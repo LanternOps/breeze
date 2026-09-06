@@ -137,6 +137,8 @@ describe('AlertAiVerdictSummaryDto (P2-1 Task 14 — alert list/detail aiVerdict
       rationale: 'Disk usage climbing steadily with no recovery.',
       patternKind: 'daily',
       feedback: 'up',
+      feedbackBy: 'user-1',
+      feedbackByName: 'Reed Only',
       suggestedIntentId: 'intent-1',
       createdAt: '2026-09-22T10:00:00.000Z',
     };

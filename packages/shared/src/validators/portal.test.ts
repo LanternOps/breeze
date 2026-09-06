@@ -66,6 +66,28 @@ describe('updatePortalSettingsSchema', () => {
     expect(updatePortalSettingsSchema.safeParse({ welcomeMessage: 'x'.repeat(2001) }).success).toBe(false);
     expect(updatePortalSettingsSchema.safeParse({ footerText: 'x'.repeat(2001) }).success).toBe(false);
   });
+
+  it('accepts all portal visibility flags', () => {
+    expect(updatePortalSettingsSchema.parse({
+      enableDashboard: true,
+      enableSecurity: true,
+      enableBackups: true,
+      enableReports: true,
+      enableSupportUsage: true,
+    })).toEqual({
+      enableDashboard: true,
+      enableSecurity: true,
+      enableBackups: true,
+      enableReports: true,
+      enableSupportUsage: true,
+    });
+  });
+
+  it('rejects non-boolean portal visibility flags', () => {
+    expect(updatePortalSettingsSchema.safeParse({
+      enableDashboard: 'true',
+    }).success).toBe(false);
+  });
 });
 
 describe('invitePortalUserSchema', () => {

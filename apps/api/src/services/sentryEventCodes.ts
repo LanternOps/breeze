@@ -63,6 +63,14 @@ export const SENTRY_EVENT_CODES = [
   /** The FX provider returned rows the sync could not use. */
   'exchange_rate_rows_rejected',
 
+  // --- pam ---------------------------------------------------------------
+  /**
+   * Boot-time scan found stored PAM rules pinned to a risk tier no tool can
+   * resolve to any more, so they can never match (#3128). Usually the tail of
+   * a tool tier re-classification shipping in the same release.
+   */
+  'pam_rule_risk_tier_unreachable',
+
   // --- software / catalog -----------------------------------------------
   /** A software version was stored with an undetermined installer type. */
   'software_version_installer_type_unknown',
@@ -111,6 +119,17 @@ export const SENTRY_EVENT_CODES = [
   /** An AI budget alert event never became visible before its retries ran out. */
   'ai_budget_alert_event_not_visible',
 
+  // --- ai agent tool registry -------------------------------------------
+  /**
+   * `createBreezeMcpServer`'s `onlyTools` (verdict/sweep tool pinning)
+   * contained a name that matched no registered tool — always a programming
+   * error (a typo in a hardcoded profile allowlist, or a tool renamed
+   * without updating it), never request input (#4447). Thrown in test/dev;
+   * in production the run degrades to the matched subset rather than
+   * failing, so this is the only signal an operator gets.
+   */
+  'ai_agent_onlytools_unknown_name',
+
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
   'backup_result_job_not_found',
@@ -145,6 +164,19 @@ export const SENTRY_EVENT_CODES = [
    * job can prune it — raise the job's batch-size / max-batches knobs.
    */
   'retention_backlog_remaining',
+
+  // --- server-side i18n (#3860) -----------------------------------------
+  /** `tApi` was asked for a key no bundle defines — the raw key string is
+   *  what shipped in the email/PDF/notification. Code↔en drift; the parity
+   *  suite only checks en↔translations. */
+  'i18n_missing_key',
+  /** A `{{var}}` in the resolved string had no value supplied — rendered as
+   *  an empty slot. */
+  'i18n_missing_interpolation',
+  /** `resolveRecipientLocale` was given ids but no tier resolved and no
+   *  partner row was readable — the recipient got English. A steady stream
+   *  for one partner means misconfiguration or an RLS-invisible row. */
+  'recipient_locale_unresolved',
 ] as const;
 
 /**

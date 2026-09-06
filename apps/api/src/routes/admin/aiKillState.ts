@@ -4,6 +4,10 @@
  *   GET  /api/v1/admin/ai-kill-state          state + epoch + provenance
  *   POST /api/v1/admin/ai-kill-state          flip it (+ MFA, reason required)
  *
+ * The GET's provenance carries the actor as a resolved name/email alongside
+ * the raw `updatedBy` UUID (`readAiKillStateRow`, #4931) — both null when the
+ * user row is gone, which the UI degrades to the UUID rather than a blank.
+ *
  * This is the first AUTHORIZED write surface for `ai_kill_state` — the row
  * shipped in wave 5A with `bumpAiKillState` deliberately uncalled, leaving a
  * direct SQL UPDATE as the only operational path. WHY PLATFORM-ADMIN ONLY:

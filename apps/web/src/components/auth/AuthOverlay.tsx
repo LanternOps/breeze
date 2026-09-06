@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookieDetailed, setThrottleMaskMounted, settleSsoLoginGate, useAuthStore } from '../../stores/auth';
+import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, markSsoExchangeFailed, restoreAccessTokenFromCookieDetailed, setThrottleMaskMounted, settleSsoLoginGate, SSO_EXCHANGE_FAILED_LOGIN_PATH, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
+import * as Sentry from '@sentry/astro';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -53,6 +54,65 @@ function consumeCfAccessLoginParam(): boolean {
     window.location.hash;
   window.history.replaceState({}, '', cleanUrl);
   return true;
+}
+
+// Single owner of the "the SSO handoff is terminally dead, bounce with the
+// specific notice" redirect. Every failure path below routes through here so
+// the ordering can't drift apart between them.
+//
+// The problem (#3704): settling the gate releases every refresh queued behind
+// it, and a dead-cookie refresh's 401 evicts via handleSessionExpired, whose
+// `window.location.replace(…&reason=session-expired)` is a HARD navigation —
+// it aborts an in-flight soft one and overwrites the URL. The user then reads
+// "Your session expired", which points away from SSO and invites an infinite
+// retry loop, since signing in again just re-runs the same broken SSO round
+// trip. `navigateTo` is an async page transition, so issuing it un-awaited and
+// settling on the next line handed that race to the eviction every time.
+//
+// TWO mechanisms close it, because neither is sufficient alone:
+//
+//  1. Order. Awaiting the navigation means that by the time the gate opens the
+//     address bar is already on /login, where handleSessionExpired's own
+//     pathname guard makes its redirect a no-op. This holds whenever navigateTo
+//     completes a real Astro soft transition — `navigate()` resolves only after
+//     `history.replaceState` has moved the URL — which is the live path here,
+//     since AuthOverlay only ever renders under layouts that mount
+//     <ClientRouter />.
+//  2. Precedence. It does NOT hold on navigateTo's own fallback: when the
+//     transition throws, it fires `window.location.replace` and returns, having
+//     merely QUEUED a hard navigation, so the address bar has not moved yet and
+//     the guard in (1) misses. markSsoExchangeFailed() covers that gap by
+//     making the eviction redirect to the same URL instead of racing it.
+//
+// The eviction itself is still correct and still runs — the SSO exchange really
+// did fail. Only its generic *reason* was wrong.
+//
+// `finally`, not a plain sequence: waiting on the navigation must not become a
+// new way to deadlock. If it throws, the queued refreshes still have to be
+// released rather than hang on the gate's 15s timeout backstop.
+async function redirectToSsoExchangeFailed(): Promise<void> {
+  // Claimed BEFORE the navigation is issued, so an eviction that somehow beats
+  // us to the address bar still carries the SSO reason.
+  markSsoExchangeFailed();
+  try {
+    await navigateTo(SSO_EXCHANGE_FAILED_LOGIN_PATH, { replace: true });
+  } catch (err) {
+    // Deliberately narrow, and NOT dead code: navigateTo already absorbs a
+    // failed transition and falls back to window.location internally, so
+    // reaching here means that fallback ALSO threw — the document has no
+    // working navigation left. Retrying it here would fail for the same
+    // reason, so the remaining recovery is the eviction above (which now
+    // carries the SSO reason) and the 10s safety net. Report it: this branch
+    // should never fire, and if it does we want to know rather than infer it
+    // from a support ticket about a stuck spinner.
+    console.warn('[AuthOverlay] SSO error redirect failed', err);
+    Sentry.captureMessage('[AuthOverlay] SSO error redirect failed — no working navigation path', {
+      level: 'warning',
+      extra: { message: err instanceof Error ? err.message : String(err) },
+    });
+  } finally {
+    settleSsoLoginGate();
+  }
 }
 
 export default function AuthOverlay() {
@@ -133,8 +193,7 @@ export default function AuthOverlay() {
         // redirect and strip the error param.
         setIsRecovering(true);
         console.warn('[AuthOverlay] malformed ssoCode fragment; bouncing to login');
-        void navigateTo('/login?error=sso_exchange_failed', { replace: true });
-        settleSsoLoginGate();
+        void redirectToSsoExchangeFailed();
         return () => { cancelled = true; };
       }
       if (fragment.present && fragment.code) {
@@ -158,10 +217,10 @@ export default function AuthOverlay() {
               // dropping it re-arms the final !isAuthenticated branch, whose
               // bare `/login` redirect races this one and strips the error
               // param. The navigation below unmounts the overlay anyway.
-              // Gate settles AFTER the navigation is issued so a queued
-              // refresh's own eviction redirect can't beat this one.
-              void navigateTo('/login?error=sso_exchange_failed', { replace: true });
-              settleSsoLoginGate();
+              // Gate settles once that navigation has COMMITTED — merely
+              // issuing it first is not enough, see
+              // redirectToSsoExchangeFailed (#3704).
+              void redirectToSsoExchangeFailed();
               return;
             }
             settleSsoLoginGate();

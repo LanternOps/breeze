@@ -555,7 +555,13 @@ func (b *Broker) listenOn(listener net.Listener, stopChan <-chan struct{}) error
 // Close shuts down the broker and all sessions.
 func (b *Broker) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), HandshakeTimeout)
-	_ = b.StopAcceptingAndWait(ctx)
+	// Logged here rather than discarded: the caller that reaches Close without
+	// having called StopAcceptingAndWait itself (listenOn's own shutdown, a test
+	// harness, a future reordering of the daemon's teardown) would otherwise see
+	// a stalled listener as a perfectly clean shutdown.
+	if err := b.StopAcceptingAndWait(ctx); err != nil {
+		log.Warn("broker close: listener shutdown did not complete", "error", err.Error())
+	}
 	cancel()
 
 	b.mu.Lock()
@@ -844,6 +850,26 @@ func (b *Broker) armHandshakeDeadline(rawConn net.Conn) bool {
 // so beginConnectionPublication returns false afterwards. Nothing cancelled here
 // can later become a live session and inherit a dead deadline, and a connection
 // that already published clears the handshake deadline itself.
+//
+// The listener's own Close() is bounded by ctx rather than awaited outright.
+// Closing a listener is normally instant, but go-winio v0.6.2's named-pipe
+// listener can deadlock its own Close(): Close blocks on doneCh, which
+// listenerRoutine only closes once a makeConnectedServerPipe call returns
+// ErrPipeListenerClosed, and that function's close branch rewrites only nil and
+// ErrFileClosed into that sentinel. A connect that was already failing on its
+// own errno when Close() cancelled it — ERROR_NO_DATA from a client that dialled
+// and hung up, which is exactly what TestNamedPipeListenAndAccept does — leaks
+// that errno through, listenerRoutine leaves `closed` false and returns to its
+// select, and the single closeCh token Close() sends is already spent. Nothing
+// ever closes doneCh. That wedged the whole `Test Agent (Windows)` job for its
+// full ten-minute budget on 2026-09-03, and on a real device it would hang agent
+// shutdown (so a service restart escalates to a kill) rather than a test.
+//
+// Abandoning the close is safe in a way that abandoning the drain is not:
+// acceptStopped is already set, so nothing can be admitted regardless of whether
+// the handle ever closes. The cost is one leaked goroutine and one leaked handle
+// for the remaining life of the process, which is strictly better than never
+// returning.
 func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	b.acceptMu.Lock()
 	b.acceptStopped = true
@@ -855,9 +881,11 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 		}
 	}
 	b.acceptMu.Unlock()
-	if listener != nil {
-		_ = listener.Close()
-	}
+
+	// Started before the drain wait rather than after it, so a well-behaved
+	// listener still closes concurrently with the handlers finishing.
+	listenerClosed := closeListenerAsync(listener)
+
 	done := make(chan struct{})
 	go func() {
 		b.preAuthHandlers.Wait()
@@ -865,10 +893,37 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+
+	select {
+	case <-listenerClosed:
+		return nil
+	case <-ctx.Done():
+		log.Error("listener Close() did not return within the shutdown budget; abandoning it",
+			"socket", b.socketPath,
+			"consequence", "one goroutine and one socket/pipe handle leak for the life of this process; nothing new is admitted")
+		return fmt.Errorf("%w: %s", ErrListenerCloseStalled, b.socketPath)
+	}
+}
+
+// closeListenerAsync closes listener on its own goroutine and returns a channel
+// that is closed once Close() returns. A nil listener yields an already-closed
+// channel, so callers need no special case for the losing side of two concurrent
+// StopAcceptingAndWait calls (Broker.Close races listenOn's own Close on every
+// shutdown; whichever loses finds b.listener already nil).
+func closeListenerAsync(listener net.Listener) <-chan struct{} {
+	closed := make(chan struct{})
+	if listener == nil {
+		close(closed)
+		return closed
+	}
+	go func() {
+		defer close(closed)
+		_ = listener.Close()
+	}()
+	return closed
 }
 
 // SessionForUser returns the first active session for the given username.
@@ -1282,8 +1337,8 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 	return nil
 }
 
-// BroadcastNotification sends a desktop notification to every connected session
-// holding the "notify" scope.
+// BroadcastNotification sends a desktop notification to one connected session per
+// interactive Windows session, chosen from those holding the "notify" scope.
 //
 // The scope filter is load-bearing, not cosmetic. The Breeze Assist helper
 // connects with assist/consent_ui and the watchdog with "watchdog"; neither
@@ -1301,15 +1356,13 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 // the fix was to grant the macOS desktop helper "notify" in scopesForRole —
 // NOT to weaken this filter, which still has to keep the assist helper and
 // watchdog out of any delivery accounting built on this broadcast.
+//
+// The fan-out is one helper per Windows session, not one per notify-scoped
+// session (#4940): in always-on lifecycle mode the broker spawns a system-role
+// and a user-role helper into the same console session and both hold "notify", so
+// an unfiltered broadcast drew every toast twice. See notifyTargets.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
-	b.mu.RLock()
-	sessions := make([]*Session, 0, len(b.sessions))
-	for _, s := range b.sessions {
-		if s.HasScope("notify") {
-			sessions = append(sessions, s)
-		}
-	}
-	b.mu.RUnlock()
+	sessions := b.notifyTargets()
 
 	for _, s := range sessions {
 		if err := s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
@@ -1321,6 +1374,108 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 				"sessionId", s.SessionID, "error", err.Error())
 		}
 	}
+}
+
+// notifyDecisionSeq numbers the envelope ids RequestNotificationDecision
+// allocates. A counter, not a timestamp: the repo's other correlated-request ids
+// use time.Now().UnixMilli() (see LaunchProcessViaUserHelperWithArgs), and
+// SendCommand rejects a duplicate in-flight id outright with ErrDuplicateCommand
+// — so two prompts raised inside the same millisecond, which two reminder rungs
+// or a rung and a retry easily are, would lose one answer.
+var notifyDecisionSeq atomic.Uint64
+
+// RequestNotificationDecision sends an interactive notification to one
+// notify-scoped session per interactive Windows session and returns the first
+// answer.
+//
+// This is the response-bearing sibling of BroadcastNotification, which
+// deliberately stays fire-and-forget: the reboot warning LADDER needs no answer
+// (#3197 guarantees the user is TOLD). Only the rungs that offer a postponement
+// come through here.
+//
+// The plumbing already existed and was never usable end to end.
+// NotifyRequest.Actions and NotifyResult.ActionClicked are declared in
+// ipc/message.go, expectedResponseType maps TypeNotify -> TypeNotifyResult, and
+// the helper's handleNotify already replies on the envelope id it was given —
+// but BroadcastNotification calls SendNotify with an EMPTY id, so no pending
+// entry exists, the reply matches nothing, and dispatchHelperMessage drops it as
+// unsolicited. Here the id is real and per-session.
+//
+// Fan-out is concurrent and first-answer-wins: there is one machine and one
+// reboot, so the first human to click decides. Sessions that time out or error
+// are not failures — an unanswered prompt means "proceed as scheduled", which is
+// the fail-safe direction. The reboot still happens; silence never cancels it and
+// never postpones it.
+//
+// The "notify" scope filter is the same one BroadcastNotification documents and
+// must not be weakened (#3255): the assist helper and the watchdog have no
+// TypeNotify handler at all, and a modal prompt is strictly more intrusive than
+// the toast that filter was written for.
+//
+// One prompt per Windows session, not per notify-scoped session (#4940). Always-on
+// lifecycle mode spawns a system-role and a user-role helper into the same console
+// session and both report canNotify=true, so the unfiltered fan-out drew two
+// identical modal dialogs — two taskbar entries, one stacked on the other.
+// First-answer-wins resolved the decision, but the losing dialog stayed on screen
+// for its whole countdown and its late notify_result was dropped as unsolicited.
+// The loser is now never asked, which is also why there is nothing to cancel: see
+// notifyTargets.
+func (b *Broker) RequestNotificationDecision(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+	sessions := b.notifyTargets()
+
+	if len(sessions) == 0 {
+		// Not an error: a headless box, or Windows sitting at the logon screen.
+		// There is no interactive user to ask.
+		return ipc.NotifyResult{}, nil
+	}
+
+	type answer struct {
+		res ipc.NotifyResult
+		err error
+	}
+	results := make(chan answer, len(sessions))
+	for _, s := range sessions {
+		go func(s *Session) {
+			id := fmt.Sprintf("notify-%s-%d", s.SessionID, notifyDecisionSeq.Add(1))
+			resp, err := s.SendCommand(id, ipc.TypeNotify, &req, timeout)
+			if err != nil {
+				results <- answer{err: fmt.Errorf("session %s: %w", s.SessionID, err)}
+				return
+			}
+			if resp.Error != "" {
+				results <- answer{err: fmt.Errorf("session %s: notify helper error: %s", s.SessionID, resp.Error)}
+				return
+			}
+			var out ipc.NotifyResult
+			if err := json.Unmarshal(resp.Payload, &out); err != nil {
+				results <- answer{err: fmt.Errorf("session %s: decode notify result: %w", s.SessionID, err)}
+				return
+			}
+			results <- answer{res: out}
+		}(s)
+	}
+
+	// results is buffered to len(sessions), so the goroutines belonging to
+	// sessions we stop reading from still finish and exit rather than leaking.
+	var best ipc.NotifyResult
+	var lastErr error
+	for range sessions {
+		a := <-results
+		if a.err != nil {
+			lastErr = a.err
+			continue
+		}
+		if a.res.ActionClicked != "" {
+			return a.res, nil // the first real decision wins
+		}
+		if a.res.Delivered {
+			best.Delivered = true
+		}
+	}
+	if !best.Delivered && lastErr != nil {
+		return best, lastErr
+	}
+	return best, nil
 }
 
 // BroadcastToDesktopSessions sends a fire-and-forget IPC message to all

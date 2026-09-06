@@ -185,6 +185,7 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  * silently writes the old value back — equally fatal, and quieter.
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  'offline_transition_effects.offline_effect_source_guard': 'RAISEs iff immutable source org_id changes; historical intents remain with source until erasure',
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
@@ -237,6 +238,30 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // contract can restamp tenancy; every evidence field stays immutable.
   'agent_health_observations.agent_health_observations_immutable_trg': 'org_id-only device-owner restamp',
   'software_inventory_observations.software_inventory_observations_immutable_trg': 'org_id-only device-owner restamp',
+  // Cross-axis field_key namespace guard (#3257 W03,
+  // 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql). RAISEs P0001
+  // only when the DESTINATION org's partner already owns a partner-wide row
+  // with the same field_key. A merge is same-partner (orgMerge.ts:289,
+  // re-validated against fresh rows inside the merge transaction at :605), so
+  // the repoint never changes which partner namespace the row lives in — the
+  // loser's row already had to clear this exact check to exist. Note this is a
+  // REACHABILITY argument, not inertness: the trigger does fire on the repoint
+  // and would abort it over a pre-existing shadow. Both halves are pinned in
+  // customFieldDefinitionsMerge.integration.test.ts ('merges cleanly while the
+  // partner owns partner-wide definitions' and 'an existing cross-axis shadow
+  // WOULD abort the repoint'). If the same-partner precondition or the
+  // migration's deploy-abort is ever weakened, this moves to BLOCKING.
+  'custom_field_definitions.custom_field_definitions_no_shadow':
+    'cross-axis field_key namespace check against the DESTINATION org\'s partner; a merge is same-partner, so the repoint cannot change the namespace being checked',
+  // BEFORE INSERT/UPDATE coherence check (#3257 W05,
+  // 2026-10-11-160000-device-custom-field-values.sql) carries an explicit merge
+  // fence: it permits the org_id repoint when the value's definition is still
+  // owned by an org that is actively status='merging' under the SAME partner as
+  // the row's new org, so the merge's early devices repoint (which restamps this
+  // table via breeze_cascade_device_org_id's generic loop while the definition
+  // is still loser-owned) does not abort.
+  'device_custom_field_values.device_custom_field_values_coherent':
+    'merge fence: permits the repoint while the definition is still loser-owned, gated on same-partner status=\'merging\'',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',
@@ -298,18 +323,27 @@ describe('Org merge policy registry contract', () => {
     expect(extra).toEqual([]);
   });
 
-  it('organizations is loser-shell; the four append-only tables are leave-for-erasure', () => {
+  it('organizations is loser-shell; the five append-only tables are leave-for-erasure', () => {
     expect(policies.get('organizations')).toEqual({ kind: 'loser-shell' });
-    for (const t of ['audit_logs', 'audit_log_chain', 'audit_chain_anchors', 'ml_feedback_events']) {
+    // agent_rollback_events joined this list in the #4371 fixup, and
+    // peripheral_policy_delivery_events in the #4806 fixup: breeze_app has
+    // no UPDATE on either (same privilege topology as ml_feedback_events),
+    // so neither can ever be a live 'repoint' target — see the SPECIAL
+    // entry's note in orgMergeRegistry.ts for the full history.
+    for (const t of ['audit_logs', 'audit_log_chain', 'audit_chain_anchors', 'ml_feedback_events', 'agent_rollback_events', 'peripheral_policy_delivery_events']) {
       expect(policies.get(t)?.kind, t).toBe('leave-for-erasure');
     }
   });
 
   it('repoints Track D device-control state and evidence with the device owner', () => {
+    // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
+    // events (#4806 fixup) are deliberately NOT in this list: breeze_app has
+    // UPDATE revoked on both, so neither can be repointed by the merge —
+    // they're asserted 'leave-for-erasure' above instead.
+    // agent_rollback_directives keeps its own separate 'repoint' policy;
+    // its evidence table just doesn't follow along anymore.
     for (const table of [
       'agent_rollback_directives',
-      'agent_rollback_events',
-      'peripheral_policy_delivery_events',
       'peripheral_policy_device_states',
     ]) {
       expect(policies.get(table), table).toEqual({ kind: 'repoint' });

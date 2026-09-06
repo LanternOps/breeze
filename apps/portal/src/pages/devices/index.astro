@@ -1,7 +1,7 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
-import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 import DeviceList from '../../components/portal/DeviceList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -14,6 +14,14 @@ const response = await portalApi.getDevices(
 if (response.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
+}
+
+// The list is gated on Self-service, which 403s with PORTAL_SELF_SERVICE_DISABLED.
+// DeviceList answers ANY error with "We couldn't load your devices just now", so
+// a deliberate switch-off used to read as an outage (#4932). Genuine failures
+// still fall through to the list's own copy.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
 }
 ---
 

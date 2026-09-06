@@ -31,6 +31,7 @@ describe('useAdvancedFilterIds', () => {
 
     expect(result.current.ids).toBeNull();
     expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBe(false);
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
@@ -99,7 +100,7 @@ describe('useAdvancedFilterIds', () => {
     expect(result.current.ids).toBeNull();
   });
 
-  it('drops the id set (fails open) when the request errors', async () => {
+  it('fails CLOSED (empty set + error flag) on a network failure — never an unfiltered list (#4732)', async () => {
     vi.mocked(fetchWithAuth).mockRejectedValue(new Error('network down'));
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -107,7 +108,111 @@ describe('useAdvancedFilterIds', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.ids).toBeNull();
+    // Regression #4732: this used to be `null` ("show everything"), which
+    // widened the result on a failed filter instead of narrowing it.
+    expect(result.current.ids).not.toBeNull();
+    expect(result.current.ids?.size).toBe(0);
+    expect(result.current.error).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it('fails CLOSED (empty set + error flag) on a 403 — a pinned orgId the caller cannot access (#4732)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: 'forbidden' }),
+    } as unknown as Response);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAdvancedFilterIds(filter));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.ids).not.toBeNull();
+    expect(result.current.ids?.size).toBe(0);
+    expect(result.current.error).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it('fails CLOSED (empty set + error flag) on a 500', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'internal_error' }),
+    } as unknown as Response);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result } = renderHook(() => useAdvancedFilterIds(filter));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.ids).not.toBeNull();
+    expect(result.current.ids?.size).toBe(0);
+    expect(result.current.error).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it('does not set the error flag on a 401, but still fails ids closed — the auth-redirect path owns the failure UX', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'unauthorized' }),
+    } as unknown as Response);
+
+    const { result } = renderHook(() => useAdvancedFilterIds(filter));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // fetchWithAuth USUALLY triggers the session-expiry redirect on an
+    // unrecoverable 401 (stores/auth.ts handleSessionExpired) before this
+    // hook ever sees the response, so `error` (which drives the toast/pill)
+    // stays false — piling a second, competing error message on top of a
+    // page that's about to navigate away would be confusing.
+    expect(result.current.error).toBe(false);
+    // But `ids` must still fail CLOSED unconditionally: two of
+    // fetchWithAuth's retry-after-refresh branches can return a SURVIVING
+    // 401 without ever calling handleSessionExpired (no redirect in
+    // flight). If `ids` stayed null in that case, the list would fall back
+    // to "no filter active" and render the full unfiltered fleet — exactly
+    // the #4732 bug this hook exists to prevent, just gated behind a rarer
+    // trigger. So `ids` empties regardless of whether a redirect is (or
+    // isn't) actually in flight for this particular 401.
+    expect(result.current.ids).not.toBeNull();
+    expect(result.current.ids?.size).toBe(0);
+  });
+
+  it('clears a prior error once the filter succeeds again', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'internal_error' }),
+    } as unknown as Response);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result, rerender } = renderHook(
+      ({ f }: { f: FilterConditionGroup }) => useAdvancedFilterIds(f),
+      { initialProps: { f: filter } }
+    );
+
+    await waitFor(() => expect(result.current.error).toBe(true));
+
+    mockPreviewResponse(['dev-1']);
+    const retried: FilterConditionGroup = {
+      operator: 'AND',
+      conditions: [{ field: 'status', operator: 'equals', value: 'offline' }],
+    };
+    rerender({ f: retried });
+
+    // Wait on `ids` (the value the success path sets LAST, after `error`),
+    // not on `error` — `error` resets to false synchronously at the START of
+    // every effect run (including this retry), well before the retried
+    // fetch resolves. Waiting on `error` alone is satisfied by that
+    // synchronous reset and can read `ids` before the retry's response has
+    // landed, flaking the very next assertion (confirmed: failed on direct
+    // isolated re-run during PR #4783 review).
+    await waitFor(() => expect(result.current.ids?.size).toBe(1));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBe(false);
     consoleSpy.mockRestore();
   });
 });

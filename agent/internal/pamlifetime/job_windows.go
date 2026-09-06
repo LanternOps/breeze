@@ -316,6 +316,15 @@ func (*nativeWindowsPrimitives) VerifyProcessIdentityGone(ctx context.Context, p
 }
 
 func (*nativeWindowsPrimitives) VerifyNoPrivilegedToken(ctx context.Context, username string) (bool, error) {
+	// Do NOT special-case "no such account" here, however tempting it looks:
+	// an unresolvable name is not on its own proof that no token exists. A
+	// Windows process keeps its token, and therefore the elevated SID, after
+	// the account behind it is deleted, so on a host that HAS actuated, this
+	// error can be the only trace of exactly the orphaned elevated process
+	// this scan exists to catch. The one context where absence is genuinely
+	// proof — an agent whose ledger has never recorded an actuation, so the
+	// account was never created — is handled by the caller, which knows that:
+	// see verifyAccountClean's neverActuated parameter in manager.go (#4587).
 	targetSID, _, _, err := windows.LookupSID("", username)
 	if err != nil {
 		return false, err

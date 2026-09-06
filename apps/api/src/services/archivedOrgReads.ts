@@ -4,11 +4,13 @@
  * Spec: docs/superpowers/specs/tenancy-rls/2026-08-26-org-lifecycle-merge-archive-design.md
  * (Part 2, "Hidden + read-only").
  *
- * `archived` orgs are excluded from `computeAccessibleOrgIds`
- * (`status IN ('active','trial')`), so a request's own RLS context cannot see
- * them at all — by design. These helpers are the explicit, opt-in door, and
- * they are the only place in the org routes that opens
- * `withArchivedOrgReadContext`.
+ * `archived` orgs — and, since #4166, orgs mid-ARCHIVE-drain (`offboarding`
+ * with `offboarding_target = 'archive'`) — are excluded from
+ * `computeAccessibleOrgIds` (`status IN ('active','trial')`), so a request's own
+ * RLS context cannot see them at all — by design. These helpers are the
+ * explicit, opt-in door, and they are the only place in the org routes that
+ * opens `withArchivedOrgReadContext`. `archiveLifecycleCondition` below is the
+ * single definition of which states the door admits, and why.
  *
  * Two phases, on purpose:
  *
@@ -27,7 +29,7 @@
  * early-return into it (discovery silently returns zero rows), and
  * `withArchivedOrgReadContext` refuses to nest outright.
  */
-import { and, eq, ilike, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -40,9 +42,11 @@ import { escapeLike } from '../utils/sql';
 type OrganizationRow = typeof organizations.$inferSelect;
 
 /**
- * An archived org row, flagged so a caller merging it into a list of live orgs
- * (and the web UI rendering that list) can tell the two apart without
- * re-deriving it from `status`.
+ * An archive-lifecycle org row, flagged so a caller merging it into a list of
+ * live orgs (and the web UI rendering that list) can tell the two apart without
+ * re-deriving it from `status`. The flag means "came through the READ ONLY
+ * archived door", which since #4166 covers `archived` AND the `offboarding`
+ * half of an archive drain — read `status` for which of the two it is.
  */
 export type ArchivedOrganizationRow = OrganizationRow & { archived: true };
 
@@ -88,6 +92,91 @@ export type ArchivedOrgScope =
   | { kind: 'partnerSelection'; partnerId: string; orgIds: string[] }
   | { kind: 'allPartners' };
 
+/**
+ * `offboarding_target` value marking a drain headed for `archived` rather than
+ * `churned`. Mirrors what `beginOrgArchive` stamps (services/orgArchive.ts) and
+ * what `restoreOrgFromArchive` requires on its abort edge.
+ */
+const ARCHIVE_DRAIN_TARGET = 'archive';
+
+/**
+ * The lifecycle states this read-only door admits (#4166).
+ *
+ * `archived` is the resting state Wave 4 built the door for. The `offboarding`
+ * arm is the DRAIN that precedes it — but only a drain headed for `archived`
+ * (`offboarding_target = 'archive'`), never a churn drain:
+ *
+ *  - Both ENDS of the archive transition are visible — `active`/`trial` through
+ *    `computeAccessibleOrgIds`, `archived` through this door — and only its
+ *    middle was not. So clicking Archive made the org vanish from every list
+ *    for the whole drain window (minutes with no agents, up to 72h with a real
+ *    fleet), and `POST /organizations/:id/restore` became unreachable from the
+ *    UI even though `restoreOrgFromArchive` accepts exactly this state as its
+ *    abort edge. That is #4166.
+ *  - A CHURN drain ends at `churned`, which is deliberately invisible (same as
+ *    `suspended`). Admitting it here would be a NEW visibility policy, would
+ *    offer a Restore that `restoreOrgFromArchive` always refuses, and would
+ *    render a purge countdown off a `purge_at` that is NULL for churn. If
+ *    churn drains should be observable, that wants its own presentation — not
+ *    a row flagged `archived: true` under "Archived organizations".
+ *
+ * ONE definition, shared by discovery, by BOTH serving reads, and by the list
+ * route's system-scope exclusion. Two status allowlists drifting apart is
+ * exactly what produced #4166; a second copy of this predicate would set up
+ * the next one.
+ */
+export function archiveLifecycleCondition(): SQL {
+  // `or`/`and` are typed `SQL | undefined` only for the all-arguments-undefined
+  // case; every arm here is a literal condition, so the result is always defined.
+  return or(
+    eq(organizations.status, 'archived'),
+    and(
+      eq(organizations.status, 'offboarding'),
+      eq(organizations.offboardingTarget, ARCHIVE_DRAIN_TARGET),
+    ),
+  ) as SQL;
+}
+
+/**
+ * Row-level twin of `archiveLifecycleCondition`, for the one caller that has an
+ * already-loaded row instead of a query to constrain: the detail route's
+ * system-scope branch, which reaches archive-lifecycle orgs through the normal
+ * read (system scope short-circuits every RLS predicate) and has to flag them
+ * the same way the partner branch does.
+ *
+ * Keep the two in lockstep — they are pinned against each other in
+ * `archivedOrgReads.scope.test.ts`.
+ */
+export function isArchiveLifecycleRow(row: {
+  status: string;
+  offboardingTarget?: string | null;
+}): boolean {
+  return (
+    row.status === 'archived'
+    || (row.status === 'offboarding' && row.offboardingTarget === ARCHIVE_DRAIN_TARGET)
+  );
+}
+
+/**
+ * The non-scope half of the door's predicate: the admitted lifecycle states,
+ * not soft-deleted, and never the hidden per-partner support org (archiving is
+ * not a way to surface it — see beginOrgArchive's NON_ARCHIVABLE_ORG_TYPES).
+ *
+ * Re-asserted in the SERVING reads as well as in discovery. Discovery and
+ * serving are two separate transactions, and the window between them is
+ * precisely when an org in this set flips state (the drain reaper finalizes
+ * `offboarding` -> `archived`; Restore aborts it back to a live status). A
+ * serving read keyed on id alone would hand back a now-live row flagged
+ * `archived: true`.
+ */
+function archiveLifecycleEligibility(): SQL {
+  return and(
+    archiveLifecycleCondition(),
+    isNull(organizations.deletedAt),
+    ne(organizations.type, 'quick_support'),
+  ) as SQL;
+}
+
 function partnerCondition(scope: ArchivedOrgScope): SQL | undefined {
   if (scope.kind === 'allPartners') return undefined;
   if (scope.kind === 'partner') return eq(organizations.partnerId, scope.partnerId);
@@ -113,6 +202,12 @@ function searchCondition(search: string | undefined): SQL | undefined {
   return trimmed ? ilike(organizations.name, `%${escapeLike(trimmed)}%`) : undefined;
 }
 
+/**
+ * `archived: true` marks "read through the archive-lifecycle read-only door",
+ * NOT literally `status === 'archived'` — since #4166 the door also admits the
+ * `offboarding` half of an archive drain. Clients must branch on this flag for
+ * read-onlyness and on `status` for what to display.
+ */
 function flagArchived(row: OrganizationRow): ArchivedOrganizationRow {
   return { ...row, archived: true };
 }
@@ -134,12 +229,7 @@ async function discoverArchivedOrgIds(input: {
         .where(
           and(
             partnerCondition(input.scope),
-            eq(organizations.status, 'archived'),
-            isNull(organizations.deletedAt),
-            // The hidden per-partner support org is never enumerated anywhere
-            // else either (see the org list handler) — archiving is not a way
-            // to surface it.
-            ne(organizations.type, 'quick_support'),
+            archiveLifecycleEligibility(),
             searchCondition(input.search),
           ),
         )
@@ -175,7 +265,7 @@ export async function listArchivedOrgs(input: {
       const orgRows = await db
         .select()
         .from(organizations)
-        .where(inArray(organizations.id, ids))
+        .where(and(inArray(organizations.id, ids), archiveLifecycleEligibility()))
         .orderBy(organizations.createdAt, organizations.id);
       const counts = await db
         .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
@@ -200,10 +290,15 @@ export async function listArchivedOrgs(input: {
 }
 
 /**
- * One archived org, or null when the target does not exist, is not archived, is
- * soft-deleted, or is outside the scope — all four collapse to the same "not
- * found" for the caller, so an archived org never becomes a cross-tenant
- * existence oracle.
+ * One archive-lifecycle org, or null when the target does not exist, is not in
+ * `archiveLifecycleCondition()`, is soft-deleted, is the hidden support org, or
+ * is outside the scope — all of which collapse to the same "not found" for the
+ * caller, so an archived org never becomes a cross-tenant existence oracle.
+ *
+ * The eligibility half runs as SQL (`archiveLifecycleEligibility`) rather than
+ * as row checks in TypeScript so it is the SAME predicate the list read uses.
+ * Only the scope check stays in TypeScript, because it is the one part that
+ * depends on the caller rather than the row.
  */
 export async function loadArchivedOrg(input: {
   orgId: string;
@@ -215,27 +310,25 @@ export async function loadArchivedOrg(input: {
         .select({
           id: organizations.id,
           partnerId: organizations.partnerId,
-          status: organizations.status,
-          deletedAt: organizations.deletedAt,
-          type: organizations.type,
         })
         .from(organizations)
-        .where(eq(organizations.id, input.orgId))
+        .where(and(eq(organizations.id, input.orgId), archiveLifecycleEligibility()))
         .limit(1),
     ),
   );
 
   if (!target) return null;
-  if (target.status !== 'archived') return null;
-  if (target.deletedAt !== null) return null;
-  if (target.type === 'quick_support') return null;
   // Partner ownership AND, for a 'selected' member, the raw selection —
   // archiving an org must not widen who can read its full row.
   if (!scopeAdmitsOrg(input.scope, target)) return null;
 
   const [row] = await runOutsideDbContext(() =>
     withArchivedOrgReadContext([input.orgId], () =>
-      db.select().from(organizations).where(eq(organizations.id, input.orgId)).limit(1),
+      db
+        .select()
+        .from(organizations)
+        .where(and(eq(organizations.id, input.orgId), archiveLifecycleEligibility()))
+        .limit(1),
     ),
   );
 

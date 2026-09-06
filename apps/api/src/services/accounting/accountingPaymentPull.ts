@@ -89,7 +89,7 @@ import { AccountingCurrencyContractError, normalizeAccountingPayment } from './a
 import type { NormalizedAccountingPayment } from './accountingCurrency';
 import { PAYMENT_CLAIM_LEASE_MS, paymentMappingRemoteId } from './accountingPaymentMarker';
 import type { AccountingConnection } from './accountingConnectionService';
-import type { ChangeSetPaymentLine } from './types';
+import { INVOICE_REMOTE_DELETED_ERROR, type ChangeSetPaymentLine } from './types';
 import { recomputeInvoiceStatus } from '../invoiceService';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -1418,7 +1418,9 @@ export async function markInvoiceDeletedRemotely(
       .limit(1);
     if ((rows as Array<{ status: string }>)[0]?.status === 'void') return 'invoice_void';
 
-    await markInvoiceMappingError(conn, mapping.id, BREEZE_ORIGIN_REMOVED_MESSAGE);
+    // `INVOICE_REMOTE_DELETED_ERROR` is the sentinel `invoiceService` /
+    // `accountingInvoicePush` match on to refuse a re-push (#4544).
+    await markInvoiceMappingError(conn, mapping.id, INVOICE_REMOTE_DELETED_ERROR);
     return 'marked';
   });
 }

@@ -85,6 +85,17 @@ export default function AlertVerdictBadge({ verdict, onFeedback, compact = false
   const [decided, setDecided] = useState<'up' | 'down' | null>(verdict.feedback);
   const locked = submitting;
 
+  // #4445 — a decided verdict used to look identical whether the CURRENT
+  // tech voted or a colleague did, so a same-alert-different-tech click
+  // only found out via a bare 409 toast. `feedbackByName` (resolved by the
+  // alerts route, `routes/alerts/actorNames.ts`) answers "who voted" up
+  // front. Only shown once decided — an undecided verdict has no voter to
+  // name — and only when the name actually resolved (a deleted user's
+  // `feedbackByName` comes back `null`, not a raw uuid).
+  const feedbackByLabel = decided && verdict.feedbackByName
+    ? t('alertVerdict.feedbackBy', { name: verdict.feedbackByName })
+    : null;
+
   const handleFeedback = async (value: 'up' | 'down') => {
     if (locked) return;
     setSubmitting(true);
@@ -113,7 +124,7 @@ export default function AlertVerdictBadge({ verdict, onFeedback, compact = false
   return (
     <span
       data-testid="alert-verdict-badge"
-      title={verdict.rationale}
+      title={feedbackByLabel ? `${verdict.rationale}\n${feedbackByLabel}` : verdict.rationale}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border font-medium',
         compact ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs',
@@ -124,6 +135,11 @@ export default function AlertVerdictBadge({ verdict, onFeedback, compact = false
       <span className="opacity-75">
         {t('alertVerdict.confidence', { pct: Math.round(verdict.confidence * 100) })}
       </span>
+      {feedbackByLabel && (
+        <span data-testid="alert-verdict-feedback-by" className="opacity-60 truncate max-w-[8rem]">
+          {feedbackByLabel}
+        </span>
+      )}
       <span className="flex items-center gap-0.5">
         <button
           type="button"

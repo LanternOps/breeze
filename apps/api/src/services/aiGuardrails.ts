@@ -252,6 +252,23 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
+  // Money-authoring drafts vs money-moving actions (#2551): this boundary
+  // tracks reversibility/external-commitment, not dollar amount. Drafting —
+  // create_draft, add_manual_line, add_catalog_line, update, etc. — only
+  // mutates an internal record nobody outside Breeze has seen yet; it's
+  // Tier 2 (auto-execute + audit) no matter how large the draft's total is.
+  // The step that actually commits externally — issuing/voiding an invoice,
+  // recording/voiding a payment, sending a quote to the customer, or
+  // transitioning a contract's lifecycle — is what exposes the change beyond
+  // Breeze, so THAT step is Tier 3 regardless of amount. A five-figure quote
+  // draft and a $10 one get the same tier; only `send` escalates.
+  //
+  // This is deliberate, not an oversight that `manage_organizations:
+  // create_org` is Tier 3 while `manage_quotes: create_draft` is Tier 2 —
+  // create_org is gated on tenant-structure mutation, an unrelated axis, not
+  // financial size. A partner-configurable dollar-amount escalation
+  // threshold for drafting was proposed and explicitly deferred (not
+  // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
@@ -449,6 +466,12 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // The customer's "regular work on a PC" (spec §3.2's explicit supervised list).
   'execute_command', 'run_script',
+  // #3525: stopping a script is a de-escalation — it never starts work, carries
+  // no operator-chosen content, target, credential or binary, and the worst
+  // outcome of an unwanted one is a job that has to be re-run. Supervised, at
+  // the same gate as the run_script it undoes; four_eyes would leave a runaway
+  // script on a customer endpoint while a second approver is found.
+  'cancel_script_execution',
   // s1_isolate_device is deliberately ABSENT here: its boolean `isolate`
   // discriminator cannot be action-classified (spec §3.1), so its scope is
   // resolved by resolveApprovalScope's override hook instead of this static
@@ -483,7 +506,41 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // RMM-QA-176 D9: a 'maintenance' feature link is the canonical
+  // monitoring-suppression source, so authoring one is a different class of
+  // act from authoring any other link — but only the INPUT says which it is,
+  // so it cannot be classified by (tool, action) in the static tables.
+  'manage_policy_feature_link:add',
+  'manage_policy_feature_link:update',
 ]);
+
+/**
+ * True when a (tool, action, input) triple escalates to Tier 3 on argument
+ * CONTENT. Exported so checkGuardrails, resolveApprovalScope and the tests all
+ * ask the SAME question — a second copy of this predicate is how a tier and
+ * its scope drift apart.
+ *
+ * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
+ * which is safe here because the handler writes exactly the featureType it was
+ * given, so a value that is not the literal 'maintenance' cannot create a
+ * maintenance link either. The handler's own principal check (D9.3) is the
+ * belt to this brace for `update`, where featureType is not a required input.
+ *
+ * The action guard is not decoration: without it a read (`list`) carrying a
+ * stray featureType argument would be escalated into an approval that the MCP
+ * transport then denies outright.
+ */
+export function isInputAwareTier3(
+  toolName: string,
+  action: string | undefined,
+  input: Record<string, unknown>,
+): boolean {
+  return (
+    toolName === 'manage_policy_feature_link' &&
+    (action === 'add' || action === 'update') &&
+    input.featureType === 'maintenance'
+  );
+}
 
 /**
  * Whole-tool counterpart of TIER3_INPUT_AWARE_ACTIONS — base-tier-3 tools
@@ -509,6 +566,16 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (isInputAwareTier3(toolName, action, input)) {
+    // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
+    // whole-tool scope set and add/update are in neither *_ACTIONS scope
+    // table, so without this override an escalated add/update would fall all
+    // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
+    // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
+    // escalations and manage_configuration_policy's own create/update/delete —
+    // authoring policy configuration, not an externally binding act.
+    return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
     // isolate:false is containment RELEASE (reverses a prior mitigation —
@@ -545,6 +612,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
+  // Same permission the HTTP cancel route requires (PERMISSIONS.SCRIPTS_EXECUTE):
+  // whoever may start a script may stop it, and nobody else.
+  cancel_script_execution: { resource: 'scripts', action: 'execute' },
   manage_alerts: {
     list: { resource: 'alerts', action: 'read' },
     get: { resource: 'alerts', action: 'read' },
@@ -625,6 +695,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'contracts', action: 'write' },
     add_line: { resource: 'contracts', action: 'write' },
     remove_line: { resource: 'contracts', action: 'write' },
+    update_line: { resource: 'contracts', action: 'write' },
     activate: { resource: 'contracts', action: 'manage' },
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
@@ -1113,6 +1184,10 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
 const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
   run_script: { limit: 5, windowSeconds: 300 },
+  // Deliberately looser than run_script: a stop is the safe direction, and a
+  // rate limit that blocks a tech's assistant from halting a runaway script is
+  // worse than the burst it prevents.
+  cancel_script_execution: { limit: 20, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
@@ -1249,6 +1324,24 @@ export type GuardrailCheck =
     });
 
 /**
+ * The read-only formula `checkAgentGuardrails` applies to a resolved
+ * `GuardrailCheck`: tier 1 is always read-only; tier 2 is read-only only on
+ * the #3130 allowlists (an explicit `readOnly: true` from an action-level
+ * table, or the tool being in `TIER2_READONLY_TOOLS`). Extracted so
+ * `agentToolCatalog.ts`'s catalog-operation resolution (which never calls
+ * `checkAgentGuardrails` — it has no run policy to check against) computes
+ * the exact same answer `checkAgentGuardrails` would, instead of a
+ * hand-rolled copy that could drift from it.
+ */
+export function isReadOnlyResolution(
+  toolName: string,
+  check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
+): boolean {
+  return check.tier === 1
+    || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+}
+
+/**
  * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
  * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
  * signals the run-loop pre-hook to revalidate (live policy + guardrail
@@ -1322,6 +1415,20 @@ export function checkGuardrails(
       tier: 1,
       allowed: true,
       requiresApproval: false,
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
+
+  // Input-aware Tier-3 escalation (RMM-QA-176 D9). After the Tier-1 downgrade
+  // so a read action can never be escalated by a stray argument; before
+  // TIER3_ACTIONS and TIER2_ACTIONS, and necessarily before the base-tier
+  // resolution below, so the base tier 2 cannot claim it first.
+  if (isInputAwareTier3(toolName, action, input)) {
+    return {
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: resolveApprovalScope(toolName, action, input),
       description: buildApprovalDescription(toolName, action, input)
     };
   }
@@ -1691,8 +1798,7 @@ export function checkAgentGuardrails(
     );
   }
 
-  const readOnly = base.tier === 1
-    || (base.tier === 2 && (base.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+  const readOnly = isReadOnlyResolution(toolName, base);
 
   // A device-less run has no site scope (buildAgentAuthContext pins
   // allowedSiteIds only when a device exists), so a mutation from it would be
@@ -1977,6 +2083,10 @@ function buildApprovalDescription(
       if (Array.isArray(input.deviceIds)) parts.push(`on ${input.deviceIds.length} device(s)`);
       break;
 
+    case 'cancel_script_execution':
+      parts.push(`Stop script execution ${(input.executionId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      break;
+
     case 'manage_services':
       parts.push(`${action?.toUpperCase()} service "${input.serviceName}"`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
@@ -2139,6 +2249,11 @@ function buildApprovalDescription(
     case 'apply_configuration_policy':
       parts.push(`Assign config policy ${(input.configPolicyId as string)?.slice(0, 8)}...`);
       parts.push(`to ${input.level} ${(input.targetId as string)?.slice(0, 8)}...`);
+      break;
+
+    case 'manage_policy_feature_link':
+      parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
+      parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
       break;
 
     case 'remove_configuration_policy_assignment':

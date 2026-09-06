@@ -120,6 +120,24 @@ export function deleteQuote(id: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}`, { method: 'DELETE' });
 }
 
+/** Draft-only atomic change-currency op (#3774, mirrors changeContractCurrency
+ *  in lib/api/contracts.ts). `clearLines` and `reprice` are mutually
+ *  exclusive; the server 409s CURRENCY_LOCKED when monetary lines exist and
+ *  neither is set. */
+export interface ChangeQuoteCurrencyBody {
+  currencyCode: string;
+  clearLines?: boolean;
+  reprice?: boolean;
+}
+
+export function changeQuoteCurrency(id: string, body: ChangeQuoteCurrencyBody): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/currency`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
 export function addBlock(id: string, body: QuoteBlockInput): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/blocks`, {
     method: 'POST',

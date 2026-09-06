@@ -1,0 +1,40 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { DashboardTiles, DashboardUnavailable } from '../../components/portal/DashboardTiles';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getDashboard(
+  buildServerApiConfig(Astro.request),
+);
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// enable_dashboard off 403s with PORTAL_DASHBOARD_DISABLED. DashboardUnavailable
+// below is the concierge state for a dashboard that SHOULD have loaded; a page
+// the org never turned on is not a fault for the customer to escalate, so it
+// bounces instead (#4932). Safe even though the dashboard is the landing page
+// when this flag is ON: the target is a page no flag can switch off, so there is
+// nothing to loop back through.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+
+// The concierge line is the whole point of the failure state, so the support
+// address is fetched only when there is a failure to explain — the happy path
+// must not pay for a second branding round trip (the layout already made one).
+const supportEmail = response.data
+  ? null
+  : (await loadPortalBranding(Astro.request)).supportEmail;
+---
+
+<PortalLayout title="Dashboard">
+  {
+    response.data
+      ? <DashboardTiles dashboard={response.data} />
+      : <DashboardUnavailable supportEmail={supportEmail} />
+  }
+</PortalLayout>

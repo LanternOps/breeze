@@ -269,6 +269,44 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports portal report definitions and contact-bound recipients', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.reports!.columns.portal_self_service!.decision,
+    ).toBe('include');
+
+    expect(
+      Object.fromEntries(
+        Object.entries(
+          CORE_TENANT_EXPORT_POLICY.report_schedule_recipients!.columns,
+        ).map(([name, value]) => [name, value.decision]),
+      ),
+    ).toEqual({
+      id: 'include',
+      report_id: 'include',
+      org_id: 'include',
+      contact_id: 'include',
+      created_at: 'include',
+    });
+
+    expect(CORE_TENANT_EXPORT_POLICY).not.toHaveProperty('report_runs');
+  });
+
+  // #2787 wave 04 — `devices` is in CORE_ORG_CASCADE_DELETE_ORDER, so EVERY
+  // column of it must carry an export classification; an unclassified one
+  // fails the tenant-export contract suites. `decommissioned_at` is a plain
+  // timestamp (when the device was removed), not credential material.
+  it('classifies the device removal timestamp as ordinary exportable tenant data', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at,
+    ).toBeDefined();
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at!.decision,
+    ).toBe('include');
+    expect(
+      CORE_TENANT_EXPORT_POLICY.devices!.columns.decommissioned_at!.reviewedSensitiveName,
+    ).toBeUndefined();
+  });
+
   it('rejects a column classified in both a shared group and a specific decision', () => {
     expect(() =>
       tablePolicy('org_id', {

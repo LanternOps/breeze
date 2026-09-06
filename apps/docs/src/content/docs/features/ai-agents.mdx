@@ -10,7 +10,7 @@ An AI agent is a named, permission-scoped worker you configure once. It wakes on
 Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
 
 <Aside type="caution" title="Act mode runs unattended — read this before enabling it">
-  An agent has three modes: **Off**, **Shadow**, and **Act**. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set still proposes and waits, exactly as in Shadow. See [Act mode](#act-mode) before turning it on.
+  An agent has three modes: **Off**, **Shadow**, and **Act** — a new agent is always created disabled, in Shadow. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set — in every mode — still proposes and waits for a person. A separate path lets one specific operation skip that wait too, but only by earning it: once it has a long enough clean record, a **second, different person** has to pre-authorize it (see [Graduation](#graduation-feedback-loop)) — no operation is pre-authorized just because an operator typed it in. See [Act mode](#act-mode) before turning it on.
 </Aside>
 
 ## What an agent does
@@ -165,6 +165,31 @@ Agents are gated on their own capabilities rather than on general organization p
 These are deliberately separate from `organizations:write`. Authoring an agent policy is what authorizes autonomous action on customer machines once an agent is switched to Act mode, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
 
 Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
+
+### Choosing what an agent can do
+
+The agent form's own **Permissions** section groups tools into **capabilities** — fixed groups like alerts and monitoring, files and disk, or scripts and commands — that the catalog assigns to every tool an agent can reach. Only capabilities and operations an agent can actually reach are offered; a tool the agent runtime doesn't expose is never shown, no matter how you search for it. Read-only tools (device lookups, reports, and the like) are always available to every agent and need no decision — they're listed separately, collapsed behind a count of how many.
+
+**Use recommended** adds the operations the agent's kind typically needs on top of whatever is already selected; it never clears anything.
+
+Every mutating operation carries one outcome badge, for the agent's current mode:
+
+| Badge | Meaning |
+|---|---|
+| **Approval request** | Tier 3. Recorded as a proposal; a technician decides in Approvals. |
+| **Logged proposal** | Tier 2. Recorded in the run's outcome and never executed. |
+| **Executes unattended** | Act mode only, and only for the fixed, act-eligible operations described in [Act mode](#act-mode). **Run a script** is the one exception: it stays an approval request until at least one script is authorized for the agent (`actAssets.scriptIds`, set through the API today — there is no form control for it yet), and the picker and review card say so rather than promising an unattended run. |
+
+A green dot marks an operation that **can be pre-authorized** — eligible, on a clean enough record, to graduate out of the approval queue (see [Graduation](#graduation-feedback-loop)). The dot means eligible, not authorized: nothing is pre-authorized until a second person promotes it. On an organization's agent, an operation its partner-wide baseline hasn't granted is marked **Not in partner baseline** and its checkbox is disabled — unless it's already selected, in which case it stays enabled just long enough to be unchecked, so a grant made before the baseline narrowed can still be removed. The partner row is a ceiling on what the organization may be granted, not a starting grant of its own. Pre-authorized operations can no longer be added to an organization's agent directly in this form: its own supervised-keys section is a read-only list of what it already holds, not a checkbox — a key becomes eligible only by promoting an Eligible row in Graduation or the four-eyes request it raises, never by an operator's checkbox.
+
+Turn on **Show tool names** to see the literal key behind each operation. Selections are stored on the agent as `tool:action` entries — one per operation, even when every current operation of a tool is selected, so an operation added to that tool later is never silently granted; a bare `tool` entry appears only for a tool with just one operation to begin with. An entry the picker can't represent — an unknown or unreachable tool, or a hand-typed bare entry on a multi-operation tool — is listed under **Unrecognised or unreachable entries** with a reason and a remove action; it is never dropped or rewritten silently.
+
+The same catalog and ceiling behind the picker are available directly:
+
+```
+GET /api/v1/ai/agents/tool-catalog
+GET /api/v1/ai/agents/ceiling?kind={kind}
+```
 
 ## Alert triage wiring
 

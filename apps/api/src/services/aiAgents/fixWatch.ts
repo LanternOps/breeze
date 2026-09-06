@@ -880,6 +880,14 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
     console.error('[fixWatch] failed to notify a recurrence (non-fatal — the watch state is already committed)', {
       watchId, error,
     });
+    // #4582 — a console line is invisible in production, and both catches
+    // below/above swallow the only signal a human would ever get that a
+    // committed verdict went unannounced. Identifiers only in the message.
+    captureException(
+      new Error(`recurrence notification failed for fix watch ${watchId}; the verdict is committed`, {
+        cause: error,
+      }),
+    );
   }
   // Separately caught: a failing recurrence notification must not suppress
   // the revoke notice, which is the more consequential of the two (an
@@ -892,6 +900,16 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       console.error('[fixWatch] failed to notify a supervised-key revoke (non-fatal — the revoke is already committed)', {
         watchId, opKey: demotion.opKey, error,
       });
+      // #4582 — the revoke is COMMITTED: an org just lost unattended
+      // authority. `notifyDemotion` reports its own no-recipient outcomes, so
+      // a throw reaching here is the last remaining way that becomes silent.
+      captureException(
+        new Error(
+          `supervised-key revoke notification failed for fix watch ${watchId} `
+          + `(op key "${demotion.opKey}"); the revoke is committed`,
+          { cause: error },
+        ),
+      );
     }
   }
   return { action: 'recurred' };

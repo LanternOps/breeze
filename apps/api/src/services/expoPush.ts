@@ -2,6 +2,7 @@ import { db } from '../db';
 import { mobileDevices } from '../db/schema/mobile';
 import { and, eq } from 'drizzle-orm';
 import { sendApnsNotification } from './apns';
+import { sendFcmNotification } from './fcm';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const MAX_LABEL_LEN = 60;
@@ -319,6 +320,18 @@ async function purgeApnsToken(token: string): Promise<void> {
   }
 }
 
+/** Purges a single dead native-FCM token, mirroring purgeApnsToken. */
+async function purgeFcmToken(token: string): Promise<void> {
+  try {
+    await db.update(mobileDevices).set({ fcmToken: null }).where(eq(mobileDevices.fcmToken, token));
+  } catch (err) {
+    console.error('[push] failed to purge unregistered fcm token', {
+      token: redactPushToken(token),
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /**
  * Fans a single approval notification out across pre-resolved, provider-tagged
  * tokens. Split from dispatchApprovalPush so callers that must resolve tokens
@@ -408,16 +421,32 @@ export async function dispatchPushToTokens(
     }
   }
 
-  // Native FCM (Android) delivery is out of scope for the current iOS
-  // submission. The existing firebase path (notifications.sendFCM) speaks a
-  // different PushPayload shape and requires FIREBASE_SERVICE_ACCOUNT init, so
-  // wiring it here is non-trivial — we deliberately skip rather than
-  // half-implement. These tokens are still counted in tokensFound.
+  // Native FCM (Android) tokens — one send each; purge on unregistered.
+  // Mirrors the APNs branch above exactly (#3639).
   const fcmTokens = tokens.filter((t) => t.provider === 'fcm');
-  if (fcmTokens.length > 0) {
-    console.info(
-      `[push] android ${logLabel} push not wired to FCM yet — ${fcmTokens.length} token(s) skipped`
-    );
+  for (const t of fcmTokens) {
+    try {
+      const res = await sendFcmNotification(t.token, {
+        title: spec.title,
+        body: spec.body,
+        data: spec.data,
+        ttl: spec.ttl,
+        channelId: spec.channelId,
+        collapseId: spec.collapseId,
+      });
+      if (res.ok) {
+        result.dispatched++;
+      } else {
+        result.errors++;
+        if (res.unregistered) await purgeFcmToken(t.token);
+      }
+    } catch (err) {
+      console.error(`[push] fcm ${logLabel} dispatch failed`, {
+        token: redactPushToken(t.token),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result.errors++;
+    }
   }
 
   return result;

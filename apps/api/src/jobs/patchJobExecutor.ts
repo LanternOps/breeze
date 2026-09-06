@@ -31,6 +31,7 @@ import {
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 // Strict shape for patches.policyAutoApprove as stored in the job JSONB.
 // deferralDays must be a valid non-negative integer when present — a malformed
@@ -1284,6 +1285,9 @@ async function recordDeviceExecution(
       // none of the agent's warning thresholds, so the user got no notice.
       const rebootResult = await executeReboot(deviceId, rebootEval.reason, {
         expectedOrgId: orgId,
+        // #3207: a reboot fired inside a maintenance window may not be
+        // postponed past the close of that window. Null for every other policy.
+        windowEndsAt: rebootEval.windowEndsAt,
       });
       // A partially failed job that still reboots is the #4228 path — name it in
       // the log so an operator reading "the job failed but the box rebooted" can
@@ -1412,7 +1416,9 @@ let deviceWorker: Worker | null = null;
 
 export async function initializePatchJobWorkers(): Promise<void> {
   jobWorker = createPatchJobWorker();
+  attachWorkerObservability(jobWorker, 'patchJobWorker');
   deviceWorker = createPatchJobDeviceWorker();
+  attachWorkerObservability(deviceWorker, 'patchJobDeviceWorker');
   console.log('[PatchJobExecutor] Workers initialized');
 }
 

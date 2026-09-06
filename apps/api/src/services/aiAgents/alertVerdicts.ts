@@ -475,6 +475,10 @@ export function projectAlertAiVerdictSummary(row: AiAlertVerdictRow): AlertAiVer
     rationale: row.rationale,
     patternKind: row.pattern?.kind ?? null,
     feedback: row.feedback,
+    // Raw user id only — no join to `users` available here (#4445). Callers
+    // that want a display name (`feedbackByName`) resolve it themselves via
+    // `withAlertActorNames`, same as `acknowledgedByName`/`resolvedByName`.
+    feedbackBy: row.feedbackBy,
     suggestedIntentId: row.suggestedIntentId,
     createdAt: row.createdAt.toISOString(),
   };
@@ -645,7 +649,7 @@ export async function recordVerdictFeedback(
     .set({ feedback, feedbackBy: auth.user.id, feedbackAt: new Date() })
     .where(eq(aiAlertVerdicts.id, verdictId));
 
-  const [run] = await db.select({ agentId: aiAgentRuns.agentId })
+  const [run] = await db.select({ agentId: aiAgentRuns.agentId, orgId: aiAgentRuns.orgId })
     .from(aiAgentRuns)
     .where(eq(aiAgentRuns.id, verdict.runId))
     .limit(1);
@@ -656,8 +660,16 @@ export async function recordVerdictFeedback(
   // row is guaranteed to exist whenever the verdict row does, so `run` is
   // only undefined in a test double that forgot to queue it.
   if (run) {
+    // The evidence row's tenant stamp follows the RUN, not the verdict: a
+    // device org-move re-stamps `ai_alert_verdicts.org_id` to the target org
+    // (routes/devices/moveOrg.ts, ALERT_CHILD_ORG_REWRITE_TABLES, #4867) but
+    // deliberately leaves `ai_agent_runs` in the source org, so the two can
+    // diverge. `ai_agent_op_evidence_run_org_fk` is the composite
+    // (run_id, org_id) -> ai_agent_runs(id, org_id); writing the verdict's org
+    // next to the run's id would be a 23503 for any verdict whose alert has
+    // moved since the run happened.
     await upsertVerdictFeedbackEvidence({
-      orgId: verdict.orgId,
+      orgId: run.orgId,
       agentId: run.agentId,
       namespace: 'alert_verdict',
       opKey: AI_AGENT_ALERT_VERDICT_OP_KEY,

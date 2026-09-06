@@ -45,6 +45,7 @@ import {
   intersectSiteScopes,
   isSiteScopeSubset,
   normalizeSiteIds,
+  portalUserReportAuthority,
   persistedSiteScopeValues,
   persistedSystemSiteScopeValues,
   systemReportAuthority,
@@ -377,6 +378,7 @@ describe('persisted site-scope columns', () => {
         ? restricted(scope.siteIds)
         : scope;
     const authority: ReportExecutionAuthority = {
+      principalKind: 'user',
       scope,
       principalUserId: USER_ID,
       capturedAt: CAPTURED_AT,
@@ -561,6 +563,72 @@ describe('persisted site-scope columns', () => {
     },
   ])('rejects $name', ({ row }) => {
     expect(() => decodeSiteScope(row, ORG_A)).toThrow(/partial|invalid|malformed/i);
+  });
+});
+
+describe('portal-user report execution principal', () => {
+  it('builds and persists an unrestricted authority without a staff user id', () => {
+    const authority = portalUserReportAuthority(ORG_A, CAPTURED_AT);
+
+    expect(authority).toEqual({
+      principalKind: 'portal_user',
+      scope: unrestricted(),
+      capturedAt: CAPTURED_AT,
+      fingerprint: siteScopeFingerprint(unrestricted()),
+    });
+    expect(authority).not.toHaveProperty('principalUserId');
+    expect(persistedSiteScopeValues(authority)).toEqual({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    });
+  });
+
+  it('decodes a persisted portal-user run as unrestricted', () => {
+    expect(decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(unrestricted()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toEqual(unrestricted());
+  });
+
+  it('rejects a restricted portal-user principal', () => {
+    expect(() => decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: [SITE_A],
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(restricted([SITE_A])),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toThrow(/invalid/i);
+  });
+
+  it('rejects a legacy_unscoped portal-user principal', () => {
+    expect(() => decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'legacy_unscoped',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(legacy()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toThrow(/invalid/i);
+  });
+
+  it('rejects a portal-user authority carrying a forged staff user id', () => {
+    expect(() => persistedSiteScopeValues({
+      ...portalUserReportAuthority(ORG_A, CAPTURED_AT),
+      principalUserId: USER_ID,
+    } as ReportExecutionAuthority)).toThrow(/portal|principal|user/i);
   });
 });
 
@@ -775,7 +843,7 @@ describe('report definition scope SQL predicates', () => {
     }
   });
 
-  it('admits a system-principal row in the unrestricted branch only', () => {
+  it('admits non-user principals in the unrestricted branch only', () => {
     // Without this branch the download/list predicates drop every
     // system-authored row (they require execution_scope_user_id NOT NULL),
     // so an unrestricted reader would 404 on a report the platform authored.
@@ -784,6 +852,7 @@ describe('report definition scope SQL predicates', () => {
     );
     expect(unrestrictedRendered.sql).toContain('execution_scope_principal_kind');
     expect(unrestrictedRendered.params).toContain('system');
+    expect(unrestrictedRendered.params).toContain('portal_user');
 
     // A site-restricted caller must never reach a system row: its branch is
     // kind = 'restricted' only, which the shape CHECK forbids for 'system'.
@@ -791,11 +860,8 @@ describe('report definition scope SQL predicates', () => {
       reportDefinitionScopeSqlPredicate(reports, restricted([SITE_A])),
     );
     expect(restrictedRendered.params).not.toContain('system');
-
-    // The all-NULL old-writer branch must not swallow a stamped principal.
-    expect(
-      unrestrictedRendered.sql.match(/execution_scope_principal_kind/g),
-    ).toHaveLength(2);
+    expect(restrictedRendered.params).not.toContain('portal_user');
+    expect(restrictedRendered.params).toContain('user');
   });
 
   it('fails closed for a forced legacy live caller value', () => {
@@ -955,7 +1021,9 @@ describe('report run scope SQL predicates', () => {
     expect(rendered.params).not.toContain('legacy_unscoped');
     expect(rendered.sql.toLowerCase()).toContain('<@');
     expect(rendered.sql.toLowerCase()).toContain('is not null');
-    expect(rendered.sql.toLowerCase()).not.toContain(' or ');
+    expect(rendered.params).not.toContain('system');
+    expect(rendered.params).not.toContain('portal_user');
+    expect(rendered.params).toContain('user');
     expect(rendered.params).toContain(SITE_A);
     expect(rendered.params).not.toContain(SITE_B);
   });

@@ -355,6 +355,29 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     expect(line).not.toHaveTextContent("Never");
   });
 
+  // Issue #4543 (silent-failure-hunter review finding): the reconcile worker
+  // stamps a skip/failure reason onto `last_error` even while `status` stays
+  // "connected" — e.g. the 15-minute sweep racing a pull_payments toggle-off.
+  // Before this test (and the render it pins down) that stamp was DB-only:
+  // the connected-state card read `lastReconcileAt` but never `lastError`.
+  it("renders last_error on the connected-state card (not just the reauth banner)", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks") {
+        return jsonResponse({
+          ...connected,
+          lastError: "Payment pull: run skipped — disabled for this connection",
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    expect(
+      await screen.findByTestId("quickbooks-reconcile-last-error"),
+    ).toHaveTextContent("disabled for this connection");
+  });
+
   it("Sync now POSTs the reconcile route and reports a queued job as a success", async () => {
     fetchWithAuth.mockImplementation(
       async (url: string, init?: RequestInit) => {
@@ -412,6 +435,40 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     );
     expect(showToast).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("issue #4543 — shows the pull-disabled reason (not a generic failure) on a 409 pull_disabled reconcile response", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/reconcile" &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse(
+            { error: "Payment pull is disabled for this connection", code: "pull_disabled" },
+            409,
+          );
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "error",
+        message: "Payment sync is turned off for this connection. Turn on Payment sync to sync now.",
+      }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "warning" }),
     );
   });
 

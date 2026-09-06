@@ -20,6 +20,12 @@ import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTr
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
+import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import {
+  resolveScriptRunContextForApproval,
+  describeScriptRunContext,
+  type ScriptApprovalRunContext,
+} from './scriptRunContextApproval';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -277,12 +283,6 @@ const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 // than declared independently here, so the two paths cannot drift apart —
 // see the doc comments at their declaration site.
 
-function stripMcpPrefix(toolName: string): string {
-  if (!toolName.startsWith('mcp__')) return toolName;
-  const separatorIndex = toolName.indexOf('__', 'mcp__'.length);
-  return separatorIndex === -1 ? toolName : toolName.slice(separatorIndex + 2);
-}
-
 /**
  * Human-readable verbs for the two M365 mutation tools that hit per-step
  * approval. The three read tools are tier 1 and never create an approval card,
@@ -309,11 +309,6 @@ export function buildM365RiskSummary(
   const user = String(input.userIdentifier ?? 'a user');
   const reason = input.reason ? ` Reason: ${String(input.reason)}.` : '';
   return `${verb} ${user} on ${conn.customerDisplayName}.${reason}`;
-}
-
-function isAllowedForSession(toolName: string, allowedTools: readonly string[]): boolean {
-  const bareToolName = stripMcpPrefix(toolName);
-  return allowedTools.some((allowedTool) => stripMcpPrefix(allowedTool) === bareToolName);
 }
 
 // ============================================
@@ -496,7 +491,7 @@ export async function runPreFlightChecks(
  * server tools.
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
-  return async (toolName, input) => {
+  return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
@@ -516,8 +511,35 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
-    if (session.allowedTools && !isAllowedForSession(toolName, session.allowedTools)) {
-      return { allowed: false, error: `Tool '${toolName}' is not allowed for this session` };
+    // Allowlist check runs on the EXPOSED name, not the handler name. The two
+    // coincide for every tool the `breeze` MCP server registers; script
+    // builder's `execute_script_on_device` dispatches to the `run_script`
+    // handler, and comparing THAT against an allowlist of
+    // `mcp__script_builder__*` names denied every call before tier/approval
+    // logic ran (#4883). Once this gate resolves, nothing further in this
+    // function reads `exposedToolName` — the capability being gated is the
+    // handler's, so tier, RBAC, rate limits, approval and audit all stay on
+    // `toolName`.
+    const exposedToolName = mcpToolName ?? toolName;
+    if (session.allowedTools && !isAllowedForSession(exposedToolName, session.allowedTools)) {
+      // The SDK is handed the SAME list as `allowedTools` on `query()`, so it
+      // should never offer the model a tool this branch then refuses. Reaching
+      // here means the two views disagree — a wiring bug, not a user-permission
+      // outcome — and #4883 proves that failure is invisible without a signal:
+      // it read as an ordinary tool refusal in chat for weeks while every
+      // Script Builder test run was dead.
+      const wiringError = new Error(
+        `Session allowlist denied '${exposedToolName}' (handler '${toolName}') — `
+        + 'the SDK exposed a tool the app-layer guard refuses',
+      );
+      console.error(`[AI-SDK] ${wiringError.message} (session ${session.breezeSessionId})`);
+      // Detail rides in the message, not in tags: the Sentry scrubber's tag
+      // allowlist silently voids tag keys it does not know.
+      captureException(wiringError, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+      return {
+        allowed: false,
+        error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,
+      };
     }
 
     // Guardrails (tier check + action-based escalation)
@@ -916,7 +938,36 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
       }
 
-      const description = guardrailCheck.description ?? `Execute ${toolName}`;
+      // #4888 — a script launch is the one approval where the ARGUMENTS decide
+      // a privilege level, so the effective run context is resolved here and
+      // stated on the card rather than left inside the collapsed parameter
+      // JSON. Non-fatal: any failure degrades to no run-context line, never to
+      // a failed approval. Returns null for every non-script tool.
+      let scriptRunContext: ScriptApprovalRunContext | null = null;
+      try {
+        scriptRunContext = await resolveScriptRunContextForApproval(
+          toolName,
+          input as Record<string, unknown>,
+          session.orgId,
+        );
+      } catch (err) {
+        // Reported, not just logged: `resolveScriptRunContextForApproval`
+        // already captures its own (expected) DB failure internally and
+        // degrades, so anything reaching HERE is a bug in the resolver rather
+        // than an outage — and its only symptom is an approval card that
+        // quietly stops naming the run context. That must not be invisible in
+        // Sentry, whatever the surrounding file's console-only convention.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
+      }
+
+      const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
+      // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
+      // every surface that renders one: the chat card, the durable intent's
+      // stored reason, the /approvals queue, and the mobile push.
+      const description = scriptRunContext
+        ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
+        : baseDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -949,6 +1000,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+          // The guardrail description names the device by an id stub
+          // ("on device 6eae0f70..." — buildApprovalDescription in
+          // aiGuardrails.ts); the approver reads the hostname. Matched on
+          // THIS call's id prefix, literally, so nothing user-supplied that
+          // happens to look like a stub gets rewritten.
+          const deviceStub = deviceId ? `on device ${deviceId.slice(0, 8)}...` : null;
+          const approvalLabel = deviceStub && deviceContext?.hostname
+            ? riskSummary.split(deviceStub).join(`on ${deviceContext.hostname}`)
+            : riskSummary;
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -963,6 +1023,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               input: input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
+              actionLabel: approvalLabel,
               orgId: session.orgId,
             });
           } catch (err) {
@@ -1016,6 +1077,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // (AiApprovalDialog) uses this to decide whether the self-approve
             // button is itself the whole decision or just this user's half of one.
             approvalScope: guardrailCheck.approvalScope,
+            // #4888 — structured twin of the sentence in `description`, so
+            // the card can render a localized, always-visible run-context row
+            // instead of relying on the English prose.
+            scriptRunContext,
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1468,6 +1533,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             input,
             description,
             deviceContext,
+            scriptRunContext,
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval

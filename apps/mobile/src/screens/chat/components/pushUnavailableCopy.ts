@@ -17,12 +17,6 @@ export interface PushUnavailableCopy {
 
 export function pushUnavailableCopy(reason: string | null): PushUnavailableCopy {
   switch (reason) {
-    case 'android_push_not_configured':
-      return {
-        notificationsRow: "Push notifications aren't available on Android yet.",
-        pairedDevicesHint:
-          "Push isn't available on Android yet, so this phone can't register itself. Phones that register for pushes appear here.",
-      };
     case 'not_physical_device':
       return {
         notificationsRow: "Push notifications aren't available in the simulator.",

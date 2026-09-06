@@ -25,6 +25,7 @@ import { ringAutoApproveSchema, mergeRingAutoApproveWrite } from '@breeze/shared
 // auto-provisioned ring auto-approves nothing until an operator opts in.
 const DEFAULT_RING_AUTO_APPROVE = {
   enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+  autoApproveUnrated: false,
 } as const;
 
 export const updateRingRoutes = new Hono();
@@ -106,6 +107,7 @@ const categoryRuleSchema = z.object({
   }),
   autoApprove: z.boolean(),
   autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+  autoApproveUnrated: z.boolean().optional(),
   deferralDaysOverride: z.number().int().min(0).max(365).nullable().optional(),
 });
 

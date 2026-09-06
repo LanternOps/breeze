@@ -1,21 +1,21 @@
 /**
  * Real-DB proof for the Phase-C invoice-push currency contract (multi-currency
- * §11, bug B8). This is the exact file the trailing contract comment in
- * `accountingCurrency.ts:143-186` mandates by name — that comment is the
- * authoritative spec for what this suite proves, and this file follows it
- * verbatim rather than a looser paraphrase:
+ * §11, bug B8), UPDATED by #4498 to invert the "no trace" half of that
+ * contract for `currency_mismatch` specifically. The trailing contract
+ * comment in `accountingCurrency.ts:143-186` still describes the ORIGINAL
+ * shape (no mapping row for either currency failure) — that comment is
+ * stale for `currency_mismatch` as of this change; `home_currency_unknown`
+ * is unaffected and still persists nothing (see #4498's own scoping: it is a
+ * rarer connection-setup problem, not this issue's complaint):
  *
  *  - EUR invoice + USD-home connection: `pushInvoiceToAccounting` throws
  *    `ACCOUNTING_INVOICE_CURRENCY_MISMATCH` (typed here as the coordinator's
- *    `currency_mismatch`), NO QBO request is made, and NO sync/mapping state
- *    is persisted — no `accounting_entity_mappings` row for the invoice
- *    exists at all, because the currency guard
- *    (`assertAccountingInvoicePushCurrency`) runs before the coordinator ever
- *    reads/writes the invoice's mapping row (see `accountingInvoicePush.ts`'s
- *    `pushInvoiceToAccounting`: the guard sits immediately after the
- *    draft/void check and strictly before the org mapping load, the line
- *    load, and `upsertInvoiceMappingPending`).
- *  - NULL home currency: same treatment, `home_currency_unknown`.
+ *    `currency_mismatch`), NO QBO request is made, and the invoice's
+ *    `accounting_entity_mappings` row now lands `sync_status:'error'` with
+ *    no `remoteEntityId` and both currencies named in `lastError` — so the
+ *    invoice detail card has something to show instead of nothing (#4498).
+ *  - NULL home currency: `home_currency_unknown`, NO QBO request, and NO
+ *    mapping row persisted — unchanged from before #4498.
  *  - USD invoice against a USD-home connection with the provider transport
  *    mocked at the `fetch` boundary: the invoice's mapping row lands
  *    `sync_status:'synced'`, and a second push against the now-existing
@@ -44,7 +44,7 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { upsertConnection } from '../../services/accounting/accountingConnectionService';
-import { pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
+import { pushInvoiceToAccounting, voidInvoiceInAccounting } from '../../services/accounting/accountingInvoicePush';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -180,7 +180,7 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
     vi.restoreAllMocks();
   });
 
-  runDb('EUR invoice against a USD-home connection: currency_mismatch, no QBO request, no mapping row persisted', async () => {
+  runDb('EUR invoice against a USD-home connection: currency_mismatch, no QBO request, error-only mapping row persisted with both currencies named (#4498)', async () => {
     const fx = await seedFixture({ homeCurrency: 'USD', multiCurrencyEnabled: false });
     const invoiceId = await seedInvoice(fx, { currencyCode: 'EUR' });
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -190,7 +190,42 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
     ).rejects.toMatchObject({ code: 'currency_mismatch', status: 409 });
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(await loadInvoiceMappingRows(fx, invoiceId)).toEqual([]);
+
+    const rows = await loadInvoiceMappingRows(fx, invoiceId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      syncStatus: 'error',
+      remoteEntityId: null,
+      linkStatus: 'create_new',
+    });
+    expect(rows[0]!.lastError).toContain('EUR');
+    expect(rows[0]!.lastError).toContain('USD');
+
+    // Retrying the same push re-throws the same terminal error and merely
+    // UPDATEs the existing row in place (idempotent) rather than inserting a
+    // second one — proves a manual retry loop cannot spin up duplicate rows
+    // or duplicate QuickBooks calls against a mapping that can never succeed.
+    const fetchSpy2 = vi.spyOn(globalThis, 'fetch');
+    await expect(
+      pushInvoiceToAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn))
+    ).rejects.toMatchObject({ code: 'currency_mismatch', status: 409 });
+    expect(fetchSpy2).not.toHaveBeenCalled();
+    const rowsAfterRetry = await loadInvoiceMappingRows(fx, invoiceId);
+    expect(rowsAfterRetry).toHaveLength(1);
+    expect(rowsAfterRetry[0]!.id).toBe(rows[0]!.id);
+
+    // The mapping row this currency guard just persisted must not trip
+    // `voidInvoiceInAccounting`'s in-flight-marker assumption: that push
+    // never reached QuickBooks (syncStatus:'error', no remoteEntityId), so a
+    // void must no-op rather than misreading it as a mid-flight `pending`
+    // push (which would throw the non-terminal `sync_in_progress`) or trying
+    // to void a QuickBooks invoice that was never created.
+    await expect(
+      voidInvoiceInAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn))
+    ).resolves.toBeUndefined();
+    const rowsAfterVoid = await loadInvoiceMappingRows(fx, invoiceId);
+    expect(rowsAfterVoid).toHaveLength(1);
+    expect(rowsAfterVoid[0]).toMatchObject({ syncStatus: 'error', remoteEntityId: null });
   });
 
   runDb('NULL home currency: home_currency_unknown, no QBO request, no mapping row persisted', async () => {

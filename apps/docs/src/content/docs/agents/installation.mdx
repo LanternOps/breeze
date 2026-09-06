@@ -20,6 +20,33 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
 | macOS | arm64 (Apple Silicon) | `breeze-agent-darwin-arm64` |
 | Windows | amd64 | `breeze-agent-windows-amd64.exe` |
 
+### Supported Windows Versions
+
+The agent requires **Windows 10 or Windows Server 2016 or later**. This is a
+hard floor set by the Go toolchain the agent is built with (Go 1.22+ dropped
+support for older Windows kernels) -- it is not a Breeze-specific choice and
+cannot be worked around by an older agent build.
+
+| Windows version | Supported |
+|---|---|
+| Windows 10 / 11 | Yes |
+| Windows Server 2016 / 2019 / 2022 / 2025 | Yes |
+| Windows 8.1 / Server 2012 R2 and earlier | No |
+| Windows 7 / Server 2008 R2 | No |
+
+Legacy boxes are not silently accepted: the MSI installer refuses to run
+below this floor (`Breeze Agent requires Windows 10 or Windows Server 2016 or
+later.`), and the PowerShell quick-install command checks the same floor
+before it downloads anything, so an unsupported machine fails fast with a
+clear message instead of installing a binary that can't run.
+
+<Aside type="note">
+  Monitoring a Windows 7 / Server 2008 R2 fleet? There's no supported Breeze
+  agent path today. Agentless coverage (SNMP/WMI from a modern jump-box
+  agent) and a legacy build track are both open roadmap questions, not
+  shipped features -- reach out if this is blocking you.
+</Aside>
+
 ## Quick Install
 
 <Tabs>
@@ -55,6 +82,17 @@ The Breeze agent is a single Go binary (~8 MB) with no runtime dependencies. It 
   </TabItem>
   <TabItem label="Windows">
     ```powershell
+    # Check the minimum supported OS before downloading anything
+    $osv = [System.Environment]::OSVersion.Version
+    if ($osv.Major -lt 10) {
+      throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"
+    }
+
+    # Older PowerShell/.NET defaults (e.g. Windows Server 2016) can omit
+    # TLS 1.2, which makes Invoke-WebRequest fail outright.
+    [Net.ServicePointManager]::SecurityProtocol = `
+      [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
     # Download the agent
     Invoke-WebRequest -Uri "https://breeze.yourdomain.com/api/v1/agents/download/windows/amd64" `
       -OutFile "breeze-agent.exe"
@@ -144,12 +182,13 @@ Pre-provisioned devices land in `status: 'pending'` and stay there until the age
 
 ## What Gets Installed
 
-All platform installers (MSI, PKG, and manual service install) include two components:
+All platform installers (MSI, PKG, and manual service install) include these components:
 
 | Component | Description |
 |-----------|-------------|
 | **Breeze Agent** | The main service that communicates with the Breeze server, runs commands, and reports device status. |
 | **Watchdog** | A companion service that monitors the agent and automatically restarts it after crashes or hangs. |
+| **Desktop helper** (macOS) | A per-user helper that runs in the logged-in user's session so features like screen sharing work. Installed at `/usr/local/bin/breeze-desktop-helper`. |
 
 The watchdog runs alongside the agent as a separate process. You do not need to configure it -- it starts automatically with the agent service. See the [Watchdog documentation](/features/watchdog) for details.
 
@@ -167,6 +206,8 @@ When running `breeze-agent service install` manually, the agent fetches the matc
     ```
   </TabItem>
 </Tabs>
+
+On macOS the desktop helper is resolved the same way: `breeze-agent service install` uses a `breeze-desktop-helper` binary staged next to the agent if there is one, and otherwise downloads the matching-version signed binary from GitHub releases. If neither is available (for example on an air-gapped host), the install prints a warning and continues -- the agent service is still installed and running, and only the helper's features are unavailable until you place the binary next to `breeze-agent` and re-run `service install`. The agent binary is never installed under the helper's name: doing so would give the helper the agent's code-signing identity, and macOS would drop the Screen Recording and Accessibility grants once a real helper replaced it. The macOS `.pkg` always ships the signed helper, so this only affects raw-binary installs.
 
 If a previously agent-only install needs the watchdog added, re-run `breeze-agent service install`. This reinstalls the agent binary and restarts the agent service (safe for upgrades) and registers the missing watchdog. To add *only* the watchdog without touching the agent service, run `breeze-watchdog service install` directly.
 

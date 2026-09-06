@@ -46,6 +46,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'pam',
   'onedrive_helper',
   'vulnerability',
+  'device_lifecycle',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -203,6 +204,11 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   // reboot fires. Replaces the hardcoded 5-minute delay that raced the
   // agent's own warning ladder and could reboot with zero notice.
   rebootDelayMinutes: integer('reboot_delay_minutes').notNull().default(15),
+  // #3207: end-user reboot deferral budget. Off by default so the shipped
+  // behaviour (warn-then-reboot, #3197) is unchanged until an admin opts in.
+  rebootAllowDeferral: boolean('reboot_allow_deferral').notNull().default(false),
+  rebootMaxDeferrals: integer('reboot_max_deferrals').notNull().default(3),
+  rebootDeferralMinutes: integer('reboot_deferral_minutes').notNull().default(60),
   // #1872: when true, the Windows agent suppresses the native Windows Update
   // automatic-install channel (NoAutoUpdate=1) so patches flow only through
   // Breeze. Breeze's own WUA-driven installs are unaffected.

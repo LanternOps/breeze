@@ -158,6 +158,8 @@ login() {
     -H 'Content-Type: application/json' -H "Origin: ${origin}" \
     --data "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")" \
     || fail "login request to ${origin} failed"
+  jq -e '.mfaEnrollmentRequired == false' <<<"${body}" >/dev/null \
+    || fail "installer smoke role-MFA relief valve was not honoured at ${origin}"
   jq -er '.tokens.accessToken' <<<"${body}" 2>/dev/null \
     || fail "login at ${origin} returned no access token: $(jq -c 'del(.tokens)' <<<"${body}" 2>/dev/null || echo "${body}")"
 }
@@ -220,6 +222,10 @@ sed -i \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_PASSWORD=.*|BREEZE_BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
   -e "s|^BREEZE_BINARIES_IMAGE_REF=.*|BREEZE_BINARIES_IMAGE_REF=${BINARIES_IMAGE_REF}|" \
   "${WORK_DIR}/.env"
+# This smoke covers installer/reboot, session cookies and partner trust, not
+# enrollment. Persist the documented role-only valve through the systemd reboot;
+# the stored role flag and default forced-MFA behavior are tested separately.
+printf '\nMFA_FORCE_FOR_PARTNER_ADMIN=false\n' >> "${WORK_DIR}/.env"
 echo "  OK  staged"
 
 step "Run scripts/guided-setup.sh --yes end to end (generate, pull, up, health wait, systemd install)"
@@ -243,6 +249,22 @@ installer_status=${PIPESTATUS[0]}
 set -e
 [[ "${installer_status}" -eq 0 ]] || fail "guided-setup.sh exited ${installer_status} (see log above)"
 echo "  OK  installer exited 0"
+
+step "Assert the M365 JWK secret placeholder exists (#2991 — bare install dir, not a full checkout)"
+# This WORK_DIR only ever gets docker-compose.yml + .env.example + (in
+# packaged-Caddy mode) docker/Caddyfile.prod staged into it above — it is
+# never a full repo clone. docker-compose.yml's M365 executor signing-key
+# secrets default their file: source to ./docker/secrets/.empty-jwk when
+# unset, so the installer itself must create that file (it is not part of
+# what gets staged/downloaded); otherwise `docker compose up` fails with
+# "bind source path does not exist" instead of starting. If this regresses,
+# the installer run above would already have failed on the api container
+# never starting — this step exists to name the exact cause instead of
+# leaving it to a bisect through installer output.
+placeholder="${WORK_DIR}/docker/secrets/.empty-jwk"
+[[ -f "${placeholder}" ]] || fail "installer did not create ${placeholder}"
+[[ ! -s "${placeholder}" ]] || fail "${placeholder} is not empty"
+echo "  OK  ${placeholder} exists and is empty"
 
 step "Assert the generated .env"
 grep -q "^BREEZE_VERSION=${VERSION}\$" "${WORK_DIR}/.env" || fail "BREEZE_VERSION was not pinned to ${VERSION}"

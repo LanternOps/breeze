@@ -1,4 +1,86 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Updating live"
+    },
+    "list": {
+      "clearFilters": "Clear filters",
+      "emptyDescription": "Runs triggered by alerts, schedules, tickets, and manual actions will appear here once an agent executes.",
+      "emptyFilteredDescription": "No runs match these filters. Try a different agent or status.",
+      "emptyConfigureLink": "Configure AI agents",
+      "columns": {
+        "started": "Started",
+        "duration": "Duration"
+      },
+      "showCost": "Show cost",
+      "hideCost": "Hide cost"
+    },
+    "detail": {
+      "notFoundDescription": "This run may have been deleted, or the link may be out of date.",
+      "pageTitle": "{{agent}} · {{started}} · Run | Breeze RMM",
+      "header": {
+        "title": "{{agent}} run",
+        "startedLabel": "Started",
+        "machineVerdict": "Machine verdict: {{verdict}}"
+      },
+      "summary": {
+        "title": "What the agent found"
+      },
+      "findings": {
+        "badge_one": "{{count}} finding to review",
+        "badge_other": "{{count}} findings to review"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Drive",
+          "serviceName": "Service name",
+          "configName": "Backup job",
+          "usedPercent": "Used (%)",
+          "percentUsed": "Used (%)",
+          "freeGb": "Free (GB)",
+          "totalGb": "Capacity (GB)",
+          "lastSeenAt": "Last seen",
+          "lastSeenDays": "Days since last seen",
+          "checkedAt": "Checked",
+          "cveIds": "CVE IDs",
+          "cveCount": "CVE count",
+          "cveId": "CVE",
+          "cvssScore": "CVSS score",
+          "osType": "OS type",
+          "openCriticalCount": "Open critical CVEs"
+        }
+      },
+      "sweep": {
+        "caption": "One row per problem this sweep found, with the action it proposed.",
+        "reviewPermissions": "Review agent permissions",
+        "checksLabel": "Checks:"
+      },
+      "trace": {
+        "description": "Every tool call the agent proposed, executed, or was denied, in order.",
+        "emptyDescription": "Tool calls the agent proposes or executes will be listed here."
+      },
+      "ledger": {
+        "description": "Only the calls that actually ran, with their timing and any error.",
+        "emptyDescription": "Tools the agent actually invoked will be listed here.",
+        "collapsedSummary": "Tool executions ({{count}}) — same as the trace above",
+        "statuses": {
+          "pending": "Pending",
+          "approved": "Approved",
+          "executing": "Executing",
+          "completed": "Completed",
+          "failed": "Failed",
+          "rejected": "Rejected"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Approvals this run requested will be listed here."
+      },
+      "triage": {
+        "categoryLabel": "Category",
+        "categoryUnresolved": "Suggested — name not available on this view"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Service principals",
     "description": "Manage partner-scoped machine identities and their access keys.",
@@ -18,6 +100,7 @@
     "principalDescription": "Description",
     "scopes": "Scopes",
     "sourceCidrs": "Source IPs or CIDRs (one per line)",
+    "writeScopeRestrictionsRequired": "The enrollment-keys:write scope requires an expiry date and at least one source IP or CIDR.",
     "expiresAt": "Expires at",
     "save": "Save",
     "cancel": "Cancel",
@@ -748,6 +831,28 @@
       "unavailable": "No policy available."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Audit Log Retention",
+    "description": "Controls how long this organization's audit trail is kept before older entries are pruned.",
+    "loading": "Loading retention policy...",
+    "errors": {
+      "load": "Failed to load the audit retention policy.",
+      "save": "Failed to save the audit retention policy."
+    },
+    "toasts": {
+      "saved": "Audit retention policy saved."
+    },
+    "unconfiguredWarning": "No retention policy is configured for this organization yet — audit logs are never pruned until you save one.",
+    "retentionDays": "Retention period (days)",
+    "readOnly": "You do not have permission to change this setting.",
+    "lastCleanup": "Last cleanup ran at {{date}}",
+    "actions": {
+      "save": "Save"
+    },
+    "issues": {
+      "range": "Enter a whole number of days between 1 and 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Customize the portal experience for {{organization}}.",
@@ -1006,6 +1111,33 @@
         "enablePasswordReset": {
           "label": "Password reset",
           "description": "Customers can reset their portal password themselves."
+        }
+      }
+    },
+    "visibility": {
+      "title": "Visibility",
+      "description": "Choose which service insights this customer can see in the portal.",
+      "enableAll": "Enable all visibility",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Dashboard",
+          "description": "Show a service-health summary when customers sign in."
+        },
+        "enableSecurity": {
+          "label": "Security",
+          "description": "Show security posture, protection, threats, and vulnerabilities."
+        },
+        "enableBackups": {
+          "label": "Backups",
+          "description": "Show backup coverage, verification, restore tests, and readiness."
+        },
+        "enableReports": {
+          "label": "Reports",
+          "description": "Allow customers to generate and download approved reports."
+        },
+        "enableSupportUsage": {
+          "label": "Support usage",
+          "description": "Show month-to-date billable support-time totals."
         }
       }
     },
@@ -1353,7 +1485,7 @@
       "deleteOverride": "Remove override",
       "confirmDelete": "Confirm delete",
       "cron": "Cron expression",
-      "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00.",
+      "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00. The minute field must be a literal number or comma-separated list (no *, /, or - ranges) — schedules fire at most hourly.",
       "cronInvalid": "Enter a valid five-field cron expression before saving.",
       "timezone": "Timezone",
       "kinds": {
@@ -1373,6 +1505,10 @@
       "tightenOnly": "An override can only narrow the baseline: it may disable the sweep or drop checks, never add one.",
       "noKinds": "No checks",
       "lastRun": "Last run {{at}} · {{admitted}} of {{total}} organizations swept, {{skipped}} skipped.",
+      "nextRun": "Next run {{at}} ({{timezone}})",
+      "nextRunInvalid": "Invalid schedule",
+      "nextRunNone": "No run falls in the next year.",
+      "useMyTimezone": "Use my timezone",
       "kindLabels": {
         "disk_pressure": "Disk pressure",
         "stale_agents": "Stale agents",
@@ -1405,10 +1541,72 @@
     "title": "AI Agents",
     "description": "Named AI workers with a policy. Partners set the baseline; organizations can only tighten it.",
     "empty": "No agents yet.",
+    "kindHints": {
+      "triage": "Investigates new alerts and proposes what to do about them.",
+      "patch": "Reviews missing patches and proposes what to install.",
+      "helpdesk": "Picks up tickets and proposes replies and next steps."
+    },
+    "emptyState": {
+      "title": "No agents yet",
+      "description": "An agent is a saved policy, not a running process: it watches the alerts, patches or tickets you choose, investigates with the tools you allow, and then either proposes a fix or carries one out. Start in shadow mode, where the agent proposes and a person approves, so nothing reaches a device until you say so.",
+      "action": "Create your first agent"
+    },
+    "modeChoice": {
+      "legend": "What this agent may do",
+      "off": "Off",
+      "offConsequence": "Nothing runs.",
+      "shadow": "Shadow",
+      "shadowConsequence": "Observes and proposes; a human approves everything.",
+      "act": "Act",
+      "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
+      "actUnavailable": "Not available for this agent yet."
+    },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
     "stateEnabled": "Enabled",
     "stateDisabled": "Disabled",
+    "runningBadge": {
+      "running": "Running",
+      "notRunning": "Not running"
+    },
+    "reenableNote": "Restored, switched off. Review its policy, then turn it on.",
+    "chipLabels": {
+      "kind": "Kind",
+      "ownership": "Ownership",
+      "mode": "Mode",
+      "running": "Status",
+      "baseline": "Partner baseline",
+      "lastRunStatus": "Last run outcome"
+    },
+    "inertBadge": {
+      "label": "Inactive",
+      "hint": "No partner-wide baseline exists yet for this kind. An organization-only agent only overrides a baseline, so it has no effect until one is created."
+    },
+    "lastRun": {
+      "never": "Never run",
+      "at": "Last run {{at}}"
+    },
+    "disableDialog": {
+      "title": "Disable {{name}}?",
+      "message": "Future runs stop, attached schedules stop firing, and organization overrides of this agent stop applying. A run already in flight continues to its time limit.",
+      "retained": "Run history and evidence are kept. You can re-enable the agent later from the Disabled list; it comes back switched off."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Save or cancel the schedule you are editing before closing this editor.",
+      "discardTitle": "Discard unsaved schedule?",
+      "discardMessage": "The schedule you were editing has not been saved. Closing the editor discards those changes. The agent itself is unchanged.",
+      "discardConfirm": "Discard schedule"
+    },
+    "disabledSection": {
+      "title": "Disabled",
+      "hint": "Kept for their run history. Re-enabling one brings it back switched off, so you can review its policy before it runs again.",
+      "disabledAt": "Disabled {{at}}"
+    },
+    "allDisabled": {
+      "title": "All agents are disabled",
+      "description": "Nothing is running right now.",
+      "reenableCta": "Re-enable an agent"
+    },
     "errors": {
       "load": "Could not load agents.",
       "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
@@ -1417,7 +1615,9 @@
       "actMissingRecipient": "Add at least one notification recipient before enabling act mode.",
       "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode.",
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "That agent is already live.",
+      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode."
     },
     "actions": {
       "add": "New agent",
@@ -1425,19 +1625,24 @@
       "save": "Save",
       "cancel": "Cancel",
       "disable": "Disable",
-      "confirmDisable": "Confirm disable"
+      "confirmDisable": "Confirm disable",
+      "reenable": "Re-enable",
+      "runs": "Runs"
     },
     "toasts": {
       "saved": "Agent saved",
       "saveFailed": "Could not save the agent.",
       "disabled": "Agent disabled",
-      "disableFailed": "Could not disable the agent."
+      "disableFailed": "Could not disable the agent.",
+      "reenabled": "Agent re-enabled",
+      "reenableFailed": "Could not re-enable the agent."
     },
     "issues": {
       "name": "Give the agent a name.",
       "severities": "Select at least one alert severity.",
       "org": "Select an organization before creating an org-owned agent.",
-      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead."
+      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead.",
+      "unsavedSchedule": "You have an unsaved schedule. Save or cancel it before saving the agent."
     },
     "editor": {
       "newTitle": "New agent",
@@ -1450,8 +1655,11 @@
     "sections": {
       "scope": "When it runs",
       "permissions": "Permissions",
+      "permissionsDescription": "What this agent may touch. The tool allowlist widens what it can do; protected resources narrow it, and always win.",
       "policyDecide": "Unattended policy authorization",
       "limits": "Limits",
+      "limitsBudget": "Budget and reach",
+      "limitsTiming": "Timing",
       "notifications": "Notifications",
       "instructions": "Instructions"
     },
@@ -1501,15 +1709,53 @@
       "maxFleetPercentPerDay": "Max fleet share per day (%)",
       "cooldownSeconds": "Per-device cooldown (seconds)",
       "recipientRolesHint": "Roles notified when this agent proposes something.",
+      "recipientRolesPartner": "Partner roles",
+      "recipientRolesOrganization": "Organization roles",
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
       "charactersLeft": "{{count}} characters left",
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysNoneHeld": "This agent has no pre-authorized operations yet.",
+      "supervisedActionKeysCeilingSummary_one": "Ceiling for organizations — {{count}} key",
+      "supervisedActionKeysCeilingSummary_other": "Ceiling for organizations — {{count}} keys",
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
-      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in"
+      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
+      "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
+      "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
+      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
+      "recipientRoleNoMembers": "no active members"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Services",
+        "manage_startup_items": "Startup items",
+        "manage_scheduled_tasks": "Scheduled tasks",
+        "security_scan": "Security scan"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Start a service",
+          "stop": "Stop a service",
+          "restart": "Restart a service"
+        },
+        "manage_startup_items": {
+          "disable": "Disable a startup item",
+          "enable": "Enable a startup item"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Run a scheduled task",
+          "disable": "Disable a scheduled task",
+          "enable": "Enable a scheduled task"
+        },
+        "security_scan": {
+          "quarantine": "Quarantine a threat",
+          "remove": "Remove a threat",
+          "restore": "Restore a threat"
+        }
+      }
     },
     "loading": "Loading agents…",
     "runs": {
@@ -1526,8 +1772,6 @@
         "status": "Status",
         "trigger": "Trigger",
         "verdict": "Verdict",
-        "queued": "Queued",
-        "finished": "Finished",
         "cost": "Cost"
       },
       "statuses": {
@@ -1715,6 +1959,29 @@
         "draftKinds": {
           "reply": "Reply draft",
           "resolutionNote": "Resolution-note draft"
+        },
+        "skippedTitle": "Not applied",
+        "skipped": {
+          "item": {
+            "fields": "Field updates",
+            "link": "Device link",
+            "note": "Private note",
+            "draftReply": "Reply draft",
+            "draftResolution": "Resolution-note draft"
+          },
+          "reason": {
+            "noFieldsProposed": "No fields were proposed.",
+            "belowConfidenceFloor": "Confidence was below the threshold for an automatic write.",
+            "humanSet": "A person already set this field.",
+            "noDeviceProposed": "No device was proposed.",
+            "deviceAlreadyLinked": "The ticket already has a linked device.",
+            "noDraftReply": "No reply was proposed.",
+            "noDraftResolution": "No resolution note was proposed.",
+            "resolutionNoteExists": "The ticket already has a resolution note.",
+            "maxActionsPerRun": "The run's action cap was reached first.",
+            "intentError": "Creating the change failed.",
+            "ticketNotFound": "The ticket could not be found."
+          }
         }
       }
     },
@@ -1731,6 +1998,7 @@
       "refresh": "Refresh",
       "refreshing": "Rebuilding…",
       "retry": "Try again",
+      "moreActions": "More actions",
       "errors": {
         "load": "The impact report could not be loaded.",
         "rebuild": "The impact rebuild could not be queued.",
@@ -1743,6 +2011,15 @@
         "rebuildComplete": "The impact report has been rebuilt.",
         "rebuildStillRunning": "The rebuild is still running. Reload this page in a few minutes to see the new figures."
       },
+      "emptyState": {
+        "title": "No AI outcomes in this window yet",
+        "description": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Widen the reporting window above, or set up an agent to get started.",
+        "action": "Set up an agent"
+      },
+      "tileGroups": {
+        "judged": "Judged",
+        "executed": "Executed"
+      },
       "tiles": {
         "alertsJudged": "Alerts judged",
         "noiseFlagged": "Flagged as noise",
@@ -1750,9 +2027,12 @@
         "draftsSent": "Drafts sent",
         "fixesExecuted": "Fixes executed",
         "promoteEligible": "Promotion-eligible operations",
-        "promoteEligibleHint": "Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.",
+        "promoteEligibleCaption": "Enough clean evidence to pre-authorize. Review and promote in AI Agents settings.",
         "estTimeSaved": "Estimated time saved",
-        "estTimeSavedValue": "{{hours}} hours",
+        "estTimeSavedValue_one": "{{hours}} hour",
+        "estTimeSavedValue_other": "{{hours}} hours",
+        "estTimeSavedCaption": "Based on per-outcome allowances — edit weights to adjust.",
+        "howEstimatedToggle": "How is this estimated?",
         "llmSpend": "LLM spend"
       },
       "weightsTooltipTitle": "An estimate only — each outcome is credited with a fixed allowance:",
@@ -1785,20 +2065,30 @@
           "llmSpend": "LLM spend"
         }
       },
+      "freshnessLabel": "Data freshness",
       "freshness": "Data through {{through}} (UTC) · rebuilt {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Data through {{through}} (UTC) · never rebuilt",
+      "freshnessNeverRebuilt": "Not built yet — first rebuild runs nightly",
       "positiveFeedbackRate": "Positive feedback rate",
       "positiveFeedbackDetail": "{{up}} helpful, {{down}} not helpful",
       "editWeights": "Edit weights",
       "exportPdf": "Export PDF",
       "weightsDrawer": {
         "title": "Edit time-saved weights",
-        "description": "Set how many seconds of human time each outcome is credited with. These weights only change the estimate — they never change what your AI agents do.",
+        "description": "Set how many minutes of human time each outcome is credited with. These weights only change the estimate — they never change what your AI agents do.",
+        "unitSuffix": "min",
+        "rangeHint": "Enter a value between {{min}} and {{max}} minutes.",
+        "defaultValue": "Default {{minutes}} min",
+        "preview": "Estimated time saved this window: {{from}} → {{to}}",
+        "noOutcomesPreview": "No outcomes in this window to preview against",
         "save": "Save",
         "saving": "Saving…",
         "reset": "Reset to defaults",
         "resetting": "Resetting…",
         "customized": "Customized",
+        "resetConfirm": {
+          "title": "Reset weights to defaults?",
+          "message": "All six weights revert to their default allowances, and the estimated time saved on this page changes to match."
+        },
         "errors": {
           "save": "The weights could not be saved.",
           "reset": "The weights could not be reset."
@@ -1826,7 +2116,7 @@
           "through": "Data through (UTC)",
           "rebuiltAt": "Last rebuilt"
         },
-        "weightRowLabel": "{{label}} (seconds credited)",
+        "weightRowLabel": "{{label}} (minutes credited)",
         "neverRebuilt": "Never rebuilt"
       }
     },
@@ -1836,6 +2126,8 @@
       "loading": "Loading graduation evidence…",
       "error": "The graduation evidence could not be loaded.",
       "retry": "Try again",
+      "noBaselineTitle": "No baseline agent yet",
+      "noBaseline": "Graduation tracking starts once a partner-wide baseline agent of this kind exists. Create one with the \"All organizations\" scope to begin tracking evidence for this org.",
       "orgRequired": "Choose a single organization in the organization switcher to see its graduation evidence.",
       "empty": "No evidence has been recorded for this agent yet.",
       "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
@@ -1843,7 +2135,24 @@
       "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
       "approvalsLink": "Track this request in the approvals inbox",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
+      "grantOnlyHint": "Pre-authorized keys on an organization agent are granted only through the Graduation panel by a second approver, and are revoked there too.",
       "promote": "Promote",
+      "revoke": "Revoke",
+      "emptyTitle": "No evidence yet",
+      "demotedAt": "Revoked {{at}}",
+      "demotedReason": "Reason: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "an attempt failed",
+        "recurrence": "the alert it fixed came back",
+        "operator": "an operator revoked it"
+      },
+      "revokeConfirm": {
+        "title": "Revoke pre-authorization",
+        "message": "{{opKey}} goes back to the approval queue for this organization's agent. A run already under way is unaffected; every later one needs a human decision again.",
+        "action": "Revoke",
+        "reasonLabel": "Reason (optional)",
+        "reasonHint": "Recorded on the audit entry for this revocation. Up to 500 characters."
+      },
       "verifiedOfThreshold": "{{verified}} of {{threshold}}",
       "columns": {
         "opKey": "Operation",
@@ -1874,14 +2183,594 @@
         "action": "Request approval"
       },
       "toasts": {
-        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only."
+        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only.",
+        "revoked": "Pre-authorization revoked. This operation needs a human decision again, starting with the next run."
       },
       "errors": {
         "promote": "The pre-authorization request could not be raised.",
-        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted."
+        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted.",
+        "revoke": "The pre-authorization could not be revoked.",
+        "noPromotedGrant": "This operation is not pre-authorized for this organization, so there is nothing to revoke.",
+        "alreadyDemoted": "This operation is already back in the approval queue.",
+        "alreadyRevoked": "This operation had already been removed from the agent, so nothing changed.",
+        "ambiguousOpKey": "More than one agent holds this operation for this organization. Open the agent you want to change and revoke it there."
       },
       "reliability": {
         "caption": "Act-mode operations, read-only: these are not policy keys, so they can never be pre-authorized."
+      }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Alerts and monitoring",
+          "description": "View and manage alerts, alert rules, and uptime or service monitors across the fleet."
+        },
+        "services_startup": {
+          "label": "Services and startup items",
+          "description": "Start, stop or restart services; enable or disable startup items on one device."
+        },
+        "files_disk": {
+          "label": "Files and disk",
+          "description": "Read, write or delete files and folders; analyze and clean up disk space on one device."
+        },
+        "scripts_commands": {
+          "label": "Scripts and commands",
+          "description": "Run scripts, playbooks and system commands, and manage the processes, scheduled tasks and registry entries they touch."
+        },
+        "tickets": {
+          "label": "Helpdesk tickets",
+          "description": "Review helpdesk tickets and propose replies or next steps."
+        },
+        "patching_software": {
+          "label": "Patching and software",
+          "description": "Approve, install or roll back patches, run deployments, and manage software and update-ring policies."
+        },
+        "security_response": {
+          "label": "Security response",
+          "description": "Investigate and respond to threats: isolate devices, run security scans, and apply CIS remediations."
+        },
+        "backup_recovery": {
+          "label": "Backup and recovery",
+          "description": "Configure backup jobs and manage recovery for devices and workloads."
+        },
+        "config_policies": {
+          "label": "Configuration policies",
+          "description": "Create, assign and review configuration, DNS, browser and peripheral policies."
+        },
+        "network": {
+          "label": "Network",
+          "description": "Discover devices on the network and manage network-related baselines."
+        },
+        "remote_access": {
+          "label": "Remote access",
+          "description": "View a device's screen and take remote control of its mouse and keyboard."
+        },
+        "endpoint_agent": {
+          "label": "Endpoint agent",
+          "description": "Inspect and manage the Breeze agent itself: logs, diagnostics and log levels."
+        },
+        "automations_reports": {
+          "label": "Automations and reports",
+          "description": "Run automations, generate reports, and manage groups, tags and saved filters."
+        },
+        "business": {
+          "label": "Business",
+          "description": "Manage quotes, invoices, contracts and the product catalog."
+        },
+        "tenancy": {
+          "label": "Tenancy",
+          "description": "Manage organizations, sites and cross-tenant integrations."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Boot performance analysis",
+        "analyze_disk_usage": "Disk usage analysis",
+        "analyze_fleet_metrics": "Fleet metrics analysis",
+        "analyze_metrics": "Device metrics analysis",
+        "analyze_screen": "Screen analysis",
+        "apply_cis_remediation": "CIS remediation",
+        "apply_configuration_policy": "Apply a configuration policy",
+        "cancel_script_execution": "Cancel a script run",
+        "capture_agent_pprof": "Capture agent diagnostics",
+        "computer_control": "Remote control",
+        "configuration_policy_compliance": "Configuration policy compliance",
+        "delete_tenant": "Delete an organization",
+        "detect_log_correlations": "Detect log correlations",
+        "disk_cleanup": "Disk cleanup",
+        "execute_command": "Run a system command",
+        "execute_playbook": "Run a playbook",
+        "file_operations": "File operations",
+        "generate_report": "Reports",
+        "get_active_users": "Active users",
+        "get_catalog_item": "Catalog item lookup",
+        "get_cis_compliance": "CIS compliance report",
+        "get_cis_device_report": "CIS device report",
+        "get_configuration_policy": "Configuration policy details",
+        "get_contract": "Contract details",
+        "get_device_context": "Device context",
+        "get_device_details": "Device details",
+        "get_device_vulnerabilities": "Device vulnerabilities",
+        "get_dns_security": "DNS security activity",
+        "get_effective_configuration": "Effective configuration",
+        "get_fleet_findings": "Fleet findings",
+        "get_fleet_health": "Fleet health",
+        "get_fleet_status": "Fleet status",
+        "get_huntress_incidents": "Huntress incidents",
+        "get_huntress_status": "Huntress status",
+        "get_invoice": "Invoice details",
+        "get_log_trends": "Log trends",
+        "get_playbook_history": "Playbook run history",
+        "get_quote": "Quote details",
+        "get_s1_status": "SentinelOne status",
+        "get_s1_threats": "SentinelOne threats",
+        "get_script_details": "Script details",
+        "get_script_execution": "Script run details",
+        "get_script_execution_history": "Script run history",
+        "get_security_posture": "Security posture",
+        "get_service_monitoring_status": "Service monitoring status",
+        "get_user_experience_metrics": "User experience metrics",
+        "get_vulnerability_report": "Vulnerability report",
+        "list_configuration_policies": "Configuration policies list",
+        "list_contracts": "Contracts list",
+        "list_invoices": "Invoices list",
+        "list_organizations": "Organizations list",
+        "list_playbooks": "Playbooks list",
+        "list_quotes": "Quotes list",
+        "list_script_templates": "Script templates list",
+        "list_scripts": "Scripts list",
+        "lookup_distributor_product": "Distributor product lookup",
+        "m365_query_groups": "Microsoft 365 groups",
+        "m365_query_intune_devices": "Microsoft Intune devices",
+        "m365_query_org": "Microsoft 365 organization",
+        "m365_query_signins": "Microsoft 365 sign-ins",
+        "m365_query_sites": "Microsoft 365 sites",
+        "m365_query_users": "Microsoft 365 users",
+        "manage_alert_rules": "Manage alert rules",
+        "manage_alerts": "Manage alerts",
+        "manage_automations": "Manage automations",
+        "manage_backup_configs": "Manage backup configurations",
+        "manage_configuration_policy": "Manage configuration policies",
+        "manage_contracts": "Manage contracts",
+        "manage_deployments": "Manage deployments",
+        "manage_dns_policy": "Manage DNS policy",
+        "manage_groups": "Manage device groups",
+        "manage_invoices": "Manage invoices",
+        "manage_maintenance_windows": "Manage maintenance windows",
+        "manage_monitors": "Manage uptime monitors",
+        "manage_organizations": "Manage organizations",
+        "manage_patches": "Manage patches",
+        "manage_peripheral_policies": "Manage peripheral policies",
+        "manage_policy_feature_link": "Link a policy to a feature",
+        "manage_service_monitors": "Manage service monitors",
+        "manage_services": "Manage services",
+        "manage_software_policies": "Manage software policies",
+        "manage_startup_items": "Manage startup items",
+        "manage_update_rings": "Manage update rings",
+        "network_discovery": "Network discovery",
+        "preview_configuration_change": "Preview a configuration change",
+        "query_audit_log": "Query the audit log",
+        "query_change_log": "Query the change log",
+        "query_devices": "Query devices",
+        "query_monitors": "Query monitors",
+        "remediate_vulnerability": "Remediate a vulnerability",
+        "remove_configuration_policy_assignment": "Remove a configuration policy assignment",
+        "resolve_device_context": "Resolve a device",
+        "run_script": "Run a script",
+        "s1_isolate_device": "SentinelOne: isolate device",
+        "s1_threat_action": "SentinelOne threat actions",
+        "search_agent_logs": "Search agent logs",
+        "search_catalog": "Search the product catalog",
+        "search_logs": "Search device logs",
+        "security_scan": "Security scan",
+        "set_agent_log_level": "Set agent log level",
+        "set_device_context": "Set device context",
+        "sync_huntress_data": "Sync Huntress data",
+        "take_screenshot": "Take a screenshot"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "Apply CIS remediation",
+          "rollback": "Roll back CIS remediation"
+        },
+        "computer_control": {
+          "double_click": "Double-click",
+          "key": "Press a key",
+          "left_click": "Left-click",
+          "middle_click": "Middle-click",
+          "mouse_move": "Move the mouse",
+          "right_click": "Right-click",
+          "screenshot": "Take a screenshot",
+          "scroll": "Scroll",
+          "type": "Type text"
+        },
+        "configuration_policy_compliance": {
+          "status": "Compliance status",
+          "summary": "Compliance summary"
+        },
+        "disk_cleanup": {
+          "execute": "Run disk cleanup",
+          "preview": "Preview disk cleanup"
+        },
+        "execute_command": {
+          "event_logs_list": "List event logs",
+          "event_logs_query": "Query event logs",
+          "file_list": "List files",
+          "file_read": "Read a file",
+          "kill_process": "Kill a process",
+          "list_processes": "List processes",
+          "list_services": "List services",
+          "restart_service": "Restart a service",
+          "start_service": "Start a service",
+          "stop_service": "Stop a service"
+        },
+        "file_operations": {
+          "delete": "Delete a file",
+          "list": "List files",
+          "mkdir": "Create a folder",
+          "read": "Read a file",
+          "rename": "Rename a file",
+          "write": "Write a file"
+        },
+        "generate_report": {
+          "create": "Create a report",
+          "data": "Report data",
+          "delete": "Delete a report",
+          "download": "Download a report",
+          "generate": "Generate a report",
+          "history": "Report history",
+          "list": "List reports",
+          "update": "Update a report"
+        },
+        "get_dns_security": {
+          "allowed": "Allowed DNS activity",
+          "blocked": "Blocked DNS activity",
+          "redirected": "Redirected DNS activity"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Known services",
+          "results": "Monitoring results",
+          "status": "Monitoring status",
+          "summary": "Monitoring summary"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Alert summary",
+          "create_rule": "Create an alert rule",
+          "delete_rule": "Delete an alert rule",
+          "get_rule": "Alert rule details",
+          "list_channels": "List notification channels",
+          "list_rules": "List alert rules",
+          "list_templates": "List alert rule templates",
+          "test_rule": "Test an alert rule",
+          "update_rule": "Update an alert rule"
+        },
+        "manage_alerts": {
+          "acknowledge": "Acknowledge an alert",
+          "get": "Alert details",
+          "list": "List alerts",
+          "resolve": "Resolve an alert",
+          "suppress": "Suppress an alert"
+        },
+        "manage_automations": {
+          "create": "Create an automation",
+          "delete": "Delete an automation",
+          "disable": "Disable an automation",
+          "enable": "Enable an automation",
+          "get": "Automation details",
+          "history": "Automation run history",
+          "list": "List automations",
+          "run": "Run an automation",
+          "update": "Update an automation"
+        },
+        "manage_backup_configs": {
+          "create": "Create a backup configuration",
+          "get": "Backup configuration details",
+          "list": "List backup configurations",
+          "update": "Update a backup configuration"
+        },
+        "manage_configuration_policy": {
+          "activate": "Activate a configuration policy",
+          "create": "Create a configuration policy",
+          "deactivate": "Deactivate a configuration policy",
+          "delete": "Delete a configuration policy",
+          "update": "Update a configuration policy"
+        },
+        "manage_contracts": {
+          "activate": "Activate a contract",
+          "add_line": "Add a contract line",
+          "cancel": "Cancel a contract",
+          "create_draft": "Create a draft contract",
+          "delete_draft": "Delete a draft contract",
+          "pause": "Pause a contract",
+          "remove_line": "Remove a contract line",
+          "resume": "Resume a contract",
+          "update": "Update a contract",
+          "update_line": "Update a contract line"
+        },
+        "manage_deployments": {
+          "cancel": "Cancel a deployment",
+          "create": "Create a deployment",
+          "device_status": "Deployment device status",
+          "get": "Deployment details",
+          "list": "List deployments",
+          "pause": "Pause a deployment",
+          "resume": "Resume a deployment",
+          "start": "Start a deployment"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Allow a domain",
+          "add_block": "Block a domain",
+          "remove_allow": "Remove an allowed domain",
+          "remove_block": "Remove a blocked domain"
+        },
+        "manage_groups": {
+          "add_devices": "Add devices to a group",
+          "create": "Create a device group",
+          "delete": "Delete a device group",
+          "get": "Device group details",
+          "list": "List device groups",
+          "membership_log": "Group membership history",
+          "preview": "Preview group membership",
+          "remove_devices": "Remove devices from a group",
+          "update": "Update a device group"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Add a bundle line",
+          "add_catalog_line": "Add a catalog line",
+          "add_contract_line": "Add a contract line",
+          "add_manual_line": "Add a manual line",
+          "assemble_from_org": "Assemble an invoice from an organization",
+          "assemble_from_ticket": "Assemble an invoice from a ticket",
+          "create_draft": "Create a draft invoice",
+          "create_pay_link": "Create a payment link",
+          "delete_draft": "Delete a draft invoice",
+          "issue": "Issue an invoice",
+          "record_payment": "Record a payment",
+          "remove_line": "Remove an invoice line",
+          "update_header": "Update invoice details",
+          "update_line": "Update an invoice line",
+          "void": "Void an invoice",
+          "void_payment": "Void a payment"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Active maintenance windows",
+          "create": "Create a maintenance window",
+          "delete": "Delete a maintenance window",
+          "get": "Maintenance window details",
+          "list": "List maintenance windows",
+          "update": "Update a maintenance window"
+        },
+        "manage_monitors": {
+          "create": "Create a monitor",
+          "delete": "Delete a monitor",
+          "get": "Monitor details",
+          "update": "Update a monitor"
+        },
+        "manage_organizations": {
+          "add_contact": "Add an organization contact",
+          "create_org": "Create an organization",
+          "create_site": "Create a site",
+          "update_org": "Update an organization"
+        },
+        "manage_patches": {
+          "approve": "Approve a patch",
+          "bulk_approve": "Bulk-approve patches",
+          "compliance": "Patch compliance",
+          "decline": "Decline a patch",
+          "defer": "Defer a patch",
+          "install": "Install a patch",
+          "list": "List patches",
+          "rollback": "Roll back a patch",
+          "scan": "Scan for patches",
+          "setup_auto_approval": "Set up patch auto-approval"
+        },
+        "manage_peripheral_policies": {
+          "create": "Create a peripheral policy",
+          "get": "Peripheral policy details",
+          "list": "List peripheral policies",
+          "update": "Update a peripheral policy"
+        },
+        "manage_policy_feature_link": {
+          "add": "Link a policy to a feature",
+          "list": "List policy feature links",
+          "remove": "Remove a policy feature link",
+          "update": "Update a policy feature link"
+        },
+        "manage_service_monitors": {
+          "list": "List service monitors"
+        },
+        "manage_services": {
+          "list": "List services",
+          "restart": "Restart a service",
+          "start": "Start a service",
+          "stop": "Stop a service"
+        },
+        "manage_software_policies": {
+          "create": "Create a software policy",
+          "get": "Software policy details",
+          "list": "List software policies",
+          "update": "Update a software policy"
+        },
+        "manage_startup_items": {
+          "disable": "Disable a startup item",
+          "enable": "Enable a startup item"
+        },
+        "manage_update_rings": {
+          "create": "Create an update ring",
+          "get": "Update ring details",
+          "list": "List update rings",
+          "update": "Update an update ring"
+        },
+        "s1_threat_action": {
+          "kill": "Kill a threat process",
+          "quarantine": "Quarantine a threat",
+          "rollback": "Roll back a threat action"
+        },
+        "security_scan": {
+          "quarantine": "Quarantine a threat",
+          "remove": "Remove a threat",
+          "restore": "Restore a threat",
+          "scan": "Run a security scan",
+          "status": "Security scan status",
+          "vulnerabilities": "Scan for vulnerabilities"
+        }
+      },
+      "alwaysOnCount_one": "{{count}} read-only tool",
+      "alwaysOnCount_other": "{{count}} read-only tools",
+      "highImpact": "High impact",
+      "recommendedTitle": "Recommended for {{kind}}",
+      "recommendedDescription": "Operations that {{kind}} agents typically need.",
+      "recommendedApply": "Use recommended",
+      "recommendedApplied": "Applied",
+      "searchPlaceholder": "Search capabilities, tools or actions…",
+      "showToolNames": "Show tool names",
+      "outcome": {
+        "approval_request": "Approval request",
+        "logged_proposal": "Logged proposal",
+        "unattended": "Executes unattended"
+      },
+      "preauthorizable": "This operation can be pre-authorized so it skips the approval request.",
+      "notInCeiling": "Not in partner baseline",
+      "ceilingNote": "This organization can only enable operations already present in its partner's baseline.",
+      "moreCapabilities": "More capabilities ({{count}})",
+      "moreCapabilitiesHint": "Capabilities this agent kind doesn't typically need.",
+      "unrecognisedTitle": "Unrecognised or unreachable entries",
+      "unrecognised": {
+        "unknown_tool": "This tool no longer exists.",
+        "unreachable_tool": "This tool is not available to agents.",
+        "bare_multi_op": "This entry covers every action for this tool, including ones added later. Select individual operations instead.",
+        "read_only": "Read-only: always available to the agent, so this entry has no effect."
+      },
+      "remove": "Remove",
+      "operationsCount_one": "{{selected}} of {{total}} operation",
+      "operationsCount_other": "{{selected}} of {{total}} operations",
+      "capabilityCount_one": "{{count}} capability",
+      "capabilityCount_other": "{{count}} capabilities",
+      "summary": {
+        "shadow_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}); executes nothing unattended.",
+        "shadow_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{breakdown}}); executes nothing unattended.",
+        "act_one": "Reads device, alert and fleet data; may propose {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}); executes eligible operations unattended.",
+        "act_other": "Reads device, alert and fleet data; may propose {{operations}} operations across {{capabilityPhrase}} ({{breakdown}}); executes eligible operations unattended.",
+        "off_one": "Off: this agent does not run. Turned on, it would touch {{operations}} operation across {{capabilityPhrase}} ({{breakdown}}).",
+        "off_other": "Off: this agent does not run. Turned on, it would touch {{operations}} operations across {{capabilityPhrase}} ({{breakdown}})."
+      },
+      "modeLine": {
+        "shadow": "Shadow mode: nothing below runs on its own. Approval requests go to a technician; low-risk changes are logged as proposals and never executed.",
+        "act": "Act mode: operations marked “Executes unattended” run without a technician's approval; everything else still sends an approval request or is logged as a proposal.",
+        "off": "Off: this agent does not run, so nothing below has any effect yet."
+      },
+      "catalogUnavailable": "Could not load the tool catalog. You can still edit the permissions list directly below.",
+      "loading": "Loading capabilities…",
+      "approvalRequestCount_one": "{{count}} approval request",
+      "approvalRequestCount_other": "{{count}} approval requests",
+      "loggedProposalCount_one": "{{count}} logged proposal",
+      "loggedProposalCount_other": "{{count}} logged proposals",
+      "unattendedCount_one": "{{count}} unattended",
+      "unattendedCount_other": "{{count}} unattended",
+      "scriptGateNote": "Stays an approval request until a script is authorized for this agent."
+    },
+    "summary": {
+      "edit": "Edit",
+      "createdDisabled": "Created disabled",
+      "enabled": "Enabled",
+      "allOrganizations": "all organizations",
+      "rowLabels": {
+        "runsWhen": "Runs when",
+        "canRead": "Can read",
+        "mayPropose": "May propose",
+        "executesUnattended": "Executes unattended",
+        "neverTouches": "Never touches",
+        "limits": "Limits",
+        "approvers": "Asks for approval from"
+      },
+      "runsWhen": {
+        "triage": "Runs on new {{severities}} alerts on any device.",
+        "anySeverity": "any-severity",
+        "patch": "Runs on a schedule, or when triggered manually, to review missing patches.",
+        "helpdesk": "Runs when a ticket is created, gets its first reply, or is marked resolved.",
+        "maintenanceWindows": "Waits out maintenance windows.",
+        "ticketWrites": "Writes ticket updates without waiting for a technician."
+      },
+      "canRead": "Device, alert and fleet data for {{scope}}: inventory, metrics, logs, patches, backups, tickets and audit history ({{count}} read-only tools, always on).",
+      "mayProposeNone": "This agent does not propose any operations yet.",
+      "unrecognisedLabel": "Not recognized by the current tool catalog:",
+      "executesUnattendedNone": "Nothing. Shadow mode observes and proposes; nothing runs without a technician's approval.",
+      "executesUnattendedNoneAct": "Nothing yet — no selected operation is eligible to run unattended.",
+      "executesUnattendedList": "Executes {{list}} without a technician's approval.",
+      "preauthorizedNote": "Some of these are pre-authorized operations, granted ahead of time through the four-eyes review process.",
+      "neverTouchesEmpty": "Nothing is protected yet.",
+      "limits": "Up to {{devices}} per run, {{runs}}, {{minutes}} per run, a daily budget of {{budget}}, no more than {{fleetPercent}} of the fleet touched per day, and {{cooldown}} between runs on the same device.",
+      "approversNone": "No roles are configured yet, so nothing will be notified.",
+      "mayPropose_one": "{{count}} operation across {{capabilityPhrase}}: {{breakdown}}.",
+      "mayPropose_other": "{{count}} operations across {{capabilityPhrase}}: {{breakdown}}.",
+      "approvalCount_one": "{{count}} raises an approval request that a technician decides",
+      "approvalCount_other": "{{count}} raise an approval request that a technician decides",
+      "loggedCount_one": "{{count}} is logged as a proposal and never executed",
+      "loggedCount_other": "{{count}} are logged as proposals and never executed",
+      "unattendedCount_one": "{{count}} runs unattended",
+      "unattendedCount_other": "{{count}} run unattended",
+      "deviceCount_one": "{{count}} device",
+      "deviceCount_other": "{{count}} devices",
+      "runsPerHourCount_one": "{{count}} run per hour",
+      "runsPerHourCount_other": "{{count}} runs per hour",
+      "minuteCount_one": "{{count}} minute",
+      "minuteCount_other": "{{count}} minutes",
+      "approvers_one": "{{roles}} is asked, via inbox, chat and mobile push. First decision wins.",
+      "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
+      "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
+      "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
+      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request."
+    },
+    "flow": {
+      "title": "New agent",
+      "stepperAriaLabel": "New agent steps",
+      "back": "Back",
+      "next": "Next: {{step}}",
+      "createAgent": "Create agent",
+      "createdDisabledNote": "New agents are created switched off. You'll decide whether to start it running on the last step, after reviewing everything.",
+      "startEnabled": "Start enabled",
+      "startEnabledHint": "Off is the safe default. Review the summary above, then switch this on when you want the agent to start running.",
+      "previewFailed": "Could not load a live preview of this agent's policy. You can still create it — review your choices carefully first.",
+      "previewLoading": "Loading preview…",
+      "protectedResourcesLegend": "Protected resources",
+      "steps": {
+        "purpose": {
+          "label": "Purpose and posture",
+          "description": "Mode, kind, ownership and name"
+        },
+        "does": {
+          "label": "What it does",
+          "description": "Triggers and capabilities"
+        },
+        "safety": {
+          "label": "Safety and oversight",
+          "description": "Protected resources, limits and approvers"
+        },
+        "review": {
+          "label": "Review and create",
+          "description": "Confirm what this agent will do"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Watches alerts and proposes fixes for the ones that matter.",
+          "runsWhen": "a new alert crosses the severities you choose",
+          "recommended": "restarting stuck services and clearing disk space"
+        },
+        "patch": {
+          "blurb": "Reviews missing patches and proposes what to install.",
+          "runsWhen": "its schedule fires, or you trigger it manually",
+          "recommended": "approving and installing patches, then restarting affected services"
+        },
+        "helpdesk": {
+          "blurb": "Works tickets as they're created, replied to, or resolved.",
+          "runsWhen": "a ticket is created, gets its first reply, or is marked resolved",
+          "recommended": "restarting services and clearing disk space to resolve common requests"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Runs when:",
+        "recommendedPrefix": "Recommended:",
+        "taken": "Already in use for this owner"
       }
     }
   },
@@ -2113,7 +3002,7 @@
     "remove": "Remove",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Import from URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG, or WebP up to 5 MB.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG or JPEG, up to 5 MB.",
     "saveTheItemFirstThenAddAProductImage": "Save the item first, then add a product image.",
     "thisItemIsABundle": "This item is a bundle",
     "groupsOtherCatalogItemsSoldTogether": "Groups other catalog items sold together.",
@@ -2312,7 +3201,7 @@
     "regenerateRecoveryCodes": "Regenerate recovery codes",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
     "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated.",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated. Your other signed-in devices are signed out; this one stays signed in.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
@@ -3164,6 +4053,8 @@
     "archived": {
       "banner": "This organization is archived and read-only. Restore it to make changes.",
       "bannerWithDate": "This organization is archived — purge scheduled for {{date}}. Restore it to make changes.",
+      "drainBanner": "This organization is being archived — its agents are being removed and it stays read-only until the drain finishes.",
+      "drainBannerWithDate": "This organization is being archived — its agents are being removed, and a purge is scheduled for {{date}}.",
       "restoreLink": "Restore this organization",
       "saveBlocked": "This organization is archived and cannot be edited. Restore it first."
     },
@@ -3199,6 +4090,8 @@
       "remoteAccessDescription": "VNC, proxy, tunnels",
       "eventLogs": "Event Logs",
       "eventLogsDescription": "Forwarding and retention",
+      "auditRetention": "Audit Retention",
+      "auditRetentionDescription": "How long audit logs are kept",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
@@ -3701,12 +4594,14 @@
       "empty": "No archived organizations.",
       "noMatches": "No archived organizations match your search.",
       "badge": "Archived",
+      "archivingBadge": "Archiving…",
       "keptIndefinitely": "Kept indefinitely",
       "purgeToday": "Purges today",
       "purgeCountdown_one": "Purges in {{count}} day",
       "purgeCountdown_other": "Purges in {{count}} days",
       "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
       "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
+      "drainNotice": "This organization is being archived — its agents are being removed, and it stays read-only until the drain finishes. Restore it to cancel and bring it back.",
       "errors": {
         "fetch": "Failed to load archived organizations"
       }
@@ -3858,8 +4753,15 @@
     "description": "Define custom attributes to track additional information on devices.",
     "searchPlaceholder": "Search fields...",
     "allTypes": "All Types",
+    "allOrganizations": "All organizations",
+    "ownerScope": {
+      "legend": "Applies to",
+      "allOrganizations": "All organizations (partner-wide)",
+      "thisOrganizationOnly": "This organization only"
+    },
     "actions": {
       "add": "Add Custom Field",
+      "importFromRmm": "Import from another RMM",
       "addFirst": "Add your first custom field",
       "addChoice": "Add Choice",
       "createField": "Create Field",
@@ -3882,7 +4784,8 @@
     },
     "columns": {
       "key": "Key",
-      "deviceTypes": "Device Types"
+      "deviceTypes": "Device Types",
+      "scriptWrite": "Script write"
     },
     "fieldTypes": {
       "text": {
@@ -3923,6 +4826,8 @@
       "fieldKey": "Field Key",
       "fieldKeyPlaceholder": "e.g., asset_tag",
       "fieldKeyHelp": "Used in filters and API. Cannot be changed after creation.",
+      "fieldKeyScriptHelp": "This key is what scripts use to read and write the field. Read: bind a script parameter's source to \"From a device custom field\" using this key. Write: have the script call the device's custom-fields API with a PATCH request and an API key to save a new value.",
+      "fieldKeyScriptHelpAriaLabel": "About using this field in scripts",
       "fieldType": "Field Type",
       "dropdownChoices": "Dropdown Choices",
       "choiceLabel": "Label",
@@ -3934,7 +4839,9 @@
       "patternPlaceholder": "e.g., ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Device Types (optional)",
       "deviceTypesHelp": "Leave empty to show on all device types",
-      "requiredField": "Required field"
+      "requiredField": "Required field",
+      "scriptWrite": "Allow scripts to write this field",
+      "scriptWriteHelp": "Scripts running on a device can set this field by printing ::breeze:custom-fields:: {\"key\": \"value\"}. The value also appears in the script's saved output — never write a secret this way."
     },
     "delete": {
       "title": "Delete Custom Field",

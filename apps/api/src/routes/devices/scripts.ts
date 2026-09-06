@@ -37,6 +37,17 @@ scriptsRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #4885 — the "Run again" action needs the runtime values the
+        // execution was submitted with. Already exposed at the same
+        // SCRIPTS_READ permission level by GET /scripts/:id/executions and
+        // GET /scripts/executions/:id, so this adds no new exposure — just
+        // parity for the device-scoped history list.
+        parameters: scriptExecutions.parameters,
+        // #4888 — the run context this execution actually used, so the device
+        // Scripts tab can show SYSTEM vs the logged-in user instead of leaving
+        // the operator to guess. NULL on rows written before the column.
+        runAs: scriptExecutions.runAs,
+        targetSessionId: scriptExecutions.targetSessionId,
         startedAt: scriptExecutions.startedAt,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt

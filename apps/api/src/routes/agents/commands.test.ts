@@ -193,6 +193,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
       });
@@ -620,6 +621,7 @@ describe('agent commands routes', () => {
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         tenantDraining: true,
@@ -889,6 +891,7 @@ describe('agent commands routes', () => {
         deviceId: deviceUuid,
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
       });
@@ -940,6 +943,7 @@ describe('agent commands routes', () => {
           deviceId: deviceUuid,
           agentId: 'agent-1',
           orgId: 'org-1',
+          partnerId: 'partner-1',
           siteId: 'site-1',
           role: 'agent',
         });
@@ -1343,6 +1347,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
         deviceId: opts.deviceId ?? 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
+        partnerId: 'partner-1',
         siteId: 'site-1',
         role: 'agent',
         ...drainContext,

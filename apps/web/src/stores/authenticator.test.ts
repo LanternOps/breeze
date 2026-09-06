@@ -13,7 +13,9 @@ vi.mock('@simplewebauthn/browser', () => ({
 }));
 
 import {
+  AssertionChallengeError,
   getApprovalAssertion,
+  getBatchApprovalAssertion,
   listApproverDevices,
   registerApproverDevice,
   revokeApproverDevice,
@@ -133,6 +135,25 @@ describe('authenticator store approver helpers', () => {
     await expect(getApprovalAssertion('/pam/elevation-requests', 'req-z')).rejects.toMatchObject({
       name: expect.not.stringMatching(/NoApproverDeviceError/),
     });
+    expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
+  });
+
+  it('issue #4459 — getBatchApprovalAssertion carries the 422 batch_not_homogeneous response\'s offending ids onto AssertionChallengeError', async () => {
+    // Previously only `token`/`status` survived onto AssertionChallengeError;
+    // `offending` was read off the body but discarded, so the batch challenge
+    // path (the common APPROVE case — it re-validates before minting) could
+    // never tell the inbox which cards drifted.
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      makeResponse({ error: 'batch_not_homogeneous', offending: ['ap-2', 'ap-3'] }, false, 422),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await getBatchApprovalAssertion('/mobile/approvals', ['ap-1', 'ap-2', 'ap-3'], 'approved')
+      .catch((e: unknown) => e);
+
+    expect(rejection).toBeInstanceOf(AssertionChallengeError);
+    expect((rejection as AssertionChallengeError).token).toBe('batch_not_homogeneous');
+    expect((rejection as AssertionChallengeError).offending).toEqual(['ap-2', 'ap-3']);
     expect(webauthnMocks.startAuthentication).not.toHaveBeenCalled();
   });
 

@@ -43,3 +43,42 @@ describe('AutomationForm — deploy_software action', () => {
     expect(values.actions[0].catalogId).toBe('cat-1');
   });
 });
+
+describe('AutomationForm — run_script runAs override (#4888)', () => {
+  const SCRIPTS = [{ id: 'script-1', name: 'Cleanup temp files' }];
+
+  it('defaults to "Script default" and omits runAs from the submitted action', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <AutomationForm onSubmit={onSubmit} defaultValues={{ name: 'Cleanup automation' }} scripts={SCRIPTS} />,
+    );
+
+    // Default action is run_script; the run-as select should default to the
+    // "Script default" option (empty value).
+    const runAsSelect = screen.getByTestId('action-0-run-as-select') as HTMLSelectElement;
+    expect(runAsSelect.value).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: /Save automation/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const values = onSubmit.mock.calls[0][0];
+    expect(values.actions[0].type).toBe('run_script');
+    expect('runAs' in values.actions[0]).toBe(false);
+  });
+
+  it('submits runAs: "user" when the operator picks "Logged-in user"', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <AutomationForm onSubmit={onSubmit} defaultValues={{ name: 'Cleanup automation' }} scripts={SCRIPTS} />,
+    );
+
+    const runAsSelect = screen.getByTestId('action-0-run-as-select');
+    fireEvent.change(runAsSelect, { target: { value: 'user' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Save automation/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const values = onSubmit.mock.calls[0][0];
+    expect(values.actions[0].runAs).toBe('user');
+  });
+});

@@ -6,6 +6,7 @@ const {
   requireScopeMock,
   requirePermissionMock,
   requireMfaMock,
+  assertDeviceExecuteAllowedMock,
 } = vi.hoisted(() => ({
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -23,6 +24,7 @@ const {
     return next();
   }),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
+  assertDeviceExecuteAllowedMock: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -50,6 +52,11 @@ vi.mock('./helpers', async (importOriginal) => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+}));
+
+vi.mock('../../services/partnerTrust.commands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/partnerTrust.commands')>()),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
 }));
 
 import { db } from '../../db';
@@ -119,20 +126,37 @@ function rigTransaction(opts: {
   elevationRow: typeof SAMPLE_ELEVATION | null;
   casWins?: boolean;
   commandRow?: Record<string, unknown>;
+  // Second select in the happy path: the best-effort pam_rule_id -> name
+  // lookup (#4913). Only reached when elevationRow.metadata.pam_rule_id is
+  // a string; defaults to "no matching rule" (empty result set).
+  pamRuleRow?: Record<string, unknown> | null;
 }) {
   const commandValues = vi.fn();
   const auditInsertCalls: Array<{ values: Record<string, unknown> }> = [];
   const updateSetCalls: Array<Record<string, unknown>> = [];
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+    // The route issues at most two `tx.select(...)` calls: the elevation
+    // row (with LEFT JOINs for requester/approver display names, chained
+    // via .leftJoin(...).leftJoin(...).where(...).limit(...)), then
+    // optionally the pam-rule name lookup (.from(...).where(...).limit(...),
+    // no join). Call order is what distinguishes them here, since the mock
+    // doesn't introspect which table/condition was passed.
+    let selectCallCount = 0;
     const tx: any = {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn().mockResolvedValue(opts.elevationRow ? [opts.elevationRow] : []),
-          })),
-        })),
-      })),
+      select: vi.fn(() => {
+        selectCallCount += 1;
+        const isElevationSelect = selectCallCount === 1;
+        const rows = isElevationSelect
+          ? (opts.elevationRow ? [opts.elevationRow] : [])
+          : (opts.pamRuleRow ? [opts.pamRuleRow] : []);
+        const limit = vi.fn().mockResolvedValue(rows);
+        const chain: any = {
+          leftJoin: vi.fn(() => chain),
+          where: vi.fn(() => ({ limit })),
+        };
+        return { from: vi.fn(() => chain) };
+      }),
       update: vi.fn(() => ({
         set: vi.fn((vals: Record<string, unknown>) => {
           updateSetCalls.push(vals);
@@ -194,6 +218,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
     // Default: enable the PAM actuator so existing tests continue to pass.
     savedPamEnv = process.env.PAM_ACTUATOR_ENABLED;
     process.env.PAM_ACTUATOR_ENABLED = 'true';
+    assertDeviceExecuteAllowedMock.mockResolvedValue(undefined);
     setAuth();
     app = new Hono();
     app.route('/devices', actuateElevationRoutes);
@@ -481,6 +506,38 @@ describe('POST /devices/:id/actuate-elevation', () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(SAMPLE_DEVICE as never);
     });
 
+    it('returns a trust probation denial without inserting a device command', async () => {
+      const { TrustDeniedError } = await import('../../services/partnerTrust.commands');
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError(
+          'TRUST_PROBATION',
+          'probation_default_deny',
+          DEVICE_ID,
+          'actuate_elevation',
+        ),
+      );
+      const { commandValues } = rigTransaction({ elevationRow: SAMPLE_ELEVATION });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_PROBATION',
+        capability: 'device_execute',
+        reason: 'probation_default_deny',
+      });
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'actuate_elevation',
+        USER_ID,
+      );
+      expect(commandValues).not.toHaveBeenCalled();
+    });
+
     it('queues actuate_elevation with go-signal payload only', async () => {
       const { commandValues } = rigTransaction({
         elevationRow: SAMPLE_ELEVATION,
@@ -525,6 +582,11 @@ describe('POST /devices/:id/actuate-elevation', () => {
           }),
         }),
       );
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'actuate_elevation',
+        USER_ID,
+      );
       const queued = commandValues.mock.calls[0]![0] as any;
       expect(queued.payload).not.toHaveProperty('username');
       expect(queued.payload).not.toHaveProperty('password');
@@ -535,6 +597,7 @@ describe('POST /devices/:id/actuate-elevation', () => {
         elevationRow: {
           ...SAMPLE_ELEVATION,
           targetExecutablePath: 'C:\\Windows\\System32\\mmc.exe',
+          targetExecutableHash: 'a'.repeat(64),
           subjectUsername: 'CORP\\alice',
           metadata: { command_line: 'mmc.exe devmgmt.msc' },
         } as never,
@@ -561,8 +624,95 @@ describe('POST /devices/:id/actuate-elevation', () => {
         expect.objectContaining({
           payload: expect.objectContaining({
             targetPath: 'C:\\Windows\\System32\\mmc.exe',
+            targetHash: 'a'.repeat(64),
             commandLine: 'mmc.exe devmgmt.msc',
             subjectUsername: 'CORP\\alice',
+          }),
+        }),
+      );
+    });
+
+    it('resolves requester/approver display identity and context into the payload (#4913)', async () => {
+      const approvedAt = new Date('2026-09-05T10:00:00.000Z');
+      const expiresAt = new Date('2026-09-05T10:30:00.000Z');
+      const { commandValues } = rigTransaction({
+        elevationRow: {
+          ...SAMPLE_ELEVATION,
+          requestedByName: 'Alice Requester',
+          approvedByName: 'Bob Approver',
+          approvedByEmail: 'bob@example.com',
+          approvedAt,
+          expiresAt,
+          riskTier: 2,
+          metadata: { pam_rule_id: 'rule-1' },
+        } as never,
+        pamRuleRow: { name: 'Allow devmgmt.msc' },
+        commandRow: {
+          id: 'cmd-identity',
+          deviceId: DEVICE_ID,
+          type: 'actuate_elevation',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(commandValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            requestedByName: 'Alice Requester',
+            approvedByName: 'Bob Approver',
+            approvedByEmail: 'bob@example.com',
+            approvedAt: approvedAt.toISOString(),
+            riskTier: 2,
+            matchedRuleName: 'Allow devmgmt.msc',
+            windowEndsAt: expiresAt.toISOString(),
+          }),
+        }),
+      );
+      // Never a user id, token, or credential on the wire (CLAUDE.md, #4913).
+      const queued = commandValues.mock.calls[0]![0] as any;
+      expect(queued.payload).not.toHaveProperty('subjectUserId');
+      expect(queued.payload).not.toHaveProperty('approvedByUserId');
+      expect(queued.payload).not.toHaveProperty('softwarePolicyMatchId');
+      expect(JSON.stringify(queued.payload)).not.toContain('rule-1');
+    });
+
+    it('nulls out identity/context fields when the elevation row carries none of them', async () => {
+      const { commandValues } = rigTransaction({
+        elevationRow: SAMPLE_ELEVATION,
+        commandRow: {
+          id: 'cmd-noidentity',
+          deviceId: DEVICE_ID,
+          type: 'actuate_elevation',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(commandValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            requestedByName: null,
+            approvedByName: null,
+            approvedByEmail: null,
+            approvedAt: null,
+            riskTier: null,
+            matchedRuleName: null,
+            windowEndsAt: null,
           }),
         }),
       );
@@ -589,7 +739,12 @@ describe('POST /devices/:id/actuate-elevation', () => {
       expect(res.status).toBe(201);
       expect(commandValues).toHaveBeenCalledWith(
         expect.objectContaining({
-          payload: expect.objectContaining({ targetPath: '', commandLine: '', subjectUsername: '' }),
+          payload: expect.objectContaining({
+            targetPath: '',
+            targetHash: '',
+            commandLine: '',
+            subjectUsername: '',
+          }),
         }),
       );
     });

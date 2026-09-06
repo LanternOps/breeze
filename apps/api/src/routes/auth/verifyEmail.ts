@@ -6,7 +6,7 @@ import { createHash } from 'crypto';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, partners, roles } from '../../db/schema';
-import type { PartnerStatus } from '../../db/schema/orgs';
+import type { PartnerStatus, PartnerTrustState } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
@@ -25,7 +25,8 @@ import {
 import { createPartner } from '../../services/partnerCreate';
 import { combineMfaPolicyFacts, type MfaSecuritySettings } from '../../services/mfaPolicy';
 import { dispatchHook } from '../../services/partnerHooks';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { ANONYMOUS_ACTOR_ID, writeAuditEvent } from '../../services/auditEvents';
+import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { isHosted } from '../../config/env';
 import { ENABLE_REGISTRATION, ENABLE_2FA } from './schemas';
@@ -68,6 +69,8 @@ import {
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -390,6 +393,7 @@ interface RegistrationFacts {
     slug: string;
     plan: string;
     status: PartnerStatus;
+    trustState: PartnerTrustState;
     settings: unknown;
   };
   userRow: {
@@ -438,6 +442,7 @@ async function createRegistrationAccount(
       slug: partners.slug,
       plan: partners.plan,
       status: partners.status,
+      trustState: partners.trustState,
       settings: partners.settings,
     })
     .from(partners)
@@ -666,11 +671,40 @@ async function finalizePendingRegistration(
   }
 
   const { facts } = committed;
+  if (rec.signupIp && partnerTrustMode() !== 'off') {
+    void enqueueIpClassify({
+      kind: 'partner',
+      partnerId: facts.created.partnerId,
+      ip: rec.signupIp,
+    }).catch((err) => {
+      console.warn('[VerifyEmail] Failed to queue signup IP classification:', err instanceof Error ? err.message : err);
+    });
+  }
   if (committed.kind === 'created_guarded') {
     await bindIssuedUserSession(committed.issued);
   }
 
   try {
+    if (facts.partnerRow.trustState === 'probation') {
+      try {
+        await createAuditLog({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'partner.trust.probation',
+          resourceType: 'partner',
+          resourceId: facts.created.partnerId,
+          result: 'success',
+          details: { reason: 'signup', from: null, to: 'probation' },
+        });
+      } catch (auditErr) {
+        console.error('[VerifyEmail] trust probation audit write failed', {
+          partnerId: facts.created.partnerId,
+          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+        });
+      }
+    }
+
     // External webhook work is deliberately post-commit: no transition, user,
     // family, or tenant lock is held while another service is contacted.
     const hookResponse = await dispatchHook('registration', facts.created.partnerId, {

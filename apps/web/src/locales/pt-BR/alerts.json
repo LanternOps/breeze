@@ -536,6 +536,7 @@
     "feedbackThanks": "Obrigado pelo seu feedback",
     "feedbackTaken": "Alguém já deixou feedback neste veredito",
     "feedbackFailed": "Não foi possível registrar o feedback",
+    "feedbackBy": "Feedback de {{name}}",
     "hideNoise": "Ocultar ruído sinalizado pela IA",
     "suggestionPending": "A IA sugeriu uma ação — revise em Aprovações",
     "none": "Ainda não há veredito da IA"

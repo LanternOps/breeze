@@ -561,7 +561,37 @@ describe('passkey MFA auth routes', () => {
       body: JSON.stringify({ currentPassword: 'wrong-password' }),
     });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+    expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+  });
+
+  // #4470: the two statuses above are the whole point, so pin them apart.
+  // `ProfilePage.handleAddPasskey` calls this endpoint through `fetchWithAuth`
+  // with no 401 opt-out, so while a wrong step-up password answered 401 it was
+  // fed to refresh-and-replay and could sign the user out of the settings page
+  // for a typo. A MISSING bearer must still be the 401 that refreshes.
+  it('#4470: a wrong step-up password is 400 invalid_credentials, a missing bearer is still 401', async () => {
+    vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+
+    const rejected = await app.request('/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'wrong-password' }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({
+      error: 'Invalid credentials',
+      message: 'Invalid credentials',
+      code: 'invalid_credentials',
+    });
+
+    const noBearer = await app.request('/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+    expect(noBearer.status).toBe(401);
     expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
   });
 
@@ -682,7 +712,7 @@ describe('passkey MFA auth routes', () => {
       expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
     });
 
-    it('register/options returns the opaque 401 for a passwordless account with an invalid/expired grant', async () => {
+    it('register/options returns the opaque 400 for a passwordless account with an invalid/expired grant', async () => {
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
       vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
@@ -693,8 +723,12 @@ describe('passkey MFA auth routes', () => {
         body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
       });
 
-      expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
       expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
     });
 
@@ -721,7 +755,7 @@ describe('passkey MFA auth routes', () => {
       );
     });
 
-    it('register/verify returns the opaque 401 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+    it('register/verify returns the opaque 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
@@ -736,8 +770,12 @@ describe('passkey MFA auth routes', () => {
         }),
       });
 
-      expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid credentials',
+        message: 'Invalid credentials',
+        code: 'invalid_credentials',
+      });
     });
   });
 
@@ -754,7 +792,7 @@ describe('passkey MFA auth routes', () => {
       }),
     });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/challenge|expired|invalid/i) });
   });
 
@@ -1680,7 +1718,7 @@ describe('passkey MFA auth routes', () => {
       body: JSON.stringify({ currentPassword: 'wrong-password' }),
     });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
     // No passkey delete and no users update should run when the password is wrong.
     expect(dbState.updateSets).toHaveLength(0);
   });

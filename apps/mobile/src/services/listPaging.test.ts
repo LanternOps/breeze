@@ -25,11 +25,16 @@ const row = (id: string) => ({ id, hostname: id, status: 'online', orgId: 'o1' }
 const rows = (n: number) => Array.from({ length: n }, (_, i) => row(`d${i}`));
 
 /**
- * A response shaped like the REAL server: `nextCursor` is always null for a
- * caller that sent no cursor, because the route computes the token only inside
- * `if (cursor)`. An earlier version of this file returned a cursor on page one
- * — a contract the server has never had — and so certified a client walk that
- * in production stopped after a single page and called it a whole fleet.
+ * `nextCursor: null` here regardless of input is deliberate, not a claim
+ * about what the real server returns today: the server now DOES mint a
+ * `nextCursor` on a cold-start caller's first response (#3770). `fetchPage`
+ * below never reads `nextCursor` at all — it fetches exactly one page and
+ * reports honestly off `total` — so these fixtures are only proving that
+ * behavior is nextCursor-agnostic, not asserting the token's value. An
+ * earlier version of this file returned a cursor on page one and asserted the
+ * client walked it, which certified a walk that in production stopped after a
+ * single page (because the server-side bug made that cursor unobtainable) and
+ * called it a whole fleet.
  */
 function page(data: unknown[], total: number | null) {
   return () =>

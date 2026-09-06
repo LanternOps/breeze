@@ -90,6 +90,12 @@ const remediateBodySchema = z.discriminatedUnion('actionKind', [
   z.object({
     actionKind: z.literal('script'),
     scriptId: z.string().guid(),
+    // #4888 — run context for this remediation. Script branch only: a
+    // `command` run has no script row whose default there would be anything
+    // to override, and `.strict()` turns sending it on that branch into a 400
+    // rather than a silently ignored field. Same enum as
+    // `executeScriptSchema` — 'elevated' is not a launch-time choice.
+    runAs: z.enum(['system', 'user']).optional(),
     ...remediateSharedFields,
   }).strict(),
   z.object({
@@ -241,6 +247,9 @@ fleetFindingsRoutes.post(
         actionKind: body.actionKind,
         commandType: body.actionKind === 'command' ? body.commandType : null,
         scriptId: body.actionKind === 'script' ? body.scriptId : null,
+        // #4888 — null means "the script's saved default", which is what the
+        // dispatcher will resolve it to.
+        runAs: body.actionKind === 'script' ? body.runAs ?? null : null,
         targetCount: result.targetCount,
         skippedCount: result.skipped.length,
         dispatchEnqueueFailed,

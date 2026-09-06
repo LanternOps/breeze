@@ -17,6 +17,17 @@ var (
 	ErrHandshakeTimeout   = errors.New("sessionbroker: handshake timeout")
 	ErrInvalidBinary      = errors.New("sessionbroker: binary path verification failed")
 	ErrBinaryHashMismatch = errors.New("sessionbroker: binary hash mismatch")
+
+	// ErrListenerCloseStalled means the listener's own Close() did not return
+	// within the shutdown budget, so it was abandoned. Acceptance is still
+	// stopped — acceptStopped is set before the close is even attempted — so the
+	// broker admits nothing after this; what leaks is one goroutine and one
+	// socket/pipe handle for the remaining life of the process.
+	//
+	// Not theoretical: go-winio v0.6.2's named-pipe listener can deadlock its own
+	// Close(), which wedged the whole `Test Agent (Windows)` job for its full
+	// ten-minute budget. See StopAcceptingAndWait.
+	ErrListenerCloseStalled = errors.New("sessionbroker: listener Close() did not return; abandoned")
 )
 
 // PamDismissOutcome reports how an uncertain PAM consent dismissal ended.

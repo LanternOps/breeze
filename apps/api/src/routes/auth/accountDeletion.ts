@@ -23,6 +23,8 @@ import {
   getClientRateLimitKey,
   resolveUserAuditOrgId,
   writeAuthAudit,
+  rejectProof,
+  INVALID_CREDENTIALS_CODE,
 } from './helpers';
 
 const { db } = dbModule;
@@ -262,7 +264,12 @@ accountDeletionRoutes.post(
         userId: auth.user.id,
         email: auth.user.email,
       });
-      return c.json({ error: 'Invalid password' }, 401);
+      // #4660: 400, not 401 — see the wrong-password branch below. This
+      // "account has no password at all" case deliberately answers with the
+      // IDENTICAL body, so the endpoint cannot be used to probe whether an
+      // account is SSO-only; both branches must therefore always carry the
+      // same status too. Migrating only one would reopen that oracle.
+      return rejectProof(c, 'Invalid password', INVALID_CREDENTIALS_CODE, 400);
     }
 
     const passwordOk = await verifyPassword(userRow.passwordHash, password);
@@ -274,7 +281,14 @@ accountDeletionRoutes.post(
         userId: auth.user.id,
         email: auth.user.email,
       });
-      return c.json({ error: 'Invalid password' }, 401);
+      // #4660 (extends the #4470 contract): the password arrived in the
+      // request BODY and is data this handler validates — the credential that
+      // authenticates the request is the bearer, already checked by
+      // `authMiddleware`. A 401 here was handed to `fetchWithAuth`'s
+      // refresh-and-replay path (apps/web/src/stores/auth.ts) and on to
+      // `handleSessionExpired`, so a mistyped password on the delete-account
+      // form signed the user out instead of showing the error.
+      return rejectProof(c, 'Invalid password', INVALID_CREDENTIALS_CODE, 400);
     }
 
     // Idempotency: return the existing pending request if one exists.

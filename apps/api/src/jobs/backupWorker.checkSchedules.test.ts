@@ -38,6 +38,7 @@ const createScheduledBackupJobIfAbsentMock = vi.fn();
 vi.mock('../services/backupJobCreation', () => ({
   createScheduledBackupJobIfAbsent: (...args: unknown[]) =>
     createScheduledBackupJobIfAbsentMock(...(args as [])),
+  deviceHelperQueues: vi.fn().mockResolvedValue(true),
 }));
 
 const enqueueBackupDispatchMock = vi.fn();

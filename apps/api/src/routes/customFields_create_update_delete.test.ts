@@ -39,7 +39,7 @@ vi.mock('../db/schema', () => ({
     options: 'options',
     required: 'required',
     defaultValue: 'defaultValue',
-    deviceTypes: 'deviceTypes',
+    deviceTypes: 'deviceTypes', scriptWrite: 'scriptWrite',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt'
   }
@@ -76,7 +76,7 @@ function makeField(overrides: Record<string, unknown> = {}) {
     options: null,
     required: false,
     defaultValue: null,
-    deviceTypes: null,
+    deviceTypes: null, scriptWrite: false,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
     ...overrides
@@ -333,6 +333,56 @@ describe('customFields routes', () => {
       const body = await res.json();
       expect(body.data.deviceTypes).toEqual(['windows', 'macos']);
     });
+
+    it('accepts a dropdown created with the shared {label,value} choices shape', async () => {
+      const created = makeField({
+        name: 'Contract Tier',
+        fieldKey: 'contract_tier',
+        type: 'dropdown',
+        options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Contract Tier',
+          fieldKey: 'contract_tier',
+          type: 'dropdown',
+          options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('preserves text minLength/maxLength instead of stripping them', async () => {
+      let inserted: any;
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockImplementation((v: any) => {
+          inserted = v;
+          return { returning: vi.fn().mockResolvedValue([makeField({ name: 'Asset Tag', fieldKey: 'asset_tag', options: v.options })]) };
+        })
+      } as any);
+
+      await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Asset Tag',
+          fieldKey: 'asset_tag',
+          type: 'text',
+          options: { minLength: 3, maxLength: 32 }
+        })
+      });
+
+      expect(inserted.options).toEqual({ minLength: 3, maxLength: 32 });
+    });
   });
 
   // ----------------------------------------------------------------
@@ -407,6 +457,110 @@ describe('customFields routes', () => {
   // ----------------------------------------------------------------
   // DELETE /:id - Delete custom field
   // ----------------------------------------------------------------
+  describe('scriptWrite (#2698)', () => {
+    /**
+     * These assert what the ROUTE hands the database, not what the mocked
+     * database hands back — a `.returning()` mock would echo any value and
+     * pass vacuously whether or not the route wired the column through.
+     */
+    it('defaults scriptWrite to false on create', async () => {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeField()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: false }));
+    });
+
+    it('passes scriptWrite true through to the insert', async () => {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeField({ scriptWrite: true })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text', scriptWrite: true
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: true }));
+      expect((await res.json()).data.scriptWrite).toBe(true);
+    });
+
+    it('rejects a non-boolean scriptWrite', async () => {
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'RAM slot type', fieldKey: 'ram_slot_type', type: 'text', scriptWrite: 'yes'
+        })
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('toggles scriptWrite on update', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeField()])
+          })
+        })
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeField({ scriptWrite: true })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/custom-fields/${FIELD_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scriptWrite: true })
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ scriptWrite: true }));
+      expect((await res.json()).data.scriptWrite).toBe(true);
+    });
+
+    it('leaves scriptWrite untouched when the update omits it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeField()])
+          })
+        })
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeField({ name: 'Renamed' })])
+        })
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/custom-fields/${FIELD_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.not.objectContaining({ scriptWrite: expect.anything() }));
+    });
+  });
+
   describe('DELETE /custom-fields/:id', () => {
     it('should delete a custom field', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
@@ -471,6 +625,109 @@ describe('customFields routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Database-level key conflicts (#3257 W02/W03)
+  // ----------------------------------------------------------------
+  describe('key conflicts surface as 409, not 500', () => {
+    /**
+     * Two database guards on custom_field_definitions can refuse a create, and
+     * BOTH are the caller's own to fix:
+     *
+     *  - P0001 from the anti-shadowing trigger (#3257 W03,
+     *    2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql) — the key
+     *    collides with one on the OTHER ownership axis under this partner.
+     *  - 23505 from W02's per-axis unique indexes — the key already exists on
+     *    THIS axis.
+     *
+     * Before this mapping both fell through to the global error handler as a
+     * bare 500, which tells the operator nothing about a condition whose fix is
+     * one word (rename the key). The errors are raised inside PostgreSQL, so the
+     * only way to reach them from a route unit test is to make the mocked insert
+     * throw the driver's shape.
+     *
+     * These use the DrizzleQueryError shape — SQLSTATE on `.cause`, a generic
+     * "Failed query: …" on the outer `.message` — deliberately. A handler
+     * reading a bare `err.code` would pass a flat-error test and still return
+     * 500 for every real Drizzle-issued insert; `pgErrorCode`/`pgErrorNode` walk
+     * the `.cause` chain, and only this shape proves they are being used.
+     */
+    function drizzleWrapped(code: string, message: string): Error {
+      const driverError = Object.assign(new Error(message), { code, severity: 'ERROR' });
+      return Object.assign(
+        new Error('Failed query: insert into "custom_field_definitions" ...'),
+        { cause: driverError }
+      );
+    }
+
+    function insertRejects(err: Error) {
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockRejectedValue(err)
+        })
+      } as any);
+    }
+
+    async function postCreate() {
+      return app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'UDF 7', fieldKey: 'udf7', type: 'text' })
+      });
+    }
+
+    it('maps the anti-shadowing P0001 to 409 field-key-shadowed', async () => {
+      insertRejects(drizzleWrapped(
+        'P0001',
+        'custom field key "udf7" already exists as an all-organizations field for this partner'
+      ));
+
+      const res = await postCreate();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('field-key-shadowed');
+      // The trigger's copy is written for a human and discloses nothing about
+      // the conflicting row beyond the key and the axis, so it is passed
+      // through verbatim rather than replaced with something vaguer.
+      expect(body.error).toContain('udf7');
+      expect(body.error).toContain('all-organizations field for this partner');
+    });
+
+    it('maps a duplicate key 23505 to 409 field-key-duplicate', async () => {
+      insertRejects(drizzleWrapped(
+        '23505',
+        'duplicate key value violates unique constraint "custom_field_definitions_org_key_uq"'
+      ));
+
+      const res = await postCreate();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('field-key-duplicate');
+      expect(body.error).toContain('udf7');
+      // The driver message names the internal index and (in `detail`) the
+      // offending column VALUES. Neither belongs in a client response, so this
+      // path builds its own copy instead of echoing the error.
+      expect(body.error).not.toContain('custom_field_definitions_org_key_uq');
+      expect(body.error).not.toContain('duplicate key value');
+    });
+
+    /**
+     * Anything that is NOT one of the two mapped conditions must keep
+     * propagating. Swallowing unknown SQLSTATEs into a 409 would turn a real
+     * outage — a dead connection, a permission problem — into a message telling
+     * the operator to rename their field.
+     */
+    it('does not swallow an unrelated database error', async () => {
+      insertRejects(drizzleWrapped('08006', 'connection failure'));
+
+      const res = await postCreate();
+
+      expect(res.status).not.toBe(409);
+      expect(res.status).toBeGreaterThanOrEqual(500);
     });
   });
 

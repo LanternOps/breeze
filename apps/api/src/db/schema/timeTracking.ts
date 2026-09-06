@@ -22,6 +22,19 @@ function sqlIsRunning(t: { endedAt: unknown }): SQL {
 export const timeEntries = pgTable('time_entries', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  // #4596: declared here as a plain single-column reference, but the real
+  // tenancy constraints are COMPOSITE and SQL-migration-only (Drizzle cannot
+  // express a composite FK — same convention as tickets.requesterContactId and
+  // portal_users.contactId):
+  //   - time_entries_org_partner_fk (org_id, partner_id) -> organizations
+  //     (id, partner_id), in 2026-10-06-110000-time-entries-org-partner-fk.sql.
+  //     The partner-axis RLS policy checks partner_id ONLY; this FK is what
+  //     stops a row attributing labour to another partner's organization.
+  //   - time_entries_ticket_org_fk (ticket_id, org_id) -> tickets (id, org_id),
+  //     in 2026-10-06-110100-ticket-child-org-fks.sql. org_id is denormalized
+  //     from the ticket, and this is what keeps the two from disagreeing.
+  // Both are DEFERRABLE INITIALLY IMMEDIATE; both org-move paths defer the
+  // ticket-keyed one BY NAME (ticketService.moveTicketOrg, devices/moveOrg.ts).
   orgId: uuid('org_id').references(() => organizations.id),
   ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
   userId: uuid('user_id').notNull().references(() => users.id),
@@ -52,11 +65,22 @@ export const timeEntries = pgTable('time_entries', {
   uniqueIndex('time_entries_one_running_per_user_uq').on(t.userId).where(sqlIsRunning(t)),
   index('time_entries_partner_started_idx').on(t.partnerId, t.startedAt),
   index('time_entries_ticket_idx').on(t.ticketId),
-  index('time_entries_user_started_idx').on(t.userId, t.startedAt)
+  index('time_entries_user_started_idx').on(t.userId, t.startedAt),
+  index('time_entries_org_started_at_idx')
+    .on(t.orgId, t.startedAt)
+    .where(sql`${t.orgId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // #4596: ticket_parts is org-axis RLS (Shape 1) and has NO partner_id column,
+  // so the cross-partner composite the issue proposed is not implementable here
+  // — the org-axis WITH CHECK already confines org_id to the caller's orgs.
+  // Its real gap was the ticket disagreement: a part could hang off ANOTHER
+  // tenant's ticket while carrying the writer's own org_id, and
+  // invoiceAssembly.ts bills parts by org_id. Closed by the SQL-only composite
+  // ticket_parts_ticket_org_fk (ticket_id, org_id) -> tickets (id, org_id),
+  // DEFERRABLE INITIALLY IMMEDIATE, in 2026-10-06-110100-ticket-child-org-fks.sql.
   ticketId: uuid('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   description: text('description').notNull(),

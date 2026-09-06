@@ -118,7 +118,9 @@ export function EmptyState({
   return (
     <div {...rest} className={cn('border-y border-border/70 py-14 text-center', className)}>
       {icon && <div className="mx-auto mb-4 flex justify-center text-muted-foreground/70">{icon}</div>}
-      <h3 className="font-display text-lg font-semibold text-foreground">{title}</h3>
+      {/* <h2>, not <h3>: every page opens with PageHeader's single <h1>, so an
+          <h3> here skips a level and reads as a missing section. */}
+      <h2 className="font-display text-lg font-semibold text-foreground">{title}</h2>
       {children}
     </div>
   );

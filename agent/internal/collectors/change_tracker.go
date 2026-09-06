@@ -142,8 +142,33 @@ func NewChangeTrackerCollector(snapshotPath string) *ChangeTrackerCollector {
 	}
 }
 
-// CollectChanges detects changes since the previous snapshot.
-func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
+// PendingChanges is a collected but uncommitted change set: the records the
+// caller should upload, plus the snapshot that becomes the new diff baseline
+// once those records are known to have landed.
+//
+// The baseline is the whole reason this type exists. Advancing it destroys the
+// delta it was derived from — a change dropped between collect and commit can
+// never be re-derived, because the next diff runs against a world in which the
+// change already happened (#3529).
+type PendingChanges struct {
+	// Records are the detected changes, ready to upload.
+	Records []ChangeRecord
+
+	// snapshot is the state Records was diffed against. Unexported so a caller
+	// cannot hand Commit a snapshot the tracker never produced.
+	snapshot *Snapshot
+}
+
+// CollectPendingChanges detects changes since the previous snapshot WITHOUT
+// advancing the baseline. Callers that upload the records must call Commit only
+// after the upload is confirmed; skipping Commit re-reports the same changes on
+// the next cycle, which is the recoverable failure mode.
+//
+// Collect and Commit are separate lock acquisitions so the mutex is not held
+// across a network round trip. They are expected to be called in pairs from a
+// single goroutine (the heartbeat's inventory cycle); overlapping collections
+// would each diff the same baseline and report the same changes twice.
+func (c *ChangeTrackerCollector) CollectPendingChanges() (*PendingChanges, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -162,11 +187,10 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 	// First successful run establishes baseline — emit all discovered items
 	// as "added" so they appear in the API (e.g. known-services autocomplete).
 	if c.lastSnapshot == nil {
-		c.lastSnapshot = currentSnapshot
-		if err := c.saveSnapshot(); err != nil {
-			return nil, err
-		}
-		return c.initialInventory(currentSnapshot), nil
+		return &PendingChanges{
+			Records:  c.initialInventory(currentSnapshot),
+			snapshot: currentSnapshot,
+		}, nil
 	}
 
 	changes := make([]ChangeRecord, 0, 16)
@@ -180,11 +204,59 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 	changes = append(changes, c.diffOS(currentSnapshot)...)
 	changes = c.filterNoise(changes)
 
-	c.lastSnapshot = currentSnapshot
-	if err := c.saveSnapshot(); err != nil {
-		return changes, err
+	return &PendingChanges{Records: changes, snapshot: currentSnapshot}, nil
+}
+
+// Commit advances the diff baseline to the snapshot the pending records were
+// derived from and persists it. Call it only once the records are known to be
+// durable server-side (or when there were none to deliver).
+//
+// The baseline only ever moves forward. Because the lock is released across the
+// upload, two overlapping cycles can finish out of order — the one that
+// collected FIRST can commit LAST if its request was slower — and letting the
+// older snapshot win would roll the baseline backwards, re-reporting changes
+// that were already delivered on every subsequent cycle. A stale commit is
+// therefore dropped rather than applied: the newer snapshot already accounts
+// for everything the older one saw.
+//
+// The in-memory baseline advances even when the on-disk write fails: the
+// records have already landed, so re-reporting them every cycle would duplicate
+// them server-side. A failed write costs at most one re-diff after a restart.
+func (c *ChangeTrackerCollector) Commit(pending *PendingChanges) error {
+	if pending == nil || pending.snapshot == nil {
+		return nil
 	}
-	return changes, nil
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.lastSnapshot != nil && pending.snapshot.Timestamp.Before(c.lastSnapshot.Timestamp) {
+		slog.Debug("change tracker ignoring stale baseline commit",
+			"pending", pending.snapshot.Timestamp,
+			"committed", c.lastSnapshot.Timestamp)
+		return nil
+	}
+
+	c.lastSnapshot = pending.snapshot
+	return c.saveSnapshot()
+}
+
+// CollectChanges detects changes since the previous snapshot and immediately
+// advances the baseline.
+//
+// Prefer CollectPendingChanges + Commit whenever the records are uploaded:
+// committing before delivery is confirmed permanently loses whatever the
+// server rejected (#3529). This wrapper is for callers that only inspect the
+// records locally.
+func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
+	pending, err := c.CollectPendingChanges()
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Commit(pending); err != nil {
+		return pending.Records, err
+	}
+	return pending.Records, nil
 }
 
 // initialInventory generates "added" records for every item in the baseline

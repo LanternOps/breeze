@@ -37,6 +37,11 @@ vi.mock('./apns', () => ({
   sendApnsNotification: (...args: unknown[]) => sendApnsNotificationMock(...args),
 }));
 
+const sendFcmNotificationMock = vi.fn();
+vi.mock('./fcm', () => ({
+  sendFcmNotification: (...args: unknown[]) => sendFcmNotificationMock(...args),
+}));
+
 import {
   sendExpoPush,
   buildApprovalPush,
@@ -310,6 +315,7 @@ describe('dispatchApprovalPush routing', () => {
     vi.mocked(db.select).mockReset();
     vi.mocked(db.update).mockClear();
     sendApnsNotificationMock.mockReset();
+    sendFcmNotificationMock.mockReset();
     updateWhereCalls.length = 0;
     updateSetCalls.length = 0;
   });
@@ -389,18 +395,45 @@ describe('dispatchApprovalPush routing', () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('counts native android (fcm) tokens as found-but-skipped, not errors', async () => {
-    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+  it('dispatches native android (fcm) tokens via sendFcmNotification', async () => {
     stubSelectRows([{ fcm: 'native-fcm-token', apns: null, platform: 'android' }]);
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: true, messageId: 'fcm-msg-1' });
 
     const res = await dispatchApprovalPush('u1', pushArgs);
 
-    // Counted in tokensFound, but neither dispatched nor errored — FCM is not wired.
-    expect(res).toEqual({ tokensFound: 1, dispatched: 0, errors: 0 });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(sendApnsNotificationMock).not.toHaveBeenCalled();
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('not wired to FCM'));
-    infoSpy.mockRestore();
+    expect(sendFcmNotificationMock).toHaveBeenCalledWith('native-fcm-token', {
+      title: 'Approval requested',
+      body: 'Claude Desktop: Delete devices',
+      data: { type: 'approval', approvalId: 'ap-1' },
+      ttl: 60,
+      channelId: 'approvals',
+    });
+    expect(res).toEqual({ tokensFound: 1, dispatched: 1, errors: 0 });
+  });
+
+  it('purges the fcm column when the native fcm sender reports the token unregistered', async () => {
+    stubSelectRows([{ fcm: 'dead-fcm-token', apns: null, platform: 'android' }]);
+    sendFcmNotificationMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'messaging/registration-token-not-registered',
+      unregistered: true,
+    });
+
+    const res = await dispatchApprovalPush('u1', pushArgs);
+
+    expect(res).toEqual({ tokensFound: 1, dispatched: 0, errors: 1 });
+    expect(db.update).toHaveBeenCalled();
+    expect(updateSetCalls.some((s) => s.fcmToken === null)).toBe(true);
+  });
+
+  it('counts a live fcm failure as an error without purging when not unregistered', async () => {
+    stubSelectRows([{ fcm: 'fcm-token', apns: null, platform: 'android' }]);
+    sendFcmNotificationMock.mockResolvedValueOnce({ ok: false, reason: 'messaging/internal-error' });
+
+    const res = await dispatchApprovalPush('u1', pushArgs);
+
+    expect(res).toEqual({ tokensFound: 1, dispatched: 0, errors: 1 });
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 

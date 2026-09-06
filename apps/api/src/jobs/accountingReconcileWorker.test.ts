@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /**
  * The Phase-D QuickBooks CDC reconcile worker (Task 4 —
@@ -316,35 +316,105 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('processReconcileConnectionJob: gating', () => {
-  it('returns null and never calls the provider when there is no QuickBooks connection', async () => {
+  // Issue #4543: all four short-circuits used to collapse into one silent
+  // `return null` — indistinguishable from the outside. Each must now log a
+  // structured `reason=` line, and `logSpy` asserts on the exact call shape
+  // so a future short-circuit that forgets to log fails these tests.
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('returns null, logs reason=missing, and never calls the provider when there is no QuickBooks connection', async () => {
     getConnectionMock.mockResolvedValue(null);
 
     await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
 
     expect(reconcileChangesMock).not.toHaveBeenCalled();
     expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('run skipped'),
+      'reason=missing',
+      `connectionId=${CONN_ID}`,
+      `partnerId=${PARTNER_ID}`,
+      'trigger=sweep',
+    );
+    // No live connection row to stamp.
+    expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
   });
 
-  it('returns null and never calls the provider when the connection is not status=connected', async () => {
+  it('returns null, logs reason=not_connected, and never calls the provider when the connection is not status=connected', async () => {
     getConnectionMock.mockResolvedValue(connectionRow({ status: 'reauth_required' }));
 
     await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
 
     expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('run skipped'),
+      'reason=not_connected',
+      `connectionId=${CONN_ID}`,
+      `partnerId=${PARTNER_ID}`,
+      'trigger=sweep',
+    );
+    // `status` already surfaces this on the existing status route — no
+    // separate last_error stamp needed.
+    expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
   });
 
-  // The `pull_payments`-off short-circuit is covered by the both-switches-off
-  // pair in the "gate: pull OR push" describe below (connectionRow now
-  // defaults pushPayments:true, so a fixture that only sets pullPayments:false
-  // no longer exercises the switched-off path this test used to name — it was
-  // silently exercising both_switches_off before that default existed).
+  // Phase D2 (spec decision 6): `pull_payments` off ALONE is not a skip any
+  // more — see the "gate: pull OR push" describe below. Only both switches
+  // off short-circuits.
+  it('returns null, logs reason=both_switches_off, stamps the connection, and never resolves a token when BOTH switches are off', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: false }));
 
-  it('returns null when the resolved connection is not the one the job names', async () => {
+    await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
+
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+    // No token refresh for a switched-off connection: the refresh itself is a
+    // QuickBooks round trip and a write, and doing it here would keep a
+    // disabled connection's tokens alive forever.
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('run skipped'),
+      'reason=both_switches_off',
+      `connectionId=${CONN_ID}`,
+      `partnerId=${PARTNER_ID}`,
+      'trigger=sweep',
+    );
+    // The one reason with no other visible signal: stamp it on last_error
+    // (finding-H mechanism) so the sync-status surface shows it too.
+    expect(stampReconcileRunErrorMock).toHaveBeenCalledWith(
+      // The mock captures the RAW message — `stampReconcileRunError`'s own
+      // `RECONCILE_RUN_ERROR_PREFIX` ("Payment pull: ") is applied inside the
+      // (mocked-out) real function, not visible here.
+      {}, CONN_ID, PARTNER_ID, expect.stringMatching(/disabled/i),
+    );
+  });
+
+  it('returns null, logs reason=connection_mismatch, and never calls the provider when the resolved connection is not the one the job names', async () => {
     getConnectionMock.mockResolvedValue(connectionRow({ id: 'some-other-connection' }));
 
     await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
 
     expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('run skipped'),
+      'reason=connection_mismatch',
+      `connectionId=${CONN_ID}`,
+      `partnerId=${PARTNER_ID}`,
+      'trigger=sweep',
+      // The live connection that superseded the job's stale target — lets a
+      // debugger correlate without a separate query (review finding).
+      'liveConnectionId=some-other-connection',
+    );
+    // The live connection is a DIFFERENT row than this stale job named —
+    // nothing to safely stamp.
+    expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
   });
 });
 
@@ -886,7 +956,7 @@ describe('gate: pull OR push (spec decision 6)', () => {
     await processReconcileConnectionJob(JOB);
 
     const reasons = logSpy.mock.calls
-      .filter((call) => call[0] === '[AccountingReconcileWorker] short-circuit')
+      .filter((call) => call[0] === '[AccountingReconcileWorker] run skipped')
       .map((call) => call.find((arg) => typeof arg === 'string' && arg.startsWith('reason=')));
     expect(reasons).toEqual([
       'reason=missing',

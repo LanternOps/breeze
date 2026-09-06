@@ -27,6 +27,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/pg-connect-env.sh
+source "${SCRIPT_DIR}/lib/pg-connect-env.sh"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -148,12 +152,22 @@ backup_database() {
   log "Starting database backup..."
   local dest="${BACKUP_DIR}/db_${TIMESTAMP}.dump"
 
-  if pg_dump "${DATABASE_URL}" -Fc -Z 6 -f "${dest}" 2>&1; then
+  # Split DATABASE_URL into PG* environment variables rather than passing it
+  # as an argument — pg_dump's argv is visible to any local user via `ps` for
+  # the whole duration of the dump (#4497).
+  if ! pg_url_to_env "${DATABASE_URL}"; then
+    log "ERROR: Database backup failed"
+    return 1
+  fi
+
+  if pg_dump -Fc -Z 6 -f "${dest}" 2>&1; then
+    pg_url_unset_env
     local size
     size=$(du -h "${dest}" | cut -f1)
     log "Database backup complete: ${dest} (${size})"
     TASKS_SUCCEEDED=$((TASKS_SUCCEEDED + 1))
   else
+    pg_url_unset_env
     log "ERROR: Database backup failed"
     rm -f "${dest}"
     return 1

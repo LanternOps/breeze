@@ -21,6 +21,14 @@ const { portalUserRow, activeOrgResult } = vi.hoisted(() => ({
   activeOrgResult: { current: null as { orgId: string; partnerId: string } | null },
 }));
 
+const resolveOrgTimezone = vi.hoisted(() =>
+  vi.fn(async () => 'UTC'),
+);
+
+vi.mock('../../services/portal/timezone', () => ({
+  resolveOrgTimezone,
+}));
+
 // The select mock APPLIES the projection rather than echoing the whole fixture
 // row. Without that, `select({ id, orgId, ... })` is unobservable and any
 // assertion about which columns the middleware hydrates is vacuous — deleting
@@ -88,7 +96,11 @@ function makeApp() {
   // portal ticket read is `submitted_by = me OR requester_contact_id = my
   // contact`, so an un-hydrated contactId is a silently narrowed query, not a
   // type error.
-  app.get('/protected', (c) => c.json({ ok: true, user: c.get('portalAuth').user }));
+  app.get('/protected', (c) => c.json({
+    ok: true,
+    user: c.get('portalAuth').user,
+    timezone: c.get('portalAuth').timezone,
+  }));
   return app;
 }
 
@@ -128,6 +140,18 @@ describe('portalAuthMiddleware org-status gate', () => {
     expect(getActiveOrgTenant).toHaveBeenCalledWith(ORG_ID);
     // A passing gate must not disturb the session.
     expect(portalSessions.has(TOKEN)).toBe(true);
+  });
+
+  it('hydrates the organization timezone exactly once into portalAuth', async () => {
+    resolveOrgTimezone.mockResolvedValue('America/Denver');
+    seedSession();
+
+    const res = await call();
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { timezone: string }).timezone).toBe('America/Denver');
+    expect(resolveOrgTimezone).toHaveBeenCalledTimes(1);
+    expect(resolveOrgTimezone).toHaveBeenCalledWith(ORG_ID);
   });
 
   it("rejects a session whose org is fenced for a merge ('merging')", async () => {

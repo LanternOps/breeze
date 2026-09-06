@@ -1,12 +1,19 @@
 /**
  * Unit tests for the config-policy partner-wide ownership primitives (#2930).
  *
- * These assert the two things that, when missing, make a partner-authored
- * policy silently never reach an agent:
- *   1. the emitted SQL admits `org_id IS NULL AND partner_id = <device partner>`
- *      rows, not just `org_id = <device org>`;
- *   2. the read escapes to a system RLS context, because partner-owned rows are
- *      invisible under every agent-facing (org-scoped) context.
+ * These assert the app-layer half of "a partner-authored policy reaches an
+ * agent": the emitted SQL admits `org_id IS NULL AND partner_id = <device
+ * partner>` rows, not just `org_id = <device org>`.
+ *
+ * The RLS half is no longer app code. It used to be `withPartnerWideVisibility`,
+ * a nested system-context escape, tested here; #4673 W03 deleted it because
+ * `<table>_partner_wide_select` (W01) grants the read directly and W02 populates
+ * `breeze.current_partner_id` on agent contexts. There is nothing left to
+ * unit-test about it — the guarantee now lives in Postgres, so its regression
+ * gates are the RLS/integration suites
+ * (`__tests__/integration/configPolicyPartnerWideSelect.integration.test.ts`,
+ * `agentPolicyResolversPartnerWide.integration.test.ts`) and the mocked
+ * no-escape assertions in `routes/agents/helpers.partnerWidePolicies.test.ts`.
  *
  * The SQL is compiled with the real PgDialect rather than inspected as an AST —
  * a regression that drops the partner branch changes the compiled text and the
@@ -15,24 +22,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { getCurrentDbAccessContextMock, runOutsideDbContextMock, withSystemDbAccessContextMock } =
-  vi.hoisted(() => ({
-    getCurrentDbAccessContextMock: vi.fn<
-      () => { scope: string; accessiblePartnerIds?: string[] | null } | undefined
-    >(() => undefined),
-    runOutsideDbContextMock: vi.fn(<T>(fn: () => T): T => fn()),
-    withSystemDbAccessContextMock: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn()),
-  }));
+const { getCurrentDbAccessContextMock } = vi.hoisted(() => ({
+  getCurrentDbAccessContextMock: vi.fn<
+    () => { scope: string; accessiblePartnerIds?: string[] | null } | undefined
+  >(() => undefined),
+}));
 
+// Deliberately a MINIMAL db mock. `runOutsideDbContext` / `withSystemDbAccessContext`
+// are absent, so if this module ever reintroduces a system-context escape the
+// import fails loudly with "No <name> export is defined on the mock" instead of
+// silently escaping again (#4673 W03).
 vi.mock('../db', () => ({
   getCurrentDbAccessContext: getCurrentDbAccessContextMock,
-  runOutsideDbContext: runOutsideDbContextMock,
-  withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
 import {
   policyOwnershipCondition,
-  withPartnerWideVisibility,
   withDevicePartnerPolicyVisibility,
 } from './configPolicyOwnership';
 
@@ -79,49 +84,6 @@ describe('policyOwnershipCondition', () => {
     expect(sql).not.toMatch(/IS NULL/i);
     expect(sql).not.toMatch(/partner_id/i);
     expect(params).toEqual([ORG_ID]);
-  });
-});
-
-describe('withPartnerWideVisibility', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    getCurrentDbAccessContextMock.mockReturnValue(undefined);
-  });
-
-  it('escapes to a system context when the caller is org-scoped', async () => {
-    getCurrentDbAccessContextMock.mockReturnValue({ scope: 'organization' });
-
-    await expect(withPartnerWideVisibility(async () => 'rows')).resolves.toBe('rows');
-
-    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('escapes when there is no ambient context at all', async () => {
-    getCurrentDbAccessContextMock.mockReturnValue(undefined);
-
-    await withPartnerWideVisibility(async () => null);
-
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('is a no-op when already system-scoped — never double-holds a connection (#1105)', async () => {
-    getCurrentDbAccessContextMock.mockReturnValue({ scope: 'system' });
-
-    await expect(withPartnerWideVisibility(async () => 'rows')).resolves.toBe('rows');
-
-    expect(runOutsideDbContextMock).not.toHaveBeenCalled();
-    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
-  });
-
-  it('propagates the callback error rather than swallowing it', async () => {
-    getCurrentDbAccessContextMock.mockReturnValue({ scope: 'organization' });
-
-    await expect(
-      withPartnerWideVisibility(async () => {
-        throw new Error('boom');
-      })
-    ).rejects.toThrow('boom');
   });
 });
 

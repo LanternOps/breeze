@@ -2,6 +2,34 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { getTableName, is, Table } from 'drizzle-orm';
 
+const { evaluateCapability, requireCapability } = vi.hoisted(() => {
+  const evaluateCapability = vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true }));
+  return {
+    evaluateCapability,
+    requireCapability: vi.fn((capability: string) => async (c: any, next: any) => {
+      const auth = c.get('auth');
+      if (!auth?.partnerId) return next();
+      const decision = await evaluateCapability(capability, {
+        partnerId: auth.partnerId,
+        userId: auth.user?.id,
+        orgId: auth.orgId ?? undefined,
+      });
+      if (!decision.allow) {
+        return c.json({
+          error: decision.code,
+          capability: decision.capability,
+          reason: decision.reason,
+          reviewRequested: false,
+          meetingUrl: null,
+        }, 403);
+      }
+      return next();
+    }),
+  };
+});
+
+vi.mock('../../services/partnerTrust', () => ({ evaluateCapability, requireCapability }));
+
 // Hold a configurable partner-settings value the mocked select chain returns.
 // Each test mutates this before calling app.request().
 let mockPartnerSettings: unknown = {};
@@ -40,7 +68,15 @@ function makeSelectMock() {
   });
 }
 
+// `getCurrentDbAccessContext` is named on purpose: the partner-settings read
+// now goes through `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts),
+// which imports all three context helpers BY NAME. Omitting any of them makes
+// this suite fail with "No <name> export is defined on the mock" rather than
+// silently skipping the RLS escape and reintroducing #3419. Returning
+// `undefined` models a request-scoped (non-system) caller, so the escape is
+// taken — which is the shape every route under test actually runs in.
 vi.mock('../../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -69,7 +105,7 @@ vi.mock('../../middleware/auth', () => ({
       user: { id: '11111111-1111-1111-1111-111111111111', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-123',
-      partnerId: null,
+      partnerId: '33333333-3333-4333-8333-333333333333',
       accessibleOrgIds: ['org-123'],
       // This route is reached by a person clicking Connect, so the mocked
       // context carries the same discriminator the real one would. The
@@ -151,9 +187,34 @@ describe('POST /devices/:id/remote-access-launch', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    evaluateCapability.mockResolvedValue({ allow: true });
     mockPartnerSettings = {};
     app = new Hono();
     app.route('/devices', coreRoutes);
+  });
+
+  it('returns 403 before resolving a credential-bearing URL when remote control is denied', async () => {
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+
+    const res = await app.request(`/devices/${deviceId}/remote-access-launch`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+    }));
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.objectContaining({
+      partnerId: '33333333-3333-4333-8333-333333333333',
+    }));
+    expect(getDeviceWithOrgAndSiteCheck).not.toHaveBeenCalled();
   });
 
   // Registration-time gate test. The launcher POST issues URLs that may carry
@@ -237,6 +298,7 @@ describe('POST /devices/:id/remote-access-launch', () => {
       headers: { Authorization: 'Bearer token' }
     });
     expect(res.status).toBe(200);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.any(Object));
     const body = await res.json() as { launchUrl?: string; scheme?: string; providerId?: string };
     expect(body.launchUrl).toBe('rustdesk://294064193?password=p%23x');
     expect(body.scheme).toBe('rustdesk');

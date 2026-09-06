@@ -149,6 +149,7 @@
       "webhookSecret": "Webhook Secret (optional)",
       "mode": "Mode",
       "script": "Script",
+      "runAs": "Run as",
       "notificationChannel": "Notification Channel",
       "severity": "Severity",
       "message": "Message",
@@ -250,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} passed",
       "failed": "{{count}} failed",
-      "skipped": "{{count}} skipped"
+      "skipped": "{{count}} skipped",
+      "cancelled": "{{count}} cancelled"
     },
     "duration": "Duration: {{duration}}",
     "progress": {
@@ -262,9 +264,20 @@
       "error": "Couldn't load device results. Try reopening the run.",
       "empty": "No per-device results recorded for this run."
     },
+    "errors": {
+      "cancelRun": "Failed to cancel the run."
+    },
     "actions": {
       "hideLogs": "Hide Logs",
-      "viewLogs": "View Logs"
+      "viewLogs": "View Logs",
+      "cancelRun": "Cancel run",
+      "partnerScopeTooltip": "This run applies to every organization under your partner account. Ask a full partner admin to cancel it, or stop individual executions on your own devices instead.",
+      "confirmCancelRunTitle": "Cancel this run?",
+      "confirmCancelRunMessage": "Breeze will stop every execution this run is still waiting on. Actions already in progress may finish before they can be stopped.",
+      "cancelRunSuccess_one": "Cancelled — {{count}} execution stopped.",
+      "cancelRunSuccess_other": "Cancelled — {{count}} executions stopped.",
+      "uncancellableActions_one": "{{count}} action could not be stopped and may still be running on its own.",
+      "uncancellableActions_other": "{{count}} actions could not be stopped and may still be running on their own."
     },
     "timestamps": {
       "started": "Started: {{date}}",
@@ -281,7 +294,8 @@
       "partial": "Partial",
       "running": "Running",
       "pending": "Pending",
-      "skipped": "Skipped"
+      "skipped": "Skipped",
+      "cancelled": "Cancelled"
     },
     "empty": "No run history available.",
     "triggeredBy": {
@@ -618,8 +632,33 @@
       "stdout": "Standard Output (stdout)",
       "stderr": "Standard Error (stderr)"
     },
+    "customFields": {
+      "title": "Custom field writes",
+      "applied": "Applied",
+      "rejected": "Rejected",
+      "none": "None",
+      "reasons": {
+        "unknown_field": "No matching field definition",
+        "not_script_writable": "Field is not script-writable",
+        "not_applicable_to_device": "Field does not apply to this device type",
+        "device_not_found": "Device not found",
+        "invalid_type": "Value has the wrong type",
+        "out_of_range": "Value is out of range",
+        "not_a_choice": "Value is not one of the field's allowed choices",
+        "too_long": "Value is too long",
+        "invalid_date": "Value is not a valid date",
+        "marker_unparseable": "Marker could not be parsed as JSON",
+        "too_many_lines": "Too many marker lines in this run",
+        "too_many_keys": "Too many keys in the marker",
+        "marker_too_large": "Marker exceeded the size limit",
+        "forbidden_key": "Key is not allowed",
+        "envelope_unparseable": "Structured result could not be parsed",
+        "envelope_unsupported_version": "Structured result used an unsupported version"
+      }
+    },
     "actions": {
-      "copyToClipboard": "Copy to clipboard"
+      "copyToClipboard": "Copy to clipboard",
+      "runAgain": "Run again"
     },
     "title": "Execution Details",
     "statusDescription": {
@@ -627,20 +666,31 @@
       "completed": "Script completed successfully",
       "failed": "Script execution failed",
       "timeout": "Script execution timed out",
-      "pending": "Script is waiting to be executed"
+      "pending": "Script is waiting to be executed",
+      "queued": "Script is queued for delivery to the device",
+      "cancelling": "Stop requested — waiting for the device to confirm.",
+      "cancelled": "Script was stopped on the device"
     },
     "fields": {
       "startedAt": "Started At",
       "duration": "Duration",
       "exitCode": "Exit Code",
-      "completedAt": "Completed At"
+      "completedAt": "Completed At",
+      "runAs": "Run context"
     },
     "status": {
       "running": "Running...",
       "pending": "Pending",
       "completed": "Completed",
       "failed": "Failed",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "Queued",
+      "cancelling": "Stopping…",
+      "cancelled": "Cancelled",
+      "completedCancelTooLate": "Completed — your stop request arrived too late",
+      "failedCancelTooLate": "Failed — your stop request arrived too late",
+      "timeoutCancelTooLate": "Timed out — your stop request arrived too late",
+      "cancelFailed": "Stop failed — the device could not stop the process"
     }
   },
   "executionHistory": {
@@ -661,7 +711,14 @@
       "running": "Running...",
       "completed": "Completed",
       "failed": "Failed",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "Queued",
+      "cancelling": "Stopping…",
+      "cancelled": "Cancelled",
+      "completedCancelTooLate": "Completed — your stop request arrived too late",
+      "failedCancelTooLate": "Failed — your stop request arrived too late",
+      "timeoutCancelTooLate": "Timed out — your stop request arrived too late",
+      "cancelFailed": "Stop failed — the device could not stop the process"
     },
     "summary": "{{shown}} of {{total}}",
     "headers": {
@@ -671,8 +728,16 @@
       "exitCode": "Exit Code"
     },
     "empty": "No executions found. Try adjusting your filters.",
+    "errors": {
+      "noLongerCancellable": "This execution already finished and can no longer be stopped.",
+      "cancelFailed": "Failed to stop the execution."
+    },
     "actions": {
-      "viewDetails": "View details"
+      "viewDetails": "View details",
+      "stop": "Stop",
+      "forceStop": "Force stop",
+      "confirmStopTitle": "Stop this execution?",
+      "confirmStopMessage": "Breeze will ask the device to stop {{script}}. This can take a few seconds — Force stop skips the grace period and kills the process immediately."
     },
     "pagination": {
       "showing": "Showing {{start}} to {{end}} of {{total}}",
@@ -762,7 +827,8 @@
     "errors": {
       "fetch": "Failed to fetch script",
       "generic": "An error occurred",
-      "save": "Failed to save script"
+      "save": "Failed to save script",
+      "duplicate": "Failed to duplicate script"
     },
     "toast": {
       "created": "Script created",
@@ -772,6 +838,7 @@
     "actions": {
       "backToScripts": "Back to Scripts",
       "executionHistory": "Execution History",
+      "duplicate": "Duplicate",
       "create": "Create Script",
       "saveChanges": "Save Changes"
     },
@@ -1035,6 +1102,8 @@
       "variablePlaceholder": "e.g. vendor_token",
       "fieldLabel": "Custom field key",
       "fieldPlaceholder": "e.g. asset_tag",
+      "fieldHelp": "Enter the Field Key shown in Settings → Custom Fields (case-sensitive). Read: once bound, the resolved value is delivered to the script just like a normal parameter — no prompt is shown. Write: to save a new value back, have the script call the device's custom-fields API with a PATCH request and an API key.",
+      "fieldHelpAriaLabel": "About the device custom field binding",
       "builtinLabel": "Property",
       "chooseTitle": "Choose a variable",
       "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",
@@ -1080,6 +1149,7 @@
     "actions": {
       "runTitle": "Run script",
       "editTitle": "Edit script",
+      "duplicateTitle": "Duplicate script",
       "deleteTitle": "Delete script"
     },
     "pagination": {
@@ -1200,7 +1270,8 @@
       "delete": "Failed to delete script",
       "deleteTryAgain": "Failed to delete script. Please try again.",
       "alreadyInLibrary": "\"{{name}}\" is already in your library",
-      "import": "Failed to import script"
+      "import": "Failed to import script",
+      "duplicate": "Failed to duplicate script"
     },
     "toast": {
       "deleting": "Deleting \"{{name}}\"...",
@@ -1287,6 +1358,8 @@
     "offlineWarning": "The selected device is offline — the run will wait until it reconnects.",
     "exitCode": "exit {{code}}",
     "viewHistory": "View history",
+    "runAgain": "Run again",
+    "viewOnDevice": "View on device",
     "status": {
       "pending": "Queued",
       "running": "Running",
@@ -1294,7 +1367,8 @@
       "failed": "Failed",
       "timeout": "Timed out",
       "queued": "Queued",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "cancelling": "Stopping…"
     },
     "errors": {
       "execute": "Failed to start the test run",

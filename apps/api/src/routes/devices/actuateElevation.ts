@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { db } from '../../db';
 import {
@@ -8,6 +9,8 @@ import {
   devices,
   elevationAudit,
   elevationRequests,
+  pamRules,
+  users,
 } from '../../db/schema';
 import {
   authMiddleware,
@@ -18,9 +21,33 @@ import {
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { type UserPermissions } from '../../services/permissions';
+import {
+  assertDeviceExecuteAllowed,
+  TrustDeniedError,
+} from '../../services/partnerTrust.commands';
+import { trustDenyBody } from '../../services/partnerTrust';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 
 export const actuateElevationRoutes = new Hono();
+
+// Display-only aliases for the endpoint event-log identity fields (#4913):
+// the requesting subject and the approving technician are both rows in
+// `users`, so the same table needs two independent joins.
+const requestedByUser = alias(users, 'actuate_elevation_requested_by_user');
+const approvedByUser = alias(users, 'actuate_elevation_approved_by_user');
+
+// toIsoString normalizes a timestamp column read back from postgres.js
+// (a Date) into a JSON-safe ISO string for the command payload. Accepts a
+// plain string too so unit tests can stub fixtures without a real Date.
+function toIsoString(value: unknown): string | null {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  return null;
+}
 
 actuateElevationRoutes.use('*', authMiddleware);
 
@@ -117,7 +144,9 @@ actuateElevationRoutes.post(
     // wrong-status — must land in `elevation_audit` with the cause. 404/decommission
     // paths above can't write elevation_audit (no valid FK target), so they get only
     // the route-level audit at the outer scope.
-    const result = await db.transaction(async (tx) => {
+    let result;
+    try {
+      result = await db.transaction(async (tx) => {
       const [elevation] = await tx
         .select({
           id: elevationRequests.id,
@@ -125,10 +154,23 @@ actuateElevationRoutes.post(
           orgId: elevationRequests.orgId,
           status: elevationRequests.status,
           targetExecutablePath: elevationRequests.targetExecutablePath,
+          targetExecutableHash: elevationRequests.targetExecutableHash,
           subjectUsername: elevationRequests.subjectUsername,
           metadata: elevationRequests.metadata,
+          approvedAt: elevationRequests.approvedAt,
+          expiresAt: elevationRequests.expiresAt,
+          riskTier: elevationRequests.riskTier,
+          // Display-only identity fields (#4913): resolved here, inside the
+          // same tenant-scoped transaction, so the endpoint event log can show
+          // who requested and who approved without the agent ever holding a
+          // user id. Never select credentials/tokens onto this row.
+          requestedByName: requestedByUser.name,
+          approvedByName: approvedByUser.name,
+          approvedByEmail: approvedByUser.email,
         })
         .from(elevationRequests)
+        .leftJoin(requestedByUser, eq(elevationRequests.subjectUserId, requestedByUser.id))
+        .leftJoin(approvedByUser, eq(elevationRequests.approvedByUserId, approvedByUser.id))
         .where(
           and(
             eq(elevationRequests.id, data.elevationRequestId),
@@ -196,6 +238,24 @@ actuateElevationRoutes.post(
       // routes/agents/elevationRequests.ts), not a first-class column;
       // same extraction pattern as routes/pam.ts's `commandLine` field.
       const metadata = (elevation.metadata ?? {}) as Record<string, unknown>;
+      await assertDeviceExecuteAllowed(deviceId, 'actuate_elevation', auth.user.id);
+
+      // Best-effort display name of the PAM rule that auto-approved this
+      // request, if any (#4913). `pam_rule_id` lives in the jsonb metadata
+      // blob rather than a column (see routes/pam.ts matchPamRule), so this
+      // is a separate lookup rather than a join. Never fatal: a missing or
+      // stale rule id just means the endpoint event shows no rule name.
+      const pamRuleId = typeof metadata.pam_rule_id === 'string' ? metadata.pam_rule_id : null;
+      let matchedRuleName: string | null = null;
+      if (pamRuleId) {
+        const [rule] = await tx
+          .select({ name: pamRules.name })
+          .from(pamRules)
+          .where(eq(pamRules.id, pamRuleId))
+          .limit(1);
+        matchedRuleName = rule?.name ?? null;
+      }
+
       const [command] = await tx
         .insert(deviceCommands)
         .values({
@@ -205,12 +265,24 @@ actuateElevationRoutes.post(
             elevationRequestId: data.elevationRequestId,
             timeoutMs: data.timeoutMs ?? 8000,
             targetPath: elevation.targetExecutablePath ?? '',
+            targetHash: elevation.targetExecutableHash ?? '',
             commandLine: typeof metadata.command_line === 'string' ? metadata.command_line : '',
             // Path B places the elevated process in the requesting user's live
             // session; the agent resolves this name to a session id (falls back
             // to the console when absent). Path A ignores it. See
             // pamactuator.Request.SubjectUsername.
             subjectUsername: elevation.subjectUsername ?? '',
+            // Display-only identity/context fields for the endpoint's local
+            // audit trail (Windows Event Log + audit.jsonl, #4913). These are
+            // names/emails/timestamps resolved server-side for a human
+            // reading the event log — never a user id, token, or credential.
+            requestedByName: elevation.requestedByName ?? null,
+            approvedByName: elevation.approvedByName ?? null,
+            approvedByEmail: elevation.approvedByEmail ?? null,
+            approvedAt: toIsoString(elevation.approvedAt),
+            riskTier: elevation.riskTier ?? null,
+            matchedRuleName,
+            windowEndsAt: toIsoString(elevation.expiresAt),
           },
           status: 'pending',
           createdBy: auth.user.id,
@@ -239,7 +311,21 @@ actuateElevationRoutes.post(
       });
 
       return { kind: 'success' as const, command };
-    });
+      });
+    } catch (e) {
+      if (e instanceof TrustDeniedError) {
+        return c.json(
+          trustDenyBody({
+            allow: false,
+            code: e.code,
+            capability: 'device_execute',
+            reason: e.reason,
+          }, false),
+          403,
+        );
+      }
+      throw e;
+    }
 
     if (result.kind === 'not_found') {
       // Route-level audit only — no elevation_audit because the FK target

@@ -57,8 +57,10 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
   const { quote, blocks, lines, branding, presentation } = initial;
   const currency = quote.currencyCode;
   const open = status === 'sent' || status === 'viewed';
-  const hasRecurring =
-    Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+  const lineHasCadence = (cadence: 'monthly' | 'annual') => lines.some(
+    (l) => l.customerVisible !== false && l.recurrence === cadence,
+  );
+  const hasRecurring = lineHasCadence('monthly') || lineHasCadence('annual');
   // Per-line Tax column + a Subtotal/Tax breakdown appear only when this quote
   // carries tax (otherwise the totals stay focused on due-on-acceptance).
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
@@ -192,13 +194,13 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
                 </div>
               </>
             )}
-            {hasRecurring && Number(quote.monthlyRecurringTotal ?? 0) > 0 && (
+            {hasRecurring && lineHasCadence('monthly') && (
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Monthly recurring</span>
                 <span className="tabular-nums text-foreground">{money(quote.monthlyRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
               </div>
             )}
-            {hasRecurring && Number(quote.annualRecurringTotal ?? 0) > 0 && (
+            {hasRecurring && lineHasCadence('annual') && (
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Annual recurring</span>
                 <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>

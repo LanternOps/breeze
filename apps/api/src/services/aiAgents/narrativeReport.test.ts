@@ -344,6 +344,9 @@ describe('persistNarrativeReport', () => {
       rowCount: 0,
       executionScopePrincipalKind: 'system',
       executionScopeUserId: null,
+      requestedByKind: 'system',
+      requestedByUserId: null,
+      requestedByPortalUserId: null,
     });
     const result = values.result as {
       rows: unknown[]; rowCount: number;

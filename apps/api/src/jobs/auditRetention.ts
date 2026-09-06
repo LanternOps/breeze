@@ -73,6 +73,7 @@ import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'audit-log-retention';
 const JOB_NAME = 'audit-log-retention';
@@ -731,6 +732,7 @@ export async function initializeAuditRetentionWorker(): Promise<void> {
     logAuditAdminPoolMode();
 
     retentionWorker = createAuditRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'auditRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[AuditRetention] Worker error:', error);

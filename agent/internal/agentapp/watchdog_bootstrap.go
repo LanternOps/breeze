@@ -15,10 +15,15 @@ import (
 	"time"
 )
 
+// releasesBase, releaseChecksumsURL, fetchReleaseAssetChecksum,
+// verifyFileSHA256 and downloadReleaseAsset are shared release-asset
+// primitives: the watchdog bootstrap below and the desktop-helper bootstrap in
+// desktop_helper_bootstrap.go both consume them.
+//
 // NOTE: Keep this URL base in sync with agent/internal/updater/pkg_darwin.go.
 // Both point at the same GitHub releases. If one ever moves to an env var,
 // migrate both call sites together.
-const watchdogReleasesBase = "https://github.com/LanternOps/breeze/releases/download"
+const releasesBase = "https://github.com/LanternOps/breeze/releases/download"
 
 // watchdogBinaryName returns the filename for the watchdog binary on the given GOOS.
 func watchdogBinaryName(goos string) string {
@@ -36,11 +41,18 @@ func watchdogDownloadURL(version, goos, goarch string) string {
 		ext = ".exe"
 	}
 	return fmt.Sprintf("%s/v%s/breeze-watchdog-%s-%s%s",
-		watchdogReleasesBase, version, goos, goarch, ext)
+		releasesBase, version, goos, goarch, ext)
 }
 
-func watchdogChecksumsURL(version string) string {
-	return fmt.Sprintf("%s/v%s/checksums.txt", watchdogReleasesBase, version)
+func releaseChecksumsURL(version string) string {
+	return fmt.Sprintf("%s/v%s/checksums.txt", releasesBase, version)
+}
+
+// isDevBuildVersion reports whether version names a locally built agent rather
+// than a published release. Dev builds have no matching GitHub release, so any
+// companion binary must be staged next to the agent by hand.
+func isDevBuildVersion(version string) bool {
+	return version == "" || version == "dev" || strings.HasPrefix(version, "dev-")
 }
 
 // locateSiblingWatchdog checks for the watchdog binary in the same directory
@@ -55,16 +67,16 @@ func locateSiblingWatchdog(agentPath string) (string, bool) {
 }
 
 const (
-	watchdogMinSize         = 1 * 1024 * 1024 // 1 MB sanity check (real binary is several MB)
-	watchdogDownloadTimeout = 60 * time.Second
+	releaseAssetMinSize    = 1 * 1024 * 1024 // 1 MB sanity check (real binary is several MB)
+	releaseDownloadTimeout = 60 * time.Second
 )
 
 // downloadWatchdog fetches the watchdog binary from url and writes it to destPath.
 // The file is streamed to a sibling temp file and atomically renamed on success,
 // so a partial download never leaves a broken binary behind. On unix the file is
 // marked executable (0755).
-func fetchWatchdogChecksum(checksumsURL, assetName string) (string, error) {
-	client := &http.Client{Timeout: watchdogDownloadTimeout}
+func fetchReleaseAssetChecksum(checksumsURL, assetName string) (string, error) {
+	client := &http.Client{Timeout: releaseDownloadTimeout}
 	resp, err := client.Get(checksumsURL)
 	if err != nil {
 		return "", fmt.Errorf("http get %s: %w", checksumsURL, err)
@@ -122,8 +134,12 @@ func verifyFileSHA256(path, expected string) error {
 	return nil
 }
 
-func downloadWatchdog(url, destPath, expectedSHA256 string) error {
-	client := &http.Client{Timeout: watchdogDownloadTimeout}
+// downloadReleaseAsset fetches a release asset from url and writes it to
+// destPath. The file is streamed to a sibling temp file and atomically renamed
+// on success, so a partial download never leaves a broken binary behind. It is
+// written executable (0755).
+func downloadReleaseAsset(url, destPath, expectedSHA256 string) error {
+	client := &http.Client{Timeout: releaseDownloadTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("http get %s: %w", url, err)
@@ -149,7 +165,7 @@ func downloadWatchdog(url, destPath, expectedSHA256 string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close %s: %w", tmpPath, closeErr)
 	}
-	if n < watchdogMinSize {
+	if n < releaseAssetMinSize {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("downloaded body too small (%d bytes); URL likely returned an error page", n)
 	}
@@ -187,7 +203,7 @@ type bootstrapOptions struct {
 func bootstrapWatchdog(opts bootstrapOptions) error {
 	watchdogPath, ok := locateSiblingWatchdog(opts.agentPath)
 	if !ok {
-		if opts.version == "" || opts.version == "dev" || strings.HasPrefix(opts.version, "dev-") {
+		if isDevBuildVersion(opts.version) {
 			return fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `breeze-watchdog service install` manually", opts.version)
 		}
 		url := opts.urlOverride
@@ -201,14 +217,14 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 			}
 			assetName := filepath.Base(url)
 			var err error
-			checksum, err = fetchWatchdogChecksum(watchdogChecksumsURL(opts.version), assetName)
+			checksum, err = fetchReleaseAssetChecksum(releaseChecksumsURL(opts.version), assetName)
 			if err != nil {
 				return fmt.Errorf("fetch watchdog checksum: %w", err)
 			}
 		}
 		watchdogPath = filepath.Join(filepath.Dir(opts.agentPath), watchdogBinaryName(opts.goos))
 		fmt.Fprintf(os.Stderr, "Downloading watchdog from %s ...\n", url)
-		if err := downloadWatchdog(url, watchdogPath, checksum); err != nil {
+		if err := downloadReleaseAsset(url, watchdogPath, checksum); err != nil {
 			return fmt.Errorf("download watchdog: %w", err)
 		}
 	}

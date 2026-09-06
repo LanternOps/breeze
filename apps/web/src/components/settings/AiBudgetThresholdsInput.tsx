@@ -38,7 +38,7 @@ export function parseThresholds(raw: string): { ok: true; value: number[] | unde
 
 export default function AiBudgetThresholdsInput({ value, onChange, onValidityChange, disabled, placeholder, testId = 'ai-budget-thresholds' }: Props) {
   const { t } = useTranslation('settings');
-  const [text, setText] = useState(value?.join(', ') ?? '');
+  const [text, setText] = useState(() => value?.join(', ') ?? '');
   const [invalid, setInvalid] = useState(false);
   // Mirrors `invalid` so the setter below can compare against the live value
   // from any closure (effects included) without taking it as a dependency.
@@ -56,7 +56,40 @@ export default function AiBudgetThresholdsInput({ value, onChange, onValidityCha
     onValidityChangeRef.current?.(!next);
   }, []);
 
-  useEffect(() => { setText(value?.join(', ') ?? ''); markInvalid(false); }, [value, markInvalid]);
+  // Re-seed from `value` DURING RENDER, never from an effect (#4659). A passive
+  // effect is flushed after the commit, so a queued `setText(value)` could land
+  // *after* the user had typed and silently revert the box to the value it was
+  // last seeded with; the next blur then committed that stale ladder instead of
+  // what was on screen. On CI this reached `AiUsagePage` as a budget PUT
+  // carrying `[50, 80, 95]` where the field had been cleared, and `null` where
+  // `60, 90` had been typed. Deriving during render leaves no window at all:
+  // there is no commit in which the box still shows the previous ladder.
+  //
+  // Same defect and same remedy as `InvoiceEditor`'s notes/terms drafts, which
+  // this deliberately mirrors — that one was filed five times (#2925, #3219,
+  // #3277, #3980, #4033) before the effect was recognised as the cause.
+  //
+  // Compare the RENDERED string, not the array identity: a refetch that hands
+  // back an equal-but-new `[50, 80, 95]` (or a `[]`/`undefined` round-trip)
+  // changes nothing on screen, and must not throw away a draft the user is
+  // still typing. The old `[value]` effect dependency had exactly that hole.
+  const seed = value?.join(', ') ?? '';
+  const [seededFrom, setSeededFrom] = useState(seed);
+  if (seededFrom !== seed) {
+    setSeededFrom(seed);
+    setText(seed);
+    setInvalid(false);
+  }
+
+  // The reset above cannot call `markInvalid` (notifying the parent mid-render
+  // is illegal) and must not touch `invalidRef` (a render can be discarded), so
+  // reconcile both here. A no-op for every `markInvalid`-driven change, since
+  // that setter already moved the ref and told the caller synchronously.
+  useEffect(() => {
+    if (invalidRef.current === invalid) return;
+    invalidRef.current = invalid;
+    onValidityChangeRef.current?.(!invalid);
+  }, [invalid]);
 
   const commit = () => {
     if (disabled) return;

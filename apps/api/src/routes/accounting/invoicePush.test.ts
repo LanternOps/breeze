@@ -235,6 +235,22 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
+  // #4544: a mapping row carrying the remote-deleted marker must reject the
+  // push with a stable 409 code, not a generic/quickbooks-flavored error the
+  // web layer would have to guess at.
+  it('409 pass-through: remote_deleted (invoice deleted/voided in QuickBooks) is never a silent no-op or a generic error', async () => {
+    pushInvoiceToAccountingMock.mockRejectedValue(
+      new AccountingInvoicePushError('remote_deleted', 409, 'QuickBooks reports this invoice as deleted — pushing again would create a duplicate.'),
+    );
+    const res = await pushInvoice();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'remote_deleted',
+      message: 'QuickBooks reports this invoice as deleted — pushing again would create a duplicate.',
+    });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
   it('404 pass-through: an unpushable/unknown invoice preserves its code', async () => {
     pushInvoiceToAccountingMock.mockRejectedValue(new AccountingInvoicePushError('invoice_not_pushable', 404, 'Invoice not found for this partner'));
     const res = await pushInvoice();

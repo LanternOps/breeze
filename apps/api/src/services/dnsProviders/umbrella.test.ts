@@ -75,6 +75,23 @@ describe('UmbrellaProvider OAuth2 client-credentials auth (#3271)', () => {
     expect(initOf(apiCall).headers?.Authorization).toBe('Bearer tok-1');
   });
 
+  it('sends from/to as epoch-millisecond strings, not ISO 8601 (#4597)', async () => {
+    queueTokenThen({ requests: [] });
+
+    const since = new Date('2026-08-14T00:30:00.151Z');
+    const until = new Date('2026-08-15T00:30:00.151Z');
+    await makeProvider().syncEvents(since, until);
+
+    const apiCall = requestJsonMock.mock.calls[1]!;
+    const params = new URL(urlOf(apiCall)).searchParams;
+    // Cisco's reporting API rejects ISO strings ("invalid timestamp"); it
+    // wants Unix epoch milliseconds as a numeric string.
+    expect(params.get('from')).toBe(String(since.getTime()));
+    expect(params.get('to')).toBe(String(until.getTime()));
+    expect(params.get('from')).toMatch(/^\d+$/);
+    expect(params.get('to')).toMatch(/^\d+$/);
+  });
+
   it('sends the bearer token to the policies API too', async () => {
     queueTokenThen({});
 

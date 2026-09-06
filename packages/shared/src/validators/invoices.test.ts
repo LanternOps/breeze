@@ -69,6 +69,13 @@ describe('partnerBillingSettingsSchema', () => {
     expect(omitted.autoTaxHardware).toBeUndefined();
   });
 
+  it('#3205 W07: accepts invoiceDeviceAppendix as an optional boolean and rejects strings', () => {
+    const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
+    expect(partnerBillingSettingsSchema.parse({ ...base, invoiceDeviceAppendix: true }).invoiceDeviceAppendix).toBe(true);
+    expect(partnerBillingSettingsSchema.parse(base).invoiceDeviceAppendix).toBeUndefined();
+    expect(partnerBillingSettingsSchema.safeParse({ ...base, invoiceDeviceAppendix: 'true' }).success).toBe(false);
+  });
+
   it('bounds defaultMarkupPercent to 0..9999.99 with 2-decimal precision', () => {
     const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
     expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 0 }).success).toBe(true);

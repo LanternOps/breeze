@@ -114,4 +114,10 @@ export const huntressIncidents = pgTable('huntress_incidents', {
 }, (table) => ({
   incidentIdIdx: uniqueIndex('huntress_incidents_external_idx').on(table.integrationId, table.huntressIncidentId),
   orgStatusIdx: index('huntress_incidents_org_status_idx').on(table.orgId, table.status),
+  orgReportedAtIdx: index('huntress_incidents_org_reported_at_idx')
+    .on(table.orgId, table.reportedAt)
+    .where(sql`${table.reportedAt} IS NOT NULL`),
+  orgResolvedAtIdx: index('huntress_incidents_org_resolved_at_idx')
+    .on(table.orgId, table.resolvedAt)
+    .where(sql`${table.resolvedAt} IS NOT NULL`),
 }));

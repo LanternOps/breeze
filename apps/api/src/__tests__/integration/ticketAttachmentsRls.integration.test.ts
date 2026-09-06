@@ -272,7 +272,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
   function buildPortalApp(user: { id: string; orgId: string }) {
     const app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('portalAuth' as never, { user, token: 'tok', authMethod: 'bearer' } as never);
+      c.set('portalAuth' as never, { user, token: 'tok', authMethod: 'bearer', timezone: 'UTC' } as never);
       await next();
     });
     app.route('/', portalTicketRoutes);

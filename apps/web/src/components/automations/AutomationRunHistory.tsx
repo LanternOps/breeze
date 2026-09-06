@@ -7,18 +7,33 @@ import {
   XCircle,
   AlertTriangle,
   Clock,
+  Ban,
   ChevronDown,
   ChevronUp,
   Monitor,
   Terminal,
   Calendar,
-  Timer
+  Timer,
+  Square,
+  Info
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
+import { hasPermission } from '@/lib/permissions';
+import type { Permission } from '@/stores/auth';
+import { fetchWithAuth } from '@/stores/auth';
+import { runAction, handleActionError } from '@/lib/runAction';
+import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptsT = TFunction<'scripts'>;
+
+// #4767 — one action the fan-out could not stop and left running/reporting on
+// its own (execute_command creates no script_executions row; a deployment
+// lives in deployment_results). Rendered so the operator never reads
+// "cancelled" as "everything actually stopped".
+export type UncancellableAction = { actionIndex: number; actionType: string; reason: string };
 
 /**
  * One `run_script` action's real script output on one device (#3162). Distinct
@@ -55,7 +70,7 @@ const SCRIPT_RESULT_POLL_MS = 5000;
 export type DeviceRunResult = {
   deviceId: string;
   deviceName: string;
-  status: 'pending' | 'success' | 'failed' | 'skipped' | 'running';
+  status: 'pending' | 'success' | 'failed' | 'skipped' | 'running' | 'cancelled';
   startedAt?: string;
   completedAt?: string;
   duration?: number;
@@ -77,13 +92,20 @@ export type AutomationRun = {
   triggeredBy: 'schedule' | 'event' | 'webhook' | 'manual' | 'api';
   startedAt: string;
   completedAt?: string;
-  status: 'running' | 'success' | 'failed' | 'partial';
+  status: 'running' | 'success' | 'failed' | 'partial' | 'cancelled';
   devicesTotal: number;
   devicesSuccess: number;
   devicesFailed: number;
   devicesSkipped: number;
+  devicesCancelled?: number;
   deviceResults: DeviceRunResult[];
   logs?: string[];
+  // #4767 (W05 dependency) — whether this run belongs to an org-owned or a
+  // partner-wide automation. Absent/undefined is treated as 'organization'
+  // (the common case, and the safe default if a not-yet-updated GET response
+  // omits the field): Cancel run stays offered rather than mysteriously
+  // vanishing.
+  ownerScope?: 'organization' | 'partner';
 };
 
 type AutomationRunHistoryProps = {
@@ -94,10 +116,25 @@ type AutomationRunHistoryProps = {
   timezone?: string;
   /** When provided, expanding a run lazily fetches its per-device breakdown. */
   onLoadRunDetail?: RunDetailLoader;
+  // #4767 — UX-only gate mirroring the cancel route's own
+  // requireAutomationWrite (automations:write) — see the requirePermission
+  // call in apps/api/src/routes/automations.ts's POST /runs/:runId/cancel.
+  // NOT scripts:execute, which gates the separate, execution-level cancel
+  // route ExecutionHistory/ExecutionDetails call. Cancel run is HIDDEN,
+  // never merely disabled, without it.
+  permissions?: Permission[];
+  // #4767 — mirrors canManagePartnerWidePolicies(auth) server-side (OD7-A): an
+  // org-scoped operator may still cancel individual executions on their own
+  // devices, but must not stop a run that fans out across sibling tenants.
+  canManagePartnerWide?: boolean;
+  /** Called after a successful cancel so the host page can refresh the run list. */
+  onRunCancelled?: (runId: string) => void;
 };
 
-type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending';
-const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
+export type AutomationRunHistoryStatusKey =
+  'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending' | 'cancelled';
+
+export const statusConfig: Record<AutomationRunHistoryStatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   running: {
     label: 'status.running',
     color: 'text-blue-600',
@@ -133,6 +170,12 @@ const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: s
     color: 'text-gray-600',
     bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: Clock
+  },
+  cancelled: {
+    label: 'status.cancelled',
+    color: 'text-muted-foreground',
+    bgColor: 'bg-muted',
+    icon: Ban
   }
 };
 
@@ -286,11 +329,17 @@ function RunItem({
   timezone,
   onLoadRunDetail,
   t,
+  permissions,
+  canManagePartnerWide,
+  onRunCancelled,
 }: {
   run: AutomationRun;
   timezone: string;
   onLoadRunDetail?: RunDetailLoader;
   t: ScriptsT;
+  permissions?: Permission[];
+  canManagePartnerWide?: boolean;
+  onRunCancelled?: (runId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
@@ -299,8 +348,47 @@ function RunItem({
   const [detailError, setDetailError] = useState(false);
   // Bumped by the script-result poll below to re-run the fetch effect.
   const [scriptPollTick, setScriptPollTick] = useState(0);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [uncancellableActions, setUncancellableActions] = useState<UncancellableAction[] | null>(null);
 
   const isRunning = run.status === 'running';
+  // #4767/#4766 (W05, apps/api/src/routes/automations.ts) — the route this
+  // button calls is gated on requireAutomationWrite (automations:write), NOT
+  // scripts:execute. scripts:execute stays the gate on the SIBLING
+  // execution-level route (POST /scripts/executions/:id/cancel) that
+  // ExecutionHistory/ExecutionDetails call — the two are easy to conflate
+  // but they are different permissions on different routes.
+  const canManageAutomations = hasPermission(permissions, 'automations', 'write');
+  const isPartnerOwned = run.ownerScope === 'partner';
+  const canCancelRun = isRunning && canManageAutomations && (!isPartnerOwned || canManagePartnerWide);
+  const cancelHiddenByPartnerScope = isRunning && canManageAutomations && isPartnerOwned && !canManagePartnerWide;
+
+  const handleConfirmCancelRun = async () => {
+    setCancelling(true);
+    try {
+      // Real shape from apps/api/src/routes/automations.ts's
+      // POST /runs/:runId/cancel (#4766/W05): { success, run: {id, status},
+      // alreadyCancelling, actionsCancelled, executionsCancelled, executions,
+      // uncancellableActions }.
+      const result = await runAction<{
+        executionsCancelled: number;
+        uncancellableActions?: UncancellableAction[];
+      }>({
+        request: () => fetchWithAuth(`/automations/runs/${run.id}/cancel`, { method: 'POST' }),
+        errorFallback: t('automationRunHistory.errors.cancelRun'),
+        successMessage: (data) => t('automationRunHistory.actions.cancelRunSuccess', { count: data.executionsCancelled }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      setUncancellableActions(result.uncancellableActions ?? []);
+      onRunCancelled?.(run.id);
+    } catch (err) {
+      handleActionError(err, t('automationRunHistory.errors.cancelRun'));
+    } finally {
+      setCancelling(false);
+      setConfirmingCancel(false);
+    }
+  };
 
   // Lazily load the per-device breakdown on first expand, and refresh it while
   // the run is still in progress (parent polling bumps the counts below, which
@@ -361,12 +449,16 @@ function RunItem({
 
   return (
     <div className="rounded-md border">
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between p-4 text-left hover:bg-muted/40"
-      >
-        <div className="flex items-center gap-3">
+      {/* A plain row, not a <button> — Cancel run below nests a real
+          <button>, which native <button>-in-<button> forbids. The toggle
+          itself stays a <button> (just the left content), which is also what
+          existing tests query via `.closest('button')`. */}
+      <div className="flex w-full items-center justify-between p-4 hover:bg-muted/40">
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="flex flex-1 items-center gap-3 text-left"
+        >
           <StatusIcon className={cn('h-5 w-5', statusConfig[run.status].color)} />
           <div>
             <div className="flex items-center gap-2">
@@ -386,7 +478,7 @@ function RunItem({
               {t('automationRunHistory.deviceCount', { count: run.devicesTotal })}
             </p>
           </div>
-        </div>
+        </button>
         <div className="flex items-center gap-4">
           <div className="text-right text-xs">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -397,18 +489,56 @@ function RunItem({
               {run.devicesSkipped > 0 && (
                 <span className="text-gray-500">{t('automationRunHistory.resultCount.skipped', { count: run.devicesSkipped })}</span>
               )}
+              {/* #4767 — rendered separately from failed/succeeded: a
+                  cancelled device is neither, and folding it into either
+                  count would misreport why the run didn't finish. */}
+              {(run.devicesCancelled ?? 0) > 0 && (
+                <span className="text-muted-foreground">
+                  {t('automationRunHistory.resultCount.cancelled', { count: run.devicesCancelled })}
+                </span>
+              )}
             </div>
             {duration && (
               <p className="text-muted-foreground">{t('automationRunHistory.duration', { duration: formatDuration(duration) })}</p>
             )}
           </div>
-          {expanded ? (
-            <ChevronUp className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          {canCancelRun && (
+            <button
+              type="button"
+              data-testid="cancel-run"
+              onClick={(e) => { e.stopPropagation(); setConfirmingCancel(true); }}
+              className="flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium text-destructive transition hover:bg-destructive/10"
+            >
+              <Square className="h-3.5 w-3.5" />
+              {t('automationRunHistory.actions.cancelRun')}
+            </button>
           )}
+          {cancelHiddenByPartnerScope && (
+            // #4767 review: the full explanation is long (and longer still in
+            // some locales) — it belongs in `title`, not as inline row text,
+            // or it blows out every partner-owned run row.
+            <span
+              data-testid="cancel-run-partner-tooltip"
+              title={t('automationRunHistory.actions.partnerScopeTooltip')}
+              className="flex h-8 w-8 items-center justify-center text-muted-foreground"
+            >
+              <Info className="h-4 w-4" />
+              <span className="sr-only">{t('automationRunHistory.actions.partnerScopeTooltip')}</span>
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+          >
+            {expanded ? (
+              <ChevronUp className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
         </div>
-      </button>
+      </div>
 
       {/* Live progress bar — shown while a run is in progress (#2023). */}
       {isRunning && run.devicesTotal > 0 && (
@@ -486,6 +616,26 @@ function RunItem({
           </div>
         </div>
       )}
+
+      {uncancellableActions && uncancellableActions.length > 0 && (
+        <div className="border-t bg-warning/10 px-4 py-2 text-xs text-warning" data-testid="uncancellable-actions">
+          {t('automationRunHistory.actions.uncancellableActions', { count: uncancellableActions.length })}
+        </div>
+      )}
+
+      {confirmingCancel && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setConfirmingCancel(false)}
+          onConfirm={() => void handleConfirmCancelRun()}
+          title={t('automationRunHistory.actions.confirmCancelRunTitle')}
+          message={t('automationRunHistory.actions.confirmCancelRunMessage')}
+          variant="warning"
+          confirmLabel={t('automationRunHistory.actions.cancelRun')}
+          confirmTestId="confirm-cancel-run"
+          isLoading={cancelling}
+        />
+      )}
     </div>
   );
 }
@@ -496,7 +646,10 @@ export default function AutomationRunHistory({
   onClose,
   automationName,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone,
-  onLoadRunDetail
+  onLoadRunDetail,
+  permissions,
+  canManagePartnerWide,
+  onRunCancelled
 }: AutomationRunHistoryProps) {
   const { t } = useTranslation('scripts');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -555,7 +708,16 @@ export default function AutomationRunHistory({
           ) : (
             <div className="space-y-3">
               {filteredRuns.map(run => (
-                <RunItem key={run.id} run={run} timezone={timezone} onLoadRunDetail={onLoadRunDetail} t={t} />
+                <RunItem
+                  key={run.id}
+                  run={run}
+                  timezone={timezone}
+                  onLoadRunDetail={onLoadRunDetail}
+                  t={t}
+                  permissions={permissions}
+                  canManagePartnerWide={canManagePartnerWide}
+                  onRunCancelled={onRunCancelled}
+                />
               ))}
             </div>
           )}

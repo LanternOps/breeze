@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Postura della flotta",
     "dashboard": "Dashboard",
@@ -41,6 +42,7 @@
     "auditTrail": "Registro di controllo",
     "eventLogs": "Registri eventi",
     "partner": "Partner",
+    "billing": "Fatturazione",
     "organizations": "Organizzazioni",
     "aiUsageBudget": "Utilizzo e budget AI",
     "aiAgents": "Agenti AI",
@@ -64,6 +66,7 @@
     "sectionExtensions": "Estensioni",
     "variables": "Variabili",
     "llmProviderCatalog": "Catalogo dei fornitori LLM",
+    "aiKillSwitch": "Interruttore di emergenza IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestione flotta",
     "sectionBilling": "Fatturazione",
@@ -164,6 +167,19 @@
     "none": "Nessuno",
     "optional": "Facoltativo",
     "required": "Obbligatorio"
+  },
+  "runContext": {
+    "label": "Esegui come",
+    "scriptDefault": "Predefinito dello script",
+    "scriptDefaultNamed": "Predefinito dello script ({{context}})",
+    "system": "Sistema",
+    "user": "Utente connesso",
+    "elevated": "Elevato",
+    "unknown": "Non registrato",
+    "userInSession": "Utente connesso (sessione {{session}})",
+    "sessionLabel": "Sessione target",
+    "sessionAny": "Qualsiasi sessione attiva",
+    "effectiveLabel": "Contesto di esecuzione"
   },
   "shared": {
     "accessDenied": {
@@ -355,6 +371,9 @@
       "criticalPending": "{{count}} patch critiche in sospeso",
       "criticalPending_one": "{{count}} patch critica in sospeso",
       "criticalPending_other": "{{count}} patch critiche in sospeso",
+      "unratedPending": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
+      "unratedPending_one": "{{count}} patch non valutata in sospeso (non verrà approvata automaticamente)",
+      "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "empty": "Nessun dato sulle patch ancora"
     },
     "vuln": {

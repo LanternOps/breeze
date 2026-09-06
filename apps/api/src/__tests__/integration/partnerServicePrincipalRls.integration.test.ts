@@ -24,7 +24,11 @@ const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-16-partner-service-principals.sql',
 );
-const ALL_SCOPES = [
+const SCOPE_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-10-08-101600-enrollment-keys-scope.sql',
+);
+const READ_SCOPES = [
   'organizations:read',
   'sites:read',
   'devices:read',
@@ -34,6 +38,7 @@ const ALL_SCOPES = [
   'backup-configuration:read',
   'custom-fields:read',
 ] as const;
+const ALL_SCOPES = [...READ_SCOPES, 'enrollment-keys:write'] as const;
 
 function partnerContext(partnerId: string, userId: string): DbAccessContext {
   return {
@@ -71,7 +76,7 @@ async function insertPrincipal(input: {
       .values({
         partnerId: input.partnerId,
         name: input.name,
-        scopes: [...ALL_SCOPES],
+        scopes: [...READ_SCOPES],
         createdBy: input.userId,
         updatedBy: input.userId,
       })
@@ -129,11 +134,59 @@ describe('partner-service-principal database contract', () => {
   runDb('migration is idempotent', async () => {
     const adminDb = getTestDb();
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
+    const scopeMigration = readFileSync(SCOPE_MIGRATION_FILE, 'utf8');
 
     await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(scopeMigration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(scopeMigration))).resolves.toBeDefined();
   });
 
+  runDb('scope migration accepts enrollment-keys:write only with expiry and source CIDRs', async () => {
+    const { partnerA, userA } = await seedTwoPartners();
+    const admin = getTestDb();
+    const [created] = await admin.insert(partnerServicePrincipals).values({
+      partnerId: partnerA.id,
+      name: `write-scope-${randomUUID()}`,
+      scopes: [...ALL_SCOPES],
+      sourceCidrs: ['203.0.113.0/24'],
+      expiresAt: new Date(Date.now() + 86_400_000),
+      createdBy: userA.id,
+      updatedBy: userA.id,
+    }).returning();
+    expect(created?.scopes).toContain('enrollment-keys:write');
+
+    const cause = await captureCause(() => admin.insert(partnerServicePrincipals).values({
+      partnerId: partnerA.id,
+      name: `unrestricted-write-scope-${randomUUID()}`,
+      scopes: [...ALL_SCOPES],
+      sourceCidrs: [],
+      expiresAt: null,
+      createdBy: userA.id,
+      updatedBy: userA.id,
+    }));
+    expect(cause?.code).toBe('23514');
+    expect(cause?.constraint_name).toBe(
+      'partner_service_principals_enrollment_key_write_restrictions_ch',
+    );
+    for (const controls of [
+      { sourceCidrs: ['203.0.113.0/24'], expiresAt: null },
+      { sourceCidrs: [], expiresAt: new Date(Date.now() + 86_400_000) },
+    ]) {
+      const individualCause = await captureCause(() => admin.insert(partnerServicePrincipals).values({
+        partnerId: partnerA.id,
+        name: `partially-restricted-${randomUUID()}`,
+        scopes: [...ALL_SCOPES],
+        ...controls,
+        createdBy: userA.id,
+        updatedBy: userA.id,
+      }));
+      expect(individualCause?.code).toBe('23514');
+      expect(individualCause?.constraint_name).toBe(
+        'partner_service_principals_enrollment_key_write_restrictions_ch',
+      );
+    }
+  });
   runDb('enforces unique principal names within a partner', async () => {
     const { partnerA, userA } = await seedTwoPartners();
     await insertPrincipal({ partnerId: partnerA.id, userId: userA.id, name: 'unique-name' });

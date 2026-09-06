@@ -54,9 +54,15 @@ import {
 } from './groupMembership';
 
 function selectChain(rows: unknown[], withLimit = false) {
+  // `updateDeviceMembership`'s group SELECT now ends in
+  // `.orderBy(deviceGroups.id)` — a lock-order contract, #4630 review finding 2
+  // — so the non-limit terminal must be thenable AND carry `orderBy`.
   const terminal = withLimit
     ? { limit: vi.fn().mockResolvedValue(rows) }
-    : Promise.resolve(rows);
+    : {
+      orderBy: vi.fn().mockResolvedValue(rows),
+      then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+    };
   return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(terminal) }) };
 }
 
@@ -88,6 +94,7 @@ describe('evaluateGroupMembership persisted site scope', () => {
         filterConditions: filter,
         filterFieldsUsed: ['osType'],
       }], true))
+      .mockReturnValueOnce(selectChain([]))
       .mockReturnValueOnce(selectChain([]));
     mockEvaluateFilter.mockResolvedValue({ deviceIds: [], totalCount: 0, evaluatedAt: new Date() });
 

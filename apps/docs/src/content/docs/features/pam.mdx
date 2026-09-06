@@ -85,7 +85,7 @@ A rule's verdict is one of:
 Criteria identify *what* is being elevated and *who* is asking. A rule must carry at least one identifying criterion -- you can't write a rule that matches everything:
 
 - **Executable rules** match on code-signer (a single publisher or a reusable **signer group**), file hash, file path (glob), parent process, or the launched **command line** (a case-insensitive substring match).
-- **AI tool-action rules** match on the tool name and risk tier.
+- **AI tool-action rules** match on the tool name and risk tier. The risk tier is matched *exactly*, and tool tiers are set by the Breeze release -- so if an upgrade re-classifies a tool, a rule pinned to the old tier stops covering it. Such a rule is flagged with a warning badge on the Rules tab (and rejected outright if the tier it names can no longer occur at all); see [Risk-tier drift](/reference/pam-api/#risk-tier-drift).
 - Both shapes can additionally narrow by **user**, **AD group**, and a **time window** (with day-of-week and time-zone awareness, including windows that wrap past midnight).
 
 Any criterion can be **negated** — turn on "does not match" beneath a field to make the rule fire when that criterion is *not* satisfied (for example, "signer is *not* Microsoft Corporation"). Negation never turns missing data into a match: if the agent didn't report the value a negated criterion checks, the rule simply doesn't match.

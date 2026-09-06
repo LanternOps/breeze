@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removidos ocultos",
-    "show": "mostrar"
+    "show": "mostrar",
+    "shownLabel": "{{count}} removidos exibidos",
+    "hide": "ocultar"
   },
   "deviceActions": {
     "unavailable": {
@@ -181,18 +183,23 @@
       },
       "exitMaintenance": {
         "title": "Sair do modo de manutenção",
-        "message": "Tem certeza de que deseja encerrar o modo de manutenção de {{hostname}}? Os alertas e o monitoramento serão retomados.",
+        "message": "Tem certeza de que deseja encerrar o modo de manutenção de {{hostname}}?",
         "confirm": "Sair da manutenção"
       },
       "enterMaintenance": {
         "title": "Entrar no modo de manutenção",
-        "message": "Tem certeza de que deseja colocar {{hostname}} no modo de manutenção? Os alertas serão suprimidos enquanto estiver nesse modo.",
+        "message": "Tem certeza de que deseja colocar {{hostname}} no modo de manutenção?",
         "confirm": "Entrar em manutenção"
       },
       "decommission": {
         "title": "Remover dispositivo",
         "message": "Tem certeza de que deseja remover {{hostname}}? Isso o tirará da sua frota ativa e ele deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
         "confirm": "Remover"
+      },
+      "permanentDelete": {
+        "title": "Excluir {{hostname}} permanentemente?",
+        "message": "Isso exclui todo o histórico deste dispositivo: chamados, alertas e registros de patches e backups. Não é possível desfazer.",
+        "confirm": "Excluir permanentemente"
       },
       "clearSessions": {
         "title": "Encerrar sessões",
@@ -204,6 +211,22 @@
         "message": "Instala o Homebrew como o usuário conectado no momento, usando uma cópia fixada e verificada por checksum do instalador oficial. Requer uma sessão de console com privilégios de administrador e uma credencial sudo ativa ou sem senha; caso contrário, a instalação falha e o erro é informado de volta.",
         "confirm": "Instalar o Homebrew"
       }
+    },
+    "removeDialog": {
+      "titleOne": "Remover {{hostname}}?",
+      "titleMany": "Remover {{count}} dispositivos?",
+      "bodyOne": "Ele sairá da sua frota ativa e deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
+      "bodyMany": "Eles sairão da sua frota ativa e deixarão de ser monitorados. O histórico é mantido e você pode restaurá-los depois.",
+      "summary": "{{online}} on-line, {{notOnline}} no momento sem conexão.",
+      "legend": "O que deve acontecer com o agente Breeze?",
+      "uninstall": "Desinstalar o agente Breeze",
+      "uninstallOnline": "Na fila agora — um agente on-line o recolhe em instantes.",
+      "uninstallQueuedWithWindow": "Na fila — é executado na próxima vez que o dispositivo se comunicar. Cancelado se isso não acontecer em {{hours}} horas.",
+      "uninstallQueued": "Na fila — é executado na próxima vez que o dispositivo se comunicar.",
+      "uninstallMixed": "Os dispositivos on-line o recolhem em instantes; os demais o executam na próxima comunicação.",
+      "leave": "Manter o agente instalado",
+      "leaveHint": "A máquina continua executando o agente, mas não pode ser gerenciada.",
+      "confirm": "Remover"
     },
     "runScript": "Executar script",
     "remoteTools": "Ferramentas remotas",
@@ -297,6 +320,26 @@
     "dismiss": "Descartar",
     "resolve": "Resolver",
     "promote": "Promover"
+  },
+  "deviceBillingCard": {
+    "title": "Faturamento",
+    "uncovered": "Nenhuma linha de contrato ativa cobra este dispositivo.",
+    "viewContracts": "Ver contratos",
+    "notBillable": {
+      "decommissioned": "Não cobrado — este dispositivo está desativado",
+      "ephemeral": "Não cobrado — este dispositivo é de sessão de suporte efêmera",
+      "not_billable": "Não cobrado — este dispositivo não é cobrável no momento"
+    },
+    "error": {
+      "generic": "Não foi possível carregar a cobertura de faturamento.",
+      "groupEvaluation": "Não foi possível avaliar um grupo de dispositivos de um contrato ativo ({{group}}). A cobertura é desconhecida."
+    },
+    "matchedBy": {
+      "org": "Toda a organização",
+      "site": "Este site",
+      "role": "Função: {{role}}",
+      "group": "Grupo: {{group}}"
+    }
   },
   "deviceBootPerformanceTab": {
     "bootMetricsCollectionTriggeredDataWill": "A coleta de métricas de inicialização foi acionada. Os dados aparecerão após a próxima inicialização ou ciclo de coleta.",
@@ -509,7 +552,6 @@
     "s": "s",
     "decommissionCancelled": "Remoção cancelada",
     "permanentDeleteCancelled": "Exclusão permanente cancelada",
-    "permanentlyDeletedWithWarning": "{{hostname}} foi excluído, mas {{warning}}",
     "failedToQueueScript": "Falha ao colocar o script na fila",
     "loadingDevice": "Carregando dispositivo...",
     "backToDevices": "Voltar para dispositivos",
@@ -569,6 +611,18 @@
     "backupStatusJobsSnapshotsAndVerification": "Status, tarefas, snapshots e verificação de backup",
     "theOsReportsAPendingReboot": "O OS informa que há uma reinicialização pendente (Registro do Windows/marcadores reboot-required do Linux).",
     "rebootPending": "Reinicialização pendente",
+    "restartScheduled": "Reinicialização agendada",
+    "restartInProgress": "Reiniciando",
+    "restartScheduledFor": "Reinicialização agendada para {{time}}",
+    "restartInProgressAt": "Reinicialização iniciada às {{time}}",
+    "restartDeadline": "Deve reiniciar até {{time}}",
+    "restartPostponed": "Adiado {{used}} de {{max}}",
+    "restartPostponedTooltip": "Quantas vezes a pessoa que usa este dispositivo adiou a reinicialização, do total permitido pela política.",
+    "restartCannotBePostponed": "Não pode ser adiado",
+    "restartSourcePatchJob": "Solicitado por uma instalação de patch",
+    "restartSourceMaintenanceWindow": "Solicitado por uma janela de manutenção",
+    "restartSourceManual": "Solicitado por um técnico",
+    "restartSourceUnknown": "Reinicialização agendada",
     "agentV": "Agente v",
     "uptime": "Tempo ativo",
     "lastSeen": "Visto por último",
@@ -632,6 +686,7 @@
     "retry": "Tentar novamente",
     "activities": "Atividades",
     "total": "total)",
+    "totalAtLeast": "{{count}} ou mais",
     "searchActivities": "Pesquisar atividades...",
     "all": "Todos",
     "success": "Sucesso",
@@ -651,7 +706,8 @@
     "details": "Detalhes",
     "showing": "Exibindo",
     "text": "–",
-    "of": "de"
+    "of": "de",
+    "noMoreActivity": "Não há mais atividade"
   },
   "deviceFilesystemTab": {
     "failedToFetchFilesystemStatus": "Falha ao buscar o status do sistema de arquivos",
@@ -734,6 +790,10 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Falha ao salvar o grupo de dispositivos",
     "failedToDeleteGroup": "Falha ao excluir o grupo",
+    "billedByContracts": "Este grupo é faturado por {{count}} contrato(s): {{names}}. Remova primeiro essas linhas de contrato.",
+    "billedByContractsCount": "Este grupo é faturado por {{count}} contrato(s). Remova primeiro essas linhas de contrato.",
+    "quotedByQuotes": "Este grupo é precificado por {{count}} orçamento(s) aberto(s): {{names}}. Remova primeiro essas linhas de orçamento.",
+    "quotedByQuotesCount": "Este grupo é precificado por {{count}} orçamento(s) aberto(s). Remova primeiro essas linhas de orçamento.",
     "failedToRunScriptOnGroups": "Falha ao executar o script nos grupos",
     "failedToApplyPolicyToGroups": "Falha ao aplicar a política aos grupos",
     "failedToMoveDevice": "Falha ao mover o dispositivo",
@@ -1059,6 +1119,7 @@
     "of": "de",
     "devices": "dispositivos",
     "advancedFilterActive": "Filtro avançado ativo",
+    "advancedFilterFailed": "Falha ao carregar o filtro — nenhum dispositivo exibido",
     "filterByDeviceClass": "Filtrar por classe de dispositivo",
     "filterByVpn": "Filtrar por VPN",
     "allVpn": "Todas as VPNs",
@@ -1083,8 +1144,11 @@
     "disableMaintenance": "Desativar manutenção",
     "wakeSelected": "Acordar selecionados",
     "compareSelected": "Comparar selecionados",
+    "compareMaxDevices": "A comparação suporta até {{count}} dispositivos",
     "linkAsMultiBoot": "Vincular como multi-boot",
     "decommissionSelected": "Remover selecionados",
+    "restoreSelected": "Restaurar selecionados",
+    "permanentDeleteSelected": "Excluir permanentemente…",
     "clearSelection": "Limpar seleção",
     "selectAllDevicesOnThisPage": "Selecionar todos os dispositivos nesta página",
     "actions": "Ações",
@@ -1097,6 +1161,8 @@
     "sendAWakeOnLanPacket": "Enviar um pacote Wake-on-LAN por um agente par online na LAN do dispositivo",
     "wake": "Acordar",
     "settings": "Configurações",
+    "enterMaintenance": "Entrar em manutenção",
+    "exitMaintenance": "Sair da manutenção",
     "restore": "Restaurar",
     "decommission": "Remover",
     "permanentlyDelete": "Excluir permanentemente",
@@ -1227,6 +1293,8 @@
       "installOsPatches": "Instalar patches pendentes do OS ({{count}})",
       "installThirdPartyPatches": "Instalar patches de terceiros ({{count}})",
       "lastScan": "Última verificação: {{label}}",
+      "managePatches": "Gerenciar patches",
+      "managedByPolicy": "Gerenciado pela política:",
       "pendingApprovalCount": "({{count}} aguardando aprovação)",
       "polling": "Consultando...",
       "refreshPatchData": "Atualizar dados dos patches",
@@ -1474,12 +1542,14 @@
       "completedAt": "Concluído em",
       "duration": "Duração",
       "exitCode": "Código de saída",
+      "runAs": "Contexto de execução",
       "startedAt": "Iniciado em"
     },
     "noOutput": "Sem saída",
     "output": "Saída",
     "refreshing": "Atualizando...",
     "running": "Em execução...",
+    "runAgain": "Executar novamente",
     "scriptFallback": "Script",
     "status": {
       "cancelled": "Cancelado",
@@ -1740,6 +1810,14 @@
       "shutdown": "Desligar"
     },
     "addDevice": "Adicionar dispositivo",
+    "bulkPurge": {
+      "andMore": "e mais {{count}}",
+      "confirm": "Excluir permanentemente",
+      "message": "Isso não pode ser desfeito. Todos os registros desses dispositivos — histórico, alertas, scripts, sessões — são excluídos junto. Os chamados são mantidos e desvinculados.",
+      "multipleOrgs": "Esta seleção abrange {{count}} organizações. Verifique o escopo de organização antes de continuar.",
+      "title": "Excluir permanentemente {{count}} dispositivo(s)?",
+      "typeCount": "Digite {{count}} para confirmar"
+    },
     "confirmDecommissionedSkip": {
       "message": "{{skipped}} de {{total}} dispositivos selecionados estão removidos e serão ignorados — eles não têm mais um agente gerenciado. Continuar com os {{eligible}} dispositivo(s) restantes? Os que estiverem offline executarão isso na próxima conexão.",
       "title": "Alguns dispositivos selecionados estão removidos"
@@ -1763,6 +1841,7 @@
     "title": "Dispositivos",
     "toasts": {
       "actionFailed": "{{action}} falhou em {{hostname}}",
+      "advancedFilterFailed": "Falha ao carregar o filtro avançado — nenhum dispositivo exibido. Edite ou limpe o filtro para tentar novamente.",
       "agentOnlyAction": "Esta ação se aplica somente a dispositivos com agente. Os dispositivos de rede não têm agente e foram ignorados.",
       "alreadyPendingTail": "Já estava pendente",
       "bulkActionFailed": "Falha na ação em massa",
@@ -1775,11 +1854,23 @@
       "bulkMaintenanceAllFailed": "Falha ao atualizar o modo de manutenção dos dispositivos (total: {{count}}): {{devices}}",
       "bulkMaintenanceSomeFailed": "Modo de manutenção {{verb}} em {{succeeded}} dispositivos; falha em {{failed}}: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} dispositivos {{verb}} modo de manutenção",
+      "bulkMaintenanceSuccess_one": "{{count}} dispositivo {{verb}} modo de manutenção",
+      "bulkMaintenanceSuccess_other": "{{count}} dispositivos {{verb}} modo de manutenção",
+      "bulkPurgeDone": "{{count}} dispositivo(s) excluído(s) permanentemente",
+      "bulkPurgeDoneWithSkips": "{{purged}} dispositivo(s) excluído(s) permanentemente; {{skipped}} ignorado(s) ({{reasons}})",
+      "bulkPurgeFailed": "Falha na exclusão permanente: {{reason}}",
+      "bulkPurgeNoneDeleted": "Nenhum dispositivo foi excluído: {{reasons}}",
+      "bulkPurgeStarted": "Excluindo permanentemente {{count}} dispositivo(s)…",
+      "bulkRestoreAllFailed": "Falha ao restaurar todos os {{count}} dispositivo(s)",
+      "bulkRestoreSomeFailed": "{{succeeded}} dispositivo(s) restaurado(s); {{failed}} com falha",
+      "bulkRestoreUninstallAlreadySent": "{{count}} dispositivo(s) já haviam recebido a desinstalação — pode ser necessário reinstalar o agente nessas máquinas.",
+      "bulkRestored": "{{count}} dispositivo(s) restaurado(s)",
       "bulkWakeAllFailed": "Falha ao despertar todos os dispositivos",
       "bulkWakeSent": "Comando de despertar em massa enviado",
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
       "commandQueued": "{{action}} na fila — será executado quando {{hostname}} reconectar",
       "commandSent": "{{action}} enviado para {{hostname}}",
+      "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "decommissionCancelled": "Remoção cancelada",
       "decommissionFailed": "Falha ao remover",
       "decommissioned": "Removido",
@@ -1793,11 +1884,9 @@
       "maintenanceOn": "Manutenção ativada",
       "multibootLinked": "Inicialização múltipla vinculada",
       "networkSkipped": "Dispositivos de rede ignorados: {{count}} — esta ação se aplica somente a dispositivos com agente.",
-      "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
-      "permanentDeleting": "Excluindo permanentemente",
-      "permanentlyDeleted": "Excluído permanentemente",
-      "permanentlyDeletedWithWarning": "{{hostname}} foi excluído, mas {{warning}}",
+      "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
+      "permanentlyDeleted": "{{hostname}} excluído permanentemente",
       "restored": "Restaurado",
       "scriptQueueFailed": "Falha ao colocar o script na fila",
       "scriptQueuedMany": "Scripts colocados na fila",
@@ -1813,7 +1902,8 @@
     "unknownDevice": "Desconhecido",
     "unknownOrg": "Organização desconhecida",
     "unknownSite": "Site desconhecido",
-    "viewInstallationGuide": "Ver guia de instalação"
+    "viewInstallationGuide": "Ver guia de instalação",
+    "importFromRmm": "Importar de outro RMM"
   },
   "filterAddDropdown": {
     "addFilter": "Adicionar filtro",
@@ -2085,6 +2175,30 @@
     },
     "title": "Permissões do macOS"
   },
+  "maintenanceModeDialog": {
+    "title": "Ativar o modo de manutenção",
+    "titleMany": "Ativar o modo de manutenção em {{deviceCount}} dispositivos",
+    "description": "Registra uma janela de manutenção em {{hostname}} e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
+    "descriptionMany": "Registra uma janela de manutenção nos dispositivos selecionados e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
+    "reasonLabel": "Motivo",
+    "reasonPlaceholder": "Por que entrará em manutenção?",
+    "reasonHint": "De 3 a 500 caracteres. Registrado no dispositivo e na trilha de auditoria.",
+    "durationLabel": "Duração",
+    "durationOptionOne": "1 hora a partir de agora",
+    "durationOptionOther": "{{hours}} horas a partir de agora",
+    "durationHint": "A janela sempre começa agora — estendê-la substitui a janela atual em vez de somar a ela.",
+    "stepUpHeading": "Confirme sua identidade",
+    "stepUpIntro": "Sua organização exige um segundo fator antes de iniciar o modo de manutenção.",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpPasskeyNote": "Você confirmará com sua chave de acesso.",
+    "noStepUpFactor": "Adicione um app autenticador ou uma chave de acesso à sua conta antes de colocar dispositivos em modo de manutenção.",
+    "mfaRequired": "Conclua primeiro o login com MFA e tente novamente.",
+    "submit": "Iniciar manutenção",
+    "submitStepUp": "Verificar e iniciar",
+    "submitting": "Processando…",
+    "cancel": "Cancelar",
+    "genericError": "Não foi possível iniciar o modo de manutenção."
+  },
   "networkDeviceDetailPage": {
     "backToDevices": "Voltar para dispositivos",
     "configurePrefix": "Configure a consulta SNMP e os monitores de rede em",
@@ -2334,5 +2448,170 @@
     "colDetectedVersion": "Versão detectada",
     "colScannedAt": "Última verificação",
     "loadMore": "Carregar mais"
+  },
+  "uninstallState": {
+    "pending": "Desinstalação do agente na fila — expira {{when}}",
+    "pendingNoDeadline": "Desinstalação do agente na fila",
+    "sent": "Desinstalação do agente entregue",
+    "completed": "Agente desinstalado",
+    "expired": "Desinstalação expirada — o agente nunca se conectou e pode continuar instalado",
+    "failed": "Falha na desinstalação do agente",
+    "cancelled": "Desinstalação do agente cancelada",
+    "none": "O agente foi deixado instalado"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Importar de outro RMM",
+    "description": "Traga os campos personalizados e seus valores do seu RMM anterior.",
+    "close": "Fechar",
+    "sourceLabel": "Origem",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "CSV genérico"
+    },
+    "steps": {
+      "definitions": "Definições de campos",
+      "values": "Valores dos dispositivos"
+    },
+    "backToDefinitions": "Voltar às definições de campos"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Solte aqui um CSV com a lista de campos do seu fornecedor anterior, ou clique para procurar",
+    "errors": {
+      "previewFailed": "Não foi possível visualizar essas definições de campo",
+      "importFailed": "Não foi possível importar essas definições de campo",
+      "allRefused": "Nenhuma dessas definições de campo pôde ser importada — veja os erros abaixo"
+    },
+    "ownerScope": {
+      "legend": "A quem pertencem estes campos",
+      "allOrganizations": "Todas as organizações",
+      "thisOrganizationOnly": "Somente esta organização"
+    },
+    "grid": {
+      "heading": "{{count}} campo encontrado — renomeie e defina o tipo de cada um",
+      "heading_other": "{{count}} campos encontrados — renomeie e defina o tipo de cada um",
+      "sourceLabel": "Campo de origem",
+      "name": "Nome",
+      "type": "Tipo"
+    },
+    "actions": {
+      "preview": "Pré-visualizar",
+      "previewing": "Pré-visualizando…",
+      "import": "Criar campos",
+      "importing": "Criando…",
+      "skipToValues": "Pular — continuar para os valores"
+    },
+    "preview": {
+      "heading": "Pré-visualização"
+    },
+    "annotations": {
+      "create": "Será criado",
+      "already-exists": "Já existe",
+      "type-conflict": "Conflito de tipo",
+      "key-shadowed": "Chave já usada no outro escopo",
+      "org-not-found": "Organização não encontrada",
+      "partner-wide-denied": "Você não pode criar campos para todas as organizações"
+    },
+    "summary": "{{created}} criados, {{skipped}} ignorados, {{failed}} com falha"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Solte aqui um CSV com os valores dos dispositivos, ou clique para procurar",
+    "errors": {
+      "previewFailed": "Não foi possível visualizar esses valores",
+      "importFailed": "Não foi possível importar esses valores"
+    },
+    "mode": {
+      "label": "Quando um valor já está definido",
+      "skip": "Deixar como está",
+      "update": "Substituir"
+    },
+    "dateFormat": {
+      "label": "Formato de data",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Substituir os dados de garantia do fabricante",
+    "mapping": {
+      "ignore": "Ignorar esta coluna",
+      "identifierGroup": "Corresponder dispositivo por…",
+      "identifiers": {
+        "deviceId": "ID do dispositivo",
+        "externalSystem": "Sistema de origem",
+        "externalId": "ID do dispositivo na origem",
+        "serialNumber": "Número de série",
+        "hostname": "Nome do host",
+        "organizationId": "ID da organização"
+      },
+      "customField": "Campo personalizado…",
+      "warrantyGroup": "Garantia",
+      "warranty": {
+        "warrantyStartDate": "Data de início da garantia",
+        "warrantyEndDate": "Data de término da garantia",
+        "manufacturer": "Fabricante"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} linha ignorada — nenhum identificador ou valor mapeado",
+      "droppedRows_other": "{{count}} linhas ignoradas — nenhum identificador ou valor mapeado"
+    },
+    "actions": {
+      "preview": "Pré-visualizar {{count}} linha",
+      "preview_other": "Pré-visualizar {{count}} linhas",
+      "previewing": "Pré-visualizando…",
+      "import": "Importar {{count}} linha",
+      "import_other": "Importar {{count}} linhas",
+      "importing": "Importando…"
+    },
+    "chunkedNotice": "Este arquivo é maior do que uma única solicitação — será enviado automaticamente em partes.",
+    "progress": "Parte {{done}} de {{total}}",
+    "summary": "{{applied}} aplicados, {{skipped}} ignorados, {{failed}} valores com falha",
+    "notAttempted": "{{count}} linha não foi tentada porque uma parte anterior falhou — corrija o erro abaixo e execute novamente a importação para as linhas restantes",
+    "notAttempted_other": "{{count}} linhas não foram tentadas porque uma parte anterior falhou — corrija o erro abaixo e execute novamente a importação para as linhas restantes",
+    "errorRow": "Linha {{index}}",
+    "previewStale": "O mapeamento mudou desde esta pré-visualização — execute a pré-visualização novamente antes de importar"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Selecionar tudo",
+    "unresolved": "Não resolvido",
+    "columns": {
+      "device": "Dispositivo",
+      "status": "Status",
+      "values": "Valores"
+    },
+    "rowOutcomes": {
+      "matched": "Correspondido",
+      "linkMatch": "Vinculado",
+      "ambiguous": "Ambíguo",
+      "notFound": "Não encontrado",
+      "orgNotFound": "Organização não encontrada",
+      "identityConflict": "Correspondência conflitante"
+    },
+    "valueOutcomes": {
+      "applied": "Aplicado",
+      "skippedAlreadySet": "Já definido",
+      "skippedProviderOwned": "Gerenciado pelo provedor",
+      "noDefinition": "Campo inexistente",
+      "typeError": "Erro de tipo",
+      "notApplicable": "Não aplicável a este dispositivo",
+      "deviceUnresolved": "Dispositivo não resolvido"
+    },
+    "hideCandidates": "Ocultar candidatos",
+    "showCandidates": "Mostrar {{count}} candidato",
+    "showCandidates_other": "Mostrar {{count}} candidatos",
+    "picked": "{{deviceId}} selecionado",
+    "candidate": {
+      "serial": "Série: {{value}}",
+      "os": "SO: {{value}}",
+      "enrolled": "Registrado: {{value}}",
+      "lastSeen": "Visto pela última vez: {{value}}",
+      "pick": "Selecionar",
+      "picked": "Selecionado"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Data de início da garantia",
+      "warrantyEndDate": "Data de término da garantia",
+      "manufacturer": "Fabricante"
+    },
+    "identityConflictNote": "Os identificadores desta linha apontam para dispositivos diferentes e não podem ser importados como estão — corrija o arquivo e execute a pré-visualização novamente. Os candidatos abaixo são mostrados apenas como referência."
   }
 }

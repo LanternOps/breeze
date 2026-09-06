@@ -116,6 +116,14 @@ export type DispatchScriptResult =
       // action is validated without consulting the referenced script's
       // definitions and so literally cannot pre-validate against a binding.
       ignoredParameters: string[];
+      // The run context this dispatch RESOLVED to — `input.runAs` when the
+      // caller overrode it, otherwise the saved script default (#4888). One
+      // source of truth for every caller that has to report or echo what
+      // actually ran: recomputing `input.runAs ?? script.runAs` at the call
+      // site is how a UI ends up disagreeing with the payload it sent.
+      runAs: 'system' | 'user' | 'elevated';
+      /** The Windows session a `runAs: 'user'` dispatch was pinned to, if any. */
+      targetSessionId: number | null;
     }
   | {
       ok: false;
@@ -411,6 +419,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // can answer "which variable fed this run" without carrying what it
         // was worth.
         parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
+        // #4888 — stamp the RESOLVED run context onto the execution row so
+        // history can answer "SYSTEM or the logged-in user?" without reading
+        // the (sanitised, independently reaped) command payload.
+        runAs,
+        targetSessionId: input.targetSessionId ?? null,
         status: 'pending',
       })
       .returning({ id: scriptExecutions.id });
@@ -619,7 +632,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

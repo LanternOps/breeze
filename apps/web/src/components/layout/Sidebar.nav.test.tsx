@@ -62,6 +62,13 @@ function hrefsOf(id: string) {
 }
 
 describe('navSections structure (#1321, #1324)', () => {
+  it('includes a Billing entry in the Settings section (#4605)', () => {
+    const settings = section('settings');
+    const billingItem = settings.items.find((i) => i.href === '/settings/billing');
+    expect(billingItem, 'Settings section should link to /settings/billing').toBeDefined();
+    expect(billingItem?.labelKey).toBe('nav.billing');
+  });
+
   it('has a dedicated Backup section with Backup, Cloud Backup, Disaster Recovery, in that order', () => {
     const backup = section('backup');
     expect(backup.label).toBe('Backup');

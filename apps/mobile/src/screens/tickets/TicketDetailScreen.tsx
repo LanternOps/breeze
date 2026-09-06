@@ -586,8 +586,25 @@ export function TicketDetailScreen() {
     <KeyboardAvoidingView
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      // iOS is handled by `automaticallyAdjustKeyboardInsets` on the
+      // ScrollView below; leaving this enabled too would double-count the
+      // keyboard height and open a blank band above it.
+      enabled={Platform.OS !== 'ios'}
     >
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        // Drag the list down to dismiss the keyboard (the chat list already
+        // does this); there is no Done button on a multiline iOS keyboard.
+        keyboardDismissMode="interactive"
+        // iOS: UIScrollView adds the keyboard's height to the bottom content
+        // inset natively, so the composer / submit button — which live at the
+        // END of this scroll content — can always be scrolled clear of it.
+        // KeyboardAvoidingView's padding never gave scroll room, only a
+        // shorter viewport, and with a 32pt bottom pad the last field sat
+        // under a ~300pt keyboard with nowhere to go.
+        automaticallyAdjustKeyboardInsets
+      >
         <View style={styles.header}>
           {ref ? <Text style={styles.ref}>{ref}</Text> : null}
           <View style={[styles.priorityDot, { backgroundColor: priorityColor(ticket.priority) }]} />
@@ -866,7 +883,7 @@ const styles = StyleSheet.create({
     backgroundColor: palette.dark.bg0,
     padding: spacing['6'],
   },
-  content: { padding: spacing['4'], paddingBottom: spacing['8'] },
+  content: { padding: spacing['4'], paddingBottom: spacing['16'] },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing['2'] },
   ref: { ...type.monoMd, color: palette.dark.textMd },
   priorityDot: { width: 8, height: 8, borderRadius: radii.full },

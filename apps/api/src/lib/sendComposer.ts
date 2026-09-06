@@ -24,6 +24,12 @@ export const sendComposerSchema = z.object({
   cc: z.array(sendEmailField).max(10).optional(),
   subject: z.string().trim().max(200).optional(),
   includePdf: z.boolean().optional(),
+  // #3205 W07: NOT a send option — the route persists it onto
+  // invoices.device_appendix BEFORE issuing, because the PDF is rendered by an
+  // async BullMQ job and deliverInvoiceEmail reuses a stored PDF. A flag passed
+  // as a render argument would be dropped in the common path and silently lost
+  // on any later re-render. composerOptions() deliberately does not forward it.
+  includeDeviceAppendix: z.boolean().optional(),
 }).strict();
 
 export type SendComposerBody = z.infer<typeof sendComposerSchema>;

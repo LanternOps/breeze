@@ -11,6 +11,8 @@ vi.mock('../db', () => ({
 import { db } from '../db';
 import type { ReportExecutionAuthority } from './siteScope';
 import {
+  assertReportExecutionPreflight,
+  generateDeviceInventoryReport,
   generateReport,
   StoredArtifactOnlyReportError,
   type ReportType,
@@ -63,12 +65,22 @@ function authority(
   orgId = ORG_ID,
 ): ReportExecutionAuthority {
   return {
+    principalKind: 'user',
     scope: kind === 'restricted'
       ? { version: 1, kind, orgId, siteIds }
       : { version: 1, kind, orgId },
     principalUserId: USER_ID,
     capturedAt: new Date('2026-07-25T12:00:00.000Z'),
     fingerprint: kind === 'restricted' ? 'a'.repeat(64) : 'f'.repeat(64),
+  };
+}
+
+function portalAuthority(): ReportExecutionAuthority {
+  return {
+    principalKind: 'portal_user',
+    scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
+    capturedAt: new Date('2026-07-25T12:00:00.000Z'),
+    fingerprint: 'f'.repeat(64),
   };
 }
 
@@ -130,6 +142,46 @@ describe('generateReport mandatory execution authority', () => {
         expect(result.rows).toEqual([]);
         expect(result.rowCount).toBe(0);
       }
+    },
+  );
+
+  it.each(['executive_summary', 'security_compliance_posture'] as const)(
+    'allows portal-user authority for %s',
+    async (type) => {
+      await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+        .resolves.toBeDefined();
+    },
+  );
+
+  it.each([
+    'device_inventory',
+    'software_inventory',
+    'alert_summary',
+    'compliance',
+    'performance',
+    'ai_org_narrative',
+  ] as const)('rejects portal-user authority for %s before querying', async (type) => {
+    await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
+      .rejects.toThrow(/portal|authority|report type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects portal-user authority at a non-canonical generator entry point', async () => {
+    await expect(
+      generateDeviceInventoryReport(ORG_ID, {}, portalAuthority()),
+    ).rejects.toThrow(/portal|authority|report type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each(['executive_summary', 'security_compliance_posture'] as const)(
+    'allows portal-user authority through the shared preflight for %s',
+    (type) => {
+      expect(() => assertReportExecutionPreflight(
+        ORG_ID,
+        {},
+        portalAuthority(),
+        type,
+      )).not.toThrow();
     },
   );
 

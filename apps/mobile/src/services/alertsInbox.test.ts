@@ -61,4 +61,26 @@ describe('getAlerts inbox query', () => {
     // empties the filtered view.
     expect((alerts[0].metadata as Record<string, unknown>).orgId).toBe('org-1');
   });
+
+  it('surfaces the rule template category from the inbox row (#4535)', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a1', title: 't', message: 'm', severity: 'high', status: 'active',
+          orgId: 'org-1', triggeredAt: '2026-08-18T00:00:00Z', category: 'Security' },
+      ],
+    });
+    const alerts = await getAlerts();
+    expect(alerts[0].category).toBe('Security');
+  });
+
+  it('leaves category undefined for alerts with no rule (nullable join)', async () => {
+    jsonOnce({
+      data: [
+        { id: 'a2', title: 't', message: 'm', severity: 'low', status: 'active',
+          orgId: 'org-1', triggeredAt: '2026-08-18T00:00:00Z', category: null },
+      ],
+    });
+    const alerts = await getAlerts();
+    expect(alerts[0].category).toBeUndefined();
+  });
 });

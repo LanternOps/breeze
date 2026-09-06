@@ -102,6 +102,7 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
       // do not read it, so the null (contact-less login) case is stated.
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod,
+      timezone: 'UTC',
     });
     await next();
   });
@@ -198,8 +199,10 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
+    expect(body.lines[0]).not.toHaveProperty('sourceType');
+    expect(body.lines[0]).not.toHaveProperty('sourceId');
     // The customer-facing title survives the route boundary (#3319) — this is
     // the assertion the stubbed serializer used to make vacuous.
     expect(body.lines[0].name).toBe('Support retainer');

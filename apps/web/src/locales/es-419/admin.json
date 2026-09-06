@@ -512,6 +512,53 @@
         "passed": "Aprobado",
         "failed": "Fallido"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Interruptor de emergencia de IA",
+      "description": "Parada de emergencia a nivel de plataforma para la actividad no supervisada de agentes de IA. Activarlo afecta a todos los partners a la vez — esta es una operación de plataforma, no una configuración por tenant.",
+      "refresh": "Actualizar",
+      "loading": "Cargando el estado del interruptor de emergencia…",
+      "impactNote": "Activar el interruptor detiene las acciones de IA no supervisadas para todos los partners en unos 5 segundos. Las acciones ya en curso no se interrumpen.",
+      "platformAdmin": {
+        "title": "Se requiere acceso de administrador de plataforma",
+        "description": "El interruptor de emergencia de IA es un control a nivel de plataforma administrado por los administradores de plataforma de Breeze. Su cuenta no puede verlo ni cambiarlo."
+      },
+      "status": {
+        "active": "Acciones de IA activas",
+        "killed": "Acciones de IA detenidas"
+      },
+      "fields": {
+        "epoch": "Época",
+        "updatedBy": "Modificado por última vez por",
+        "updatedAt": "Modificado por última vez el",
+        "lastReason": "Último motivo",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Detener las acciones de IA en toda la plataforma",
+        "restore": "Restaurar acciones de IA"
+      },
+      "confirm": {
+        "killTitle": "¿Detener las acciones de IA en toda la plataforma?",
+        "killDescription": "Esto detiene inmediatamente la actividad no supervisada de agentes de IA para todos los partners en Breeze. Úselo solo para un incidente activo.",
+        "restoreTitle": "¿Restaurar las acciones de IA?",
+        "restoreDescription": "Esto vuelve a habilitar la actividad no supervisada de agentes de IA para todos los partners en Breeze.",
+        "reasonLabel": "Motivo (obligatorio, para el registro de auditoría)",
+        "reasonPlaceholder": "Describa el incidente o el motivo de este cambio…",
+        "cancel": "Cancelar",
+        "killSubmit": "Detener acciones de IA",
+        "restoreSubmit": "Restaurar acciones de IA"
+      },
+      "notice": {
+        "killed": "Acciones de IA detenidas en toda la plataforma.",
+        "restored": "Acciones de IA restauradas en toda la plataforma."
+      },
+      "errors": {
+        "load": "Error al cargar el estado del interruptor de emergencia",
+        "generic": "Se produjo un error",
+        "flip": "Error al actualizar el interruptor de emergencia",
+        "mfaRequired": "Cambiar el interruptor de emergencia de IA requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
+      }
     }
   },
   "audit": {
@@ -687,80 +734,6 @@
         "previous": "Anterior",
         "page": "Página {{page}}",
         "next": "Siguiente"
-      }
-    },
-    "complianceReport": {
-      "title": "Informe de cumplimiento",
-      "description": "Genere resúmenes listos para auditorías alineados con los controles de cumplimiento.",
-      "generateReport": "Generar informe",
-      "dataAccessAudit": "Auditoría de acceso a datos",
-      "sensitiveOperations": "Operaciones sensibles",
-      "reviewRequired": "Revisión requerida",
-      "categories": {
-        "gdpr": {
-          "label": "GDPR"
-        },
-        "soc2": {
-          "label": "SOC 2"
-        },
-        "hipaa": {
-          "label": "HIPAA"
-        }
-      },
-      "summary": {
-        "gdpr": {
-          "dataAccessEvents": "Eventos de acceso a datos",
-          "dsarRequests": "solicitudes DSAR",
-          "retentionAlerts": "Alertas de retención"
-        },
-        "soc2": {
-          "controlExceptions": "Controlar excepciones",
-          "privilegedActions": "Acciones privilegiadas",
-          "policyAttestations": "Certificaciones de política"
-        },
-        "hipaa": {
-          "phiAccessEvents": "eventos de acceso PHI",
-          "roleChanges": "Cambios de rol",
-          "encryptionChecks": "Comprobaciones de cifrado"
-        },
-        "helpers": {
-          "past30Days": "últimos 30 días",
-          "pending2": "pendiente 2",
-          "overdue": "atrasado",
-          "last7Days": "últimos 7 días",
-          "withinScope": "dentro del alcance",
-          "complete": "completo",
-          "past14Days": "últimos 14 días",
-          "requiresReview": "requiere revisión",
-          "compliant": "conforme"
-        }
-      },
-      "table": {
-        "user": "Usuario",
-        "data": "Datos",
-        "purpose": "Objetivo",
-        "time": "Tiempo"
-      },
-      "data": {
-        "customerRecords": "Registros de clientes",
-        "adminPortal": "Portal de administración",
-        "payrollRecords": "Registros de nómina",
-        "deviceGroupVip": "Grupo de dispositivos: VIP"
-      },
-      "purpose": {
-        "billingReview": "Revisión de facturación",
-        "securityAudit": "Auditoría de seguridad",
-        "complianceSampling": "Muestreo de cumplimiento",
-        "accessProvisioning": "Aprovisionamiento de acceso"
-      },
-      "operations": {
-        "exportedCustomerDataset": "Conjunto de datos de clientes exportado a CSV",
-        "mfaWindowReduced": "Ventana MFA reducida a 15 minutos",
-        "roleChangedExternalContractor": "Rol cambiado para contratista externo"
-      },
-      "severity": {
-        "high": "Alto",
-        "medium": "Medio"
       }
     },
     "userActivityReport": {

@@ -13,10 +13,35 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { StatusPillRole } from '../../components/billing/shared/statusPillRoles';
+import type { ContractLineType } from '@breeze/shared';
+
+export type { ContractLineType };
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
-export type ContractLineType = 'flat' | 'per_device' | 'per_seat' | 'manual';
+
+/** #3205 W04 (#4607): what happens to the units above includedQuantity. */
+export type OverageMode = 'bill' | 'flag';
+
+/** One allowance line that is OVER this period, in either mode. `bill` is on the
+ *  invoice; `flag` is not — the UI branches on `mode`. */
+export interface OverageSummary {
+  contractLineId: string;
+  /** The materialized overage invoice line ('bill' mode) or null ('flag' mode). W07
+   *  attaches device evidence to it. */
+  invoiceLineId: string | null;
+  description: string;
+  counted: number;
+  included: number;
+  overage: number;
+  mode: OverageMode;
+}
+
+/** Devices no device-counted line on the contract bills (#3205). null = not applicable. */
+export interface UncoveredDevices {
+  total: number;
+  byRole: Record<string, number>;
+}
 
 /** A row from `GET /contracts` (the full `contracts` table row). */
 export interface ContractSummary {
@@ -41,21 +66,32 @@ export interface ContractSummary {
   createdAt: string;
   updatedAt: string;
   /** Resolved period value (live per_device/per_seat counts), added by GET /contracts. */
-  estimatedPeriodValue?: string;
+  estimatedPeriodValue?: string | null;
+  estimateError?: 'GROUP_EVALUATION_FAILED';
 }
 
 /** One line's resolved estimate from GET /contracts/:id/estimate. */
 export interface ContractEstimateLine {
   lineId: string;
   lineType: ContractLineType;
+  /** BASE quantity billed by the contract line; overage is separate. */
   quantity: number;
+  /** BASE value only. `overageValue` is never folded into this value. */
   value: string;
   live: boolean;
+  counted: number;
+  included: number | null;
+  overage: number;
+  overageMode: OverageMode | null;
+  overageValue: string;
+  unresolved?: 'group_deleted' | 'site_deleted';
 }
 export interface ContractEstimate {
   currencyCode: string;
   periodTotal: string;
   lines: ContractEstimateLine[];
+  uncoveredDevices: UncoveredDevices | null;
+  overages: OverageSummary[];
 }
 
 export interface ContractLine {
@@ -68,6 +104,16 @@ export interface ContractLine {
   unitPrice: string;
   manualQuantity: string | null;
   siteId: string | null;
+  siteName: string | null;
+  deviceRoles: string[] | null;
+  /** #3205 W03: resolved server-side so the detail page needs no site lookup. */
+  site: { id: string; name: string } | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+  includedQuantity: string | null;
+  overageMode: OverageMode | null;
+  overageUnitPrice: string | null;
   taxable: boolean;
   sortOrder: number;
   createdAt: string;
@@ -80,6 +126,22 @@ export interface ContractBillingPeriod {
   periodStart: string;
   periodEnd: string;
   invoiceId: string | null;
+  generatedAt: string;
+  snapshotDeviceTotal: number | null;
+  uncoveredTotal: number | null;
+  flaggedTotal: number | null;
+  billedOverageTotal: number | null;
+}
+
+export interface PeriodOutcome {
+  contractBillingPeriodId: string;
+  invoiceId: string | null;
+  snapshotDeviceTotal: number;
+  uncoveredTotal: number;
+  flaggedTotal: number;
+  billedOverageTotal: number;
+  uncoveredByRole: Record<string, number>;
+  overages: OverageSummary[];
   generatedAt: string;
 }
 
@@ -162,6 +224,16 @@ export function getContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`);
 }
 
+export async function fetchPeriodOutcome(
+  contractId: string,
+  periodId: string,
+): Promise<{ recorded: boolean; outcome: PeriodOutcome | null }> {
+  const res = await fetchWithAuth(`/contracts/${contractId}/periods/${periodId}/outcome`);
+  if (!res.ok) throw new Error(`Contract period outcome request failed (${res.status})`);
+  const body = (await res.json()) as { data: { recorded: boolean; outcome: PeriodOutcome | null } };
+  return body.data;
+}
+
 export function getContractEstimate(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/estimate`);
 }
@@ -196,6 +268,32 @@ export function addContractLine(id: string, body: unknown): Promise<Response> {
 
 export function removeContractLine(id: string, lineId: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, { method: 'DELETE' });
+}
+
+/** Body of PATCH /contracts/:id/lines/:lineId (#3205 W03). Omitted keys are
+ *  unchanged; `catalogItemId: null` unlinks (and then unitPrice + taxable are
+ *  required in the same patch); the same id re-sent is a no-op — use
+ *  `refreshCatalogPrice` to re-price an unchanged link. `lineType` is rejected. */
+export interface UpdateContractLinePatch {
+  description?: string;
+  unitPrice?: string;
+  taxable?: boolean;
+  catalogItemId?: string | null;
+  refreshCatalogPrice?: boolean;
+  manualQuantity?: string;
+  siteId?: string | null;
+  deviceRoles?: string[];
+  deviceGroupId?: string;
+  sortOrder?: number;
+  includedQuantity?: string | null;
+  overageMode?: OverageMode | null;
+  overageUnitPrice?: string | null;
+}
+
+export function updateContractLine(id: string, lineId: string, body: UpdateContractLinePatch): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, {
+    method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body),
+  });
 }
 
 /** Body of `POST /contracts/:id/currency`. The stamped currency is only ever

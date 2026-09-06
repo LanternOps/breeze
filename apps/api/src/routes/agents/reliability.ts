@@ -24,7 +24,7 @@ type LookupResult =
 reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetricsSchema), async (c) => {
   const agentId = c.req.param('id');
   const metrics = c.req.valid('json');
-  const agent = c.get('agent') as { orgId?: string; agentId?: string } | undefined;
+  const agent = c.get('agent') as { orgId?: string; agentId?: string; partnerId?: string } | undefined;
 
   // Fail fast on a token that authenticated but carries no org. Building a vacuous
   // org-scoped RLS context (orgId '', accessibleOrgIds []) would make the device
@@ -44,8 +44,20 @@ reliabilityRoutes.post('/:id/reliability', zValidator('json', reliabilityMetrics
     scope: 'organization' as const,
     orgId,
     accessibleOrgIds: [orgId],
+    // Partner-AXIS access (breeze_has_partner_access → writes) stays empty.
     accessiblePartnerIds: [],
-    currentPartnerId: null,
+    // #4673 W02 — self-managed context, so the partner id must be carried from
+    // the agent context explicitly (see heartbeat.ts / agentAuth.ts). Read-only
+    // visibility of this device's own MSP partner-wide rows.
+    //
+    // `?? null` rather than a fail-fast: unlike `orgId` above (whose absence
+    // would silently RLS-deny the device lookup and masquerade as a 404), this
+    // route reads NO partner-wide table — it does a device lookup and an insert.
+    // A null here is therefore genuinely inert, and 401-ing a reliability ingest
+    // over it would trade a no-op for lost fleet posture data. The middleware
+    // always populates it (`AgentAuthContext.partnerId` is required); this is
+    // just the local narrowing being defensive.
+    currentPartnerId: agent.partnerId ?? null,
   };
 
   const lookup = await withDbAccessContext(dbContext, async (): Promise<LookupResult> => {

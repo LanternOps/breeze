@@ -34,7 +34,15 @@
     "registerDevice": "Register this device",
     "decideFailed": "Failed to submit the decision",
     "approvedToast": "Action approved",
-    "deniedToast": "Action denied"
+    "approvedToast_one": "{{count}} action approved",
+    "approvedToast_other": "{{count}} actions approved",
+    "deniedToast": "Action denied",
+    "deniedToast_one": "{{count}} action denied",
+    "deniedToast_other": "{{count}} actions denied",
+    "runContextLabel": "Run context:",
+    "runContextChosenByAssistant": "chosen by the assistant",
+    "runContextScriptDefault": "the script's saved default",
+    "runContextOverrides": "chosen by the assistant, overriding the script's saved default ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Waiting for response...",
@@ -424,7 +432,9 @@
     "limit": "Up to 5 concurrent conversations"
   },
   "workspaceTab": {
-    "approvalPending": "Approval pending"
+    "approvalPending": "Approval pending",
+    "renameLabel": "Rename chat",
+    "renameHint": "Double-click to rename"
   },
   "workspaceTabBar": {
     "newTabShortcut": "New tab (Cmd+Shift+N)",

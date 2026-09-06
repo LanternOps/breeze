@@ -1,5 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
-import { organizations, sites } from './orgs';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
@@ -54,6 +54,9 @@ export const devices = pgTable('devices', {
   // Public IP the agent enrolled from (point-in-time; lastSeenIp above tracks
   // the ongoing value). Feeds the abuse-signals sweep's IP-spread heuristics.
   enrollmentIp: varchar('enrollment_ip', { length: 45 }),
+  enrollmentIpClass: ipClassEnum('enrollment_ip_class').notNull().default('unknown'),
+  enrollmentIpAsn: integer('enrollment_ip_asn'),
+  enrollmentIpClassifiedAt: timestamp('enrollment_ip_classified_at', { withTimezone: true }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
@@ -83,6 +86,16 @@ export const devices = pgTable('devices', {
   // evaluation — but NOT from the status-upkeep path, which the reaper's
   // end-user-stop detection depends on.
   isEphemeral: boolean('is_ephemeral').notNull().default(false),
+  // RMM-QA-176: manual maintenance lease. `maintenance_until > now()` — not
+  // `status` — is the truth of "a technician put this device into maintenance":
+  // the heartbeat overwrites status to 'online' on every beat, so a status read
+  // cannot distinguish entry from extension. started_at / started_by are
+  // IMMUTABLE across extensions (the original actor stays on the row; each
+  // extension's actor is on its audit event). See services/deviceMaintenanceLease.ts.
+  maintenanceStartedAt: timestamp('maintenance_started_at', { withTimezone: true }),
+  maintenanceUntil: timestamp('maintenance_until', { withTimezone: true }),
+  maintenanceReason: varchar('maintenance_reason', { length: 500 }),
+  maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
@@ -114,6 +127,31 @@ export const devices = pgTable('devices', {
   // on the first post-reboot heartbeat. Backs the system.rebootRequired
   // filter and the "Reboot pending" UI badge.
   pendingReboot: boolean('pending_reboot').notNull().default(false),
+  // Scheduled-restart status denormalized from the agent heartbeat (#3207 W5).
+  //
+  // Distinct from pendingReboot above: that is the OS saying "a restart is
+  // required at some point", these are the agent's RebootManager saying "a
+  // restart is booked for this instant, and the end user has postponed it N
+  // times". Scalars, not one jsonb column, because `devices` is an org-cascade
+  // table and CLAUDE.md forces any open container into the export policy's
+  // `excludedOpen` bucket — which would keep reboot status out of tenant
+  // exports entirely.
+  //
+  // All nullable, and NULL is load-bearing: it means "this agent has never
+  // reported reboot status" (a pre-#3207 build), which the console must be
+  // able to tell apart from "a restart is scheduled that cannot be postponed"
+  // (rebootMaxDeferrals === 0). Written from the heartbeat's `rebootStatus`,
+  // where an ABSENT field means "no news" (old agents must not wipe the
+  // console's view) and an explicit null means "cancelled, or already fired".
+  rebootScheduledAt: timestamp('reboot_scheduled_at', { withTimezone: true }),
+  rebootDeadline: timestamp('reboot_deadline', { withTimezone: true }),
+  rebootSource: varchar('reboot_source', { length: 32 }),
+  rebootDeferralsUsed: integer('reboot_deferrals_used'),
+  // The deferral budget in force for THIS schedule, read from the agent rather
+  // than re-derived from the patch policy: the policy can be edited after a
+  // restart is already booked, and the console must show the budget the end
+  // user actually has, not the one a tech just saved.
+  rebootMaxDeferrals: integer('reboot_max_deferrals'),
   // Current-state power/battery snapshot from the agent heartbeat (#2142).
   // Latest value only — dynamic per-heartbeat state, stored next to uptime /
   // pendingReboot rather than in the device_metrics time-series. null when the
@@ -186,6 +224,13 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #2787 item 4 — WHEN this device was removed (status flipped to
+  // 'decommissioned'). NULL for every device that is not removed, and cleared
+  // again on Restore. `updated_at` cannot stand in for it: it moves on every
+  // unrelated write after removal, so a retention window built on it would
+  // silently extend itself. NULL on a decommissioned row means "removal time
+  // unknown" and the purge job treats that as NEVER PURGE (fail closed).
+  decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
@@ -431,7 +476,11 @@ export const deviceGroups = pgTable('device_groups', {
   parentId: uuid('parent_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Composite-FK target for contract_lines(device_group_id, org_id) (#3205 W02).
+  // Created in SQL migration 2026-10-06-100100; declared here for db:check-drift.
+  idOrgUnique: uniqueIndex('device_groups_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
@@ -441,7 +490,27 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   addedAt: timestamp('added_at').defaultNow().notNull(),
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
 }, (table) => ({
-  pk: primaryKey({ columns: [table.deviceId, table.groupId] })
+  pk: primaryKey({ columns: [table.deviceId, table.groupId] }),
+  // #3182 — the row's org_id alone is what RLS gates on, so without these the
+  // group_id and device_id are free to name a DIFFERENT org's group/device.
+  // Together they pin the triangle: group.org_id = membership.org_id =
+  // device.org_id. Created in SQL migration
+  // 2026-10-09-000200-device-group-memberships-composite-tenant-fks.sql, which
+  // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
+  // foreignKey() builder has no deferrable option, so that detail lives in the
+  // migration only) and adds the detach — to breeze_cascade_device_org_id(),
+  // an AFTER trigger — that drops these rows on a cross-org device move.
+  // Declared here for db:check-drift.
+  groupOrgFk: foreignKey({
+    columns: [table.groupId, table.orgId],
+    foreignColumns: [deviceGroups.id, deviceGroups.orgId],
+    name: 'device_group_memberships_group_org_fk',
+  }),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_group_memberships_device_org_fk',
+  }),
 }));
 
 // Audit log for group membership changes

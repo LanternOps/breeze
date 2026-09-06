@@ -59,4 +59,18 @@ describe('product terminology quality', () => {
       }
     }
   });
+
+  it('keeps alert-verdict badge feedback copy in the formal register the rest of alerts.json uses (#4449)', () => {
+    // de-DE and es-419 alerts.json otherwise address the user formally
+    // (Sie / su); the machine-translated feedbackThanks string was the lone
+    // informal (du / tu) outlier in each file.
+    const expected = {
+      'de-DE': 'Danke für Ihr Feedback',
+      'es-419': 'Gracias por su comentario',
+    } as const;
+
+    for (const locale of Object.keys(expected) as (keyof typeof expected)[]) {
+      expect(valueAt(catalog(locale, 'alerts'), 'alertVerdict.feedbackThanks')).toBe(expected[locale]);
+    }
+  });
 });

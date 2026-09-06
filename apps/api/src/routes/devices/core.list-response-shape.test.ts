@@ -309,5 +309,23 @@ describe('GET /devices — response shape', () => {
     expect(Object.prototype.hasOwnProperty.call(row, 'lanIp')).toBe(true);
     expect(row.wanIp).toBeNull();
     expect(row.lanIp).toBeNull();
+
+    // #3207 W5 — scheduled-restart keys present (null) for a device with no
+    // restart booked, which is the steady state for nearly the whole fleet.
+    // Present-but-null is load-bearing here beyond rendering a dash:
+    // rebootMaxDeferrals null means "this agent predates deferral reporting"
+    // and 0 means "this restart cannot be postponed", and the badge renders
+    // those two differently. A key silently dropped by the response mapper
+    // would collapse them into the same "absent" case.
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootScheduledAt')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootDeadline')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootSource')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootDeferralsUsed')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'rebootMaxDeferrals')).toBe(true);
+    expect(row.rebootScheduledAt).toBeNull();
+    expect(row.rebootDeadline).toBeNull();
+    expect(row.rebootSource).toBeNull();
+    expect(row.rebootDeferralsUsed).toBeNull();
+    expect(row.rebootMaxDeferrals).toBeNull();
   });
 });

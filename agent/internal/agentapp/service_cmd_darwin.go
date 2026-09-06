@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/launchdplist"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
 )
@@ -72,65 +73,12 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>user_session</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
-
-const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>login_window</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>LoginWindow</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`
+// darwinDesktopUserPlist and darwinDesktopLoginWindowPlist are rendered by
+// internal/launchdplist — the single source of truth for these plists (#4379).
+var (
+	darwinDesktopUserPlist        = launchdplist.DesktopHelperUser
+	darwinDesktopLoginWindowPlist = launchdplist.DesktopHelperLoginWindow
+)
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
@@ -207,28 +155,43 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
-		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
-		if desktopHelperErr != nil {
-			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
+		// Stage the REAL desktop helper — sibling binary first, matching-version
+		// signed release asset second. It must never be substituted with the
+		// agent binary: see stageDesktopHelper for why (#3457). A failure here
+		// is a warning, not a fatal error, so an offline or air-gapped install
+		// still gets a working agent service (same policy as the watchdog).
+		stageHelperErr := stageDesktopHelper(desktopHelperStageOptions{
+			agentPath: exePath,
+			destPath:  darwinDesktopHelperBinaryPath,
+			version:   version,
+			goos:      runtime.GOOS,
+			goarch:    runtime.GOARCH,
+		})
+		if stageHelperErr != nil {
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH))
+		} else {
+			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}
-		if desktopHelperErr != nil {
-			return fmt.Errorf("failed to stage desktop helper binary: %w", desktopHelperErr)
-		}
-		if err := os.WriteFile(darwinDesktopHelperBinaryPath, desktopHelperBytes, 0755); err != nil {
-			return fmt.Errorf("failed to copy desktop helper to %s: %w", darwinDesktopHelperBinaryPath, err)
-		}
-		fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 
-		if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+		// Only register the helper's LaunchAgents when a helper binary is
+		// actually there — see desktopHelperLaunchAgentsWanted.
+		helperLaunchAgents := desktopHelperLaunchAgentsWanted(stageHelperErr, darwinDesktopHelperBinaryPath)
+		if helperLaunchAgents {
+			if err := os.WriteFile(darwinDesktopUserPlistDst, []byte(darwinDesktopUserPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper user plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
+			}
+			if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
+			} else {
+				fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			}
 		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopUserPlistDst)
-		}
-		if err := os.WriteFile(darwinDesktopLoginWindowPlistDst, []byte(darwinDesktopLoginWindowPlist), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write desktop-helper loginwindow plist: %v\n", err)
-		} else {
-			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
+			fmt.Fprintf(os.Stderr,
+				"Skipping desktop-helper LaunchAgent setup: no helper binary at %s.\n"+
+					"  launchd would otherwise retry a missing program indefinitely.\n",
+				darwinDesktopHelperBinaryPath)
 		}
 
 		// Create the breeze group, put the logged-in console users in it, and only
@@ -238,10 +201,17 @@ var serviceInstallCmd = &cobra.Command{
 		// would not be in the group that owns the IPC socket and would be denied
 		// (#3133/#3134/#3137). This ordering was previously reversed; it is
 		// pinned by TestInstallIPCPrereqsThenHelpersOrdering.
+		// The breeze group is set up regardless — the agent's own IPC socket
+		// belongs to it — but the helper bootstrap is skipped when there is no
+		// helper binary to bootstrap.
+		bootstrapHelpers := bootstrapDesktopHelperPlists
+		if !helperLaunchAgents {
+			bootstrapHelpers = func() {}
+		}
 		if err := installIPCPrereqsThenHelpers(
 			ensureDarwinBreezeGroup,
 			ensureDarwinBreezeGroupConsoleMembers,
-			bootstrapDesktopHelperPlists,
+			bootstrapHelpers,
 		); err != nil {
 			return err
 		}

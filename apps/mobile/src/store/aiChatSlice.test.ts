@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import reducer, {
+  reconcileHistory,
+  setInFlightTool,
   addPendingAssistantMessage,
   addUserMessage,
   appendDelta,
@@ -230,5 +232,52 @@ describe('aiChatSlice', () => {
     s = reducer(s, addPendingAssistantMessage({ id: 'a1', sentAt: 't' }));
     s = reducer(s, resetChat());
     expect(s).toEqual(INITIAL);
+  });
+});
+
+describe('reconcileHistory', () => {
+  const started = { toolUseId: 't1', toolName: 'manage_services', state: 'started' as const };
+
+  it('keeps the turn streaming with the running tool captioned when incomplete', () => {
+    let s = reducer(INITIAL, addPendingAssistantMessage({ id: 'local-a', sentAt: 't' }));
+    s = reducer(
+      s,
+      reconcileHistory({
+        sessionId: 's1',
+        messages: [
+          { id: 'u1', role: 'user', content: 'restart spooler', sentAt: 't' },
+          { id: 'a1', role: 'assistant', content: '', toolEvents: [started], sentAt: 't', isStreaming: false },
+        ],
+        complete: false,
+      }),
+    );
+    expect(s.sessionId).toBe('s1');
+    expect(s.status).toBe('streaming');
+    expect(s.streamingMessageId).toBe('a1');
+    expect(s.inFlightTool).toEqual({ toolUseId: 't1', toolName: 'manage_services' });
+    const last = s.messages[s.messages.length - 1];
+    expect(last.role === 'assistant' && last.isStreaming).toBe(true);
+    // The local placeholder is replaced by the server transcript, not appended to.
+    expect(s.messages.map((m) => m.id)).toEqual(['u1', 'a1']);
+  });
+
+  it('settles to idle when the transcript is complete', () => {
+    let s = reducer(INITIAL, addPendingAssistantMessage({ id: 'local-a', sentAt: 't' }));
+    s = reducer(s, setInFlightTool({ toolUseId: 't1', toolName: 'manage_services' }));
+    s = reducer(
+      s,
+      reconcileHistory({
+        sessionId: 's1',
+        messages: [
+          { id: 'u1', role: 'user', content: 'restart spooler', sentAt: 't' },
+          { id: 'a1', role: 'assistant', content: 'Done.', toolEvents: [{ ...started, state: 'completed' }], sentAt: 't', isStreaming: false },
+        ],
+        complete: true,
+      }),
+    );
+    expect(s.status).toBe('idle');
+    expect(s.streamingMessageId).toBeNull();
+    expect(s.inFlightTool).toBeNull();
+    expect(s.error).toBeNull();
   });
 });

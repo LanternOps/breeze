@@ -4,7 +4,7 @@ import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners, aiAgents,
+  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks,
 } from '../../db/schema';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
@@ -340,6 +340,42 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     if (!org) return TARGET_ABSENT;
     return material(org.status);
+  },
+
+  // manage_policy_feature_link:update (RMM-QA-176 D9). Escalates to Tier 3 on
+  // INPUT content — a `maintenance` feature link is the canonical
+  // monitoring-suppression source — so it is enumerated in
+  // TIER3_INPUT_AWARE_ACTIONS and therefore needs a pin like any other
+  // four_eyes surface.
+  //
+  // The TOCTOU shape is the reason this is not optional: the approver signs
+  // off on "update link L to these settings", and within the approval window
+  // (up to 24h on mcp_api) L's CURRENT settings can be edited by someone else
+  // — a different featureType, a different linked feature policy, a wider
+  // window — while the intent's own arguments stay byte-identical.
+  //
+  // Pins CONTENT (featureType + featurePolicyId + inlineSettings) rather than
+  // `updated_at`, following manage_tickets:move_org: content is exactly what
+  // the approver evaluated, and a write that rewrites a row to the same values
+  // is not a change the approver needs to re-see.
+  'manage_policy_feature_link:update': async (args, database) => {
+    const featureLinkId = typeof args.featureLinkId === 'string' ? args.featureLinkId : null;
+    if (!featureLinkId) return MISSING_ARG;
+    const [link] = await database
+      .select({
+        featureType: configPolicyFeatureLinks.featureType,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+      .limit(1);
+    if (!link) return TARGET_ABSENT;
+    return material(JSON.stringify({
+      featureType: link.featureType,
+      featurePolicyId: link.featurePolicyId,
+      inlineSettings: link.inlineSettings,
+    }));
   },
 
   // manage_tickets:move_org — re-tenanting a ticket. Pins the ticket's

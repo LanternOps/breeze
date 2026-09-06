@@ -1,0 +1,513 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+
+const ORG_ID = '11111111-1111-4111-8111-111111111111';
+const REPORT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const CONTACT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+const state = vi.hoisted(() => ({
+  results: [] as unknown[][],
+  inserted: [] as Array<{ table: unknown; value: unknown }>,
+  deleted: [] as unknown[],
+  updated: [] as Array<{ value: unknown; condition?: unknown }>,
+  whereConditions: [] as unknown[],
+  getReport: vi.fn(),
+  createContact: vi.fn(),
+  contactCreateAuditEvent: vi.fn(),
+  writeContactAudit: vi.fn(),
+  permissionCalls: [] as Array<{ resource: string; action: string }>,
+  scopeCalls: [] as string[][],
+  mfaCalls: 0,
+  denyPermission: false,
+  lockedReportConfig: {} as Record<string, unknown>,
+  lockCalls: [] as string[],
+}));
+
+function selectChain(result: unknown[]) {
+  const chain: Record<string, any> = {};
+  for (const method of ['from', 'innerJoin', 'orderBy']) {
+    chain[method] = vi.fn(() => chain);
+  }
+  chain.where = vi.fn((condition) => {
+    state.whereConditions.push(condition);
+    return chain;
+  });
+  chain.limit = vi.fn(() => chain);
+  chain.for = vi.fn((lock: string) => {
+    state.lockCalls.push(lock);
+    return Promise.resolve(result);
+  });
+  chain.then = (resolve: (value: unknown) => unknown) =>
+    Promise.resolve(result).then(resolve);
+  return chain;
+}
+
+function database() {
+  return {
+    select: vi.fn((projection?: Record<string, unknown>) => {
+      if (projection?.config === 'reports.config') {
+        return selectChain([{ config: state.lockedReportConfig }]);
+      }
+      return selectChain(state.results.shift() ?? []);
+    }),
+    insert: vi.fn((table) => ({
+      values: vi.fn((value) => {
+        state.inserted.push({ table, value });
+        return {
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])),
+            then: (resolve: (value: unknown) => unknown) =>
+              Promise.resolve(undefined).then(resolve),
+          })),
+          returning: vi.fn(() => Promise.resolve([{
+            id: CONTACT_ID,
+            name: 'Alex',
+            email: 'alex@example.test',
+          }])),
+        };
+      }),
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn((condition) => {
+        state.deleted.push(condition);
+        return { returning: vi.fn(() => Promise.resolve([{ id: 'recipient-1' }])) };
+      }),
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn((value) => {
+        const entry = { value } as { value: unknown; condition?: unknown };
+        state.updated.push(entry);
+        return {
+          where: vi.fn((condition) => {
+            entry.condition = condition;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    })),
+  };
+}
+
+const rootDb = vi.hoisted(() => ({ current: undefined as any }));
+
+vi.mock('../../db', () => ({
+  db: new Proxy({}, {
+    get: (_target, property) => rootDb.current[property],
+  }),
+}));
+
+vi.mock('../../db/schema', () => ({
+  contacts: {
+    id: 'contacts.id',
+    orgId: 'contacts.orgId',
+    name: 'contacts.name',
+    email: 'contacts.email',
+  },
+  reportScheduleRecipients: {
+    id: 'recipients.id',
+    reportId: 'recipients.reportId',
+    orgId: 'recipients.orgId',
+    contactId: 'recipients.contactId',
+  },
+  reports: {
+    id: 'reports.id',
+    orgId: 'reports.orgId',
+    config: 'reports.config',
+  },
+}));
+
+vi.mock('drizzle-orm', () => ({
+  and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
+  asc: (column: unknown) => ({ type: 'asc', column }),
+  eq: (column: unknown, value: unknown) => ({ type: 'eq', column, value }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    type: 'sql',
+    strings: [...strings],
+    values,
+  }),
+}));
+
+vi.mock('../../middleware/auth', () => ({
+  authMiddleware: async (c: any, next: () => Promise<void>) => {
+    if (!c.get('auth')) {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        user: { id: 'user-1' },
+      });
+    }
+    await next();
+  },
+  requirePermission: (resource: string, action: string) =>
+    async (c: any, next: () => Promise<void>) => {
+      state.permissionCalls.push({ resource, action });
+      if (state.denyPermission) return c.json({ error: 'Forbidden' }, 403);
+      await next();
+    },
+  requireScope: (...scopes: string[]) =>
+    async (_c: unknown, next: () => Promise<void>) => {
+      state.scopeCalls.push(scopes);
+      await next();
+    },
+  requireMfa: () => async (c: any, next: () => Promise<void>) => {
+    state.mfaCalls += 1;
+    if (c.req.header('x-test-mfa') !== 'satisfied') {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    await next();
+  },
+}));
+
+vi.mock('../../services/permissions', () => ({
+  PERMISSIONS: {
+    REPORTS_READ: { resource: 'reports', action: 'read' },
+    REPORTS_WRITE: { resource: 'reports', action: 'write' },
+  },
+}));
+
+vi.mock('./helpers', () => ({
+  getReportWithOrgCheck: state.getReport,
+}));
+
+vi.mock('../../services/contacts/audit', () => ({
+  contactCreateAuditEvent: state.contactCreateAuditEvent,
+  writeContactAudit: state.writeContactAudit,
+}));
+
+vi.mock('../../services/contacts/crud', () => ({
+  createContact: state.createContact,
+}));
+
+import { recipientsRoutes } from './recipients';
+
+function app() {
+  const hono = new Hono();
+  hono.route('/', recipientsRoutes);
+  return hono;
+}
+
+function hasEquality(condition: unknown, column: string, value: unknown): boolean {
+  if (!condition || typeof condition !== 'object') return false;
+  const node = condition as { type?: string; column?: unknown; value?: unknown; conditions?: unknown[] };
+  if (node.type === 'eq' && node.column === column && node.value === value) return true;
+  return node.conditions?.some((child) => hasEquality(child, column, value)) ?? false;
+}
+
+describe('report recipient routes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.results.length = 0;
+    state.inserted.length = 0;
+    state.deleted.length = 0;
+    state.updated.length = 0;
+    state.whereConditions.length = 0;
+    state.permissionCalls.length = 0;
+    state.scopeCalls.length = 0;
+    state.mfaCalls = 0;
+    state.denyPermission = false;
+    state.lockedReportConfig = {
+      emailRecipients: ['alex@example.test', 'keep@example.test'],
+    };
+    state.lockCalls.length = 0;
+    const tx = database();
+    rootDb.current = {
+      ...database(),
+      transaction: vi.fn(async (callback: (tx: ReturnType<typeof database>) => unknown) => callback(tx)),
+    };
+    state.getReport.mockResolvedValue({
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      config: { emailRecipients: ['alex@example.test', 'keep@example.test'] },
+    });
+    state.contactCreateAuditEvent.mockReturnValue({
+      action: 'contact.create',
+      resourceType: 'contact',
+      resourceId: CONTACT_ID,
+      resourceName: 'Alex',
+      details: { isPrimary: false, roles: [] },
+    });
+    state.createContact.mockResolvedValue({
+      id: CONTACT_ID,
+      orgId: ORG_ID,
+      siteId: null,
+      name: 'Alex',
+      email: 'alex@example.test',
+      phone: null,
+      mobile: null,
+      title: null,
+      roles: [],
+      isPrimary: false,
+      notes: null,
+      createdBy: 'user-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  });
+
+  it('lists contact-bound recipients with an explicit recipient org predicate', async () => {
+    state.results.push([{
+      id: 'recipient-1',
+      contactId: CONTACT_ID,
+      name: 'Alex',
+      email: 'alex@example.test',
+    }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: [{
+        id: 'recipient-1',
+        contactId: CONTACT_ID,
+        name: 'Alex',
+        email: 'alex@example.test',
+      }],
+    });
+    expect(state.whereConditions.some((condition) =>
+      hasEquality(condition, 'recipients.orgId', ORG_ID))).toBe(true);
+  });
+
+  it('rejects a contact from another organization', async () => {
+    state.results.push([]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contactId: CONTACT_ID }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(state.inserted).toHaveLength(0);
+    expect(state.whereConditions.some((condition) =>
+      hasEquality(condition, 'contacts.orgId', ORG_ID))).toBe(true);
+  });
+
+  it('adds an org-owned contact as a recipient', async () => {
+    state.results.push([{ id: CONTACT_ID }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contactId: CONTACT_ID }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ data: { id: 'recipient-1' } });
+    expect(state.inserted[0]?.value).toEqual({
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      contactId: CONTACT_ID,
+    });
+  });
+
+  it('deletes only the report recipient in the resolved organization', async () => {
+    const response = await app().request(`/${REPORT_ID}/recipients/${CONTACT_ID}`, {
+      method: 'DELETE',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: { deleted: true } });
+    expect(hasEquality(state.deleted[0], 'recipients.orgId', ORG_ID)).toBe(true);
+  });
+
+  it('converts a legacy email into an org contact and removes only that legacy address', async () => {
+    state.results.push([]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'Alex@Example.Test', name: 'Alex' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      data: { id: CONTACT_ID, name: 'Alex', email: 'alex@example.test' },
+    });
+    expect(state.createContact).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        orgId: ORG_ID,
+        name: 'Alex',
+        email: 'alex@example.test',
+      },
+      { userId: 'user-1' },
+    );
+    expect(state.inserted[0]?.value).toEqual({
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      contactId: CONTACT_ID,
+    });
+    expect(state.updated[0]?.value).toMatchObject({
+      config: { emailRecipients: ['keep@example.test'] },
+    });
+    expect(hasEquality(state.updated[0]?.condition, 'reports.orgId', ORG_ID)).toBe(true);
+  });
+
+  it('preserves the config from the report row locked inside the conversion transaction', async () => {
+    state.lockedReportConfig = {
+      emailRecipients: ['alex@example.test', 'keep@example.test'],
+      filters: { siteIds: ['site-after-concurrent-edit'] },
+      dateRange: { preset: 'last_90_days' },
+    };
+    state.results.push([{
+      id: CONTACT_ID,
+      name: 'Existing Alex',
+      email: 'alex@example.test',
+    }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'alex@example.test' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(state.updated[0]?.value).toMatchObject({
+      config: {
+        emailRecipients: ['keep@example.test'],
+        filters: { siteIds: ['site-after-concurrent-edit'] },
+        dateRange: { preset: 'last_90_days' },
+      },
+    });
+    expect(state.whereConditions.some((condition) =>
+      hasEquality(condition, 'reports.id', REPORT_ID)
+      && hasEquality(condition, 'reports.orgId', ORG_ID))).toBe(true);
+    expect(state.lockCalls).toEqual(['update']);
+  });
+
+  it('audits the contact created while converting a legacy recipient', async () => {
+    state.results.push([]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'alex@example.test', name: 'Alex' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(state.contactCreateAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ id: CONTACT_ID, name: 'Alex' }),
+    );
+    expect(state.writeContactAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        orgId: ORG_ID,
+        action: 'contact.create',
+        contactId: CONTACT_ID,
+        contactName: 'Alex',
+        details: { isPrimary: false, roles: [] },
+      },
+    );
+  });
+
+  it('requires MFA before converting a legacy recipient', async () => {
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'attacker@example.test' }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'MFA required',
+      code: 'MFA_REQUIRED',
+    });
+    expect(state.getReport).not.toHaveBeenCalled();
+    expect(state.inserted).toHaveLength(0);
+  });
+
+  it('reuses an existing contact matched by lowercased email without creating a duplicate', async () => {
+    state.results.push([{
+      id: CONTACT_ID,
+      name: 'Existing Alex',
+      email: 'Alex@Example.Test',
+    }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'ALEX@example.test', name: 'Ignored Name' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      data: {
+        id: CONTACT_ID,
+        name: 'Existing Alex',
+        email: 'Alex@Example.Test',
+      },
+    });
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0]?.value).toEqual({
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      contactId: CONTACT_ID,
+    });
+    expect(state.whereConditions.some((condition) => {
+      if (!condition || typeof condition !== 'object') return false;
+      const node = condition as { conditions?: Array<{ type?: string; values?: unknown[] }> };
+      return node.conditions?.some((child) =>
+        child.type === 'sql' && child.values?.includes('alex@example.test')) ?? false;
+    })).toBe(true);
+    expect(state.writeContactAudit).not.toHaveBeenCalled();
+    expect(state.createContact).not.toHaveBeenCalled();
+  });
+
+  it('validates recipient and conversion request bodies', async () => {
+    const invalidContact = await app().request(`/${REPORT_ID}/recipients`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ contactId: 'not-a-guid' }),
+    });
+    const invalidEmail = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'not-an-email' }),
+    });
+
+    expect(invalidContact.status).toBe(400);
+    expect(invalidEmail.status).toBe(400);
+    expect(state.getReport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['GET', `/${REPORT_ID}/recipients`, 'read', false],
+    ['POST', `/${REPORT_ID}/recipients`, 'write', false],
+    ['DELETE', `/${REPORT_ID}/recipients/${CONTACT_ID}`, 'write', false],
+    ['POST', `/${REPORT_ID}/recipients/convert`, 'write', true],
+  ] as const)(
+    '%s %s requires the expected report permission and organization-capable scope',
+    async (method, path, action, requiresMfa) => {
+      if (method === 'POST' && path.endsWith('/recipients')) {
+        state.results.push([{ id: CONTACT_ID }]);
+      }
+      const response = await app().request(path, {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          ...(requiresMfa ? { 'x-test-mfa': 'satisfied' } : {}),
+        },
+        body: method === 'POST'
+          ? JSON.stringify(path.endsWith('/convert')
+              ? { email: 'alex@example.test' }
+              : { contactId: CONTACT_ID })
+          : undefined,
+      });
+
+      expect(response.status).toBeLessThan(400);
+      expect(state.permissionCalls).toContainEqual({ resource: 'reports', action });
+      expect(state.scopeCalls).toContainEqual(['organization', 'partner', 'system']);
+      expect(state.mfaCalls).toBe(requiresMfa ? 1 : 0);
+    },
+  );
+
+  it('returns 403 before the report handler when report permission is denied', async () => {
+    state.denyPermission = true;
+
+    const response = await app().request(`/${REPORT_ID}/recipients`);
+
+    expect(response.status).toBe(403);
+    expect(state.getReport).not.toHaveBeenCalled();
+    expect(rootDb.current.select).not.toHaveBeenCalled();
+  });
+});

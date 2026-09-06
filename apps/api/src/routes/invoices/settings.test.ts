@@ -81,6 +81,14 @@ describe('billing settings routes', () => {
     );
   });
 
+  it('#3205 W07: PATCH /partner/billing-settings round-trips invoiceDeviceAppendix', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, invoiceDeviceAppendix: true,
+    }));
+    expect(res.status).toBe(200);
+    expect((svc.updatePartnerBillingSettings as any).mock.calls[0]![0]).toMatchObject({ invoiceDeviceAppendix: true });
+  });
+
   it('PATCH /partner/billing-settings rejects a bad currency code (→ 400, no service call)', async () => {
     const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
       currencyCode: 'EURO', invoiceNumberPrefix: 'EU', invoiceTermsDays: 14

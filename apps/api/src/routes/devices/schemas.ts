@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
 import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
@@ -182,10 +183,38 @@ export const bulkCommandSchema = z.object({
   payload: z.any().optional()
 });
 
-export const maintenanceModeSchema = z.object({
-  enable: z.boolean(),
-  durationHours: z.number().int().positive().max(168).optional()
-});
+/**
+ * RMM-QA-176 D4. `reason` and `durationHours` are REQUIRED on entry: the exit
+ * contract's "audit actor/reason/window" clause cannot be met by an audit row
+ * that says `reason: null`, and there is no released client to protect — the
+ * route is JWT-only (index.ts:840) so no API-key integration can exist, and the
+ * web ships its dialog in the same PR. Both branches are `.strict()`, so an old
+ * client sending `{ enable: false, durationHours }` gets a named 400 rather
+ * than silently having a field ignored. Bounds are imported, never retyped:
+ * the step-up mint schema binds the SAME numbers into the grant digest.
+ */
+export const maintenanceReasonSchema = z.string().trim().min(3).max(500);
+export const maintenanceDurationSchema = z.number().int().min(1).max(MAINTENANCE_MAX_DURATION_HOURS);
+
+export const maintenanceModeSchema = z.discriminatedUnion('enable', [
+  z.object({
+    enable: z.literal(true),
+    reason: maintenanceReasonSchema,
+    durationHours: maintenanceDurationSchema,
+    stepUpGrant: z.string().guid().optional(),
+  }).strict(),
+  z.object({
+    enable: z.literal(false),
+  }).strict(),
+]);
+
+/** Entry-only. Exit stays per-device — ending suppression needs no batching. */
+export const bulkMaintenanceSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(MAINTENANCE_MAX_BULK_DEVICES),
+  reason: maintenanceReasonSchema,
+  durationHours: maintenanceDurationSchema,
+  stepUpGrant: z.string().guid().optional(),
+}).strict();
 
 export const createGroupSchema = z.object({
   orgId: z.string().guid(),
@@ -238,3 +267,19 @@ export const updateLinkGroupSchema = z
     (d) => d.name !== undefined || d.addDeviceIds !== undefined || d.removeDeviceIds !== undefined,
     { message: 'Provide at least one of name, addDeviceIds, or removeDeviceIds' },
   );
+
+/**
+ * Hard ceiling on a bulk lifecycle call (#2787). Enforced HERE and again in
+ * the bulk-purge worker: the queue payload outlives the request, so a
+ * validator-only bound would be enforced by whichever process happened to
+ * write the job rather than by the one doing the deleting.
+ *
+ * 500 is the same order as the existing bulk-command surface; it bounds a
+ * synchronous restore loop to a few seconds and a purge job to a few minutes.
+ */
+export const BULK_LIFECYCLE_MAX_DEVICES = 500;
+
+/** `{ deviceIds: [...] }` body shared by bulk restore and bulk permanent delete. */
+export const bulkDeviceIdsSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(BULK_LIFECYCLE_MAX_DEVICES),
+});

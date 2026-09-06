@@ -7,7 +7,8 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -149,6 +150,12 @@ export function buildServerForwardHeaders(request: Request): Headers {
 export interface ApiRequestConfig {
   headers?: HeadersInit;
   redirectOnUnauthorized?: boolean;
+  /** Abort the request after this many ms, falling into the existing
+   *  network-error catch path below (so callers that already fail closed on
+   *  a network error — e.g. loadPortalBranding — also fail closed on a
+   *  hang, not just a hard error). Undefined = no bound, matching prior
+   *  behavior for every other call site. */
+  timeoutMs?: number;
 }
 
 export interface ApiResponse<T> {
@@ -197,7 +204,8 @@ export async function apiRequest<T>(
     const response = await fetch(url, {
       ...options,
       headers,
-      credentials: 'include'
+      credentials: 'include',
+      signal: config.timeoutMs !== undefined ? AbortSignal.timeout(config.timeoutMs) : options.signal
     });
 
     if (response.status === 401) {
@@ -298,15 +306,11 @@ export interface PaginatedResult<T> extends ApiResponse<T[]> {
   pagination?: Pagination;
 }
 
-export interface Device {
-  id: string;
-  hostname: string;
-  displayName: string | null;
-  osType: string | null;
-  osVersion: string | null;
-  status: 'online' | 'offline' | 'warning';
-  lastSeenAt: string | null;
+export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
+  timezone?: string;
 }
+
+export type Device = EnrichedPortalDevice;
 
 /** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
  *  (it becomes 'open' when a technician picks it up); 'pending' is waiting on
@@ -323,7 +327,12 @@ export interface TicketSummary {
   priority: TicketPriority;
   createdAt: string;
   updatedAt: string;
+  sla: SlaDto;
 }
+
+export type CreatedPortalTicket = Omit<TicketSummary, 'sla'> & {
+  description: string;
+};
 
 /**
  * Attachment metadata on a PUBLIC ticket comment (W08 #3902). Render-only in
@@ -441,6 +450,7 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  ticketNumber: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
   name: string | null;
   description: string;
@@ -557,6 +567,16 @@ export interface QuoteLine {
   recurrence: string;
   customerVisible: boolean;
   sortOrder: number;
+  contractLineType?: 'per_device' | 'per_device_role' | 'per_device_group' | 'per_seat' | null;
+  deviceRoles?: string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+  includedQuantity?: string | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | null;
+  descriptorUnresolved?: boolean;
   /** Server-built relative path to this line's product thumbnail (uploaded image
    *  or its catalog item's), or null when the line has no image. Resolve via
    *  buildPortalApiUrl before use. */
@@ -693,6 +713,11 @@ export interface BrandingConfig {
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
   enablePasswordReset?: boolean;
+  enableDashboard?: boolean;
+  enableSecurity?: boolean;
+  enableBackups?: boolean;
+  enableReports?: boolean;
+  enableSupportUsage?: boolean;
 }
 
 export interface ListParams {
@@ -724,13 +749,14 @@ export const portalApi = {
   getDevices: async (
     params: ListParams = {},
     config: ApiRequestConfig = {}
-  ): Promise<PaginatedResult<Device>> => {
+  ): Promise<PaginatedResult<EnrichedPortalDevice>> => {
     const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
-    const response = await apiGet<{ data: Device[]; pagination: Pagination }>(
-      `/portal/devices${query}`,
-      config
+    return mapPaginatedData(
+      await apiGet<{
+        data: EnrichedPortalDevice[];
+        pagination: Pagination;
+      }>(`/portal/devices${query}`, config)
     );
-    return mapPaginatedData(response);
   },
 
   getTickets: async (
@@ -792,8 +818,8 @@ export const portalApi = {
   createTicket: async (
     data: CreateTicketInput,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketSummary & { description: string }>> => {
-    const response = await apiPost<{ ticket: TicketSummary & { description: string } }>(
+  ): Promise<ApiResponse<CreatedPortalTicket>> => {
+    const response = await apiPost<{ ticket: CreatedPortalTicket }>(
       '/portal/tickets',
       data,
       config
@@ -952,6 +978,31 @@ export const portalApi = {
     };
   },
 
+  // Public (unauthenticated) branding lookup by custom domain / forwarded host —
+  // used for the anonymous landing/redirect path before a portal session exists.
+  getBrandingByDomain: async (
+    domain: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BrandingConfig>> => {
+    const response = await apiGet<{ branding: BrandingConfig }>(
+      `/portal/branding/${encodeURIComponent(domain)}`,
+      config
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.branding,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
   getQuotes: async (
     params: ListParams = {},
     config: ApiRequestConfig = {}
@@ -1072,5 +1123,113 @@ export const portalApi = {
       { sessionId },
       { redirectOnUnauthorized: false }
     );
-  }
+  },
+
+  // W04 — portal dashboard
+  getDashboard: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<DashboardDto>> =>
+    apiGet<DashboardDto>('/portal/dashboard', config),
+
+  // ---- W05 — security ----
+  getSecurityOverview: (
+    days = 30,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SecurityOverviewDto>> =>
+    apiGet<SecurityOverviewDto>(
+      `/portal/security/overview${buildQueryString({ days })}`,
+      config
+    ),
+
+  getSecurityDevices: (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SecurityDevicesDto>> =>
+    apiGet<SecurityDevicesDto>(
+      `/portal/security/devices${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50
+      })}`,
+      config
+    ),
+
+  // W06 — backups
+  getBackupOverview: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupOverviewDto>> =>
+    apiGet<BackupOverviewDto>('/portal/backups/overview', config),
+
+  getBackupDevices: (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupDevicesDto>> =>
+    apiGet<BackupDevicesDto>(
+      `/portal/backups/devices${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50,
+      })}`,
+      config
+    ),
+
+  // ---------------------------------------------------------------------------
+  // W08 — support usage
+  // ---------------------------------------------------------------------------
+  getSupportUsage: (
+    month?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SupportUsageDto>> =>
+    apiGet<SupportUsageDto>(
+      `/portal/tickets/usage${buildQueryString({ month })}`,
+      config
+    ),
+
+  // W10 — customer reports
+  getReportRuns: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {},
+  ): Promise<PortalRunsResult> => {
+    const query = buildQueryString({
+      page: params.page ?? 1,
+      limit: params.limit ?? 20,
+    });
+    const response = await apiGet<PortalRunsDto>(
+      `/portal/reports/runs${query}`,
+      config,
+    );
+    return {
+      ...mapPaginatedData(response),
+      timezone: response.data?.timezone,
+    };
+  },
+
+  generateReport: async (
+    type: 'security_compliance_posture' | 'executive_summary',
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalRunDto>> => {
+    const response = await apiPost<{ data: PortalRunDto }>(
+      '/portal/reports/generate',
+      { type },
+      config,
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        code: response.code,
+        errorData: response.errorData,
+        statusCode: response.statusCode,
+        headers: response.headers,
+      };
+    }
+    return {
+      data: response.data.data,
+      statusCode: response.statusCode,
+      headers: response.headers,
+    };
+  },
+
+  reportArtifactUrl: (
+    runId: string,
+    format: 'pdf' | 'csv',
+  ): PublicApiPath =>
+    publicApiPath(`/portal/reports/runs/${runId}/${format}`),
 };

@@ -215,7 +215,10 @@ export const devicePatches = pgTable('device_patches', {
   devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId),
   userScopeIdx: index('idx_device_patches_user_scope').on(table.deviceId).where(sql`scope = 'user'`),
   // Backs the `patches.pending` device-filter field (#968).
-  pendingIdx: index('idx_device_patches_pending').on(table.deviceId).where(sql`status = 'pending'`)
+  pendingIdx: index('idx_device_patches_pending').on(table.deviceId).where(sql`status = 'pending'`),
+  orgInstalledAtIdx: index('device_patches_org_installed_at_idx')
+    .on(table.orgId, table.installedAt)
+    .where(sql`${table.status} = 'installed'`)
 }));
 
 export const patchJobs = pgTable('patch_jobs', {

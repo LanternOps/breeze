@@ -78,6 +78,7 @@ export type AttachmentErrorCode =
   | 'INVALID_MULTIPART'
   | 'EMPTY_ATTACHMENT'
   | 'SHARING_UNAVAILABLE'
+  | 'ORG_CONTEXT_REQUIRED'
   | 'UPLOAD_FAILED';
 
 /**
@@ -123,6 +124,10 @@ const ERROR_COPY: Record<AttachmentErrorCode, { message: string; retryable: bool
   INVALID_MULTIPART: { message: 'That file could not be read. Pick it again.', retryable: false },
   EMPTY_ATTACHMENT: { message: 'That file is empty.', retryable: false },
   SHARING_UNAVAILABLE: { message: 'This device cannot open that file.', retryable: false },
+  ORG_CONTEXT_REQUIRED: {
+    message: 'Your sign-in has no organisation selected. Sign out and back in.',
+    retryable: false,
+  },
   UPLOAD_FAILED: { message: 'Upload failed. Check your connection and try again.', retryable: true },
 };
 
@@ -170,7 +175,27 @@ export function toAttachmentError(err: unknown): AttachmentUploadError {
   if (typeof statusCode === 'number' && STATUS_FALLBACK[statusCode]) {
     return attachmentError(STATUS_FALLBACK[statusCode]);
   }
-  return attachmentError('UPLOAD_FAILED');
+  const rawMessage = (err as { message?: unknown } | null)?.message;
+  const detail = typeof rawMessage === 'string' && rawMessage.trim() ? rawMessage.trim() : null;
+  // The server ANSWERED — a 401/403/404 from the auth or route layer carries
+  // no `code`, but it is a rejection, not a dropped link. Telling the
+  // technician to "check your connection" sent them chasing Wi-Fi for a
+  // permission problem, and hid the status we needed to diagnose it.
+  // 408 is the one 4xx that IS transient (request timed out at the proxy).
+  if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500 && statusCode !== 408) {
+    return new AttachmentUploadError(
+      'UPLOAD_FAILED',
+      `Upload rejected (HTTP ${statusCode}${detail ? `: ${detail}` : ''}).`,
+      false,
+    );
+  }
+  // Nothing came back at all: a dropped connection, a timeout, or a runtime
+  // failure before the request was sent (an unreadable file URI, a picker
+  // temp file the OS purged). Keep it retryable, but name the cause so a
+  // support screenshot is worth something.
+  const copy = ERROR_COPY.UPLOAD_FAILED;
+  const message = detail && detail !== copy.message ? `${copy.message} (${detail})` : copy.message;
+  return new AttachmentUploadError('UPLOAD_FAILED', message, copy.retryable);
 }
 
 export function isAllowedMime(mimeType: string): boolean {

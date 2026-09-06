@@ -14,12 +14,48 @@ import {
 } from './queueSchemas';
 
 const BACKUP_QUEUE = 'backup';
+
+/**
+ * Retrying options for the queue's IDEMPOTENT work.
+ *
+ * `process-results` re-applies the same agent payload to the same job row, so
+ * replaying it after a transient DB/Redis blip converges on the same state —
+ * retrying is a straight win there.
+ *
+ * NOT for `dispatch-backup`: see {@link DISPATCH_JOB_OPTIONS}.
+ */
 const PRIVILEGED_JOB_OPTIONS = {
   attempts: 3,
   backoff: {
     type: 'exponential' as const,
     delay: 1_000,
   },
+};
+
+/**
+ * One-shot options for `dispatch-backup` (#4137).
+ *
+ * `processDispatchBackup` is NOT idempotent: its Phase 3
+ * (`prepareBackupDispatchTargets`) INSERTs a brand-new `backup_jobs` child row
+ * for every target after the first, and commits them before the Phase-4 sends.
+ * A retry therefore re-runs Phase 3 and creates a SECOND set of children while
+ * the first set is stranded at status='running' forever — nothing sweeps
+ * children by parent id, because no parent linkage column exists. It would
+ * also re-send commands the agent may already be running.
+ *
+ * So the dispatch gives up retries entirely: a failed dispatch leaves the job
+ * row as the retry surface (the scheduler creates a fresh job on the next
+ * tick, and an operator can re-run it manually), exactly the trade the other
+ * non-idempotent one-shots in this repo make — `jobs/aiAgentEnqueuer.ts`,
+ * `jobs/orgMerge.ts`, `jobs/tenantErasure.ts`.
+ *
+ * `attempts: 1` alone does not close the whole hole: BullMQ re-delivers a
+ * STALLED job (worker process killed mid-run) independently of `attempts`,
+ * up to the worker's `maxStalledCount`. `processDispatchBackup` therefore also
+ * refuses to run a re-delivery — see the `redelivered` guard in backupWorker.ts.
+ */
+const DISPATCH_JOB_OPTIONS = {
+  attempts: 1,
 };
 
 let backupQueue: Queue | null = null;
@@ -114,7 +150,7 @@ export async function enqueueBackupDispatch(
     payload,
     {
       jobId: `backup-dispatch-${jobId}`,
-      ...PRIVILEGED_JOB_OPTIONS,
+      ...DISPATCH_JOB_OPTIONS,
       removeOnComplete: { count: 50 },
       removeOnFail: { count: 100 },
     }

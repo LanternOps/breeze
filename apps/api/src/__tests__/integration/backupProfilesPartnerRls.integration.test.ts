@@ -38,7 +38,11 @@ import {
   sites,
 } from '../../db/schema';
 import { resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
-import { updateFeatureLink } from '../../services/configurationPolicy';
+import {
+  isBackupProfileReference,
+  updateFeatureLink,
+  validateFeaturePolicyExists,
+} from '../../services/configurationPolicy';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -240,13 +244,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#2468) keys on, so a test that omits it
+ * is exercising the AGENT context shape (currentPartnerId null), not an org
+ * token's, and any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -299,12 +313,20 @@ describe('backup_profiles RLS — dual-axis (2026-07-13 migration)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('org scope can INSERT/SELECT an org profile but cannot see a partner-wide one', async () => {
+  // #2468 flipped the second half of this. It used to assert org scope could
+  // not see a partner-wide profile — but the fixture never set
+  // `currentPartnerId`, so it was asserting the AGENT context shape and passed
+  // for the wrong reason. `backup_profiles_partner_wide_select`
+  // (2026-10-05-110000-config-policy-partner-wide-select.sql) now grants an org
+  // token a SELECT-only view of its OWN partner's partner-wide profiles. Org
+  // tokens still never pass `breeze_has_partner_access`, so every WRITE path is
+  // exactly as strict as before.
+  it('org scope can INSERT/SELECT an org profile and READ (not write) its partner’s partner-wide one', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const partnerProfileId = await seedPartnerProfile(partner.id);
 
-    const inserted = await withDbAccessContext(orgContext(org.id), () =>
+    const inserted = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db
         .insert(backupProfiles)
         .values({ name: 'Org profile', orgId: org.id, partnerId: null, selections: SERVER_SELECTIONS })
@@ -313,12 +335,33 @@ describe('backup_profiles RLS — dual-axis (2026-07-13 migration)', () => {
     if (inserted[0]) createdProfiles.push(inserted[0].id);
     expect(inserted).toHaveLength(1);
 
-    // RLS is stricter than the app layer: org tokens never pass
-    // breeze_has_partner_access even though they carry a partnerId.
-    const partnerVisibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const partnerVisibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select({ id: backupProfiles.id }).from(backupProfiles).where(eq(backupProfiles.id, partnerProfileId)),
     );
-    expect(partnerVisibleToOrg).toEqual([]);
+    expect(partnerVisibleToOrg.map((r) => r.id)).toEqual([partnerProfileId]);
+
+    // FOR SELECT only — RLS filters the write's target rows silently, so the
+    // row COUNT is the assertion that has teeth.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(backupProfiles)
+        .set({ name: 'HIJACKED' })
+        .where(eq(backupProfiles.id, partnerProfileId))
+        .returning({ id: backupProfiles.id }),
+    );
+    expect(updated).toEqual([]);
+  });
+
+  it('org scope of a DIFFERENT partner still cannot see a partner-wide profile', async () => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: other.id });
+    const partnerProfileId = await seedPartnerProfile(owner.id);
+
+    const visible = await withDbAccessContext(orgContext(otherOrg.id, other.id), () =>
+      db.select({ id: backupProfiles.id }).from(backupProfiles).where(eq(backupProfiles.id, partnerProfileId)),
+    );
+    expect(visible).toEqual([]);
   });
 
   it('the one-owner CHECK rejects BOTH axes and NEITHER axis', async () => {
@@ -1221,9 +1264,18 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       return { deviceId: device!.id, configId: config!.id };
     });
 
-    // The org token carries NO partner access — exactly what a tech's session
-    // looks like. Before the system-context fix this resolved to [].
-    const entries = await withDbAccessContext(orgContext(org.id), () =>
+    // The org token carries NO partner-AXIS access (`accessiblePartnerIds: []`)
+    // but DOES carry its own partner in `currentPartnerId` — exactly what a
+    // tech's session looks like: `buildDbAccessContext` sets it from the JWT's
+    // partnerId for every scope, org tokens included (middleware/auth.ts).
+    //
+    // Before #2930 this resolved to []. #2930 fixed it with a nested
+    // system-context escape; #4673 W03 removed that escape, so what makes it
+    // resolve now is the SELECT-only `*_partner_wide_select` RLS branch keyed
+    // on `breeze_current_partner_id()`. The blind case immediately below pins
+    // that this is the mechanism — under the old escape it would resolve with
+    // or without the GUC.
+    const entries = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       resolveAllBackupAssignedDevices(org.id),
     );
 
@@ -1236,6 +1288,62 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       'mssql',
     ]);
     expect(entry!.selectionError).toBeNull();
+  });
+
+  // The negative half of the fan-out proof (#4673 W03). Same seed, same
+  // resolver, same org — only `currentPartnerId` differs. If the resolver ever
+  // reopens a nested system context, the partner-wide policy resolves here too
+  // and this goes red: an escape ignores the GUC by construction.
+  it('FAN-OUT PROOF (blind): the same partner-wide policy is INVISIBLE without breeze.current_partner_id', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+    const { policy } = await seedPartnerPolicyWithLink(partner.id, profileId);
+
+    const { deviceId } = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [config] = await db
+        .insert(backupConfigs)
+        .values({
+          orgId: org.id,
+          name: 'Org default S3 (blind)',
+          type: 'file',
+          provider: 's3',
+          providerConfig: { bucket: 'b', region: 'us-east-1' },
+          isDefault: true,
+        })
+        .returning();
+      createdConfigs.push(config!.id);
+
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'partner',
+        targetId: partner.id,
+        priority: 100,
+      });
+      const [site] = await db.insert(sites).values({ orgId: org.id, name: 'HQ' }).returning();
+      createdSites.push(site!.id);
+      const [device] = await db
+        .insert(devices)
+        .values({
+          orgId: org.id,
+          siteId: site!.id,
+          agentId: `agent-${site!.id.slice(0, 18)}`,
+          hostname: 'srv-03',
+          osType: 'windows',
+          osVersion: '10.0',
+          architecture: 'x64',
+          agentVersion: '1.0.0',
+        })
+        .returning();
+      createdDevices.push(device!.id);
+      return { deviceId: device!.id };
+    });
+
+    const entries = await withDbAccessContext(orgContext(org.id, null), () =>
+      resolveAllBackupAssignedDevices(org.id),
+    );
+
+    expect(entries.find((e) => e.deviceId === deviceId)).toBeUndefined();
   });
 
   // A partner-wide policy is visible to EVERY org under the partner, so its
@@ -1722,5 +1830,121 @@ describe('backup feature-link / normalized-settings parity', () => {
         'organizations.ab_backup_refs_org_update',
       ],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4673 W03 — the two feature-link validators no longer escape to a system
+// context. Proof that the SELECT-only RLS branch replaces the escape.
+// ---------------------------------------------------------------------------
+//
+// `isBackupProfileReference` and the `backup` branch of
+// `validateFeaturePolicyExists` both used to run
+// `runOutsideDbContext(() => withSystemDbAccessContext(...))`, for one stated
+// reason: a partner-wide profile (`org_id NULL`) was RLS-invisible to the
+// org-scoped token of the tech doing the linking, so an org policy → partner
+// profile link was misclassified as a legacy `backup_configs` destination id
+// and rejected with a nonsense error.
+//
+// `backup_profiles_partner_wide_select` (W01) grants exactly that read to the
+// profile's OWN partner, and `buildDbAccessContext` sets
+// `breeze.current_partner_id` from the JWT partnerId for every scope, org
+// tokens included — so the escape is gone.
+//
+// These are the only real-DB tests of that path: every other test of these two
+// functions mocks the database and therefore evaluates no RLS at all. Without
+// them, W03 removed an escape on a code path with no RLS-level coverage.
+describe('#4673 W03 — feature-link validation resolves partner-wide profiles without a system escape', () => {
+  it('isBackupProfileReference sees the partner-wide profile from an ORG-scoped context', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+
+    const seen = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      isBackupProfileReference(profileId),
+    );
+    expect(seen).toBe(true);
+  });
+
+  it('...and is BLIND to it without breeze.current_partner_id — the branch, not an escape, is doing the work', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+
+    // Under the removed system escape this would still be `true`: the escape
+    // ran as scope 'system' and saw every tenant's profiles regardless of any
+    // GUC. `false` here is what proves the escape is gone.
+    const seen = await withDbAccessContext(orgContext(org.id, null), () =>
+      isBackupProfileReference(profileId),
+    );
+    expect(seen).toBe(false);
+  });
+
+  it('a FOREIGN partner\'s profile is invisible — the deliberate tightening', async () => {
+    // Previously this probe saw every tenant's rows and leaned on
+    // validateFeaturePolicyExists to re-tenant the link afterwards. Now the id
+    // simply reads as absent, falls through to the legacy-destination branch,
+    // and is rejected there. Same outcome, one step earlier, no RLS bypass.
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const foreignProfileId = await seedPartnerProfile(partnerA.id);
+
+    const seen = await withDbAccessContext(orgContext(orgB.id, partnerB.id), () =>
+      isBackupProfileReference(foreignProfileId),
+    );
+    expect(seen).toBe(false);
+  });
+
+  it('validateFeaturePolicyExists accepts an ORG policy linking its PARTNER\'s partner-wide profile', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+
+    const result = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      validateFeaturePolicyExists('backup', profileId, { orgId: org.id, partnerId: null }),
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('validateFeaturePolicyExists rejects a FOREIGN partner\'s profile', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const foreignProfileId = await seedPartnerProfile(partnerA.id);
+
+    const result = await withDbAccessContext(orgContext(orgB.id, partnerB.id), () =>
+      validateFeaturePolicyExists('backup', foreignProfileId, { orgId: orgB.id, partnerId: null }),
+    );
+    expect(result.valid).toBe(false);
+  });
+
+  it('validateFeaturePolicyExists still accepts a legacy org-owned backup_configs destination', async () => {
+    // `backup_configs` is org-only — no partner axis, no partner-wide branch —
+    // and its lookup was escaping too. Under the org context the plain
+    // `breeze_has_org_access(org_id)` policy admits it, which is why dropping
+    // that escape needed no migration.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    const configId = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [config] = await db
+        .insert(backupConfigs)
+        .values({
+          orgId: org.id,
+          name: 'Legacy destination',
+          type: 'file',
+          provider: 's3',
+          providerConfig: { bucket: 'b', region: 'us-east-1' },
+        })
+        .returning();
+      createdConfigs.push(config!.id);
+      return config!.id;
+    });
+
+    const result = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      validateFeaturePolicyExists('backup', configId, { orgId: org.id, partnerId: null }),
+    );
+    expect(result.valid).toBe(true);
   });
 });

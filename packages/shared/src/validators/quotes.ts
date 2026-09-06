@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { BULK_ID_LIMIT } from '../constants';
 import { currencyCodeSchema } from './currency';
+import {
+  contractLineInvariantIssues, ALLOWANCE_LINE_TYPES, OVERAGE_MODES,
+  isSiteDeletedLine, type ContractLineShape,
+} from './contracts';
+import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 
 // Bounded to numeric(12,2) (max 9,999,999,999.99) so out-of-range inputs fail
 // fast with a 400 rather than overflowing at insert (DB-layer 500). Mirrors the
@@ -16,6 +21,120 @@ const taxRate = z.number().min(0).max(1);
 
 export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
+
+/** The four contract line types a quote line may name. Deliberately the CONTRACT
+ *  enum's values, so acceptance maps 1:1 with no translation table. Equal to
+ *  W04's ALLOWANCE_LINE_TYPES today; asserted equal by a test so a divergence is
+ *  caught rather than silently accepted (#3205 W05). */
+export const QUOTE_DEVICE_SET_TYPES =
+  ['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const;
+export type QuoteDeviceSetType = typeof QUOTE_DEVICE_SET_TYPES[number];
+const QUOTE_DEVICE_SET_TYPE_SET: ReadonlySet<string> = new Set(QUOTE_DEVICE_SET_TYPES);
+
+const present = (v: unknown): boolean => v !== undefined && v !== null;
+/** Quote money/quantities are NUMBERS; contract ones are 2dp STRINGS. The same
+ *  conversion addManualLine already does at the service boundary. */
+const str = (n: number | null | undefined): string | null | undefined =>
+  n == null ? n : n.toFixed(2);
+
+/** The descriptor as it appears on a quote line, in the QUOTE's conventions.
+ *  Deliberately carries NO `quantity`: "the client may not set it" is a rule
+ *  about who may WRITE the field, not a property of a row, and a stored line's
+ *  quantity is always valid (spec decision 5). */
+export interface QuoteLineDeviceSetShape {
+  contractLineType?: QuoteDeviceSetType | null;
+  recurrence: 'one_time' | 'monthly' | 'annual';
+  parentLineId?: string | null;
+  deviceRoles?: readonly string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+  includedQuantity?: number | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: number | null;
+}
+
+/** Quote-line spelling of the shared persisted-site orphan predicate. */
+export function isQuoteLineSiteDeleted(l: {
+  contractLineType: string | null | undefined;
+  siteId: string | null | undefined;
+  siteName: string | null | undefined;
+}): boolean {
+  return isSiteDeletedLine({
+    lineType: l.contractLineType ?? '',
+    siteId: l.siteId,
+    siteName: l.siteName,
+  });
+}
+
+/**
+ * The quote-line descriptor rules (#3205 W05). Does NOT restate
+ * contractLineInputSchema's refines — it PROJECTS onto W03's ContractLineShape
+ * and calls contractLineInvariantIssues, so roles / group / site / allowance can
+ * never diverge between a quote line and the contract line it becomes (and
+ * #4547's future additions arrive here for free).
+ *
+ * 'create'    — a new line: deviceGroupId required on a group line.
+ * 'persisted' — a stored or merged row: deviceGroupId may be null (the orphan
+ *               state the FK produces), the stamps are required.
+ */
+export function quoteLineDeviceSetIssues(
+  l: QuoteLineDeviceSetShape, opts: { mode: 'create' | 'persisted' },
+): Array<{ path: string; message: string }> {
+  const issues: Array<{ path: string; message: string }> = [];
+  const anyDescriptorColumn =
+    present(l.deviceRoles) || present(l.deviceGroupId) || present(l.deviceGroupName)
+    || present(l.siteId) || present(l.siteName)
+    || present(l.includedQuantity) || present(l.overageMode) || present(l.overageUnitPrice);
+
+  if (!present(l.contractLineType)) {
+    if (anyDescriptorColumn) {
+      issues.push({ path: 'contractLineType', message: 'a device set needs a contractLineType' });
+    }
+    return issues;   // an ordinary quote line: nothing else applies.
+  }
+  if (!QUOTE_DEVICE_SET_TYPE_SET.has(l.contractLineType!)) {
+    issues.push({ path: 'contractLineType', message: 'contractLineType must be one of per_device, per_device_role, per_device_group, per_seat' });
+    return issues;   // the projection below would be meaningless.
+  }
+  if (l.recurrence === 'one_time') {
+    issues.push({ path: 'recurrence', message: 'a device set is only valid on a monthly or annual line — a one-time charge has no billing period to count in' });
+  }
+  if (present(l.parentLineId)) {
+    issues.push({ path: 'parentLineId', message: 'a bundle component cannot carry its own device set' });
+  }
+  // #4693's site-stamp rules come from the delegated contract helper below and are
+  // persisted-only there: siteName is never a create input (the writer stamps it).
+
+  // Delegate the rest. `path` is re-mapped lineType → contractLineType so the
+  // caller's error points at the field the quote API actually exposes.
+  const projected: ContractLineShape = {
+    lineType: l.contractLineType as ContractLineShape['lineType'],
+    manualQuantity: undefined,
+    siteId: l.siteId,
+    siteName: l.siteName,
+    deviceRoles: l.deviceRoles,
+    deviceGroupId: l.deviceGroupId,
+    deviceGroupName: l.deviceGroupName,
+    includedQuantity: str(l.includedQuantity),
+    overageMode: l.overageMode,
+    overageUnitPrice: str(l.overageUnitPrice),
+  };
+  // The contract create schema owns `.min(1)`, so its invariant helper reports
+  // an empty role set only in persisted mode. This helper is also a public row
+  // checker, so inherit that same contract-side issue here without restating it.
+  if (opts.mode === 'create' && l.deviceRoles?.length === 0) {
+    const emptyRolesIssue = contractLineInvariantIssues(projected, { mode: 'persisted' })
+      .find((issue) => issue.path === 'deviceRoles');
+    if (emptyRolesIssue) issues.push(emptyRolesIssue);
+  }
+  for (const issue of contractLineInvariantIssues(projected, opts)) {
+    issues.push({ path: issue.path === 'lineType' ? 'contractLineType' : issue.path, message: issue.message });
+  }
+  return issues;
+}
+
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
 export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract', 'table', 'callout']);
 export const quoteDepositTypeSchema = z.enum(['none', 'percent', 'selected_lines']);
@@ -97,7 +216,11 @@ export const quoteLineInputSchema = z.object({
   // At least one must be non-empty (refined below) so a line is never blank.
   name: z.string().max(255).nullable().optional(),
   description: z.string().max(2000).nullable().optional(),
-  quantity: positiveQty,
+  // Client may not set the quantity of a device-set line: the server derives it
+  // from the same snapshot helpers that will bill it (decision 5). Required on
+  // every other line exactly as today — enforced in the superRefine below,
+  // which is the only place that can see whether a descriptor was submitted.
+  quantity: positiveQty.optional(),
   unitPrice: money,
   taxable: z.boolean(),
   customerVisible: z.boolean().default(true),
@@ -111,8 +234,27 @@ export const quoteLineInputSchema = z.object({
   vendorSku: z.string().max(100).nullable().optional(),
   manufacturer: z.string().max(255).nullable().optional(),
   depositEligible: z.boolean().default(false),
+  // #3205 W05: the device-set descriptor. deviceGroupName / siteName are NOT
+  // input fields — the server resolves and stamps them.
+  contractLineType: z.enum(QUOTE_DEVICE_SET_TYPES).optional(),
+  deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
+  deviceGroupId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  includedQuantity: z.number().int().positive().max(9_999_999_999).optional(),
+  overageMode: z.enum(OVERAGE_MODES).optional(),
+  overageUnitPrice: money.optional(),
 }).refine((d) => Boolean(d.name?.trim() || d.description?.trim()), {
   message: 'A line needs a name or a description', path: ['name'],
+}).superRefine((l, ctx) => {
+  for (const issue of quoteLineDeviceSetIssues(l as never, { mode: 'create' })) {
+    ctx.addIssue({ code: 'custom', path: [issue.path], message: issue.message });
+  }
+  if (l.contractLineType === undefined && l.quantity === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['quantity'], message: 'quantity is required' });
+  }
+  if (l.contractLineType !== undefined && l.quantity !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['quantity'], message: 'quantity is derived from the live device count on a device-set line — omit it' });
+  }
 });
 
 export const catalogQuoteLineSchema = z.object({ catalogItemId: z.string().guid(), quantity: positiveQty, blockId: z.string().guid().optional(), partNumber: z.string().max(100).nullable().optional() });
@@ -138,7 +280,65 @@ export const updateQuoteLineSchema = z.object({
   // quote_images row on the same quote — the service enforces ownership.
   imageId: z.string().guid().nullable().optional(),
   depositEligible: z.boolean().optional(),
-});
+  // #3205 W05. deviceRoles / deviceGroupId are .optional() only: clearing either
+  // leaves a row quote_lines_device_set_chk rejects. The other four are
+  // .nullable().optional() because clearing each leaves a valid shape — W03's
+  // own rule, applied unchanged.
+  deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
+  deviceGroupId: z.string().guid().optional(),
+  siteId: z.string().guid().nullable().optional(),
+  includedQuantity: z.number().int().positive().max(9_999_999_999).nullable().optional(),
+  overageMode: z.enum(OVERAGE_MODES).nullable().optional(),
+  overageUnitPrice: money.nullable().optional(),
+  // NO contractLineType: adding or removing a descriptor changes what the line
+  // IS (W03's reasoning for lineType). Remove the line and add it again.
+}).strict();
+
+/** A quote_lines row in read-layer shape (null = not applicable). */
+export interface PersistedQuoteLine extends QuoteLineDeviceSetShape {
+  contractLineType: QuoteDeviceSetType | null;
+  parentLineId: string | null;
+  deviceRoles: readonly string[] | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  siteId: string | null;
+  siteName: string | null;
+  includedQuantity: number | null;
+  overageMode: 'bill' | 'flag' | null;
+  overageUnitPrice: number | null;
+}
+export type UpdateQuoteLineInput = z.infer<typeof updateQuoteLineSchema>;
+
+/** Key-presence test for a tri-state patch field: `=== undefined` cannot tell
+ *  "leave it alone" from "clear it"; key presence can. */
+export function quoteLinePatchHasKey(patch: UpdateQuoteLineInput, key: keyof UpdateQuoteLineInput): boolean {
+  return Object.prototype.hasOwnProperty.call(patch, key);
+}
+
+/**
+ * Current persisted line ⊕ patch (#3205 W05). PURE, mirroring W03's
+ * mergeContractLinePatch, so the service validates the MERGED row with
+ * mode: 'persisted' and the editor can run the identical check before saving.
+ *
+ * contractLineType is never merged (not patchable). The two stamps are never
+ * read from the patch: the service re-stamps them from the resolved group/site
+ * AFTER the invariants run, and clearing siteId clears siteName with it.
+ */
+export function mergeQuoteLinePatch(current: PersistedQuoteLine, patch: UpdateQuoteLineInput): PersistedQuoteLine {
+  const p = patch as Record<string, unknown>;
+  return {
+    ...current,
+    recurrence: (p.recurrence as PersistedQuoteLine['recurrence']) ?? current.recurrence,
+    deviceRoles: (p.deviceRoles as readonly string[] | undefined) ?? current.deviceRoles,
+    deviceGroupId: (p.deviceGroupId as string | undefined) ?? current.deviceGroupId,
+    deviceGroupName: current.deviceGroupName,
+    siteId: quoteLinePatchHasKey(patch, 'siteId') ? ((p.siteId as string | null) ?? null) : current.siteId,
+    siteName: quoteLinePatchHasKey(patch, 'siteId') ? (p.siteId ? current.siteName : null) : current.siteName,
+    includedQuantity: quoteLinePatchHasKey(patch, 'includedQuantity') ? ((p.includedQuantity as number | null) ?? null) : current.includedQuantity,
+    overageMode: quoteLinePatchHasKey(patch, 'overageMode') ? ((p.overageMode as 'bill' | 'flag' | null) ?? null) : current.overageMode,
+    overageUnitPrice: quoteLinePatchHasKey(patch, 'overageUnitPrice') ? ((p.overageUnitPrice as number | null) ?? null) : current.overageUnitPrice,
+  };
+}
 
 export const createQuoteSchema = z.object({
   orgId: z.string().guid(),

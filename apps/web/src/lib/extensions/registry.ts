@@ -199,6 +199,30 @@ useAuthStore.subscribe((state) => {
  *  A `moduleUrl` whose resolved pathname doesn't start here is refused. */
 const ASSET_PATH_PREFIX = '/api/v1/extensions/assets/';
 
+/** The literal segment that introduces the server's short-lived signed asset
+ *  token: `/api/v1/extensions/assets/t/<token>/<name>/<digest>/<member...>`
+ *  (issue #4164 — a bare dynamic `import()` cannot send an Authorization
+ *  header, so the capability travels in the URL, above the member path so
+ *  relative sibling imports inherit it). Must stay in step with
+ *  `ASSET_TOKEN_SEGMENT` in apps/api/src/extensions/webRegistry.ts. This module
+ *  never validates the token — that is the server's job — it only needs to
+ *  recognise the segment so the credential can be excluded from cache keys and
+ *  redacted out of error text. */
+const ASSET_TOKEN_SEGMENT = 't';
+
+/** The shape a token value must have to be treated as one: `v1.<payload>.<sig>`,
+ *  all base64url. Mirrors `EXTENSION_ASSET_TOKEN_PATTERN` in
+ *  apps/api/src/services/extensionAssetToken.ts (a cross-app import is not
+ *  available). This module calls itself the trust boundary for running
+ *  extension code, so it must not lean on an invariant enforced only in
+ *  `@breeze/extension-sdk`'s manifest schema: a URL is treated as tokened only
+ *  when it genuinely looks tokened, never on the strength of a bare `t` first
+ *  segment that some other path shape could also produce. */
+const ASSET_TOKEN_VALUE_PATTERN = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/** `t` + token + name + digest + at least one member segment. */
+const MIN_TOKENED_SEGMENTS = 5;
+
 const ALLOWED_MODULE_PROTOCOLS = new Set(['http:', 'https:']);
 
 /** Encoded slash/backslash variants that could smuggle an extra path
@@ -209,6 +233,66 @@ const ALLOWED_MODULE_PROTOCOLS = new Set(['http:', 'https:']);
  *  belt-and-suspenders so the client never even attempts to import such a
  *  URL. */
 const ENCODED_SLASH_RE = /%2f|%5c/i;
+
+/**
+ * Replace every asset token in `text` with a placeholder. Import failures are
+ * reported to Sentry with their full message and stack, and a native module
+ * fetch error embeds the URL it failed on — which now contains a live
+ * credential. Redact before anything leaves the browser.
+ */
+export function redactExtensionAssetTokens(text: string): string {
+  return text.replace(
+    new RegExp(`(/extensions/assets/${ASSET_TOKEN_SEGMENT}/)[^/\\s"']+`, 'g'),
+    '$1<redacted>',
+  );
+}
+
+/**
+ * The token-free identity of an asset URL: same origin + pathname, with the
+ * `t/<token>` pair removed. Used as the module-import memo key so a rotated
+ * token (the registry mints a fresh one each time the server's mint bucket
+ * rolls over) does not fragment the cache into repeated imports of the very
+ * same digest-addressed module. The digest is still in the retained path, so
+ * this key remains content-addressed and never needs invalidating.
+ *
+ * Stripping is deliberately conservative: it fires only for a path that has
+ * the FULL tokened shape — the `t` marker, a value that actually parses as a
+ * token, and enough segments left for a name/digest/member. Anything else is
+ * left whole. A looser rule (strip whenever the first segment is `t`) would
+ * let a path that merely happens to start with a `t` segment collapse onto the
+ * same key as a real tokened asset, and two different extensions sharing a
+ * memo key means one extension's module could be handed out under the other's
+ * identity. Nothing can currently produce such a path — the manifest schema's
+ * `isSafeRelativePath` rejects the `..` segments it would take, and the server
+ * binds both name and digest into the token — but this module is the loader's
+ * trust boundary and should not depend on an invariant enforced in a different
+ * package that it never references.
+ */
+function assetIdentityKey(resolved: URL): string {
+  const segments = resolved.pathname.slice(ASSET_PATH_PREFIX.length).split('/');
+  if (
+    segments.length >= MIN_TOKENED_SEGMENTS
+    && segments[0] === ASSET_TOKEN_SEGMENT
+    && ASSET_TOKEN_VALUE_PATTERN.test(segments[1] ?? '')
+  ) {
+    segments.splice(0, 2);
+  }
+  return `${resolved.origin}${ASSET_PATH_PREFIX}${segments.join('/')}`;
+}
+
+/** A module import that reached the network and failed. Carries the ORIGINAL
+ *  failure as `cause`, but its own message has the asset token redacted so the
+ *  error boundary's Sentry report cannot leak the credential. */
+export class ExtensionModuleImportError extends Error {
+  constructor(moduleUrl: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(redactExtensionAssetTokens(
+      `failed to import extension module ${redactExtensionAssetTokens(moduleUrl)}: ${detail}`,
+    ));
+    this.name = 'ExtensionModuleImportError';
+    this.cause = cause;
+  }
+}
 
 export class UntrustedExtensionModuleUrlError extends Error {
   constructor(moduleUrl: string, reason: string) {
@@ -281,17 +365,23 @@ export function __resetExtensionModuleCacheForTests(): void {
  */
 export function loadExtensionModule(moduleUrl: string): Promise<unknown> {
   const resolved = assertSameOriginAssetUrl(moduleUrl);
-  const key = resolved.href;
+  // Memoize on the TOKEN-FREE identity (see assetIdentityKey) but import the
+  // full href — the server needs the credential, the cache must not key on it.
+  const key = assetIdentityKey(resolved);
 
   const cached = moduleImportCache.get(key);
   if (cached) return cached;
 
-  const promise = moduleImporter(key);
+  const promise = moduleImporter(resolved.href).catch((cause: unknown) => {
+    throw new ExtensionModuleImportError(resolved.href, cause);
+  });
   moduleImportCache.set(key, promise);
-  // A rejected import (network hiccup, transient 401 racing a token refresh)
-  // shouldn't permanently poison the cache for this URL — allow a later
-  // caller to retry. The original `promise` returned above still rejects for
-  // its own caller; this just clears the memo so the NEXT call starts fresh.
+  // A rejected import (network hiccup, an expired asset token on a tab left
+  // open past the token's lifetime) shouldn't permanently poison the cache for
+  // this module — allow a later caller, which will have re-fetched the registry
+  // and so hold a freshly-minted token, to retry. The `promise` returned above
+  // still rejects for its own caller; this just clears the memo so the NEXT
+  // call starts fresh.
   promise.catch(() => {
     if (moduleImportCache.get(key) === promise) {
       moduleImportCache.delete(key);

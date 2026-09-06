@@ -3,17 +3,31 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
+import { customFieldWriteConflict } from '../services/customFields/writeErrors';
 
 // Custom field schemas (defined locally to avoid rootDir issues)
 // Must match the database enum: 'text', 'number', 'boolean', 'dropdown', 'date'
 const customFieldTypeSchema = z.enum(['text', 'number', 'boolean', 'dropdown', 'date']);
 
+// Mirrors CustomFieldOptions in packages/shared/src/types/filters.ts. The
+// {label,value} choice shape is the one the shared contract, the web form and
+// services/customFields/validateValue.ts readChoices() all use; the bare-string
+// array is accepted for the rows already stored that way. Widening here was a
+// live bug fix, not a nicety: a dropdown created through the UI was rejected by
+// this very schema (#3257 Phase 0).
+const customFieldChoiceSchema = z.union([
+  z.string().min(1).max(255),
+  z.object({ label: z.string().min(1).max(255), value: z.string().min(1).max(255) })
+]);
+
 const customFieldOptionsSchema = z.object({
-  choices: z.array(z.string()).optional(),
+  choices: z.array(customFieldChoiceSchema).max(200).optional(),
   min: z.number().optional(),
   max: z.number().optional(),
-  pattern: z.string().optional(),
-  placeholder: z.string().optional()
+  minLength: z.number().int().nonnegative().optional(),
+  maxLength: z.number().int().positive().optional(),
+  pattern: z.string().max(512).optional(),
+  placeholder: z.string().max(255).optional()
 });
 
 const createCustomFieldSchema = z.object({
@@ -31,7 +45,10 @@ const createCustomFieldSchema = z.object({
   options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().default(false),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  // #2698 — may a script running on a device write this field via the
+  // ::breeze:custom-fields:: marker? Default false: opting in is deliberate.
+  scriptWrite: z.boolean().default(false)
 });
 
 const updateCustomFieldSchema = z.object({
@@ -39,7 +56,8 @@ const updateCustomFieldSchema = z.object({
   options: customFieldOptionsSchema.optional(),
   required: z.boolean().optional(),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  scriptWrite: z.boolean().optional() // #2698
 });
 
 const customFieldQuerySchema = z.object({
@@ -74,6 +92,7 @@ type CustomFieldDefinition = {
   required: boolean;
   defaultValue: unknown;
   deviceTypes: string[] | null;
+  scriptWrite: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -189,6 +208,7 @@ function mapCustomFieldRow(
     required: field.required,
     defaultValue: field.defaultValue ?? null,
     deviceTypes: field.deviceTypes ?? null,
+    scriptWrite: field.scriptWrite,
     createdAt: field.createdAt.toISOString(),
     updatedAt: field.updatedAt.toISOString()
   };
@@ -324,20 +344,36 @@ customFieldRoutes.post(
       return c.json({ error: 'orgId or partnerId is required' }, 400);
     }
 
-    const [field] = await db
-      .insert(customFieldDefinitions)
-      .values({
-        orgId,
-        partnerId,
-        name: payload.name,
-        fieldKey: payload.fieldKey,
-        type: payload.type,
-        options: payload.options,
-        required: payload.required,
-        defaultValue: payload.defaultValue,
-        deviceTypes: payload.deviceTypes
-      })
-      .returning();
+    let field;
+    try {
+      [field] = await db
+        .insert(customFieldDefinitions)
+        .values({
+          orgId,
+          partnerId,
+          name: payload.name,
+          fieldKey: payload.fieldKey,
+          type: payload.type,
+          options: payload.options,
+          required: payload.required,
+          defaultValue: payload.defaultValue,
+          deviceTypes: payload.deviceTypes,
+          scriptWrite: payload.scriptWrite
+        })
+        .returning();
+    } catch (err) {
+      // Both mapped conditions are the caller's own to fix and neither is a
+      // server fault, so neither may surface as a 500. The mapping itself lives
+      // in services/customFields/writeErrors.ts because the definitions
+      // importer (#3257 W07) needs the identical one per row — see that
+      // module's header for what each SQLSTATE means and why only one of the
+      // two messages may be passed through verbatim.
+      const conflict = customFieldWriteConflict(err, payload.fieldKey);
+      if (conflict) {
+        return c.json(conflict, 409);
+      }
+      throw err;
+    }
 
     if (!field) {
       return c.json({ error: 'Failed to create custom field' }, 500);
@@ -384,6 +420,7 @@ customFieldRoutes.patch(
     if (payload.required !== undefined) updates.required = payload.required;
     if (payload.defaultValue !== undefined) updates.defaultValue = payload.defaultValue;
     if (payload.deviceTypes !== undefined) updates.deviceTypes = payload.deviceTypes;
+    if (payload.scriptWrite !== undefined) updates.scriptWrite = payload.scriptWrite;
 
     const [updated] = await db
       .update(customFieldDefinitions)

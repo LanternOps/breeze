@@ -113,7 +113,14 @@ import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { assertApprovalAssurance, StepUpRequiredError } from '../authenticatorAssurance';
 import { isAgentIntentDecideAuthorized } from '../actionIntents/intentApprovers';
-import { BATCH_MAX, batchAssertionKey, decideApprovalBatch } from './batchDecide';
+import { approvalBatchGroupKey } from '@breeze/shared';
+import { serialize } from './decideApprovalRequest';
+import {
+  BATCH_MAX,
+  batchAssertionKey,
+  batchGroupKey,
+  decideApprovalBatch,
+} from './batchDecide';
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -370,6 +377,35 @@ describe('decideApprovalBatch', () => {
     expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
   });
 
+  // (b3) same tool AND action, but a DIFFERENT customer org. This axis is the
+  // one a drift would hurt most — a fleet sweep proposes the identical
+  // `(tool, action)` across every org a partner manages, so if `orgId` ever
+  // fell out of the key the whole 422 would silently become "approve all of
+  // these, everywhere" off ONE ceremony. Covered end-to-end here, not just as
+  // a key-equality unit check, so the org axis has the same defence in depth
+  // the tool and action axes already have.
+  it('422s for the same tool and action under a DIFFERENT org', async () => {
+    const batchRows = [
+      { approval: buildApproval(1), intent: buildIntent(1) },
+      { approval: buildApproval(2), intent: buildIntent(2, { orgId: 'org-other' }) },
+    ];
+    mockDb({ batchRows });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(422);
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+    // Nothing decided, and no assertion ceremony consumed.
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
   // (c)
   it('422s when a FOUR-EYES card is in the set', async () => {
     const batchRows = [
@@ -612,5 +648,105 @@ describe('decideApprovalBatch', () => {
     expect(res.httpStatus).toBe(422);
     expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
     expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * #4457 — the batch-grouping rule now has ONE definition
+ * (`approvalBatchGroupKey` in `@breeze/shared`) and two consumers: this
+ * service, which refuses a heterogeneous set, and the web inbox, which offers
+ * "Approve all (N)" over rows it believes share a key.
+ *
+ * The web never sees a DB row — it sees the DTO `serialize` projects. So the
+ * contract that actually has to hold is: **the key the server enforces off a
+ * loaded row equals the key the shared helper produces from that same row's
+ * serialized DTO.** That is what these cases drive, end to end through the real
+ * `serialize`, rather than re-asserting the shared unit tests.
+ *
+ * A regression here is not cosmetic: a looser server key would let ONE
+ * assertion ceremony cover a set of approvals the approver never read as a
+ * single decision.
+ */
+describe('batchGroupKey cross-equivalence with the inbox DTO (#4457)', () => {
+  /** Exactly what `GET /approvals/pending` hands the inbox for this row, then
+   *  exactly what the inbox does with it (`groupIdentity` in
+   *  `components/approvals/approvalGrouping.ts` calls the shared helper with
+   *  the DTO itself). */
+  function inboxKey(approval: any, intent: any): string {
+    const dto = serialize(
+      approval,
+      null,
+      intent.approvalScope,
+      {
+        id: intent.id,
+        requestingAgentRunId: intent.requestingAgentRunId,
+        requestingClientLabel: intent.requestingClientLabel,
+      },
+      null,
+      intent.orgId,
+      'Acme Corp',
+    );
+    return approvalBatchGroupKey(dto);
+  }
+
+  const cases: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: 'an ordinary multiplexed action', args: { deviceId: 'dev-1', action: 'restart' } },
+    {
+      name: 'an action spelled with stray case and whitespace',
+      args: { deviceId: 'dev-1', action: '  ReStart ' },
+    },
+    { name: 'a tool with no action discriminator', args: { deviceId: 'dev-1' } },
+    { name: 'an explicit null action', args: { deviceId: 'dev-1', action: null } },
+    { name: 'a non-string action', args: { deviceId: 'dev-1', action: { nested: 'restart' } } },
+    { name: 'an empty-string action', args: { deviceId: 'dev-1', action: '' } },
+  ];
+
+  for (const { name, args } of cases) {
+    it(`agrees with the inbox for ${name}`, () => {
+      const intent = buildIntent(1);
+      const approval = buildApproval(1, { actionArguments: args });
+      expect(batchGroupKey({ approval, intent } as any)).toBe(inboxKey(approval, intent));
+    });
+  }
+
+  it('collapses two cosmetically different spellings of the same action into ONE key', () => {
+    const intent = buildIntent(1);
+    const plain = buildApproval(1, { actionArguments: { action: 'restart' } });
+    const noisy = buildApproval(2, { actionArguments: { action: '  RESTART  ' } });
+    expect(batchGroupKey({ approval: noisy, intent } as any)).toBe(
+      batchGroupKey({ approval: plain, intent } as any),
+    );
+    expect(inboxKey(noisy, intent)).toBe(inboxKey(plain, intent));
+  });
+
+  it('keeps a DIFFERENT action in a different group — on BOTH sides', () => {
+    const intent = buildIntent(1);
+    const restart = buildApproval(1, { actionArguments: { action: 'restart' } });
+    const stop = buildApproval(2, { actionArguments: { action: 'stop' } });
+    expect(batchGroupKey({ approval: stop, intent } as any)).not.toBe(
+      batchGroupKey({ approval: restart, intent } as any),
+    );
+    expect(inboxKey(stop, intent)).not.toBe(inboxKey(restart, intent));
+  });
+
+  it('keys off the LINKED INTENT org, so two orgs never share a group', () => {
+    const approval = buildApproval(1);
+    const orgA = buildIntent(1, { orgId: 'org-a' });
+    const orgB = buildIntent(1, { orgId: 'org-b' });
+    expect(batchGroupKey({ approval, intent: orgB } as any)).not.toBe(
+      batchGroupKey({ approval, intent: orgA } as any),
+    );
+    expect(inboxKey(approval, orgB)).not.toBe(inboxKey(approval, orgA));
+  });
+
+  it('keeps a different tool in a different group', () => {
+    const intent = buildIntent(1);
+    const services = buildApproval(1, { actionToolName: 'manage_services' });
+    const patches = buildApproval(2, { actionToolName: 'manage_patches' });
+    expect(batchGroupKey({ approval: patches, intent } as any)).not.toBe(
+      batchGroupKey({ approval: services, intent } as any),
+    );
+    expect(inboxKey(patches, intent)).not.toBe(inboxKey(services, intent));
   });
 });

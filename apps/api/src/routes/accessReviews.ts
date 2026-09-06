@@ -19,6 +19,8 @@ import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
+import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
+import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 
 export const accessReviewRoutes = new Hono();
 
@@ -464,6 +466,8 @@ accessReviewRoutes.post(
     const result = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         db.transaction(async (tx) => {
+          const neutralizedUserIds: string[] = [];
+
           // Apply revocations - remove users from the scope
           if (revokedUserIds.length > 0) {
             if (scopeContext.scope === 'partner') {
@@ -487,8 +491,17 @@ accessReviewRoutes.post(
             }
 
             for (const userId of uniqueRevokedUserIds) {
-              await advanceUserEpochs(tx, userId, { auth: true });
+              // D3/D5 (RMM-QA-166): epochs {auth, mfa} → families → neutralize.
+              // A user whose LAST membership anywhere was just revoked is an
+              // orphan and is neutralized exactly as DELETE /users/:id does —
+              // disabled, no password, every factor incl. passkeys stripped.
+              // The orphan check is valid cross-tenant because this transaction
+              // is system-scoped; a user with a remaining membership elsewhere
+              // is untouched.
+              await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
               await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+              const { neutralized } = await neutralizeUserIfOrphaned(tx, userId);
+              if (neutralized) neutralizedUserIds.push(userId);
             }
           }
 
@@ -513,7 +526,8 @@ accessReviewRoutes.post(
 
           return {
             review: updatedReview,
-            revokedCount: revokedItems.length
+            revokedCount: revokedItems.length,
+            neutralizedUserIds
           };
         })
       )
@@ -526,13 +540,14 @@ accessReviewRoutes.post(
     // honoured until natural expiry; logged, not surfaced, so the review
     // still completes successfully.
     await Promise.all(uniqueRevokedUserIds.map((userId) => runPostCommitCleanup(userId)));
+    await Promise.all(uniqueRevokedUserIds.map((userId) => sweepPendingFactorArtifacts(userId)));
 
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,
       action: 'access_review.complete',
       resourceType: 'access_review',
       resourceId: result.review.id,
-      details: { revokedCount: result.revokedCount, revokedUserIds: uniqueRevokedUserIds }
+      details: { revokedCount: result.revokedCount, revokedUserIds: uniqueRevokedUserIds, neutralizedUserIds: result.neutralizedUserIds }
     });
 
     return c.json({

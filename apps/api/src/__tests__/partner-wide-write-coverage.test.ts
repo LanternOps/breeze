@@ -127,6 +127,29 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/pendingEmail.ts': 'pending-email state and auth epochs for the acting user only',
   'services/recoveryCodeAuth.ts': 'atomically consumes one recovery code belonging to the authenticating user',
 
+  // --- cross-user credential / account-lifecycle writes on `users` ----------
+  // (RMM-QA-166.) Shape 4 again, but the write is per-USER, never partner-wide
+  // configuration: these two services set only credential and account-lifecycle
+  // columns (mfa_secret/mfa_method/mfa_recovery_codes/phone, password_hash,
+  // status/disabled_reason) for ONE target user id, and they hold no partner
+  // axis of their own. Same class as the cross-user `users` entries in the
+  // routes block above (auth/invite.ts, admin/abuse.ts, system.ts): the
+  // authority is "may you administer this USER", and it is carried by the
+  // caller-facing routes — routes/users.ts (USERS_WRITE + requireMfa() +
+  // getScopedUser tenant resolution) and routes/accessReviews.ts (which DOES
+  // gate on canManagePartnerWidePolicies).
+  //
+  // Gating these on canManagePartnerWidePolicies would be actively WRONG, not
+  // merely redundant: the helper is false for `organization` scope
+  // unconditionally (partnerWideAccess.ts), and userRoutes carries no
+  // requireScope, so an org-scope admin holding USERS_WRITE would lose the
+  // ability to reset their own org user's MFA or to remove that user. Same
+  // reasoning already recorded for timeSuggestionService.ts and orgArchive.ts.
+  'services/mfaFactorReset.ts':
+    "clears ONE target user's factor columns and user_passkeys rows; routes/users.ts gates reset with USERS_WRITE + requireMfa + tenant-scoped getScopedUser, and tombstone reinvite with USERS_INVITE + requireMfa + tenant-scoped email visibility. Neutralization callers enforce membership-removal authority. Never writes partner-wide config; gating here would block organization admins from resetting their own users",
+  'services/userNeutralization.ts':
+    "disables ONE orphaned user (status, disabled_reason, password_hash) after their LAST membership is removed, then delegates the factor wipe to mfaFactorReset; both callers are gated one layer up — routes/users.ts DELETE /:id by USERS_DELETE + requireMfa(), routes/accessReviews.ts by canManagePartnerWidePolicies itself. Per-user account lifecycle, never partner-wide config",
+
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
@@ -175,6 +198,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
   'services/policyEvaluationService.ts': 'partner-policy writes gated at routes/policyManagement/actions.ts; workers are system context',
+  'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
   'services/tdSynnexDigitalBridge.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate; search caches tokens',
   'services/tdSynnexEcExpress.ts': 'credential config/test gated at routes/catalog/distributors.ts partnerWideGate',
   'services/tdSynnexSftpSync.ts': 'credential config/test/sync gated at routes/catalog/distributors.ts partnerWideGate; worker is system context',

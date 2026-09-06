@@ -15,10 +15,28 @@
  *  - it passes the DEVICE ORG'S PARTNER into `policyOwnershipCondition` (so the
  *    emitted predicate admits `org_id NULL` rows — the SQL itself is pinned in
  *    services/configPolicyOwnership.test.ts), and
- *  - it runs the policy join inside `withPartnerWideVisibility` (the RLS
- *    escape).
+ *  - it runs the policy join in the CALLER'S OWN DB CONTEXT, with no escape.
+ *
+ * That second assertion INVERTED in #4673 W03. It used to require the opposite:
+ * that the join ran inside `withPartnerWideVisibility`, a nested
+ * `runOutsideDbContext(() => withSystemDbAccessContext(...))` that took a second
+ * pooled connection (#1105) and bypassed RLS wholesale (#2417). W01 added the
+ * SELECT-only `<table>_partner_wide_select` policies and W02 populates
+ * `breeze.current_partner_id` on agent contexts, so the database now grants the
+ * read and the escape is a liability rather than the fix.
+ *
+ * The gate is built to fail LOUDLY if anyone reintroduces it:
+ *  - `runOutsideDbContext` / `withSystemDbAccessContext` are mocked to THROW,
+ *    and each resolver additionally asserts they were never called; and
+ *  - the `configPolicyOwnership` mock factory intentionally omits
+ *    `withPartnerWideVisibility`, so re-importing it fails with
+ *    "No withPartnerWideVisibility export is defined on the mock".
+ *
  * End-to-end proof against real Postgres lives in
- * __tests__/integration/configurationPolicyPartnerResolution.integration.test.ts.
+ * __tests__/integration/configurationPolicyPartnerResolution.integration.test.ts
+ * and __tests__/integration/agentPolicyResolversPartnerWide.integration.test.ts
+ * (the latter proves the RLS half: the same resolvers under a REAL org-scoped
+ * context, with and without `currentPartnerId`).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,7 +44,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Hoisted mocks
 // ---------------------------------------------------------------------------
 
-const { dbMock, redisMock, getRedisImpl, ownershipMock, partnerWideVisibilityMock } = vi.hoisted(() => {
+const { dbMock, redisMock, getRedisImpl, ownershipMock, systemEscapeMock } = vi.hoisted(() => {
   let selectCallQueue: unknown[][] = [];
   let selectCallIdx = 0;
 
@@ -65,21 +83,33 @@ const { dbMock, redisMock, getRedisImpl, ownershipMock, partnerWideVisibilityMoc
     redisMock,
     getRedisImpl: vi.fn(() => redisMock as any),
     ownershipMock: vi.fn(() => 'OWNERSHIP_CONDITION' as any),
-    partnerWideVisibilityMock: vi.fn(<T>(fn: () => Promise<T>) => fn()),
+    // #4673 W03: any system-context escape on these paths is now a regression.
+    // Throwing (rather than transparently delegating) means a reintroduced
+    // escape fails the suite even in a test that forgets the explicit
+    // `not.toHaveBeenCalled()` assertion below.
+    systemEscapeMock: vi.fn(() => {
+      throw new Error(
+        'routes/agents/helpers.ts must not open a nested system DB context: ' +
+          'partner-wide config rows are granted by the *_partner_wide_select ' +
+          'RLS branch (#4673 W01/W02). See configPolicyOwnership.ts.',
+      );
+    }),
   };
 });
 
 vi.mock('../../db', () => ({
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  runOutsideDbContext: systemEscapeMock,
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: systemEscapeMock,
   getCurrentDbAccessContext: vi.fn(() => undefined),
   db: dbMock,
 }));
 
+// `withPartnerWideVisibility` is deliberately ABSENT from this factory (#4673
+// W03 deleted it). Re-importing it in helpers.ts fails loudly here rather than
+// silently reintroducing the nested system context.
 vi.mock('../../services/configPolicyOwnership', () => ({
   policyOwnershipCondition: ownershipMock,
-  withPartnerWideVisibility: partnerWideVisibilityMock,
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -231,7 +261,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   getRedisImpl.mockReturnValue(null); // no cache — always resolve from "DB"
   ownershipMock.mockReturnValue('OWNERSHIP_CONDITION' as any);
-  partnerWideVisibilityMock.mockImplementation(<T>(fn: () => Promise<T>) => fn());
 });
 
 /**
@@ -285,12 +314,15 @@ describe.each([
     expect(ownershipMock).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID });
   });
 
-  it('runs the policy join inside the partner-wide RLS escape', async () => {
+  it('runs the policy join in the caller\'s own DB context — no system escape (#4673 W03)', async () => {
     dbMock._resetQueue(queue(orgWithPartner));
 
+    // Completing at all is half the assertion: the db mock throws from
+    // runOutsideDbContext / withSystemDbAccessContext, so a reintroduced escape
+    // rejects here rather than reporting a passing resolve.
     await run();
 
-    expect(partnerWideVisibilityMock).toHaveBeenCalledTimes(1);
+    expect(systemEscapeMock).not.toHaveBeenCalled();
   });
 
   it('passes partnerId null when the device org has no partner', async () => {
@@ -335,7 +367,7 @@ describe('onedrive_helper stays org-only — do not "fix" it like the others', (
     await buildOnedriveHelperConfigUpdate(DEVICE_ID);
 
     expect(ownershipMock).not.toHaveBeenCalled();
-    expect(partnerWideVisibilityMock).not.toHaveBeenCalled();
+    expect(systemEscapeMock).not.toHaveBeenCalled();
   });
 });
 
@@ -413,6 +445,68 @@ describe('partner-owned policies actually reach the agent payload', () => {
 
     await buildMonitoringConfigUpdate(DEVICE_ID);
 
-    expect(partnerWideVisibilityMock).toHaveBeenCalledTimes(1);
+    expect(systemEscapeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('monitoring: a matched policy with zero enabled watches (#2949)', () => {
+  // A winning policy row with no enabled watches ("clear all watches") is a
+  // different fact than "no policy matched at all" — collapsing both to `null`
+  // means heartbeat.ts omits monitoring_settings from the payload entirely, and
+  // the agent (which handles an empty watches array fine — see
+  // agent/internal/monitoring/monitor.go ApplyConfig) never learns to clear out
+  // watches it was told about on a previous heartbeat.
+  it('returns an object with an empty watches array, not null', async () => {
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [], // no enabled watches for the winning settings row
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result).not.toBeNull();
+    expect(result?.check_interval_seconds).toBe(90);
+    expect(result?.watches).toEqual([]);
+  });
+
+  it('still returns null when no policy row matches at all', async () => {
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [], // no assignment/policy rows matched
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it('caches the empty-watches result via redis.set, same as any other match', async () => {
+    // `buildMonitoringConfigUpdate` only skips caching on a null resolution
+    // ("quick policy activation"); an empty-watches object is a real match and
+    // must be cached like any other, or a rapid heartbeat retry would re-run
+    // the resolver queries needlessly.
+    getRedisImpl.mockReturnValue(redisMock);
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [], // no enabled watches for the winning settings row
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result?.watches).toEqual([]);
+    expect(redisMock.set).toHaveBeenCalledWith(
+      `monitoring:settings:device:${DEVICE_ID}`,
+      JSON.stringify({ check_interval_seconds: 90, watches: [] }),
+      'EX',
+      120,
+    );
   });
 });

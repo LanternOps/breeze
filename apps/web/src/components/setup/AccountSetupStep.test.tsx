@@ -27,6 +27,42 @@ vi.mock('../../stores/auth', () => {
 import AccountSetupStep from './AccountSetupStep';
 
 const ok = () => ({ ok: true, json: async () => ({}) });
+const trustResponse = (trustState: string) => ({
+  ok: true,
+  json: async () => ({ trustState }),
+});
+const trustCopy = 'Remote control and script execution unlock after your first card payment settles (about 24 hours) or once we have reviewed your account.';
+
+describe('AccountSetupStep — partner trust onboarding copy', () => {
+  beforeEach(() => {
+    authMocks.fetchWithAuth.mockResolvedValue(trustResponse('trusted'));
+  });
+
+  it('shows the copy while the partner is on probation', async () => {
+    authMocks.fetchWithAuth.mockResolvedValueOnce(trustResponse('probation'));
+
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    expect(await screen.findByText(trustCopy)).toBeInTheDocument();
+    expect(authMocks.fetchWithAuth).toHaveBeenCalledWith('/partner/trust');
+  });
+
+  it('hides the copy when the partner is trusted', async () => {
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    await waitFor(() => expect(authMocks.fetchWithAuth).toHaveBeenCalledWith('/partner/trust'));
+    expect(screen.queryByText(trustCopy)).not.toBeInTheDocument();
+  });
+
+  it('hides the copy when the trust request fails', async () => {
+    authMocks.fetchWithAuth.mockRejectedValueOnce(new Error('network unavailable'));
+
+    render(<AccountSetupStep onNext={vi.fn()} />);
+
+    await waitFor(() => expect(authMocks.fetchWithAuth).toHaveBeenCalledWith('/partner/trust'));
+    expect(screen.queryByText(trustCopy)).not.toBeInTheDocument();
+  });
+});
 
 /**
  * #2428: a committed email change advances auth_epoch and revokes every refresh

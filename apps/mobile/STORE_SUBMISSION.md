@@ -23,10 +23,39 @@ as permanently dead and **deletes the token from the database**. To test push
 from a local Debug build, switch the droplets to `APNS_ENVIRONMENT=sandbox`
 first.
 
-Android push is **not wired**: the server skips raw FCM tokens, and `app.json`
-no longer carries an Expo `projectId`, so `registerForPushNotifications()`
-returns `unsupported`. Android launch needs either the projectId restored or a
-real FCM sender added server-side.
+Android push uses **native FCM**, the same pattern as iOS's native APNs — no
+Expo relay, no EAS/Expo account. `registerForPushNotifications()` calls
+`Notifications.getDevicePushTokenAsync()` unconditionally on both platforms;
+on Android that returns a raw FCM registration token once
+`google-services.json` is present in the native build, and the server sends to
+it via `apps/api/src/services/fcm.ts` (mirrors `apns.ts`'s contract, #3639).
+
+`google-services.json` is Android's analogue of iOS's `.p8` APNs key and is
+**never committed** — `app.json`'s `android.googleServicesFile` points at
+`./google-services.json`, which Expo's config plugin only resolves during
+`expo prebuild --platform android` (or an Android EAS/Gradle build), so it
+needs to exist on disk at build time, not in git. Generate it with:
+
+```bash
+GOOGLE_SERVICES_JSON=<content of the file downloaded from the Firebase Console> \
+  pnpm --filter breeze-mobile write-google-services
+```
+
+Accepts either the raw JSON or base64-encoded JSON (same tolerance as the
+server's `FIREBASE_SERVICE_ACCOUNT`). Download the source file from the
+Firebase Console: Project Settings → your Android app (package
+`com.breeze.rmm`) → "Download google-services.json" — this must be the same
+Firebase project backing the droplets' `FIREBASE_SERVICE_ACCOUNT`, or every
+Android token will fail with a credential-mismatch error even though the
+sender reports itself configured. See `scripts/write-google-services.mjs` and
+`.gitignore` for the injection contract, and `google-services.json.example`
+for the file's shape. Registering the Firebase Android app itself (if one
+doesn't already exist) and confirming `FIREBASE_SERVICE_ACCOUNT` on both
+droplets is tracked separately (#4717 Wave 3) — this repo's build tooling is
+ready before that operational step lands.
+
+FCM has no sandbox/production split the way APNs does — there is no equivalent
+to the `APNS_ENVIRONMENT` gotcha above to watch for.
 
 ## App Store Connect record
 

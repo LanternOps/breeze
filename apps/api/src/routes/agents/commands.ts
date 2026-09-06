@@ -90,6 +90,11 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'mssql_backup',
   'snmp_poll',
   'script',
+  // #3525: the agent's script_cancel ack is the ONLY evidence that lets an
+  // execution terminalise as `cancelled`. Omitting it here drops that evidence
+  // on the HTTP-polling transport specifically, leaving the row stuck in
+  // `cancelling` until a sweep gives up on it.
+  'script_cancel',
   'peripheral_policy_sync_v2',
   'pam_apply_v2',
   'pam_cleanup_v2',

@@ -198,6 +198,26 @@ describe('POST /accounting/:provider/reconcile', () => {
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
+  // Issue #4543: before this, POST /reconcile always answered
+  // `{ enqueued: true }` without checking `pull_payments` — the worker then
+  // silently no-oped, so a connection with pull disabled looked like it
+  // synced but never did. Refuses with 409 + a stable `code` (matching the
+  // `{ error, code }` shape `AccountingConnectionError`/`AccountingMappingError`
+  // already use elsewhere in this file) instead of a false "queued" toast.
+  it('409 { code: "pull_disabled" } when pull_payments is off, and never enqueues', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false }));
+
+    const res = await reconcile();
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.stringMatching(/payment pull.*disabled/i),
+      code: 'pull_disabled',
+    });
+    expect(enqueueAccountingReconcileMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
   it('denies an org-scoped token (403) before touching the connection', async () => {
     authState.scope = 'organization';
 

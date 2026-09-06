@@ -1089,7 +1089,7 @@ describe('syncMappedEntity', () => {
     expect((err as Error).message).toContain('qb-created');
     expect((err as Error).message.toLowerCase()).toContain('do not retry');
     expect(captureExceptionMock).toHaveBeenCalledWith(
-      expect.any(Error), undefined, expect.objectContaining({ remoteEntityId: 'qb-created' }),
+      expect.any(Error), undefined, expect.objectContaining({ remote_entity_id: 'qb-created' }),
     );
   });
 });

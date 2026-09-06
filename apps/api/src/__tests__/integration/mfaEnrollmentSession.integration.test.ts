@@ -7,8 +7,9 @@ import { withSystemDbAccessContext } from '../../db';
 import { refreshTokenFamilies, users } from '../../db/schema';
 import { authBindingRoutes } from '../../routes/auth/binding';
 import { beginAuthIssuance } from '../../services/authBrowserTransition';
-import { completeInitialMfaEnrollment } from '../../services/mfaEnrollmentSession';
+import { completeInitialMfaEnrollment, replaceSessionOnMfaFactorWrite } from '../../services/mfaEnrollmentSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
+import { isUserTokenRevoked } from '../../services/tokenRevocation';
 import type { UserSessionIdentity } from '../../services/userSession';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -108,6 +109,15 @@ function completeTotpEnrollment(
       return secret;
     },
   }));
+}
+
+/** Unverified `iat` read — these tests own the token they just minted. */
+function tokenIssuedAt(jwt: string): number {
+  const [, payload] = jwt.split('.');
+  if (!payload) throw new Error('not a JWT');
+  const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { iat?: number };
+  if (typeof claims.iat !== 'number') throw new Error('token carries no iat');
+  return claims.iat;
 }
 
 describe('completeInitialMfaEnrollment — real-PG atomicity', () => {
@@ -231,5 +241,110 @@ describe('completeInitialMfaEnrollment — real-PG atomicity', () => {
       .where(eq(refreshTokenFamilies.userId, value.user.id));
     expect(families).toHaveLength(1);
     expect(families[0]).toMatchObject({ familyId: value.oldFamilyId, revokedAt: null });
+  });
+});
+
+
+/**
+ * #4480 — recovery-code rotation on an ALREADY-protected account. Same
+ * primitive, `expectedMfaEnabled: true`: every other session must die and the
+ * caller must leave holding a session that still works, because the response
+ * body carries the one-time codes.
+ */
+describe('replaceSessionOnMfaFactorWrite — recovery-code rotation (#4480)', () => {
+  runDb('evicts every other session and hands the caller a live replacement', async () => {
+    const value = await fixture();
+    // Get the account to the state a rotation starts from: MFA enrolled.
+    const enrolled = await completeTotpEnrollment(value, await freshBrowserCapability(), 'enrolled-secret');
+    const [afterEnroll] = await getTestDb().select().from(users).where(eq(users.id, value.user.id)).limit(1);
+    if (!afterEnroll) throw new Error('enrolled user vanished');
+    // A second device logs in after enrollment; the rotation must kill it.
+    const otherDeviceFamilyId = await mintRefreshTokenFamily(value.user.id);
+    const rotationCapability = await freshBrowserCapability();
+
+    const rotated = await withSystemDbAccessContext(() => replaceSessionOnMfaFactorWrite({
+      userId: value.user.id,
+      identity: value.identity,
+      capability: rotationCapability,
+      expectedAuthEpoch: afterEnroll.authEpoch,
+      expectedMfaEpoch: afterEnroll.mfaEpoch,
+      expectedMfaEnabled: true,
+      revokeReason: 'integration-recovery-rotate',
+      recoveryCodes: ['rotated-code'],
+      recoveryCodeHashes: ['rotated-hash'],
+      persistFactor: async (tx, hashes) => {
+        const rows = await tx.update(users)
+          .set({ mfaRecoveryCodes: [...hashes], updatedAt: new Date() })
+          .where(eq(users.id, value.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('rotation missed user');
+        return undefined;
+      },
+    }));
+
+    const [after] = await getTestDb().select().from(users).where(eq(users.id, value.user.id)).limit(1);
+    // The factor survives; only its recovery-code set and the epoch moved.
+    expect(after).toMatchObject({ mfaEnabled: true, mfaSecret: 'enrolled-secret' });
+    expect(after?.mfaEpoch).toBe(afterEnroll.mfaEpoch + 1);
+    expect(after?.mfaRecoveryCodes).toEqual(['rotated-hash']);
+
+    const families = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, value.user.id));
+    const live = families.filter((family) => family.revokedAt === null);
+    // Exactly one family survives, and it is the one just minted for the caller.
+    expect(live).toHaveLength(1);
+    expect(live[0]?.familyId).toBe(rotated.issued.familyId);
+    expect(rotated.issued.familyId).not.toBe(otherDeviceFamilyId);
+    expect(rotated.issued.familyId).not.toBe(enrolled.issued.familyId);
+    expect(families.find((family) => family.familyId === otherDeviceFamilyId)?.revokedAt).toBeInstanceOf(Date);
+    expect(families.find((family) => family.familyId === enrolled.issued.familyId)?.revokedAt).toBeInstanceOf(Date);
+    expect(families.find((family) => family.familyId === value.oldFamilyId)?.revokedAt).toBeInstanceOf(Date);
+
+    // The OTHER half of the eviction is the Redis cutoff `runPostCommitCleanup`
+    // writes, and /auth/refresh rejects any refresh token with
+    // `iat <= revokedAfter`. Proven here against the real Redis this suite runs:
+    // the cutoff is armed, and the replacement token clears it.
+    //
+    // Scope note — this does NOT discriminate the `preserveTokensIssuedAtOrAfter`
+    // clamp on its own. On a fast run the mint and the cleanup land in the same
+    // second, so the plain `now - 1` default already sits below the replacement's
+    // `iat`; the clamp only decides the outcome once a commit stalls past a
+    // second, which this test cannot force. The clamp's arithmetic is pinned by
+    // `services/tokenRevocation.test.ts`. What this adds is that the two halves
+    // are actually wired together end to end.
+    expect(rotated.cleanup.redisOk).toBe(true);
+    const replacementIat = tokenIssuedAt(rotated.issued.refreshToken);
+    expect(await isUserTokenRevoked(value.user.id, replacementIat)).toBe(false);
+    // ...and the cutoff is genuinely armed: anything predating the rotation is.
+    expect(await isUserTokenRevoked(value.user.id, replacementIat - 60)).toBe(true);
+  });
+
+  runDb('refuses to rotate onto an account whose MFA was disabled underneath it', async () => {
+    const value = await fixture();
+    const [before] = await getTestDb().select().from(users).where(eq(users.id, value.user.id)).limit(1);
+    if (!before) throw new Error('user vanished');
+    // Never enrolled: mfa_enabled is false, so the expectedMfaEnabled: true
+    // precondition must lose — no epoch bump, no revoke, no code write.
+    const capability = await freshBrowserCapability();
+
+    await expect(withSystemDbAccessContext(() => replaceSessionOnMfaFactorWrite({
+      userId: value.user.id,
+      identity: value.identity,
+      capability,
+      expectedAuthEpoch: before.authEpoch,
+      expectedMfaEpoch: before.mfaEpoch,
+      expectedMfaEnabled: true,
+      revokeReason: 'integration-recovery-rotate-conflict',
+      recoveryCodes: ['must-not-land'],
+      recoveryCodeHashes: ['must-not-land-hash'],
+      persistFactor: async () => undefined,
+    }))).rejects.toMatchObject({ name: 'AuthIssuanceConflictError' });
+
+    const [after] = await getTestDb().select().from(users).where(eq(users.id, value.user.id)).limit(1);
+    expect(after?.mfaEpoch).toBe(before.mfaEpoch);
+    expect(after?.mfaRecoveryCodes ?? null).toEqual(before.mfaRecoveryCodes ?? null);
+    const families = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, value.user.id));
+    expect(families.find((family) => family.familyId === value.oldFamilyId)?.revokedAt).toBeNull();
   });
 });

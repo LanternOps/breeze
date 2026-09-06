@@ -1356,6 +1356,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1379,7 +1380,43 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
     expect(executeReboot).toHaveBeenCalledWith(
       'device-1',
       'Installed patch requires reboot',
-      { expectedOrgId: 'org-1' },
+      { expectedOrgId: 'org-1', windowEndsAt: null },
+    );
+  });
+
+  // #3207: a maintenance_window reboot may not be postponed past the close of
+  // the window it fired inside. evaluateRebootPolicy is the only thing on this
+  // path that knows when that is, so if the executor drops it the deferral cap
+  // silently never applies here — while still applying on the maintenance
+  // sweep, which is exactly the kind of asymmetry nobody notices.
+  it('forwards the maintenance-window close so the deferral deadline stays capped', async () => {
+    const windowEndsAt = new Date('2026-02-17T02:00:00.000Z');
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'In active maintenance window',
+      deferred: false,
+      windowEndsAt,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'maintenance_window',
+      command: agentCommandRow({
+        success: true,
+        installedCount: 2,
+        failedCount: 0,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'installed' },
+        ],
+      }),
+    });
+
+    expect(executeReboot).toHaveBeenCalledWith(
+      'device-1',
+      'In active maintenance window',
+      { expectedOrgId: 'org-1', windowEndsAt },
     );
   });
 
@@ -1388,6 +1425,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1415,6 +1453,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'Reboot policy is never',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1496,6 +1535,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'Outside maintenance window — reboot deferred',
       deferred: true,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1539,6 +1579,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1563,6 +1604,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: false,
       reason: 'No installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1593,6 +1635,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1624,6 +1667,7 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
       shouldReboot: true,
       reason: 'Installed patch requires reboot',
       deferred: false,
+      windowEndsAt: null,
     });
 
     await runDeviceExecution({
@@ -1670,6 +1714,7 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
       shouldReboot: false,
       reason: 'no reboot needed for this test',
       deferred: false,
+      windowEndsAt: null,
     });
   });
 

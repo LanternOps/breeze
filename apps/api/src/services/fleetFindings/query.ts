@@ -94,6 +94,11 @@ export interface FleetFindingRun {
   id: string;
   actionKind: 'script' | 'command';
   scriptId: string | null;
+  /**
+   * Operator-chosen run context (#4888). NULL = the script's saved default,
+   * which is what the dispatcher resolves it to.
+   */
+  runAs: 'system' | 'user' | 'elevated' | null;
   commandType: string | null;
   status: FleetRunStatus;
   targetCount: number;
@@ -362,6 +367,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       id: fleetRemediationRuns.id,
       actionKind: fleetRemediationRuns.actionKind,
       scriptId: fleetRemediationRuns.scriptId,
+      runAs: fleetRemediationRuns.runAs,
       commandType: fleetRemediationRuns.commandType,
       status: fleetRemediationRuns.status,
       targetCount: fleetRemediationRuns.targetCount,
@@ -396,6 +402,7 @@ export async function getFleetFinding(auth: AuthContext, id: string): Promise<Fl
       id: r.id,
       actionKind: r.actionKind,
       scriptId: r.scriptId ?? null,
+      runAs: r.runAs ?? null,
       commandType: r.commandType ?? null,
       status: r.status,
       targetCount: r.targetCount,
@@ -479,6 +486,7 @@ export async function getRemediationRun(auth: AuthContext, runId: string): Promi
     findingRevision: run.findingRevision,
     actionKind: run.actionKind,
     scriptId: run.scriptId ?? null,
+    runAs: run.runAs ?? null,
     commandType: run.commandType ?? null,
     parameterSnapshot: (run.parameterSnapshot ?? {}) as Record<string, unknown>,
     status: run.status,

@@ -50,13 +50,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#2468) keys on, so a test that omits it
+ * is exercising the AGENT context shape (currentPartnerId null), not an org
+ * token's, and any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -152,14 +162,48 @@ describe('configuration_policies RLS — dual-axis (2026-06-27 migration)', () =
     expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
   });
 
-  it('an org-scope caller cannot see a partner-wide policy owned by its partner', async () => {
-    // Org scope is intentionally narrower than partner scope: partner-wide
-    // policies belong to the partner axis, which org-scope tokens don't hold.
+  // #2468 flipped this. It used to assert org scope could not see a
+  // partner-wide policy at all — but the fixture never set `currentPartnerId`,
+  // so it was asserting the AGENT context shape and passed for the wrong
+  // reason. `configuration_policies_partner_wide_select`
+  // (2026-10-05-110000-config-policy-partner-wide-select.sql) now grants an org
+  // token a SELECT-only view of its OWN partner's partner-wide rows, which is
+  // what every request-path reader previously bought with a nested
+  // system-context escalation. Writes are unchanged — see below and the full
+  // matrix in configPolicyPartnerWideSelect.integration.test.ts.
+  it('an org-scope caller of the owning partner CAN read a partner-wide policy but cannot write it', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const id = await seedPartnerPolicy(partner.id);
 
-    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .select({ id: configurationPolicies.id })
+        .from(configurationPolicies)
+        .where(eq(configurationPolicies.id, id)),
+    );
+    expect(visibleToOrg.map((r) => r.id)).toEqual([id]);
+
+    // The branch is FOR SELECT only: RLS hides the row from the write command
+    // rather than raising, so assert the ROW COUNT — "it didn't throw" would
+    // be satisfied by a successful hijack.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(configurationPolicies)
+        .set({ name: 'HIJACKED' })
+        .where(eq(configurationPolicies.id, id))
+        .returning({ id: configurationPolicies.id }),
+    );
+    expect(updated).toEqual([]);
+  });
+
+  it('an org-scope caller of a DIFFERENT partner still cannot see a partner-wide policy', async () => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: other.id });
+    const id = await seedPartnerPolicy(owner.id);
+
+    const visibleToOrg = await withDbAccessContext(orgContext(otherOrg.id, other.id), () =>
       db
         .select({ id: configurationPolicies.id })
         .from(configurationPolicies)

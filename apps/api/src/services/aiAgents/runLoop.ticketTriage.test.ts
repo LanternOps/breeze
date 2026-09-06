@@ -456,6 +456,33 @@ describe('ticket-triage persistence at finish (P2-4, Task A8)', () => {
     expect(final.patch.intentIds).toEqual(['intent-triage-approved', 'intent-triage-pending']);
   });
 
+  it('issue #4462 — per-field skip reasons reach the persisted outcome, not just the console log', async () => {
+    seedRows({ effective: policy({ mode: 'shadow' }) });
+    dbMockState.rowQueues.tickets = [[{ deviceId: null, resolutionNote: null, fieldProvenance: {} }]];
+    createActionIntent.mockResolvedValue({ id: 'intent-triage-3', status: 'pending_approval' });
+    scriptQuery({
+      toolCalls: [{
+        tool: 'submit_ticket_proposal',
+        // Below TICKET_TRIAGE_CONFIDENCE_FLOOR (0.7) — `persistTicketTriage`
+        // drops the `fields` slot with reason `below_confidence_floor`
+        // (ticketTriageFindings.ts). No device proposed either, so `link`
+        // skips with `no_device_proposed`.
+        input: { ...VALID_PROPOSAL, fields: { priority: { value: 'high', confidence: 0.3 } } },
+      }],
+      assistantText: 'Proposal submitted.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.patch.outcome).toMatchObject({
+      ticketTriageSkipped: expect.arrayContaining([
+        { item: 'fields', reason: 'below_confidence_floor' },
+        { item: 'link', reason: 'no_device_proposed' },
+      ]),
+    });
+  });
+
   it('a run that never calls submit_ticket_proposal finishes completed with ticket_proposal_missing', async () => {
     seedRows({ effective: policy({ mode: 'shadow' }) });
     scriptQuery({ assistantText: 'Nothing to report.' });

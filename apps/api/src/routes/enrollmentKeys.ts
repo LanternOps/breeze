@@ -54,6 +54,8 @@ import {
   hasNoLiveUnexhaustedBootstrapToken,
 } from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
+import { evaluateCapability, requireCapability } from "../services/partnerTrust";
+import { partnerTrustMode } from "../config/partnerTrustMode";
 
 // ============================================================
 // Signing-spend caps for the authenticated installer endpoint.
@@ -580,10 +582,10 @@ const installerLinkSchema = z.object({
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
 
-function sanitizeEnrollmentKey(
+export function sanitizeEnrollmentKey(
   enrollmentKey: typeof enrollmentKeys.$inferSelect,
 ) {
-  const { key, ...safeRecord } = enrollmentKey;
+  const { key, keySecretHash, ...safeRecord } = enrollmentKey;
   return safeRecord;
 }
 
@@ -1404,6 +1406,11 @@ enrollmentKeyRoutes.get(
     PERMISSIONS.ORGS_WRITE.action,
   ),
   requireMfa(),
+  // No requireCapability("installer_distribute") here: this is the console's
+  // authenticated own-device installer download (AddDeviceModal,
+  // EnrollDeviceStep, EnrollmentKeyManager) — not the abuse-relevant
+  // distribution surface. Distribution is gated below on bootstrap-token
+  // and installer-link, and on the anonymous evaluations.
   zValidator("query", installerQuerySchema),
   async (c) => {
     const auth = c.get("auth");
@@ -1903,6 +1910,7 @@ enrollmentKeyRoutes.post(
   ),
   userRateLimit("enroll-write", 10, 60),
   requireMfa(),
+  requireCapability("installer_distribute"),
   zValidator("param", idParamSchema),
   zValidator("json", bootstrapTokenBodySchema),
   async (c) => {
@@ -1987,6 +1995,7 @@ enrollmentKeyRoutes.post(
   ),
   userRateLimit("enroll-write", 10, 60),
   requireMfa(),
+  requireCapability("installer_distribute"),
   zValidator("json", installerLinkSchema),
   async (c) => {
     const auth = c.get("auth");
@@ -2511,6 +2520,27 @@ async function serveInstaller(
 
 export const publicEnrollmentRoutes = new Hono();
 
+async function anonymousInstallerDistributionAllowed(
+  orgId: string,
+  route: "public-download" | "short-link",
+): Promise<boolean> {
+  if (partnerTrustMode() === "off") return true;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  if (!org?.partnerId) return false;
+
+  const decision = await evaluateCapability("installer_distribute", {
+    partnerId: org.partnerId,
+    orgId,
+    detail: { route },
+  });
+  return decision.allow;
+}
+
 const publicDownloadQuerySchema = z
   .object({
     h: z
@@ -2566,6 +2596,10 @@ publicEnrollmentRoutes.get(
         return c.json({ error: "Invalid or expired download link" }, 404);
       }
 
+      if (!await anonymousInstallerDistributionAllowed(enrollmentKey.orgId, "public-download")) {
+        return c.json({ error: "Invalid or expired download link" }, 404);
+      }
+
       return serveInstaller(c, enrollmentKey, platform, finalToken);
     });
   },
@@ -2599,6 +2633,10 @@ publicShortLinkRoutes.get("/:code", async (c) => {
       row.installerPlatform !== "windows" &&
       row.installerPlatform !== "macos"
     ) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    if (!await anonymousInstallerDistributionAllowed(row.orgId, "short-link")) {
       return c.json({ error: "Not found" }, 404);
     }
 

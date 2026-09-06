@@ -341,3 +341,41 @@ describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
     expect(screen.queryByText(/^Title$/)).toBeNull();
   });
 });
+
+describe('ConnectDesktopButton — session creation (#4090)', () => {
+  beforeEach(() => {
+    _resetToastQueueForTests();
+    fetchMock.mockReset();
+    toastMock.mockReset();
+  });
+
+  it('never fires the unscoped stale-session sweep; the POST does its own device+type cleanup', async () => {
+    // Regression for #4090: DELETE /remote/sessions/stale with no deviceId revoked
+    // every live session the caller could see (the reporter's Terminal socket got
+    // close 4003 "Session revoked"), and racing it against the POST could revoke
+    // the brand-new desktop session too. The server already terminates stale
+    // rows scoped to device+type inside POST /remote/sessions, so the client
+    // sweep is both redundant and destructive.
+    fetchMock.mockResolvedValueOnce(jsonRes({
+      desktopAccess: null,
+      hasRemoteAccessLauncher: false,
+      remoteAccessLaunchSkipReason: 'no_provider_configured',
+    }));
+    fetchMock.mockResolvedValue(jsonRes({ id: 'sess-1', code: 'code-1', status: 'pending' }));
+
+    render(<ConnectDesktopButton deviceId="dev-4090" />);
+    fireEvent.click(screen.getByRole('button', { name: /connect desktop/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/remote/sessions',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    const staleCalls = fetchMock.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/remote/sessions/stale'),
+    );
+    expect(staleCalls).toEqual([]);
+  });
+});

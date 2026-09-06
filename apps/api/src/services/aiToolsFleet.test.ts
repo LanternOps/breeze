@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSchedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+  mockDeleteDeviceGroup: vi.fn(),
 }));
 
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
+
+vi.mock('./deviceGroupDelete', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./deviceGroupDelete')>();
+  return { ...actual, deleteDeviceGroup: mockDeleteDeviceGroup };
+});
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
@@ -201,6 +207,7 @@ import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
 import { upsertPatchApproval } from '../routes/patches/helpers';
 import { listFleetFindings } from './fleetFindings/query';
+import { DeviceGroupDeleteError } from './deviceGroupDelete';
 
 const mockListFleetFindings = listFleetFindings as unknown as ReturnType<typeof vi.fn>;
 
@@ -300,6 +307,10 @@ describe('manage_groups peripheral reconciliation', () => {
     orgCondition: () => undefined,
   } as any;
 
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('schedules exactly the memberships inserted by the direct AI path', async () => {
     let selectCall = 0;
     vi.mocked(db.select).mockImplementation(() => {
@@ -338,6 +349,65 @@ describe('manage_groups peripheral reconciliation', () => {
       ['device-1', 'ai_group_membership_changed'],
       ['device-2', 'ai_group_membership_changed'],
     ]);
+  });
+
+  it('returns the service error when a contract bills the deleted group', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' },
+          ]),
+        }),
+      }),
+    } as any);
+    mockDeleteDeviceGroup.mockRejectedValueOnce(
+      new DeviceGroupDeleteError(
+        'BILLED_BY_CONTRACTS',
+        'Group is billed by 1 contract(s); remove those contract lines first',
+        [{ id: 'contract-1', name: 'Acme', status: 'active' }],
+      )
+    );
+
+    const result = JSON.parse(await tool.handler({
+      action: 'delete',
+      groupId: 'group-1',
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'Group is billed by 1 contract(s); remove those contract lines first',
+      code: 'BILLED_BY_CONTRACTS',
+    });
+  });
+
+  it('returns the service error when an open quote prices the deleted group', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' },
+          ]),
+        }),
+      }),
+    } as any);
+    mockDeleteDeviceGroup.mockRejectedValueOnce(
+      new DeviceGroupDeleteError(
+        'QUOTED_BY_QUOTES',
+        'Group is priced by 1 open quote(s); remove those quote lines first',
+        undefined,
+        [{ id: 'quote-1', quoteNumber: 'Q-42', status: 'sent' }],
+      )
+    );
+
+    const result = JSON.parse(await tool.handler({
+      action: 'delete',
+      groupId: 'group-1',
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'Group is priced by 1 open quote(s); remove those quote lines first',
+      code: 'QUOTED_BY_QUOTES',
+    });
   });
 });
 

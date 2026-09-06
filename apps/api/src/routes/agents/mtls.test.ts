@@ -691,6 +691,15 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
+
+    // #2787 item 4 — deny is a REMOVAL path: it leaves the device in
+    // 'decommissioned'. The retention job measures the purge window from
+    // `decommissioned_at`, so every write that sets that status must stamp it
+    // or the device is silently exempt from the org's retention policy forever.
+    const setSpy = (dbUpdateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> }).set;
+    const setArg = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.status).toBe('decommissioned');
+    expect(setArg.decommissionedAt).toBeInstanceOf(Date);
   });
 });
 

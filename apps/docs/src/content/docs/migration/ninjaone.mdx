@@ -128,6 +128,32 @@ Bulk-load the converted scripts with [Recipe 6](/migration/toolkit/#recipe-6--bu
 
 ---
 
+## Migrating Custom Fields
+
+Ninja custom fields exist at four scopes — global, organization, location, and device — and Breeze's [custom fields](/features/custom-fields/) only have two ownership axes (partner-wide or one organization), so the mapping collapses two Ninja scopes onto each:
+
+| NinjaOne scope | Breeze owner | Notes |
+|---|---|---|
+| Global | **All organizations** (partner-wide) | Import once, not per organization. |
+| Organization | One organization | |
+| Location | **One organization** | Breeze has no site-level custom field; a location-scoped Ninja field becomes org-owned. If two locations under one organization disagree on a value, the later import wins — decide which location's values are authoritative before you run it. |
+| Device | (not a definition scope) | Device-scope is where *values* live, regardless of which scope owns the *definition* — see below. |
+
+Use the **Import from another RMM** wizard (Settings → Custom Fields, or the Devices page) rather than the raw `/v2/queries/custom-fields` export on its own:
+
+<Steps>
+
+1. From your Phase 0 export (step 4), separate global-scope fields from organization/location-scope ones — the wizard needs one pass per owner.
+2. Open the wizard, choose **NinjaOne** as the source. Import the global fields first with owner **All organizations**, then the organization/location fields per organization with owner **This organization only**.
+3. On the values step, map `systemName` (or NinjaOne's own device `id`, returned by `/v2/devices-detailed`) to an identifier column and each field's values to the matching custom field.
+4. **Map the device `id` to Source device ID**, not just the hostname. It is the durable identifier [Custom Fields](/features/custom-fields/) records on this first run, so a later re-import — after more devices enroll — resolves exactly instead of guessing by hostname.
+
+</Steps>
+
+A row the wizard can't resolve to exactly one device is reported, never guessed at. Re-run after each enrollment wave; an already-applied value is left alone by default.
+
+---
+
 ## Policies: The Part That Needs Design
 
 This is where NinjaOne migrations take their time. Ninja uses **nested, inheriting policies** — a parent policy with child overrides per organization or device role. Breeze does not model inheritance that way. Instead it is **partner-wide first**: a policy is owned by the partner and applies across every organization, or it is owned by one organization.

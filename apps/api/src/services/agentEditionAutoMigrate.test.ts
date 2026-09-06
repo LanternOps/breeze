@@ -96,6 +96,8 @@ function primeHappyPath() {
     deliveryOutcome: 'sent',
     executedAt: null,
     ignoredParameters: [],
+    runAs: 'system' as const,
+    targetSessionId: null,
   } as never);
   return claim;
 }

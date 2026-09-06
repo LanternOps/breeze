@@ -2325,14 +2325,18 @@ describe('MFA enrollment API bindings', () => {
     });
   });
 
-  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
-  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
-  // replays the code or — on the forced-enrollment page, where the user has
-  // nowhere else to go — signs them out for a typo.
-  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+  // #4470 (was #4413): /auth/mfa/enable now answers 400 + `code:
+  // 'mfa_code_invalid'` for "that TOTP is wrong", so a typo can no longer
+  // reach fetchWithAuth's 401 refresh-and-evict path at all. This replaces the
+  // client-side `skipUnauthorizedRetry` stopgap: the status itself carries the
+  // distinction now, so a NEW caller cannot re-inherit the logout bug by
+  // forgetting a flag.
+  it('treats a wrong-code 400 as a rejection: no refresh, no replay, still signed in', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(
+      { error: 'Invalid MFA code', message: 'Invalid MFA code', code: 'mfa_code_invalid' },
+      false,
+      400,
+    ));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
@@ -2341,6 +2345,34 @@ describe('MFA enrollment API bindings', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(refreshCallsOf(fetchMock)).toHaveLength(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+    // The stopgap flag is gone WITH the overloaded status, not instead of it.
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(init.skipUnauthorizedRetry).toBeUndefined();
+  });
+
+  // The other half of #4470: dropping the opt-out flag is only safe because a
+  // 401 from this endpoint now means ONLY "your bearer is dead" — and that
+  // still has to refresh and replay, or the forced-enrollment page (which
+  // always loads with an empty in-memory token) can never complete.
+  it('a genuine bearer 401 from /auth/mfa/enable still refreshes and replays', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: { accessToken: 'fresh', expiresInSeconds: 900 } }, true, 200))
+      .mockResolvedValueOnce(makeResponse({
+        success: true,
+        recoveryCodes: ['RC-ONE'],
+        tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+      }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toMatchObject({ success: true });
+
+    expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 
@@ -2409,5 +2441,161 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(false);
     expect(useAuthStore.getState().tokens).toEqual(newerTokens);
     expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
+  });
+});
+
+describe('replacement-session adoption (#4480)', () => {
+  it('installs the replacement tokens on the live session without touching the user record', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const rotated = { accessToken: 'rotated', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, rotated)).toBe(true);
+    expect(useAuthStore.getState().tokens).toEqual(rotated);
+    expect(useAuthStore.getState().user).toEqual({ ...baseUser, mfaEnabled: true });
+    // Adopting a replacement is not a new session — nothing else may re-run.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('refuses a replacement after logout rather than resurrecting the session', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a replacement that lost a race with a newer login', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+  });
+});
+
+// #4660: `POST /auth/change-password` and `POST /auth/account-deletion-request`
+// verify a password the user typed into the request BODY. Until this fix both
+// answered a rejection with 401 — the same status the bearer guard uses — and
+// neither caller passes `skipUnauthorizedRetry`, so `fetchWithAuth` handed the
+// rejection to refresh-and-replay and then `handleSessionExpired`: a single
+// typo signed the user out mid-flow instead of showing "that password is
+// wrong". The server now answers 400 + `code: 'invalid_credentials'`.
+//
+// These tests pin the mechanism at the transport layer, where the bug actually
+// lived, rather than at the component's copy. The 401 halves are the negative
+// controls: they prove the tests would still catch a regression that moved the
+// status back, and that a genuinely dead bearer on these paths must STILL
+// refresh (both pages load with an empty in-memory access token after a
+// reload, so removing that would break them a different way).
+describe('fetchWithAuth — a rejected body password never looks like session death (#4660)', () => {
+  const REJECTED = {
+    error: 'Current password is incorrect',
+    message: 'Current password is incorrect',
+    code: 'invalid_credentials',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  it.each([
+    ['/auth/change-password', REJECTED],
+    ['/auth/account-deletion-request', {
+      error: 'Invalid password',
+      message: 'Invalid password',
+      code: 'invalid_credentials',
+    }],
+  ] as const)('a 400 from %s is returned to the caller: no refresh, no logout', async (path, body) => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(body, false, 400));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth(path, {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword: 'wrong', newPassword: 'new-strong-pw-1234' }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual(body);
+    // The single most important assertion: one call out, no refresh attempt.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refreshCallsOf(fetchMock)).toHaveLength(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+  });
+
+  it.each([
+    '/auth/change-password',
+    '/auth/account-deletion-request',
+  ])('a genuine bearer 401 from %s still refreshes and replays', async (path) => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: { accessToken: 'fresh', expiresInSeconds: 900 } }, true, 200))
+      .mockResolvedValueOnce(makeResponse({ success: true }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth(path, { method: 'POST', body: JSON.stringify({}) });
+
+    expect(response.status).toBe(200);
+    expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  // The fix is the STATUS, not a client-side opt-out. #4470 showed that
+  // `skipUnauthorizedRetry` is a trap — any new caller that forgets it
+  // re-inherits the logout — so neither of these call sites should acquire it.
+  it('neither call site opts out of the 401 retry path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(REJECTED, false, 400));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/auth/change-password', { method: 'POST', body: '{}' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(init.skipUnauthorizedRetry).toBeUndefined();
+  });
+
+  // The harm, demonstrated rather than asserted. This is the shape #4660
+  // describes: with the OLD 401 the rejection entered the refresh path, and
+  // whenever that refresh could not restore the session — a refresh cookie
+  // that has aged out on a long-open profile page is the common case — the
+  // user was logged out and bounced to /login. They mistyped a password; they
+  // got signed out. Nothing about the wrong password made the session dead.
+  //
+  // Kept as a live test (not a comment) because it is the reason the server
+  // change is worth a wire-contract break: if a future change routes 400s
+  // through the refresh path too, the first test above goes red and this one
+  // explains why that matters.
+  it('demonstrates the pre-fix harm: a 401 rejection whose refresh fails evicts the session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Current password is incorrect' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'refresh denied' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/settings/profile');
+    try {
+      await fetchWithAuth('/auth/change-password', { method: 'POST', body: '{}' });
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(replace).toHaveBeenCalledWith(
+      `/login?next=${encodeURIComponent('/settings/profile')}&reason=session-expired`,
+    );
   });
 });

@@ -122,6 +122,7 @@ function authority(kind: 'unrestricted' | 'restricted') {
   return {
     ok: true,
     authority: {
+      principalKind: 'user',
       scope,
       principalUserId: USER_ID,
       capturedAt: CAPTURED_AT,

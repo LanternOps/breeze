@@ -7,11 +7,14 @@ import { DEVICE_BLOCKED_CODE, type ApiError } from '../services/api';
  * user (issues #3115 / #3141): call sites show static copy on screen and route
  * the detail (function name, HTTP status) here instead.
  *
- * services/api.ts throws plain `ApiError` object literals, not `Error`
- * instances. Captured as-is, those become stackless synthetic Sentry events
- * that all group into one issue ("Object captured as exception…"), so
- * non-Error values are normalized into a real `Error` keyed on the area and
- * status, with the original object preserved in `extra`.
+ * `services/api.ts` throws a real `ApiError extends Error` (#4747), so most
+ * callers hit the `instanceof Error` branch and are captured as-is. This stays
+ * defensive for anything that still throws a plain object or non-Error value
+ * (a caught third-party rejection, a stubbed test double, `throw 'string'`) —
+ * captured as-is those become stackless synthetic Sentry events that all group
+ * into one issue ("Object captured as exception…"), so non-Error values are
+ * normalized into a real `Error` keyed on the area and status, with the
+ * original value preserved in `extra`.
  */
 export function reportInternalError(err: unknown, area: string): void {
   const apiErr = err && typeof err === 'object' ? (err as Partial<ApiError>) : null;
@@ -28,8 +31,22 @@ export function reportInternalError(err: unknown, area: string): void {
           `${area} failed: ${apiErr?.statusCode ?? '?'} ${apiErr?.message ?? String(err)}`.trim(),
         );
 
+  // A real `ApiError` is `instanceof Error` and takes the branch above
+  // unchanged, but Sentry does not auto-serialize a thrown Error subclass's
+  // own `code`/`statusCode` properties (no extraErrorDataIntegration
+  // configured) — attach them explicitly so the HTTP status/code survives
+  // into the event instead of only living in the stack trace.
+  const apiExtra =
+    apiErr && (apiErr.code !== undefined || apiErr.statusCode !== undefined)
+      ? { code: apiErr.code, statusCode: apiErr.statusCode }
+      : null;
+
   Sentry.captureException(normalized, {
     tags: { area },
-    ...(err instanceof Error ? {} : { extra: { apiError: err } }),
+    ...(err instanceof Error
+      ? apiExtra
+        ? { extra: apiExtra }
+        : {}
+      : { extra: { apiError: err } }),
   });
 }

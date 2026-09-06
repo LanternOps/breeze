@@ -109,6 +109,56 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
+  it('writes probation whenever hosted partner trust evaluation is running (shadow or enforce), omits it when off', async () => {
+    const previousIsHosted = process.env.IS_HOSTED;
+    const previousMode = process.env.PARTNER_TRUST_MODE;
+    try {
+      process.env.IS_HOSTED = 'true';
+      process.env.PARTNER_TRUST_MODE = 'enforce';
+      await createPartner({
+        orgName: 'Enforced',
+        adminEmail: 'enforced@example.com',
+        adminName: 'Enforced',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const enforcedInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(enforcedInsert.values).toHaveProperty('trustState', 'probation');
+
+      insertCalls = [];
+      process.env.PARTNER_TRUST_MODE = 'shadow';
+      await createPartner({
+        orgName: 'Shadow',
+        adminEmail: 'shadow@example.com',
+        adminName: 'Shadow',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const shadowInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(shadowInsert.values).toHaveProperty('trustState', 'probation');
+
+      insertCalls = [];
+      process.env.PARTNER_TRUST_MODE = 'off';
+      await createPartner({
+        orgName: 'Off',
+        adminEmail: 'off@example.com',
+        adminName: 'Off',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const offInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(offInsert.values).not.toHaveProperty('trustState');
+    } finally {
+      if (previousIsHosted === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = previousIsHosted;
+      if (previousMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+      else process.env.PARTNER_TRUST_MODE = previousMode;
+    }
+  });
+
   it('uses a caller transaction without opening a nested transaction', async () => {
     const input = {
       orgName: 'Outer Transaction',
@@ -270,6 +320,29 @@ describe('createPartner', () => {
       signupIp: '198.51.100.7',
       signupUserAgent: 'ua',
       mcpOriginIp: null,
+    });
+  });
+
+  // RMM-QA-164: the tenant Partner Admin copy must be created with
+  // force_mfa=true. The 2026-05-25-f migration ran before this row existed
+  // and never revisits it, so the literal on the insert is the invariant.
+  it('inserts the tenant Partner Admin role with forceMfa: true', async () => {
+    await createPartner({
+      orgName: 'Forced MFA Co',
+      adminEmail: 'forced@example.com',
+      adminName: 'Forced',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+      status: 'active',
+    });
+
+    const roleCall = insertCalls.find((c) => (c.table as any).__t === 'roles');
+    expect(roleCall).toBeDefined();
+    expect(roleCall!.values).toMatchObject({
+      scope: 'partner',
+      name: 'Partner Admin',
+      isSystem: true,
+      forceMfa: true,
     });
   });
 });

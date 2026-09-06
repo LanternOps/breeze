@@ -15,6 +15,15 @@
  * bypass for audit_logs, and the topological FK order against the
  * actual schema. Runs under the integration config which connects to
  * the test docker-compose stack.
+ *
+ * Scope note (#3880): this file is the REGRESSION suite — its fixture is
+ * shaped around specific shipped bugs (#4100, the QuickBooks polymorphic
+ * mapping pre-clear, the #3258 composite portal_users FK) and it asserts
+ * named tables. Breadth (zero residual rows across the WHOLE cascade list,
+ * self-referencing chains, device-scoped denormalized org_id, partner-wide
+ * org_id-NULL rows) and the mid-walk failure semantics live in
+ * `tenantCascadeErasureBreadth.integration.test.ts`. Add a new named
+ * regression fixture here; add a new shape class there.
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';

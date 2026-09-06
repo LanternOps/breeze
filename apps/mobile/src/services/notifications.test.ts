@@ -79,27 +79,22 @@ describe('registerForPushNotifications', () => {
     await expect(registerForPushNotifications()).resolves.toMatchObject({ status: 'ok' });
   });
 
-  it('Android without a projectId reports UNSUPPORTED, not failed', async () => {
-    // Regression: this used to throw 'EAS projectId missing', get caught, and
-    // surface as status:'failed' — showing a red "push failed" banner for a
-    // feature that was never wired after app.json dropped extra.eas.projectId.
+  it('Android uses the NATIVE FCM token, never the Expo relay', async () => {
     platform.OS = 'android';
+    notif.getDevicePushTokenAsync.mockResolvedValue({ data: 'FCM-TOKEN' });
 
     const out = await registerForPushNotifications();
 
-    expect(out).toEqual({ status: 'unsupported', reason: 'android_push_not_configured' });
-    expect(api.registerPushToken).not.toHaveBeenCalled();
+    expect(out).toEqual({ status: 'ok', token: 'FCM-TOKEN' });
+    expect(notif.getDevicePushTokenAsync).toHaveBeenCalledTimes(1);
+    expect(notif.getExpoPushTokenAsync).not.toHaveBeenCalled();
+    expect(api.registerPushToken).toHaveBeenCalledWith('FCM-TOKEN', 'android');
   });
 
-  it('Android WITH a projectId still uses the Expo relay', async () => {
+  it('Android does not need an EAS projectId', async () => {
     platform.OS = 'android';
-    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
-
-    const out = await registerForPushNotifications();
-
-    expect(out).toEqual({ status: 'ok', token: 'ExponentPushToken[x]' });
-    expect(notif.getExpoPushTokenAsync).toHaveBeenCalledWith({ projectId: 'proj-1' });
-    expect(api.registerPushToken).toHaveBeenCalledWith('ExponentPushToken[x]', 'android');
+    constants.expoConfig = { extra: {} }; // no eas.projectId anywhere
+    await expect(registerForPushNotifications()).resolves.toMatchObject({ status: 'ok' });
   });
 
   it('reports unsupported on a simulator', async () => {
@@ -111,17 +106,21 @@ describe('registerForPushNotifications', () => {
     });
   });
 
-  it('emits reasons the Settings sheet maps to SPECIFIC copy, not the generic fallback (#3118)', async () => {
-    // Pins the string contract between this service and pushUnavailableCopy:
-    // if a reason is renamed here, the sheet silently falls through to generic
-    // "this device" copy with both sides' own tests still green.
+  it('the not_physical_device reason maps to simulator copy on both platforms (#3118)', async () => {
+    // Pins the string contract between this service and pushUnavailableCopy.
+    // Android has no reason-specific unsupported copy any more (#3639) — its
+    // only unsupported reason is the platform-shared not_physical_device check
+    // — so both platforms must land on the same simulator copy, not a generic
+    // "this device" fallback.
+    device.isDevice = false;
+
     platform.OS = 'android';
     const android = await registerForPushNotifications();
     if (android.status !== 'unsupported') throw new Error('expected unsupported');
-    expect(pushUnavailableCopy(android.reason).notificationsRow).toMatch(/Android/);
+    expect(android.reason).toBe('not_physical_device');
+    expect(pushUnavailableCopy(android.reason).notificationsRow).toMatch(/simulator/i);
 
     platform.OS = 'ios';
-    device.isDevice = false;
     const sim = await registerForPushNotifications();
     if (sim.status !== 'unsupported') throw new Error('expected unsupported');
     expect(pushUnavailableCopy(sim.reason).notificationsRow).toMatch(/simulator/i);
@@ -154,12 +153,11 @@ describe('registerForPushNotifications', () => {
     // configured; a channel failure is a presentation nit, not a delivery
     // failure. Pre-#3143 this ran after the catch and rejected the promise.
     platform.OS = 'android';
-    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
     notif.setNotificationChannelAsync.mockRejectedValue(new Error('channel boom'));
 
     await expect(registerForPushNotifications()).resolves.toEqual({
       status: 'ok',
-      token: 'ExponentPushToken[x]',
+      token: 'APNS-TOKEN',
     });
   });
 
@@ -284,7 +282,7 @@ describe('reconcilePushRegistration (#3143)', () => {
     for (const [status, reason] of [
       ['failed', 'some network error'],
       ['failed', null],
-      ['unsupported', 'android_push_not_configured'],
+      ['unsupported', 'not_physical_device'],
       ['idle', null],
     ] as const) {
       await expect(reconcilePushRegistration(status, reason)).resolves.toBeNull();
@@ -427,7 +425,6 @@ describe('shouldSetBadgeFor (#4336)', () => {
 describe('the tickets Android channel (#4336)', () => {
   it('is registered alongside alerts and approvals', async () => {
     platform.OS = 'android';
-    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
 
     await registerForPushNotifications();
 

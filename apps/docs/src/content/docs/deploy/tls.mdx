@@ -48,6 +48,25 @@ The Caddyfile is generated inline inside `docker-compose.yml` — there is no se
 3. Caddy requests a certificate from Let's Encrypt on first start
 4. Certificates auto-renew 30 days before expiry
 
+### Internal CA for domains Let's Encrypt cannot reach
+
+If your Breeze domain is an internal name that only resolves on your LAN or VPN, or a host whose ports 80 and 443 are not open to the internet, Let's Encrypt cannot validate it. Left alone, the failed certificate order aborts the TLS handshake and the browser reports `ERR_SSL_PROTOCOL_ERROR` with nothing to click through — which reads like a broken deployment rather than a certificate problem.
+
+Set `CADDY_LOCAL_CERTS` to the literal value `local_certs` and Caddy issues from its own internal certificate authority instead of trying Let's Encrypt:
+
+```bash
+# .env.prod
+CADDY_LOCAL_CERTS=local_certs
+```
+
+Browsers will warn on the self-issued certificate until you trust the internal root on each client machine. Export it with:
+
+```bash
+docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt
+```
+
+Leave the variable empty for any internet-reachable deployment. You do not need it for `localhost` or a bare IP address, which Caddy already self-signs.
+
 ### WebSocket Proxying
 
 Caddy automatically handles WebSocket upgrade for:
@@ -59,7 +78,14 @@ No additional configuration needed.
 
 ## Nginx (Alternative)
 
-If you prefer nginx, here's an equivalent configuration:
+If you prefer nginx, here's an equivalent configuration.
+
+<Aside type="caution" title="The upstream ports below are not published by default">
+  The shipped `docker-compose.yml` publishes host ports for **Caddy only** (`80` and `443`). The `api` (3001), `web` (4321) and `portal` (4322) containers are reachable on the compose network but not from the host, so an nginx (or Nginx Proxy Manager) upstream of `127.0.0.1:4322` returns **502** until you either:
+
+  - **Front Caddy instead** (recommended) — point nginx at `http://127.0.0.1:80` as a single upstream with WebSocket support, and set `CADDY_SITE_ADDRESS=:80` in `.env` so Caddy stays in plain-HTTP mode behind your TLS terminator. Caddy already routes `/api/*`, `/portal/*` and the dashboard, and it is the configuration tested every release. This is the same arrangement as [Cloudflare Tunnel, Option A](/deploy/cloudflare-tunnel/).
+  - **Publish the ports** — add a `docker-compose.override.yml` with `ports:` entries for `api` (`3001:3001`), `web` (`4321:4321`) **and** `portal` (`4322:4322`), then use the per-path config below. If you publish only api and web, everything works except `/portal`, which 502s.
+</Aside>
 
 <Tabs>
   <TabItem label="nginx + certbot">

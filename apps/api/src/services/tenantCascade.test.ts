@@ -118,6 +118,22 @@ describe('getOrgCascadeDeleteOrder()', () => {
     expect(withoutOrgs).toEqual(sortedWithoutOrgs);
   });
 
+  it('registers report_schedule_recipients in localeCompare order', () => {
+    const order = getOrgCascadeDeleteOrder();
+    const recipients = order.indexOf('report_schedule_recipients');
+    const reports = order.indexOf('reports');
+
+    expect(recipients).toBeGreaterThan(-1);
+    expect(reports).toBeGreaterThan(recipients);
+    expect(
+      order.filter((name) => name !== 'organizations'),
+    ).toEqual(
+      order
+        .filter((name) => name !== 'organizations')
+        .sort((a, b) => a.localeCompare(b)),
+    );
+  });
+
   it('routes append-only ML feedback labels through the audit-admin delete path', () => {
     expect(cascadeOrder).toContain('ml_feedback_events');
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ml_feedback_events')).toBe(true);

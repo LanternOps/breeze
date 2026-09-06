@@ -39,7 +39,9 @@ vi.mock('../../services/deviceActions', () => ({
   sendDeviceCommand: vi.fn(),
   sendBulkCommand: vi.fn(),
   executeScript: vi.fn(),
-  toggleMaintenanceMode: vi.fn(),
+  enterMaintenanceMode: vi.fn(),
+  exitMaintenanceMode: vi.fn(),
+  bulkEnterMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
   restoreDevice: vi.fn(),
@@ -53,6 +55,16 @@ vi.mock('../../services/deviceActions', () => ({
   wakeFriendlyErrorMessage: vi.fn(() => null),
   linkDevicesMultiboot: vi.fn(),
   linkDevicesVmHost: vi.fn(),
+  // #3987: RemoveDeviceDialog fetches the env-driven drain window on open.
+  fetchRemovalConfig: vi.fn(async () => ({ uninstallDrainWindowHours: 72 })),
+  // #2787 bulk lifecycle.
+  bulkRestoreDevices: vi.fn(),
+  startBulkPurge: vi.fn(),
+  fetchPurgeRun: vi.fn(),
+  PURGE_POLL_INTERVAL_MS: 2000,
+  BulkPurgeRejectedError: class BulkPurgeRejectedError extends Error {
+    rejected: unknown[] = [];
+  },
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -191,11 +203,12 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-include-decommissioned={includeDecommissioned ? 'true' : 'false'}
+      data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
@@ -203,7 +216,7 @@ vi.mock('./DeviceList', () => ({
       data-wan-ips={devices.map(d => d.wanIp ?? '').join(',')}
       data-lan-ips={devices.map(d => d.lanIp ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare', 'restore', 'permanent-delete'].map(action => (
         <button
           key={action}
           type="button"
@@ -279,6 +292,15 @@ vi.mock('./DeviceList', () => ({
           onClick={() => onShowDecommissioned()}
         >
           show decommissioned
+        </button>
+      )}
+      {onHideDecommissioned && (
+        <button
+          type="button"
+          data-testid="stub-hide-decommissioned"
+          onClick={() => onHideDecommissioned()}
+        >
+          hide decommissioned
         </button>
       )}
     </div>
@@ -429,6 +451,89 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
     expect(screen.getByTestId(`device-card-${DEV_2}`)).toBeTruthy();
     expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
     expect(vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))).toBe(false);
+  });
+});
+
+// #4732: a failed /filters/preview (403 on a pinned orgId the caller can't
+// access, 500, network error) must never render as a silently unfiltered
+// list. useAdvancedFilterIds fails CLOSED (empty id set, `error: true`);
+// these tests prove DevicesPage actually surfaces that in BOTH views, since
+// only DeviceList (list view) gets an inline pill from its own suite —
+// DevicesPage owns the toast (which is the ONLY signal in grid view) and the
+// grid view's own persistent banner.
+describe('DevicesPage — advanced filter preview failure surfaces in both views (#4732)', () => {
+  function failPreview(status: number) {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return { ok: false, status, json: async () => ({ error: 'failed' }) } as unknown as Response;
+      }
+      return jsonResponse({ data: [] });
+    });
+  }
+
+  it('list view: resolves to an empty (not null) id set and toasts the failure on a 403', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(403);
+
+    render(<DevicesPage />);
+
+    const list = await screen.findByTestId('device-list');
+    // Empty Set -> `[...set].sort().join(',')` is '' — distinguishable from
+    // the "no filter" case (also '') only by the toast below firing, which
+    // is exactly why `error` exists as a separate signal from `ids`.
+    await waitFor(() => {
+      expect(list.getAttribute('data-filter-ids')).toBe('');
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringContaining('Advanced filter failed to load'),
+        }),
+      );
+    });
+  });
+
+  it('grid view: renders zero cards and a persistent error banner (not just the transient toast) on a 500', async () => {
+    failPreview(500);
+
+    render(<DevicesPage />);
+
+    const gridButton = await screen.findByLabelText('Grid view');
+    fireEvent.click(gridButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('device-filter-error-grid')).toBeTruthy();
+    });
+    expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+  });
+
+  it('does not spam the toast on an unrelated re-render while the same failing filter stays active', async () => {
+    const { showToast } = await import('../shared/Toast');
+    failPreview(500);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    const failureToasts = () =>
+      vi.mocked(showToast).mock.calls.filter(([toast]) =>
+        typeof toast.message === 'string' && toast.message.includes('Advanced filter failed to load'),
+      ).length;
+
+    await waitFor(() => expect(failureToasts()).toBe(1));
+
+    // Toggle view mode twice (grid, then back to list) — a state change and
+    // re-render on the page that does NOT touch `advancedFilter`. The error
+    // toast fires once on the false->true transition only; it must not fire
+    // again just because the page re-rendered for an unrelated reason.
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+    fireEvent.click(await screen.findByLabelText('List view'));
+    await screen.findByTestId('device-list');
+
+    expect(failureToasts()).toBe(1);
   });
 });
 
@@ -640,6 +745,17 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     expect(list.getAttribute('data-wan-ips')).toBe('');
   });
 
+  // RMM-QA-176 D10: bulk `maintenance-on` no longer fires N requests from the
+  // click. It opens MaintenanceModeDialog, which collects the now-REQUIRED
+  // reason + duration and makes ONE call to POST /devices/bulk/maintenance
+  // under ONE step-up grant. These helpers drive that dialog so the cases below
+  // keep asserting the same intent against the new shape.
+  async function submitMaintenanceDialog(reason = 'scheduled patching') {
+    const textarea = await screen.findByTestId('maintenance-reason');
+    fireEvent.change(textarea, { target: { value: reason } });
+    fireEvent.click(screen.getByTestId('maintenance-submit'));
+  }
+
   async function renderWithFleet() {
     const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValue(null); // no advanced filter
@@ -658,21 +774,33 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     return list;
   }
 
-  it('skips the network row and only toggles maintenance on the 3 agent devices', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+  // FLIPPED (RMM-QA-176). Was: 'skips the network row and only toggles
+  // maintenance on the 3 agent devices' — it asserted
+  // toggleMaintenanceMode toHaveBeenCalledTimes(3) and the targeted-id list of
+  // the client loop. Same intent, now against the single server-side call.
+  it('sends ONE bulk maintenance call carrying the 3 agent ids, never the network asset id', async () => {
+    const { bulkEnterMaintenanceMode, enterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(toggleMaintenanceMode).mockResolvedValue({ success: true, device: {} } as never);
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_1, DEV_2, DEV_3].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [],
+    } as never);
 
     await renderWithFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
 
     await waitFor(() => {
-      expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1);
     });
-    // The network asset id must NEVER have been sent to the maintenance endpoint.
-    const targetedIds = vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]);
-    expect(targetedIds).not.toContain(NET_1);
-    expect(targetedIds.sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+    // One call for the whole set — N single-device calls would demand N
+    // step-up grants and 403 on every one of them.
+    expect(vi.mocked(enterMaintenanceMode)).not.toHaveBeenCalled();
+    const body = vi.mocked(bulkEnterMaintenanceMode).mock.calls[0][0];
+    // The network asset id must NEVER reach the maintenance endpoint.
+    expect(body.deviceIds).not.toContain(NET_1);
+    expect([...body.deviceIds].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+    expect(body.reason).toBe('scheduled patching');
 
     // User is told the network device was skipped, then the success summary.
     const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
@@ -680,31 +808,67 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     expect(messages.some(m => /3 devices put into maintenance mode/i.test(m))).toBe(true);
   });
 
-  it('does not abort the batch when one agent device fails mid-loop (per-item catch)', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+  // FLIPPED (RMM-QA-176). Was: 'does not abort the batch when one agent device
+  // fails mid-loop (per-item catch)'. The per-item catch is gone with the loop;
+  // the server now reports per-device outcomes in `failed[]`, and the SAME
+  // intent — one device's failure neither aborts the batch nor is swallowed —
+  // is asserted against that list.
+  it('renders the partial-failure summary from the response failed[] (a 200 is not a success)', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    // The FIRST agent device throws (as a 404 on a real-but-stale id would).
-    // Without the per-item catch this aborts the loop and DEV_2/DEV_3 are
-    // silently skipped — exactly the bug. With the fix all 3 are attempted.
-    vi.mocked(toggleMaintenanceMode)
-      .mockRejectedValueOnce(new Error('404 not found'))
-      .mockResolvedValue({ success: true, device: {} } as never);
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_2, DEV_3].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [{ deviceId: DEV_1, code: 'STATE_CONFLICT', message: 'nope' }],
+    } as never);
 
     await renderWithFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
 
-    await waitFor(() => {
-      // All 3 agent devices were attempted despite the first throwing.
-      expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(3);
-    });
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
 
-    // A partial-failure summary toast is shown — not a generic abort.
-    const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-    expect(messages.some(m => /2 device.*maintenance mode.*1 failed/i.test(m))).toBe(true);
+    const toasts = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    const summary = toasts.find(x => /2 device.*maintenance mode.*1 failed/i.test(x.message ?? ''));
+    expect(summary).toBeDefined();
+    expect(summary!.type).toBe('error');
+  });
+
+  // The negative case that "always report success" would pass without: the
+  // bulk route answers 200 with an EMPTY `succeeded` when every device fails
+  // preflight. Reporting that as success would tell the technician the fleet
+  // is suppressed when nothing is.
+  it('reports an ALL-FAILED 200 as a failure, never as success', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [],
+      failed: [DEV_1, DEV_2, DEV_3].map(deviceId => ({
+        deviceId,
+        code: 'DECOMMISSIONED',
+        message: 'Cannot change maintenance mode for a decommissioned device.',
+      })),
+    } as never);
+
+    await renderWithFleet();
+    fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
+
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
+
+    const afterSubmit = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    const allFailed = afterSubmit.find(x => /failed to update maintenance mode for all 3/i.test(x.message ?? ''));
+    expect(allFailed).toBeDefined();
+    expect(allFailed!.type).toBe('error');
+    // And nothing anywhere claimed devices went INTO maintenance.
+    expect(
+      afterSubmit.some(x => x.type === 'success' && /maintenance mode/i.test(x.message ?? '')),
+    ).toBe(false);
   });
 
   it('blocks a network-only selection from an agent-only action with a clear message', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+    // Unchanged in meaning: the agent-only maintenance endpoint must not be
+    // reached at all. Only the service name moved.
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
 
     const { decodeFilterFromHash } = await import('./filterUrl');
@@ -728,7 +892,7 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
       expect(messages.some(m => /applies to agent devices only/i.test(m))).toBe(true);
     });
-    expect(vi.mocked(toggleMaintenanceMode)).not.toHaveBeenCalled();
+    expect(vi.mocked(bulkEnterMaintenanceMode)).not.toHaveBeenCalled();
   });
 });
 
@@ -850,13 +1014,13 @@ describe('DevicesPage — row selection routes by device class (#1424)', () => {
 });
 
 // #2251 — decommissioned devices are hidden by default with no cue that they
-// exist. The page must surface a "N decommissioned hidden — show" hint in both
-// views, and "show" applies the Decommissioned status filter (the existing
-// unhide mechanism — includeDecommissioned flips true when the active filter
-// targets that status).
-describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
-  it('grid view shows the hint; clicking "show" applies the Decommissioned filter and reveals the rows', async () => {
-    const { decodeFilterFromHash } = await import('./filterUrl');
+// exist. The page must surface a "N removed hidden — show" hint in both
+// views. #5023 paper cut: "show" ADDS the removed rows to whatever is on
+// screen (page-level showRemoved flag) instead of swapping the view to a
+// removed-only status filter; the hint then flips to "N removed shown — hide".
+describe('DevicesPage — hidden-decommissioned hint (#2251, #5023)', () => {
+  it('grid view: "show" adds the removed cards alongside the active one, leaves the filter alone, and offers "hide"', async () => {
+    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [
@@ -865,15 +1029,6 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
         { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
       ],
     } as never);
-    // The decommissioned status filter resolves to the two decommissioned rows.
-    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
-      if (url.startsWith('/filters/preview')) {
-        return jsonResponse({
-          data: { totalCount: 2, deviceIds: [DEV_2, DEV_3], evaluatedAt: new Date().toISOString() },
-        });
-      }
-      return jsonResponse({ data: [] });
-    });
 
     render(<DevicesPage />);
     fireEvent.click(await screen.findByLabelText('Grid view'));
@@ -886,25 +1041,64 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
 
     fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
 
-    // The status filter now targets decommissioned → those cards render, the
-    // online card drops out (filtered), and the hint disappears.
+    // The removed cards are ADDED — the active card stays, the hidden hint
+    // gives way to the "shown — hide" line.
     expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
     expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
-    await waitFor(() => {
-      expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
-    });
+    expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    const shown = screen.getByTestId('decommissioned-shown-hint');
+    expect(shown).toHaveTextContent('2 removed shown');
 
-    // The applied condition is the toolbar-equivalent status filter.
-    const previewCall = vi.mocked(fetchWithAuth).mock.calls.find(([url]) =>
-      String(url).startsWith('/filters/preview')
-    );
-    expect(previewCall).toBeDefined();
-    const body = JSON.parse(previewCall![1]?.body as string);
-    expect(body.conditions).toEqual({
-      operator: 'AND',
-      conditions: [{ field: 'status', operator: 'equals', value: 'decommissioned' }],
+    // No filter was applied or rewritten — the advanced filter is untouched.
+    expect(vi.mocked(writeFilterToHash).mock.calls.some(([f]) => f !== null)).toBe(false);
+    expect(
+      vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))
+    ).toBe(false);
+
+    // "hide" restores the default view.
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-hide'));
+    await waitFor(() => {
+      expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
     });
+    expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
+    expect(screen.getByTestId('decommissioned-hidden-hint')).toHaveTextContent('2 removed hidden');
+  });
+
+  it('grid view: the hint counts only removed devices the advanced filter admits', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
+      operator: 'AND',
+      conditions: [{ field: 'os', operator: 'equals', value: 'windows' }],
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+    // The os filter admits the active device and ONE of the two removed ones.
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: { totalCount: 2, deviceIds: [DEV_1, DEV_2], evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+
+    const hint = await screen.findByTestId('decommissioned-hidden-hint');
+    await waitFor(() => expect(hint).toHaveTextContent('1 removed hidden'));
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
+    expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
+    // DEV_3 is excluded by the filter, not by the hidden-by-default rule.
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+    expect(screen.getByTestId('decommissioned-shown-hint')).toHaveTextContent('1 removed shown');
   });
 
   it('grid view renders no hint when no decommissioned devices exist', async () => {
@@ -918,111 +1112,54 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
   });
 
-  it('list view: onShowDecommissioned replaces an existing status value and keeps other conditions', async () => {
+  it('list view: "show" flips includeDecommissioned without rewriting the existing filter; "hide" flips it back', async () => {
     const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
-      operator: 'AND',
+    const existing = {
+      operator: 'AND' as const,
       conditions: [
-        { field: 'os', operator: 'equals', value: 'windows' },
-        { field: 'status', operator: 'equals', value: 'online' },
+        { field: 'os', operator: 'equals' as const, value: 'windows' },
+        { field: 'status', operator: 'equals' as const, value: 'online' },
       ],
-    });
+    };
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(existing);
 
     render(<DevicesPage />);
     const list = await screen.findByTestId('device-list');
     expect(list.getAttribute('data-include-decommissioned')).toBe('false');
-
-    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
-
-    // status=online is REPLACED (single-select per field, like the toolbar);
-    // the os condition is preserved.
-    await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          { field: 'os', operator: 'equals', value: 'windows' },
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
-    });
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
-  });
-});
-
-// #2251 — the two trickier handleShowDecommissioned branches: an OR sentence
-// from the Advanced drawer must be nested (not rewritten to AND, and the
-// status condition must stay top-level where the includeDecommissioned memo
-// looks), and a multi-select `in` status condition must be replaced, not
-// stacked into a contradictory AND.
-describe('DevicesPage — show-decommissioned filter rewrite edge cases (#2251)', () => {
-  it('nests an OR group and keeps the status condition top-level', async () => {
-    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    const orGroup = {
-      operator: 'OR' as const,
-      conditions: [
-        { field: 'os', operator: 'equals' as const, value: 'windows' },
-        { field: 'os', operator: 'equals' as const, value: 'macos' },
-      ],
-    };
-    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(orGroup);
-
-    render(<DevicesPage />);
-    const list = await screen.findByTestId('device-list');
-    expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
 
     fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
 
     await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          orGroup,
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
+      expect(list.getAttribute('data-include-decommissioned')).toBe('true');
     });
-    // The top-level status condition is what flips includeDecommissioned —
-    // a condition buried inside the nested group would leave the rows hidden.
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('true');
+    // status=online is NOT replaced — the tech's filter survives "show".
+    const lastWritten = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
+    expect(lastWritten).toEqual(existing);
+
+    fireEvent.click(screen.getByTestId('stub-hide-decommissioned'));
+    await waitFor(() => {
+      expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+    });
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
   });
 
-  it('replaces a multi-select `in` status condition and preserves nested subgroups', async () => {
-    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    const nestedGroup = {
-      operator: 'OR' as const,
-      conditions: [
-        { field: 'os', operator: 'equals' as const, value: 'windows' },
-        { field: 'os', operator: 'equals' as const, value: 'linux' },
-      ],
-    };
+  it('list view: an explicit Decommissioned status filter shows the rows with no "hide" affordance', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
       operator: 'AND',
-      conditions: [
-        nestedGroup,
-        { field: 'status', operator: 'in', value: ['online', 'offline'] },
-      ],
+      conditions: [{ field: 'status', operator: 'equals', value: 'decommissioned' }],
     });
 
     render(<DevicesPage />);
     const list = await screen.findByTestId('device-list');
-
-    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
-
-    // A leftover `status in [...]` would AND with the new equals to an
-    // always-empty result; it must be replaced. The nested subgroup survives.
     await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          nestedGroup,
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
+      expect(list.getAttribute('data-include-decommissioned')).toBe('true');
     });
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+    // The filter (not the showRemoved flag) is what unhid them, so "hide"
+    // would be a no-op — it must not be offered.
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
   });
 });
 
@@ -1285,6 +1422,10 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
 
+    // #3987: the skip gate hands off to the agent-choice dialog, which is what
+    // actually fires the batch.
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
+
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     // DEV_3 (already decommissioned) must NOT be re-submitted — that's the
     // doomed request the API 400s. DEV_2 (offline) IS a legitimate target:
@@ -1334,6 +1475,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     await renderMixedFleet([DEV_1, DEV_2]);
 
     fireEvent.click(screen.getByTestId('bulk-decommission'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     await waitFor(() => {
@@ -1582,13 +1724,14 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     expect(decommissionDevice).not.toHaveBeenCalled();
     expect(await toastTypes()).not.toContain('undo');
 
-    // The SAME keys DeviceActions.tsx renders — proving no new copy was needed
-    // and that the two screens still read identically. The VALUES moved to
-    // "Remove" in #3987/#3994 (the action id stayed `decommission`); asserting
-    // the rendered text is what makes a future divergence between the two
-    // screens visible here, so these track the copy deliberately.
-    expect(await screen.findByText('Remove Device')).toBeTruthy();
-    expect(screen.getByText(/remove host-alpha\?/i)).toBeTruthy();
+    // The SAME component DeviceActions.tsx renders — RemoveDeviceDialog
+    // (#3987) — proving the two screens still read identically. The generic
+    // deviceActions.confirm.decommission.* copy this used to assert was
+    // replaced by the dialog's own removeDialog.* block, which asks the agent
+    // question instead of just "are you sure?"; asserting the rendered text is
+    // what makes a future divergence between the two screens visible here.
+    expect(await screen.findByText('Remove host-alpha?')).toBeTruthy();
+    expect(screen.getByTestId('remove-choice-uninstall')).toBeChecked();
 
     const confirmBtn = await screen.findByTestId('confirm-device-action');
     expect(confirmBtn.textContent).toBe('Remove');
@@ -1638,7 +1781,9 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     }
 
     expect(decommissionDevice).toHaveBeenCalledTimes(1);
-    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1);
+    // #3987: uninstall is the web's default answer, so an untouched dialog
+    // still queues the agent teardown.
+    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1, { uninstallAgent: true });
   });
 
   // The gate lives on the shared handleDeviceAction, so the grid card inherits
@@ -1659,7 +1804,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     fireEvent.click(await screen.findByTestId(`card-decommission-${DEV_1}`));
 
     expect(decommissionDevice).not.toHaveBeenCalled();
-    expect(await screen.findByText('Remove Device')).toBeTruthy();
+    expect(await screen.findByText('Remove host-alpha?')).toBeTruthy();
   });
 
   // Deliberate scope boundary (#4009): `restore` is the UNDO of a decommission.
@@ -1928,12 +2073,17 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
     await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
   }
 
-  it('decommissions every offline device — no gate, no confirm', async () => {
+  it('decommissions every offline device — no skip gate', async () => {
     const { bulkDecommissionDevices } = await import('../../services/deviceActions');
     vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    // #3987: the agent-choice dialog is NOT the #2465 skip gate — it asks what
+    // to do with the agent, it does not drop devices from the batch. The
+    // exemption this test pins is the absence of `confirm-decommissioned-skip`.
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
@@ -1941,16 +2091,26 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
     expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
-  it('flags every offline device into maintenance — no gate, no confirm', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
-    vi.mocked(toggleMaintenanceMode).mockResolvedValue({ success: true, device: {} } as never);
+  // FLIPPED (RMM-QA-176): the loop became one bulk call. The property under
+  // test is unchanged — no decommissioned-skip confirm gates an offline fleet,
+  // and both offline devices are targeted.
+  it('flags every offline device into maintenance — no decommissioned-skip gate', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_1, DEV_2].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [],
+    } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
-
-    await waitFor(() => expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect(vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]).sort()).toEqual(
+
+    const textarea = await screen.findByTestId('maintenance-reason');
+    fireEvent.change(textarea, { target: { value: 'scheduled patching' } });
+    fireEvent.click(screen.getByTestId('maintenance-submit'));
+
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
+    expect([...vi.mocked(bulkEnterMaintenanceMode).mock.calls[0][0].deviceIds].sort()).toEqual(
       [DEV_1, DEV_2].sort(),
     );
   });
@@ -2050,13 +2210,15 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
   });
 });
 
-// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the
-// agent could not be reached for remote uninstall (decommission force-closes
-// the WS handshake, so this is the common case, not a rare race — see the
-// issue). The row/grid path must branch the toast on it instead of always
-// showing a green success, or the operator believes the endpoint is clean
-// when the agent is still installed and running.
-describe('DevicesPage — permanent delete surfaces the API warning (#4368)', () => {
+// #4368 was "surface the API's `warning` when the agent could not be reached
+// for remote uninstall". #2787 DELETED that warning: the best-effort WS
+// uninstall it described is gone, and permanent delete now REFUSES
+// (409 UNINSTALL_PENDING) while a durable agent uninstall is still
+// collectable, rather than deleting the device and hoping. So there is no
+// warning to surface any more, and the toast is unconditionally the success
+// one. What is pinned here is that the branch really is gone — not that it
+// happens not to fire for the bodies the API sends today.
+describe('DevicesPage — permanent delete toasts success, with no warning branch (#2787, was #4368)', () => {
   beforeEach(() => {
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
@@ -2065,15 +2227,18 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
 
   async function runPermanentDelete() {
     render(<DevicesPage />);
-    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    // #5023: the kebab only opens the confirm now — the delete and its undo
+    // window start from the dialog.
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
 
     // Only setTimeout is faked, and fake timers must be installed BEFORE the
-    // click — the 5s undo-window timer is scheduled synchronously inside the
-    // click handler, so installing fake timers after the click would leave it
-    // running on the real clock.
+    // confirm — the 5s undo-window timer is scheduled synchronously inside the
+    // handler, so installing fake timers after it would leave it running on
+    // the real clock.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      fireEvent.click(trigger);
+      fireEvent.click(confirmBtn);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000);
       });
@@ -2082,37 +2247,570 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
     }
   }
 
-  it('shows a warning toast (not success) when the agent could not be reached', async () => {
+  it('shows a success toast for the plain { success: true } body the API now returns', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
-      success: true,
-      agentUninstallSent: false,
-      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
-    } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(
-      expect.objectContaining({
-        type: 'warning',
-        message: expect.stringContaining('host-alpha'),
-      }),
+      expect.objectContaining({ type: 'success', message: expect.stringContaining('host-alpha') }),
     );
-    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
-    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
 
-  it('still shows a success toast when there is no warning', async () => {
+  /**
+   * The DISCRIMINATING half. Feeding a body that still carries the retired
+   * `warning` field proves the branch was removed rather than merely being
+   * unreachable with today's payloads — a dead `if` would resurrect the
+   * warning toast here and claim an uninstall attempt that no longer exists.
+   */
+  it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
     const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      warning: 'The agent could not be reached for remote uninstall.',
+    } as never);
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
-    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
+  });
+
+  // Paper cut: the undo toast shown the instant the delete is triggered never
+  // named which device was being deleted (locale value was the untranslated
+  // "Permanent Deleting" constant, with no {{hostname}} interpolation).
+  it('names the device in the initial undo toast', async () => {
+    const { showToast } = await import('../shared/Toast');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('confirm-device-action'));
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        type: 'undo',
+        message: expect.stringContaining('host-alpha'),
+      }),
+    );
+  });
+});
+
+// #3987 items 2 + 6: every Remove surface asks what should happen to the agent
+// and forwards the answer to the API. Before this, the web issued a bodyless
+// DELETE, so `uninstallAgent` defaulted to false server-side and every removed
+// machine kept a zombie agent heartbeating into a 403.
+describe('DevicesPage — Remove asks about the agent (#3987)', () => {
+  it('single Remove from the row kebab defaults to uninstall and sends uninstallAgent: true', async () => {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue({ success: true } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+
+    const uninstallRadio = await screen.findByTestId('remove-choice-uninstall');
+    expect(uninstallRadio).toBeChecked();
+
+    // Only setTimeout is faked — the 5s undo window is a plain timer inside
+    // runDeviceAction (see the #4009 describe above for why not Date).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-device-action'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(decommissionDevice)).toHaveBeenCalledWith(DEV_1, { uninstallAgent: true }),
+    );
+  });
+
+  it('single Remove forwards uninstallAgent: false when the operator leaves the agent', async () => {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue({ success: true } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('remove-choice-leave'));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-device-action'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(decommissionDevice)).toHaveBeenCalledWith(DEV_1, { uninstallAgent: false }),
+    );
+  });
+
+  it('bulk Remove asks once and forwards the one choice to bulkDecommissionDevices', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'online' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+      ],
+    } as never);
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    // One dialog for the whole selection, bucketed online vs not-currently-online.
+    expect(await screen.findByText('Remove 2 devices?')).toBeTruthy();
+    expect(screen.getByTestId('remove-dialog-summary').textContent)
+      .toBe('1 online, 1 not currently online.');
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('remove-choice-leave'));
+    fireEvent.click(screen.getByTestId('confirm-bulk-remove'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(bulkDecommissionDevices).mock.calls[0][1]).toEqual({ uninstallAgent: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2787 — bulk Restore + async bulk Delete permanently
+// ---------------------------------------------------------------------------
+describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () => {
+  const removedFleet = () =>
+    ({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    }) as never;
+
+  async function renderWithRemovedFleet() {
+    vi.mocked(fetchAllDevices).mockResolvedValue(removedFleet());
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+  }
+
+  it('bulk Restore calls bulkRestoreDevices with the selected ids and toasts success', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [
+        { deviceId: DEV_1, uninstallAlreadyDispatched: false },
+        { deviceId: DEV_2, uninstallAlreadyDispatched: false },
+      ],
+      failed: [],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() => expect(vi.mocked(bulkRestoreDevices)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(bulkRestoreDevices).mock.calls[0]![0]).toEqual([DEV_1, DEV_2]);
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: '2 device(s) restored' }),
+      ),
+    );
+  });
+
+  it('warns separately when a restored device had already received its uninstall', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [
+        { deviceId: DEV_1, uninstallAlreadyDispatched: true },
+        { deviceId: DEV_2, uninstallAlreadyDispatched: false },
+      ],
+      failed: [],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    // The device row came back, but the MACHINE may already be wiped — a
+    // success toast alone would tell the operator everything is fine.
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'warning', message: expect.stringContaining('reinstalled') }),
+      ),
+    );
+  });
+
+  it('reports a partial bulk-restore failure as an error, not a success', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [{ deviceId: DEV_2, code: 'NOT_REMOVED', message: 'nope' }],
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: '1 device(s) restored; 1 failed' }),
+      ),
+    );
+  });
+
+  it('bulk Delete permanently confirms with a typed count, then polls the run to completion', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-1', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun)
+      .mockResolvedValueOnce({
+        state: 'active',
+        progress: { done: 1, total: 2 },
+        result: null,
+        failedReason: null,
+      })
+      .mockResolvedValue({
+        state: 'completed',
+        progress: { done: 2, total: 2 },
+        result: { purged: [DEV_1, DEV_2], skipped: [] },
+        failedReason: null,
+      });
+
+    await renderWithRemovedFleet();
+    const fetchesBefore = vi.mocked(fetchAllDevices).mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+
+    // Nothing is started by opening the dialog.
+    expect(await screen.findByTestId('bulk-purge-count')).toBeInTheDocument();
+    expect(vi.mocked(startBulkPurge)).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    // Fake timers must be installed BEFORE the confirm: runBulkPurge schedules
+    // the FIRST poll tick synchronously after startBulkPurge resolves, and a
+    // tick scheduled on the real clock is invisible to advanceTimersByTime.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalledWith([DEV_1, DEV_2]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: '2 device(s) permanently deleted' }),
+      ),
+    );
+    // The purged rows must leave the list; without a refetch they linger and
+    // the next action against them 404s.
+    await waitFor(() =>
+      expect(vi.mocked(fetchAllDevices).mock.calls.length).toBeGreaterThan(fetchesBefore),
+    );
+  });
+
+  it('surfaces a whole-selection rejection and never starts polling', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockRejectedValue(
+      new Error('No selected device can be permanently deleted'),
+    );
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: 'No selected device can be permanently deleted',
+        }),
+      ),
+    );
+    expect(vi.mocked(fetchPurgeRun)).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed run with the reason instead of a silent stall', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-2', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'failed',
+      progress: { done: 0, total: 2 },
+      result: null,
+      failedReason: 'Redis went away',
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Redis went away') }),
+      ),
+    );
+  });
+
+  it('names the skipped devices when a run completes with refusals', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-3', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'completed',
+      progress: { done: 2, total: 2 },
+      result: {
+        purged: [DEV_1],
+        skipped: [{ deviceId: DEV_2, code: 'UNINSTALL_PENDING' }],
+      },
+      failedReason: null,
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(vi.mocked(startBulkPurge)).toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // A bare "1 deleted" would hide the refusal entirely — the operator would
+    // never learn that a device is waiting on an agent uninstall.
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'warning',
+          message: expect.stringContaining('UNINSTALL_PENDING'),
+        }),
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5023 — a mutation must re-resolve the SERVER-side advanced filter, not just
+// the device rows.
+//
+// Advanced filters ("Status is Removed") are resolved server-side into an id
+// set by useAdvancedFilterIds and handed to the list/grid as `serverFilterIds`.
+// `fetchDevices()` after a mutation refreshed the ROWS only, so a Restore left
+// the now-non-matching device in that stale id set and it stayed on screen,
+// with a stale count, until a full page reload. Asserting the row disappears
+// alone is not enough — the refreshed rows still carry the restored device, so
+// what has to be pinned is that the id set was re-resolved.
+// ---------------------------------------------------------------------------
+describe('DevicesPage — post-mutation refresh re-resolves the advanced filter (#5023)', () => {
+  /**
+   * Stand in for a "Status is Removed" advanced filter over a removed fleet:
+   * the first resolution matches both devices, every later one matches only
+   * the device that is still removed.
+   */
+  async function removedFilterFleet() {
+    // An earlier describe pins decodeFilterFromHash to null with
+    // mockReturnValue, and vi.clearAllMocks() does not restore an
+    // implementation — re-arm the active filter explicitly rather than
+    // depending on suite order.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
+
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+
+    const state = { previewCalls: 0 };
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        state.previewCalls += 1;
+        const deviceIds = state.previewCalls === 1 ? [DEV_1, DEV_3] : [DEV_3];
+        return jsonResponse({
+          data: { totalCount: deviceIds.length, deviceIds, evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+    return state;
+  }
+
+  async function renderAndSettle(state: { previewCalls: number }) {
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() =>
+      expect(list.getAttribute('data-filter-ids')).toBe([DEV_1, DEV_3].sort().join(',')),
+    );
+    expect(state.previewCalls).toBe(1);
+  }
+
+  const filterIds = () => screen.getByTestId('device-list').getAttribute('data-filter-ids');
+
+  it('single Restore drops the restored device from the resolved id set', async () => {
+    const { restoreDevice } = await import('../../services/deviceActions');
+    vi.mocked(restoreDevice).mockResolvedValue({ success: true } as never);
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+
+  it('bulk Restore re-resolves the id set too', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [],
+    });
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() => expect(vi.mocked(bulkRestoreDevices)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5023 — single "Delete permanently" is gated like every other destructive
+// action.
+//
+// Bulk purge has always demanded a typed device count (BulkPurgeDialog), but
+// the row/card kebab's single Delete permanently went straight to the 5s undo
+// toast. Same irreversible operation, one accidental click away in a dense
+// list — and unlike Remove there is nothing to restore afterwards.
+// ---------------------------------------------------------------------------
+describe('DevicesPage — single permanent delete asks first (#5023)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
+    } as never);
+  });
+
+  it('opens a purge-framed confirm dialog instead of deleting immediately', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+
+    expect(await screen.findByText('Delete host-alpha permanently?')).toBeTruthy();
+    // The copy has to say what is actually destroyed — "are you sure?" would
+    // read as the (reversible) Remove the operator already knows.
+    expect(
+      screen.getByText(/deletes all history for this device/i),
+    ).toBeTruthy();
+
+    const confirmBtn = screen.getByTestId('confirm-device-action');
+    expect(confirmBtn.textContent).toBe('Delete permanently');
+    // Irreversible: the stop-octagon variant, not the caution triangle.
+    expect(confirmBtn.className).toContain('bg-destructive');
+
+    // Nothing has been queued — not even the undo toast, which is the point:
+    // the gate must precede the timer, not race it.
+    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(vi.mocked(showToast).mock.calls.some(([toast]) => toast.type === 'undo')).toBe(false);
+  });
+
+  it('cancelling deletes nothing', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    await screen.findByTestId('confirm-device-action');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-device-action')).toBeNull());
+    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+  });
+
+  it('confirming still deletes, undo window and all', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      // The confirm replaces the click as the trigger; the undo window it
+      // starts is kept, so a mis-confirm is still recoverable for 5s.
+      expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(vi.mocked(permanentDeleteDevice)).toHaveBeenCalledWith(DEV_1);
   });
 });

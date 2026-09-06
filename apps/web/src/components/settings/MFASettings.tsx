@@ -36,8 +36,8 @@ type MFASettingsProps = {
    * It lives only in the parent's React state and the `#ssoReauthGrant=`
    * fragment is stripped at mount, so a reload while the QR is on screen — or
    * a session restore, or opening the page in a second tab — loses it. Without
-   * this the Verify button would post no proof at all, the server would 401,
-   * and the user would be staring at that error on a screen with no password
+   * this the Verify button would post no proof at all, the server would refuse
+   * it, and the user would be staring at that error on a screen with no password
    * field and no way to re-verify. Defaults to `true` so the password road and
    * any caller that does not pass it are unaffected.
    */
@@ -48,8 +48,8 @@ type MFASettingsProps = {
   qrCodeDataUrl?: string;
   recoveryCodes?: string[];
   /**
-   * #4413: resolve to `false` when the write was REJECTED (e.g. the 401 a
-   * mistyped TOTP earns). `undefined` — what a handler that only sets
+   * #4413: resolve to `false` when the write was REJECTED (e.g. the 400
+   * `mfa_code_invalid` a mistyped TOTP earns — #4470). `undefined` — what a handler that only sets
    * `errorMessage` returns — is treated as success, matching `onRequestSetup`
    * and keeping the prop back-compatible. Without a verdict the panel used to
    * collapse on every outcome, discarding a secret the server will never
@@ -264,8 +264,8 @@ export default function MFASettings({
     // the parent supplies the SSO re-auth grant instead, so requiring a
     // non-empty password here would make the Verify button permanently inert.
     // But a passwordless account with NO grant left has no proof at all, and
-    // firing the request anyway just buys a 401 on a screen with nothing to
-    // retry with. Refuse to issue it; the view offers re-verification instead.
+    // firing the request anyway just buys a rejection on a screen with nothing
+    // to retry with. Refuse to issue it; the view offers re-verification instead.
     if (isLoading || isSubmitting || code.length !== DIGIT_COUNT
       || needsSsoReVerify
       || (!isPasswordless && !currentPassword)) {
@@ -298,7 +298,7 @@ export default function MFASettings({
         // #4413: stay on the QR. Leaving this view discards a secret the server
         // will not re-issue, so a mistyped digit would cost a whole re-
         // enrollment — and the password collected at the gate has to survive
-        // with it, or the retry 401s for an entirely different reason.
+        // with it, or the retry is refused for an entirely different reason.
         focusIndex(0);
       }
     }
@@ -903,7 +903,7 @@ export default function MFASettings({
 
         {/* #4018: the single-use grant is gone (reload, restored session, or a
             second tab), so there is no proof left to send. Say so and offer the
-            only thing that fixes it rather than letting the submit 401. */}
+            only thing that fixes it rather than letting the submit be refused. */}
         {needsSsoReVerify && (
           <p data-testid="mfa-sso-grant-lost" className="text-sm text-muted-foreground">
             {t('mFASettings.ssoReauthProofExpired')}

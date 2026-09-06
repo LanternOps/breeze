@@ -13,7 +13,9 @@ import {
   ShieldOff
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
+import { useHashTab } from '@/lib/useHashState';
 
 // Import actual components
 import ProcessManager, { type Process, type ProcessStatus } from './ProcessManager';
@@ -24,6 +26,7 @@ import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
 import ConnectDesktopButton from './ConnectDesktopButton';
+import { showToast } from '@/components/shared/Toast';
 import { getInitialFilePath } from './filePathUtils';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -48,6 +51,11 @@ const tabs: { id: ToolTab; label: string; icon: typeof Activity; windowsOnly?: b
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'files', label: 'File Browser', icon: FolderOpen }
 ];
+
+// The full set of tab ids, used to validate a deep-linked hash (#4512) — every
+// id in `tabs` above, regardless of `windowsOnly`, since the hash can be
+// followed before the device's OS (and therefore tab availability) resolves.
+const VALID_TABS: readonly ToolTab[] = tabs.map((tab) => tab.id);
 
 type DeviceOs = 'windows' | 'macos' | 'linux';
 
@@ -396,7 +404,13 @@ export default function RemoteToolsPage({
   showClose = false
 }: RemoteToolsPageProps) {
   const { t } = useTranslation('remote');
-  const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
+  // Tab selection is persisted in the URL hash (#4512) rather than plain
+  // component state, so a browser refresh (or a deep link) lands back on the
+  // tab the user was on instead of always resetting to Processes — same
+  // pattern as DeviceDetails.tsx / DnsSecurityPage.tsx (CLAUDE.md "URL State
+  // in Components": hash, not query params). `useHashTab` is SSR-safe: the
+  // first render uses `initialTab` and the hash is adopted post-mount.
+  const [activeTab, setActiveTabState] = useHashTab<ToolTab>(VALID_TABS, initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
   const [isHeadless, setIsHeadless] = useState(false);
@@ -407,6 +421,10 @@ export default function RemoteToolsPage({
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
   const [processLoading, setProcessLoading] = useState(false);
+  // Reason the last process-list fetch failed, or null. Kept separate from
+  // `processes` because an empty list and a failed fetch must not render the
+  // same thing (#4935).
+  const [processError, setProcessError] = useState<string | null>(null);
 
   // Services state
   const [services, setServices] = useState<WindowsService[]>([]);
@@ -428,6 +446,28 @@ export default function RemoteToolsPage({
   const availableTabs = tabs.filter(tab => !tab.windowsOnly || isWindows);
   const shouldShowClose = showClose || Boolean(onClose);
   const deviceOsLabel = formatDeviceOs(resolvedDeviceOs);
+
+  // Reflect tab clicks into the URL hash (CLAUDE.md "URL State in
+  // Components") — matches DnsSecurityPage.tsx's switchTab.
+  const switchTab = useCallback((tab: ToolTab) => {
+    window.location.hash = tab;
+    setActiveTabState(tab);
+  }, [setActiveTabState]);
+
+  // A hash can restore a windows-only tab (bookmarked/shared link, or a stale
+  // fragment left over from a different device) for a device that turns out
+  // not to be Windows. `availableTabs` below already hides that tab's button
+  // and none of the tab-content branches render for it, so without this the
+  // page would silently show no active tab and an empty content pane — the
+  // hash gives that state a second, unguarded path that clicking a tab button
+  // never could. Reset to the always-available Processes tab when that
+  // happens, and reflect the correction into the hash too.
+  useEffect(() => {
+    const tabDef = tabs.find(tab => tab.id === activeTab);
+    if (tabDef?.windowsOnly && !isWindows) {
+      switchTab('processes');
+    }
+  }, [activeTab, isWindows, switchTab]);
 
   const handleClose = useCallback(() => {
     if (onClose) {
@@ -489,12 +529,28 @@ export default function RemoteToolsPage({
     setProcessLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=500`);
-      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchProcesses'));
+      if (!res.ok) {
+        // An offline device answers 503 with
+        // `{ error: 'The device is offline.', code: 'device_offline' }`
+        // (apps/api/src/routes/systemTools/fileBrowserHelpers.ts). Discarding
+        // that body and logging in the catch below is what made this tab read
+        // "Processes 0 / No Data" — indistinguishable from a genuinely idle
+        // box (#4935). Keep the server's reason so the pane says why.
+        const body = await res.json().catch(() => null);
+        throw new Error(extractApiError(body, t('remoteToolsPage.errors.fetchProcesses')));
+      }
       const json = await res.json();
       const data: ApiProcess[] = Array.isArray(json.data) ? json.data : [];
       setProcesses(data.map(mapProcess));
+      setProcessError(null);
     } catch (err) {
       console.error('Failed to fetch processes:', err);
+      // Drop any rows from an earlier successful fetch: leaving them beside the
+      // error banner would show a stale list as if it were current.
+      setProcesses([]);
+      setProcessError(
+        err instanceof Error ? err.message : t('remoteToolsPage.errors.fetchProcesses')
+      );
     } finally {
       setProcessLoading(false);
     }
@@ -849,7 +905,7 @@ export default function RemoteToolsPage({
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => switchTab(tab.id)}
               className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                 isActive
                   ? 'border-primary text-primary'
@@ -888,6 +944,7 @@ export default function RemoteToolsPage({
             deviceName={resolvedDeviceName}
             processes={processes}
             loading={processLoading}
+            loadError={processError}
             onRefresh={fetchProcesses}
             onKillProcess={handleKillProcess}
             onGetProcess={handleGetProcess}
@@ -957,6 +1014,15 @@ export default function RemoteToolsPage({
           <RemoteTerminal
             deviceId={deviceId}
             deviceHostname={resolvedDeviceName}
+            // Without this the terminal's only failure report went nowhere: it
+            // calls onError and, before #4152, did nothing else — so a dead
+            // terminal was indistinguishable from an idle one. The in-pane
+            // retry overlay is the primary signal now; the toast is what makes
+            // the failure noticeable if the user is looking elsewhere.
+            onError={(msg) => {
+              console.error('[RemoteToolsPage] Terminal error:', msg);
+              showToast({ type: 'error', message: msg });
+            }}
           />
         )}
         {activeTab === 'files' && (

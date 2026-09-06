@@ -33,7 +33,7 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 const visibleLine: InvoiceDetail['lines'][number] = {
   id: 'line-1', invoiceId: 'inv-1', sourceType: 'manual', parentLineId: null, catalogItemId: null,
   name: null, description: 'Consulting', quantity: '2.00', unitPrice: '50.00', costBasis: null, revenueAllocation: null,
-  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1,
+  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
 };
 
 // Draft with a customer-visible line so issue/send buttons are *otherwise*

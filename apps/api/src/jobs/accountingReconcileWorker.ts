@@ -61,6 +61,7 @@ import {
   listReconcilableConnections,
   stampReconcileRunError,
 } from '../services/accounting/accountingConnectionService';
+import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
 import { getAccountingProvider } from '../services/accounting/providerRegistry';
 import type { ChangeSetPaymentLine } from '../services/accounting/types';
@@ -247,6 +248,61 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
   );
 }
 
+/**
+ * Why a `reconcile-connection` job is a no-op (issue #4543). Before this, all
+ * four conditions below collapsed into one silent `return null` — a
+ * switched-off connection, a lost connection, a stale job target and a
+ * genuine connectivity problem were indistinguishable from the outside.
+ *
+ *   - `missing`: no QuickBooks connection exists for this partner at all.
+ *   - `connection_mismatch`: a connection exists, but it is not the row this
+ *     job named (the partner reconnected under a new connection id between
+ *     enqueue and processing — the job's target is simply stale).
+ *   - `not_connected`: the connection exists and matches, but its `status`
+ *     is not `connected` (e.g. `reauth_required`, `error`).
+ *   - `both_switches_off`: the connection is live and matches, but the
+ *     operator has switched BOTH `pull_payments` and `push_payments` off.
+ *     Phase D2 (spec decision 6): pull-off/push-on is NOT a skip — the CDC
+ *     pass still runs because it is what ADOPTS a Breeze-created Payment
+ *     whose phase 2 never landed and what notices a Breeze-origin Payment
+ *     deleted in QuickBooks; it just suppresses new QuickBooks-origin imports
+ *     (`skipped_pull_disabled`, counted per row).
+ */
+type ReconcileSkipReason = 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off';
+
+function classifyReconcileSkip(
+  conn: Pick<AccountingConnection, 'id' | 'status' | 'pullPayments' | 'pushPayments'> | null,
+  data: ReconcileConnectionJobData,
+): ReconcileSkipReason | null {
+  if (!conn) return 'missing';
+  if (conn.id !== data.connectionId) return 'connection_mismatch';
+  if (conn.status !== 'connected') return 'not_connected';
+  if (!conn.pullPayments && !conn.pushPayments) return 'both_switches_off';
+  return null;
+}
+
+/**
+ * One structured line per short-circuit reason (issue #4543) — see
+ * `classifyReconcileSkip`. On `connection_mismatch` also logs the LIVE
+ * connection id that superseded the job's stale target (review finding:
+ * without it, a debugger sees "this job's target is dead" but not what
+ * replaced it, and has to go query the connection row separately).
+ */
+function logReconcileSkip(
+  data: ReconcileConnectionJobData,
+  reason: ReconcileSkipReason,
+  conn: Pick<AccountingConnection, 'id'> | null,
+): void {
+  console.log(
+    '[AccountingReconcileWorker] run skipped',
+    `reason=${reason}`,
+    `connectionId=${data.connectionId}`,
+    `partnerId=${data.partnerId}`,
+    `trigger=${data.trigger}`,
+    ...(reason === 'connection_mismatch' && conn ? [`liveConnectionId=${conn.id}`] : []),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Job handlers (exported for direct unit testing)
 // ---------------------------------------------------------------------------
@@ -254,16 +310,12 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 /**
  * Reconcile ONE connection's CDC window.
  *
- * Returns null when the job is a no-op: no connection, a connection that is
- * not the one the job names, one that is not `connected`, or one with BOTH
- * direction switches off. Phase D2 (spec decision 6): pull-off/push-on still
- * runs the CDC pass — it is what ADOPTS a Breeze-created Payment whose phase
- * 2 never landed and what notices a Breeze-origin Payment deleted in
- * QuickBooks — it just suppresses new QuickBooks-origin imports. A
- * switched-off connection (both switches off) short-circuits BEFORE
- * `resolveConnectionAndToken`: that call is itself a QuickBooks round trip
- * plus a token write, and refreshing tokens for a connection the operator has
- * fully disabled is work nobody asked for.
+ * Returns `null` when the job is a no-op — see `classifyReconcileSkip` for the
+ * four distinct reasons, each logged via `logReconcileSkip` (issue #4543). A
+ * switched-off connection (BOTH direction switches off, Phase D2 spec
+ * decision 6) short-circuits BEFORE `resolveConnectionAndToken`: that call is
+ * itself a QuickBooks round trip plus a token write, and refreshing tokens for
+ * a connection the operator has fully disabled is work nobody asked for.
  */
 export async function processReconcileConnectionJob(
   data: ReconcileConnectionJobData,
@@ -274,17 +326,22 @@ export async function processReconcileConnectionJob(
       withSystemDbAccessContext(fn, `accountingReconcile.${data.trigger}`);
 
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    const shortCircuit = (reason: 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off'): null => {
-      console.log(
-        '[AccountingReconcileWorker] short-circuit',
-        `connectionId=${data.connectionId}`, `trigger=${data.trigger}`, `reason=${reason}`,
-      );
+    const skipReason = classifyReconcileSkip(conn, data);
+    if (skipReason) {
+      logReconcileSkip(data, skipReason, conn);
+      // `both_switches_off` is the one reason with no OTHER visible signal:
+      // `status` already surfaces `not_connected`, and `missing` /
+      // `connection_mismatch` name a job whose target isn't (or is no longer)
+      // the live connection, so there is nothing safe to stamp. Reuses the
+      // finding-H mechanism (`stampReconcileRunError`) — rendered on the
+      // connected-state "Sync now" card in QuickbooksIntegration.tsx.
+      if (skipReason === 'both_switches_off' && conn) {
+        await runInDbContext(() =>
+          stampReconcileRunError(db, conn.id, data.partnerId, 'run skipped — disabled for this connection'),
+        );
+      }
       return null;
-    };
-    if (!conn) return shortCircuit('missing');
-    if (conn.id !== data.connectionId) return shortCircuit('connection_mismatch');
-    if (conn.status !== 'connected') return shortCircuit('not_connected');
-    if (!conn.pullPayments && !conn.pushPayments) return shortCircuit('both_switches_off');
+    }
 
     const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting

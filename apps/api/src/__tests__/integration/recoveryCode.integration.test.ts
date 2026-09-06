@@ -101,7 +101,7 @@ describe('POST /auth/mfa/verify (method: recovery) — real-PG single-use concur
     tempTokens.length = 0;
   });
 
-  it('identical-code race: exactly one 200, one 401, persisted array has exactly 2 hashes (no double-spend)', async () => {
+  it('identical-code race: exactly one 200, one 400, persisted array has exactly 2 hashes (no double-spend)', async () => {
     const userId = await seedUserWithRecoveryCodes();
     const { getRedis } = await import('../../services');
     const redis = getRedis();
@@ -118,8 +118,12 @@ describe('POST /auth/mfa/verify (method: recovery) — real-PG single-use concur
 
     const [r1, r2] = await Promise.all([verify(app, tokenX, CODE_A), verify(app, tokenY, CODE_A)]);
 
+    // #4470: the loser's rejection is a REJECTED PROOF (its code is gone), so
+    // it answers 400 `mfa_code_invalid` — not the bearer guard's 401.
     const statuses = [r1.status, r2.status].sort((a, b) => a - b);
-    expect(statuses).toEqual([200, 401]);
+    expect(statuses).toEqual([200, 400]);
+    const loser = r1.status === 400 ? r1 : r2;
+    expect(await loser.json()).toMatchObject({ code: 'mfa_code_invalid' });
 
     const remaining = await readRecoveryCodes(userId);
     expect(remaining).toHaveLength(2);

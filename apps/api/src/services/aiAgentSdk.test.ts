@@ -93,6 +93,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     // tests below stub via checkGuardrails, not this map.
     file_operations: 1,
     get_device_details: 1,
+    // #4883: the handler behind script builder's `execute_script_on_device`.
+    run_script: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -185,6 +187,18 @@ vi.mock('../db/schema/actionIntents', () => ({
 // no DB/network surface, and asserting against the real value pins the
 // actual key resultSecrets.ts uses rather than a test-local guess.
 const mockCaptureException = vi.fn();
+// #4888 — PARTIAL mock: only the DB-reading resolver is stubbed, so the real
+// `describeScriptRunContext` still builds the sentence this file asserts on.
+// Mocking both would leave the approval prose untested from every angle.
+const mockResolveScriptRunContext = vi.fn();
+vi.mock('./scriptRunContextApproval', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./scriptRunContextApproval')>();
+  return {
+    ...actual,
+    resolveScriptRunContextForApproval: (...args: unknown[]) => mockResolveScriptRunContext(...args),
+  };
+});
+
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
 }));
@@ -948,6 +962,89 @@ describe('createSessionPreToolUse', () => {
       expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
     });
 
+    /**
+     * #4888 — the approval an assistant-chosen run context has to clear.
+     *
+     * Allowing the model to pick `runAs` is a privilege decision, and the
+     * condition attached to allowing it is that the human deciding the
+     * approval is told which context the run will use. These pin BOTH carriers
+     * of that fact, because they reach different surfaces: the structured
+     * `scriptRunContext` drives the web card's visible row, and the sentence
+     * folded into `description` is what the durable intent stores as its
+     * `reason` — i.e. what the /approvals queue and the mobile push show.
+     */
+    it('names the SYSTEM run context on the approval card and in the intent reason', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Run script abcd1234... on 1 device(s)',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+      mockInsertReturning({ id: 'exec-rc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-rc', approvalRequestIds: ['appr-rc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('run_script', {
+        scriptId: 'abcd1234-0000-0000-0000-000000000000',
+        deviceIds: ['d-1'],
+        runAs: 'system',
+      });
+
+      // The prose an approver reads on the queue / push must say SYSTEM, and
+      // must say it is an override — "runs as SYSTEM" alone does not tell a
+      // reviewer that this script normally runs as the logged-in user.
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toMatch(/SYSTEM/);
+      expect(intentArgs.reason).toMatch(/overriding the script's saved default/i);
+
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.description).toMatch(/SYSTEM/);
+      expect(published.scriptRunContext).toEqual({
+        effectiveRunAs: 'system',
+        scriptDefaultRunAs: 'user',
+        chosenByAssistant: true,
+        targetSessionId: null,
+      });
+    });
+
+    it('leaves a non-script tool\'s approval untouched — no run-context sentence, no structured field', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockResolveScriptRunContext.mockResolvedValue(null);
+      mockInsertReturning({ id: 'exec-nc' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-nc', approvalRequestIds: ['appr-nc'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'auto_approve' });
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+      const intentArgs = mockCreateActionIntent.mock.calls[0]![1] as { reason: string };
+      expect(intentArgs.reason).toBe('Execute command');
+      const published = (vi.mocked(session.eventBus.publish).mock.calls as unknown[][])
+        .map((call): Record<string, unknown> => call[0] as Record<string, unknown>)
+        .find((event: Record<string, unknown>) => event.type === 'approval_required')!;
+      expect(published.scriptRunContext ?? null).toBeNull();
+    });
+
     it('four-eyes: publishes NO selfApprovalRequestId when the requester holds no approval row', async () => {
       // The requester must never be handed a self-approve button (nor another
       // approver's row id) in a multi-approver org. objectContaining cannot
@@ -1622,6 +1719,112 @@ describe('createSessionPreToolUse', () => {
       toolName: 'take_screenshot',
       status: 'executing',
     }));
+  });
+
+  // #4883: script builder exposes `execute_script_on_device` but dispatches to
+  // the `run_script` handler. The session allowlist only ever holds the exposed
+  // MCP name, so the gate must be told which name the session actually granted
+  // — checking the handler name denied every Script Builder test run before
+  // tier/approval logic ran at all.
+  describe('#4883: tools exposed under a different name than their handler', () => {
+    const SCRIPT_BUILDER_ALLOWLIST = ['mcp__script_builder__execute_script_on_device'];
+
+    it('allows the call when the EXPOSED MCP name is on the allowlist', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 2,
+        requiresApproval: false,
+        description: 'Run script on device',
+      } as any);
+      const values = mockInsertValues();
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({ allowed: true });
+      // Only the allowlist check moved to the exposed name. Tier, RBAC and the
+      // audit row still describe the capability that actually runs.
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: 'script-1' });
+      expect(checkToolPermission).toHaveBeenCalledWith(
+        'run_script',
+        { scriptId: 'script-1' },
+        session.auth,
+      );
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        toolName: 'run_script',
+        status: 'executing',
+      }));
+    });
+
+    it('does not widen the allowlist — the bare handler name alone is still denied', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)('run_script', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'run_script' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // The exposed name is AUTHORITATIVE. A session that somehow granted only
+    // the handler alias must not thereby gain the tool the model actually
+    // calls — this is the case that goes green if createSessionPreToolUse
+    // reverts to checking `toolName`, so it pins the direction of the fix and
+    // not just its effect.
+    it('denies when only the HANDLER name is granted and the exposed name is not', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: ['mcp__script_builder__run_script'],
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'run_script',
+        { scriptId: 'script-1' },
+        'mcp__script_builder__execute_script_on_device',
+      );
+
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'execute_script_on_device' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects an exposed name the session never granted', async () => {
+      const session = makeActiveSession({
+        approvalMode: 'auto_approve',
+        allowedTools: SCRIPT_BUILDER_ALLOWLIST,
+      });
+
+      const result = await createSessionPreToolUse(session)(
+        'take_screenshot',
+        {},
+        'mcp__script_builder__take_screenshot',
+      );
+
+      // Named by the model-facing tool, not the internal handler, so the
+      // assistant can tell the user which capability it lacks.
+      expect(result).toEqual({
+        allowed: false,
+        error: "Tool 'take_screenshot' is not allowed for this session",
+      });
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('plan-step shortcut is gated on effective tier', () => {

@@ -43,6 +43,7 @@ vi.mock('../../services/catalogImageStorage', () => ({
   fetchImageFromUrl: vi.fn(),
   sniffImageMime: vi.fn(),
   MAX_CATALOG_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
+  CATALOG_IMAGE_WEBP_REJECTED_MESSAGE: "WebP images can't be used in quote PDFs — please upload a PNG or JPEG image instead.",
 }));
 
 vi.mock('../../services/tdSynnexDigitalBridge', () => ({
@@ -192,6 +193,21 @@ describe('catalog item image routes', () => {
     expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
   });
 
+  // #4521 — catalog item images reach quote PDFs (pdfkit, PNG/JPEG only) via line
+  // thumbnails, so WebP — a format sniffImageMime happily recognizes — must be
+  // rejected explicitly, distinct from the generic "unsniffable" 415 above.
+  it('POST /:id/image rejects a sniffed WebP with the clear PDF-specific message (415)', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.sniffImageMime as any).mockReturnValue('image/webp');
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array([1, 2, 3, 4])], 'p.webp', { type: 'image/webp' }));
+    const res = await app().request(`/${ID}/image`, { method: 'POST', body: form });
+    expect(res.status).toBe(415);
+    const body = await res.json();
+    expect(body.error).toBe(imgSvc.CATALOG_IMAGE_WEBP_REJECTED_MESSAGE);
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
   it('POST /:id/image 404s when the item is not the partner’s', async () => {
     (svc.getCatalogItem as any).mockRejectedValue(new (svc as any).CatalogServiceError('not found', 404, 'NOT_FOUND'));
     const form = new FormData();
@@ -226,6 +242,20 @@ describe('catalog item image routes', () => {
       body: JSON.stringify({ url: 'https://internal.example/p.png' })
     });
     expect(res.status).toBe(400);
+    expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/image/from-url rejects a WebP download with the clear PDF-specific message (415)', async () => {
+    (svc.getCatalogItem as any).mockResolvedValue({ item: { id: ID } });
+    (imgSvc.fetchImageFromUrl as any).mockRejectedValue(new Error(imgSvc.CATALOG_IMAGE_WEBP_REJECTED_MESSAGE));
+    const res = await app().request(`/${ID}/image/from-url`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/p.webp' })
+    });
+    expect(res.status).toBe(415);
+    const body = await res.json();
+    expect(body.error).toBe(imgSvc.CATALOG_IMAGE_WEBP_REJECTED_MESSAGE);
     expect(imgSvc.writeCatalogItemImage).not.toHaveBeenCalled();
   });
 
