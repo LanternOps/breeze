@@ -7,7 +7,8 @@
  * the rest so the SDK files have one import. Keep it otherwise a LEAF — no
  * schema, no db, no service imports: the SDK suites mock `../db/schema`
  * partially and widening this graph breaks them with "No <x> export is defined
- * on the mock".
+ * on the mock". (`@breeze/shared` is exempt: it carries no db/schema, and
+ * `aiAgentSdkTools.ts` already pulls the same barrel.)
  *
  * ## Why this exists
  *
@@ -38,11 +39,18 @@
  * stamps `toolOutcome: 'approved_executing'` instead of claiming the tool ran.
  */
 
+// Package ROOT, not `@breeze/shared/utils/aiToolHandoff`. The deep subpath is
+// absent from packages/shared's `exports` map, so Node refuses to resolve it —
+// and this is a VALUE import, which is why it fails at runtime rather than
+// being erased the way the neighbouring `import type ... from
+// '@breeze/shared/types/ai'` deep paths are. The unit job resolves the package
+// from source and never noticed; the integration config goes through the
+// exports map and three suites died at module load.
 import {
   AI_TOOL_APPROVED_EXECUTING,
   isAiToolHandoffOutput,
   type AiToolHandoffStatus,
-} from '@breeze/shared/utils/aiToolHandoff';
+} from '@breeze/shared';
 
 /** The one non-failure, non-success tool outcome. */
 export const APPROVED_EXECUTING_STATUS = AI_TOOL_APPROVED_EXECUTING;
