@@ -14,6 +14,7 @@ import {
   FileCode,
   RotateCcw,
   Settings,
+  Shield,
   Trash2,
   Zap,
   Columns3,
@@ -2381,10 +2382,10 @@ export default function DeviceList({
                                 if (rowMenuOpenId !== device.id) {
                                   const rect =
                                     e.currentTarget.getBoundingClientRect();
-                                  // ~280px dropdown height (7 items × ~36px + padding/divider).
+                                  // ~320px dropdown height (8 items × ~36px + padding/divider).
                                   // Flip up when the space below the button is less than that.
                                   setRowMenuFlipUp(
-                                    window.innerHeight - rect.bottom < 300,
+                                    window.innerHeight - rect.bottom < 340,
                                   );
                                   setRowMenuAnchor({
                                     top: rect.top,
@@ -2519,6 +2520,48 @@ export default function DeviceList({
                                   >
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
+                                  </button>
+                                  {/* #4936: maintenance mode was reachable only
+                                      through Bulk Actions, so acting on ONE
+                                      device meant ticking its checkbox and
+                                      opening a bulk menu. This dispatches the
+                                      same `maintenance` action the page already
+                                      handled — a per-device POST for one id.
+
+                                      Gating: maintenance is a DB flag, not an
+                                      agent command, so it is NOT gated on
+                                      `online` (bulkActionGating.ts lists
+                                      `maintenance-*` as intentionally ungated) —
+                                      suppressing monitoring on a box that has
+                                      already gone dark is the point of it. The
+                                      API does refuse a REMOVED device
+                                      (commands.ts: "Cannot change maintenance
+                                      mode for a decommissioned device"), which
+                                      is exactly the set `isCommandQueueable`
+                                      excludes, so the shared predicate and its
+                                      tooltip are correct here rather than
+                                      borrowed (#3994: no surface should offer an
+                                      action the API rejects). */}
+                                  <button
+                                    type="button"
+                                    data-testid={`device-${device.id}-action-maintenance`}
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(device.status, t)}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      onAction?.("maintenance", device);
+                                      setRowMenuOpenId(null);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Shield className="h-4 w-4" />
+                                    {device.status === "maintenance"
+                                      ? t("deviceList.exitMaintenance")
+                                      : t("deviceList.enterMaintenance")}{" "}
                                   </button>
                                   <hr className="my-1" />
                                   {device.status === "decommissioned" ? (

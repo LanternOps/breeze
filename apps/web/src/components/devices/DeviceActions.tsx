@@ -567,6 +567,26 @@ export default function DeviceActions({
                 <Power className="h-4 w-4" />
                 {t("deviceActions.shutdown")}{" "}
               </button>
+              <hr className="my-1" />
+              {/* #4936: maintenance is a DB flag, not an agent command, so it
+                  carries no `!online` gate of its own — it is the action you
+                  want immediately before the Reboot above. Same label logic and
+                  same ConfirmDialog route as the "…" menu entry. NOTE: the
+                  Power BUTTON keeps its pre-existing `!online` gate (#2013), so
+                  for a device already in maintenance this dropdown cannot open
+                  and exit stays on the "…" menu; relaxing that gate is pinned by
+                  test and deliberately not touched here. */}
+              <button
+                type="button"
+                data-testid="device-power-action-maintenance"
+                onClick={() => handleAction("maintenance")}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+              >
+                <Shield className="h-4 w-4" />
+                {device.status === "maintenance"
+                  ? t("deviceActions.exitMaintenance")
+                  : t("deviceActions.enterMaintenance")}
+              </button>
             </div>
           )}
         </div>

@@ -1460,3 +1460,92 @@ describe('DeviceList — Compare bulk action gating', () => {
     expect(screen.getByTestId('bulk-link-multiboot')).toBeInTheDocument();
   });
 });
+
+// #4936: maintenance mode was reachable ONLY through Bulk Actions — you had to
+// tick a single row's checkbox and open a bulk menu to act on that one device.
+// The row action menu now offers it directly and dispatches the SAME
+// `onAction('maintenance', device)` the page already handled, so the request is
+// the per-device POST /devices/:id/maintenance for exactly one id — no bulk
+// fan-out, no new handler.
+describe('DeviceList — row-menu maintenance mode (#4936)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const openRowMenu = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+  };
+
+  const maintenanceBtn = (id: string = baseDevice.id) =>
+    screen.getByTestId(`device-${id}-action-maintenance`);
+
+  it('offers Enter Maintenance on an online device and dispatches for that one device', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeEnabled();
+    expect(maintenanceBtn()).toHaveTextContent('Enter Maintenance');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).toHaveBeenCalledWith('maintenance', baseDevice);
+  });
+
+  it('flips to Exit Maintenance for a device already in maintenance', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'maintenance' };
+    render(<DeviceList devices={[device]} onAction={onAction} />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeEnabled();
+    expect(maintenanceBtn()).toHaveTextContent('Exit Maintenance');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).toHaveBeenCalledWith('maintenance', device);
+  });
+
+  // REGRESSION GUARD, same shape as the Run Script guard above: maintenance is
+  // a DB flag, not an agent command (bulkActionGating.ts lists `maintenance-*`
+  // under INTENTIONALLY_UNGATED_BULK_ACTIONS). Gating it on `online` would
+  // remove the ability to suppress monitoring on a box that has already gone
+  // dark — the case the flag exists for.
+  it.each(['offline', 'quarantined', 'updating', 'pending'] as const)(
+    'keeps maintenance ENABLED for a %s device (DB flag, not a live session)',
+    (status) => {
+      const onAction = vi.fn();
+      const device: Device = { ...baseDevice, status };
+      render(<DeviceList devices={[device]} onAction={onAction} />);
+      openRowMenu();
+
+      expect(maintenanceBtn()).toBeEnabled();
+      expect(maintenanceBtn()).not.toHaveAttribute('title');
+      fireEvent.click(maintenanceBtn());
+      expect(onAction).toHaveBeenCalledWith('maintenance', device);
+    },
+  );
+
+  // The one status the API genuinely refuses: commands.ts returns 400 "Cannot
+  // change maintenance mode for a decommissioned device". #3994 established the
+  // principle that no surface should offer an action the API rejects.
+  it('disables maintenance for a removed device, with a tooltip saying why', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'decommissioned' };
+    render(<DeviceList devices={[device]} onAction={onAction} includeDecommissioned />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeDisabled();
+    expect(maintenanceBtn()).toHaveAttribute('title', 'Device is removed');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('targets only the row it was opened from when several devices are listed', () => {
+    const onAction = vi.fn();
+    const second: Device = { ...baseDevice, id: '22222222-2222-2222-2222-222222222222', hostname: 'host-b' };
+    render(<DeviceList devices={[baseDevice, second]} onAction={onAction} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Device actions' })[1]!);
+    fireEvent.click(maintenanceBtn(second.id));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('maintenance', second);
+  });
+});

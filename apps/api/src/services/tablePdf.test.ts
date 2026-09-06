@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
-import { PDFDocument as PdfLibDocument } from 'pdf-lib';
+import { PDFDocument as PdfLibDocument, PDFArray, PDFDict, PDFName, PDFRawStream, PDFStream, PDFString, decodePDFRawStream } from 'pdf-lib';
 import { parseTable, measureTable, renderTableIntoPdf, MIN_COLUMN_WIDTH, CELL_PADDING, type EnsureRoomRich, type TableModel } from './tablePdf';
 import { registerThemeFonts } from './documentThemes';
 import type { QuoteTableContent } from '@breeze/shared';
@@ -481,5 +481,238 @@ describe('renderTableIntoPdf', () => {
     // in the (uncompressed) object bodies instead of the content stream).
     const raw = buf.toString('latin1');
     expect(raw).toContain('Helvetica-Bold');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-run cells in non-left-aligned columns (#4438).
+//
+// A cell whose HTML carries formatting (`<strong>`, `<a>`) is drawn as several
+// pdfkit `continued: true` runs. pdfkit applies `align` to EVERY text() call —
+// including each continued run — so a multi-run cell in a centered or
+// right-aligned column used to paint each run individually aligned inside the
+// box: all the runs of one line landed on top of each other. drawRuns now lays
+// those lines out itself (richTextPdf.ts); these tests pin the geometry from
+// the rendered bytes rather than trusting the implementation.
+// ---------------------------------------------------------------------------
+describe('renderTableIntoPdf multi-run cells in non-left-aligned columns (#4438)', () => {
+  const ACCENT = '#2563eb';
+  // Column weights 3/2 over an A4 content width (495pt) → 297pt + 198pt boxes.
+  const CENTER_HTML =
+    '<strong>Bold</strong> lead then a <a href="https://example.com/sla">service level link</a> plus enough trailing words that the cell wraps onto a second line';
+  const RIGHT_HTML = 'Base <strong>$1,200.00</strong> per <a href="https://example.com/pricing">month</a>';
+
+  interface Fragment { text: string; x: number; y: number; width: number; baseFont: string; size: number }
+
+  /** Every drawn text run with its origin, font and advance width. pdfkit
+   *  emits one `BT … ET` object per run: a `1 0 0 1 x y Tm` origin, a
+   *  `/Fn size Tf` font selection and a TJ show-text array. Widths are
+   *  re-measured at the fragment's own font+size — the TJ kerning adjustments
+   *  pdfkit interleaves are already included in widthOfString, so adding them
+   *  back would over-measure (verified against the underline rule pdfkit draws
+   *  for the same run, which spans exactly widthOfString). */
+  async function extractTextFragments(pdf: Buffer, pageHeight = 841.89): Promise<Fragment[]> {
+    const lib = await PdfLibDocument.load(pdf);
+    const measurer = new PDFDocument({ size: 'A4', margin: 50 });
+    const fragments: Fragment[] = [];
+    try {
+      for (const page of lib.getPages()) {
+        const fontByResourceName = new Map<string, string>();
+        const resources = page.node.Resources();
+        const fontEntry = resources instanceof PDFDict ? resources.get(PDFName.of('Font')) : undefined;
+        const fontDict = fontEntry instanceof PDFDict ? fontEntry : lib.context.lookupMaybe(fontEntry as never, PDFDict);
+        for (const [name, value] of fontDict?.entries() ?? []) {
+          const fontObj = lib.context.lookupMaybe(value as never, PDFDict);
+          const baseFont = fontObj?.get(PDFName.of('BaseFont'));
+          if (baseFont) fontByResourceName.set(name.toString(), baseFont.toString().replace(/^\//, ''));
+        }
+        const contentsEntry = page.node.get(PDFName.of('Contents'));
+        const contents = contentsEntry instanceof PDFArray
+          ? contentsEntry.asArray().map((ref) => lib.context.lookupMaybe(ref as never, PDFStream))
+          : [lib.context.lookupMaybe(contentsEntry as never, PDFStream)];
+        for (const stream of contents.filter((s): s is PDFRawStream => s instanceof PDFRawStream)) {
+          const body = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1');
+          const textObjectRe = /BT\s+([\s\S]*?)\s+ET/g;
+          let textObject: RegExpExecArray | null;
+          while ((textObject = textObjectRe.exec(body))) {
+            const block = textObject[1]!;
+            const tm = /1 0 0 1 ([\d.]+) ([\d.]+) Tm/.exec(block);
+            if (!tm) continue;
+            const tf = /\/(\w+) ([\d.]+) Tf/.exec(block);
+            const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+            let text = '';
+            let token: RegExpExecArray | null;
+            while ((token = tokenRe.exec(block))) {
+              text += token[1] !== undefined
+                ? Buffer.from(token[1].length % 2 ? `${token[1]}0` : token[1], 'hex').toString('latin1')
+                : token[2]!.replace(/\\([()\\])/g, '$1');
+            }
+            if (!text.length) continue;
+            const size = Number(tf?.[2] ?? 10);
+            const baseFont = fontByResourceName.get(`/${tf?.[1] ?? ''}`) ?? 'Helvetica';
+            measurer.font(baseFont).fontSize(size);
+            fragments.push({ text, x: Number(tm[1]), y: pageHeight - Number(tm[2]), size, baseFont, width: measurer.widthOfString(text) });
+          }
+        }
+      }
+    } finally {
+      measurer.end();
+    }
+    return fragments;
+  }
+
+  /** Link annotations on page 1: URI + rect (PDF user space, y up). */
+  async function extractLinkAnnotations(pdf: Buffer): Promise<{ uri: string; rect: number[] }[]> {
+    const lib = await PdfLibDocument.load(pdf);
+    const annots = lib.getPage(0).node.Annots();
+    const links: { uri: string; rect: number[] }[] = [];
+    for (const ref of annots?.asArray() ?? []) {
+      const annot = lib.context.lookupMaybe(ref as never, PDFDict);
+      if (!annot || annot.get(PDFName.of('Subtype'))?.toString() !== '/Link') continue;
+      const action = lib.context.lookupMaybe(annot.get(PDFName.of('A')) as never, PDFDict);
+      const uri = action?.get(PDFName.of('URI'));
+      const rect = annot.get(PDFName.of('Rect'));
+      links.push({
+        uri: uri instanceof PDFString ? uri.decodeText() : String(uri ?? ''),
+        rect: rect instanceof PDFArray ? rect.asArray().map((n) => Number(String(n))) : [],
+      });
+    }
+    return links;
+  }
+
+  /** Group fragments into drawn lines (same baseline) and sort each left→right. */
+  function toLines(fragments: Fragment[]): Fragment[][] {
+    const lines: Fragment[][] = [];
+    for (const f of [...fragments].sort((a, b) => a.y - b.y || a.x - b.x)) {
+      const line = lines[lines.length - 1];
+      if (line && Math.abs(line[0]!.y - f.y) < 0.5) line.push(f);
+      else lines.push([f]);
+    }
+    return lines;
+  }
+
+  interface ColumnBox { inner: { left: number; right: number }; outer: { left: number; right: number } }
+  interface Rendered { buf: Buffer; columns: ColumnBox[]; rowTop: number }
+
+  async function renderAlignedTable(aligns: ['center' | 'right' | 'left', 'center' | 'right' | 'left']): Promise<Rendered> {
+    const content = {
+      columns: [{ label: 'Item', align: aligns[0], weight: 3 }, { label: 'Amount', align: aligns[1], weight: 2 }],
+      rows: [{ cells: [CENTER_HTML, RIGHT_HTML] }],
+    } as unknown as QuoteTableContent;
+    const captured: Rendered = { buf: Buffer.alloc(0), columns: [], rowTop: 0 };
+    captured.buf = await renderToBuffer((doc) => {
+      const theme = registerThemeFonts(doc, 'classic');
+      const model = measureTable(doc, parseTable(content, doc.page.width - 100)!, theme);
+      let cx = doc.page.margins.left;
+      captured.columns = model.columns.map((col) => {
+        const box = {
+          outer: { left: cx, right: cx + col.width },
+          inner: { left: cx + CELL_PADDING, right: cx + col.width - CELL_PADDING },
+        };
+        cx += col.width;
+        return box;
+      });
+      const yRef = { y: 100 };
+      const ensureRoom = makeEnsureRoomRich(doc, yRef);
+      captured.rowTop = yRef.y + model.headerHeight;
+      renderTableIntoPdf(doc, model, { x: doc.page.margins.left, startY: yRef.y, accent: ACCENT, fonts: theme, ensureRoom });
+    });
+    return captured;
+  }
+
+  /** The row's fragments for one column, grouped into lines. Column membership
+   *  is decided by the fragment's origin against the column's OUTER box, so a
+   *  neighbouring column's runs can't leak in however badly aligned they are. */
+  async function cellLines(rendered: Rendered, columnIndex: number): Promise<Fragment[][]> {
+    const fragments = await extractTextFragments(rendered.buf);
+    const { outer } = rendered.columns[columnIndex]!;
+    const inCell = fragments.filter((f) => f.y > rendered.rowTop && f.x >= outer.left - 0.5 && f.x < outer.right - 0.5);
+    return toLines(inCell);
+  }
+
+  it('lays a bold/link multi-run cell out as one centered line sequence, run after run', async () => {
+    const rendered = await renderAlignedTable(['center', 'left']);
+    const span = rendered.columns[0]!.inner;
+    const center = (span.left + span.right) / 2;
+    const lines = await cellLines(rendered, 0);
+
+    // Non-vacuity: the cell really wrapped, and it really drew in more than one
+    // font (the <strong> run) with the link run present.
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines[0]!.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(lines.flat().map((f) => f.baseFont)).size).toBeGreaterThanOrEqual(2);
+    expect(lines.flat().some((f) => f.text.includes('service level link'))).toBe(true);
+
+    for (const line of lines) {
+      const first = line[0]!;
+      const last = line[line.length - 1]!;
+      const lastRight = last.x + last.width;
+      // Centered as a LINE: the whole line's box is centered in the cell, not
+      // each run on its own.
+      expect((first.x + lastRight) / 2).toBeCloseTo(center, 0);
+      expect(first.x).toBeGreaterThanOrEqual(span.left - 0.5);
+      expect(lastRight).toBeLessThanOrEqual(span.right + 0.5);
+      // Runs of one line follow each other instead of painting over each other.
+      for (let i = 1; i < line.length; i++) {
+        const prev = line[i - 1]!;
+        expect(line[i]!.x, `run ${i} overlaps "${prev.text}"`).toBeGreaterThanOrEqual(prev.x + prev.width - 0.6);
+      }
+    }
+  });
+
+  it('right-aligns every line of a bold/link multi-run cell to the cell\'s inner right edge', async () => {
+    const rendered = await renderAlignedTable(['left', 'right']);
+    const span = rendered.columns[1]!.inner;
+    const lines = await cellLines(rendered, 1);
+
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(lines.flat().length).toBeGreaterThanOrEqual(4); // Base / $1,200.00 / per / month
+    expect(new Set(lines.flat().map((f) => f.baseFont)).size).toBeGreaterThanOrEqual(2);
+
+    for (const line of lines) {
+      const first = line[0]!;
+      const last = line[line.length - 1]!;
+      const lastRight = last.x + last.width;
+      expect(lastRight).toBeCloseTo(span.right, 0);
+      expect(first.x).toBeGreaterThanOrEqual(span.left - 0.5);
+      for (let i = 1; i < line.length; i++) {
+        const prev = line[i - 1]!;
+        expect(line[i]!.x, `run ${i} overlaps "${prev.text}"`).toBeGreaterThanOrEqual(prev.x + prev.width - 0.6);
+      }
+    }
+  });
+
+  it('keeps a left-aligned multi-run cell run after run (control for the two above)', async () => {
+    const rendered = await renderAlignedTable(['left', 'left']);
+    const span = rendered.columns[0]!.inner;
+    const lines = await cellLines(rendered, 0);
+
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    // Left-aligned: the first run of every line starts at the cell's left padding.
+    for (const line of lines) {
+      expect(line[0]!.x).toBeCloseTo(span.left, 0);
+      for (let i = 1; i < line.length; i++) {
+        const prev = line[i - 1]!;
+        expect(line[i]!.x).toBeGreaterThanOrEqual(prev.x + prev.width - 0.6);
+      }
+    }
+  });
+
+  it('gives each link run exactly one annotation, inside its own cell', async () => {
+    const rendered = await renderAlignedTable(['center', 'right']);
+    const links = await extractLinkAnnotations(rendered.buf);
+
+    expect(links.map((l) => l.uri).sort()).toEqual(['https://example.com/pricing', 'https://example.com/sla']);
+    for (const link of links) {
+      const [x1, , x2] = link.rect;
+      const span = (link.uri.endsWith('/sla') ? rendered.columns[0]! : rendered.columns[1]!).inner;
+      expect(x1!).toBeGreaterThanOrEqual(span.left - 0.5);
+      expect(x2!).toBeLessThanOrEqual(span.right + 0.5);
+      expect(x2!).toBeGreaterThan(x1!);
+    }
+    // And no link bled onto the runs that follow it (pdfkit continued-option
+    // stickiness — the same hazard richTextPdf.test.ts guards for paragraphs).
+    const raw = rendered.buf.toString('latin1');
+    expect((raw.match(/\/Subtype \/Link/g) ?? []).length).toBe(2);
   });
 });

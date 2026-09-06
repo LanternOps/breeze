@@ -599,6 +599,7 @@
         "driftChip": "contagem alterada: {{stored}} → {{live}}", "refresh": "Atualizar contagens", "estimateError": "Não foi possível verificar a contagem atual de dispositivos.", "pickerError": "Não foi possível carregar os grupos de dispositivos ou os locais. Atualize a página e tente novamente.",
         "groupDeleted": "O grupo de dispositivos “{{name}}” foi excluído — escolha outro", "siteDeleted": "O site “{{name}}” foi excluído — escolha outro",
         "typeLocked": "Um conjunto de dispositivos não pode ser alterado após a criação da linha — remova a linha e adicione-a novamente.",
+        "allowanceGroupLabel": "Franquia de quantidade", "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
         "includedLabel": "Quantidade incluída", "overageModeLabel": "Acima da franquia", "overageBill": "Cobrar cada unidade adicional", "overageFlag": "Reportar para revisão", "overagePriceLabel": "Preço de excedente",
         "driftToast": "{{count}} linha(s) não correspondem mais à contagem atual de dispositivos: {{lines}}",
         "retargetToast": "{{count}} linha(s) precisam que um grupo de dispositivos ou site seja escolhido novamente para esta organização"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "As linhas são excluídas. Obrigatório quando alguma linha é manual ou um pacote.",
         "modeReprice": "Reprecificar as linhas de catálogo",
         "modeRepriceHint": "Cada linha de catálogo é resolvida pela tabela de preços da nova moeda. Só é possível quando todas as linhas vêm do catálogo.",
+        "modeRepriceUnavailable": "Indisponível — pelo menos uma linha é manual ou um pacote, então a tabela de preços não consegue reprificá-la. Em vez disso, exclua todas as linhas.",
         "confirm": "Entendo que isto altera a moeda da cotação.",
         "submit": "Alterar moeda"
       },

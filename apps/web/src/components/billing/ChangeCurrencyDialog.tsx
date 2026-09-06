@@ -51,6 +51,12 @@ interface Props {
   onSubmit: () => void;
   submittable: boolean;
   copy: ChangeCurrencyDialogCopy;
+  /** When set, the `reprice` radio is disabled and this reason REPLACES its
+   *  hint. Callers pass it when the document's own lines make `reprice`
+   *  illegal — the server refuses the whole op with 409 CURRENCY_LOCKED, so
+   *  offering a choice that can only fail costs a round-trip to be told no
+   *  (#4937). `clear` is always legal, so the operator is never dead-ended. */
+  repriceUnavailableReason?: string | null;
   /** data-testid prefix, e.g. "quote-currency" / "invoice-currency" — mirrors
    *  the "contract-currency-*" ids ContractDetail's dialog established. */
   testIdPrefix: string;
@@ -59,7 +65,7 @@ interface Props {
 export default function ChangeCurrencyDialog({
   open, onClose, busy, currentCurrency, targetCurrency, onTargetCurrencyChange,
   mode, onModeChange, confirmed, onConfirmedChange, error, onSubmit, submittable,
-  copy, testIdPrefix,
+  copy, repriceUnavailableReason, testIdPrefix,
 }: Props) {
   const { i18n } = useTranslation('billing');
   return (
@@ -105,17 +111,27 @@ export default function ChangeCurrencyDialog({
               <span className="block text-muted-foreground">{copy.modeClearHint}</span>
             </span>
           </label>
-          <label className="flex items-start gap-2 text-sm">
+          <label className={`flex items-start gap-2 text-sm${repriceUnavailableReason ? ' opacity-60' : ''}`}>
             <input
               type="radio" name={`${testIdPrefix}-mode`} value="reprice"
               checked={mode === 'reprice'}
               onChange={() => onModeChange('reprice')}
+              disabled={!!repriceUnavailableReason}
               data-testid={`${testIdPrefix}-mode-reprice`}
               className="mt-1"
             />
             <span>
               <span className="font-medium">{copy.modeRepriceLabel}</span>
-              <span className="block text-muted-foreground">{copy.modeRepriceHint}</span>
+              {repriceUnavailableReason ? (
+                <span
+                  className="block text-muted-foreground"
+                  data-testid={`${testIdPrefix}-mode-reprice-unavailable`}
+                >
+                  {repriceUnavailableReason}
+                </span>
+              ) : (
+                <span className="block text-muted-foreground">{copy.modeRepriceHint}</span>
+              )}
             </span>
           </label>
         </fieldset>

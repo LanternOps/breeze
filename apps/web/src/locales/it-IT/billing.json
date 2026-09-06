@@ -599,6 +599,7 @@
         "driftChip": "conteggio cambiato: {{stored}} → {{live}}", "refresh": "Aggiorna conteggi", "estimateError": "Impossibile verificare il conteggio attuale dei dispositivi.", "pickerError": "Impossibile caricare i gruppi di dispositivi o i siti. Aggiorna la pagina e riprova.",
         "groupDeleted": "Il gruppo di dispositivi “{{name}}” è stato eliminato — scegline un altro", "siteDeleted": "La sede “{{name}}” è stata eliminata — scegline un'altra",
         "typeLocked": "Un insieme di dispositivi non può essere modificato dopo la creazione della riga — rimuovi la riga e aggiungila di nuovo.",
+        "allowanceGroupLabel": "Soglia di quantità", "allowanceToggle": "Includi una quantità fissa e gestisci le eccedenze",
         "includedLabel": "Quantità inclusa", "overageModeLabel": "Oltre la soglia inclusa", "overageBill": "Fattura ogni unità aggiuntiva", "overageFlag": "Segnala per revisione", "overagePriceLabel": "Prezzo eccedenza",
         "driftToast": "{{count}} riga/righe non corrispondono più al conteggio dispositivi attuale: {{lines}}",
         "retargetToast": "{{count}} riga/righe richiedono di riselezionare un gruppo di dispositivi o una sede per questa organizzazione"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Le righe vengono eliminate. Obbligatorio quando una riga è manuale o un bundle.",
         "modeReprice": "Riprezza le righe di catalogo",
         "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "modeRepriceUnavailable": "Non disponibile — almeno una riga è manuale o un bundle, quindi il listino non può riprezzarla. Rimuovi invece tutte le righe.",
         "confirm": "Comprendo che questa operazione cambia la valuta del preventivo.",
         "submit": "Cambia valuta"
       },

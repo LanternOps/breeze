@@ -399,3 +399,136 @@ describe('replaceSessionOnMfaFactorWrite — rotation on an already-protected ac
     expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
   });
 });
+
+// #4934: a factor REMOVAL is the third shape this primitive has to serve. It
+// bumps the epoch and revokes every family exactly like enrollment and rotation
+// do — no other session may survive the account losing its second factor — but
+// there is no code set to install and nothing one-time to reveal, so the codes
+// are omitted rather than faked.
+describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery codes (#4934)', () => {
+  const tx = { marker: 'transaction' } as never;
+  const capability = { marker: 'capability' } as unknown as AuthIssuanceCapability;
+  const identity: UserSessionIdentity = {
+    userId: 'user-123',
+    email: 'user@example.com',
+    roleId: 'role-123',
+    orgId: 'org-123',
+    partnerId: 'partner-123',
+    scope: 'organization',
+    mfa: true,
+  };
+  const issued = {
+    accessToken: 'access',
+    refreshToken: 'refresh',
+    refreshJti: 'refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'family-new',
+    transitionId: 'transition-123',
+    generation: 4,
+  } as unknown as AuthorizedUserSession;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    finishAuthIssuanceMock.mockImplementation(
+      async (_capability: unknown, callback: (value: unknown) => Promise<unknown>) => callback(tx),
+    );
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 3,
+      mfaEpoch: 8,
+      emailEpoch: 1,
+      passwordResetEpoch: 1,
+    });
+    revokeAllRefreshFamiliesMock.mockResolvedValue(undefined);
+    issueUserSessionMock.mockResolvedValue(issued);
+    runPostCommitCleanupMock.mockResolvedValue({ redisOk: true, permissionCacheOk: true, oauthOk: true });
+    terminateUserRemoteSessionsMock.mockResolvedValue(0);
+  });
+
+  it('revokes every family and re-issues the caller while installing no codes', async () => {
+    const persistFactor = vi.fn(async (suppliedTx: unknown, hashes: readonly string[]) => {
+      expect(suppliedTx).toBe(tx);
+      expect(hashes).toEqual([]);
+      return undefined;
+    });
+
+    const result = await replaceSessionOnMfaFactorWrite({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      expectedMfaEnabled: true,
+      revokeReason: 'mfa-disable',
+      persistFactor,
+    });
+
+    expect(persistFactor).toHaveBeenCalledTimes(1);
+    // Every OTHER session still dies: the removal is predicated on the factor
+    // still existing when the bump lands, so a concurrent second removal loses.
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(
+      tx,
+      identity.userId,
+      { mfa: true },
+      { authEpoch: 3, mfaEpoch: 7, mfaEnabled: true, status: 'active' },
+    );
+    expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(tx, identity.userId, 'mfa-disable');
+    expect(issueUserSessionMock).toHaveBeenCalledWith(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: 3, mfaEpoch: 8 },
+    });
+    expect(result.recoveryCodes).toEqual([]);
+    expect(result.issued).toBe(issued);
+    // The replacement token must survive its own post-commit revocation cutoff.
+    expect(runPostCommitCleanupMock).toHaveBeenCalledTimes(1);
+    expect(runPostCommitCleanupMock.mock.calls[0]?.[1]?.preserveTokensIssuedAtOrAfter)
+      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+
+  it('still rejects a supplied-but-empty code set', async () => {
+    await expect(replaceSessionOnMfaFactorWrite({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      expectedMfaEnabled: true,
+      revokeReason: 'mfa-recovery-rotate',
+      recoveryCodes: [],
+      recoveryCodeHashes: [],
+      persistFactor: vi.fn(),
+    })).rejects.toThrow(/count/i);
+
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+
+  it('still rejects codes supplied without their hashes', async () => {
+    await expect(replaceSessionOnMfaFactorWrite({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      expectedMfaEnabled: true,
+      revokeReason: 'mfa-recovery-rotate',
+      recoveryCodes: ['code-1'],
+      persistFactor: vi.fn(),
+    })).rejects.toThrow(/count/i);
+
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an initial enrollment that installs no recovery codes', async () => {
+    await expect(completeInitialMfaEnrollment({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'initial-mfa-enrollment',
+      persistFactor: vi.fn(),
+    })).rejects.toThrow(/recovery-code/i);
+
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+});

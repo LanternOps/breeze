@@ -52,6 +52,20 @@ class OrgVanishedDuringMoveError extends Error {
   }
 }
 
+/**
+ * How much alert-axis derived state a device org-move carried over (#4867),
+ * recorded on BOTH audit rows so the source and target feeds agree.
+ * `correlationGroupsHeld` counts the groups the move touched but deliberately
+ * left in the source org — still spanning two orgs, or their
+ * (org_id, group_key) slot already taken in the target org.
+ */
+interface AlertChildOrgRewriteCounts {
+  correlationMembers: number;
+  correlationGroups: number;
+  correlationGroupsHeld: number;
+  alertVerdicts: number;
+}
+
 export const moveOrgRoutes = new Hono();
 
 moveOrgRoutes.use('*', authMiddleware);
@@ -186,6 +200,10 @@ moveOrgRoutes.post(
     // #3776 — non-null only when the caller accepted a cross-currency move
     // that stranded unbilled monetary ticket rows in the source currency.
     let currencyGuard: MoveCurrencyGuardDetails | null = null;
+    // #4867 — non-null only when the moved device actually had alert-axis
+    // derived state (correlation members / groups, AI alert verdicts) to carry
+    // over. See AlertChildOrgRewriteCounts.
+    let alertChildRewrite: AlertChildOrgRewriteCounts | null = null;
     try {
       await db.transaction(async (tx) => {
         // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
@@ -606,6 +624,126 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_email_links')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
+        // core.ts): alert_correlation_members, alert_correlation_groups and
+        // ai_alert_verdicts all denormalize org_id but have NO device_id
+        // column, so neither the generic loop above nor the DB-side
+        // breeze_cascade_device_org_id() trigger (which discovers its tables BY
+        // that device_id column) can reach them. Every alert-facing reader pins
+        // these rows to the ALERT's org — hideAiNoiseCondition /
+        // correlationMetadataCondition (routes/alerts/alerts.ts) and
+        // latestVerdictsForAlerts / latestVerdictForGroup
+        // (services/aiAgents/alertVerdicts.ts) — so a row left behind is
+        // invisible to the org that now owns the alert: the moved alert
+        // silently loses its AI-noise suppression and its correlation badge,
+        // and nothing regenerates either (the verdict scheduler is event-driven
+        // off `alert.triggered` and never re-scans).
+        //
+        // Placement is load-bearing twice: AFTER the generic loop, because the
+        // group predicate below reads alerts.org_id AS RE-STAMPED by it; and
+        // AFTER the ticket chain above, so this extends — never reorders — the
+        // documented ticket-child lock order
+        // (services/ticketOrgMoveLockOrder.ts). The three run member -> group ->
+        // verdict because each later predicate reads what the earlier one just
+        // wrote. None of them carries a composite tenant FK, so there is no
+        // 23503 hazard of the kind the ticket chain is ordered for.
+        //
+        // A member row describes ONE alert's membership, so it always follows
+        // that alert — even when its group does not (next statement).
+        const movedCorrelationMembers = (await tx.execute(
+          sql`UPDATE ${sql.identifier('alert_correlation_members')} SET org_id = ${targetOrgId}::uuid
+              WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
+              RETURNING id`,
+        )) as unknown as Array<{ id: string }>;
+
+        // A GROUP can span alerts from several devices, so it travels only once
+        // EVERY member alert shares the target org — handing a group to an org
+        // that owns part of it would make its member_count / noise_reduction_
+        // percent claims wrong for both orgs. A group still spanning two orgs
+        // is left behind and counted below instead.
+        //
+        // The third guard is `alert_correlation_groups_org_key_uq (org_id,
+        // group_key)`: the correlation job mints group_key as
+        // `root:<rootAlertId>` PER ORG (services/alertCorrelationGroups.ts), so
+        // the target org can already hold the same key — reachable precisely
+        // because this gap let a previously-moved alert grow a second group
+        // there. Skipping is deliberate: derived correlation state must not be
+        // able to fail an admin's device move with a 23505, and merging two
+        // groups (which one's status/score/metadata wins?) is not this route's
+        // call to make silently.
+        const movedCorrelationGroups = (await tx.execute(
+          sql`UPDATE ${sql.identifier('alert_correlation_groups')} g SET org_id = ${targetOrgId}::uuid
+              WHERE g.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+                AND EXISTS (
+                  SELECT 1 FROM alert_correlation_members m
+                  JOIN alerts a ON a.id = m.alert_id
+                  WHERE m.group_id = g.id AND a.device_id = ${deviceId}::uuid)
+                AND NOT EXISTS (
+                  SELECT 1 FROM alert_correlation_members m2
+                  JOIN alerts a2 ON a2.id = m2.alert_id
+                  WHERE m2.group_id = g.id AND a2.org_id IS DISTINCT FROM ${targetOrgId}::uuid)
+                AND NOT EXISTS (
+                  SELECT 1 FROM alert_correlation_groups existing
+                  WHERE existing.org_id = ${targetOrgId}::uuid AND existing.group_key = g.group_key)
+              RETURNING g.id`,
+        )) as unknown as Array<{ id: string }>;
+
+        // A verdict follows the row it judges. The OR is the point: a
+        // `duplicate_of_group` classification is persisted with alert_id NULL
+        // and correlation_group_id set, so the alert leg alone never reaches it
+        // and every member alert of a moved group would keep its noise verdict
+        // stranded. The group leg is narrowed to groups this device's alerts
+        // belong to, so it cannot re-stamp a verdict on an unrelated group that
+        // merely happens to sit in the target org. Runs after the group
+        // statement because "g.org_id = target" is what "this move just took
+        // the group with it" means here.
+        //
+        // Provenance note: verdict.run_id is NOT NULL and `ai_agent_runs`
+        // deliberately stays in the SOURCE org (owner decision 2026-08-23), so
+        // after this re-stamp a verdict's org_id and its run's org_id differ.
+        // Nothing dereferences that pair except recordVerdictFeedback's
+        // op-evidence write, whose composite FK (run_id, org_id) ->
+        // ai_agent_runs(id, org_id) forces the EVIDENCE row to carry the RUN's
+        // org — see the fix in services/aiAgents/alertVerdicts.ts.
+        const movedAlertVerdicts = (await tx.execute(
+          sql`UPDATE ${sql.identifier('ai_alert_verdicts')} SET org_id = ${targetOrgId}::uuid
+              WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
+                 OR correlation_group_id IN (
+                   SELECT g.id FROM alert_correlation_groups g
+                   WHERE g.org_id = ${targetOrgId}::uuid
+                     AND EXISTS (
+                       SELECT 1 FROM alert_correlation_members m
+                       JOIN alerts a ON a.id = m.alert_id
+                       WHERE m.group_id = g.id AND a.device_id = ${deviceId}::uuid))
+              RETURNING id`,
+        )) as unknown as Array<{ id: string }>;
+
+        // Groups this move touched but deliberately left behind (still spanning
+        // two orgs, or blocked by an occupied group_key). Counted so an operator
+        // asking "why didn't the correlation badge follow this device?" finds
+        // the number in the audit row instead of reconstructing it from SQL.
+        const [heldCorrelationGroups] = (await tx.execute(
+          sql`SELECT count(*)::int AS held
+              FROM alert_correlation_groups g
+              WHERE g.org_id IS DISTINCT FROM ${targetOrgId}::uuid
+                AND EXISTS (
+                  SELECT 1 FROM alert_correlation_members m
+                  JOIN alerts a ON a.id = m.alert_id
+                  WHERE m.group_id = g.id AND a.device_id = ${deviceId}::uuid)`,
+        )) as unknown as Array<{ held: number }>;
+
+        const alertChildCounts = {
+          correlationMembers: movedCorrelationMembers.length,
+          correlationGroups: movedCorrelationGroups.length,
+          correlationGroupsHeld: Number(heldCorrelationGroups?.held ?? 0),
+          alertVerdicts: movedAlertVerdicts.length,
+        };
+        // Only audit the block when the device actually had alert-axis rows, so
+        // a move of a quiet device adds no noise to either org's audit feed.
+        alertChildRewrite = Object.values(alertChildCounts).some((n) => n > 0)
+          ? alertChildCounts
+          : null;
+
         // Rewrite denormalized site_id on every device-scoped table that has
         // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
         // in core.ts). Skipping any of these strands rows under the OLD
@@ -686,6 +824,7 @@ moveOrgRoutes.post(
     // Audit on BOTH orgs so the move shows up in source and target feeds.
     // (Cast: TS narrows the closure-assigned `let` to its initial null.)
     const acceptedGuard = currencyGuard as MoveCurrencyGuardDetails | null;
+    const alertChildCounts = alertChildRewrite as AlertChildOrgRewriteCounts | null;
     const auditDetails = {
       deviceId,
       sourceOrgId,
@@ -702,6 +841,10 @@ moveOrgRoutes.post(
       // #3776 — the caller knowingly left unbilled ticket money in the source
       // currency; record the counts so the stranded snapshots are traceable.
       ...(acceptedGuard?.accepted ? { currencyMismatchAccepted: acceptedGuard } : {}),
+      // #4867 — how much alert-axis derived state travelled with the device,
+      // and how many correlation groups were held back on purpose. Omitted
+      // entirely for a device with no alerts, so a quiet move adds no noise.
+      ...(alertChildCounts ? { alertChildRewrite: alertChildCounts } : {}),
     } as const;
 
     writeRouteAudit(c, {

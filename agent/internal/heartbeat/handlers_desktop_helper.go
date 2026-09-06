@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/launchdplist"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -678,65 +679,11 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 
 // darwinHelperPlists defines the LaunchAgent plists the agent writes to disk
 // when they're missing, so the desktop helper self-configures without a .pkg.
+// The XML itself comes from internal/launchdplist — the single source of
+// truth for these plists (#4379).
 var darwinHelperPlists = map[string]string{
-	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist": `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>user_session</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`,
-	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
-        <string>--context</string>
-        <string>login_window</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>LimitLoadToSessionType</key>
-    <string>LoginWindow</string>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-</dict>
-</plist>
-`,
+	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist":        launchdplist.DesktopHelperUser,
+	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": launchdplist.DesktopHelperLoginWindow,
 }
 
 // ensureDarwinHelperPrereqs prepares everything a macOS desktop helper needs
