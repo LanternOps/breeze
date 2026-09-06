@@ -13,7 +13,7 @@ import {
   createSavedFilterSchema,
   updateSavedFilterSchema,
   savedFilterQuerySchema
-} from '@breeze/shared/validators/filters';
+} from '@breeze/shared/validators';
 
 export const filterRoutes = new Hono();
 const requireFilterRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);

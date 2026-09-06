@@ -399,6 +399,7 @@ type DeviceListProps = {
   // the table already renders zero rows; this only drives the inline error
   // message that explains why (#4732).
   serverFilterError?: boolean;
+  onRetryServerFilter?: () => void;
   // When false (default), decommissioned devices are hidden — matching the old
   // default view (status='all' implicitly excluded them). DevicesPage sets this
   // true only when the active filter group explicitly targets the
@@ -660,6 +661,7 @@ export default function DeviceList({
   advancedFilter,
   serverFilterLoading = false,
   serverFilterError = false,
+  onRetryServerFilter,
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
@@ -845,7 +847,9 @@ export default function DeviceList({
   // tech's filters would actually let through — a decommissioned device the
   // server filter or search already excludes is not "hidden by default" and
   // must not be counted as showable.
+  const filterBlocked = serverFilterLoading || serverFilterError;
   const matchingDevices = useMemo(() => {
+    if (filterBlocked) return [];
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter((device) => {
@@ -875,6 +879,7 @@ export default function DeviceList({
     vpnFilter,
     serverFilterIds,
     advancedFilter,
+    filterBlocked,
   ]);
 
   // Hide decommissioned by default — preserves the old list's hygiene
@@ -1057,7 +1062,7 @@ export default function DeviceList({
   // annotated with the eligible count on a mixed selection — the request
   // funnel in DevicesPage still refuses network rows, this just says so
   // before the click instead of after.
-  const agentOnlyDisabled = selectedAgentCount === 0;
+  const agentOnlyDisabled = filterBlocked || selectedAgentCount === 0;
   const agentOnlyTitle = agentOnlyDisabled
     ? t("deviceList.agentOnlyBulkAction")
     : undefined;
@@ -1069,6 +1074,7 @@ export default function DeviceList({
     ) : null;
 
   const handleSelectAll = (checked: boolean) => {
+    if (filterBlocked) return;
     if (checked) {
       setSelectedIds(new Set(selectablePageDevices.map((d) => d.id)));
     } else {
@@ -1077,6 +1083,7 @@ export default function DeviceList({
   };
 
   const handleSelectOne = (id: string, checked: boolean) => {
+    if (filterBlocked) return;
     const newSet = new Set(selectedIds);
     if (checked) {
       newSet.add(id);
@@ -1087,7 +1094,8 @@ export default function DeviceList({
   };
 
   const handleBulkAction = (action: string) => {
-    onBulkAction?.(action, selectedDevices);
+    if (filterBlocked) return;
+    if (selectedDevices.length) onBulkAction?.(action, selectedDevices);
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
@@ -2081,6 +2089,7 @@ export default function DeviceList({
               >
                 <Filter className="h-3 w-3" />
                 {t("deviceList.advancedFilterFailed")}
+                {onRetryServerFilter && <button type="button" onClick={onRetryServerFilter}>{t('common:actions.retry')}</button>}
               </span>
             ) : (
               serverFilterIds !== null && (
@@ -2270,13 +2279,14 @@ export default function DeviceList({
           <div className="relative">
             <button
               type="button"
+              disabled={filterBlocked}
               onClick={() => setBulkMenuOpen(!bulkMenuOpen)}
               className="flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
               {t("deviceList.bulkActions")}{" "}
               <MoreHorizontal className="h-4 w-4" />
             </button>
-            {bulkMenuOpen && (
+            {bulkMenuOpen && !filterBlocked && (
               <div
                 data-testid="bulk-actions-menu"
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
@@ -2428,6 +2438,7 @@ export default function DeviceList({
                 <input
                   type="checkbox"
                   checked={allSelected}
+                  disabled={filterBlocked}
                   aria-label={t("deviceList.selectAllDevicesOnThisPage")}
                   ref={(el) => {
                     if (el) el.indeterminate = someSelected && !allSelected;
@@ -2542,6 +2553,7 @@ export default function DeviceList({
                         )}
                         <input
                           type="checkbox"
+                          disabled={filterBlocked}
                           checked={selectedIds.has(device.id)}
                           aria-label={t("deviceList.selectDevice", { hostname: device.hostname })}
                           onClick={(e) => e.stopPropagation()}

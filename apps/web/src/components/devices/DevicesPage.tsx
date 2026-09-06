@@ -263,11 +263,13 @@ export default function DevicesPage() {
     ids: advancedFilterIds,
     loading: advancedFilterLoading,
     error: advancedFilterError,
+    state: advancedFilterState,
     // #5023: the resolution is keyed on the FILTER, so it never notices that a
     // mutation changed a filtered attribute. Every post-mutation refresh below
     // goes through `refreshDevices`, which re-resolves the id set as well.
     refetch: refetchAdvancedFilterIds,
-  } = useAdvancedFilterIds(advancedFilter);
+  } = useAdvancedFilterIds(advancedFilter, orgScopeKey);
+  const advancedFilterBlocked = advancedFilterLoading || advancedFilterState === 'error' || advancedFilterError;
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -383,9 +385,23 @@ export default function DevicesPage() {
     [advancedFilterIds, advancedFilter, includeDecommissioned, listFilters.search, listFilters.vpn]
   );
   const fleetFilteredDevices = useMemo(
-    () => devices.filter(d => matchesMergedListFilters(d, listFilterContext)),
-    [devices, listFilterContext]
+    () => advancedFilterBlocked ? [] : devices.filter(d => matchesMergedListFilters(d, listFilterContext)),
+    [devices, listFilterContext, advancedFilterBlocked]
   );
+  const canActOnDevices = (targets: Device[]) => !advancedFilterBlocked
+    && targets.length > 0
+    && targets.every(target => devices.some(device => device.id === target.id && matchesMergedListFilters(device, { ...listFilterContext, includeDecommissioned: true })));
+  useEffect(() => {
+    setPendingBulkRemove(null);
+    setPendingBulkPurge(null);
+    setPendingDecommissionedSkip(null);
+    setPendingScriptRun(null);
+    setScriptPickerOpen(false);
+    setScriptTargetDevices([]);
+    setMaintenanceDialogDevices(null);
+    setVmHostPickerDevices(null);
+  }, [advancedFilter, orgScopeKey]);
+
   const deviceClassCounts = useMemo(() => countDevicesByClass(fleetFilteredDevices), [fleetFilteredDevices]);
   // The merged list narrowed by class only — what the table receives.
   // DeviceList applies the shared predicate itself (it owns paging), while the
@@ -401,7 +417,7 @@ export default function DevicesPage() {
   // counted (see summarizeHiddenNetworkDevices).
   const hiddenNetwork = useMemo(
     () => summarizeHiddenNetworkDevices(classFilteredDevices, listFilterContext),
-    [classFilteredDevices, listFilterContext]
+    [classFilteredDevices, listFilterContext, advancedFilterBlocked]
   );
   const hiddenNetworkFieldLabels = useMemo(
     () =>
@@ -416,10 +432,10 @@ export default function DevicesPage() {
   // table, with the decommissioned rule lifted.
   const gridMatchingDevices = useMemo(
     () =>
-      classFilteredDevices.filter(d =>
+      (advancedFilterBlocked ? [] : classFilteredDevices).filter(d =>
         matchesMergedListFilters(d, { ...listFilterContext, includeDecommissioned: true })
       ),
-    [classFilteredDevices, listFilterContext]
+    [classFilteredDevices, listFilterContext, advancedFilterBlocked]
   );
   // Grid view: same filtered rows as the table (search included) in the same
   // default order, instead of the raw fetch concatenation.
@@ -837,6 +853,7 @@ export default function DevicesPage() {
   };
 
   const handleScriptSelect = (script: Script, runAs: ScriptRunAsSelection, parameters?: Record<string, unknown>, _targetSessionId?: number) => {
+    if (!canActOnDevices(scriptTargetDevices)) return;
     // Gate script execution behind a scope-naming confirm dialog. Capture the
     // target devices now: ScriptPickerModal calls onClose() right after
     // onSelect(), and closeScriptPicker() resets scriptTargetDevices to [] —
@@ -846,6 +863,7 @@ export default function DevicesPage() {
   };
 
   const doExecuteScript = async (pending: PendingScriptRun) => {
+    if (!canActOnDevices(pending.devices)) return;
     if (actionInProgress) return;
     try {
       setActionInProgress(true);
@@ -1103,7 +1121,7 @@ export default function DevicesPage() {
   // multiboot bulk path's toast/refetch handling.
   const handleVmHostConfirm = async (hostDeviceId: string) => {
     const targets = vmHostPickerDevices;
-    if (!targets || actionInProgress) return;
+    if (!targets || actionInProgress || !canActOnDevices(targets)) return;
     try {
       setActionInProgress(true);
       await linkDevicesVmHost(hostDeviceId, targets.map(d => d.id));
@@ -1175,6 +1193,7 @@ export default function DevicesPage() {
   };
 
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
+    if (!canActOnDevices(allSelectedDevices)) return;
     if (actionInProgress || allSelectedDevices.length === 0) return;
 
     // Every bulk action below talks to an enrolled agent (reboot/shutdown/lock,
@@ -1269,6 +1288,7 @@ export default function DevicesPage() {
   // bulkActionGating.ts. Entered either directly from handleBulkAction
   // (nothing to skip) or from the decommissioned-skip confirm.
   const runBulkAction = async (action: string, selectedDevices: Device[]) => {
+    if (!canActOnDevices(selectedDevices)) return;
     if (actionInProgress || selectedDevices.length === 0) return;
 
     const deviceIds = selectedDevices.map(d => d.id);
@@ -1569,6 +1589,7 @@ export default function DevicesPage() {
   );
 
   const runBulkPurge = async (targets: Device[]) => {
+    if (!canActOnDevices(targets)) return;
     if (targets.length === 0) return;
     setActionInProgress(true);
     try {
@@ -1603,6 +1624,7 @@ export default function DevicesPage() {
   // only opens RemoveDeviceDialog; this runs once the operator has answered the
   // agent question, with the SAME answer applied to every device in the batch.
   const runBulkRemove = async (selectedDevices: Device[], choice: { uninstallAgent: boolean }) => {
+    if (!canActOnDevices(selectedDevices)) return;
     if (selectedDevices.length === 0) return;
     setActionInProgress(true);
     try {
@@ -1858,7 +1880,8 @@ export default function DevicesPage() {
           serverFilterIds={advancedFilterIds}
           advancedFilter={advancedFilter}
           serverFilterLoading={advancedFilterLoading}
-          serverFilterError={advancedFilterError}
+          serverFilterError={advancedFilterError || advancedFilterState === 'error'}
+          onRetryServerFilter={refetchAdvancedFilterIds}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}
           onHideDecommissioned={onHideDecommissioned}
@@ -1886,6 +1909,7 @@ export default function DevicesPage() {
             >
               <AlertCircle className="h-3.5 w-3.5" />
               {t('devicesPage.toasts.advancedFilterFailed')}
+              <button type="button" onClick={refetchAdvancedFilterIds}>{t('common:actions.retry')}</button>
             </div>
           )}
           {hiddenDecommissionedCount > 0 && (
@@ -1936,7 +1960,7 @@ export default function DevicesPage() {
         onCreated={handleGroupCreated}
       />
 
-      {vmHostPickerDevices && (
+      {vmHostPickerDevices && !advancedFilterBlocked && (
         <LinkVmHostModal
           isOpen={true}
           devices={vmHostPickerDevices}
@@ -1946,7 +1970,7 @@ export default function DevicesPage() {
         />
       )}
 
-      {maintenanceDialogDevices && (
+      {maintenanceDialogDevices && !advancedFilterBlocked && (
         <MaintenanceModeDialog
           open={true}
           devices={maintenanceDialogDevices.map(d => ({ id: d.id, hostname: d.hostname }))}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import { NO_VALUE_OPERATORS } from '../components/devices/filterMigration';
@@ -18,111 +18,74 @@ function hasValidConditions(filter: FilterConditionGroup): boolean {
   });
 }
 
-export interface UseAdvancedFilterIdsReturn {
-  /**
-   * Set of device ids matching the advanced filter, or null when no filter is
-   * active (callers should treat null as "show everything"). On ANY preview
-   * failure — including a 401 — this is an EMPTY set, never null: a failed
-   * filter must narrow the result to nothing, not widen it to the unfiltered
-   * fleet (#4732).
-   */
-  ids: Set<string> | null;
-  loading: boolean;
-  /**
-   * True when the last preview request failed with a non-ok response other
-   * than 401, or a thrown fetch. Callers should surface this rather than let
-   * the empty `ids` pass silently as "the filter genuinely matched nothing."
-   * A 401 does NOT set this — fetchWithAuth almost always triggers the
-   * session-expiry redirect itself, which owns the failure UX and would
-   * otherwise compete with a second "filter failed" message. `ids` still
-   * empties on a 401 regardless, so the rare case where fetchWithAuth
-   * returns a surviving 401 (see the hook body) fails closed too — just
-   * without a label.
-   */
-  error: boolean;
-  /**
-   * Re-run the resolution against the SAME filter (#5023).
-   *
-   * The effect below is keyed on the filter alone, so it never re-runs when
-   * the underlying devices change. A mutation that alters a filtered attribute
-   * — Restore inside a "Status is Removed" filter is the reported case —
-   * therefore left a stale id set behind, and the row stayed on screen until a
-   * full page reload. Callers refreshing their device rows after a mutation
-   * must call this alongside. Stable across renders, so it is safe in a
-   * dependency array. A no-op resolution (no filter) still just clears.
-   */
-  refetch: () => void;
-}
+type FilterResolution =
+  | { state: 'inactive'; ids: null; loading: false; error: false }
+  | { state: 'loading'; ids: Set<string>; loading: true; error: false }
+  | { state: 'ready'; ids: Set<string>; loading: false; error: false }
+  | { state: 'error'; ids: Set<string>; loading: false; error: boolean };
 
-/**
- * Resolve an advanced filter (FilterConditionGroup) to the COMPLETE set of
- * matching device ids via POST /filters/preview with `idsOnly: true`. Unlike
- * the preview path this is uncapped — filters matching >100 devices return
- * every id, so the device table/grid never silently hides matches.
+export type UseAdvancedFilterIdsReturn = FilterResolution & { refetch: () => void };
+const EMPTY_IDS = new Set<string>();
+
+/** Resolve the complete device scope. Only an inactive filter returns null.
+ * A changed filter, scope or retry closes synchronously, before effects run.
  */
-export function useAdvancedFilterIds(filter: FilterConditionGroup | null): UseAdvancedFilterIdsReturn {
-  const [ids, setIds] = useState<Set<string> | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-  // Bumping this re-runs the effect against an unchanged filter (#5023).
+export function useAdvancedFilterIds(
+  filter: FilterConditionGroup | null,
+  scopeKey = '',
+): UseAdvancedFilterIdsReturn {
   const [reloadToken, setReloadToken] = useState(0);
-
   const refetch = useCallback(() => setReloadToken(n => n + 1), []);
+  const active = filter !== null && hasValidConditions(filter);
+  const key = JSON.stringify([filter, scopeKey, reloadToken]);
+  const requestFilter = useMemo(() => JSON.parse(key)[0] as FilterConditionGroup, [key]);
+  const [previousKey, setPreviousKey] = useState(key);
+  const [resolved, setResolved] = useState<{
+    key: string; result: FilterResolution;
+  } | null>(null);
+
+  // Do not revive an older ready snapshot on A -> B -> A while B is pending.
+  if (previousKey !== key) {
+    setPreviousKey(key);
+    setResolved(null);
+  }
 
   useEffect(() => {
-    if (!filter || !hasValidConditions(filter)) {
-      setIds(null);
-      setError(false);
-      return;
-    }
-
-    setLoading(true);
-    setError(false);
+    if (!active) return;
     const controller = new AbortController();
-
-    fetchWithAuth('/filters/preview', {
-      method: 'POST',
-      body: JSON.stringify({ conditions: filter, idsOnly: true }),
-      signal: controller.signal
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          const data = await res.json();
-          const result = data.data ?? data;
-          setIds(new Set<string>(result.deviceIds ?? []));
-          setError(false);
+    // runaction-exempt: read-only preview; failures close the scope with retry UI.
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/filters/preview', {
+          method: 'POST',
+          body: JSON.stringify({ conditions: requestFilter, idsOnly: true }),
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        if (!response.ok) {
+          setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: response.status !== 401 } });
           return;
         }
-        // Non-ok: a failed filter must never degrade to an unfiltered list
-        // (#4732) — fail CLOSED (empty set, not null) regardless of status.
-        // This covers 401 too: fetchWithAuth USUALLY triggers its own
-        // session-expiry redirect before returning an unrecoverable 401, but
-        // two of its retry-after-refresh branches (`stores/auth.ts`, the
-        // 'restored' and 'a newer token exists' paths) can themselves 401
-        // again without calling handleSessionExpired — relying on "401 means
-        // the redirect already owns it" for `ids` would silently reopen the
-        // exact hole this fix closes. Setting the id set is therefore
-        // unconditional.
-        setIds(new Set());
-        // The visible error toast/pill is still suppressed for 401: the
-        // common case IS an in-flight auth redirect, and a competing "filter
-        // failed" message on top of a page that's about to navigate away
-        // would be confusing. The rare surviving-401 edge case above is left
-        // with an empty, unlabeled result rather than a mislabeled one —
-        // strictly better than the pre-fix "silently unfiltered" behavior.
-        if (res.status === 401) return;
-        setError(true);
-      })
-      .catch((err) => {
+        const body = await response.json();
         if (controller.signal.aborted) return;
-        console.error('Filter preview failed:', err);
-        setIds(new Set());
-        setError(true);
-      })
-      .finally(() => setLoading(false));
-
+        const result = body?.data ?? body;
+        if (!Array.isArray(result?.deviceIds)
+          || !result.deviceIds.every((id: unknown) => typeof id === 'string' && id.length > 0)
+          || !Number.isSafeInteger(result.totalCount)
+          || result.totalCount !== new Set(result.deviceIds).size) {
+          throw new Error('Invalid complete filter response');
+        }
+        setResolved({ key, result: { state: 'ready', ids: new Set(result.deviceIds), loading: false, error: false } });
+      } catch {
+        if (!controller.signal.aborted) {
+          setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: true } });
+        }
+      }
+    })();
     return () => controller.abort();
-  }, [filter, reloadToken]);
+  }, [key, active, requestFilter]);
 
-  return { ids, loading, error, refetch };
+  if (!active) return { state: 'inactive', ids: null, loading: false, error: false, refetch };
+  if (previousKey !== key || resolved?.key !== key) return { state: 'loading', ids: EMPTY_IDS, loading: true, error: false, refetch };
+  return { ...resolved.result, refetch };
 }

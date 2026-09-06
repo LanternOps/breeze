@@ -2872,3 +2872,22 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
     await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
   });
 });
+
+
+describe('DevicesPage unresolved filter dispatch boundary (RMM-QA-153)', () => {
+  it('refuses bulk dispatch from a stale child selection while loading and after 503', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    let finish!: (response: Response) => void;
+    vi.mocked(fetchWithAuth).mockImplementation(url => url.startsWith('/filters/preview')
+      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(jsonResponse({ data: [] })));
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(screen.getByTestId('device-list')).toHaveAttribute('data-device-count', '3');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    expect(sendBulkCommand).not.toHaveBeenCalled();
+    await act(async () => finish({ ok: false, status: 503 } as Response));
+    expect(screen.getByTestId('device-list')).toHaveAttribute('data-filter-ids', '');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    expect(sendBulkCommand).not.toHaveBeenCalled();
+  });
+});

@@ -1786,3 +1786,25 @@ describe('DeviceList — row-menu maintenance mode (#4936)', () => {
     expect(onAction).toHaveBeenCalledWith('maintenance', second);
   });
 });
+
+
+describe('DeviceList filter action scope (RMM-QA-153)', () => {
+  it.each(['loading', 'error'] as const)('clears a prior selection and blocks select-all on %s', state => {
+    const onBulkAction = vi.fn();
+    const retry = vi.fn();
+    const props = { devices: [baseDevice], onBulkAction, onRetryServerFilter: retry };
+    const { rerender } = render(<DeviceList {...props} />);
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    rerender(<DeviceList {...props} serverFilterIds={new Set([baseDevice.id])}
+      serverFilterLoading={state === 'loading'} serverFilterError={state === 'error'} />);
+    expect(screen.getByLabelText('Select all devices on this page')).toBeDisabled();
+    expect(screen.queryByTestId('bulk-actions-menu')).not.toBeInTheDocument();
+    expect(screen.queryByText(baseDevice.hostname)).not.toBeInTheDocument();
+    expect(onBulkAction).not.toHaveBeenCalled();
+    if (state === 'error') {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(retry).toHaveBeenCalledOnce();
+    }
+  });
+});

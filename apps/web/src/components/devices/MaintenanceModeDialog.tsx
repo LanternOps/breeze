@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Wrench } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
@@ -61,6 +61,13 @@ export default function MaintenanceModeDialog({
   onCompleted,
 }: MaintenanceModeDialogProps) {
   const { t } = useTranslation('devices');
+  // A scope change can unmount this dialog while step-up proof is pending.
+  // Never send the captured device selection after the dialog is cancelled.
+  const live = useRef(false);
+  useEffect(() => {
+    live.current = open;
+    return () => { live.current = false; };
+  }, [open]);
   const [reason, setReason] = useState('');
   const [durationHours, setDurationHours] = useState<number>(DEFAULT_DURATION_HOURS);
   const [phase, setPhase] = useState<Phase>('form');
@@ -128,6 +135,8 @@ export default function MaintenanceModeDialog({
         return;
       }
     }
+
+    if (!live.current) return;
 
     const body = {
       reason: resource.reason,

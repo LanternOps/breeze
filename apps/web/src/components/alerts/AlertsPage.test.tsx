@@ -17,7 +17,8 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigat
 // The device filter bar issues its own fetches; stub it out so the page's
 // alert/device fetches are the only traffic under test.
 vi.mock('../filters/DeviceFilterBar', () => ({
-  DeviceFilterBar: () => null
+  DeviceFilterBar: ({ onChange }: { onChange: (filter: unknown) => void }) => <button data-testid="apply-device-filter"
+    onClick={() => onChange({ operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] })}>Apply</button>
 }));
 
 // Pin the org-scope selectors so the page doesn't try to read a real store.
@@ -838,5 +839,43 @@ describe('AlertsPage — dismiss', () => {
 
     expect(await screen.findByText('High CPU on SRV-01')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Dismiss: High CPU on SRV-01/i })).not.toBeInTheDocument();
+  });
+});
+
+
+describe('AlertsPage complete device filter scope (RMM-QA-153)', () => {
+  it('blocks captured bulk dismiss on failure, hides device-less alerts and retries with idsOnly', async () => {
+    vi.clearAllMocks();
+    let previews = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/alerts') && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: [activeAlert, { ...activeAlert, id: 'no-device', deviceId: null, title: 'Organization alert' }] });
+      }
+      if (url === '/filters/preview') {
+        previews++;
+        expect(JSON.parse(init!.body as string)).toEqual(expect.objectContaining({ idsOnly: true }));
+        return previews === 1 ? makeJsonResponse({}, false, 503)
+          : makeJsonResponse({ data: { totalCount: 1, deviceIds: ['device-1'] } });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<AlertsPage />);
+    await screen.findByText(activeAlert.title);
+    fireEvent.click(screen.getAllByRole('checkbox')[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /dismiss/i }));
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('apply-device-filter'));
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    await screen.findByTestId('alert-device-filter-error');
+    expect(screen.queryByText(activeAlert.title)).not.toBeInTheDocument();
+    expect(screen.queryByText('Organization alert')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('checkbox').every(input => (input as HTMLInputElement).disabled)).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/alerts/bulk'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText(activeAlert.title);
+    expect(screen.queryByText('Organization alert')).not.toBeInTheDocument();
+    expect(previews).toBe(2);
   });
 });
