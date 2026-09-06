@@ -1,13 +1,17 @@
 package patching
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 )
 
@@ -522,3 +526,179 @@ func TestPromptOrNotifyDesktop(t *testing.T) {
 }
 
 var errUnusableLogind = errors.New("loginctl reported sessions but none could be queried")
+
+// syncBuffer is a mutex-guarded bytes.Buffer. The package logger is global, so
+// any goroutine left over from another test in this package can write to it
+// concurrently, which -race would (correctly) flag on a bare buffer.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// captureWarnLogs points the package logger at a buffer for the duration of the
+// test, following sessionbroker's captureLogs. Global state, so a test using it
+// must not be parallel.
+func captureWarnLogs(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	logging.Init("text", "warn", buf)
+	t.Cleanup(func() {
+		logging.Init("text", "info", nil)
+	})
+	return buf
+}
+
+// TestDialogEndedInCleanDecision is the second half of #4941. zenity exits 1 for
+// Cancel, the window's close box, ESC AND every --extra-button; only stdout tells
+// them apart. Treating the exit code alone as "not clean" logged a WARN for every
+// postponement on every Linux endpoint, one line above the line saying the
+// postponement had been granted.
+func TestDialogEndedInCleanDecision(t *testing.T) {
+	const dismissed = 3 * time.Second // long enough that a person could have acted
+	cases := []struct {
+		name string
+		run  desktopDialogRun
+		// actions defaults to testPromptActions when nil.
+		actions []string
+		shown   bool
+		want    bool
+	}{
+		{
+			name: "Restart now", shown: true, want: true,
+			run: desktopDialogRun{started: true, exitCode: 0, elapsed: dismissed},
+		},
+		{
+			// THE fix: an --extra-button press exits 1 like a Cancel, but it
+			// prints the label we offered, which is the decision the manager acts on.
+			name: "a postponement press is a decision, not an ambiguity", shown: true, want: true,
+			run: desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour\n", elapsed: dismissed},
+		},
+		{
+			name: "a postponement pressed quickly is still a decision", shown: true, want: true,
+			run: desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour", elapsed: 5 * time.Millisecond},
+		},
+		{
+			// Still ambiguous: a dismissal and a display failure are
+			// indistinguishable on the exit code, so this keeps its trace.
+			name: "exit 1 with nothing on stdout", shown: true, want: false,
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: dismissed},
+		},
+		{
+			name: "an unrecognised stdout is not a decision", shown: true, want: false,
+			run: desktopDialogRun{started: true, exitCode: 1, stdout: "Restart now", elapsed: dismissed},
+		},
+		{
+			// A label we offered, arriving with an action list that never
+			// contained it, is not proof of anything.
+			name: "a postponement label nobody offered", shown: true, want: false,
+			actions: []string{RebootActionRestartNow},
+			run:     desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour", elapsed: dismissed},
+		},
+		{
+			name: "a GTK display failure exits 1 as well", shown: false, want: false,
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: 12 * time.Millisecond,
+				stderr: "Gtk-WARNING **: cannot open display: :0"},
+		},
+		{
+			name: "zenity's own timeout reached no decision", shown: true, want: false,
+			run: desktopDialogRun{started: true, exitCode: 5, elapsed: 90 * time.Second},
+		},
+		{
+			name: "a dialog we had to kill", shown: false, want: false,
+			run: desktopDialogRun{started: true, timedOut: true, exitCode: -1, elapsed: 105 * time.Second},
+		},
+		{
+			name: "zenity never started", shown: false, want: false,
+			run: desktopDialogRun{},
+		},
+		{
+			// classifyDialogRun's "Wait failed with no exit status" branch: exit
+			// code reads as 0, but nothing can be concluded from it.
+			name: "no exit status and nothing shown", shown: false, want: false,
+			run: desktopDialogRun{exitCode: 0},
+		},
+		{
+			name: "an unknown exit code", shown: false, want: false,
+			run: desktopDialogRun{started: true, exitCode: 3, elapsed: dismissed},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actions := tc.actions
+			if actions == nil {
+				actions = testPromptActions
+			}
+			if got := dialogEndedInCleanDecision(tc.run, actions, tc.shown); got != tc.want {
+				t.Errorf("dialogEndedInCleanDecision(%+v, %v, shown=%v) = %v, want %v",
+					tc.run, actions, tc.shown, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLogDialogOutcomeStaysQuietOnAPostponement drives the log line #4941 quotes
+// through the function the linux seam calls, so the WARN itself — not only the
+// predicate underneath it — is asserted on a platform that never runs zenity.
+func TestLogDialogOutcomeStaysQuietOnAPostponement(t *testing.T) {
+	const warned = "the reboot dialog did not end in a clean decision"
+	cases := []struct {
+		name     string
+		run      desktopDialogRun
+		shown    bool
+		wantWarn bool
+	}{
+		{
+			name: "a postponement press", wantWarn: false, shown: true,
+			run: desktopDialogRun{started: true, exitCode: 1, stdout: "Postpone 1 hour\n", elapsed: 4 * time.Second},
+		},
+		{
+			name: "Restart now", wantWarn: false, shown: true,
+			run: desktopDialogRun{started: true, exitCode: 0, elapsed: 4 * time.Second},
+		},
+		{
+			name: "exit 1 with no stdout label", wantWarn: true, shown: true,
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: 4 * time.Second},
+		},
+		{
+			name: "a display failure the user never saw", wantWarn: true, shown: false,
+			run: desktopDialogRun{started: true, exitCode: 1, elapsed: 12 * time.Millisecond,
+				stderr: "Gtk-WARNING **: cannot open display: :0"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureWarnLogs(t)
+
+			logDialogOutcome("c18", "todd", tc.run, testPromptActions, tc.shown)
+
+			got := logs.String()
+			if strings.Contains(got, warned) != tc.wantWarn {
+				t.Fatalf("WARN logged = %v, want %v; logs:\n%s", !tc.wantWarn, tc.wantWarn, got)
+			}
+			if !tc.wantWarn {
+				return
+			}
+			// The warning that does fire still has to carry the evidence a
+			// support engineer needs to tell a display failure from a dismissal.
+			for _, want := range []string{"level=WARN", "session=c18", "user=todd", "exitCode=1", "shown=" + strconv.FormatBool(tc.shown)} {
+				if !strings.Contains(got, want) {
+					t.Errorf("the WARN lost %q; logs:\n%s", want, got)
+				}
+			}
+		})
+	}
+}

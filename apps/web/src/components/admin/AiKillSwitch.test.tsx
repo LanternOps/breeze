@@ -22,7 +22,9 @@ const activeRow = {
   killed: false,
   epoch: 4,
   reason: 'restored after incident 123',
-  updatedBy: 'admin-0',
+  updatedBy: '11111111-1111-4111-8111-111111111111',
+  updatedByName: 'Ada Lovelace',
+  updatedByEmail: 'ada@breeze.test',
   updatedAt: '2026-08-28T12:00:00.000Z',
 };
 
@@ -30,7 +32,9 @@ const killedRow = {
   killed: true,
   epoch: 5,
   reason: 'suspected prompt injection',
-  updatedBy: 'admin-1',
+  updatedBy: '22222222-2222-4222-8222-222222222222',
+  updatedByName: 'Grace Hopper',
+  updatedByEmail: 'grace@breeze.test',
   updatedAt: '2026-09-01T09:00:00.000Z',
 };
 
@@ -62,8 +66,51 @@ describe('AiKillSwitch', () => {
     render(<AiKillSwitch />);
     await waitFor(() => expect(screen.getByTestId('ai-kill-switch-status-badge').textContent).toMatch(/active/i));
     expect(screen.getByTestId('ai-kill-switch-epoch').textContent).toContain('4');
-    expect(screen.getByTestId('ai-kill-switch-updated-by').textContent).toContain('admin-0');
+    expect(screen.getByTestId('ai-kill-switch-updated-by').textContent).toContain('Ada Lovelace');
     expect(screen.getByTestId('ai-kill-switch-last-reason').textContent).toContain('restored after incident 123');
+  });
+
+  it('shows the actor NAME, not the raw UUID, with the UUID in a tooltip (#4931)', async () => {
+    // This is the one platform-wide control whose audit trail justifies its
+    // mandatory reason field, so the actor has to be a human-readable name.
+    // The UUID stays reachable via `title` for disambiguation and for matching
+    // the row against the audit log.
+    mockApi(activeRow);
+    render(<AiKillSwitch />);
+    const updatedBy = await screen.findByTestId('ai-kill-switch-updated-by');
+    await waitFor(() => expect(updatedBy.textContent).toBe('Ada Lovelace'));
+    expect(updatedBy.textContent).not.toContain('11111111-1111-4111-8111-111111111111');
+    expect(updatedBy.getAttribute('title')).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('falls back to the email when the actor has no usable name (#4931)', async () => {
+    mockApi({ ...activeRow, updatedByName: '   ' });
+    render(<AiKillSwitch />);
+    const updatedBy = await screen.findByTestId('ai-kill-switch-updated-by');
+    await waitFor(() => expect(updatedBy.textContent).toBe('ada@breeze.test'));
+    expect(updatedBy.getAttribute('title')).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('falls back to the raw UUID when the actor no longer resolves (#4931)', async () => {
+    // A deleted user, or a row flipped by ops through the documented SQL
+    // fallback (updated_by NULL). The API returns nulls rather than inventing a
+    // display string, so the field must degrade to the UUID instead of going
+    // blank — an empty "Last changed by" next to a filled-in reason reads like
+    // a missing audit trail.
+    mockApi({ ...activeRow, updatedByName: null, updatedByEmail: null });
+    render(<AiKillSwitch />);
+    const updatedBy = await screen.findByTestId('ai-kill-switch-updated-by');
+    await waitFor(() => expect(updatedBy.textContent).toBe('11111111-1111-4111-8111-111111111111'));
+    // Nothing to disambiguate — no tooltip duplicating the visible text.
+    expect(updatedBy.getAttribute('title')).toBeNull();
+  });
+
+  it('renders the em-dash placeholder when the switch has never been flipped (#4931)', async () => {
+    mockApi({ ...activeRow, epoch: 0, reason: null, updatedBy: null, updatedByName: null, updatedByEmail: null });
+    render(<AiKillSwitch />);
+    const updatedBy = await screen.findByTestId('ai-kill-switch-updated-by');
+    await waitFor(() => expect(updatedBy.textContent).toBe('—'));
+    expect(updatedBy.getAttribute('title')).toBeNull();
   });
 
   it('renders the killed state', async () => {

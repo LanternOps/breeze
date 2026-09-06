@@ -219,11 +219,29 @@ func (r *RebootManager) ScheduleWithOptions(delay time.Duration, deadline time.T
 	return r.scheduleLocked(delay, deadline, reason, source, opts)
 }
 
+// leadRung says how a schedule's FIRST warning is delivered. An explicit
+// parameter rather than a flag on the manager: a postponement is the only thing
+// that quiets it, and a flag left set by a schedule that was then refused would
+// silently strip the dialog from the next operator dispatch.
+type leadRung int
+
+const (
+	// leadRungPrompts is an ordinary schedule: every rung the planner made
+	// deferrable offers a postponement, the lead one included.
+	leadRungPrompts leadRung = iota
+	// leadRungWarnsOnly is a schedule the user's own postponement re-planned
+	// (#4941). Its lead rung is armed at offset zero — the instant "not now" was
+	// accepted — so a dialog there hands back the question that was just
+	// answered, with the counter decremented. The warning still goes out; the
+	// next offer arrives with a reminder rung.
+	leadRungWarnsOnly
+)
+
 // scheduleLocked is the whole of ScheduleWithOptions with r.mu already held, so
 // that Defer can run its checks and its re-schedule as ONE atomic step. Callers
 // must hold r.mu.
 func (r *RebootManager) scheduleLocked(delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
-	return r.scheduleLockedAt(r.nowFn(), delay, deadline, reason, source, opts)
+	return r.scheduleLockedAt(r.nowFn(), delay, deadline, reason, source, opts, leadRungPrompts)
 }
 
 // scheduleLockedAt takes the instant the delay is measured from, so a caller
@@ -232,7 +250,7 @@ func (r *RebootManager) scheduleLocked(delay time.Duration, deadline time.Time, 
 // against the first), which lands just past the deadline whenever the deferral
 // was clamped to it — and arbitrarily past it if the wall clock steps. Callers
 // must hold r.mu.
-func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions) error {
+func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, deadline time.Time, reason, source string, opts RebootOptions, lead leadRung) error {
 	if r.stopped {
 		return fmt.Errorf("reboot manager is stopped")
 	}
@@ -306,7 +324,13 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 		// failure, so the field describes only the most recent attempt.
 	}
 
-	for _, rung := range planRebootRungs(plan) {
+	var rungs []rebootRung
+	if lead == leadRungWarnsOnly {
+		rungs = planRebootRungsQuietLead(plan)
+	} else {
+		rungs = planRebootRungs(plan)
+	}
+	for _, rung := range rungs {
 		rung := rung // capture for closure
 		r.notifyTimers = append(r.notifyTimers, r.afterFunc(rung.notification.After, func() {
 			r.emitNotification(gen, rung)
@@ -413,8 +437,11 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 
 	// Re-schedule under the same options: it cancels the in-flight timers, bumps
 	// the generation and emits a fresh lead notification quoting the new time —
-	// which is exactly how the user learns the countdown moved.
-	if err := r.scheduleLockedAt(now, outcome.NewDelay, deadline, reason, source, RebootOptions{Deferral: policy}); err != nil {
+	// which is exactly how the user learns the countdown moved. That lead rung
+	// warns WITHOUT opening a dialog (#4941): it fires at offset zero, so a
+	// prompt there would hand back the question the user just answered.
+	if err := r.scheduleLockedAt(now, outcome.NewDelay, deadline, reason, source,
+		RebootOptions{Deferral: policy}, leadRungWarnsOnly); err != nil {
 		return 0, err
 	}
 
@@ -432,7 +459,8 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 			"path", path, "deadline", deadline, "used", used, "error", err)
 	}
 	log.Info("reboot postponed by user",
-		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals)
+		"newDelay", outcome.NewDelay.String(), "used", used, "max", policy.MaxDeferrals,
+		"leadPromptSuppressed", true)
 	return outcome.NewDelay, nil
 }
 
@@ -707,7 +735,7 @@ func (r *RebootManager) restartNow(gen uint64) error {
 		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
 	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
-		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral})
+		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral}, leadRungPrompts)
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
