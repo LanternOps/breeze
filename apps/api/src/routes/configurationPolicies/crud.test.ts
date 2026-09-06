@@ -10,6 +10,9 @@ const {
   deleteConfigPolicyMock,
   assignPolicyMock,
   dbSelectMock,
+  listEligibleParentPoliciesMock,
+  getParentLinkFeatureTypesMock,
+  mfaState,
 } = vi.hoisted(() => ({
   listConfigPoliciesMock: vi.fn(),
   createConfigPolicyMock: vi.fn(),
@@ -18,6 +21,10 @@ const {
   deleteConfigPolicyMock: vi.fn(),
   assignPolicyMock: vi.fn(),
   dbSelectMock: vi.fn(),
+  listEligibleParentPoliciesMock: vi.fn(),
+  getParentLinkFeatureTypesMock: vi.fn(),
+  // Mutable so a single test can flip MFA off without re-mocking the module.
+  mfaState: { satisfied: true },
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -32,6 +39,8 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     updateConfigPolicy: updateConfigPolicyMock,
     deleteConfigPolicy: deleteConfigPolicyMock,
     assignPolicy: assignPolicyMock,
+    listEligibleParentPolicies: listEligibleParentPoliciesMock,
+    getParentLinkFeatureTypes: getParentLinkFeatureTypesMock,
   };
 });
 
@@ -61,13 +70,18 @@ vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
 import { crudRoutes } from './crud';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { requireScope } from '../../middleware/auth';
 // Real class via the importOriginal spread in the service mock above.
-import { PartnerWideWriteDeniedError } from '../../services/configurationPolicy';
+import {
+  PartnerWideWriteDeniedError,
+  InvalidParentPolicyError,
+  PolicyHasChildrenError,
+} from '../../services/configurationPolicy';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -109,6 +123,9 @@ describe('configurationPolicies CRUD routes', () => {
     // auto-assign error-path test leaks into later cases.
     assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
     deleteConfigPolicyMock.mockResolvedValue({ id: POLICY_ID });
+    getParentLinkFeatureTypesMock.mockResolvedValue([]);
+    listEligibleParentPoliciesMock.mockResolvedValue([]);
+    mfaState.satisfied = true;
     mockOrgExists(true); // default: system-scope org-existence check passes
     app = new Hono();
     // Set auth context before mounting routes
@@ -686,6 +703,178 @@ describe('configurationPolicies CRUD routes', () => {
       deleteConfigPolicyMock.mockRejectedValue(new Error('DB error'));
       const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
       expect(res.status).toBe(500);
+    });
+  });
+
+  // ============================================
+  // One-level inheritance (#5080 W01)
+  // ============================================
+
+  describe('inheritance', () => {
+    const PARENT_ID = '44444444-4444-4444-4444-444444444444';
+
+    it('POST forwards parentPolicyId to createConfigPolicy', async () => {
+      createConfigPolicyMock.mockResolvedValue({
+        id: POLICY_ID, name: 'Child', orgId: ORG_ID, parentPolicyId: PARENT_ID,
+      });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createConfigPolicyMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ parentPolicyId: PARENT_ID }),
+        expect.anything(),
+      );
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ details: expect.objectContaining({ parentPolicyId: PARENT_ID }) }),
+      );
+    });
+
+    it('POST maps InvalidParentPolicyError to 400 INVALID_PARENT_POLICY', async () => {
+      createConfigPolicyMock.mockRejectedValue(new InvalidParentPolicyError());
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'INVALID_PARENT_POLICY' });
+    });
+
+    // MFA follows effectiveness: inheriting a gated link enables it on the new
+    // policy, the same capability POST /:id/features already gates.
+    it('POST requires MFA when the parent carries a gated link', async () => {
+      getParentLinkFeatureTypesMock.mockResolvedValue(['maintenance']);
+      mfaState.satisfied = false;
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'MFA required' });
+      expect(createConfigPolicyMock).not.toHaveBeenCalled();
+    });
+
+    it('POST allows an ungated parent without MFA', async () => {
+      getParentLinkFeatureTypesMock.mockResolvedValue(['event_log']);
+      mfaState.satisfied = false;
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Child', orgId: ORG_ID });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Child', parentPolicyId: PARENT_ID }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('POST without a parent never consults the parent MFA gate', async () => {
+      mfaState.satisfied = false;
+      createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Root', orgId: ORG_ID });
+
+      const res = await app.request('/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Root' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(getParentLinkFeatureTypesMock).not.toHaveBeenCalled();
+    });
+
+    it('DELETE maps PolicyHasChildrenError to 409 with the children', async () => {
+      const children = [{ id: 'c1', name: 'Child One' }];
+      deleteConfigPolicyMock.mockRejectedValue(new PolicyHasChildrenError(children));
+
+      const res = await app.request(`/${POLICY_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'POLICY_HAS_CHILDREN', children });
+    });
+
+    it('GET /eligible-parents (organization) returns names only', async () => {
+      listEligibleParentPoliciesMock.mockResolvedValue([
+        { id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' },
+      ]);
+
+      const res = await app.request(`/eligible-parents?ownerScope=organization&orgId=${ORG_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' }],
+      });
+    });
+
+    // Route ordering regression: `GET /:id` is declared after this route, and
+    // if it were declared first Hono would capture "eligible-parents" as an id.
+    it('GET /eligible-parents is not captured by GET /:id', async () => {
+      getConfigPolicyMock.mockResolvedValue({ id: 'should-not-be-used' });
+
+      const res = await app.request(`/eligible-parents?ownerScope=organization&orgId=${ORG_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(getConfigPolicyMock).not.toHaveBeenCalled();
+      expect(listEligibleParentPoliciesMock).toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (organization) 403s for an org the caller cannot access', async () => {
+      const res = await app.request(
+        '/eligible-parents?ownerScope=organization&orgId=55555555-5555-5555-5555-555555555555',
+      );
+
+      expect(res.status).toBe(403);
+      expect(listEligibleParentPoliciesMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (partner) 403s for an org-scoped caller even with a partnerId', async () => {
+      const partnerApp = new Hono();
+      partnerApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'organization', partnerId: PARTNER_ID }));
+        await next();
+      });
+      partnerApp.route('/', crudRoutes);
+
+      const res = await partnerApp.request('/eligible-parents?ownerScope=partner');
+
+      expect(res.status).toBe(403);
+      expect(listEligibleParentPoliciesMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /eligible-parents (partner) serves a partner-scoped caller', async () => {
+      const partnerApp = new Hono();
+      partnerApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ scope: 'partner', orgId: null, partnerId: PARTNER_ID }));
+        await next();
+      });
+      partnerApp.route('/', crudRoutes);
+      listEligibleParentPoliciesMock.mockResolvedValue([
+        { id: PARENT_ID, name: 'MSP baseline', ownerScope: 'partner' },
+      ]);
+
+      const res = await partnerApp.request('/eligible-parents?ownerScope=partner');
+
+      expect(res.status).toBe(200);
+      expect(listEligibleParentPoliciesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        { ownerScope: 'partner' },
+      );
+    });
+
+    it('GET /eligible-parents rejects an organization query with no orgId', async () => {
+      const res = await app.request('/eligible-parents?ownerScope=organization');
+      expect(res.status).toBe(400);
     });
   });
 });
