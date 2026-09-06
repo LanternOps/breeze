@@ -1403,7 +1403,7 @@ and CI changes were retained.
 The migration ordering guard failed because the unshipped October 1 reconcile
 sorted before main's `2026-10-09-000600-rls-scoped-replay-v0110.sql`. Commit
 `96c8ebbbbc` renames it to
-`2026-10-09-000700-partner-admin-force-mfa-reconcile.sql` and updates the replay
+`2026-10-11-170000-partner-admin-force-mfa-reconcile.sql` and updates the replay
 test. The SQL bytes are unchanged. This filename supersedes earlier filenames in
 the historical instructions and execution records above. Active design and seed
 comments were updated in `f23f499998`.

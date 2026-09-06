@@ -52,7 +52,7 @@
 
 **D3 — `createPartner()` writes `forceMfa: true` as a literal on the tenant Partner Admin insert.** Not copied from the global template: the template lookup happens after the insert (F6), and the invariant is "system Partner Admin forces MFA", not "whatever the template currently says". The env kill switch (F10) remains the single relief valve, and it applies uniformly to every tenant. Cost-if-wrong: an operator who wants no forcing must set `MFA_FORCE_FOR_PARTNER_ADMIN=false` rather than editing a row — which is the documented mechanism.
 
-**D4 — One idempotent forward migration reconciles installed databases, filtered to system rows.** File `apps/api/migrations/2026-10-09-000700-partner-admin-force-mfa-reconcile.sql` (preferred `HHMMSS` form; sorts strictly after `2026-09-29-detach-ticket-runs-on-device-org-move.sql` — re-verify the max at execution time, main moves; a `2026-09-29-100000-…` name would sort *before* the `-d…` file because digits precede letters). Body:
+**D4 — One idempotent forward migration reconciles installed databases, filtered to system rows.** File `apps/api/migrations/2026-10-11-170000-partner-admin-force-mfa-reconcile.sql` (preferred `HHMMSS` form; sorts strictly after `2026-09-29-detach-ticket-runs-on-device-org-move.sql` — re-verify the max at execution time, main moves; a `2026-09-29-100000-…` name would sort *before* the `-d…` file because digits precede letters). Body:
 
 ```sql
 DO $$
@@ -99,10 +99,10 @@ It flips the global template (`partner_id IS NULL`) and every tenant copy (`part
 | --- | --- | --- |
 | `apps/api/src/db/seed.ts` | D1 type + `forceMfa` on all ten `SYSTEM_ROLES` entries (Partner Admin `true`). D2: `isNull` import; narrowed `existing` lookup; `forceMfa: roleDef.forceMfa` on insert; one-directional reconcile `UPDATE` on the existing branch with a log line. No other change (bootstrap-admin section untouched). | T1, T2 |
 | `apps/api/src/services/partnerCreate.ts` | D3: `forceMfa: true` on the roles insert at `:103-111`. | T3, T4 |
-| `apps/api/migrations/2026-10-09-000700-partner-admin-force-mfa-reconcile.sql` | D4 body verbatim, header comment naming RMM-QA-164, the autoMigrate ordering cause (F4), the epoch side effect (D5) and the relief valve. | T5; `check-migration-naming.sh --staged`; `autoMigrate.test.ts` |
+| `apps/api/migrations/2026-10-11-170000-partner-admin-force-mfa-reconcile.sql` | D4 body verbatim, header comment naming RMM-QA-164, the autoMigrate ordering cause (F4), the epoch side effect (D5) and the relief valve. | T5; `check-migration-naming.sh --staged`; `autoMigrate.test.ts` |
 | `apps/api/src/__tests__/integration/registerPartnerMfaPolicy.integration.test.ts` | D12. | T4 (self) |
 | `apps/api/src/__tests__/integration/seedPartnerAdminForceMfa.integration.test.ts` (new) | T2. | — |
-| `apps/api/src/__tests__/integration/partnerAdminForceMfaMigration.integration.test.ts` (new) | T5; references the migration by path (`readFileSync(join(__dirname, '../../../migrations/2026-10-09-000700-partner-admin-force-mfa-reconcile.sql'))`, the `recoveryAuthorizationSubjectMigration` pattern). | `autoMigrate.test.ts:580` path-resolution assertion |
+| `apps/api/src/__tests__/integration/partnerAdminForceMfaMigration.integration.test.ts` (new) | T5; references the migration by path (`readFileSync(join(__dirname, '../../../migrations/2026-10-11-170000-partner-admin-force-mfa-reconcile.sql'))`, the `recoveryAuthorizationSubjectMigration` pattern). | `autoMigrate.test.ts:580` path-resolution assertion |
 | `apps/api/src/db/seed.test.ts` | T1 added. | — |
 | `apps/api/src/services/partnerCreate.test.ts` | T3 added. | — |
 | `docker-compose.yml`, `.env.example` | D6. | `envComposeParity.test.ts` |
@@ -141,7 +141,7 @@ Local, before push:
 
 ## 6. Rollout note (for the PR body and release notes)
 
-On the first boot after upgrade, `2026-10-09-000700-partner-admin-force-mfa-reconcile.sql` flips every system Partner Admin role that is still `force_mfa = false` — the global template and one row per tenant. Each flipped tenant row bumps `permissions_epoch` for that tenant's Partner Admin members (one-time cache invalidation), and every Partner Admin without an enrolled factor receives `428 mfa_enrollment_required` on their next non-exempt request until they enrol at `/auth/mfa/setup` (the web app redirects there automatically). Fresh installs seed the flag directly, so the bootstrap admin must enrol MFA before the setup wizard's protected calls succeed. Relief valve, if an enrolment outage locks operators out: `MFA_FORCE_FOR_PARTNER_ADMIN=false` in `.env` (now mapped in the root compose as well as the prod compose), which suppresses only the role-force component; settings-driven `requireMfa` stays enforced. The migration logs the flipped-row count as a `WARNING` (or `NOTICE … 0 rows`) in the Postgres log.
+On the first boot after upgrade, `2026-10-11-170000-partner-admin-force-mfa-reconcile.sql` flips every system Partner Admin role that is still `force_mfa = false` — the global template and one row per tenant. Each flipped tenant row bumps `permissions_epoch` for that tenant's Partner Admin members (one-time cache invalidation), and every Partner Admin without an enrolled factor receives `428 mfa_enrollment_required` on their next non-exempt request until they enrol at `/auth/mfa/setup` (the web app redirects there automatically). Fresh installs seed the flag directly, so the bootstrap admin must enrol MFA before the setup wizard's protected calls succeed. Relief valve, if an enrolment outage locks operators out: `MFA_FORCE_FOR_PARTNER_ADMIN=false` in `.env` (now mapped in the root compose as well as the prod compose), which suppresses only the role-force component; settings-driven `requireMfa` stays enforced. The migration logs the flipped-row count as a `WARNING` (or `NOTICE … 0 rows`) in the Postgres log.
 
 ## 7. Ship sequence
 
