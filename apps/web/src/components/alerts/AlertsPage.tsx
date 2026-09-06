@@ -177,8 +177,7 @@ export default function AlertsPage() {
     fetchAlerts();
   }, [fetchAlerts]);
 
-  const { ids: deviceFilterIds, loading: deviceFilterLoading, error: deviceFilterError,
-    state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
+  const { ids: deviceFilterIds, loading: deviceFilterLoading, state: deviceFilterState, refetch: retryDeviceFilter } = useAdvancedFilterIds(deviceFilter, `${currentOrgId}:${allOrgs}`);
   const deviceFilterBlocked = deviceFilterLoading || deviceFilterState === 'error';
   useEffect(() => {
     setPendingBulk(null);
@@ -503,7 +502,7 @@ export default function AlertsPage() {
         defaultExpanded={false}
       />
 
-      {deviceFilterError && <div role="alert" data-testid="alert-device-filter-error">
+      {deviceFilterState === 'error' && <div role="alert" data-testid="alert-device-filter-error">
         {t('devices:deviceList.advancedFilterFailed')}
         <button type="button" onClick={retryDeviceFilter}>{t('common:actions.retry')}</button>
       </div>}

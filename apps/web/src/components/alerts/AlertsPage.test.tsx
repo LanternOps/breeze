@@ -844,7 +844,7 @@ describe('AlertsPage — dismiss', () => {
 
 
 describe('AlertsPage complete device filter scope (RMM-QA-153)', () => {
-  it('blocks captured bulk dismiss on failure, hides device-less alerts and retries with idsOnly', async () => {
+  it.each([401, 403, 503])('blocks captured bulk dismiss on %s, hides device-less alerts and retries with idsOnly', async status => {
     vi.clearAllMocks();
     let previews = 0;
     fetchMock.mockImplementation(async (input, init) => {
@@ -855,7 +855,7 @@ describe('AlertsPage complete device filter scope (RMM-QA-153)', () => {
       if (url === '/filters/preview') {
         previews++;
         expect(JSON.parse(init!.body as string)).toEqual(expect.objectContaining({ idsOnly: true }));
-        return previews === 1 ? makeJsonResponse({}, false, 503)
+        return previews === 1 ? makeJsonResponse({}, false, status)
           : makeJsonResponse({ data: { totalCount: 1, deviceIds: ['device-1'] } });
       }
       return makeJsonResponse({ data: [] });

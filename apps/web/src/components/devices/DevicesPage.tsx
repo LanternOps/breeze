@@ -1901,7 +1901,7 @@ export default function DevicesPage() {
               already landed, would otherwise see an unexplained empty grid.
               This persistent banner is grid view's equivalent of DeviceList's
               `device-filter-error` pill (#4732). */}
-          {advancedFilterError && (
+          {(advancedFilterError || advancedFilterState === 'error') && (
             <div
               className="flex items-center gap-2 rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive w-fit"
               data-testid="device-filter-error-grid"
