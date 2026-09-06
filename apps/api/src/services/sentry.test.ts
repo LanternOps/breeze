@@ -773,8 +773,16 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // like the one this test guards against (see the comment above) fails
     // LOUDLY as a count mismatch, instead of silently extracting zero keys
     // for a skipped call and passing anyway.
-    ['accounting/accountingInvoicePush.ts', 8], // +1: Phase D2 payment fan-out capture
+    // 8 -> 10: the two SyncToken-re-read fixes later in this branch each added a
+    // tag-bearing capture without bumping the pin, which is exactly the count
+    // mismatch this number exists to force.
+    ['accounting/accountingInvoicePush.ts', 10],
     ['accounting/accountingMappingService.ts', 5],
+    // Phase D2. Paths are resolved against THIS file's directory (services/),
+    // so the two worker files reach out of it.
+    ['accounting/accountingPaymentPush.ts', 9],
+    ['../jobs/accountingSyncWorker.ts', 2],
+    ['../jobs/accountingReconcileWorker.ts', 5],
   ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
     const source = readFileSync(
       fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),

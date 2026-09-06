@@ -772,7 +772,7 @@ export async function notePaymentJobSkipped(
     );
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', mappingId, partnerId,
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
   }
 }
@@ -804,7 +804,7 @@ export async function paymentDeleteAwaitsRemoteRef(
     return row !== null && row.pendingOp === 'delete' && row.remoteEntityId === null;
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', mappingId, partnerId,
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
     return false;
   }
@@ -826,7 +826,7 @@ async function markPaymentMappingErrorInOwnContext(
     return await runInDbContext(() => markPaymentMappingError(mappingId, partnerId, message, opts));
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', mappingId, partnerId,
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
     return null;
   }
@@ -927,10 +927,13 @@ function fireAudit(params: {
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingPaymentPush',
-      action: params.action,
-      // Sentry tags are Record<string, string>; the unresolved-delete drop has
-      // no resource id to report.
-      ...(params.resourceId ? { resourceId: params.resourceId } : {}),
+      accounting_audit_action: params.action,
+      // Polymorphic per `resourceType` (an invoice id or a mapping id), and a
+      // plain sentinel when there is none — the unresolved-delete drop has no
+      // resource id left to report. Written as a flat string rather than a
+      // conditional spread so `sentry.test.ts`'s allowlist guard, whose matcher
+      // cannot see through a nested `{`, keeps reading this call's tags.
+      accounting_audit_resource_id: params.resourceId ?? 'none',
     });
   }
 }
@@ -1284,7 +1287,9 @@ export async function pushPaymentToAccounting(
   } catch (err) {
     const message = sanitizePaymentSyncErrorMessage(err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', mappingId, invoicePaymentId: prep.payload.invoicePaymentId,
+      service: 'accountingPaymentPush',
+      accounting_mapping_id: mappingId,
+      invoice_payment_id: prep.payload.invoicePaymentId,
     });
     // Own short context so the marker COMMITS before the throw. `pending_op` is
     // KEPT: the work is still owed and the sweep must retry it.
@@ -1400,7 +1405,7 @@ export async function pushPaymentToAccounting(
     audit = phase2.audit;
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
-      service: 'accountingPaymentPush', mappingId, remotePaymentId: ref.id,
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: ref.id,
     });
     const message = `QuickBooks accepted the payment (remote id ${ref.id}) but Breeze failed to record it — contact support to reconcile`;
     // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
@@ -1552,12 +1557,16 @@ export async function deletePaymentInAccounting(
     if (prep.outcome === 'unresolved_dropped') {
       captureException(
         new Error(
+          // NO SEMICOLON anywhere between `captureException(` and this call's
+          // tags object, comments included: `sentry.test.ts`'s allowlist guard
+          // stops matching at one, so the semicolon this message used to carry
+          // hid the call's tags from the guard completely.
           `accountingPaymentPush: dropped a delete-pending payment mapping (id=${mappingId}) that never recorded a `
-          + 'QuickBooks remote id within the grace window; a QuickBooks Payment for this Breeze payment may be '
+          + 'QuickBooks remote id within the grace window — a QuickBooks Payment for this Breeze payment may be '
           + 'orphaned and needs manual reconciliation',
         ),
         undefined,
-        { service: 'accountingPaymentPush', mappingId, partnerId },
+        { service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId },
       );
       fireAudit({
         // The connection was never resolved on this path (it must work even for
@@ -1604,11 +1613,11 @@ export async function deletePaymentInAccounting(
     if (attempts === null || attempts <= 1 || attempts % PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS === 0) {
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
         service: 'accountingPaymentPush',
-        mappingId,
-        remotePaymentId: prep.remotePaymentId,
+        accounting_mapping_id: mappingId,
+        remote_entity_id: prep.remotePaymentId,
         // Sentry tags are strings; `unknown` means the stamp itself could not be
         // written, so the event is raised rather than suppressed.
-        syncAttempts: attempts === null ? 'unknown' : String(attempts),
+        sync_attempts: attempts === null ? 'unknown' : String(attempts),
       });
     }
     throw new AccountingPaymentPushError('quickbooks_error', 502, message);
@@ -1623,7 +1632,7 @@ export async function deletePaymentInAccounting(
     });
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
-      service: 'accountingPaymentPush', mappingId, remotePaymentId: prep.remotePaymentId,
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: prep.remotePaymentId,
     });
     const message = `QuickBooks removed the payment (remote id ${prep.remotePaymentId}) but Breeze could not clear its mapping; the reconcile sweep will retry`;
     // `pending_op` KEPT and the lease released: a repeat delete against an

@@ -1508,7 +1508,7 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     seed(PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS - 1);
     expect(await attempt()).toBe(1); // 480 counted attempts ~ one sweep-day
     expect(captureExceptionMock.mock.calls[0]![2])
-      .toMatchObject({ syncAttempts: String(PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS) });
+      .toMatchObject({ sync_attempts: String(PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS) });
   });
 
   it('records a payment job the sync worker skipped because QuickBooks is not connected', async () => {

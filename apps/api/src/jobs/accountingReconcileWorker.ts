@@ -394,8 +394,8 @@ export async function processReconcileConnectionJob(
           );
           captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
             service: 'accountingPaymentPull',
-            connectionId: fresh.id,
-            remotePaymentId: line.remotePaymentId,
+            accounting_connection_id: fresh.id,
+            remote_entity_id: line.remotePaymentId,
           });
         }
       }
@@ -456,7 +456,9 @@ export async function processReconcileConnectionJob(
       );
       console.error('[AccountingReconcileWorker] CDC window truncated', `connectionId=${fresh.id}`, `trigger=${data.trigger}`);
       captureException(err, undefined, {
-        service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger,
+        service: 'accountingReconcileWorker',
+        accounting_connection_id: fresh.id,
+        accounting_trigger: data.trigger,
       });
       finish();
       throw err;
@@ -485,7 +487,7 @@ export async function processReconcileConnectionJob(
       captureException(
         new Error(`accounting reconcile cursor CAS lost for connection ${fresh.id} (realm changed mid-run)`),
         undefined,
-        { service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger },
+        { service: 'accountingReconcileWorker', accounting_connection_id: fresh.id, accounting_trigger: data.trigger },
       );
       finish();
       return summary;
@@ -539,7 +541,7 @@ export async function processReconcileSweep(): Promise<{
         err instanceof Error ? err.message : err,
       );
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-        service: 'accountingReconcileWorker', phase: 'sweep.list',
+        service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.list',
       });
     }
 
@@ -564,7 +566,7 @@ export async function processReconcileSweep(): Promise<{
         err instanceof Error ? err.message : err,
       );
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-        service: 'accountingReconcileWorker', phase: 'sweep.pendingOps',
+        service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.pendingOps',
       });
     }
 

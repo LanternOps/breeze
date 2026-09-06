@@ -629,7 +629,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { service: 'accountingPaymentPull', connectionId: CONN_ID, remotePaymentId: '180' },
+      { service: 'accountingPaymentPull', accounting_connection_id: CONN_ID, remote_entity_id: '180' },
     );
   });
 
@@ -653,7 +653,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { service: 'accountingReconcileWorker', connectionId: CONN_ID, trigger: JOB.trigger },
+      { service: 'accountingReconcileWorker', accounting_connection_id: CONN_ID, accounting_trigger: JOB.trigger },
     );
   });
 
@@ -832,7 +832,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      expect.objectContaining({ service: 'accountingReconcileWorker', connectionId: CONN_ID }),
+      expect.objectContaining({ service: 'accountingReconcileWorker', accounting_connection_id: CONN_ID }),
     );
   });
 

@@ -226,7 +226,12 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
           '[AccountingSyncWorker] terminal failure, not retrying',
           `type=${data.type}`, `invoiceId=${data.invoiceId}`, `code=${err.code}`, err.message,
         );
-        captureException(err, undefined, { service: 'accountingSyncWorker', type: data.type, invoiceId: data.invoiceId, code: err.code });
+        captureException(err, undefined, {
+          service: 'accountingSyncWorker',
+          accounting_job_type: data.type,
+          invoice_id: data.invoiceId,
+          accounting_error_code: err.code,
+        });
         return;
       }
       // quickbooks_error (502), sync_in_progress (409 — a push is mid-flight,
@@ -263,7 +268,10 @@ async function processPaymentJob(
         `type=${data.type}`, `mappingId=${data.mappingId}`, `code=${err.code}`, err.message,
       );
       captureException(err, undefined, {
-        service: 'accountingPaymentPush', type: data.type, mappingId: data.mappingId, code: err.code,
+        service: 'accountingPaymentPush',
+        accounting_job_type: data.type,
+        accounting_mapping_id: data.mappingId,
+        accounting_error_code: err.code,
       });
       return;
     }

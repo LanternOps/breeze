@@ -333,6 +333,49 @@ const ALLOWED_TAG_NAMES = new Set([
   'remote_entity_id',
   'breeze_entity_type',
   'remote_sync_token',
+  // Phase D2 (QuickBooks payment push). The same defect as #4828 above, in the
+  // payment path: every `captureException` in `accountingPaymentPush.ts`,
+  // `accountingSyncWorker.ts` and `accountingReconcileWorker.ts` was tagging
+  // camelCase keys with no allowlisted equivalent, so `buildSafeTags` dropped
+  // all of them and `scrubEvent` had already deleted `message`/`extra`. The
+  // call sites now write these; `sentry.test.ts` pins all three files against
+  // this list so the next one cannot regress silently.
+  //
+  // Record-scoped opaque UUIDs, exactly the `invoice_id`/`accounting_mapping_id`
+  // precedent above — never free text, and length-capped by `isBoundedTagValue`:
+  // `invoice_payment_id` (the `invoice_payments` row a push/delete is for),
+  // `accounting_connection_id` (which QuickBooks connection a reconcile run was
+  // for — a partner can reconnect under a new id, so `partner_id` alone cannot
+  // separate the runs) and `accounting_audit_resource_id` (the audit write's
+  // subject; polymorphic per its `resourceType`, or the literal `'none'` when
+  // the event has no resource, e.g. the unresolved-delete drop; the sentinel is
+  // the literal `none`).
+  'invoice_payment_id',
+  'accounting_connection_id',
+  'accounting_audit_resource_id',
+  // Closed sets by construction, each written as a string literal or read off a
+  // typed union at the call site; none carries a tenant, device or host id:
+  // `accounting_job_type` is the `AccountingSyncJobData['type']` union
+  // (push-invoice | void-invoice | push-payment | delete-payment),
+  // `accounting_error_code` is the AccountingInvoicePushErrorCode /
+  // AccountingPaymentPushErrorCode union (never the error's message, which
+  // interpolates provider text), `accounting_trigger` is the reconcile job's
+  // trigger union (webhook | sweep | manual), `accounting_reconcile_phase` is
+  // two literals in the sweep, and `accounting_audit_action` is the three
+  // `accounting.payment.*` audit actions.
+  'accounting_job_type',
+  'accounting_error_code',
+  'accounting_trigger',
+  'accounting_reconcile_phase',
+  'accounting_audit_action',
+  // A small integer rendered as a string (or the literal `unknown` when the
+  // stamp that would have produced it failed). It is what separates "a delete
+  // just started failing" from "this one has been stuck for a day" on the
+  // PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS cadence — the whole reason that event
+  // is throttled rather than raised every try. Bounded: a push row retires at
+  // PAYMENT_PUSH_MAX_ATTEMPTS, and a delete row's counter only ever reaches the
+  // low thousands before an operator has to intervene.
+  'sync_attempts',
   // #3860: which translation key `tApi` could not resolve. By convention keys
   // are hardcoded `ns:dotted.path` literals at the call site, which keeps the
   // set bounded — `tApi` types `key` as `string`, so this is a convention, not
