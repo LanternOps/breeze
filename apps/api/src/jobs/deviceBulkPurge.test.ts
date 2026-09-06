@@ -30,7 +30,7 @@ vi.mock('../services/agentOrgRateLimit', () => ({
   invalidateOrgDeviceCount: vi.fn(async () => undefined),
 }));
 vi.mock('../services/deviceLifecycle', () => ({
-  purgeRemovedDevice: vi.fn(async () => ({ linkGroupDissolved: false })),
+  purgeRemovedDevice: vi.fn(async () => ({ linkGroupId: null, linkGroupDissolved: false })),
   DeviceLifecycleError: class DeviceLifecycleError extends Error {
     constructor(public code: string, message: string) {
       super(message);
@@ -109,7 +109,7 @@ beforeEach(() => {
   lockedOrgByDevice.clear();
   lockedOrgByDevice.set(DEV_1, ORG_A);
   lockedOrgByDevice.set(DEV_2, ORG_A);
-  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupDissolved: false });
+  vi.mocked(purgeRemovedDevice).mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false });
 });
 
 describe('processDeviceBulkPurgeJob', () => {
@@ -144,7 +144,7 @@ describe('processDeviceBulkPurgeJob', () => {
     vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
       if (id === DEV_1) throw new DeviceLifecycleError('UNINSTALL_PENDING', 'queued');
       if (id === DEV_2) throw new DeviceLifecycleError('NOT_REMOVED', 'restored');
-      return { linkGroupDissolved: false };
+      return { linkGroupId: null, linkGroupDissolved: false };
     });
 
     const { job } = fakeJob(payload());
@@ -164,7 +164,7 @@ describe('processDeviceBulkPurgeJob', () => {
     try {
       vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) => {
         if (id === DEV_1) throw new Error('connection terminated');
-        return { linkGroupDissolved: false };
+        return { linkGroupId: null, linkGroupDissolved: false };
       });
 
       const { job } = fakeJob(payload());
@@ -208,6 +208,45 @@ describe('processDeviceBulkPurgeJob', () => {
     expect(invalidateOrgDeviceCount).toHaveBeenCalledTimes(2);
     const orgs = vi.mocked(invalidateOrgDeviceCount).mock.calls.map((c) => c[1]);
     expect(new Set(orgs)).toEqual(new Set([ORG_A, ORG_B]));
+  });
+
+  /**
+   * #2787 review — the worker discarded `PurgeResult` entirely, so a bulk purge
+   * that dissolved a link group left NO trace of it. That matters more in bulk
+   * than in the single route: dissolving a group unlinks sibling devices that
+   * were never in the selection, and the operator who ran a 200-device purge
+   * has no other way to find out it happened.
+   */
+  it('records a dissolved link group in the per-device audit entry', async () => {
+    vi.mocked(purgeRemovedDevice).mockImplementation(async (_tx, id) =>
+      id === DEV_1
+        ? { linkGroupId: 'grp-vm-1', linkGroupDissolved: true }
+        : { linkGroupId: null, linkGroupDissolved: false },
+    );
+
+    const { job } = fakeJob(payload());
+    await processDeviceBulkPurgeJob(job as never);
+
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceId: DEV_1,
+        details: expect.objectContaining({ linkGroupId: 'grp-vm-1', linkGroupDissolved: true }),
+      }),
+    );
+  });
+
+  it('omits the link-group fields for a device that was never in a group', async () => {
+    // The negative half: a blanket `linkGroupId: null` on every entry would
+    // pass the test above while making the field meaningless in the trail.
+    const { job } = fakeJob(payload());
+    await processDeviceBulkPurgeJob(job as never);
+
+    const details = vi.mocked(createAuditLog).mock.calls.map((c) => c[0].details ?? {});
+    expect(details).toHaveLength(2);
+    for (const d of details) {
+      expect(d).not.toHaveProperty('linkGroupId');
+      expect(d).not.toHaveProperty('linkGroupDissolved');
+    }
   });
 
   it('does not invalidate a device-count cache for an org whose devices were all skipped', async () => {

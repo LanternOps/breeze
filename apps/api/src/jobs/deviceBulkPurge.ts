@@ -97,6 +97,14 @@ export async function enqueueDeviceBulkPurge(
   );
 }
 
+/** What one device's purge attempt produced. `code === null` means purged. */
+interface PurgeOneOutcome {
+  code: BulkPurgeSkipCode | null;
+  /** From `PurgeResult` — read under the lock. Null when nothing was purged. */
+  linkGroupId: string | null;
+  linkGroupDissolved: boolean;
+}
+
 /**
  * Purge ONE device, or report why it was skipped.
  *
@@ -105,24 +113,38 @@ export async function enqueueDeviceBulkPurge(
  * `SELECT org_id ... FOR UPDATE` before `purgeRemovedDevice` is the ownership
  * re-check; the second FOR UPDATE the service then takes on the same row in the
  * same transaction is a no-op on a lock we already hold.
+ *
+ * Returns the service's `PurgeResult` fields rather than discarding them: a
+ * purge that dissolves a link group unlinks SIBLING devices that were never in
+ * this selection, and the audit entry below is the only place that can record
+ * it. Discarding it is how a 200-device run silently re-shapes groups nobody
+ * asked it to touch.
  */
-async function purgeOne(target: DeviceBulkPurgeTarget): Promise<BulkPurgeSkipCode | null> {
+async function purgeOne(target: DeviceBulkPurgeTarget): Promise<PurgeOneOutcome> {
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(
       () =>
-        db.transaction(async (tx) => {
+        db.transaction(async (tx): Promise<PurgeOneOutcome> => {
           const rows = (await tx.execute(
             sql`SELECT org_id FROM devices WHERE id = ${target.deviceId} FOR UPDATE`,
           )) as unknown as Array<{ org_id: string }>;
           const row = Array.isArray(rows) ? rows[0] : undefined;
-          if (!row) return 'NOT_FOUND' as const;
-          if (row.org_id !== target.orgId) return 'ORG_CHANGED' as const;
+          if (!row) return { code: 'NOT_FOUND', linkGroupId: null, linkGroupDissolved: false };
+          if (row.org_id !== target.orgId) {
+            return { code: 'ORG_CHANGED', linkGroupId: null, linkGroupDissolved: false };
+          }
 
           try {
-            await purgeRemovedDevice(tx, target.deviceId);
-            return null;
+            const purged = await purgeRemovedDevice(tx, target.deviceId);
+            return {
+              code: null,
+              linkGroupId: purged.linkGroupId,
+              linkGroupDissolved: purged.linkGroupDissolved,
+            };
           } catch (err) {
-            if (err instanceof DeviceLifecycleError) return err.code;
+            if (err instanceof DeviceLifecycleError) {
+              return { code: err.code, linkGroupId: null, linkGroupDissolved: false };
+            }
             throw err;
           }
         }),
@@ -149,9 +171,9 @@ export async function processDeviceBulkPurgeJob(
   const touchedOrgs = new Set<string>();
 
   for (const [index, target] of targets.entries()) {
-    let code: BulkPurgeSkipCode | null;
+    let outcome: PurgeOneOutcome;
     try {
-      code = await purgeOne(target);
+      outcome = await purgeOne(target);
     } catch (err) {
       // One device's failure must not abort the other 499 — but it must not be
       // silent either: the operator was told the whole selection was accepted.
@@ -160,9 +182,10 @@ export async function processDeviceBulkPurgeJob(
         err,
       );
       captureException(err);
-      code = 'ERROR';
+      outcome = { code: 'ERROR', linkGroupId: null, linkGroupDissolved: false };
     }
 
+    const { code } = outcome;
     if (code) {
       result.skipped.push({ deviceId: target.deviceId, code });
     } else {
@@ -180,7 +203,18 @@ export async function processDeviceBulkPurgeJob(
           resourceType: 'device',
           resourceId: target.deviceId,
           resourceName: target.hostname,
-          details: { bulkJobId: payload.jobId, bulk: true },
+          details: {
+            bulkJobId: payload.jobId,
+            bulk: true,
+            // #2138/#2308 — present only when the device WAS in a group, so
+            // the field means something wherever it appears.
+            ...(outcome.linkGroupId
+              ? {
+                  linkGroupId: outcome.linkGroupId,
+                  linkGroupDissolved: outcome.linkGroupDissolved,
+                }
+              : {}),
+          },
           result: 'success',
         });
       } catch (err) {
