@@ -40,6 +40,7 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -1005,6 +1006,21 @@ export default function DeviceList({
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
+
+  /**
+   * #2787 — the bulk bar is SELECTION-AWARE. A selection of only removed
+   * devices gets Restore / Delete permanently and nothing else; every other
+   * selection (including a mixed one) gets the ordinary menu.
+   *
+   * Not merely cosmetic: the removed-only actions call APIs that require
+   * `status = 'decommissioned'`, so offering them for a mixed selection would
+   * reject every active device in the batch. The ordinary actions, by contrast,
+   * already SKIP removed devices via DECOMMISSION_BLOCKED_BULK_ACTIONS, so the
+   * mixed case degrades gracefully on the active menu and badly on the other.
+   */
+  const selectionKind = classifyBulkSelection(
+    devices.filter((d) => selectedIds.has(d.id)).map((d) => d.status),
+  );
 
   const allSelected =
     selectablePageDevices.length > 0 &&
@@ -2132,6 +2148,8 @@ export default function DeviceList({
                 data-testid="bulk-actions-menu"
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
+                {selectionKind !== "removed" && (
+                  <>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("reboot")}
@@ -2210,11 +2228,48 @@ export default function DeviceList({
                 <hr className="my-1" />
                 <button
                   type="button"
+                  data-testid="bulk-decommission"
                   onClick={() => handleBulkAction("decommission")}
                   className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                 >
                   {t("deviceList.decommissionSelected")}{" "}
                 </button>
+                  </>
+                )}
+                {selectionKind === "removed" && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="bulk-restore"
+                      onClick={() => handleBulkAction("restore")}
+                      className="w-full px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                    >
+                      {t("deviceList.restoreSelected")}
+                    </button>
+                    {/* Same 2-4 cap as the active branch — DeviceCompare's own
+                        selection limit. A removed device is a legitimate (if
+                        approximate) comparison subject. */}
+                    {selectedIds.size >= 2 && selectedIds.size <= 4 && (
+                      <button
+                        type="button"
+                        data-testid="bulk-compare"
+                        onClick={() => handleBulkAction("compare")}
+                        className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                      >
+                        {t("deviceList.compareSelected")}
+                      </button>
+                    )}
+                    <hr className="my-1" />
+                    <button
+                      type="button"
+                      data-testid="bulk-permanent-delete"
+                      onClick={() => handleBulkAction("permanent-delete")}
+                      className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      {t("deviceList.permanentDeleteSelected")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

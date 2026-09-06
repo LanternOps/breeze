@@ -1140,6 +1140,8 @@
     "compareSelected": "Comparar seleccionados",
     "linkAsMultiBoot": "Enlace como arranque múltiple",
     "decommissionSelected": "Quitar seleccionados",
+    "restoreSelected": "Restaurar seleccionados",
+    "permanentDeleteSelected": "Eliminar definitivamente…",
     "clearSelection": "Borrar selección",
     "selectAllDevicesOnThisPage": "Seleccione todos los dispositivos en esta página",
     "actions": "Acciones",

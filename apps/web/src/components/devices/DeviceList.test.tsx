@@ -1375,6 +1375,80 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     return emitted;
   }
 
+  /**
+   * Same enumeration, driven from an ALL-REMOVED selection (#2787). The bulk
+   * bar swaps its menu wholesale for that case, so the two selection states
+   * emit disjoint action sets and neither one on its own proves the contract.
+   */
+  function emittedBulkActionsForRemovedSelection(): string[] {
+    const removedDevices = (): Device[] => [
+      { ...baseDevice, id: '81111111-1111-1111-1111-111111111111', hostname: 'rm-a', status: 'decommissioned' },
+      { ...baseDevice, id: '82222222-2222-2222-2222-222222222222', hostname: 'rm-b', status: 'decommissioned' },
+    ];
+    const openRemovedBulkMenu = () => {
+      fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+      fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+      return screen.getByTestId('bulk-actions-menu');
+    };
+
+    const probe = render(
+      <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={vi.fn()} />,
+    );
+    const buttonCount = within(openRemovedBulkMenu()).getAllByRole('button').length;
+    probe.unmount();
+    expect(buttonCount).toBeGreaterThan(0);
+
+    const emitted: string[] = [];
+    for (let i = 0; i < buttonCount; i++) {
+      const onBulkAction = vi.fn();
+      const view = render(
+        <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={onBulkAction} />,
+      );
+      const buttons = within(openRemovedBulkMenu()).getAllByRole('button');
+      fireEvent.click(buttons[i]!);
+      expect(onBulkAction).toHaveBeenCalledTimes(1);
+      emitted.push(onBulkAction.mock.calls[0]![0] as string);
+      view.unmount();
+    }
+    return emitted;
+  }
+
+  it('an all-removed selection emits ONLY removed-only actions (plus compare)', () => {
+    // Everything else in the menu targets a live agent or a live device row and
+    // would be rejected per device. Compare is read-only and legitimately works
+    // on a removed device, so it survives into both menus.
+    expect(emittedBulkActionsForRemovedSelection().sort()).toEqual([
+      'compare',
+      'permanent-delete',
+      'restore',
+    ]);
+  });
+
+  it('an active selection never emits a removed-only action', () => {
+    // The inverse half. Without it, a menu that showed Restore/Delete
+    // permanently unconditionally would still pass the test above.
+    const leaked = emittedBulkActions().filter((a) => REMOVED_ONLY_BULK_ACTIONS.has(a));
+    expect(leaked).toEqual([]);
+  });
+
+  it('classifies every emitted action, in BOTH selection states, into exactly one set', () => {
+    const all = new Set([...emittedBulkActions(), ...emittedBulkActionsForRemovedSelection()]);
+    const problems: string[] = [];
+    for (const action of all) {
+      const n = [
+        DECOMMISSION_BLOCKED_BULK_ACTIONS,
+        INTENTIONALLY_UNGATED_BULK_ACTIONS,
+        REMOVED_ONLY_BULK_ACTIONS,
+      ].filter((set) => set.has(action)).length;
+      if (n !== 1) problems.push(`${action} is in ${n} of the three sets`);
+    }
+    expect(
+      problems,
+      'Every bulk action must be in EXACTLY ONE of DECOMMISSION_BLOCKED_BULK_ACTIONS, '
+        + 'INTENTIONALLY_UNGATED_BULK_ACTIONS or REMOVED_ONLY_BULK_ACTIONS (bulkActionGating.ts).',
+    ).toEqual([]);
+  });
+
   it('classifies every emitted bulk action as either decommission-gated or explicitly exempt', () => {
     const emitted = emittedBulkActions();
 

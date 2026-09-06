@@ -1140,6 +1140,8 @@
     "compareSelected": "Confronta selezionati",
     "linkAsMultiBoot": "Collega come multi-boot",
     "decommissionSelected": "Rimuovi selezionati",
+    "restoreSelected": "Ripristina selezionati",
+    "permanentDeleteSelected": "Elimina definitivamente…",
     "clearSelection": "Cancella selezione",
     "selectAllDevicesOnThisPage": "Seleziona tutti i dispositivi in questa pagina",
     "actions": "Azioni",

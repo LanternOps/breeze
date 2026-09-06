@@ -1140,6 +1140,8 @@
     "compareSelected": "Compare Selected",
     "linkAsMultiBoot": "Link as multi-boot",
     "decommissionSelected": "Remove Selected",
+    "restoreSelected": "Restore Selected",
+    "permanentDeleteSelected": "Delete Permanently…",
     "clearSelection": "Clear selection",
     "selectAllDevicesOnThisPage": "Select all devices on this page",
     "actions": "Actions",

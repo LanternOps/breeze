@@ -1140,6 +1140,8 @@
     "compareSelected": "Seçilenleri Karşılaştır",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
     "decommissionSelected": "Seçilenleri Çıkar",
+    "restoreSelected": "Seçilenleri Geri Yükle",
+    "permanentDeleteSelected": "Kalıcı Olarak Sil…",
     "clearSelection": "Seçimi temizle",
     "selectAllDevicesOnThisPage": "Bu sayfadaki tüm cihazları seçin",
     "actions": "Eylemler",
