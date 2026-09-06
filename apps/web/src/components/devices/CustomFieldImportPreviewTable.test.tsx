@@ -17,7 +17,7 @@ const matched: AnnotatedValueRow = {
   method: 'serial',
   organizationId: 'org-1',
   candidates: [],
-  values: [{ target: { kind: 'customField', fieldKey: 'asset_owner' }, value: 'IT Team', outcome: 'applied' }],
+  values: [{ target: { kind: 'customField', fieldKey: 'asset_owner' }, outcome: 'applied' }],
 };
 
 const linkMatch: AnnotatedValueRow = {
@@ -27,7 +27,7 @@ const linkMatch: AnnotatedValueRow = {
   method: 'link',
   organizationId: 'org-1',
   candidates: [],
-  values: [{ target: { kind: 'warranty', field: 'warrantyEndDate' }, value: '2027-01-01', outcome: 'applied' }],
+  values: [{ target: { kind: 'warranty', field: 'warrantyEndDate' }, outcome: 'applied' }],
 };
 
 const ambiguous: AnnotatedValueRow = {
@@ -62,7 +62,7 @@ const ambiguous: AnnotatedValueRow = {
       method: 'hostname',
     },
   ],
-  values: [{ target: { kind: 'customField', fieldKey: 'asset_owner' }, value: 'IT Team', outcome: 'applied' }],
+  values: [{ target: { kind: 'customField', fieldKey: 'asset_owner' }, outcome: 'applied' }],
 };
 
 const notFound: AnnotatedValueRow = {
@@ -83,8 +83,8 @@ const partial: AnnotatedValueRow = {
   organizationId: 'org-1',
   candidates: [],
   values: [
-    { target: { kind: 'customField', fieldKey: 'unknown_field' }, value: 'x', outcome: 'no-definition' },
-    { target: { kind: 'customField', fieldKey: 'ticket_count' }, value: 'abc', outcome: 'type-error', reason: 'invalid_type' },
+    { target: { kind: 'customField', fieldKey: 'unknown_field' }, outcome: 'no-definition' },
+    { target: { kind: 'customField', fieldKey: 'ticket_count' }, outcome: 'type-error', reason: 'invalid_type' },
   ],
 };
 
@@ -98,7 +98,6 @@ const reservedKeyRow: AnnotatedValueRow = {
   values: [
     {
       target: { kind: 'customField', fieldKey: 'asset_tag' },
-      value: 'AT-1',
       outcome: 'applied',
       warning:
         "This key feeds the device's partner integration identity (stableIdentifiers), which is republished to every connected integration",
