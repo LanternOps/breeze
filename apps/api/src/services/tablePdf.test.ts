@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
-import { PDFDocument as PdfLibDocument, PDFArray, PDFDict, PDFName, PDFRawStream, PDFString, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument as PdfLibDocument, PDFArray, PDFDict, PDFName, PDFRawStream, PDFStream, PDFString, decodePDFRawStream } from 'pdf-lib';
 import { parseTable, measureTable, renderTableIntoPdf, MIN_COLUMN_WIDTH, CELL_PADDING, type EnsureRoomRich, type TableModel } from './tablePdf';
 import { registerThemeFonts } from './documentThemes';
 import type { QuoteTableContent } from '@breeze/shared';
@@ -528,8 +528,8 @@ describe('renderTableIntoPdf multi-run cells in non-left-aligned columns (#4438)
         }
         const contentsEntry = page.node.get(PDFName.of('Contents'));
         const contents = contentsEntry instanceof PDFArray
-          ? contentsEntry.asArray().map((ref) => lib.context.lookupMaybe(ref as never, PDFRawStream))
-          : [lib.context.lookupMaybe(contentsEntry as never, PDFRawStream)];
+          ? contentsEntry.asArray().map((ref) => lib.context.lookupMaybe(ref as never, PDFStream))
+          : [lib.context.lookupMaybe(contentsEntry as never, PDFStream)];
         for (const stream of contents.filter((s): s is PDFRawStream => s instanceof PDFRawStream)) {
           const body = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1');
           const textObjectRe = /BT\s+([\s\S]*?)\s+ET/g;
