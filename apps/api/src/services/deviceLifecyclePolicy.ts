@@ -36,7 +36,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
   configPolicyAssignments,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   organizations,
 } from '../db/schema';
@@ -95,13 +95,13 @@ export async function getOrgPurgeRemovedAfterDays(orgId: string): Promise<number
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'device_lifecycle'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'device_lifecycle'),
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
