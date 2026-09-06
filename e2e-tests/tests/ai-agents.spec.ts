@@ -1,6 +1,5 @@
 import type { BrowserContext, Page, Request } from '@playwright/test';
 import { test, expect } from '../fixtures';
-import { STORAGE_STATE } from '../global-setup';
 import { AiAgentsPage } from '../pages/AiAgentsPage';
 
 /**
@@ -29,29 +28,46 @@ const AGENT_KINDS = ['helpdesk', 'patch', 'triage'] as const;
  */
 async function readAccessToken(page: Page): Promise<string> {
   let token: string | null = null;
+  const seen: string[] = [];
   const onRequest = (req: Request) => {
-    if (token) return;
+    if (!req.url().includes('/api/v1/')) return;
     const header = req.headers()['authorization'];
-    if (header?.startsWith('Bearer ') && req.url().includes('/api/v1/')) token = header.slice(7);
+    if (seen.length < 20) seen.push(`${req.method()} ${new URL(req.url()).pathname}${header ? ' (auth)' : ''}`);
+    if (!token && header?.startsWith('Bearer ')) token = header.slice(7);
   };
   page.on('request', onRequest);
   try {
-    await page.goto('/');
-    // The stored refresh cookie rotates on first use; a retried run (a new
-    // worker, a new context replaying the same storage state) can land on
-    // /login. Sign in again rather than fail — the credentials the global
-    // setup used are in the environment on every stack.
-    if (/\/login/.test(page.url())) {
+    // A fresh context (see beforeAll) is never signed in, so go straight to
+    // the login form rather than to '/' — the app's redirect there is
+    // client-side and lands after any URL check. Sign in with the credentials
+    // the global setup used (in the environment on every stack). The login
+    // response carries the access token directly, which is the deterministic
+    // source; the request watch above is the fallback should it not.
+    await page.goto('/login');
+    {
       const email = process.env.E2E_ADMIN_EMAIL;
       const password = process.env.E2E_ADMIN_PASSWORD;
-      if (!email || !password) throw new Error('bounced to /login and E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD are not set');
+      if (!email || !password) throw new Error('E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD are not set');
       await page.getByTestId('login-email-input').fill(email);
       await page.getByTestId('login-password-input').fill(password);
+      // A context with no auth-binding cookie yet gets a 428
+      // (auth_binding_rotation_required) carrying a fresh binding, and the
+      // app retries the login with it on its own — wait for that retry's
+      // answer, not the handshake.
+      const loginResponse = page.waitForResponse(
+        (res) => res.request().method() === 'POST' && res.url().includes('/api/v1/auth/login') && res.status() !== 428,
+        { timeout: 30_000 },
+      );
       await page.getByTestId('login-submit').click();
+      const res = await loginResponse;
+      if (!res.ok()) throw new Error(`login failed: POST /api/v1/auth/login -> ${res.status()} ${(await res.text()).slice(0, 200)}`);
+      const body = (await res.json()) as { tokens?: { accessToken?: string }; accessToken?: string };
+      const fromLogin = body.tokens?.accessToken ?? body.accessToken;
+      if (typeof fromLogin === 'string' && fromLogin) token = fromLogin;
       await page.waitForURL((url) => !/\/login/.test(url.pathname), { timeout: 30_000 });
     }
     await expect.poll(() => token, {
-      message: 'an authenticated /api/v1 request from the app',
+      message: () => `an authenticated /api/v1 request from the app (at ${page.url()}; seen: ${seen.join(', ') || 'none'})`,
       timeout: 30_000,
     }).toBeTruthy();
   } finally {
@@ -73,7 +89,12 @@ let token = '';
 let createdAgentId: string | null = null;
 
 test.beforeAll(async ({ browser }) => {
-  ctx = await browser.newContext({ storageState: STORAGE_STATE });
+  // Deliberately NOT the shared storage state: the refresh cookie in it is
+  // single-use, so two contexts booting from the same copy at once (this
+  // spec next to multi-currency.spec.ts under three workers) race the
+  // rotation and one of them is signed out. A fresh context signs in on its
+  // own and holds its own cookie; `readAccessToken` performs that login.
+  ctx = await browser.newContext();
   page = await ctx.newPage();
   token = await readAccessToken(page);
   const res = await page.request.get('/api/v1/ai/agents/tool-catalog', {
