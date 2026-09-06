@@ -59,6 +59,25 @@ export function pgErrorNode(err: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
+/**
+ * The constraint (or unique index) name Postgres attached to the error, read
+ * off the SAME node as the SQLSTATE via {@link pgErrorNode}.
+ *
+ * postgres.js surfaces it as `constraint_name`, node-postgres as `constraint` —
+ * the same two spellings {@link isPgUniqueViolation} already reconciles. Use
+ * this whenever a mapper must distinguish WHICH constraint fired (e.g. a 23514
+ * from an inheritance guard vs. an unrelated CHECK on the same table); reading
+ * `constraint_name` off the OUTER error yields undefined on every
+ * Drizzle-issued statement.
+ */
+export function pgErrorConstraint(err: unknown): string | undefined {
+  const node = pgErrorNode(err) as { constraint_name?: unknown; constraint?: unknown } | undefined;
+  if (!node) return undefined;
+  if (typeof node.constraint_name === 'string') return node.constraint_name;
+  if (typeof node.constraint === 'string') return node.constraint;
+  return undefined;
+}
+
 export function pgErrorCode(err: unknown): string | undefined {
   let cur: unknown = err;
   for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {

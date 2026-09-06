@@ -34,8 +34,15 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, isNull, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import {
+  InvalidParentPolicyError,
+  isCompatibleParent,
+  PolicyHasChildrenError,
+} from './configPolicyOwnership';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { captureException } from './sentry';
 import { z } from 'zod';
 import {
   alertRuleInlineSettingsSchema,
@@ -231,24 +238,115 @@ export {
   PartnerWideWriteDeniedError,
 } from './partnerWideAccess';
 
+// Inheritance errors live in the dependency-free leaf module
+// services/configPolicyOwnership.ts. Re-exported here so routes and AI tools
+// import them from the same place as PartnerWideWriteDeniedError.
+export { InvalidParentPolicyError, PolicyHasChildrenError } from './configPolicyOwnership';
+
+// The DB constraints that mean "this parent edge is not allowed", mapped to one
+// InvalidParentPolicyError so the API never becomes an existence oracle.
+// `configuration_policies_parent_policy_id_fkey` arrives as 23503 (the parent was
+// deleted between the app-layer check and the insert); the rest as 23514 from
+// `configuration_policies_parent_guard`. See migration
+// 2026-10-12-100000-config-policy-inheritance.sql.
+const INVALID_PARENT_CHECK_CONSTRAINTS: ReadonlySet<string> = new Set([
+  'configuration_policies_parent_guard',
+  'configuration_policies_parent_immutable',
+  'configuration_policies_not_own_parent_chk',
+]);
+
+function isInvalidParentDbError(err: unknown): boolean {
+  const code = pgErrorCode(err);
+  const constraint = pgErrorConstraint(err) ?? '';
+  if (code === '23503') return constraint === 'configuration_policies_parent_policy_id_fkey';
+  if (code === '23514') return INVALID_PARENT_CHECK_CONSTRAINTS.has(constraint);
+  return false;
+}
+
 export async function createConfigPolicy(
   owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
-  data: { name: string; description?: string; status?: 'active' | 'inactive' | 'archived' },
+  data: {
+    name: string;
+    description?: string;
+    status?: 'active' | 'inactive' | 'archived';
+    parentPolicyId?: string;
+  },
   userId: string
 ) {
-  const [policy] = await db
-    .insert(configurationPolicies)
-    .values({
-      orgId: owner.orgId ?? null,
-      partnerId: owner.partnerId ?? null,
-      name: data.name,
-      description: data.description ?? null,
-      status: data.status ?? 'active',
-      createdBy: userId,
-    })
-    .returning();
-  if (!policy) throw new Error('Failed to create configuration policy');
-  return policy;
+  const values = {
+    orgId: owner.orgId ?? null,
+    partnerId: owner.partnerId ?? null,
+    name: data.name,
+    description: data.description ?? null,
+    status: data.status ?? 'active',
+    createdBy: userId,
+    parentPolicyId: data.parentPolicyId ?? null,
+  };
+
+  // No parent named: unchanged single-statement path. A transaction is opened
+  // ONLY for the inheritance case, so the overwhelmingly common create keeps its
+  // existing shape and cost.
+  if (!data.parentPolicyId) {
+    const [policy] = await db.insert(configurationPolicies).values(values).returning();
+    if (!policy) throw new Error('Failed to create configuration policy');
+    return policy;
+  }
+
+  const parentPolicyId = data.parentPolicyId;
+  return db.transaction(async (tx) => {
+    // Read the parent through the CALLER'S OWN RLS context — an org token sees a
+    // partner-wide parent via configuration_policies_partner_wide_select, and
+    // sees nothing of another tenant, so "not visible" collapses into the same
+    // "not eligible" answer below.
+    //
+    // Deliberately NO row lock. A `FOR KEY SHARE` would apply the UPDATE policy,
+    // which the SELECT-only partner-wide branch does not satisfy, so it would
+    // break exactly the case inheritance exists for. The race a lock would close
+    // — the parent being deleted between check and insert — is closed instead by
+    // the FK (23503, mapped to the same 400). The other race, the parent gaining
+    // a parent of its own, cannot happen: parent_policy_id is immutable.
+    const [parent] = await tx
+      .select({
+        id: configurationPolicies.id,
+        orgId: configurationPolicies.orgId,
+        partnerId: configurationPolicies.partnerId,
+        parentPolicyId: configurationPolicies.parentPolicyId,
+      })
+      .from(configurationPolicies)
+      .where(eq(configurationPolicies.id, parentPolicyId))
+      .limit(1);
+
+    let orgPartnerId: string | null = null;
+    if (owner.orgId) {
+      const [org] = await tx
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, owner.orgId))
+        .limit(1);
+      orgPartnerId = org?.partnerId ?? null;
+    }
+
+    if (
+      !parent
+      || !isCompatibleParent(
+        { orgId: owner.orgId ?? null, partnerId: owner.partnerId ?? null, orgPartnerId },
+        parent,
+      )
+    ) {
+      throw new InvalidParentPolicyError();
+    }
+
+    try {
+      const [policy] = await tx.insert(configurationPolicies).values(values).returning();
+      if (!policy) throw new Error('Failed to create configuration policy');
+      return policy;
+    } catch (err) {
+      // The constraint trigger is the authority; the check above only exists to
+      // make the common rejection a friendly 400 rather than a raw 23514.
+      if (isInvalidParentDbError(err)) throw new InvalidParentPolicyError();
+      throw err;
+    }
+  });
 }
 
 export async function getConfigPolicy(id: string, auth: AuthContext) {
@@ -267,9 +365,140 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
 
   if (!policy) return null;
 
+  // The policy's OWN links. The editor must never render inherited rows as
+  // authored, so this deliberately does not go through the effective-links view.
   const featureLinks = await listFeatureLinks(id);
 
-  return { ...policy, featureLinks };
+  let parentPolicy:
+    | {
+        id: string;
+        name: string;
+        status: string;
+        orgId: string | null;
+        featureLinks: Awaited<ReturnType<typeof listFeatureLinks>>;
+      }
+    | null = null;
+  if (policy.parentPolicyId) {
+    // Deliberately NOT through policyAccessCondition. That gate hides
+    // partner-wide policies from org-scoped get/list so the org UI never offers
+    // to EDIT the MSP's shared policies, and it stays that way (#1724). This
+    // embed is READ-ONLY, exists only for a policy the caller can already see,
+    // and the parent's rows are already SELECT-visible under RLS — the same
+    // visibility the agent config path relies on. Without it, an org-scoped
+    // caller viewing a child of a partner-wide baseline would 404 on the parent
+    // and silently render no inherited state at all.
+    const [parent] = await db
+      .select({
+        id: configurationPolicies.id,
+        name: configurationPolicies.name,
+        status: configurationPolicies.status,
+        orgId: configurationPolicies.orgId,
+      })
+      .from(configurationPolicies)
+      .where(eq(configurationPolicies.id, policy.parentPolicyId))
+      .limit(1);
+    if (parent) {
+      parentPolicy = { ...parent, featureLinks: await listFeatureLinks(parent.id) };
+    } else {
+      // Not a legitimate state: the constraint trigger only ever accepted a
+      // parent this policy's own tenant could see, so an unresolvable parent
+      // means RLS visibility regressed (a dropped *_partner_wide_select branch,
+      // an unpopulated breeze.current_partner_id, ...). Callers fail closed on
+      // it, but it must not rot silently — that class of bug reaches production
+      // as "config quietly stopped inheriting", with nothing in the logs.
+      const message = `[configurationPolicy] policy ${id} has parent_policy_id ${policy.parentPolicyId} but the parent row is not visible to this context`;
+      console.error(message);
+      captureException(new Error(message));
+    }
+  }
+
+  // Blast radius of editing or deleting this policy. Also what the delete route
+  // needs to explain a 409.
+  const childPolicies = await db
+    .select({ id: configurationPolicies.id, name: configurationPolicies.name })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.parentPolicyId, id))
+    .orderBy(asc(configurationPolicies.name));
+
+  return { ...policy, featureLinks, parentPolicy, childPolicies };
+}
+
+/**
+ * Root policies a new child could name as its parent, filtered server-side by
+ * the ownership rule and `parent_policy_id IS NULL`.
+ *
+ * Names only — no links, no other tenant's rows. This is the one narrow widening
+ * of org-scoped read visibility (an org caller sees their partner's partner-wide
+ * policy NAMES), and it exists so an org tech can inherit the MSP baseline, which
+ * is the product story. RLS remains the visibility authority; the app-layer
+ * filter below only narrows to the ownership rule.
+ *
+ * Status is NOT filtered: an archived parent still inherits (spec — archiving a
+ * baseline must not silently strip config from every child), so hiding archived
+ * rows here would misrepresent what is selectable.
+ */
+export async function listEligibleParentPolicies(
+  auth: AuthContext,
+  sel: { ownerScope: 'organization'; orgId: string } | { ownerScope: 'partner' },
+): Promise<{ id: string; name: string; ownerScope: 'organization' | 'partner' }[]> {
+  const rootOnly = isNull(configurationPolicies.parentPolicyId);
+  let where: SQL;
+
+  if (sel.ownerScope === 'partner') {
+    if (!auth.partnerId) return [];
+    where = and(
+      rootOnly,
+      isNull(configurationPolicies.orgId),
+      eq(configurationPolicies.partnerId, auth.partnerId),
+    )!;
+  } else {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, sel.orgId))
+      .limit(1);
+    const own = eq(configurationPolicies.orgId, sel.orgId);
+    // Fail closed: an org row that is missing or RLS-invisible falls back to the
+    // plain org filter rather than a bare `org_id IS NULL` (which would return
+    // every partner's partner-wide policies platform-wide for a system caller).
+    where = org?.partnerId
+      ? and(
+        rootOnly,
+        or(own, and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, org.partnerId))),
+      )!
+      : and(rootOnly, own)!;
+  }
+
+  const rows = await db
+    .select({
+      id: configurationPolicies.id,
+      name: configurationPolicies.name,
+      orgId: configurationPolicies.orgId,
+    })
+    .from(configurationPolicies)
+    .where(where)
+    .orderBy(asc(configurationPolicies.name));
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    ownerScope: r.orgId === null ? ('partner' as const) : ('organization' as const),
+  }));
+}
+
+/**
+ * Feature types linked on a prospective parent, read under the caller's own RLS
+ * context (no access condition — same read-only rationale as the parent embed).
+ *
+ * Feeds the MFA-by-effectiveness gate: creating a child of a parent that carries
+ * a gated link makes that link effective on the new policy.
+ */
+export async function getParentLinkFeatureTypes(parentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ featureType: configPolicyFeatureLinks.featureType })
+    .from(configPolicyFeatureLinks)
+    .where(eq(configPolicyFeatureLinks.configPolicyId, parentId));
+  return rows.map((r) => r.featureType);
 }
 
 export async function listConfigPolicies(
@@ -425,11 +654,33 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
     throw new PartnerWideWriteDeniedError();
   }
 
-  const [deleted] = await db
-    .delete(configurationPolicies)
-    .where(and(...conditions))
-    .returning();
-  return deleted ?? null;
+  // Deleting a baseline out from under its children would un-configure every one
+  // of them, so the self-FK (NO ACTION) refuses it. Pre-check so the response can
+  // NAME the blocking children instead of surfacing a bare 23503.
+  const children = await db
+    .select({ id: configurationPolicies.id, name: configurationPolicies.name })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.parentPolicyId, id));
+  if (children.length > 0) throw new PolicyHasChildrenError(children);
+
+  try {
+    const [deleted] = await db
+      .delete(configurationPolicies)
+      .where(and(...conditions))
+      .returning();
+    return deleted ?? null;
+  } catch (err) {
+    // Lost the race: a child was created after the check above. The FK is the
+    // real guard; report the same 409 (without the names, which we no longer
+    // have a consistent read of).
+    if (
+      pgErrorCode(err) === '23503'
+      && pgErrorConstraint(err) === 'configuration_policies_parent_policy_id_fkey'
+    ) {
+      throw new PolicyHasChildrenError([]);
+    }
+    throw err;
+  }
 }
 
 // ============================================
