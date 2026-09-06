@@ -64,8 +64,9 @@ describe('OrgDevicesTab', () => {
     expect(screen.queryByText(/^Organization$/)).toBeNull();
   });
 
-  it('search/status/site filters narrow the rendered rows client-side', async () => {
-    const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2', siteName: 'Branch' };
+  const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2', siteName: 'Branch' };
+
+  function renderTwoDevices() {
     const { orgFetch } = makeRecordingOrgFetch({
       '/devices': () => jsonResponse({ data: [DEVICE, secondDevice] }),
       '/orgs/sites': () =>
@@ -76,8 +77,11 @@ describe('OrgDevicesTab', () => {
           ],
         }),
     });
+    return render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+  }
 
-    render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+  it('the search filter narrows the rendered rows client-side', async () => {
+    renderTwoDevices();
 
     await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
     expect(screen.getByText('acme-desktop-02')).toBeTruthy();
@@ -91,8 +95,40 @@ describe('OrgDevicesTab', () => {
     });
   });
 
-  it('shows a retryable-looking error state when the devices load fails', async () => {
+  it('the status filter narrows the rendered rows to the selected status', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+
+    const statusFilter = screen.getByTestId('org-devices-status-filter') as HTMLSelectElement;
+    fireEvent.change(statusFilter, { target: { value: 'offline' } });
+
+    await waitFor(() => {
+      expect(screen.queryByText('acme-laptop-01')).toBeNull();
+      expect(screen.getByText('acme-desktop-02')).toBeTruthy();
+    });
+  });
+
+  it('the site filter narrows the rendered rows to the selected site', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+
+    const siteFilter = screen.getByTestId('org-devices-site-filter') as HTMLSelectElement;
+    fireEvent.change(siteFilter, { target: { value: 'site-2' } });
+
+    await waitFor(() => {
+      expect(screen.queryByText('acme-laptop-01')).toBeNull();
+      expect(screen.getByText('acme-desktop-02')).toBeTruthy();
+    });
+  });
+
+  it('shows a retryable-looking error state when the devices load fails outright', async () => {
     const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ error: 'boom' }, false, 500) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+    await waitFor(() => expect(screen.getByTestId('org-devices-error')).toBeTruthy());
+  });
+
+  it('shows the same error state on a malformed 200 devices body, not "no devices" (#5075 W02 review)', async () => {
+    const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: null }) });
     render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
     await waitFor(() => expect(screen.getByTestId('org-devices-error')).toBeTruthy());
   });

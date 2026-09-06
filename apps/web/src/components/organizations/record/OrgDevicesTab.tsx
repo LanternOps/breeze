@@ -35,7 +35,10 @@ const STATUS_OPTIONS: DeviceStatus[] = [
  * cursor walk: a customer record's own device count is realistically well
  * under that, and the filter bar here is intentionally the cut-down
  * search/status/site set rather than the fleet page's full chip-based filter
- * builder.
+ * builder. This is an unenforced assumption, not a hard cap — an org past
+ * 200 devices silently loses rows past the limit with no truncation notice.
+ * Revisit with real pagination (or `fetchAllDevices`'s cursor walk) if that
+ * ever stops being realistic.
  */
 export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
   const { t } = useTranslation('organizations');
@@ -53,7 +56,12 @@ export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
         const res = await orgFetch('/devices?limit=200');
         if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
         const body = await res.json();
-        const rows: Device[] = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : [];
+        const rows: Device[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+        // A 200 whose body isn't a parseable array tells us nothing about the
+        // real device count — treating it as `[]` would render "No devices
+        // found" (active guidance to adjust filters) for what is actually an
+        // API failure. Fail the same way a non-2xx response does.
+        if (rows === null) throw new Error('devices load: malformed response body');
         if (!cancelled) setDevices(rows);
       } catch (err) {
         console.warn('[OrgDevicesTab] devices load failed', err);
@@ -72,7 +80,8 @@ export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
         const res = await orgFetch(`/orgs/sites?organizationId=${orgId}&limit=100`);
         if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
         const body = await res.json();
-        const rows: SiteOption[] = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : [];
+        const rows: SiteOption[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+        if (rows === null) throw new Error('sites load: malformed response body');
         if (!cancelled) setSites(rows.map((s) => ({ id: s.id, name: s.name })));
       } catch (err) {
         // Site names only feed the filter dropdown — a failed load leaves it

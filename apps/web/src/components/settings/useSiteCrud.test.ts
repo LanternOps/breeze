@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSiteCrud } from './useSiteCrud';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('@/lib/runAction', async () => {
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 const t = ((key: string) => key) as unknown as import('i18next').TFunction;
 
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -29,6 +31,7 @@ describe('useSiteCrud', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     onUnauthorized.mockReset();
+    showToastMock.mockReset();
   });
 
   it('refresh() GETs sites for the bound org with orgIdOverride, even while ambient scope points elsewhere', async () => {
@@ -71,6 +74,38 @@ describe('useSiteCrud', () => {
 
     expect(value).toBeNull();
     expect(result.current.sites).toEqual([]);
+    // `sitesFailed` is what actually distinguishes this from a genuinely
+    // empty org — `sites` alone reads identically in both cases.
+    expect(result.current.sitesFailed).toBe(true);
+  });
+
+  it('sitesFailed flags a request-level failure too, and clears on the next successful refresh', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, false, 500));
+    const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.sitesFailed).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [SITE] }));
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.sitesFailed).toBe(false);
+    expect(result.current.sites).toEqual([SITE]);
+  });
+
+  it('clear() also resets sitesFailed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, false, 500));
+    const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.sitesFailed).toBe(true);
+
+    act(() => result.current.clear());
+    expect(result.current.sitesFailed).toBe(false);
   });
 
   it('clear() empties the list without a network request', async () => {
@@ -126,6 +161,10 @@ describe('useSiteCrud', () => {
     expect(postCall).toBeTruthy();
     const body = JSON.parse((postCall![1] as RequestInit).body as string);
     expect(body.orgId).toBe(ORG_ID);
+    // The POST itself also carries orgIdOverride — the site-mutation routes
+    // don't consult it server-side today, but the hook's guarantee should not
+    // depend on that staying true.
+    expect((postCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
   });
 
@@ -145,6 +184,7 @@ describe('useSiteCrud', () => {
       ([url, init]) => url === `/orgs/sites/${SITE.id}` && (init as RequestInit)?.method === 'PATCH',
     );
     expect(patchCall).toBeTruthy();
+    expect((patchCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
   });
 
   it('confirmDelete() DELETEs the selected site, then refreshes and closes', async () => {
@@ -163,10 +203,11 @@ describe('useSiteCrud', () => {
       ([url, init]) => url === `/orgs/sites/${SITE.id}` && (init as RequestInit)?.method === 'DELETE',
     );
     expect(deleteCall).toBeTruthy();
+    expect((deleteCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
   });
 
-  it('a non-401 failure leaves the modal open (surfaced via toast, not a thrown rejection)', async () => {
+  it('a non-401 submit failure leaves the modal open and surfaces a toast (via runAction, not a thrown rejection)', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, false, 500));
     const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
 
@@ -176,6 +217,24 @@ describe('useSiteCrud', () => {
     });
 
     expect(result.current.siteModalMode).toBe('add');
+    // runAction itself calls showToast for a non-2xx body before throwing
+    // ActionError — this is the "surfaced via toast" half of the contract,
+    // not just "the modal happened to stay open".
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('a non-401 confirmDelete failure leaves the modal open and surfaces a toast', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, false, 500));
+    const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+
+    act(() => result.current.openDelete(SITE));
+    await act(async () => {
+      await result.current.confirmDelete();
+    });
+
+    expect(result.current.siteModalMode).toBe('delete');
+    expect(result.current.selectedSite).toEqual(SITE);
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
   it('getSiteFormDefaults maps address/contact sub-objects to the flat form shape', () => {

@@ -4471,7 +4471,8 @@
       "saveOrder": "Failed to save organization order",
       "saveOrganization": "Failed to save organization",
       "saveSite": "Failed to save site ({{status}})",
-      "deleteSite": "Failed to delete site"
+      "deleteSite": "Failed to delete site",
+      "loadSites": "Couldn't load sites for this organization."
     },
     "status": {
       "active": "Active",

@@ -4418,7 +4418,8 @@
       "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
       "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
       "saveSite": "Standort konnte nicht gespeichert werden ({{status}})",
-      "deleteSite": "Die Standort konnte nicht gelöscht werden"
+      "deleteSite": "Die Standort konnte nicht gelöscht werden",
+      "loadSites": "Die Standorte dieser Organisation konnten nicht geladen werden."
     },
     "status": {
       "active": "Aktiv",

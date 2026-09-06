@@ -12,12 +12,21 @@ import type { Site } from './SiteList';
  *
  * Same URLs, same `runAction` error fallbacks, same `ActionError` catch
  * pattern as the page it was extracted from. The one addition is
- * `orgIdOverride: orgId` on the sites GET, so a caller inside the record page
- * (whose org can differ from the OrgSwitcher's ambient scope) always reads
- * the RIGHT org's sites rather than whatever the switcher happens to point at.
+ * `orgIdOverride: orgId` on every request this hook issues (GET, POST, PATCH,
+ * DELETE), so a caller inside the record page (whose org can differ from the
+ * OrgSwitcher's ambient scope) always targets the RIGHT org rather than
+ * whatever the switcher happens to point at. The three site mutation routes
+ * (`POST /orgs/sites`, `PATCH /orgs/sites/:id`, `DELETE /orgs/sites/:id`)
+ * derive their org from the request body / the site's own DB row, never from
+ * the query string, so an ambient-scope `orgId` there was already inert
+ * rather than a live cross-tenant risk (verified: `apps/api/src/routes/orgs.ts`
+ * — the site mutation handlers never read `c.req.query('orgId')`). Pinning it
+ * anyway removes the need for that "verified harmless today" reasoning and
+ * matches `refresh`'s guarantee exactly, so nothing about this hook's
+ * behavior depends on a fact about the API surface staying true.
  * `OrganizationsPage` is unaffected: there, `orgId` passed in already IS the
- * organization whose sites are being listed, so pinning it explicitly is a
- * no-op change in observable behaviour.
+ * organization being managed, so pinning it explicitly is a no-op change in
+ * observable behaviour.
  */
 export type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
@@ -38,6 +47,15 @@ export interface SiteFormDefaults {
 export interface UseSiteCrud {
   sites: Site[];
   sitesLoading: boolean;
+  /**
+   * True when the most recent `refresh()` did not resolve a real site list
+   * (failed request or a malformed 200 body) — distinct from `sites` being
+   * genuinely empty. `sites` is reset to `[]` in that case too (existing
+   * first-site-guidance callers rely on it), so a caller that wants to avoid
+   * rendering "No sites yet" for what was actually a load failure must check
+   * this flag rather than `sites.length === 0`.
+   */
+  sitesFailed: boolean;
   siteSubmitting: boolean;
   siteModalMode: SiteModalMode;
   selectedSite: Site | null;
@@ -80,6 +98,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   const { onUnauthorized, t } = opts;
   const [sites, setSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
+  const [sitesFailed, setSitesFailed] = useState(false);
   const [siteModalMode, setSiteModalMode] = useState<SiteModalMode>('closed');
   const [selectedSite, setSelectedSite] = useState<Site | null>(null);
   const [siteSubmitting, setSiteSubmitting] = useState(false);
@@ -90,6 +109,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
       const targetOrgId = orgIdOverride ?? orgId;
       if (!targetOrgId) return null;
       setSitesLoading(true);
+      setSitesFailed(false);
       try {
         const response = await fetchWithAuth(`/orgs/sites?organizationId=${targetOrgId}`, {
           orgIdOverride: targetOrgId,
@@ -100,8 +120,10 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         if (siteList === null) {
           // 200 OK but the body isn't a parseable array of sites — fail closed so
           // callers suppress the first-site nag rather than treat this as
-          // confirmed zero.
+          // confirmed zero, AND flag the failure so a caller like `OrgSitesTab`
+          // can show a real error instead of "No sites yet".
           setSites([]);
+          setSitesFailed(true);
           // Message text is pinned by `OrganizationsPage.firstSite.test.tsx`,
           // which predates this hook's extraction — kept verbatim (including
           // the `[OrganizationsPage]` prefix) rather than renamed to
@@ -114,6 +136,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         return siteList;
       } catch (err) {
         setSites([]);
+        setSitesFailed(true);
         console.warn('[OrganizationsPage] failed to fetch sites for org', targetOrgId, err);
         return null;
       } finally {
@@ -123,7 +146,10 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     [orgId],
   );
 
-  const clear = useCallback(() => setSites([]), []);
+  const clear = useCallback(() => {
+    setSites([]);
+    setSitesFailed(false);
+  }, []);
 
   const openAdd = useCallback(() => {
     setSelectedSite(null);
@@ -190,7 +216,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
 
         await runAction({
-          request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+          request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload), orgIdOverride: orgId }),
           // `organizationsPage.errors.saveSite` interpolates {{status}}, which
           // runAction does not expose when building the fallback — this is the
           // existing status-free sibling, present in all 8 locales.
@@ -214,7 +240,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     setSiteSubmitting(true);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE' }),
+        request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE', orgIdOverride: orgId }),
         errorFallback: t('settings:organizationsPage.errors.deleteSite'),
         onUnauthorized,
       });
@@ -248,6 +274,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   return {
     sites,
     sitesLoading,
+    sitesFailed,
     siteSubmitting,
     siteModalMode,
     selectedSite,

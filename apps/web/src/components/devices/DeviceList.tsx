@@ -1124,9 +1124,9 @@ export default function DeviceList({
   // carry information — in single-org scope it would repeat the header's org
   // on every row, so it disappears from the table and the column picker.
   // The hook call stays UNCONDITIONAL even when `forceSingleOrg` already
-  // decides the answer — conditionally calling a hook based on a prop would
-  // violate the rules of hooks the moment `forceSingleOrg` ever changed
-  // across a render.
+  // decides the answer — hooks must run in the same order on every render,
+  // so gating this call behind an `if (!forceSingleOrg)` would violate the
+  // rules of hooks regardless of whether the prop's value ever changes.
   const fleetFromStore = useOrgStore((s) => !s.currentOrgId && s.allOrgs);
   const isFleetView = !forceSingleOrg && fleetFromStore;
 

@@ -68,4 +68,26 @@ describe('OrgSitesTab', () => {
       expect(body.orgId).toBe(RECORD_ORG);
     });
   });
+
+  it('shows a real error state on a failed load, not "no sites" (#5075 W02 review)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'boom' }, false, 500));
+    render(<OrgSitesTab orgId={RECORD_ORG} orgName="Acme Dental" />);
+
+    await waitFor(() => expect(screen.getByTestId('org-sites-load-error')).toBeTruthy());
+    expect(screen.queryByText(/no sites/i)).toBeNull();
+  });
+
+  it('shows the error state on a malformed 200 body too, and retry re-issues the request', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: null }));
+    render(<OrgSitesTab orgId={RECORD_ORG} orgName="Acme Dental" />);
+
+    await waitFor(() => expect(screen.getByTestId('org-sites-load-error')).toBeTruthy());
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [SITE] }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /try again/i }));
+
+    await waitFor(() => expect(screen.getAllByText('Downtown Office').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('org-sites-load-error')).toBeNull();
+  });
 });

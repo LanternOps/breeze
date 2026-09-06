@@ -35,6 +35,24 @@ export default function OrgSitesTab({ orgId, orgName }: OrgSitesTabProps) {
           <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
           <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
         </div>
+      ) : siteCrud.sitesFailed ? (
+        // A failed load must not read as "this org has no sites" — `sites` is
+        // reset to `[]` on failure too (existing first-site-guidance callers
+        // rely on that), so `sitesFailed` is what actually distinguishes the
+        // two here.
+        <div
+          data-testid="org-sites-load-error"
+          className="rounded-lg border bg-card p-6 text-sm text-muted-foreground"
+        >
+          {t('organizationsPage.errors.loadSites')}{' '}
+          <button
+            type="button"
+            onClick={() => void siteCrud.refresh()}
+            className="underline hover:text-foreground"
+          >
+            {t('organizationsPage.actions.tryAgain')}
+          </button>
+        </div>
       ) : (
         <SiteList
           sites={siteCrud.sites}
