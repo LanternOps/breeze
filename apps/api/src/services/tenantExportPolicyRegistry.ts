@@ -172,6 +172,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "device_change_log": tablePolicy("org_id", {"included":["id","device_id","org_id","fingerprint","timestamp","change_type","change_action","subject","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["before_value","after_value","details"]}),
   "device_config_state": tablePolicy("org_id", {"included":["device_id","org_id","file_path","config_key","collected_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["config_value"],"excludedOpen":[]}),
   "device_connections": tablePolicy("org_id", {"included":["id","device_id","org_id","protocol","local_addr","local_port","remote_addr","remote_port","state","pid","process_name","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Closes the gap where devices.custom_fields is excludedOpen (every
+  // json/jsonb column must be) and every custom-field value therefore
+  // vanished from the tenant export (#3257 W05). field_key is denormalized
+  // here precisely so this projection is readable without a join.
+  "device_custom_field_values": tablePolicy("org_id", {"included":["id","device_id","org_id","definition_id","field_key","value_text","value_number","value_bool","value_date","source","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_disks": tablePolicy("org_id", {"included":["id","device_id","org_id","mount_point","device","fs_type","total_gb","used_gb","free_gb","used_percent","health","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "device_event_logs": tablePolicy("org_id", {"included":["id","device_id","org_id","timestamp","level","category","source","event_id","message","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"],"specific":{"search_vector":{"decision":"exclude","rationale":"PostgreSQL tsvector search-index data is derived from event content and is not needed in a portable tenant export."}}}),
   // `system` and `external_id` are tenant IDENTIFIERS, not secrets — the same

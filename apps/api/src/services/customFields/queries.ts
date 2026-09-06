@@ -1,7 +1,7 @@
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { customFieldDefinitions } from '../../db/schema/customFields';
-import { devices, organizations } from '../../db/schema';
+import { deviceCustomFieldValues, devices, organizations } from '../../db/schema';
 
 export interface WriteBackDevice {
   id: string;
@@ -113,28 +113,126 @@ export async function loadVisibleCustomFieldDefinitions(
  */
 export const loadScriptWritableDefinitions = loadVisibleCustomFieldDefinitions;
 
-/**
- * Ambient ORG context. The org predicate is redundant under RLS but pins the
- * write to the exact device the transport authorized — the same
- * defense-in-depth the PATCH endpoint applies
- * (routes/devices/customFieldValues.ts).
- *
- * Callers MUST skip this when the merged object is unchanged: every UPDATE on
- * `devices` that actually changes `custom_fields` fires
- * `breeze_partner_export_z_custom_values_update`, which takes
- * `pg_advisory_xact_lock(1000201, hashtext(org_id))` — an EXCLUSIVE per-org
- * lock held to COMMIT. A fleet-wide script would otherwise serialise every
- * device in the org behind it.
+/*
+ * `persistDeviceCustomFields(deviceId, orgId, merged)` — which wrote the whole
+ * `devices.custom_fields` jsonb in one UPDATE — was REMOVED by #3257 W05 rather
+ * than deprecated. Since the projection trigger rebuilds that column from
+ * `device_custom_field_values`, any direct write to it is reverted by the next
+ * value write and bypasses both the composite device/org FK and the definition
+ * coherence trigger. Leaving it exported would have been a live footgun with a
+ * silent failure mode. Use `persistDeviceCustomFieldValues` below.
  */
-export async function persistDeviceCustomFields(
+
+/** One resolved custom-field write, ready for the normalized table. */
+export interface CustomFieldValueWrite {
+  definitionId: string;
+  fieldKey: string;
+  type: 'text' | 'number' | 'boolean' | 'dropdown' | 'date';
+  value: string | number | boolean | null;
+}
+
+/** The four typed columns; exactly one non-null, or all null for a clear. */
+export interface CustomFieldValueColumns {
+  valueText: string | null;
+  valueNumber: number | null;
+  valueBool: boolean | null;
+  valueDate: string | null;
+}
+
+/**
+ * Map a validated value onto exactly one typed column.
+ *
+ * Takes the value AS ALREADY COERCED by `validateCustomFieldValue`, which is
+ * the only thing allowed to decide whether a value is acceptable for its type —
+ * this function must never widen or narrow that decision, only place it. `null`
+ * is a legal, first-class value: an explicitly cleared field stores as all-NULL
+ * (`customFieldValueSchema` has always accepted `z.null()`), which stays
+ * distinguishable from an absent row.
+ */
+export function valueColumnsFor(
+  type: CustomFieldValueWrite['type'],
+  value: string | number | boolean | null,
+): CustomFieldValueColumns {
+  const empty: CustomFieldValueColumns = {
+    valueText: null, valueNumber: null, valueBool: null, valueDate: null,
+  };
+  if (value === null) return empty;
+  switch (type) {
+    case 'number':
+      return { ...empty, valueNumber: typeof value === 'number' ? value : Number(value) };
+    case 'boolean':
+      return { ...empty, valueBool: typeof value === 'boolean' ? value : value === 'true' };
+    case 'date':
+      return { ...empty, valueDate: String(value).slice(0, 10) };
+    case 'text':
+    case 'dropdown':
+    default:
+      return { ...empty, valueText: String(value) };
+  }
+}
+
+/**
+ * Upsert device custom-field values into `device_custom_field_values`
+ * (#3257 W05). Returns the field keys that ACTUALLY changed.
+ *
+ * `devices.custom_fields` is no longer written by any caller — it is rebuilt by
+ * `breeze_device_custom_field_project()` from this table. Writing it directly
+ * would be overwritten by the next value write, and would bypass both the
+ * composite device/org FK and the definition coherence trigger.
+ *
+ * Ambient ORG context. `org_id` pins the write to the org the transport
+ * authorized (RLS enforces it too — the predicate is defense in depth, the same
+ * shape `routes/devices/customFieldValues.ts` already applies).
+ *
+ * THE COMPARE-BEFORE-WRITE IS NOT COSMETIC, and it moved here from
+ * `scriptWriteBack.ts` so all three write paths get it. An UPDATE that actually
+ * changes a value propagates through the projection trigger to an UPDATE on
+ * `devices`, which fires `breeze_partner_export_z_custom_values_update` and
+ * takes `pg_advisory_xact_lock(1000201, hashtext(org_id))` — an EXCLUSIVE
+ * per-org lock held to COMMIT. A fleet-wide script re-writing unchanged values
+ * would serialise every device in the org behind it. `setWhere` makes Postgres
+ * skip the UPDATE entirely (no RETURNING row, no WAL, no trigger) rather than
+ * making us read-then-write.
+ *
+ * `source` is deliberately NOT part of that predicate, so re-asserting the same
+ * value from a different writer leaves the original `source` in place. That is a
+ * conscious trade: adding it would make provenance track the last writer, but it
+ * would also mean a fleet-wide script re-asserting unchanged values updates
+ * every row again — WAL and a row lock per device — which is the exact cost this
+ * comparison exists to avoid. Provenance is informational; the write amplification
+ * is not. Do not "fix" this without that trade in front of you.
+ */
+export async function persistDeviceCustomFieldValues(
   deviceId: string,
   orgId: string,
-  merged: Record<string, unknown>,
-): Promise<boolean> {
-  const updated = await db
-    .update(devices)
-    .set({ customFields: merged, updatedAt: new Date() })
-    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
-    .returning({ id: devices.id });
-  return updated.length > 0;
+  writes: CustomFieldValueWrite[],
+  source: 'manual' | 'api' | 'script' | 'import',
+): Promise<string[]> {
+  if (writes.length === 0) return [];
+  const changed: string[] = [];
+  for (const write of writes) {
+    const columns = valueColumnsFor(write.type, write.value);
+    const updated = await db
+      .insert(deviceCustomFieldValues)
+      .values({
+        deviceId,
+        orgId,
+        definitionId: write.definitionId,
+        fieldKey: write.fieldKey,
+        source,
+        ...columns,
+      })
+      .onConflictDoUpdate({
+        target: [deviceCustomFieldValues.deviceId, deviceCustomFieldValues.definitionId],
+        set: { ...columns, source, updatedAt: new Date() },
+        setWhere: sql`
+             ${deviceCustomFieldValues.valueText} IS DISTINCT FROM ${columns.valueText}
+          OR ${deviceCustomFieldValues.valueNumber} IS DISTINCT FROM ${columns.valueNumber}
+          OR ${deviceCustomFieldValues.valueBool} IS DISTINCT FROM ${columns.valueBool}
+          OR ${deviceCustomFieldValues.valueDate}::text IS DISTINCT FROM ${columns.valueDate}`,
+      })
+      .returning({ fieldKey: deviceCustomFieldValues.fieldKey });
+    if (updated.length > 0) changed.push(write.fieldKey);
+  }
+  return changed;
 }
