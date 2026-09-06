@@ -1575,6 +1575,7 @@
       "ownership": "Propriété",
       "mode": "Mode",
       "running": "Statut",
+      "baseline": "Référence du partenaire",
       "lastRunStatus": "Résultat de la dernière exécution"
     },
     "inertBadge": {

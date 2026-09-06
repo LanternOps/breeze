@@ -167,7 +167,13 @@ describe('AiAgentsPage', () => {
     });
     render(<AiAgentsPage />);
 
-    expect(await screen.findByTestId('ai-agent-inert-badge-a2')).toBeInTheDocument();
+    const badge = await screen.findByTestId('ai-agent-inert-badge-a2');
+    expect(badge).toBeInTheDocument();
+    // Its own label prefix — NOT chipLabels.running, which the adjacent
+    // enabled/mode badge already uses; a screen reader would otherwise hear
+    // "Status: Running" then "Status: Inactive" for the same row (#5014 review).
+    expect(badge).toHaveAttribute('aria-label', 'Partner baseline: Inactive');
+    expect(screen.getByTestId('ai-agent-row-a2').querySelectorAll('[aria-label^="Status:"]')).toHaveLength(1);
   });
 
   it('does not badge an org-owned agent whose kind has an active partner-wide baseline', async () => {

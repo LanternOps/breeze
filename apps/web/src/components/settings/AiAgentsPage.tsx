@@ -515,7 +515,7 @@ export default function AiAgentsPage() {
                     <span
                       className={badgeClass('warning', { size: 'sm' })}
                       aria-describedby={inertHintId}
-                      aria-label={`${t('aiAgentsPage.chipLabels.running')}: ${t('aiAgentsPage.inertBadge.label')}`}
+                      aria-label={`${t('aiAgentsPage.chipLabels.baseline')}: ${t('aiAgentsPage.inertBadge.label')}`}
                       data-testid={`ai-agent-inert-badge-${agent.id}`}
                     >
                       {t('aiAgentsPage.inertBadge.label')}

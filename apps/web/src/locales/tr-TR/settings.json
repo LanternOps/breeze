@@ -1575,6 +1575,7 @@
       "ownership": "Sahiplik",
       "mode": "Mod",
       "running": "Durum",
+      "baseline": "Partner temeli",
       "lastRunStatus": "Son çalıştırma sonucu"
     },
     "inertBadge": {
