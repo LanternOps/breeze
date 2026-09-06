@@ -16,8 +16,10 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
-// Event IDs used by this package. Fixed values keep the Windows
-// Application log filterable by event ID in SIEM tools.
+// Event IDs used by this package's generic Info/Warning/Error helpers.
+// Fixed values keep the Windows Application log filterable by event ID in
+// SIEM tools. Callers that need their own stable per-message-shape ID (e.g.
+// the PAM lifecycle events in pam.go, 1004+) use Event instead.
 const (
 	eventIDInfo    uint32 = 1001
 	eventIDWarning uint32 = 1002
@@ -29,7 +31,13 @@ var (
 	registry               = map[string]*sourceEntry{}
 	installAsEventCreateFn = eventlog.InstallAsEventCreate
 	openEventLogFn         = eventlog.Open
-	writeEventLogErrorFn   = func(handle *eventlog.Log, eventID uint32, message string) error {
+	writeEventLogInfoFn    = func(handle *eventlog.Log, eventID uint32, message string) error {
+		return handle.Info(eventID, message)
+	}
+	writeEventLogWarningFn = func(handle *eventlog.Log, eventID uint32, message string) error {
+		return handle.Warning(eventID, message)
+	}
+	writeEventLogErrorFn = func(handle *eventlog.Log, eventID uint32, message string) error {
 		return handle.Error(eventID, message)
 	}
 )
@@ -83,14 +91,14 @@ func wrapEventLogInitError(operation, source string, err error) error {
 // Info writes an informational event to the Windows Application log.
 func Info(source, message string) {
 	if handle, _ := lookupOrRegister(source); handle != nil {
-		_ = handle.Info(eventIDInfo, message)
+		_ = writeEventLogInfoFn(handle, eventIDInfo, message)
 	}
 }
 
 // Warning writes a warning event.
 func Warning(source, message string) {
 	if handle, _ := lookupOrRegister(source); handle != nil {
-		_ = handle.Warning(eventIDWarning, message)
+		_ = writeEventLogWarningFn(handle, eventIDWarning, message)
 	}
 }
 
@@ -107,4 +115,36 @@ func WriteError(source, message string) error {
 		return err
 	}
 	return writeEventLogErrorFn(handle, eventIDError, message)
+}
+
+// Level selects the Windows Application log severity for Event.
+type Level int
+
+const (
+	LevelInfo Level = iota
+	LevelWarning
+	LevelError
+)
+
+// Event writes a single event under a caller-chosen source and event ID at
+// the given severity. Unlike Info/Warning/Error (which always write under
+// the generic 1001-1003 IDs above), Event lets a package register its own
+// stable, per-message-shape ID — e.g. the PAM lifecycle stages in pam.go
+// (1004+) — so a SIEM rule can filter on the exact event ID instead of on
+// source plus free-form message text. Registration and write failures are
+// silently swallowed, matching Info/Warning's bootstrap-safe, best-effort
+// contract.
+func Event(source string, eventID uint32, level Level, message string) {
+	handle, err := lookupOrRegister(source)
+	if err != nil || handle == nil {
+		return
+	}
+	switch level {
+	case LevelWarning:
+		_ = writeEventLogWarningFn(handle, eventID, message)
+	case LevelError:
+		_ = writeEventLogErrorFn(handle, eventID, message)
+	default:
+		_ = writeEventLogInfoFn(handle, eventID, message)
+	}
 }
