@@ -3,7 +3,7 @@
 // modules in `./networkDevice/` — kept thin so each concern stays reviewable
 // on its own.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { ArrowLeft, Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -12,7 +12,7 @@ import { runAction } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
-import { OverflowTabs, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
+import { OverflowTabs, overflowPanelId, type OverflowTab } from '../shared/OverflowTabs';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import { isWebPort, sortPorts } from '../discovery/portCatalog';
@@ -60,6 +60,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     void navigateTo('/devices');
   };
 
+  // Lifted here (rather than local to OpenPortsSection) because that section
+  // unmounts whenever the Monitoring tab is active — local state would reset
+  // "Show all" on every tab round-trip.
+  const [portsExpanded, setPortsExpanded] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
   // Which type-editor action (if any) is in flight — distinct from a plain
   // boolean so Save and Reset can each show their own loading label without
@@ -67,13 +71,23 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const [typeAction, setTypeAction] = useState<'save' | 'reset' | null>(null);
   const typeSaving = typeAction !== null;
   const [confirmUnlinkOpen, setConfirmUnlinkOpen] = useState(false);
-  // Uncommitted type-select value. Arrowing through a native <select> with a
+  // Uncommitted type-select edit. Arrowing through a native <select> with a
   // keyboard fires a change event per option landed on, so committing on
   // change used to PATCH once per arrow key — this decouples the control's
   // value from the save action. `null` means "no pending edit, show the
-  // asset's saved type"; the Save/Cancel row only appears once this differs
-  // from `asset.type`.
-  const [pendingType, setPendingType] = useState<DiscoveredAssetType | null>(null);
+  // asset's saved type"; the Save/Cancel row only appears once `value` differs
+  // from `asset.type`. `baseType` is the asset's type at the moment the edit
+  // started, kept alongside `value` so a concurrent server-side change (e.g.
+  // the background return-to-tab refresh landing mid-edit) can be detected
+  // and the stale edit discarded below, instead of silently overwriting
+  // whatever the type became underneath it.
+  const [pendingEdit, setPendingEdit] = useState<{ baseType: DiscoveredAssetType; value: DiscoveredAssetType } | null>(null);
+
+  useEffect(() => {
+    if (pendingEdit && asset && asset.type !== pendingEdit.baseType) {
+      setPendingEdit(null);
+    }
+  }, [asset, pendingEdit]);
 
   // Unlink now works for both auto and manual links (#3261 Task 2 reverses the
   // old manual-only rule — the server sets auto_link_suppressed_at so a
@@ -90,7 +104,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         successMessage: t('networkDeviceDetailPage.toasts.unlinked'),
         errorFallback: t('networkDeviceDetailPage.toasts.unlinkFailed'),
       });
-      await fetchAsset();
+      // `background: true` so the reload doesn't flip `loading` and swap the
+      // whole page for the skeleton mid-action — the operator is already
+      // looking at a fully loaded page.
+      await fetchAsset({ background: true });
       announce(t('networkDeviceDetailPage.toasts.unlinked'));
     } catch {
       // runAction already toasted the failure; leave the linked state in place.
@@ -127,7 +144,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               ? t('networkDeviceDetailPage.toasts.typeResetFailed')
               : t('networkDeviceDetailPage.toasts.typeUpdateFailed'),
         });
-        await fetchAsset();
+        // `background: true` so the reload doesn't flip `loading` and swap
+        // the whole page for the skeleton mid-Save/Reset.
+        await fetchAsset({ background: true });
         succeeded = true;
         announce(
           next === 'reset'
@@ -147,17 +166,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // Reset also discards any uncommitted select edit — its whole point is to
   // throw away manual overrides, so a pending one shouldn't survive it either.
   const handleResetType = useCallback(() => {
-    setPendingType(null);
+    setPendingEdit(null);
     void changeType('reset');
   }, [changeType]);
 
   const handleSaveType = useCallback(async () => {
-    if (pendingType === null) return;
-    const succeeded = await changeType(pendingType);
-    if (succeeded) setPendingType(null);
-  }, [pendingType, changeType]);
+    if (pendingEdit === null) return;
+    const succeeded = await changeType(pendingEdit.value);
+    if (succeeded) setPendingEdit(null);
+  }, [pendingEdit, changeType]);
 
-  const handleCancelType = useCallback(() => setPendingType(null), []);
+  const handleCancelType = useCallback(() => setPendingEdit(null), []);
 
   if (loading) {
     return <NetworkDeviceSkeleton label={t('networkDeviceDetailPage.loading')} />;
@@ -216,16 +235,17 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const TypeIcon = assetTypeIcons[asset.type] ?? assetTypeIcons.unknown;
   // The select shows the uncommitted choice while one is pending, else the
   // asset's saved type; Save only appears once the two actually differ.
-  const selectedType = pendingType ?? asset.type;
-  const typeDirty = pendingType !== null && pendingType !== asset.type;
+  const selectedType = pendingEdit?.value ?? asset.type;
+  const typeDirty = pendingEdit !== null && pendingEdit.value !== asset.type;
 
   const tabDefs: OverflowTab[] = [
     { id: 'overview', label: t('networkDeviceDetailPage.tabs.overview'), icon: <LayoutGrid aria-hidden="true" className="h-4 w-4" /> },
     { id: 'monitoring', label: t('networkDeviceDetailPage.tabs.monitoring'), icon: <Activity aria-hidden="true" className="h-4 w-4" /> },
   ];
   // Must match the `testIdPrefix` passed to OverflowTabs below — it's the
-  // same string OverflowTabs uses internally (via `overflowTabId`) to build
-  // each tab button's `id`, which each `role="tabpanel"` below points back to.
+  // same string OverflowTabs uses internally (via `overflowPanelId`) to build
+  // each tab button's `aria-controls` target, which each `role="tabpanel"`
+  // below supplies as its own `id`.
   const TAB_ID_PREFIX = 'network-detail-tab-';
 
   return (
@@ -270,7 +290,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           className="grid gap-5 lg:grid-cols-2"
           data-testid="network-detail-overview"
           role="tabpanel"
-          aria-labelledby={overflowTabId('overview', TAB_ID_PREFIX)}
+          id={overflowPanelId('overview', TAB_ID_PREFIX)}
+          aria-label={t('networkDeviceDetailPage.tabs.overview')}
         >
           <div className="space-y-5">
             <Section title={t('networkDeviceDetailPage.sections.identity')}>
@@ -289,7 +310,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                       className="rounded-md border bg-background px-2 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       value={selectedType}
                       disabled={typeSaving}
-                      onChange={(e) => setPendingType(e.target.value as DiscoveredAssetType)}
+                      onChange={(e) => setPendingEdit({ baseType: asset.type, value: e.target.value as DiscoveredAssetType })}
                       onKeyDown={(e) => {
                         if (e.key === 'Escape' && typeDirty) {
                           e.preventDefault();
@@ -378,6 +399,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               devicesError={devicesError}
               onRetryDevices={fetchDevices}
               onAnnounce={announce}
+              expanded={portsExpanded}
+              onToggle={() => setPortsExpanded((expanded) => !expanded)}
             />
           </div>
         </div>
@@ -388,7 +411,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           className="grid gap-5 lg:grid-cols-2"
           data-testid="network-detail-monitoring"
           role="tabpanel"
-          aria-labelledby={overflowTabId('monitoring', TAB_ID_PREFIX)}
+          id={overflowPanelId('monitoring', TAB_ID_PREFIX)}
+          aria-label={t('networkDeviceDetailPage.tabs.monitoring')}
         >
           <Section title={t('networkDeviceDetailPage.sections.monitoringStatus')}>
             <dl className="space-y-3 text-sm">

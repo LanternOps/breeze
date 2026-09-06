@@ -2,7 +2,7 @@ import '@/lib/i18n';
 
 import { render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { OverflowTabs, overflowTabId, type OverflowTab } from './OverflowTabs';
+import { OverflowTabs, overflowTabId, overflowPanelId, type OverflowTab } from './OverflowTabs';
 
 const tabs: OverflowTab[] = [
   { id: 'a', label: 'Alpha', icon: <span data-testid="icon-a" /> },
@@ -51,6 +51,16 @@ describe('OverflowTabs', () => {
     });
   });
 
+  describe('overflowPanelId', () => {
+    it('matches the data-testid/tab-id scheme with a "-panel" suffix when a prefix is given', () => {
+      expect(overflowPanelId('overview', 'network-detail-tab-')).toBe('network-detail-tab-overview-panel');
+    });
+
+    it('falls back to "tab-<id>-panel" with no prefix', () => {
+      expect(overflowPanelId('overview')).toBe('tab-overview-panel');
+    });
+  });
+
   // Default (unstubbed) jsdom layout: everything past the first tab collapses
   // into the "More" menu — exercised deliberately here, not worked around.
   describe('with the default jsdom (zero-width) layout — collapsed into "More"', () => {
@@ -89,6 +99,25 @@ describe('OverflowTabs', () => {
       fireEvent.click(screen.getByTestId('t-c'));
 
       expect(onTabChange).toHaveBeenCalledWith('c');
+    });
+
+    // #reviewFix10a: with the active tab collapsed into "More", none of the
+    // visible tabs used to get tabIndex 0 — a keyboard user tabbing to the
+    // tablist landed nowhere reachable at all.
+    it('keeps the first visible tab at tabIndex 0 when the active tab is in the "More" overflow', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="c" onTabChange={() => {}} testIdPrefix="t-" />);
+
+      // Only 'a' fits as a visible tab under jsdom's zero-width layout.
+      const visibleTab = screen.getByTestId('t-a');
+      expect(visibleTab.tabIndex).toBe(0);
+      expect(visibleTab.getAttribute('aria-selected')).toBe('false');
+    });
+
+    // #reviewFix10b
+    it('gives each visible tab aria-controls pointing at its panel id', () => {
+      render(<OverflowTabs tabs={tabs} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" />);
+
+      expect(screen.getByTestId('t-a').getAttribute('aria-controls')).toBe(overflowPanelId('a', 't-'));
     });
   });
 

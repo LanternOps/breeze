@@ -53,10 +53,16 @@ export function ProxyConnectPopover({
   const [open, setOpen] = useState(false);
   const [port, setPort] = useState(initialPort);
   const [portText, setPortText] = useState(String(initialPort));
+  // Only reseed from `initialPort` while the popover is closed — otherwise a
+  // prop change reaching the open header popover (e.g. the default web port
+  // shifting after a background asset refresh) would clobber whatever custom
+  // port the operator is actively typing.
   useEffect(() => {
-    setPort(initialPort);
-    setPortText(String(initialPort));
-  }, [initialPort]);
+    if (!open) {
+      setPort(initialPort);
+      setPortText(String(initialPort));
+    }
+  }, [initialPort, open]);
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -91,36 +97,43 @@ export function ProxyConnectPopover({
 
   // Move focus into the popover when it opens (the port input for the header
   // variant, else the bridge picker — whichever is first in the DOM); restore
-  // it to the trigger on every close path (Escape, click outside, Connect
-  // success all just flip `open` to false, so one effect covers all three).
+  // it to the trigger on every close path EXCEPT one: when focus already left
+  // the popover on its own (see the focusout handler below), restoring here
+  // would fight the user's own Tab navigation by yanking focus back in.
   const wasOpenRef = useRef(false);
+  const focusAlreadyMovedRef = useRef(false);
   useEffect(() => {
     if (open) {
       const focusables = getFocusable();
       (primaryControlRef.current ?? focusables[0] ?? panelRef.current)?.focus();
     } else if (wasOpenRef.current) {
-      triggerRef.current?.focus();
+      if (focusAlreadyMovedRef.current) {
+        focusAlreadyMovedRef.current = false;
+      } else {
+        triggerRef.current?.focus();
+      }
     }
     wasOpenRef.current = open;
   }, [open, getFocusable]);
 
-  const handlePanelKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== 'Tab') return;
-      const focusables = getFocusable();
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    },
-    [getFocusable],
-  );
+  // This is a non-modal dialog (`aria-modal="false"`) — it must not hard-trap
+  // Tab like a modal would. Instead, close it the moment focus leaves both
+  // the panel and the trigger (a real Tab off the last control, or a click on
+  // something else entirely), restoring nothing since focus has already
+  // moved to wherever the user sent it.
+  useEffect(() => {
+    if (!open) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const handleFocusOut = (event: FocusEvent) => {
+      const next = event.relatedTarget as Node | null;
+      if (next && container.contains(next)) return;
+      focusAlreadyMovedRef.current = true;
+      setOpen(false);
+    };
+    container.addEventListener('focusout', handleFocusOut);
+    return () => container.removeEventListener('focusout', handleFocusOut);
+  }, [open]);
 
   const onlineDevices = useMemo(() => devices.filter((d) => d.online), [devices]);
 
@@ -160,6 +173,24 @@ export function ProxyConnectPopover({
     [suggestedBridgeDeviceId, t],
   );
 
+  // Resolves free-typed combobox text to exactly one online device — an
+  // exact (case-insensitive) match on its displayed label OR on its own id.
+  // Returns undefined on no match AND on an ambiguous multi-match, since
+  // Connect must never bridge through a device the text doesn't uniquely
+  // name.
+  const matchBridgeDevice = useCallback(
+    (text: string): DeviceOption | undefined => {
+      const trimmed = text.trim();
+      if (!trimmed) return undefined;
+      const lower = trimmed.toLowerCase();
+      const matches = onlineDevices.filter(
+        (d) => labelFor(d).toLowerCase() === lower || d.id.toLowerCase() === lower,
+      );
+      return matches.length === 1 ? matches[0] : undefined;
+    },
+    [onlineDevices, labelFor],
+  );
+
   // The combobox's <input> shows a label, but the value we act on is the id
   // — keep them in sync whenever the selected device changes (including the
   // default arriving async, same as the plain-select `deviceId` sync above).
@@ -179,6 +210,11 @@ export function ProxyConnectPopover({
   const [connecting, setConnecting] = useState(false);
   const [retryingDevices, setRetryingDevices] = useState(false);
   const handleRetryDevices = useCallback(() => {
+    // Move focus into the panel BEFORE disabling the button: a browser moves
+    // focus to <body> when the currently-focused element becomes disabled,
+    // which would escape the popover's focus containment entirely (jsdom
+    // doesn't reproduce that specific move, so this only guards against it).
+    panelRef.current?.focus();
     setRetryingDevices(true);
     void Promise.resolve(onRetryDevices()).finally(() => setRetryingDevices(false));
   }, [onRetryDevices]);
@@ -263,7 +299,6 @@ export function ProxyConnectPopover({
           id={popoverId}
           ref={panelRef}
           tabIndex={-1}
-          onKeyDown={handlePanelKeyDown}
           className={`absolute top-full z-30 mt-1 w-72 rounded-md border bg-popover p-3 text-left shadow-lg ${
             variant === 'header' ? 'right-0' : 'left-0'
           }`}
@@ -339,11 +374,15 @@ export function ProxyConnectPopover({
                       ref={variant === 'header' ? undefined : (primaryControlRef as React.Ref<HTMLInputElement>)}
                       data-testid="proxy-popover-bridge-select"
                       value={bridgeSearchText}
+                      aria-invalid={!matchBridgeDevice(bridgeSearchText)}
                       onChange={(e) => {
                         const text = e.target.value;
                         setBridgeSearchText(text);
-                        const match = onlineDevices.find((d) => labelFor(d) === text);
-                        if (match) setDeviceId(match.id);
+                        // Unmatched text must NOT keep the previous deviceId —
+                        // otherwise the field can show one agent's text while
+                        // Connect bridges through a different, stale one.
+                        const match = matchBridgeDevice(text);
+                        setDeviceId(match?.id ?? '');
                       }}
                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                     />

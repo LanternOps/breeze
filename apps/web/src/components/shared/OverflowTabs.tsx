@@ -22,6 +22,15 @@ export function overflowTabId(id: string, testIdPrefix?: string): string {
   return testIdPrefix ? `${testIdPrefix}${id}` : `tab-${id}`;
 }
 
+// Stable id for a tab's panel, mirroring `overflowTabId`'s scheme — used as
+// the tab button's `aria-controls` target and the panel element's own `id`
+// (see NetworkDeviceDetailPage's `role="tabpanel"` sections). Kept distinct
+// from `overflowTabId` (rather than reusing the tab's own id) since a tab
+// element and its panel are two different DOM nodes that both need an id.
+export function overflowPanelId(id: string, testIdPrefix?: string): string {
+  return testIdPrefix ? `${testIdPrefix}${id}-panel` : `tab-${id}-panel`;
+}
+
 export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   tabs: OverflowTab[];
   activeTab: string;
@@ -116,6 +125,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
   const overflowTabs = measured ? tabs.slice(visibleCount) : [];
   const activeInOverflow = overflowTabs.some(t => t.id === activeTab);
   const activeOverflowTab = overflowTabs.find(t => t.id === activeTab);
+  // Roving tabindex normally lands on whichever visible tab is active. When
+  // the active tab has been pushed into the "More" overflow instead, none of
+  // the visible tabs would get tabIndex 0 — a keyboard user tabbing to the
+  // tablist would land nowhere reachable. Fall back to the first visible tab
+  // in that case so the tablist always has exactly one stop in the Tab order.
+  const rovingTabId = visibleTabs.some(t => t.id === activeTab) ? activeTab : visibleTabs[0]?.id;
 
   // Roving tabindex across the VISIBLE tabs only (ARIA tabs pattern, "automatic
   // activation" variant): arrowing changes both focus and selection, matching
@@ -165,7 +180,8 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                 id={tabId}
                 role="tab"
                 aria-selected={isActive}
-                tabIndex={isActive ? 0 : -1}
+                aria-controls={overflowPanelId(tab.id, testIdPrefix)}
+                tabIndex={tab.id === rovingTabId ? 0 : -1}
                 title={tab.title}
                 data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
                 ref={(el) => { tabButtonRefs.current[tab.id] = el; }}

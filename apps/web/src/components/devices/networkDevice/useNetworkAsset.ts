@@ -4,7 +4,7 @@
 // proxy/manual-link pickers. Returns plain data and callbacks so the page
 // component stays presentation-only.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { asList } from '@/lib/asList';
@@ -29,7 +29,15 @@ export function useNetworkAsset(assetId: string) {
   // (CSS-positioned, not announced here) — this is in addition to them, not
   // a replacement.
   const [liveMessage, setLiveMessage] = useState('');
-  const announce = useCallback((message: string) => setLiveMessage(message), []);
+  // Clear first and set the real message on the next tick: setting the same
+  // string twice in a row is a no-op state update, so React bails out of the
+  // second render and the live region's DOM text never actually changes —
+  // screen reader users never hear the repeat. Clearing first guarantees two
+  // distinct DOM mutations even when the message is identical to the last one.
+  const announce = useCallback((message: string) => {
+    setLiveMessage('');
+    setTimeout(() => setLiveMessage(message), 0);
+  }, []);
 
   // `background: true` is used for the return-to-tab refresh below: it must
   // not flash the loading skeleton over content the operator is already
@@ -122,21 +130,30 @@ export function useNetworkAsset(assetId: string) {
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [devicesError, setDevicesError] = useState(false);
   const assetLoaded = asset != null;
+  // Guards against a slower, earlier fetchDevices call resolving AFTER a
+  // later one (e.g. a manual "Retry" firing while the initial load is still
+  // in flight) and clobbering the fresher result with stale data. Each call
+  // captures its own sequence number and only commits state if it's still
+  // the most recent call by the time its response lands.
+  const fetchSeqRef = useRef(0);
   const fetchDevices = useCallback(async () => {
     // The site scope isn't known until the asset has loaded; firing early
     // would always (and silently) fall through to the unscoped branch.
     if (!assetLoaded) return;
+    const seq = ++fetchSeqRef.current;
     setDevicesError(false);
     try {
       const url = extras.siteId
         ? `/devices?siteId=${encodeURIComponent(extras.siteId)}`
         : '/devices';
       const response = await fetchWithAuth(url);
+      if (seq !== fetchSeqRef.current) return; // superseded by a newer call
       if (!response.ok) {
         setDevicesError(true);
         return;
       }
       const data = await response.json();
+      if (seq !== fetchSeqRef.current) return;
       const raw: any[] = asList(data, 'devices');
       let list: DeviceOption[] = raw.map((d: any) => ({
         id: d.id,
@@ -152,8 +169,10 @@ export function useNetworkAsset(assetId: string) {
       if (suggestedId && !list.some((d) => d.id === suggestedId)) {
         try {
           const suggestedResponse = await fetchWithAuth(`/devices/${suggestedId}`);
+          if (seq !== fetchSeqRef.current) return;
           if (suggestedResponse.ok) {
             const suggestedRaw = await suggestedResponse.json();
+            if (seq !== fetchSeqRef.current) return;
             if (suggestedRaw && typeof suggestedRaw.id === 'string') {
               list = [
                 {
@@ -178,7 +197,7 @@ export function useNetworkAsset(assetId: string) {
 
       setDevices(list);
     } catch {
-      setDevicesError(true);
+      if (seq === fetchSeqRef.current) setDevicesError(true);
     }
   }, [assetLoaded, extras.siteId, extras.suggestedBridgeDeviceId]);
 

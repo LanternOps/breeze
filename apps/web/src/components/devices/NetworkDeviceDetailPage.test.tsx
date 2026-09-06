@@ -217,6 +217,27 @@ describe('NetworkDeviceDetailPage', () => {
     expect(monitoring.textContent).toContain('Not linked');
   });
 
+  // #reviewFix10b: each tab must point at its panel via aria-controls, and
+  // the panel must be named with aria-label (not aria-labelledby) since the
+  // labelling tab element doesn't exist in the DOM while it's in overflow.
+  it('links each tab to its panel via aria-controls, naming the panel with aria-label', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    const overviewTab = screen.getByTestId('network-detail-tab-overview');
+    const overviewPanel = screen.getByTestId('network-detail-overview');
+    expect(overviewTab.getAttribute('aria-controls')).toBe(overviewPanel.id);
+    expect(overviewPanel.getAttribute('aria-label')).toBe('Overview');
+    expect(overviewPanel.hasAttribute('aria-labelledby')).toBe(false);
+
+    openMonitoringTab();
+    const monitoringPanel = await screen.findByTestId('network-detail-monitoring');
+    expect(monitoringPanel.getAttribute('aria-label')).toBe('Monitoring');
+    expect(monitoringPanel.hasAttribute('aria-labelledby')).toBe(false);
+  });
+
   it('initializes the active tab from the URL hash on mount', async () => {
     window.location.hash = '#monitoring';
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
@@ -429,6 +450,46 @@ describe('NetworkDeviceDetailPage', () => {
     );
   });
 
+  // #reviewFix1: handleUnlink used to call the plain (non-background)
+  // fetchAsset, flashing NetworkDeviceSkeleton over the page mid-unlink.
+  it('does not flash the loading skeleton or unmount the page while Unlink reloads the asset', async () => {
+    let resolveReload!: (value: Response) => void;
+    const reloadPromise = new Promise<Response>((resolve) => {
+      resolveReload = resolve;
+    });
+
+    fetchWithAuthMock
+      .mockResolvedValueOnce(
+        makeJsonResponse({
+          data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
+        }),
+      )
+      .mockResolvedValueOnce(devicesResponse([]))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true }))
+      .mockReturnValueOnce(reloadPromise as unknown as Promise<Response>);
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    openMonitoringTab();
+    const nameBefore = screen.getByTestId('network-device-name');
+
+    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
+    fireEvent.click(await screen.findByTestId('network-detail-unlink-confirm'));
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/discovery/assets/${ASSET_ID}/link`, { method: 'DELETE' }),
+    );
+
+    // The reload after DELETE is still in flight — must not show the
+    // skeleton or unmount/remount the page.
+    expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
+    expect(screen.getByTestId('network-device-name')).toBe(nameBefore);
+
+    resolveReload(makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, linkSource: null } }));
+    await waitFor(() => expect(screen.queryByTestId('network-detail-unlink')).toBeNull());
+    expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
+  });
+
   it('does not call DELETE when the unlink confirmation is cancelled', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
@@ -545,6 +606,42 @@ describe('NetworkDeviceDetailPage', () => {
     ).toBe(false);
   });
 
+  // #reviewFix3: pendingType used to survive a fetchAsset completion even
+  // when the server's type had moved on underneath the pending edit (e.g. a
+  // background return-to-tab refresh landing mid-edit) — the Save button
+  // would then commit a choice made against a value that no longer exists.
+  it('discards a pending type edit if a background refresh returns a different type', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
+        .mockResolvedValueOnce(devicesResponse([]))
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'switch' } }));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'router' } });
+      expect(select.value).toBe('router');
+      expect(screen.getByTestId('network-detail-type-save')).toBeTruthy();
+
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.setSystemTime(Date.now() + 65_000);
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      await waitFor(() => expect(select.value).toBe('switch'));
+      expect(screen.queryByTestId('network-detail-type-save')).toBeNull();
+      expect(
+        fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows a reset-to-auto control only when typeSource is manual', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ data: { ...baseAsset, typeSource: 'manual', detectedAssetType: 'workstation' } }),
@@ -623,6 +720,44 @@ describe('NetworkDeviceDetailPage', () => {
     resolvePatch(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
 
     await waitFor(() => expect(select.disabled).toBe(false));
+  });
+
+  // #reviewFix1: changeType used to call the plain (non-background) fetchAsset,
+  // which flips `loading` and swaps the whole page for NetworkDeviceSkeleton —
+  // a visible flash mid-Save even though the operator is already looking at a
+  // fully loaded page.
+  it('does not flash the loading skeleton or unmount the page while Save reloads the asset', async () => {
+    let resolveReload!: (value: Response) => void;
+    const reloadPromise = new Promise<Response>((resolve) => {
+      resolveReload = resolve;
+    });
+
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
+      .mockResolvedValueOnce(devicesResponse([]))
+      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }))
+      .mockReturnValueOnce(reloadPromise as unknown as Promise<Response>);
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+    const nameBefore = screen.getByTestId('network-device-name');
+
+    fireEvent.change(screen.getByTestId('network-asset-type-select'), { target: { value: 'router' } });
+    fireEvent.click(screen.getByTestId('network-detail-type-save'));
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+    );
+
+    // The post-Save reload is still in flight here — must not show the
+    // skeleton or unmount/remount the page.
+    expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
+    expect(screen.getByTestId('network-device-name')).toBe(nameBefore);
+
+    resolveReload(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
+
+    await waitFor(() => expect(screen.queryByTestId('network-detail-type-save')).toBeNull());
+    expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
   });
 
   it('announces the update to the live region once a type Save succeeds', async () => {
@@ -959,6 +1094,109 @@ describe('NetworkDeviceDetailPage', () => {
       openSpy.mockRestore();
     });
 
+    // #reviewFix5: the header popover's port field used to reseed from
+    // `initialPort` whenever it changed for ANY reason — including a
+    // background asset refresh landing while the operator has the popover
+    // open and has already typed a custom port.
+    it('does not clobber a custom-typed port in the open header popover when initialPort changes from a background refresh', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        fetchWithAuthMock
+          .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset })) // openPorts: 22, 443 -> defaultWebPort=443
+          .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]))
+          .mockResolvedValueOnce(
+            makeJsonResponse({
+              data: { ...baseAsset, openPorts: [{ port: 22, service: 'ssh' }, { port: 8443, service: 'https-alt' }] },
+            }),
+          ); // background refresh: default web port becomes 8443
+
+        render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+        await screen.findByTestId('network-device-detail');
+
+        fireEvent.click(screen.getByTestId('network-detail-open-web-ui'));
+        const portInput = (await screen.findByTestId('proxy-popover-port')) as HTMLInputElement;
+        expect(portInput.value).toBe('443');
+
+        fireEvent.change(portInput, { target: { value: '9000' } });
+        expect(portInput.value).toBe('9000');
+
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        vi.setSystemTime(Date.now() + 65_000);
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+
+        await waitFor(() =>
+          expect(screen.getByTestId('network-detail-live').textContent).toBe('Device details refreshed'),
+        );
+
+        expect((screen.getByTestId('proxy-popover-port') as HTMLInputElement).value).toBe('9000');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // #reviewFix6: clicking Retry disables the button; browsers then move
+    // focus to <body>, escaping the popover's focus containment (jsdom
+    // doesn't reproduce that specific move, so this asserts the mitigation
+    // instead: focus is pushed into the panel before the button disables).
+    it('moves focus into the panel when Retry agents is clicked, before the button disables', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(makeJsonResponse({}, false, 500))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const retryButton = await screen.findByTestId('proxy-popover-retry-agents');
+      const dialog = screen.getByTestId('network-detail-proxy-popover-443');
+
+      fireEvent.click(retryButton);
+
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      await waitFor(() => expect(screen.getByTestId('proxy-popover-bridge-select')).toBeTruthy());
+    });
+
+    // #reviewFix7 (P0): the combobox only updated deviceId on an exact label
+    // match and otherwise left the PREVIOUS id in place — so the field could
+    // show one agent's text while Connect would bridge through a different,
+    // stale one.
+    it('clears deviceId and flags aria-invalid on unmatched combobox text, recovering on an exact case-insensitive label or id match', async () => {
+      const manyDevices = Array.from({ length: 9 }, (_, i) => ({
+        id: `dev-${i}`,
+        displayName: `Agent ${i}`,
+        status: 'online',
+      }));
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-0' } }))
+        .mockResolvedValueOnce(devicesResponse(manyDevices));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const input = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLInputElement;
+      await waitFor(() => expect(input.value).toContain('Agent 0'));
+      expect(input.getAttribute('aria-invalid')).toBe('false');
+
+      fireEvent.change(input, { target: { value: 'not a real agent' } });
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect((screen.getByTestId('proxy-popover-connect') as HTMLButtonElement).disabled).toBe(true);
+
+      // Recovers on an exact, case-insensitive label match.
+      fireEvent.change(input, { target: { value: 'agent 3' } });
+      expect(input.getAttribute('aria-invalid')).toBe('false');
+      expect((screen.getByTestId('proxy-popover-connect') as HTMLButtonElement).disabled).toBe(false);
+
+      // Recovers on a match by the device's own id too.
+      fireEvent.change(input, { target: { value: 'dev-5' } });
+      expect(input.getAttribute('aria-invalid')).toBe('false');
+      expect((screen.getByTestId('proxy-popover-connect') as HTMLButtonElement).disabled).toBe(false);
+    });
+
     it('shows an inline message and does not open a tab when the target is disabled for proxy access', async () => {
       const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
 
@@ -1018,7 +1256,15 @@ describe('NetworkDeviceDetailPage', () => {
       expect(trigger.getAttribute('aria-expanded')).toBe('false');
     });
 
-    it('traps Tab focus within the popover while open, cycling from the last control back to the first', async () => {
+    // #reviewFix9: the popover is aria-modal="false" (a non-modal dialog) but
+    // used to hard-trap Tab like a modal. A real Tab key leaving the last
+    // control moves focus to whatever the browser's native tab order finds
+    // next, which is often outside the popover entirely — for a non-modal
+    // dialog that focus move should be allowed to close the popover, not be
+    // dragged back in. jsdom doesn't run native Tab traversal, so the
+    // resulting focus move is simulated directly via the focusout it
+    // produces (matching the real DOM: `focusout` bubbles, `blur` does not).
+    it('closes the popover (no hard Tab trap) when focus leaves both the panel and the trigger, without stealing focus back', async () => {
       fetchWithAuthMock
         .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
         .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]));
@@ -1028,28 +1274,80 @@ describe('NetworkDeviceDetailPage', () => {
 
       fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
       await screen.findByTestId('proxy-popover-bridge-select');
+      const connectButton = screen.getByTestId('proxy-popover-connect');
 
-      // The real first/last focusable in the panel (the "through agent"
-      // field's HelpTooltip button sits ahead of the bridge select — focus
-      // lands on the select on open per the previous test, but the trap must
-      // still cycle across the FULL focusable set, Help button included).
-      const dialog = screen.getByTestId('network-detail-proxy-popover-443');
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled])'),
+      const outsideButton = document.createElement('button');
+      document.body.appendChild(outsideButton);
+      outsideButton.focus();
+      fireEvent.focusOut(connectButton, { relatedTarget: outsideButton });
+
+      await waitFor(() => expect(screen.queryByTestId('network-detail-proxy-popover-443')).toBeNull());
+      // Restoring nothing: focus already moved where the user sent it, so the
+      // popover must not steal it back onto the trigger.
+      expect(document.activeElement).toBe(outsideButton);
+
+      document.body.removeChild(outsideButton);
+    });
+
+    it('does not close when focus moves between two controls inside the panel', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-1', displayName: 'Alpha', status: 'online' }]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const bridgeSelect = await screen.findByTestId('proxy-popover-bridge-select');
+      const schemeSelect = screen.getByTestId('proxy-popover-scheme-select');
+
+      fireEvent.focusOut(bridgeSelect, { relatedTarget: schemeSelect });
+
+      expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
+    });
+
+    // #reviewFix8: announce() set the same string twice in a row — React
+    // bails out on the no-op state update, so the live region's DOM text
+    // never actually changes and a screen reader never hears the repeat.
+    it('re-announces an identical live-region message as a fresh, observable DOM mutation', async () => {
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-42' } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]))
+        .mockResolvedValueOnce(makeJsonResponse({ tunnel: { id: 'tunnel-a' } }, true, 201))
+        .mockResolvedValueOnce(makeJsonResponse({ tunnel: { id: 'tunnel-b' } }, true, 201));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      let select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('network-detail-live').textContent).toBe('Web UI opened in a new tab'),
       );
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      expect(last.getAttribute('data-testid')).toBe('proxy-popover-connect');
 
-      // Tab from the last control wraps back to the first.
-      last.focus();
-      fireEvent.keyDown(last, { key: 'Tab' });
-      expect(document.activeElement).toBe(first);
+      const liveRegion = screen.getByTestId('network-detail-live');
+      let mutationCount = 0;
+      const observer = new MutationObserver(() => {
+        mutationCount++;
+      });
+      observer.observe(liveRegion, { childList: true, characterData: true, subtree: true });
 
-      // Shift+Tab from the first control wraps to the last.
-      first.focus();
-      fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
-      expect(document.activeElement).toBe(last);
+      // Reopen and connect again — the announced message is byte-identical to
+      // the first time.
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() => expect(mutationCount).toBeGreaterThan(0));
+      expect(screen.getByTestId('network-detail-live').textContent).toBe('Web UI opened in a new tab');
+
+      observer.disconnect();
+      openSpy.mockRestore();
     });
 
     it('announces "Web UI opened in a new tab" to the live region once Connect succeeds', async () => {
@@ -1213,6 +1511,31 @@ describe('NetworkDeviceDetailPage', () => {
       expect(toggle.textContent).toContain('Show all (15)');
 
       fireEvent.click(toggle);
+      expect(screen.getByTestId('network-detail-ports').textContent).toContain('20014');
+      expect(screen.getByTestId('network-detail-ports-toggle').textContent).toBe('Show fewer');
+    });
+
+    // #reviewFix2: portsExpanded used to live inside OpenPortsSection, which
+    // unmounts when the Monitoring tab is active — so "Show all" silently
+    // reset on every tab round-trip.
+    it('keeps "Show all" ports expanded across a tab switch and back (state lifted to the page)', async () => {
+      const manyPorts = Array.from({ length: 15 }, (_, i) => ({ port: 20000 + i, service: 'custom' }));
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, openPorts: manyPorts } }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-ports-toggle'));
+      expect(screen.getByTestId('network-detail-ports').textContent).toContain('20014');
+
+      openMonitoringTab();
+      await screen.findByTestId('network-detail-monitoring');
+
+      fireEvent.click(screen.getByTestId('network-detail-tab-overview'));
+      await screen.findByTestId('network-detail-overview');
+
       expect(screen.getByTestId('network-detail-ports').textContent).toContain('20014');
       expect(screen.getByTestId('network-detail-ports-toggle').textContent).toBe('Show fewer');
     });

@@ -1,9 +1,10 @@
 // The "Open ports" card: the port/service list (capped behind a "Show all"
 // toggle so a wide scan can't dominate the section), plus the per-port Open
-// Web UI trigger and the insecure/kind badges. Owns its own expand/collapse
-// state since nothing outside this card needs it.
+// Web UI trigger and the insecure/kind badges. The expand/collapse state is
+// controlled by the parent page (not local) because this card unmounts
+// whenever the Monitoring tab is active — local state would silently reset
+// "Show all" on every tab round-trip.
 
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { describePort } from '../../discovery/portCatalog';
 import type { OpenPortEntry } from '../../discovery/DiscoveredAssetList';
@@ -25,6 +26,8 @@ export function OpenPortsSection({
   devicesError,
   onRetryDevices,
   onAnnounce,
+  expanded,
+  onToggle,
 }: {
   openPorts: OpenPortEntry[];
   assetId: string;
@@ -34,10 +37,11 @@ export function OpenPortsSection({
   devicesError: boolean;
   onRetryDevices: () => void;
   onAnnounce: (message: string) => void;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useTranslation('devices');
-  const [portsExpanded, setPortsExpanded] = useState(false);
-  const visiblePorts = portsExpanded ? openPorts : openPorts.slice(0, PORTS_VISIBLE_LIMIT);
+  const visiblePorts = expanded ? openPorts : openPorts.slice(0, PORTS_VISIBLE_LIMIT);
 
   return (
     <Section
@@ -104,10 +108,10 @@ export function OpenPortsSection({
             <button
               type="button"
               data-testid="network-detail-ports-toggle"
-              onClick={() => setPortsExpanded((expanded) => !expanded)}
+              onClick={onToggle}
               className="mt-2 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {portsExpanded
+              {expanded
                 ? t('networkDeviceDetailPage.showFewerPorts')
                 : t('networkDeviceDetailPage.showAllPorts', { count: openPorts.length })}
             </button>
