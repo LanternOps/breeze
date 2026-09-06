@@ -597,17 +597,17 @@ describe('partner reconstruction export RLS traversal', () => {
     // pinned -- the outer guard, and, in the one scope that legitimately moves
     // ownership (org merge), the reverse validator that was always the subject
     // here. Asserting only the 23514 would quietly retire this test (#5123).
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
-      .toBe('23514');
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
     expect(await captureSqlState(() => admin.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
       await tx.update(configurationPolicies)
         .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id));
     }))).toBe('23503');
-    expect(await captureSqlState(() => admin.update(configurationPolicies)
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
-      .toBe('23514');
+      .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
     expect(await captureSqlState(() => admin.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
       await tx.update(configurationPolicies)
@@ -1259,5 +1259,27 @@ async function captureSqlState(work: () => Promise<unknown>): Promise<string | u
   } catch (error) {
     const wrapped = error as { code?: string; cause?: { code?: string } };
     return wrapped.cause?.code ?? wrapped.code;
+  }
+}
+
+/**
+ * SQLSTATE plus the constraint that produced it. `configuration_policies`
+ * carries several 23514 sources, so a bare code would let a future CHECK on the
+ * same statement path satisfy an assertion meant for a specific guard (#5123).
+ */
+async function captureSqlFailure(
+  work: () => Promise<unknown>,
+): Promise<{ code?: string; constraint?: string } | undefined> {
+  try {
+    await work();
+    return undefined;
+  } catch (error) {
+    const wrapped = error as {
+      code?: string;
+      constraint_name?: string;
+      cause?: { code?: string; constraint_name?: string };
+    };
+    const node = wrapped.cause?.code ? wrapped.cause : wrapped;
+    return { code: node.code, constraint: node.constraint_name };
   }
 }

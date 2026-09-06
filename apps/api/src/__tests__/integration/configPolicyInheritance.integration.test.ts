@@ -28,7 +28,10 @@
  *     cascade that removes the family in ONE statement still succeeds.
  *  5. ERASURE ROW-SET CLOSURE. The org-erasure FK ledger
  *     (orgCascadeFkOnDeleteAllowlist.ts) pins this self-FK with a reviewed
- *     argument instead of a migration; section 5 is that argument's evidence.
+ *     argument instead of a migration. The "erasure row-set closure" describe
+ *     block below is that argument's evidence, plus the two service-shape
+ *     properties it leans on (single-statement org erasure; the partner purge
+ *     clearing org children before partner-wide baselines).
  */
 import './setup';
 import { getTestDb } from './setup';
@@ -50,7 +53,7 @@ import {
   InvalidParentPolicyError,
   PolicyHasChildrenError,
 } from '../../services/configurationPolicy';
-import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { cascadeDeleteOrg, cascadeDeletePartner } from '../../services/tenantCascade';
 import type { AuthContext } from '../../middleware/auth';
 import { createPartner, createOrganization } from './db-utils';
 
@@ -953,11 +956,20 @@ describe('config policy inheritance — deletion (live DB)', () => {
  *
  * Closure needs exactly one thing: no row that SURVIVES the erasure statement
  * may reference a row it deletes. The surviving rows are the partner-wide ones
- * and other orgs' rows, so the two forges below are the COMPLETE set of edges
+ * and other orgs' rows, so the first two tests are the COMPLETE set of edges
  * that could break it -- both refused, in SYSTEM scope, which is the widest
- * scope any erasure or merge path runs under. The third test then runs the real
- * cascade rather than a hand-written DELETE, so a later change to the erasure
- * SQL (a per-row loop, a different WHERE) is caught here as well.
+ * scope any erasure or merge path runs under. Those two are the closure proof;
+ * they fail the moment the guard stops rejecting a forged edge.
+ *
+ * The last two tests are a different, weaker property, and are not a second
+ * proof of closure -- they seed only LEGAL edges, so they would pass even with
+ * the guard gone. What they pin is the erasure SHAPE the closure argument
+ * assumes: `cascadeDeleteOrg` still removes an org's policies in ONE statement
+ * (so NO ACTION is checked once, against the final state, not per row), and
+ * `cascadeDeletePartner` still runs its per-org cascades BEFORE the partner-axis
+ * sweep, so an org-owned child is always gone before the partner-wide baseline
+ * it inherits from is deleted. Both are properties of the service, not the
+ * schema, so nothing else would catch a refactor that changed them.
  */
 describe('config policy inheritance -- erasure row-set closure (live DB)', () => {
   it('SYSTEM scope still refuses a partner-wide child under an org-owned parent', async () => {
@@ -1004,8 +1016,10 @@ describe('config policy inheritance -- erasure row-set closure (live DB)', () =>
       orgId: t.a1, name: 'A1 child of the MSP baseline', parentPolicyId: baseline.id,
     });
 
-    // cascadeDeleteOrg, not a hand-written DELETE: this is the statement the
-    // ledger entry's argument is actually about.
+    // The real service, not a hand-written DELETE (the sibling tests above
+    // already cover the hand-written shape). Every edge seeded here is LEGAL, so
+    // this does not re-prove closure -- it pins the single-statement erasure the
+    // closure argument depends on.
     await expect(cascadeDeleteOrg(t.a1, randomUUID(), 'config-policy-erasure@test.invalid'))
       .resolves.toBeDefined();
 
@@ -1015,5 +1029,35 @@ describe('config policy inheritance -- erasure row-set closure (live DB)', () =>
           baseline.id, orgParent.id, orgChild.id, inheritsBaseline.id,
         ])));
     expect(remaining).toEqual([{ id: baseline.id }]);
+  });
+
+  /**
+   * The partner purge is the one place the ORDER of two separate statements is
+   * load-bearing for this FK. `cascadeDeletePartner` runs `cascadeDeleteOrg` for
+   * every child org first, then a partner-axis sweep that deletes the partner's
+   * own `configuration_policies` baselines. An org-owned child of a partner-wide
+   * baseline is removed by the first phase; the baseline by the second. Reverse
+   * them and the sweep raises 23503 mid-purge, leaving the partner half-deleted
+   * -- the #4100 failure mode, on the partner axis. Nothing else covers it:
+   * tenantCascadePartner.integration.test.ts seeds no configuration_policies.
+   */
+  it('the real partner purge deletes org children before the partner-wide baseline', async () => {
+    const t = await seedTenancy();
+    const baseline = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const orgChild = await seedPolicy({
+      orgId: t.a1, name: 'A1 child of the MSP baseline', parentPolicyId: baseline.id,
+    });
+    // A partner-wide child too: this pair is removed by the SWEEP's own single
+    // statement, so it also has to be closed under the self-reference.
+    const partnerChild = await seedPolicy({
+      partnerId: t.p1, name: 'partner-wide child', parentPolicyId: baseline.id,
+    });
+
+    await expect(cascadeDeletePartner(t.p1, randomUUID())).resolves.toBeDefined();
+
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: configurationPolicies.id }).from(configurationPolicies)
+        .where(inArray(configurationPolicies.id, [baseline.id, orgChild.id, partnerChild.id])));
+    expect(remaining).toEqual([]);
   });
 });

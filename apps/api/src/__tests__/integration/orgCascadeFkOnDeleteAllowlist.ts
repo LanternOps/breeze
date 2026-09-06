@@ -166,9 +166,11 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
       + 'docs/superpowers/specs/config-policy/2026-09-06-config-policy-inheritance-design.md, '
       + 'Deletion): SET NULL would silently un-configure every child when a baseline is deleted, and '
       + 'deleting a parent alone must be REFUSED, which CASCADE would turn into a silent mass '
-      + 'delete. The closure argument is proven empirically, not asserted: see section 5 of '
-      + 'configPolicyInheritance.integration.test.ts, which forges both cross-owner edges in SYSTEM '
-      + 'context and runs the real cascadeDeleteOrg() over a parent+child family. (#5123)',
+      + 'delete. The closure argument is proven empirically, not asserted: see the describe block '
+      + '"config policy inheritance -- erasure row-set closure (live DB)" in '
+      + 'configPolicyInheritance.integration.test.ts, which forges BOTH surviving-row shapes in '
+      + 'SYSTEM scope and then runs the real cascadeDeleteOrg() and cascadeDeletePartner() over a '
+      + 'parent+child family. (#5123)',
   },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_deployment_id_deployments_id_fk', parentTable: 'deployments', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
