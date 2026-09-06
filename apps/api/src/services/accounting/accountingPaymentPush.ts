@@ -149,6 +149,53 @@ export const PAYMENT_INVOICE_NOT_SYNCED_MESSAGE =
  */
 export const PAYMENT_PUSH_MAX_ATTEMPTS = 100;
 
+/**
+ * How many sweeps a `record_failed` row keeps re-sending its create before
+ * Breeze declares the QuickBooks Payment possibly orphaned and stops (review
+ * wave 2, finding 1).
+ *
+ * `record_failed` means QuickBooks ACCEPTED the create and Breeze could not
+ * record the result. Keeping `pending_op = 'push'` is what makes the orphan
+ * adoptable by the CDC echo and what lets the retries recover on their own:
+ * `push_generation` is unchanged, so each one resends the SAME `requestid` and
+ * Intuit replays the original create response rather than creating again.
+ *
+ * That replay window is 24 HOURS, and it is the whole safety argument — which
+ * is why this row cannot share `PAYMENT_PUSH_MAX_ATTEMPTS`. The worker treats
+ * `record_failed` as TERMINAL, so BullMQ does not retry it and the row accrues
+ * exactly ONE attempt per 15-minute sweep: 100 attempts is ~25 hours, PAST the
+ * replay window, and the retry after it closes mints a SECOND real Payment for
+ * money that moved once. Eight sweeps is about two hours — long enough to ride
+ * out the pool exhaustion or lock timeout that usually causes this, and an
+ * order of magnitude inside the window.
+ */
+export const PAYMENT_RECORD_FAILED_MAX_SWEEPS = 8;
+
+/**
+ * The terminal state of that bound, and a QUERYABLE discriminator.
+ *
+ * A row here is shape-identical to what the pull's
+ * `breeze_origin_removed_remotely` leaves behind — Breeze-origin, no remote id,
+ * nothing owed — and that shape is exactly what `fanOutOwedPayments` re-owns.
+ * The two mean opposite things: one says "QuickBooks has no Payment, make
+ * another", this one says "QuickBooks HAS a Payment nobody can name". Both the
+ * fan-out predicate and `reownPushMapping`'s WHERE exclude this exact string,
+ * so a manual invoice re-push cannot duplicate the orphan.
+ */
+export const PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE =
+  'QuickBooks accepted the payment but Breeze could not record it; '
+  + 'the QuickBooks Payment may be orphaned — contact support';
+
+/** Stable prefix of the WHILE-RETRYING message, so the coordinator can tell a
+ *  repeat `record_failed` from the first one without a second counter column.
+ *  Deliberately not a prefix of the orphan sentinel above. */
+const PAYMENT_RECORD_FAILED_RETRY_PREFIX = 'QuickBooks accepted the payment (remote id ';
+
+function paymentRecordFailedRetryMessage(remoteId: string): string {
+  return `${PAYMENT_RECORD_FAILED_RETRY_PREFIX}${remoteId}) but Breeze could not record it yet; `
+    + 'Breeze is retrying briefly and will stop rather than create a second payment';
+}
+
 /** Stamped by the sync worker when a payment job finds no connected QuickBooks
  *  connection to run against (`notePaymentJobSkipped`). */
 export const PAYMENT_NOT_CONNECTED_MESSAGE = 'QuickBooks is not connected';
@@ -836,6 +883,71 @@ async function markPaymentMappingErrorInOwnContext(
   }
 }
 
+/**
+ * Stamp a `record_failed` and enforce ITS bound (review wave 2, finding 1).
+ *
+ * Read-modify-write on purpose, and safe: only the worker holding this row's
+ * lease reaches phase 2, so nothing else is counting the same failure. The
+ * count rides `sync_attempts`, reset to 1 on the FIRST `record_failed` so the
+ * bound measures this failure mode rather than inheriting a long history of
+ * QuickBooks rejections — the two have completely different horizons, and
+ * conflating them is what let this path run past the replay window.
+ *
+ * Best-effort like its siblings: a failure to write the marker must not replace
+ * the caller's typed error, and Sentry already carries the original.
+ */
+async function noteRecordFailed(
+  runInDbContext: DbContextRunner,
+  mappingId: string,
+  partnerId: string,
+  message: string,
+  remoteId: string,
+): Promise<void> {
+  try {
+    const retired = await runInDbContext(async () => {
+      const row = await loadMappingById(mappingId, partnerId);
+      if (!row) return false;
+      const repeat = row.lastError?.startsWith(PAYMENT_RECORD_FAILED_RETRY_PREFIX) ?? false;
+      const attempts = repeat ? row.syncAttempts + 1 : 1;
+      const giveUp = attempts >= PAYMENT_RECORD_FAILED_MAX_SWEEPS;
+      await db
+        .update(accountingEntityMappings)
+        .set({
+          syncStatus: 'error',
+          claimedAt: null,
+          syncAttempts: attempts,
+          ...(giveUp
+            ? { pendingOp: null, lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE }
+            : { lastError: message }),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingId),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id });
+      return giveUp;
+    });
+    if (retired) {
+      // The TRANSITION, not each attempt: from here nothing in Breeze will ever
+      // name that QuickBooks Payment again, so only a human can reconcile it.
+      captureException(
+        new Error(
+          `accountingPaymentPush: gave up recording a QuickBooks payment (remote id ${remoteId}) after `
+          + `${PAYMENT_RECORD_FAILED_MAX_SWEEPS} sweeps — the QuickBooks Payment may be orphaned and needs `
+          + 'manual reconciliation',
+        ),
+        undefined,
+        { service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: remoteId },
+      );
+    }
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingPaymentPush', accounting_mapping_id: mappingId, partner_id: partnerId,
+    });
+  }
+}
+
 /** The push is done and nothing more is owed: drop `pending_op` and the lease
  *  together. Used when the CDC echo adopted the row before phase 2 got to it —
  *  the coordinator still owns closing out its own at-most-once claim. */
@@ -1032,6 +1144,7 @@ export async function fanOutOwedPayments(
         breezeOrigin: accountingEntityMappings.breezeOrigin,
         remoteEntityId: accountingEntityMappings.remoteEntityId,
         pendingOp: accountingEntityMappings.pendingOp,
+        lastError: accountingEntityMappings.lastError,
       })
       .from(accountingEntityMappings)
       .where(and(
@@ -1054,9 +1167,14 @@ export async function fanOutOwedPayments(
       // already in QuickBooks (re-owing it would CREATE a duplicate Payment,
       // since the push is create-only); a row with a `pending_op` is already
       // owed to a worker; a QuickBooks-origin row is not ours to push.
+      // ...and a row RETIRED as a possibly-orphaned `record_failed` is
+      // shape-identical to a removed-remotely one but means the OPPOSITE:
+      // QuickBooks holds a Payment nobody can name. The sentinel is the only
+      // thing that tells them apart (review wave 2, finding 1).
       const removedRemotely = existing.breezeOrigin
         && existing.remoteEntityId === null
-        && existing.pendingOp === null;
+        && existing.pendingOp === null
+        && existing.lastError !== PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE;
       if (!removedRemotely) continue;
       // A lost CAS is NOT fatal here. This whole fan-out is ONE transaction, so
       // throwing would roll back the sibling payments' inserts too — punishing
@@ -1119,6 +1237,10 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       eq(accountingEntityMappings.breezeOrigin, true),
       isNull(accountingEntityMappings.remoteEntityId),
       isNull(accountingEntityMappings.pendingOp),
+      // `IS DISTINCT FROM`, never `<>`: `last_error` is nullable and a plain
+      // inequality against NULL is NULL, which would exclude every row that
+      // carries no error at all — i.e. silently disable the whole re-own.
+      sql`${accountingEntityMappings.lastError} IS DISTINCT FROM ${PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE}`,
     ))
     .returning({ id: accountingEntityMappings.id });
   return rows.length === 1;
@@ -1415,7 +1537,7 @@ export async function pushPaymentToAccounting(
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: ref.id,
     });
-    const message = `QuickBooks accepted the payment (remote id ${ref.id}) but Breeze failed to record it — contact support to reconcile`;
+    const message = paymentRecordFailedRetryMessage(ref.id);
     // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
     // holds the Payment (review finding 1). Clearing it produced a row that was
     // byte-identical to the one `accountingPaymentPull`'s
@@ -1437,12 +1559,13 @@ export async function pushPaymentToAccounting(
     // later phase 2 stamp the very Payment this attempt could not record.
     // `PAYMENT_PUSH_MAX_ATTEMPTS` bounds it at ~5 hours, well inside that window.
     //
-    // RESIDUAL, stated rather than argued away: a row that burns the whole
-    // ceiling gives up with `pending_op` cleared and lands back in the
-    // re-ownable shape. That needs ~5 hours of continuous phase-2 failure AND a
-    // manual re-push afterwards, and the operator is looking at a `last_error`
-    // naming the orphan by remote id when they do it.
-    await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: false });
+    // THE BOUND IS ITS OWN, NOT `PAYMENT_PUSH_MAX_ATTEMPTS` — see
+    // `PAYMENT_RECORD_FAILED_MAX_SWEEPS`. The general ceiling is ~25 hours for
+    // this path (one attempt per sweep, because the worker treats
+    // `record_failed` as terminal), which is PAST Intuit's 24-hour replay
+    // window; past it a retry would create a second Payment. After eight sweeps
+    // the row is retired to a state nothing re-sends and nothing re-owns.
+    await noteRecordFailed(runInDbContext, mappingId, partnerId, message, ref.id);
     throw new AccountingPaymentPushError('record_failed', 502, message);
   }
 

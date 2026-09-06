@@ -118,6 +118,8 @@ import {
   notePaymentJobSkipped,
   paymentPushGaveUpMessage,
   partialRefundDivergenceMessage,
+  PAYMENT_RECORD_FAILED_MAX_SWEEPS,
+  PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
 } from './accountingPaymentPush';
 
 const PARTNER = 'p1';
@@ -1227,6 +1229,79 @@ describe('pushPaymentToAccounting', () => {
       .rejects.toMatchObject({ code: 'record_failed', status: 502 });
     const [[error]] = captureExceptionMock.mock.calls as [[Error]];
     expect(error.message).toContain('181');
+  });
+
+  it('STOPS re-sending the create after PAYMENT_RECORD_FAILED_MAX_SWEEPS and marks the Payment possibly orphaned', async () => {
+    // Keeping `pending_op = 'push'` is what makes the orphan adoptable and lets
+    // the same `requestid` replay the original create — but the worker treats
+    // `record_failed` as TERMINAL, so the row accrues one attempt per SWEEP.
+    // Against the ordinary 100-attempt ceiling that is ~25 hours, which outlives
+    // Intuit's 24-hour requestid replay window: the retry after it closes mints
+    // a SECOND real Payment. `record_failed` gets its own, much shorter bound.
+    const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
+      currentInvoices = [];
+      return { id: '181', syncToken: '0' };
+    });
+
+    for (let sweep = 1; sweep < PAYMENT_RECORD_FAILED_MAX_SWEEPS; sweep++) {
+      failPhase2();
+      await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+        .rejects.toMatchObject({ code: 'record_failed' });
+      currentInvoices = [invRow()];
+      // Still owed, so the CDC echo can still adopt the orphan by its marker.
+      expect(mapping()).toMatchObject({ pendingOp: 'push', syncAttempts: sweep });
+    }
+
+    failPhase2();
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'record_failed' });
+    currentInvoices = [invRow()];
+
+    expect(mapping()).toMatchObject({
+      pendingOp: null, // nothing will re-send this create, ever
+      claimedAt: null,
+      syncStatus: 'error',
+      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+    });
+    // The transition is reported: only a human can reconcile the orphan.
+    expect(captureExceptionMock.mock.calls.some(
+      (call) => String((call as [Error])[0].message).includes('may be orphaned'),
+    )).toBe(true);
+
+    // ...and the give-up must NOT return the row to the re-ownable shape.
+    createPaymentMock.mockClear();
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(mapping()).toMatchObject({ pushGeneration: 0, pendingOp: null });
+    expect(createPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it('never re-owns a row already marked as a possibly-orphaned record_failed', async () => {
+    // Shape-identical to `breeze_origin_removed_remotely` — Breeze-origin, no
+    // remote id, nothing owed — and only the sentinel tells them apart. Re-owing
+    // it would create a second QuickBooks Payment for money that moved once.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null,
+      pendingSince: null,
+      remoteEntityId: null,
+      syncStatus: 'error',
+      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(mapping()).toMatchObject({ pendingOp: null, pushGeneration: 0 });
+  });
+
+  it('STILL re-owns an ordinary removed-remotely row — the sentinel is the only exclusion', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null,
+      pendingSince: null,
+      remoteEntityId: null,
+      syncStatus: 'error',
+      lastError: 'The QuickBooks payment was deleted in QuickBooks',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
+    expect(mapping()).toMatchObject({ pendingOp: 'push', pushGeneration: 1 });
   });
 
   it('leaves a record_failed row DISTINGUISHABLE from removed-remotely, so no fan-out re-own can duplicate the Payment', async () => {
