@@ -1,3 +1,9 @@
+---
+tracking_issue: LanternOps/breeze#5080
+wave_issue: LanternOps/breeze#5083
+branch: feature/5080-config-policy-inheritance/wave-5083
+---
+
 # Config Policy Inheritance — W03 Web and Docs Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

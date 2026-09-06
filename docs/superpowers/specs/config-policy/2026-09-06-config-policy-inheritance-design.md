@@ -1,7 +1,8 @@
 ---
 title: Configuration policy inheritance (persisted parent, one level)
-status: draft
+status: approved
 date: 2026-09-06
+tracking_issue: LanternOps/breeze#5080
 origin: "#5023 browser walk paper cut: 'inherited policy state only shows with ?linked='"
 ---
 

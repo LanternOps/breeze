@@ -1,3 +1,9 @@
+---
+tracking_issue: LanternOps/breeze#5080
+wave_issue: LanternOps/breeze#5081
+branch: feature/5080-config-policy-inheritance/wave-5081
+---
+
 # Config Policy Inheritance — W01 API Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -10,7 +16,7 @@
 
 **Spec:** `docs/superpowers/specs/config-policy/2026-09-06-config-policy-inheritance-design.md`
 
-**Tracking:** feature issue and wave sub-issue numbers are added to this header by `register_feature` (feature-lifecycle). Branch: `feature/<parent#>-config-policy-inheritance/wave-<subissue#>`.
+**Tracking:** feature LanternOps/breeze#5080, wave #5081. Branch `feature/5080-config-policy-inheritance/wave-5081`.
 
 ## Global Constraints
 

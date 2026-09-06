@@ -1,3 +1,9 @@
+---
+tracking_issue: LanternOps/breeze#5080
+wave_issue: LanternOps/breeze#5082
+branch: feature/5080-config-policy-inheritance/wave-5082
+---
+
 # Config Policy Inheritance — W02 Resolver Sweep Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
