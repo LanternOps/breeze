@@ -23,18 +23,30 @@ vi.mock('../../db', () => ({
   },
 }));
 
+/**
+ * Mutable so a test can be a PARTNER-scope caller. It was hardcoded to
+ * `scope: 'organization'`, which made the original "denies another partner's
+ * run" test assert nothing: the partner branch it named was unreachable, and
+ * the test passed on the org branch instead.
+ */
+const authState = vi.hoisted(() => ({
+  scope: 'organization' as 'organization' | 'partner' | 'system',
+  partnerId: 'partner-1' as string | null,
+  accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'] as string[],
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       user: { id: 'user-1', email: 'tech@example.com' },
-      scope: 'organization',
-      orgId: ORG_A,
-      partnerId: 'partner-1',
-      accessibleOrgIds: [ORG_A],
-      canAccessOrg: (orgId: string) => orgId === ORG_A,
+      scope: authState.scope,
+      orgId: authState.scope === 'organization' ? ORG_A : null,
+      partnerId: authState.partnerId,
+      accessibleOrgIds: authState.accessibleOrgIds,
+      canAccessOrg: (orgId: string) => authState.accessibleOrgIds.includes(orgId),
       token: { mfa: true },
     });
-    c.set('permissions', { allowedSiteIds: null, scope: 'organization', orgId: ORG_A });
+    c.set('permissions', { allowedSiteIds: null, scope: authState.scope, orgId: ORG_A });
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -107,6 +119,9 @@ let app: Hono;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authState.scope = 'organization';
+  authState.partnerId = 'partner-1';
+  authState.accessibleOrgIds = [ORG_A];
   vi.mocked(runOutsideDbContext).mockImplementation(((fn: () => unknown) => fn()) as never);
   vi.mocked(withDbAccessContext).mockImplementation((async (
     _ctx: unknown,
@@ -421,6 +436,113 @@ describe('GET /devices/bulk/purge-runs/:jobId', () => {
     // Reported as "not found", never "forbidden": a cross-tenant probe must
     // not learn that the run exists.
     expect(await res.json()).toEqual({ error: 'Purge run not found' });
+  });
+
+  it("returns 404 for a partner-scope caller reading another partner's run", async () => {
+    authState.scope = 'partner';
+    authState.partnerId = 'partner-mine';
+    authState.accessibleOrgIds = [ORG_A];
+    rigJob({
+      data: {
+        partnerId: 'partner-theirs',
+        targets: [{ deviceId: DEV_1, orgId: ORG_A, hostname: 'h1' }],
+      },
+      getState: async () => 'active',
+      progress: { done: 0, total: 1 },
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  /**
+   * The gap partnerId-equality alone leaves open. A partner member with
+   * `org_access = 'selected'` shares the partner id with every org under it,
+   * so the partner arm passes — but their selection may exclude the orgs this
+   * run touched. Same case routes/orgMerge.ts:126 adds its own canAccessOrg
+   * check for, and the same reason.
+   */
+  it('returns 404 for a partner-scope caller whose org selection excludes a target org', async () => {
+    authState.scope = 'partner';
+    authState.partnerId = 'partner-1';
+    authState.accessibleOrgIds = [ORG_A]; // selection does NOT include ORG_B
+    rigJob({
+      data: {
+        partnerId: 'partner-1', // same partner — the partnerId arm passes
+        targets: [
+          { deviceId: DEV_1, orgId: ORG_A, hostname: 'h1' },
+          { deviceId: DEV_2, orgId: 'org-b-outside-selection', hostname: 'h2' },
+        ],
+      },
+      getState: async () => 'active',
+      progress: { done: 0, total: 2 },
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('lets a partner-scope caller read their own run when the selection covers every target org', async () => {
+    // The positive control: without it, the two denials above would pass
+    // against a route that 404s unconditionally.
+    authState.scope = 'partner';
+    authState.partnerId = 'partner-1';
+    authState.accessibleOrgIds = [ORG_A];
+    rigJob({
+      data: {
+        partnerId: 'partner-1',
+        targets: [{ deviceId: DEV_1, orgId: ORG_A, hostname: 'h1' }],
+      },
+      getState: async () => 'completed',
+      progress: { done: 1, total: 1 },
+      returnvalue: { purged: [DEV_1], skipped: [] },
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(200);
+  });
+
+  /**
+   * FAIL CLOSED on an unreadable payload. The org branch used to be guarded by
+   * `&& payload &&`, so a job whose `data` was absent (an evicted/roundtripped
+   * record, or a payload shape change) SKIPPED the tenancy check entirely and
+   * returned the run to any caller — while the partner branch failed closed on
+   * the same input. An unverifiable owner is not an authorised one.
+   */
+  it('returns 404 when the job payload is missing, rather than skipping the check', async () => {
+    rigJob({
+      data: undefined,
+      getState: async () => 'active',
+      progress: { done: 0, total: 0 },
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Purge run not found' });
+  });
+
+  it('still serves a system-scope caller a run with no readable payload', async () => {
+    // System scope already spans every partner and org, so it is the one caller
+    // for whom "cannot verify ownership" is not a denial.
+    authState.scope = 'system';
+    authState.partnerId = null;
+    rigJob({
+      data: undefined,
+      getState: async () => 'active',
+      progress: { done: 0, total: 0 },
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(200);
   });
 
   it('surfaces failedReason for a failed run', async () => {

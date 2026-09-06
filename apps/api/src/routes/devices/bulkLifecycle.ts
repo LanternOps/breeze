@@ -247,10 +247,27 @@ bulkLifecycleRoutes.post(
  * watching the tab.
  *
  * The jobId is a UUID the caller was handed, not a secret, and BullMQ enforces
- * nothing — so ownership is re-derived here (mirrors routes/orgMerge.ts). A
- * partner-scope caller is denied another partner's run; an org-scope caller is
- * denied a run touching any org outside their access. Both are reported as
- * "not found", never "forbidden", so a cross-tenant probe learns nothing.
+ * nothing — so ownership is re-derived here (mirrors routes/orgMerge.ts).
+ *
+ * TWO checks, and both matter:
+ *
+ *  - **Every target org must be accessible**, for partner scope as well as org
+ *    scope. Partner-id equality alone is not enough: a partner member with
+ *    `org_access = 'selected'` shares the partner id with every org under that
+ *    partner, so the partner arm passes while their selection may exclude the
+ *    orgs this run actually touched. `routes/orgMerge.ts:126` adds exactly this
+ *    check, for exactly this case.
+ *  - **A run whose payload cannot be read is DENIED**, not waved through. The
+ *    org arm used to be guarded by `&& payload &&`, so an absent `job.data`
+ *    skipped the tenancy check and returned the run to any caller — failing
+ *    OPEN, while the partner arm failed closed on the same input. An
+ *    unverifiable owner is not an authorised one.
+ *
+ * System scope is the one exemption: it already spans every partner and org, so
+ * "cannot verify ownership" is not a denial for it.
+ *
+ * Both denials are reported as "not found", never "forbidden", so a cross-tenant
+ * probe cannot learn that the run exists.
  */
 bulkLifecycleRoutes.get(
   '/bulk/purge-runs/:jobId',
@@ -268,9 +285,8 @@ bulkLifecycleRoutes.get(
       return c.json({ error: 'Purge run not found' }, 404);
     }
     if (
-      auth.scope === 'organization'
-      && payload
-      && !payload.targets.every((t) => auth.canAccessOrg(t.orgId))
+      auth.scope !== 'system'
+      && (!payload || !payload.targets.every((t) => auth.canAccessOrg(t.orgId)))
     ) {
       return c.json({ error: 'Purge run not found' }, 404);
     }
