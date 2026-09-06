@@ -131,6 +131,11 @@ export const JOB_SCHEDULES = {
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',
   'ai-agent-op-evidence-retention': '48 18 * * *',
+  // #2787 item 4 — daily purge of removed devices past their org's
+  // device_lifecycle retention window. Hour 8 in the daily (≡3 mod 5) lane
+  // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
+  // `audit-drift-evaluator` already fires hourly at :17.
+  'removed-device-purge': '13 8 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

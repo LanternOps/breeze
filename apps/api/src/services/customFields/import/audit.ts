@@ -22,7 +22,11 @@
  */
 
 import { writeRouteAudit, type AuthContext as AuditRouteContext } from '../../auditEvents';
-import type { CustomFieldDefinitionImportRow, DefinitionImportSummary } from './types';
+import type {
+  CustomFieldDefinitionImportRow,
+  DefinitionImportSummary,
+  ValueImportSummary,
+} from './types';
 
 export interface DefinitionImportAuditInput {
   summary: DefinitionImportSummary;
@@ -56,6 +60,63 @@ export function writeCustomFieldDefinitionImportAudits(
         ...(row?.sourceLabel ? { sourceLabel: row.sourceLabel } : {}),
         fieldKey: entry.fieldKey,
         ownerScope: entry.ownerScope,
+        rowCount,
+      },
+    });
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * W08 — the VALUES half (#4776)
+ *
+ * Same reason for living here as the definitions half above:
+ * `commitDeviceCustomFieldImport` has no Hono context, so the route fans the
+ * events out from the returned summary.
+ *
+ * WHAT THIS ONE HAS TO CARRY, and why: after a migration off Datto RMM the
+ * question is "where did this asset tag come from, and how did the importer
+ * decide it belonged to THIS device?". The answer is the resolution METHOD —
+ * an exact `id`/`link` match and a fuzzy `hostname` match are very different
+ * grounds for a value an MSP may later bill or act on — together with the
+ * system the file came from and the row count of the batch it arrived in.
+ *
+ * Field KEYS only, never values: a custom-field value can be anything the
+ * incumbent held, and `customFieldValues.ts` and `scriptWriteBack.ts` already
+ * apply the same rule on their own write paths.
+ *
+ * Rows where nothing was applied are deliberately not audited. They are the
+ * rows the commit left untouched — a re-import of an unchanged file is entirely
+ * such rows, and one event each would bury the real writes.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export interface ValueImportAuditInput {
+  summary: ValueImportSummary;
+  /** Rows SUBMITTED, not rows written — the batch an operator would recognise. */
+  rowCount: number;
+  /** The batch-level system, used when a row did not name its own. */
+  externalSystem: string;
+}
+
+/** One event per device the import actually backfilled. */
+export function writeCustomFieldValueImportAudits(
+  c: AuditRouteContext,
+  { summary, rowCount, externalSystem }: ValueImportAuditInput,
+): void {
+  for (const row of summary.rows) {
+    if (row.applied === 0) continue;
+
+    writeRouteAudit(c, {
+      orgId: row.organizationId,
+      action: 'device.custom_field.import',
+      resourceType: 'device',
+      resourceId: row.deviceId,
+      details: {
+        source: 'device_custom_field_import',
+        externalSystem: row.externalSystem ?? externalSystem,
+        resolutionMethod: row.method,
+        changedFields: row.appliedFieldKeys,
+        warranty: row.warranty,
+        linkCreated: row.linkCreated,
         rowCount,
       },
     });

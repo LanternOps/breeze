@@ -16,6 +16,7 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   checkGuardrails, resolveApprovalScope,
 } from './aiGuardrails';
+import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -30,27 +31,6 @@ function scopeTablePairs(): Array<{ tool: string; action: string; scope: 'four_e
     for (const action of actions) pairs.push({ tool, action, scope: 'supervised' });
   }
   return pairs;
-}
-
-/**
- * A tool's REAL action enum, from the two places an action string can enter the
- * system: the Anthropic tool definition the model is shown, and the Zod schema
- * validateToolInput enforces. Unioned, so a new member added to EITHER source
- * is caught. Returns null for a tool that is not action-multiplexed.
- */
-function realActionEnum(toolName: string): string[] | null {
-  const values = new Set<string>();
-
-  const definition = getToolDefinitions().find((d) => d.name === toolName);
-  const properties = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
-  const jsonEnum = (properties?.action as { enum?: unknown[] } | undefined)?.enum;
-  if (Array.isArray(jsonEnum)) for (const v of jsonEnum) if (typeof v === 'string') values.add(v);
-
-  const zodAction = (toolInputSchemas[toolName] as { shape?: Record<string, unknown> } | undefined)?.shape?.action;
-  const zodEnum = (zodAction as { options?: unknown[] } | undefined)?.options;
-  if (Array.isArray(zodEnum)) for (const v of zodEnum) if (typeof v === 'string') values.add(v);
-
-  return values.size > 0 ? [...values] : null;
 }
 
 /** Every action of `tool` that any tier table classifies explicitly. */
@@ -150,7 +130,7 @@ describe('tier-3 approval scope classification', () => {
 
     const enumerated: string[] = [];
     for (const tool of covered) {
-      const actions = realActionEnum(tool);
+      const actions = toolActionEnum(tool);
       if (!actions) continue; // whole-tool surface with no `action` enum
       enumerated.push(tool);
       const classified = explicitlyClassifiedActions(tool);
@@ -180,7 +160,7 @@ describe('tier-3 approval scope classification', () => {
   });
 
   it('exposes both enum sources for every enumerated tool', () => {
-    // The union in realActionEnum() is only a real guard while BOTH sources
+    // The union in toolActionEnum() is only a real guard while BOTH sources
     // still reflect. If one silently returns nothing, the union quietly shrinks
     // and a new action in that source stops failing CI.
     for (const tool of ['manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {

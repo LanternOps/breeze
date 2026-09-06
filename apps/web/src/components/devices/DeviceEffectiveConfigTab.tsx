@@ -17,6 +17,7 @@ import {
   Activity,
   Usb,
   Wrench,
+  Trash2,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -122,6 +123,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   helper: { label: "Breeze Assist", Icon: LifeBuoy },
   onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
   vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
+  device_lifecycle: { label: "Device Lifecycle", Icon: Trash2 },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the

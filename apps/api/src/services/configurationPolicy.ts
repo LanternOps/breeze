@@ -41,6 +41,7 @@ import {
   alertRuleInlineSettingsSchema,
   backupExcludePatternsSchema,
   configFeatureInlineSettingsSchema,
+  deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -106,6 +107,10 @@ export const pamInlineSettingsSchema = z
     uacInterceptionEnabled: z.boolean().optional(),
   })
   .strict();
+
+// Re-exported so routes/configurationPolicies/featureLinks.ts validates against
+// the SAME schema the service backstop uses (mirrors pamInlineSettingsSchema).
+export { deviceLifecycleInlineSettingsSchema };
 
 // Vulnerability scanning is a single opt-in toggle (BE-16 correlation gating).
 // `enabled` defaults to false so an absent/empty settings object means "off" —
@@ -799,6 +804,7 @@ async function decomposeInlineSettings(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -907,6 +913,7 @@ async function deleteNormalizedRows(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -1150,6 +1157,7 @@ async function assembleInlineSettings(
     case 'helper':
     case 'pam':
     case 'vulnerability':
+    case 'device_lifecycle':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -1219,6 +1227,10 @@ export async function addFeatureLink(
 
   if (featureType === 'vulnerability' && inlineSettings !== undefined && inlineSettings !== null) {
     vulnerabilityInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'device_lifecycle' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
   }
 
   // Service-level backstop for callers that bypass the HTTP route's validation
@@ -1315,6 +1327,10 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
@@ -2340,9 +2356,16 @@ export async function validateFeaturePolicyExists(
     featureType === 'monitoring' ||
     featureType === 'event_log' ||
     featureType === 'onedrive_helper' ||
-    featureType === 'vulnerability'
+    featureType === 'vulnerability' ||
+    featureType === 'device_lifecycle'
   ) {
-    // Monitoring, event_log, onedrive_helper, vulnerability have no policy table — requires inlineSettings
+    // These have no policy table — they require inlineSettings.
+    //
+    // Being absent from this list is NOT a harmless omission: the fall-through
+    // below accepts any id that happens to name a configuration policy in the
+    // same org (whole-policy linking), so the write proceeds and the
+    // `config_policy_feature_links_reference_integrity` trigger rejects it —
+    // a 500 where the caller should have got a 400 naming the mistake.
     if (featurePolicyId) {
       return { valid: false, error: `${featureType} feature type does not support featurePolicyId; use inlineSettings instead` };
     }

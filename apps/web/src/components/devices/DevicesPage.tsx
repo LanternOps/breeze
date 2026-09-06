@@ -14,6 +14,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
@@ -112,17 +113,27 @@ function summarizeFailedDevices(names: string[]): string {
 // ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+//
+// #5023: `permanent-delete` belongs here for a stronger reason than any of the
+// others. Bulk purge has always made the operator type the device count
+// (BulkPurgeDialog), while the single row/card kebab fired the same
+// irreversible operation on one click — and unlike `decommission` there is no
+// Restore afterwards. The 5s undo toast is not a substitute for a gate: it
+// starts a countdown the operator has to NOTICE to stop.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete']);
 
 // ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
 // caution-triangle), so the grading has to match the detail page rather than
 // drift from it: DeviceActions.tsx marks shutdown and decommission
 // `destructive` and every other confirm `warning`.
-const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete']);
 
-// The command name is snake_case; the locale keys are camelCase.
-const confirmKeyFor = (action: string): string =>
-  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+// The command name is snake_case / kebab-case; the locale keys are camelCase.
+const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
+  reboot_safe_mode: 'rebootSafeMode',
+  'permanent-delete': 'permanentDelete',
+};
+const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
@@ -174,6 +185,12 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
+  // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
+  // (#import-definitions / #import-values) internally, so this only tracks
+  // whether either of those hashes means the wizard is open at all.
+  const [showRmmImport, setShowRmmImport] = useHashState<boolean>(false, (h) =>
+    h === 'import-definitions' || h === 'import-values' ? true : undefined,
+  );
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   // Non-null = MaintenanceModeDialog is open for exactly these devices. Holding
   // the SET (not just a flag) is what lets the completion handler name the
@@ -239,7 +256,15 @@ export default function DevicesPage() {
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.
-  const { ids: advancedFilterIds, loading: advancedFilterLoading, error: advancedFilterError } = useAdvancedFilterIds(advancedFilter);
+  const {
+    ids: advancedFilterIds,
+    loading: advancedFilterLoading,
+    error: advancedFilterError,
+    // #5023: the resolution is keyed on the FILTER, so it never notices that a
+    // mutation changed a filtered attribute. Every post-mutation refresh below
+    // goes through `refreshDevices`, which re-resolves the id set as well.
+    refetch: refetchAdvancedFilterIds,
+  } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -636,6 +661,28 @@ export default function DevicesPage() {
     }
   }, [t]);
 
+  /**
+   * The post-change refresh — use this, not `fetchDevices`, anywhere something
+   * has just altered the fleet (#5023).
+   *
+   * An advanced filter is resolved SERVER-side into an id set
+   * (`serverFilterIds`), and that resolution is keyed on the filter alone, so
+   * refreshing the device rows on their own leaves the id set describing the
+   * fleet as it was BEFORE the mutation. Restoring a device inside a "Status is
+   * Removed" filter is the reported case: the row came back with a stale count
+   * and only a full page reload cleared it. The same staleness applies to every
+   * mutation that touches a filtered attribute, which is why the pairing lives
+   * here once rather than at each call site.
+   *
+   * The mount effect below deliberately keeps calling `fetchDevices` directly:
+   * the hook resolves the filter itself on mount, so going through here would
+   * just fire a second, redundant /filters/preview.
+   */
+  const refreshDevices = useCallback(async () => {
+    await fetchDevices();
+    refetchAdvancedFilterIds();
+  }, [fetchDevices, refetchAdvancedFilterIds]);
+
   useEffect(() => {
     // Org context not usable for scoping yet (#4147). A request now would go
     // out unscoped: `loading` is the sub-second window before the shell's
@@ -652,8 +699,8 @@ export default function DevicesPage() {
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
     setAutoSelectGroupId(newGroupId);
-    await fetchDevices();
-  }, [fetchDevices]);
+    await refreshDevices();
+  }, [refreshDevices]);
 
   const handleAutoSelectConsumed = useCallback(() => {
     setAutoSelectGroupId(null);
@@ -694,9 +741,11 @@ export default function DevicesPage() {
       // fleet-wide list on screen. Nothing is lost by skipping: the mount
       // effect fetches as soon as the scope resolves.
       if (orgScopeResolving || orgContextFailed) return;
-      fetchDevices();
+      // An enrol/decommission changes `status`, which is a filterable
+      // attribute — refresh the resolved id set with the rows (#5023).
+      void refreshDevices();
     }
-  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
+  }, [refreshDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
@@ -872,7 +921,7 @@ export default function DevicesPage() {
               .then(async (outcome) => {
                 if (outcome === 'online') {
                   showToast({ type: 'success', message: t('devicesPage.toasts.deviceOnline', { hostname }) });
-                  await fetchDevices();
+                  await refreshDevices();
                 } else if (outcome === 'timeout') {
                   showToast({
                     type: 'error',
@@ -919,7 +968,7 @@ export default function DevicesPage() {
           });
           // Refetch rather than assume: exit returns the device to its REAL
           // liveness state, never a blind 'online'.
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'deploy-software':
@@ -960,7 +1009,7 @@ export default function DevicesPage() {
             try {
               await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({ type: 'success', message: t('devicesPage.toasts.decommissioned', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.decommissionFailed', { hostname: device.hostname }) });
             }
@@ -971,7 +1020,7 @@ export default function DevicesPage() {
         case 'restore':
           await restoreDevice(device.id);
           showToast({ type: 'success', message: t('devicesPage.toasts.restored', { hostname: device.hostname }) });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'permanent-delete': {
@@ -993,7 +1042,7 @@ export default function DevicesPage() {
               // No warning branch: the API returns `{ success: true }` and
               // nothing else since #2787 (see permanentDeleteDevice).
               showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
             }
@@ -1025,7 +1074,7 @@ export default function DevicesPage() {
         message: `Linked ${targets.length - 1} guest VM${targets.length - 1 === 1 ? '' : 's'} under ${host?.displayName || host?.hostname || 'the host server'}.`,
       });
       setVmHostPickerDevices(null);
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to link devices' });
     } finally {
@@ -1232,7 +1281,7 @@ export default function DevicesPage() {
             type: 'success',
             message: t('devicesPage.toasts.multibootLinked', { count: deviceCount }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1309,7 +1358,7 @@ export default function DevicesPage() {
           } else {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1341,7 +1390,7 @@ export default function DevicesPage() {
           if (dispatched > 0) {
             showToast({ type: 'warning', message: t('devicesPage.toasts.bulkRestoreUninstallAlreadySent', { count: dispatched }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1457,7 +1506,7 @@ export default function DevicesPage() {
               : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
           });
         }
-        await fetchDevices();
+        await refreshDevices();
         return;
       }
 
@@ -1471,13 +1520,13 @@ export default function DevicesPage() {
         });
         // The job may have deleted some devices before failing, so the list is
         // stale either way.
-        await fetchDevices();
+        await refreshDevices();
         return;
       }
 
       scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
     },
-    [fetchDevices, stopPurgePolling, t],
+    [refreshDevices, stopPurgePolling, t],
   );
 
   const runBulkPurge = async (targets: Device[]) => {
@@ -1542,7 +1591,7 @@ export default function DevicesPage() {
           }),
         });
       }
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'decommission' }) });
     } finally {
@@ -1618,7 +1667,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={() => void fetchDevices()}
+            onClick={() => void refreshDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             {t('devicesPage.tryAgain')}
@@ -1662,6 +1711,17 @@ export default function DevicesPage() {
               <Grid className="h-4 w-4" />
             </button>
           </div>
+          <button
+            type="button"
+            data-testid="devices-page-import-rmm"
+            onClick={() => {
+              window.location.hash = 'import-definitions';
+              setShowRmmImport(true);
+            }}
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+          >
+            {t('devicesPage.importFromRmm')}
+          </button>
           <button
             type="button"
             onClick={() => setShowAddDevice(true)}
@@ -1802,6 +1862,16 @@ export default function DevicesPage() {
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
 
+      {showRmmImport && (
+        <RmmCustomFieldImport
+          organizationId={orgScope.status === 'resolved' && orgScope.scope !== 'all' ? orgScope.orgId : null}
+          onClose={() => {
+            window.location.hash = '';
+            setShowRmmImport(false);
+          }}
+        />
+      )}
+
       <CreateGroupModal
         isOpen={showCreateGroup}
         onClose={() => setShowCreateGroup(false)}
@@ -1940,7 +2010,14 @@ export default function DevicesPage() {
             setPendingDeviceAction(null);
             void runDeviceAction(p.action, p.device);
           }}
-          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`)}
+          // The hostname is interpolated into the TITLE as well as the message
+          // (#5023): permanentDelete names the device up front — "Delete
+          // {{hostname}} permanently?" — because that is the last thing the
+          // operator reads before an irreversible delete. A no-op for the
+          // existing keys, whose titles carry no placeholder.
+          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`, {
+            hostname: pendingDeviceAction.device.hostname,
+          })}
           message={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.message`, {
             hostname: pendingDeviceAction.device.hostname,
           })}
@@ -1984,7 +2061,7 @@ export default function DevicesPage() {
           device={settingsDevice}
           isOpen={!!settingsDevice}
           onClose={() => setSettingsDevice(null)}
-          onSaved={fetchDevices}
+          onSaved={refreshDevices}
           onAction={handleDeviceAction}
         />
       )}

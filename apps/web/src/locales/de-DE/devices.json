@@ -194,6 +194,11 @@
         "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
         "confirm": "Entfernen"
       },
+      "permanentDelete": {
+        "title": "{{hostname}} endgültig löschen?",
+        "message": "Damit wird der gesamte Verlauf dieses Geräts gelöscht — Tickets, Alarme, Patch- und Backup-Datensätze. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Endgültig löschen"
+      },
       "clearSessions": {
         "title": "Sitzungen beenden",
         "message": "Alle aktiven Remote-Sitzungen für {{hostname}} beenden? Dadurch werden alle derzeit über Terminal, Desktop oder Dateiübertragung verbundenen Benutzer getrennt.",
@@ -1802,6 +1807,7 @@
       "shutdown": "Herunterfahren"
     },
     "addDevice": "Gerät hinzufügen",
+    "importFromRmm": "Von einer anderen RMM importieren",
     "bulkPurge": {
       "andMore": "und {{count}} weitere",
       "confirm": "Endgültig löschen",
@@ -2449,5 +2455,160 @@
     "failed": "Agent-Deinstallation fehlgeschlagen",
     "cancelled": "Agent-Deinstallation abgebrochen",
     "none": "Agent wurde installiert gelassen"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Aus einer anderen RMM importieren",
+    "description": "Übertragen Sie benutzerdefinierte Felder und deren Werte aus Ihrer bisherigen RMM.",
+    "close": "Schließen",
+    "sourceLabel": "Quelle",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Allgemeine CSV-Datei"
+    },
+    "steps": {
+      "definitions": "Feld-Definitionen",
+      "values": "Gerätewerte"
+    },
+    "backToDefinitions": "Zurück zu den Feld-Definitionen"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "CSV-Datei mit der Feldliste Ihres bisherigen Anbieters hier ablegen oder klicken zum Durchsuchen",
+    "errors": {
+      "previewFailed": "Vorschau dieser Felddefinitionen fehlgeschlagen",
+      "importFailed": "Import dieser Felddefinitionen fehlgeschlagen",
+      "allRefused": "Keine dieser Felddefinitionen konnte importiert werden — siehe die Fehler unten"
+    },
+    "ownerScope": {
+      "legend": "Wem gehören diese Felder",
+      "allOrganizations": "Alle Organisationen",
+      "thisOrganizationOnly": "Nur diese Organisation"
+    },
+    "grid": {
+      "heading": "{{count}} Feld gefunden — jedes umbenennen und typisieren",
+      "heading_other": "{{count}} Felder gefunden — jedes umbenennen und typisieren",
+      "sourceLabel": "Quellfeld",
+      "name": "Name",
+      "type": "Typ"
+    },
+    "actions": {
+      "preview": "Vorschau",
+      "previewing": "Vorschau wird geladen…",
+      "import": "Felder erstellen",
+      "importing": "Wird erstellt…",
+      "skipToValues": "Überspringen — weiter zu den Werten"
+    },
+    "preview": {
+      "heading": "Vorschau"
+    },
+    "annotations": {
+      "create": "Wird erstellt",
+      "already-exists": "Bereits vorhanden",
+      "type-conflict": "Typkonflikt",
+      "key-shadowed": "Schlüssel bereits im anderen Bereich verwendet",
+      "org-not-found": "Organisation nicht gefunden",
+      "partner-wide-denied": "Sie dürfen keine organisationsübergreifenden Felder erstellen"
+    },
+    "summary": "{{created}} erstellt, {{skipped}} übersprungen, {{failed}} fehlgeschlagen"
+  },
+  "customFieldValueImport": {
+    "dropzone": "CSV-Datei mit Gerätewerten hier ablegen oder klicken zum Durchsuchen",
+    "errors": {
+      "previewFailed": "Vorschau dieser Werte fehlgeschlagen",
+      "importFailed": "Import dieser Werte fehlgeschlagen"
+    },
+    "mode": {
+      "label": "Wenn ein Wert bereits gesetzt ist",
+      "skip": "Unverändert lassen",
+      "update": "Überschreiben"
+    },
+    "dateFormat": {
+      "label": "Datumsformat",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Herstellerseitige Garantiedaten überschreiben",
+    "mapping": {
+      "ignore": "Diese Spalte ignorieren",
+      "identifierGroup": "Gerät zuordnen nach…",
+      "identifiers": {
+        "deviceId": "Geräte-ID",
+        "externalSystem": "Quellsystem",
+        "externalId": "Quellgeräte-ID",
+        "serialNumber": "Seriennummer",
+        "hostname": "Hostname",
+        "organizationId": "Organisations-ID"
+      },
+      "customField": "Benutzerdefiniertes Feld…",
+      "warrantyGroup": "Garantie",
+      "warranty": {
+        "warrantyStartDate": "Garantiebeginn",
+        "warrantyEndDate": "Garantieende",
+        "manufacturer": "Hersteller"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} Zeile übersprungen — keine Kennung oder kein Wert zugeordnet",
+      "droppedRows_other": "{{count}} Zeilen übersprungen — keine Kennung oder kein Wert zugeordnet"
+    },
+    "actions": {
+      "preview": "{{count}} Zeile in der Vorschau anzeigen",
+      "preview_other": "{{count}} Zeilen in der Vorschau anzeigen",
+      "previewing": "Vorschau wird geladen…",
+      "import": "{{count}} Zeile importieren",
+      "import_other": "{{count}} Zeilen importieren",
+      "importing": "Wird importiert…"
+    },
+    "chunkedNotice": "Diese Datei ist größer als eine Anfrage — sie wird automatisch in Teilen gesendet.",
+    "progress": "Teil {{done}} von {{total}}",
+    "summary": "{{applied}} angewendet, {{skipped}} übersprungen, {{failed}} fehlgeschlagene Werte",
+    "notAttempted": "{{count}} Zeile wurde nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "notAttempted_other": "{{count}} Zeilen wurden nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "errorRow": "Zeile {{index}}",
+    "previewStale": "Die Zuordnung hat sich seit dieser Vorschau geändert — führen Sie die Vorschau erneut aus, bevor Sie importieren"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Alle auswählen",
+    "unresolved": "Nicht aufgelöst",
+    "columns": {
+      "device": "Gerät",
+      "status": "Status",
+      "values": "Werte"
+    },
+    "rowOutcomes": {
+      "matched": "Zugeordnet",
+      "linkMatch": "Verknüpft",
+      "ambiguous": "Mehrdeutig",
+      "notFound": "Nicht gefunden",
+      "orgNotFound": "Organisation nicht gefunden",
+      "identityConflict": "Widersprüchliche Zuordnung"
+    },
+    "valueOutcomes": {
+      "applied": "Angewendet",
+      "skippedAlreadySet": "Bereits gesetzt",
+      "skippedProviderOwned": "Vom Anbieter verwaltet",
+      "noDefinition": "Kein solches Feld",
+      "typeError": "Typfehler",
+      "notApplicable": "Nicht zutreffend für dieses Gerät",
+      "deviceUnresolved": "Gerät nicht aufgelöst"
+    },
+    "hideCandidates": "Kandidaten ausblenden",
+    "showCandidates": "{{count}} Kandidat anzeigen",
+    "showCandidates_other": "{{count}} Kandidaten anzeigen",
+    "picked": "{{deviceId}} ausgewählt",
+    "candidate": {
+      "serial": "Seriennummer: {{value}}",
+      "os": "Betriebssystem: {{value}}",
+      "enrolled": "Registriert: {{value}}",
+      "lastSeen": "Zuletzt gesehen: {{value}}",
+      "pick": "Auswählen",
+      "picked": "Ausgewählt"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Garantiebeginn",
+      "warrantyEndDate": "Garantieende",
+      "manufacturer": "Hersteller"
+    },
+    "identityConflictNote": "Die Kennungen dieser Zeile verweisen auf unterschiedliche Geräte und können so nicht importiert werden — korrigieren Sie die Datei und führen Sie die Vorschau erneut aus. Die unten aufgeführten Kandidaten dienen nur zur Information."
   }
 }

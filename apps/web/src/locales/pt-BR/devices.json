@@ -194,6 +194,11 @@
         "message": "Tem certeza de que deseja remover {{hostname}}? Isso o tirará da sua frota ativa e ele deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
         "confirm": "Remover"
       },
+      "permanentDelete": {
+        "title": "Excluir {{hostname}} permanentemente?",
+        "message": "Isso exclui todo o histórico deste dispositivo: chamados, alertas e registros de patches e backups. Não é possível desfazer.",
+        "confirm": "Excluir permanentemente"
+      },
       "clearSessions": {
         "title": "Encerrar sessões",
         "message": "Encerrar todas as sessões remotas ativas de {{hostname}}? Isso desconectará todos os usuários conectados por terminal, desktop ou transferência de arquivos.",
@@ -1894,7 +1899,8 @@
     "unknownDevice": "Desconhecido",
     "unknownOrg": "Organização desconhecida",
     "unknownSite": "Site desconhecido",
-    "viewInstallationGuide": "Ver guia de instalação"
+    "viewInstallationGuide": "Ver guia de instalação",
+    "importFromRmm": "Importar de outro RMM"
   },
   "filterAddDropdown": {
     "addFilter": "Adicionar filtro",
@@ -2449,5 +2455,160 @@
     "failed": "Falha na desinstalação do agente",
     "cancelled": "Desinstalação do agente cancelada",
     "none": "O agente foi deixado instalado"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Importar de outro RMM",
+    "description": "Traga os campos personalizados e seus valores do seu RMM anterior.",
+    "close": "Fechar",
+    "sourceLabel": "Origem",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "CSV genérico"
+    },
+    "steps": {
+      "definitions": "Definições de campos",
+      "values": "Valores dos dispositivos"
+    },
+    "backToDefinitions": "Voltar às definições de campos"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Solte aqui um CSV com a lista de campos do seu fornecedor anterior, ou clique para procurar",
+    "errors": {
+      "previewFailed": "Não foi possível visualizar essas definições de campo",
+      "importFailed": "Não foi possível importar essas definições de campo",
+      "allRefused": "Nenhuma dessas definições de campo pôde ser importada — veja os erros abaixo"
+    },
+    "ownerScope": {
+      "legend": "A quem pertencem estes campos",
+      "allOrganizations": "Todas as organizações",
+      "thisOrganizationOnly": "Somente esta organização"
+    },
+    "grid": {
+      "heading": "{{count}} campo encontrado — renomeie e defina o tipo de cada um",
+      "heading_other": "{{count}} campos encontrados — renomeie e defina o tipo de cada um",
+      "sourceLabel": "Campo de origem",
+      "name": "Nome",
+      "type": "Tipo"
+    },
+    "actions": {
+      "preview": "Pré-visualizar",
+      "previewing": "Pré-visualizando…",
+      "import": "Criar campos",
+      "importing": "Criando…",
+      "skipToValues": "Pular — continuar para os valores"
+    },
+    "preview": {
+      "heading": "Pré-visualização"
+    },
+    "annotations": {
+      "create": "Será criado",
+      "already-exists": "Já existe",
+      "type-conflict": "Conflito de tipo",
+      "key-shadowed": "Chave já usada no outro escopo",
+      "org-not-found": "Organização não encontrada",
+      "partner-wide-denied": "Você não pode criar campos para todas as organizações"
+    },
+    "summary": "{{created}} criados, {{skipped}} ignorados, {{failed}} com falha"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Solte aqui um CSV com os valores dos dispositivos, ou clique para procurar",
+    "errors": {
+      "previewFailed": "Não foi possível visualizar esses valores",
+      "importFailed": "Não foi possível importar esses valores"
+    },
+    "mode": {
+      "label": "Quando um valor já está definido",
+      "skip": "Deixar como está",
+      "update": "Substituir"
+    },
+    "dateFormat": {
+      "label": "Formato de data",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Substituir os dados de garantia do fabricante",
+    "mapping": {
+      "ignore": "Ignorar esta coluna",
+      "identifierGroup": "Corresponder dispositivo por…",
+      "identifiers": {
+        "deviceId": "ID do dispositivo",
+        "externalSystem": "Sistema de origem",
+        "externalId": "ID do dispositivo na origem",
+        "serialNumber": "Número de série",
+        "hostname": "Nome do host",
+        "organizationId": "ID da organização"
+      },
+      "customField": "Campo personalizado…",
+      "warrantyGroup": "Garantia",
+      "warranty": {
+        "warrantyStartDate": "Data de início da garantia",
+        "warrantyEndDate": "Data de término da garantia",
+        "manufacturer": "Fabricante"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} linha ignorada — nenhum identificador ou valor mapeado",
+      "droppedRows_other": "{{count}} linhas ignoradas — nenhum identificador ou valor mapeado"
+    },
+    "actions": {
+      "preview": "Pré-visualizar {{count}} linha",
+      "preview_other": "Pré-visualizar {{count}} linhas",
+      "previewing": "Pré-visualizando…",
+      "import": "Importar {{count}} linha",
+      "import_other": "Importar {{count}} linhas",
+      "importing": "Importando…"
+    },
+    "chunkedNotice": "Este arquivo é maior do que uma única solicitação — será enviado automaticamente em partes.",
+    "progress": "Parte {{done}} de {{total}}",
+    "summary": "{{applied}} aplicados, {{skipped}} ignorados, {{failed}} valores com falha",
+    "notAttempted": "{{count}} linha não foi tentada porque uma parte anterior falhou — corrija o erro abaixo e execute novamente a importação para as linhas restantes",
+    "notAttempted_other": "{{count}} linhas não foram tentadas porque uma parte anterior falhou — corrija o erro abaixo e execute novamente a importação para as linhas restantes",
+    "errorRow": "Linha {{index}}",
+    "previewStale": "O mapeamento mudou desde esta pré-visualização — execute a pré-visualização novamente antes de importar"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Selecionar tudo",
+    "unresolved": "Não resolvido",
+    "columns": {
+      "device": "Dispositivo",
+      "status": "Status",
+      "values": "Valores"
+    },
+    "rowOutcomes": {
+      "matched": "Correspondido",
+      "linkMatch": "Vinculado",
+      "ambiguous": "Ambíguo",
+      "notFound": "Não encontrado",
+      "orgNotFound": "Organização não encontrada",
+      "identityConflict": "Correspondência conflitante"
+    },
+    "valueOutcomes": {
+      "applied": "Aplicado",
+      "skippedAlreadySet": "Já definido",
+      "skippedProviderOwned": "Gerenciado pelo provedor",
+      "noDefinition": "Campo inexistente",
+      "typeError": "Erro de tipo",
+      "notApplicable": "Não aplicável a este dispositivo",
+      "deviceUnresolved": "Dispositivo não resolvido"
+    },
+    "hideCandidates": "Ocultar candidatos",
+    "showCandidates": "Mostrar {{count}} candidato",
+    "showCandidates_other": "Mostrar {{count}} candidatos",
+    "picked": "{{deviceId}} selecionado",
+    "candidate": {
+      "serial": "Série: {{value}}",
+      "os": "SO: {{value}}",
+      "enrolled": "Registrado: {{value}}",
+      "lastSeen": "Visto pela última vez: {{value}}",
+      "pick": "Selecionar",
+      "picked": "Selecionado"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Data de início da garantia",
+      "warrantyEndDate": "Data de término da garantia",
+      "manufacturer": "Fabricante"
+    },
+    "identityConflictNote": "Os identificadores desta linha apontam para dispositivos diferentes e não podem ser importados como estão — corrija o arquivo e execute a pré-visualização novamente. Os candidatos abaixo são mostrados apenas como referência."
   }
 }

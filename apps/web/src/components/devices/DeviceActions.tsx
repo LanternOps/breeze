@@ -104,6 +104,13 @@ function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
  */
 export interface DeviceActionOptions {
   uninstallAgent?: boolean;
+  /**
+   * Set by a page-owned confirm dialog to mean "this already passed a gate,
+   * execute it" (#5023). Never sent by an action trigger — a handler keying on
+   * its absence is therefore gated for every present and future caller, which
+   * is the same guarantee `uninstallAgent`'s absence gives Remove.
+   */
+  confirmed?: boolean;
 }
 
 type DeviceActionsProps = {

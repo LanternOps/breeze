@@ -131,6 +131,13 @@ export interface CustomFieldValueWrite {
   value: string | number | boolean | null;
 }
 
+/**
+ * Whatever issues the upsert: the ambient `db` proxy by default, or a nested
+ * transaction handle for a caller that needs per-row failure isolation. See the
+ * `executor` note on `persistDeviceCustomFieldValues`.
+ */
+export type CustomFieldValueExecutor = Pick<typeof db, 'insert'>;
+
 /** The four typed columns; exactly one non-null, or all null for a clear. */
 export interface CustomFieldValueColumns {
   valueText: string | null;
@@ -201,18 +208,30 @@ export function valueColumnsFor(
  * every row again — WAL and a row lock per device — which is the exact cost this
  * comparison exists to avoid. Provenance is informational; the write amplification
  * is not. Do not "fix" this without that trade in front of you.
+ *
+ * `executor` defaults to the ambient `db` proxy, which is what every request
+ * path wants. The RMM value importer (#3257 W08) passes the handle of its
+ * PER-ROW nested transaction instead: a statement issued on the ambient proxy
+ * from inside a nested transaction still resolves to the OUTER request
+ * transaction, so a failure is recorded against the outer postgres.js scope and
+ * poisons the whole request instead of rolling back to that row's savepoint
+ * (`dbSavepointErrorIsolation.integration.test.ts` is the proof). The parameter
+ * exists so the importer gets per-row failure isolation WITHOUT forking this
+ * upsert — the compare-before-write `setWhere` below is subtle and load-bearing,
+ * and a second copy of it would drift.
  */
 export async function persistDeviceCustomFieldValues(
   deviceId: string,
   orgId: string,
   writes: CustomFieldValueWrite[],
   source: 'manual' | 'api' | 'script' | 'import',
+  executor: CustomFieldValueExecutor = db,
 ): Promise<string[]> {
   if (writes.length === 0) return [];
   const changed: string[] = [];
   for (const write of writes) {
     const columns = valueColumnsFor(write.type, write.value);
-    const updated = await db
+    const updated = await executor
       .insert(deviceCustomFieldValues)
       .values({
         deviceId,

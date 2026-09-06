@@ -224,6 +224,13 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #2787 item 4 — WHEN this device was removed (status flipped to
+  // 'decommissioned'). NULL for every device that is not removed, and cleared
+  // again on Restore. `updated_at` cannot stand in for it: it moves on every
+  // unrelated write after removal, so a retention window built on it would
+  // silently extend itself. NULL on a decommissioned row means "removal time
+  // unknown" and the purge job treats that as NEVER PURGE (fail closed).
+  decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

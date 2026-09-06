@@ -666,6 +666,16 @@
         "configCheck": "config_check",
         "none": "yok"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Kaldırılan cihazları kalıcı olarak sil",
+        "offKeepRemovedDevicesUntilDeletedManually": "Kapalı — kaldırılan cihazlar biri onları elle silene kadar saklanır.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Çıkarılan cihazlar, çıkarılmalarından {{days}} gün sonra kalıcı olarak silinir.",
+        "permanentlyDeleteRemovedDevicesAfter": "Kaldırılan cihazları şu süreden sonra kalıcı olarak sil:",
+        "days": "gün",
+        "enterAWholeNumberOfDaysBetween": "1 ile 3650 arasında tam sayı olarak gün girin.",
+        "purgeIsIrreversibleAndDestroysHistory": "Silme geri alınamaz ve geçmişi yok eder",
+        "aDailyJobPermanentlyDeletesTheDevice": "Günlük çalışan bir görev, cihaz kaydını ve ona bağlı her şeyi — uyarılar, betikler, yamalar, günlükler ve envanter — kalıcı olarak siler. Aracı kaldırma işlemi hâlâ kuyrukta olan cihazlar, bu işlem tamamlanana kadar atlanır. En yakın ilke kazanır; böylece bir kuruluş, tüm kuruluşlar için tanımlanmış bir pencereden çıkmak üzere bunu kapatabilir."
+      },
       "eventLogTab": {
         "security": "Güvenlik",
         "hardware": "Donanım",

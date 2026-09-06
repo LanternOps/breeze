@@ -21,6 +21,7 @@ import {
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
@@ -52,9 +53,12 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
+import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
+import { buildAgentPreview } from '../services/aiAgents/agentPreview';
 import {
+  loadPartnerBaselineCeiling,
   loadPartnerBaselineKinds,
   resolveEffectiveAgent,
   resolveEffectiveAgentSystem,
@@ -207,10 +211,12 @@ export function mapError(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
   }
   // Wave 5 Part B (#3827): actAssets.supervisedActionKeys failed write-time
-  // registry validation (validateAuthorizationKeys, policyDecidable.ts).
-  // `rejected` names exactly which keys and why, same shape as `missing`
-  // above, so the client (Task 5's editor) can render an actionable message.
-  if (err instanceof InvalidSupervisedActionKeysError) {
+  // registry validation (validateAuthorizationKeys, policyDecidable.ts) —
+  // OR (Spec §4.4, Task 5, #5049) an org row tried to add a pre-authorized
+  // key outside the four-eyes grant executor. Both name exactly which keys
+  // and why via the same `rejected` shape, so the client (Task 5's editor)
+  // can render an actionable message either way.
+  if (err instanceof InvalidSupervisedActionKeysError || err instanceof SupervisedKeysGrantOnlyError) {
     return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {
@@ -401,6 +407,78 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * Task 4 (#5049): the capability picker's catalog — every agent-reachable
+ * tool, its capability grouping, and the per-kind presets. Derived once from
+ * the registry/TOOL_TIERS/checkGuardrails (agentToolCatalog.ts), not stored,
+ * so it never drifts from what an agent can actually reach. Cached briefly on
+ * the client — it changes only when a code deploy changes the registry.
+ */
+aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
+  c.header('Cache-Control', 'private, max-age=300');
+  return c.json({ data: buildAgentToolCatalog() });
+});
+
+/**
+ * Task 4 (#5049): the partner-wide baseline's tool ceiling for one `kind`,
+ * projected for the create/edit form so an org-scoped caller can see what a
+ * new org row would be capped to WITHOUT being able to read the partner row
+ * itself (`effectivePolicy.ts:341-350` — an org token carries a partnerId but
+ * never passes `breeze_has_partner_access`). A partner-scope caller gets the
+ * same projection when editing/creating an ORG-owned row for its own
+ * partner — a partner token CAN read its own partner rows directly, so this
+ * exposes nothing new; `loadPartnerBaselineCeiling` just saves it a second
+ * round trip. `null` for a system-scope session (nothing to project a
+ * ceiling onto), when the caller carries no `partnerId` at all (self-hosted),
+ * or when no live baseline exists for that kind yet.
+ */
+aiAgentsRoutes.get(
+  '/ceiling',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS) })),
+  async (c) => {
+    const auth = c.get('auth');
+    if (auth.scope === 'system' || !auth.partnerId) return c.json({ data: null });
+    const { kind } = c.req.valid('query');
+    return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
+  },
+);
+
+/**
+ * Task 11 (#5051), spec §4.6 step 4 — the guided create flow's review step
+ * evaluates a DRAFT policy server-side, through the same catalog/ceiling
+ * helpers `/tool-catalog` and `/ceiling` already expose, so the review card
+ * can never drift from what `POST /` would actually enforce. `body` is
+ * `previewAiAgentSchema` — `createAiAgentSchema` with `name` optional, since
+ * the review step can run before Step 1's name is finalised. No row is
+ * created or read; this never touches the database beyond the SAME
+ * partner-axis ceiling projection `/ceiling` performs, and only when the
+ * draft being previewed is ORG-owned (`ownerScope !== 'partner'`) — a
+ * partner-wide draft's own row IS the ceiling, so there is nothing to
+ * project onto it. This mirrors `/ceiling`'s own scope gate exactly: any
+ * non-system caller with a `partnerId` qualifies, including a partner-scope
+ * caller previewing an org-owned draft (e.g. creating a new org-scoped
+ * agent for one of its orgs) — that caller can read its own partner row
+ * directly, so projecting the ceiling exposes nothing new and just saves it
+ * a round trip, same rationale as `/ceiling`'s own docstring above. `null`
+ * for a system-scope session or a caller with no `partnerId` (self-hosted).
+ */
+aiAgentsRoutes.post(
+  '/preview',
+  scopes,
+  requireAiRead,
+  zValidator('json', previewAiAgentSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const ceiling = auth.scope !== 'system' && auth.partnerId && body.ownerScope !== 'partner'
+      ? await loadPartnerBaselineCeiling(auth.partnerId, body.kind)
+      : null;
+    return c.json({ data: buildAgentPreview(body, ceiling, buildAgentToolCatalog()) });
+  },
+);
 
 /**
  * Orgs per system-context transaction in the `byOrg` fan-out of

@@ -6,6 +6,7 @@ import DeviceDetails from "./DeviceDetails";
 import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
@@ -52,6 +53,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   // DeviceSettingsModal's Danger Zone button has no dialog at all, so the
   // page owes that caller one. Set = "asked, not yet answered".
   const [pendingRemove, setPendingRemove] = useState<Device | null>(null);
+  // #5023: same gate, for the one action that is worse than Remove. Every
+  // trigger on this page (kebab, settings Danger Zone) fired Delete
+  // permanently on a single click, straight into a 5-second undo toast, while
+  // the bulk version of the same operation makes the operator type the device
+  // count. Nothing is restorable afterwards, so it gets asked about first.
+  const [pendingPermanentDelete, setPendingPermanentDelete] =
+    useState<Device | null>(null);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
@@ -138,6 +146,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // columns (neither is in SENSITIVE_DEVICE_FIELDS).
         linkGroupId: data.linkGroupId ?? null,
         linkGroupRole: data.linkGroupRole ?? null,
+        // What became of the agent-uninstall a Remove queued (#3987 item 7) —
+        // the ONLY input to UninstallStateBadge, and the same dropped-field
+        // mode as the three fields above: the badge's `undefined` guard means
+        // omitting it here renders nothing at all, silently.
+        //
+        // `?? null` rather than a passthrough is load-bearing. On THIS payload
+        // an absent field means "this Remove queued no uninstall", which the
+        // badge reports as "left installed"; `undefined` means "this payload
+        // does not carry the field" (a device-list row) and says nothing. The
+        // detail endpoint always knows, so it must never hand the badge the
+        // list row's answer. See the component doc on UninstallStateBadge.
+        uninstall: data.uninstall ?? null,
         // RDS per-session helper mode (Task 12) — gates the session pickers
         // added in Tasks 13/14. Not in SENSITIVE_DEVICE_FIELDS, so the
         // detail endpoint's full-row spread already includes it.
@@ -263,6 +283,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     // gated by default; a caller that already asked is not asked twice.
     if (action === "decommission" && !opts) {
       setPendingRemove(device);
+      return;
+    }
+    // #5023, same shape: `confirmed` is set only by this page's own dialog, so
+    // any present or future Delete permanently trigger is gated by default.
+    if (action === "permanent-delete" && !opts?.confirmed) {
+      setPendingPermanentDelete(device);
       return;
     }
 
@@ -639,6 +665,31 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
             void handleAction("decommission", target, choice);
           }}
           confirmTestId="detail-remove-confirm"
+        />
+      )}
+      {/* #5023 — the purge-framed confirm, reusing the SAME
+          deviceActions.confirm.permanentDelete.* copy DevicesPage renders so
+          the two screens read identically. The undo toast still follows on
+          confirm; the dialog is what stops a single stray click from starting
+          the countdown at all. */}
+      {pendingPermanentDelete && (
+        <ConfirmDialog
+          open
+          onClose={() => setPendingPermanentDelete(null)}
+          onConfirm={() => {
+            const target = pendingPermanentDelete;
+            setPendingPermanentDelete(null);
+            void handleAction("permanent-delete", target, { confirmed: true });
+          }}
+          title={t("deviceActions.confirm.permanentDelete.title", {
+            hostname: pendingPermanentDelete.hostname,
+          })}
+          message={t("deviceActions.confirm.permanentDelete.message", {
+            hostname: pendingPermanentDelete.hostname,
+          })}
+          confirmLabel={t("deviceActions.confirm.permanentDelete.confirm")}
+          variant="destructive"
+          confirmTestId="detail-permanent-delete-confirm"
         />
       )}
       <ChangeSiteModal
