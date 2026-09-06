@@ -53,6 +53,8 @@ vi.mock('../../services/deviceActions', () => ({
   wakeFriendlyErrorMessage: vi.fn(() => null),
   linkDevicesMultiboot: vi.fn(),
   linkDevicesVmHost: vi.fn(),
+  // #3987: RemoveDeviceDialog fetches the env-driven drain window on open.
+  fetchRemovalConfig: vi.fn(async () => ({ uninstallDrainWindowHours: 72 })),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -1368,6 +1370,10 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
 
+    // #3987: the skip gate hands off to the agent-choice dialog, which is what
+    // actually fires the batch.
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
+
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     // DEV_3 (already decommissioned) must NOT be re-submitted — that's the
     // doomed request the API 400s. DEV_2 (offline) IS a legitimate target:
@@ -1417,6 +1423,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     await renderMixedFleet([DEV_1, DEV_2]);
 
     fireEvent.click(screen.getByTestId('bulk-decommission'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     await waitFor(() => {
@@ -1665,13 +1672,14 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     expect(decommissionDevice).not.toHaveBeenCalled();
     expect(await toastTypes()).not.toContain('undo');
 
-    // The SAME keys DeviceActions.tsx renders — proving no new copy was needed
-    // and that the two screens still read identically. The VALUES moved to
-    // "Remove" in #3987/#3994 (the action id stayed `decommission`); asserting
-    // the rendered text is what makes a future divergence between the two
-    // screens visible here, so these track the copy deliberately.
-    expect(await screen.findByText('Remove Device')).toBeTruthy();
-    expect(screen.getByText(/remove host-alpha\?/i)).toBeTruthy();
+    // The SAME component DeviceActions.tsx renders — RemoveDeviceDialog
+    // (#3987) — proving the two screens still read identically. The generic
+    // deviceActions.confirm.decommission.* copy this used to assert was
+    // replaced by the dialog's own removeDialog.* block, which asks the agent
+    // question instead of just "are you sure?"; asserting the rendered text is
+    // what makes a future divergence between the two screens visible here.
+    expect(await screen.findByText('Remove host-alpha?')).toBeTruthy();
+    expect(screen.getByTestId('remove-choice-uninstall')).toBeChecked();
 
     const confirmBtn = await screen.findByTestId('confirm-device-action');
     expect(confirmBtn.textContent).toBe('Remove');
@@ -1721,7 +1729,9 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     }
 
     expect(decommissionDevice).toHaveBeenCalledTimes(1);
-    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1);
+    // #3987: uninstall is the web's default answer, so an untouched dialog
+    // still queues the agent teardown.
+    expect(decommissionDevice).toHaveBeenCalledWith(DEV_1, { uninstallAgent: true });
   });
 
   // The gate lives on the shared handleDeviceAction, so the grid card inherits
@@ -1742,7 +1752,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
     fireEvent.click(await screen.findByTestId(`card-decommission-${DEV_1}`));
 
     expect(decommissionDevice).not.toHaveBeenCalled();
-    expect(await screen.findByText('Remove Device')).toBeTruthy();
+    expect(await screen.findByText('Remove host-alpha?')).toBeTruthy();
   });
 
   // Deliberate scope boundary (#4009): `restore` is the UNDO of a decommission.
@@ -2011,12 +2021,17 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
     await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
   }
 
-  it('decommissions every offline device — no gate, no confirm', async () => {
+  it('decommissions every offline device — no skip gate', async () => {
     const { bulkDecommissionDevices } = await import('../../services/deviceActions');
     vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    // #3987: the agent-choice dialog is NOT the #2465 skip gate — it asks what
+    // to do with the agent, it does not drop devices from the batch. The
+    // exemption this test pins is the absence of `confirm-decommissioned-skip`.
+    fireEvent.click(await screen.findByTestId('confirm-bulk-remove'));
 
     await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
@@ -2216,5 +2231,98 @@ describe('DevicesPage — permanent delete surfaces the API warning (#4368)', ()
         message: expect.stringContaining('host-alpha'),
       }),
     );
+  });
+});
+
+// #3987 items 2 + 6: every Remove surface asks what should happen to the agent
+// and forwards the answer to the API. Before this, the web issued a bodyless
+// DELETE, so `uninstallAgent` defaulted to false server-side and every removed
+// machine kept a zombie agent heartbeating into a 403.
+describe('DevicesPage — Remove asks about the agent (#3987)', () => {
+  it('single Remove from the row kebab defaults to uninstall and sends uninstallAgent: true', async () => {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue({ success: true } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+
+    const uninstallRadio = await screen.findByTestId('remove-choice-uninstall');
+    expect(uninstallRadio).toBeChecked();
+
+    // Only setTimeout is faked — the 5s undo window is a plain timer inside
+    // runDeviceAction (see the #4009 describe above for why not Date).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-device-action'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(decommissionDevice)).toHaveBeenCalledWith(DEV_1, { uninstallAgent: true }),
+    );
+  });
+
+  it('single Remove forwards uninstallAgent: false when the operator leaves the agent', async () => {
+    const { decommissionDevice } = await import('../../services/deviceActions');
+    vi.mocked(decommissionDevice).mockResolvedValue({ success: true } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+    } as never);
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-decommission-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('remove-choice-leave'));
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-device-action'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(vi.mocked(decommissionDevice)).toHaveBeenCalledWith(DEV_1, { uninstallAgent: false }),
+    );
+  });
+
+  it('bulk Remove asks once and forwards the one choice to bulkDecommissionDevices', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ succeeded: 2, failed: [] } as never);
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'online' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+      ],
+    } as never);
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    // One dialog for the whole selection, bucketed online vs not-currently-online.
+    expect(await screen.findByText('Remove 2 devices?')).toBeTruthy();
+    expect(screen.getByTestId('remove-dialog-summary').textContent)
+      .toBe('1 online, 1 not currently online.');
+    expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('remove-choice-leave'));
+    fireEvent.click(screen.getByTestId('confirm-bulk-remove'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(bulkDecommissionDevices).mock.calls[0][1]).toEqual({ uninstallAgent: false });
   });
 });
