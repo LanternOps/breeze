@@ -84,26 +84,48 @@ function parseActivityTimestamp(value: unknown): Date | null {
  * handled but not assumed: if it ever appears it maps to the distinct
  * `redirected` action rather than being silently counted as allowed traffic.
  */
-function mapVerdict(verdict: string | undefined): DnsAction {
-  if (!verdict) return 'allowed';
+function mapVerdict(verdict: string | undefined): DnsAction | null {
+  if (!verdict) return null;
   if (verdict.includes('block')) return 'blocked';
   if (verdict.includes('proxied') || verdict.includes('redirect')) return 'redirected';
-  return 'allowed';
+  if (verdict.includes('allow')) return 'allowed';
+  // Anything else is unrecognized. Returning 'allowed' here would relabel a
+  // possible detection as clean traffic and leave the dashboard looking
+  // healthy — strictly worse than dropping the record and counting it.
+  return null;
 }
 
 /**
- * Map one `data[]` record from the next-gen activity feed onto a `DnsEvent`.
- *
- * Returns `[]` for anything unusable so a single malformed record costs that
- * record, not the whole sync page.
+ * The outcome of mapping one record. A single bad record must never fail the
+ * whole page, but a dropped record is a lost security event, so the caller
+ * counts each reason rather than discarding it silently.
  */
-function mapActivityRecord(entry: unknown): DnsEvent[] {
+type MappedRecord =
+  | { kind: 'event'; event: DnsEvent }
+  /** Shape drift, or a verdict we refuse to guess at. */
+  | { kind: 'unparseable' }
+  /** A proxy/firewall/intrusion record from the combined feed. */
+  | { kind: 'non-dns' };
+
+/** Map one `data[]` record from the next-gen activity feed onto a `DnsEvent`. */
+function mapActivityRecord(entry: unknown): MappedRecord {
   const record = asRecord(entry);
-  if (!record) return [];
+  if (!record) return { kind: 'unparseable' };
+
+  // Defence in depth for the x-traffic-type header: a proxy record carries a
+  // domain and a timestamp too, so without this it would be ingested as a DNS
+  // event whenever the header is ignored. A record with NO discriminator is
+  // still kept — a strict check would blank the entire feed if Cisco ever
+  // dropped the field.
+  const recordType = asString(record.type)?.toLowerCase();
+  if (recordType && recordType !== 'dns') return { kind: 'non-dns' };
 
   const domain = asString(record.domain) ?? asLabels(record.domains)[0]?.label;
   const timestamp = parseActivityTimestamp(record.timestamp ?? record.datetime);
-  if (!domain || !timestamp) return [];
+  if (!domain || !timestamp) return { kind: 'unparseable' };
+
+  const action = mapVerdict(asString(record.verdict)?.toLowerCase());
+  if (!action) return { kind: 'unparseable' };
 
   const categories = asLabels(record.categories);
   const categoryLabels = categories.map((category) => category.label);
@@ -114,11 +136,11 @@ function mapActivityRecord(entry: unknown): DnsEvent[] {
     ?? asLabels(record.policycategories).find((category) => category.type === 'security')?.label
     ?? categoryLabels[0];
 
-  return [{
+  return { kind: 'event', event: {
     timestamp,
     domain,
     queryType: asString(record.querytype) ?? asString(record.query_type) ?? 'A',
-    action: mapVerdict(asString(record.verdict)?.toLowerCase()),
+    action,
     category: primaryCategory,
     threatType: asLabels(record.threats)[0]?.label ?? asString(record.threattype),
     sourceIp: asString(record.internalip) ?? asString(record.externalip) ?? asString(record.internal_ip),
@@ -132,7 +154,7 @@ function mapActivityRecord(entry: unknown): DnsEvent[] {
       categories: categoryLabels,
       verdict: asString(record.verdict)
     }
-  }];
+  } };
 }
 
 /**
@@ -256,6 +278,22 @@ export class UmbrellaProvider implements DnsProvider {
     const to = until.getTime();
     const from = Math.max(since.getTime(), to - UMBRELLA_MAX_WINDOW_MS);
     let offset = 0;
+    // Every record we fail to map is a lost security event. Counting them by
+    // reason keeps an upstream shape change — which would otherwise return []
+    // and be recorded as a healthy "success" sync — visible in the logs.
+    let skippedUnparseable = 0;
+    let skippedNonDns = 0;
+
+    if (from > since.getTime()) {
+      // The job advances `lastSync` to `until` on success, so the skipped
+      // stretch is never revisited — and it is not fetchable from this
+      // endpoint at all. Say so rather than narrowing the window mutely.
+      console.warn(
+        `[UmbrellaProvider] requested sync window exceeds Cisco's 30-day maximum; ` +
+        `clamped to ${new Date(from).toISOString()}..${new Date(to).toISOString()} — ` +
+        'earlier activity cannot be fetched from the reporting API.'
+      );
+    }
 
     for (let request = 0; request < maxRequests; request++) {
       const url = new URL(UMBRELLA_ACTIVITY_URL);
@@ -278,7 +316,12 @@ export class UmbrellaProvider implements DnsProvider {
       );
 
       const records = asArray(payload.data);
-      allEvents.push(...records.flatMap(mapActivityRecord));
+      for (const entry of records) {
+        const mapped = mapActivityRecord(entry);
+        if (mapped.kind === 'event') allEvents.push(mapped.event);
+        else if (mapped.kind === 'non-dns') skippedNonDns++;
+        else skippedUnparseable++;
+      }
 
       // An EMPTY page is the end of the collection — not a short one. Cisco
       // documents no maximum for `limit`, so a server-side cap below ours
@@ -287,6 +330,28 @@ export class UmbrellaProvider implements DnsProvider {
       // keeps the walk correct whatever page size the API decides to serve.
       if (records.length === 0) break;
       offset += records.length;
+
+      if (request === maxRequests - 1) {
+        // Budget exhausted with a full page still coming back: the remainder
+        // is not fetched, and the next run starts from `until`, so it is lost.
+        console.warn(
+          `[UmbrellaProvider] activity sync reached the ${maxRequests}-request cap with more ` +
+          'results available; some in-window events were not fetched this run.'
+        );
+      }
+    }
+
+    if (skippedUnparseable > 0) {
+      console.warn(
+        `[UmbrellaProvider] activity sync skipped ${skippedUnparseable} unparseable record(s) ` +
+        '(possible API shape drift, or an unrecognized verdict).'
+      );
+    }
+    if (skippedNonDns > 0) {
+      console.warn(
+        `[UmbrellaProvider] activity sync skipped ${skippedNonDns} non-DNS record(s); the ` +
+        'x-traffic-type: dns header did not scope the combined feed.'
+      );
     }
 
     return allEvents;

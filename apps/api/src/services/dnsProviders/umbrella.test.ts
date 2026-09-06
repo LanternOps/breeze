@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UmbrellaProvider } from './umbrella';
 import { DnsProviderHttpError, requestJson } from './http';
 
@@ -197,6 +197,20 @@ describe('UmbrellaProvider OAuth2 client-credentials auth (#3271)', () => {
 describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
   const ACTIVITY_URL = 'https://api.umbrella.com/reports/v2/activity';
 
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  function warnings(): string {
+    return warnSpy.mock.calls.map((call: unknown[]) => call.join(' ')).join('\n');
+  }
+
   function activityCalls() {
     return requestJsonMock.mock.calls.filter((call) => urlOf(call).startsWith(ACTIVITY_URL));
   }
@@ -213,6 +227,7 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
   /** One `data[]` record in the next-gen Reports API shape. */
   function activityRecord(overrides: Record<string, unknown> = {}) {
     return {
+      type: 'dns',
       timestamp: 1755131400151,
       domain: 'evil.example.com',
       verdict: 'blocked',
@@ -408,7 +423,7 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
     expect(activityCalls()).toHaveLength(1);
   });
 
-  it('respects the maxPages guard when every page comes back full', async () => {
+  it('respects the maxPages guard when every page comes back full, and says so', async () => {
     const fullPage = Array.from({ length: 1000 }, (_, i) => activityRecord({ domain: `d${i}.example` }));
     requestJsonMock.mockImplementation(async (input) => {
       if (String(input) === TOKEN_URL) return { access_token: 'tok-1', expires_in: 3600 } as never;
@@ -417,8 +432,69 @@ describe('UmbrellaProvider next-gen reports endpoint (#4597)', () => {
 
     const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
 
-    // 100 pages hard cap — an endlessly-full upstream must not loop forever.
+    // 100 requests hard cap — an endlessly-full upstream must not loop forever.
     expect(activityCalls()).toHaveLength(100);
     expect(events).toHaveLength(100_000);
+    // The remainder is never retried (the job advances `lastSync` to `until`
+    // on success), so a truncated run must not look like a complete one.
+    expect(warnings()).toMatch(/reached the 100-request cap/);
+  });
+
+  it('warns when it clamps the window, instead of narrowing it mutely', async () => {
+    queueTokenThen({ data: [] });
+
+    const until = new Date('2026-08-15T00:30:00.000Z');
+    await makeProvider().syncEvents(new Date(until.getTime() - 90 * 24 * 60 * 60 * 1000), until);
+
+    expect(warnings()).toMatch(/30-day/);
+  });
+
+  // An unrecognized verdict must NOT be folded into `allowed`: mislabelling a
+  // block as clean traffic is worse than losing the record, because the
+  // dashboard then reads as healthy.
+  it('drops a record with an unrecognized verdict rather than calling it allowed', async () => {
+    queueActivityPages({ data: [activityRecord({ verdict: 'quarantined' })] });
+
+    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+
+    expect(events).toEqual([]);
+    expect(warnings()).toMatch(/unparseable/);
+  });
+
+  it('warns when it drops unparseable records, so upstream shape drift is visible', async () => {
+    queueActivityPages({ data: ['not-an-object', { domain: 'no-timestamp.example' }] });
+
+    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+
+    expect(events).toEqual([]);
+    expect(warnings()).toMatch(/skipped 2 unparseable record/);
+  });
+
+  // Defence in depth for the x-traffic-type header: /reports/v2/activity is the
+  // COMBINED feed, and a proxy record carries a domain + timestamp too, so it
+  // would otherwise be ingested as a DNS event if the header were ignored.
+  it('skips non-DNS records that slip into the combined feed', async () => {
+    queueActivityPages({
+      data: [
+        activityRecord({ type: 'proxy', domain: 'proxied.example' }),
+        activityRecord({ domain: 'dns.example' })
+      ]
+    });
+
+    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+
+    expect(events.map((e) => e.domain)).toEqual(['dns.example']);
+    expect(warnings()).toMatch(/non-DNS record/);
+  });
+
+  // ...but a record with NO type is kept: a strict check would blank the whole
+  // feed if Cisco ever omitted the discriminator.
+  it('keeps a record that carries no type discriminator', async () => {
+    const { type: _type, ...untyped } = activityRecord();
+    queueActivityPages({ data: [untyped] });
+
+    const events = await makeProvider().syncEvents(new Date('2026-08-01'), new Date('2026-08-02'));
+
+    expect(events).toHaveLength(1);
   });
 });
