@@ -3,6 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
+// Every case in this file describes an already-WARM page: the scope is known
+// before the detail page renders, so `useJwtClaims` reports it as resolved
+// immediately (pattern: PatchApprovalModal.test.tsx). Default to organization
+// scope; individual tests override for the partner-scope banner-link cases.
+vi.mock('../../lib/authScope', () => {
+  const getJwtClaims = vi.fn(() => ({ scope: 'organization' as const, orgId: 'org-1', partnerId: null }));
+  return {
+    getJwtClaims,
+    useJwtClaims: () => ({ status: 'resolved' as const, claims: getJwtClaims() }),
+  };
+});
+import { getJwtClaims } from '../../lib/authScope';
+const getJwtClaimsMock = vi.mocked(getJwtClaims);
+
 // Stand in for the real tab editors so this suite stays focused on the
 // page-level gating decision (which tab renders an editor vs. a read-only
 // hint) rather than each tab's own fetch/save internals — those are covered
@@ -36,7 +50,8 @@ type MockLink = {
 
 function mockPolicy(
   owner: { orgId: string | null; partnerId: string | null },
-  featureLinks: MockLink[] = []
+  featureLinks: MockLink[] = [],
+  extra: Record<string, unknown> = {}
 ) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
@@ -47,7 +62,11 @@ function mockPolicy(
         name: 'Test Policy',
         status: 'active',
         featureLinks,
+        parentPolicyId: null,
+        parentPolicy: null,
+        childPolicies: [],
         ...owner,
+        ...extra,
       });
     }
     if (url === '/configuration-policies/pol-1/features' && method === 'GET') {
@@ -255,5 +274,117 @@ describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
     await screen.findByRole('heading', { name: 'Test Policy' });
     openFeatureTab('Backup');
     expect(window.location.hash).toBe('#backup');
+  });
+});
+
+// #5080: inheritance state (banner, children list) is derived entirely from
+// the GET /configuration-policies/:id response — no `?linked=` query param,
+// no second direct fetch of the parent.
+describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
+  const parentPolicy = {
+    id: 'parent-1',
+    name: 'Baseline',
+    status: 'active',
+    orgId: 'org-1',
+    featureLinks: [
+      { id: 'link-p1', featureType: 'backup', featurePolicyId: null, inlineSettings: { retentionDays: 30 } },
+    ],
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('renders the Inheriting-from banner from policy.parentPolicy with no URL param and no second fetch', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [], { parentPolicyId: 'parent-1', parentPolicy });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.getByText(/Inheriting from/i)).toBeInTheDocument();
+    expect(screen.getByText('Baseline')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/parent-1')).toBe(false);
+  });
+
+  it('links to the parent when it is same-org for an org-scoped caller', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [], { parentPolicyId: 'parent-1', parentPolicy });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.getByRole('link', { name: 'Baseline' })).toHaveAttribute(
+      'href',
+      '/configuration-policies/parent-1'
+    );
+  });
+
+  it('shows a "managed by your MSP" hint instead of a link when an org-scoped caller views a child of a partner-wide parent', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: 'p-1' });
+    const partnerWideParent = { ...parentPolicy, orgId: null };
+    mockPolicy(
+      { orgId: 'org-1', partnerId: null },
+      [],
+      { parentPolicyId: 'parent-1', parentPolicy: partnerWideParent }
+    );
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.queryByRole('link', { name: 'Baseline' })).not.toBeInTheDocument();
+    expect(screen.getByText('Baseline')).toBeInTheDocument();
+    expect(screen.getByText(/managed by your MSP/i)).toBeInTheDocument();
+  });
+
+  it('links to a partner-wide parent when the caller is partner-scoped', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', orgId: null, partnerId: 'p-1' });
+    const partnerWideParent = { ...parentPolicy, orgId: null };
+    mockPolicy(
+      { orgId: 'org-1', partnerId: null },
+      [],
+      { parentPolicyId: 'parent-1', parentPolicy: partnerWideParent }
+    );
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Backup');
+
+    expect(screen.getByRole('link', { name: 'Baseline' })).toHaveAttribute(
+      'href',
+      '/configuration-policies/parent-1'
+    );
+  });
+
+  it('Overview shows "Inherited by N policies" with links when childPolicies is non-empty', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null }, [], {
+      childPolicies: [
+        { id: 'child-1', name: 'Child A' },
+        { id: 'child-2', name: 'Child B' },
+      ],
+    });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByText(/Inherited by 2 polic/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Child A' })).toHaveAttribute('href', '/configuration-policies/child-1');
+    expect(screen.getByRole('link', { name: 'Child B' })).toHaveAttribute('href', '/configuration-policies/child-2');
+  });
+
+  it('a policy with parentPolicyId null renders no banner and no "Inherited by" line', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.queryByText(/Inherited by/i)).not.toBeInTheDocument();
+    openFeatureTab('Backup');
+    expect(screen.queryByText(/Inheriting from/i)).not.toBeInTheDocument();
   });
 });

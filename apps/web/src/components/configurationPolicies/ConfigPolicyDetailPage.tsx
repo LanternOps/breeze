@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { cn } from "@/lib/utils";
+import { useJwtClaims } from "@/lib/authScope";
 import { extractApiError } from "@/lib/apiError";
 import { useHashTab } from "@/lib/useHashState";
 import { OverflowTabs } from "../shared/OverflowTabs";
@@ -186,18 +187,31 @@ export default function ConfigPolicyDetailPage({
     saving: removingGatedLink,
     error: gatedRemoveError,
   } = useFeatureLink(policyId ?? "");
-  // Policy-level linked configuration policy (set once at creation time via ?linked= query param)
-  const [linkedPolicyId, setLinkedPolicyId] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      return params.get("linked") || null;
-    }
-    return null;
-  });
-  const [linkedPolicyName, setLinkedPolicyName] = useState<string | null>(null);
-  const [parentFeatureLinks, setParentFeatureLinks] = useState<FeatureLink[]>(
-    [],
-  );
+  // Policy-level parent (#5080). `parent_policy_id` is now a persisted,
+  // validated column returned by the API — derived from `policy`, not read
+  // from a `?linked=` query param (a reload, bookmark, or the list page used
+  // to lose it entirely — #5023). No second fetch of the parent either: the
+  // API embeds its assembled feature links directly on `policy.parentPolicy`.
+  const linkedPolicyId = policy?.parentPolicyId ?? null;
+  const linkedPolicyName = policy?.parentPolicy?.name ?? null;
+  const parentFeatureLinks = policy?.parentPolicy?.featureLinks ?? [];
+  const childPolicies = policy?.childPolicies ?? [];
+  // The parent embed is fetched server-side without the org-scoped
+  // `policyAccessCondition` filter (see spec "API"), so a partner-wide parent
+  // is always present in `policy.parentPolicy` — but an org-scoped caller
+  // still can't OPEN that policy's own detail page (it 404s under
+  // `policyAccessCondition`). Only link when the caller is partner-scoped or
+  // the parent is owned by the same org as this policy. `useJwtClaims` (not
+  // the one-shot `getJwtClaims()`) because this is a rendered decision that
+  // must not freeze a cold-load's pre-token answer; unresolved fails closed
+  // to the non-partner branch, which still allows the same-org case through.
+  const jwtClaims = useJwtClaims();
+  const isPartnerScope =
+    jwtClaims.status === "resolved" &&
+    jwtClaims.claims.scope === "partner" &&
+    !!jwtClaims.claims.partnerId;
+  const canOpenParent =
+    isPartnerScope || (policy?.parentPolicy != null && policy.parentPolicy.orgId === policy.orgId);
   const fetchPolicy = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -259,33 +273,6 @@ export default function ConfigPolicyDetailPage({
   useEffect(() => {
     fetchFeatureLinks();
   }, [fetchFeatureLinks]);
-  // linkedPolicyId is only set via ?linked= query param (parent policy inheritance).
-  // featurePolicyId on individual feature links points to standalone entities
-  // (backup configs, patch policies, etc.) — not parent configuration policies.
-  // Resolve linked policy name and fetch parent's feature links
-  useEffect(() => {
-    if (!linkedPolicyId) {
-      setLinkedPolicyName(null);
-      setParentFeatureLinks([]);
-      return;
-    }
-    let cancelled = false;
-    fetchWithAuth(`/configuration-policies/${linkedPolicyId}`)
-      .then(async (res) => {
-        if (!res.ok || cancelled) return;
-        const data = await res.json();
-        if (!cancelled) {
-          setLinkedPolicyName(data.name ?? null);
-          setParentFeatureLinks(
-            Array.isArray(data.featureLinks) ? data.featureLinks : [],
-          );
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [linkedPolicyId]);
   const handleSaveOverview = async () => {
     if (!policyId) return;
     setSaving(true);
@@ -592,6 +579,30 @@ export default function ConfigPolicyDetailPage({
         </div>
       )}
 
+      {/* Blast radius of this baseline (#5080): who inherits from it. */}
+      {activeTab === "overview" && childPolicies.length > 0 && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="config-policy-inherited-by">
+          <h2 className="text-lg font-semibold">
+            {i18n.t(
+              "policies:configurationPolicies.configPolicyDetailPage.inheritedByPolicies",
+              { count: childPolicies.length },
+            )}
+          </h2>
+          <ul className="mt-3 space-y-1 text-sm">
+            {childPolicies.map((child) => (
+              <li key={child.id}>
+                <a
+                  href={`/configuration-policies/${child.id}`}
+                  className="text-primary underline underline-offset-2 hover:text-primary/80"
+                >
+                  {child.name}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Parent policy banner — shown on feature tabs when inheriting from another policy */}
       {FEATURE_TYPES.includes(activeTab as FeatureType) &&
         linkedPolicyId &&
@@ -603,16 +614,32 @@ export default function ConfigPolicyDetailPage({
                 {i18n.t(
                   "policies:configurationPolicies.configPolicyDetailPage.inheritingFrom",
                 )}{" "}
-                <a
-                  href={`/configuration-policies/${linkedPolicyId}`}
-                  className="underline underline-offset-2 hover:text-blue-900"
-                >
-                  {linkedPolicyName ||
-                    i18n.t(
-                      "policies:configurationPolicies.configPolicyDetailPage.parentPolicy",
-                    )}
-                </a>
+                {canOpenParent ? (
+                  <a
+                    href={`/configuration-policies/${linkedPolicyId}`}
+                    className="underline underline-offset-2 hover:text-blue-900"
+                  >
+                    {linkedPolicyName ||
+                      i18n.t(
+                        "policies:configurationPolicies.configPolicyDetailPage.parentPolicy",
+                      )}
+                  </a>
+                ) : (
+                  <span>
+                    {linkedPolicyName ||
+                      i18n.t(
+                        "policies:configurationPolicies.configPolicyDetailPage.parentPolicy",
+                      )}
+                  </span>
+                )}
               </span>
+              {!canOpenParent && (
+                <span className="text-xs text-blue-600/70">
+                  {i18n.t(
+                    "policies:configurationPolicies.configPolicyDetailPage.managedByYourMsp",
+                  )}
+                </span>
+              )}
               <span className="text-xs text-blue-600/70">
                 {i18n.t(
                   "policies:configurationPolicies.configPolicyDetailPage.overrideIndividualTabsToCustomizeSettings",
