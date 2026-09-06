@@ -77,6 +77,7 @@ import {
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
+import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
 
@@ -231,7 +232,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'cis_baseline_results', 'cis_remediation_actions',
   'deployment_invites',
   'device_agent_health_latest', 'device_boot_metrics', 'device_change_log', 'device_config_state',
-  'device_connections', 'device_disks', 'device_event_logs',
+  'device_connections', 'device_custom_field_values', 'device_disks', 'device_event_logs',
   'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
@@ -462,6 +463,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // device_id -> devices.id ON DELETE CASCADE (composite with org_id);
   // leaf table, no children.
   'device_mtls_certificates',
+  // custom-field values (#3257 W05) — FK (device_id, org_id) ->
+  // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
+  'device_custom_field_values',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
@@ -1605,6 +1609,7 @@ coreRoutes.patch(
     // /devices/:id/custom-fields) for why this must hold on both write paths.
     // All-or-nothing per request; nothing else in this PATCH is written when
     // a custom field fails (#3257 W04).
+    let customFieldWrites: CustomFieldValueWrite[] = [];
     if (data.customFields !== undefined) {
       const validation = await validateCustomFieldMap(device.orgId, device.osType, data.customFields);
       if (!validation.ok) {
@@ -1618,6 +1623,19 @@ coreRoutes.patch(
         );
       }
       data.customFields = validation.values;
+      customFieldWrites = validation.writes;
+    }
+
+    // Values go to `device_custom_field_values`; `devices.custom_fields` is a
+    // trigger-maintained projection of that table now (#3257 W05), so this
+    // PATCH must NOT put `customFields` in its own `updates` set — the write
+    // would be reverted by the projection on the next value write and would
+    // bypass the composite device/org FK and the coherence trigger. Written
+    // BEFORE the devices UPDATE below so that statement's RETURNING already
+    // carries the rebuilt projection; the whole handler runs inside the
+    // request transaction, so a later failure rolls both back together.
+    if (customFieldWrites.length > 0) {
+      await persistDeviceCustomFieldValues(deviceId, device.orgId, customFieldWrites, 'manual');
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -1628,15 +1646,10 @@ coreRoutes.patch(
       updates.deviceRole = data.deviceRole;
       updates.deviceRoleSource = 'manual';
     }
-    if (data.customFields !== undefined) {
-      // Merge with existing (coerced) custom fields rather than replacing
-      const raw = device.customFields;
-      const existing: Record<string, unknown> =
-        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-          ? (raw as Record<string, unknown>)
-          : {};
-      updates.customFields = { ...existing, ...data.customFields };
-    }
+    // NOTE: no `updates.customFields` branch. Custom-field values were written
+    // to `device_custom_field_values` above; the merge-with-existing semantics
+    // this used to implement are now the upsert's, keyed on
+    // (device_id, definition_id) so only the requested keys are touched.
 
     // When the PATCH changes the device's site, the denormalized `site_id`
     // on every table in DEVICE_SITE_DENORMALIZED_TABLES must be rewritten in

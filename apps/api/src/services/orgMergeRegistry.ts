@@ -548,6 +548,11 @@ const REPOINT_TABLES: readonly string[] = [
   "device_change_log",
   "device_config_state",
   "device_connections",
+  // device_custom_field_values (#3257 W05): plain repoint. It carries org_id
+  // and device_id, and its only unique index is (device_id, definition_id),
+  // which cannot collide across orgs because a device belongs to one org —
+  // the devices under the loser org repoint with it.
+  "device_custom_field_values",
   "device_disks",
   "device_event_logs",
   // device_external_links: plain repoint, and the unique key was checked first.

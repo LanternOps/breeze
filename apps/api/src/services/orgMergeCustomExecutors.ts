@@ -358,14 +358,15 @@ const mergePlaybookDefinitions: CustomMergeExecutor = async (loser, survivor) =>
 /**
  * Inbound FKs to re-point before the duplicate definition is deleted.
  *
- * EMPTY until W05 registers `{ table: 'device_custom_field_values', column:
- * 'definition_id' }`. Until then values live in the string-keyed
- * `devices.custom_fields` jsonb and follow the survivor's definition for free,
- * because it carries the same `field_key`. That is why dropping the loser's
- * definition loses no data today.
+ * `device_custom_field_values.definition_id` is registered here (#3257 W05).
+ * `rehomeChildrenThenDelete` moves the loser's stored values onto the
+ * survivor's identically-keyed definition BEFORE deleting the loser's
+ * duplicate, because `definition_id` is `ON DELETE CASCADE` — a blind dedupe
+ * DELETE of the loser's definition would destroy every stored value under it
+ * instead of letting them survive under the survivor's definition.
  */
 const CUSTOM_FIELD_DEFINITION_CHILDREN: readonly ChildRef[] = [
-  // W05: { table: 'device_custom_field_values', column: 'definition_id' },
+  { table: 'device_custom_field_values', column: 'definition_id' },
 ];
 
 const mergeCustomFieldDefinitions: CustomMergeExecutor = async (loser, survivor) => {

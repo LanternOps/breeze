@@ -215,6 +215,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_change_log',
   'device_config_state',
   'device_connections',
+  // Leaf table (#3257 W05): ON DELETE CASCADE FKs to both devices and
+  // custom_field_definitions, so no children of its own to order against.
+  'device_custom_field_values',
   'device_disks',
   'device_event_logs',
   'device_external_links',

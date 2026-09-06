@@ -19,6 +19,7 @@ import { createAuditLog } from '../../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
+import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 
 /**
  * Device custom-field VALUE read/write API.
@@ -253,17 +254,29 @@ customFieldValuesRoutes.patch(
       );
     }
 
-    // Merge with existing values rather than replacing the whole object, matching
-    // the PATCH /devices/:id semantics.
-    const merged = { ...readExistingCustomFields(device.customFields), ...validation.values };
+    // Writes go to `device_custom_field_values`, NOT to the jsonb (#3257 W05).
+    // `devices.custom_fields` is now a trigger-maintained projection of that
+    // table, so writing it here would be silently overwritten by the next value
+    // write and would bypass both the composite device/org FK and the definition
+    // coherence trigger. Merge semantics are unchanged — an upsert keyed on
+    // (device_id, definition_id) only touches the keys in this request, which is
+    // exactly what merging into the existing object used to mean.
+    await persistDeviceCustomFieldValues(
+      deviceId,
+      device.orgId,
+      validation.writes,
+      access.audit.actorType === 'api_key' ? 'api' : 'manual',
+    );
 
+    // Re-read the projection the trigger just rebuilt. It is the response
+    // contract (unchanged) and the only place unmanaged legacy keys survive.
     const [updated] = await db
-      .update(devices)
-      .set({ customFields: merged, updatedAt: new Date() })
+      .select({ customFields: devices.customFields })
+      .from(devices)
       // The org predicate is redundant under RLS + the org-checked lookup above,
-      // but pins the write to the exact verified device as defense-in-depth.
+      // but pins the read to the exact verified device as defense-in-depth.
       .where(and(eq(devices.id, deviceId), eq(devices.orgId, device.orgId)))
-      .returning({ customFields: devices.customFields });
+      .limit(1);
 
     if (!updated) {
       return c.json({ error: 'Device not found' }, 404);

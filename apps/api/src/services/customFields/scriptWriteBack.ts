@@ -13,7 +13,8 @@ import { validateCustomFieldValue, type CustomFieldValueRejection } from './vali
 import {
   loadDeviceForWriteBack,
   loadScriptWritableDefinitions,
-  persistDeviceCustomFields,
+  persistDeviceCustomFieldValues,
+  type CustomFieldValueWrite,
 } from './queries';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from '../auditEvents';
 import type { ScriptCustomFieldWriteSummary } from '../../db/schema/scripts';
@@ -41,12 +42,6 @@ export interface ApplyScriptCustomFieldWritesInput {
 
 /** The ingest path has no user and no request; the audit needs neither. */
 const AUDIT_REQUEST = requestLikeFromSnapshot({});
-
-function readExistingCustomFields(raw: unknown): Record<string, unknown> {
-  return raw !== null && typeof raw === 'object' && !Array.isArray(raw)
-    ? { ...(raw as Record<string, unknown>) }
-    : {};
-}
 
 /** Returns null when the result carried no write-back request at all. */
 export async function applyScriptCustomFieldWrites(
@@ -82,14 +77,17 @@ export async function applyScriptCustomFieldWrites(
   const definitions = await loadScriptWritableDefinitions(device.orgId);
   const byKey = new Map(definitions.map((d) => [d.fieldKey, d]));
 
-  // Read-modify-write, with no optimistic-concurrency check: two script results
-  // for the same device that overlap can lose one field's write. This mirrors
-  // the PATCH value endpoint (routes/devices/customFieldValues.ts) exactly, is
-  // self-healing (the next run of the same script rewrites the value), and a
-  // version column here would be a device-wide contention point far worse than
-  // the rare lost update. Accepted deliberately, not overlooked.
-  const existing = readExistingCustomFields(device.customFields);
-  const merged = { ...existing };
+  // Per-key upsert into `device_custom_field_values`, with no
+  // optimistic-concurrency check: two script results for the same device that
+  // overlap can lose one field's write. This mirrors the PATCH value endpoint
+  // (routes/devices/customFieldValues.ts) exactly, is self-healing (the next run
+  // of the same script rewrites the value), and a version column here would be a
+  // device-wide contention point far worse than the rare lost update. Accepted
+  // deliberately, not overlooked. Since #3257 W05 the blast radius is smaller
+  // still: the upsert is keyed on (device_id, definition_id), so two concurrent
+  // runs writing DIFFERENT keys no longer clobber each other at all — only two
+  // runs writing the SAME key can race.
+  const writes: CustomFieldValueWrite[] = [];
 
   for (const [key, raw] of extracted.candidates) {
     const definition = byKey.get(key);
@@ -114,7 +112,12 @@ export async function applyScriptCustomFieldWrites(
       rejected.push({ key, reason: validated.reason });
       continue;
     }
-    merged[key] = validated.value;
+    writes.push({
+      definitionId: definition.id,
+      fieldKey: key,
+      type: definition.type,
+      value: validated.value,
+    });
     applied.push(key);
   }
 
@@ -128,27 +131,16 @@ export async function applyScriptCustomFieldWrites(
     return { applied, rejected };
   }
 
-  // Compare BEFORE writing. An unchanged object means no UPDATE, which means
-  // the devices statement trigger takes no per-org advisory lock and writes no
-  // WAL — the difference between a fleet-wide script being cheap and being a
-  // per-org serialisation point. Only the applied keys can differ, because
-  // `merged` starts as a copy of `existing` and nothing else mutates it.
-  const unchanged = applied.every(
-    (key) => Object.prototype.hasOwnProperty.call(existing, key) && Object.is(merged[key], existing[key]),
-  );
-  if (!unchanged) {
-    const ok = await persistDeviceCustomFields(device.id, device.orgId, merged);
-    if (!ok) {
-      console.warn('[customFields] script write-back UPDATE matched no row', {
-        deviceId: device.id,
-        commandId: input.commandId,
-      });
-      return {
-        applied: [],
-        rejected: [...rejected, { key: '(device)', reason: 'device_not_found' }],
-      };
-    }
-  }
+  // The compare-before-write that used to live here MOVED INTO the writer
+  // (#3257 W05, `persistDeviceCustomFieldValues`), where it is a `setWhere` on
+  // the upsert and therefore applies to all three write paths instead of this
+  // one. Its reasoning is unchanged and is documented there: a write that
+  // actually changes a value propagates through the projection trigger to an
+  // UPDATE on `devices`, which fires the partner-export statement trigger and
+  // takes an EXCLUSIVE per-org advisory lock held to COMMIT — the difference
+  // between a fleet-wide script being cheap and being a per-org serialisation
+  // point. Do not re-add a compare here; it would be a second, drifting copy.
+  await persistDeviceCustomFieldValues(device.id, device.orgId, writes, 'script');
 
   // Audited even when the write was a no-op merge: the script asserted these
   // values and that assertion is the auditable event. Keys only — a value can

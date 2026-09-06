@@ -15,6 +15,7 @@ import {
   configPolicyFeatureLinks,
   configurationPolicies,
   customFieldDefinitions,
+  deviceCustomFieldValues,
   devices,
   organizations,
   partnerExportConfigurationOrgState,
@@ -743,10 +744,11 @@ describe('partner desired-configuration material watermarks', () => {
       { orgId: targetOrgId, name: 'Custom value move target' },
     ]).returning();
     if (!sourceSite || !targetSite) throw new Error('custom value move site seed failed');
-    await db.insert(customFieldDefinitions).values([
+    const [sourceDef, targetDef] = await db.insert(customFieldDefinitions).values([
       { orgId: sourceOrgId, name: 'Rack', fieldKey: 'rack', type: 'text' },
       { orgId: targetOrgId, name: 'Rack', fieldKey: 'rack', type: 'text' },
-    ]);
+    ]).returning();
+    if (!sourceDef || !targetDef) throw new Error('custom value move definition seed failed');
     const [device] = await db.insert(devices).values({
       orgId: sourceOrgId,
       siteId: sourceSite.id,
@@ -756,9 +758,18 @@ describe('partner desired-configuration material watermarks', () => {
       osVersion: '1',
       architecture: 'amd64',
       agentVersion: '1',
-      customFields: { rack: 'source-rack' },
     }).returning();
     if (!device) throw new Error('custom value move device seed failed');
+    // #3257 W05 — the value lives in device_custom_field_values now, and
+    // devices.custom_fields is the projection its triggers maintain. Seeding
+    // the jsonb directly would be reverted by the next projection pass.
+    await db.insert(deviceCustomFieldValues).values({
+      deviceId: device.id,
+      orgId: sourceOrgId,
+      definitionId: sourceDef.id,
+      fieldKey: 'rack',
+      valueText: 'source-rack',
+    });
 
     const sourceBefore = await stateClock(sourceOrgId, 'custom-fields');
     const targetBefore = await stateClock(targetOrgId, 'custom-fields');
@@ -771,11 +782,28 @@ describe('partner desired-configuration material watermarks', () => {
     expect((await sourceInitial.json() as { data: unknown[] }).data).toHaveLength(1);
     expect((await targetInitial.json() as { data: unknown[] }).data).toEqual([]);
 
-    await expect(db.update(devices).set({
-      orgId: targetOrgId,
-      siteId: targetSite.id,
-      ...(changedValue ? { customFields: { rack: 'target-rack' } } : {}),
-    }).where(eq(devices.id, device.id))).resolves.toBeDefined();
+    // The move re-homes the value onto the TARGET org's identically-keyed
+    // definition and flips the device in ONE transaction, mirroring moveOrg.ts
+    // (#3257 W05). Both halves are required here: the coherence trigger refuses
+    // a value whose definition belongs to another org, and the composite
+    // (device_id, org_id) FK — DEFERRABLE INITIALLY DEFERRED — only tolerates
+    // the value pointing at the target org before the device does while the two
+    // statements share a transaction.
+    await expect(db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT public.breeze_rehome_device_custom_field_values(
+          ${device.id}::uuid, ${targetOrgId}::uuid)`);
+      await tx.update(devices).set({
+        orgId: targetOrgId,
+        siteId: targetSite.id,
+      }).where(eq(devices.id, device.id));
+      if (changedValue) {
+        await tx.update(deviceCustomFieldValues)
+          .set({ valueText: 'target-rack' })
+          .where(eq(deviceCustomFieldValues.deviceId, device.id));
+      }
+      return true;
+    })).resolves.toBeDefined();
 
     expect((await stateClock(sourceOrgId, 'custom-fields')).getTime())
       .toBeGreaterThan(sourceBefore.getTime());
@@ -797,16 +825,14 @@ describe('partner desired-configuration material watermarks', () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org.id });
-    const fieldValues = Object.fromEntries(Array.from({ length: 501 }, (_, index) => [
-      `field_${String(index).padStart(4, '0')}`,
-      `value-${index}`,
-    ]));
-    await db.insert(customFieldDefinitions).values(Array.from({ length: 501 }, (_, index) => ({
-      orgId: org.id,
-      name: `Field ${index}`,
-      fieldKey: `field_${String(index).padStart(4, '0')}`,
-      type: 'text' as const,
-    })));
+    const definitionRows = await db.insert(customFieldDefinitions).values(
+      Array.from({ length: 501 }, (_, index) => ({
+        orgId: org.id,
+        name: `Field ${index}`,
+        fieldKey: `field_${String(index).padStart(4, '0')}`,
+        type: 'text' as const,
+      })),
+    ).returning();
     const [device] = await db.insert(devices).values({
       orgId: org.id,
       siteId: site.id,
@@ -816,9 +842,17 @@ describe('partner desired-configuration material watermarks', () => {
       osVersion: '1',
       architecture: 'amd64',
       agentVersion: '1',
-      customFields: fieldValues,
     }).returning();
     if (!device) throw new Error('custom-value device insert failed');
+    // #3257 W05 — one row per datum, in the normalized table. devices.custom_fields
+    // is the projection these inserts rebuild.
+    await db.insert(deviceCustomFieldValues).values(definitionRows.map((definition, index) => ({
+      deviceId: device.id,
+      orgId: org.id,
+      definitionId: definition.id,
+      fieldKey: definition.fieldKey,
+      valueText: `value-${index}`,
+    })));
     const app = configurationExportApp(partner.id, org.id);
     const first = await app.request('/custom-field-values?limit=500');
     expect(first.status, await first.clone().text()).toBe(200);
@@ -839,12 +873,17 @@ describe('partner desired-configuration material watermarks', () => {
     expect(new Set([...firstBody.data, ...secondBody.data].map((row: any) => row.definitionId)).size).toBe(501);
     expect([...firstBody.data, ...secondBody.data].every((row: any) => row.deviceId === device.id)).toBe(true);
 
-    await db.insert(customFieldDefinitions).values({
+    const [secretDefinition] = await db.insert(customFieldDefinitions).values({
       orgId: org.id, name: 'local_admin_password', fieldKey: 'local_admin_password', type: 'text',
+    }).returning();
+    if (!secretDefinition) throw new Error('secret definition insert failed');
+    await db.insert(deviceCustomFieldValues).values({
+      deviceId: device.id,
+      orgId: org.id,
+      definitionId: secretDefinition.id,
+      fieldKey: 'local_admin_password',
+      valueText: 'Summer2026!',
     });
-    await db.update(devices).set({
-      customFields: { ...fieldValues, local_admin_password: 'Summer2026!' },
-    }).where(eq(devices.id, device.id));
     const collectExportPages = async (path: string) => {
       const pages: Array<{ blocked?: Array<{ id: string; orgId: string }>; data: unknown[] }> = [];
       let cursor: string | null = null;
