@@ -590,12 +590,30 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(await captureSqlState(() => admin.delete(devices)
       .where(eq(devices.id, movableDevice.id))))
       .toBe('23503');
+    // #5080 W01 put a stricter guard in FRONT of the assignment reverse
+    // validator: configuration_policies ownership can only change in system
+    // scope at all (constraint trigger configuration_policies_parent_guard,
+    // constraint configuration_policies_owner_immutable). Both halves are
+    // pinned -- the outer guard, and, in the one scope that legitimately moves
+    // ownership (org merge), the reverse validator that was always the subject
+    // here. Asserting only the 23514 would quietly retire this test (#5123).
     expect(await captureSqlState(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
-      .toBe('23503');
+      .toBe('23514');
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id));
+    }))).toBe('23503');
     expect(await captureSqlState(() => admin.update(configurationPolicies)
       .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
-      .toBe('23503');
+      .toBe('23514');
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ partnerId: partnerB.partner.id })
+        .where(eq(configurationPolicies.id, partnerPolicy.id));
+    }))).toBe('23503');
 
     const [updatableAssignment] = await withDbAccessContext(contextA, () =>
       db.insert(configPolicyAssignments).values({
@@ -671,6 +689,10 @@ describe('partner reconstruction export RLS traversal', () => {
       }).returning();
       if (!movingPolicy) throw new Error('concurrent owner policy seed failed');
       const policyMover = admin.transaction(async (tx) => {
+        // System scope: #5080 W01 refuses a configuration-policy owner move in
+        // any other scope, and org merge -- the only real mover -- is system
+        // scoped. Without this the race never starts (#5123).
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
         await tx.update(configurationPolicies).set({ orgId: target.orgs[0]!.id })
           .where(eq(configurationPolicies.id, movingPolicy.id));
         ownerMove.resolve();
@@ -772,12 +794,19 @@ describe('partner reconstruction export RLS traversal', () => {
       { partnerId: second.partner.id, name: 'Bulk partner policy B' },
     ]).returning();
     if (!policyA || !policyB) throw new Error('bulk policy seed failed');
-    await expect(admin.update(configurationPolicies).set({
-      partnerId: sql`CASE
-        WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
-        ELSE ${first.partner.id}::uuid
-      END`,
-    }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
+    // System scope, for the same reason as the owner-move race above: #5080 W01
+    // makes a configuration-policy owner change system-only. The property under
+    // test is unchanged -- a COMPLETE swap must not trip the reverse validator
+    // on the intermediate state (#5123).
+    await expect(admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      return tx.update(configurationPolicies).set({
+        partnerId: sql`CASE
+          WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
+          ELSE ${first.partner.id}::uuid
+        END`,
+      }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]));
+    })).resolves.toBeDefined();
     await expect(admin.delete(configurationPolicies)
       .where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
 

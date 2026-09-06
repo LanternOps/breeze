@@ -26,9 +26,13 @@
  *     system-context escalation anywhere.
  *  4. DELETION. A parent with children cannot be deleted alone, but an org
  *     cascade that removes the family in ONE statement still succeeds.
+ *  5. ERASURE ROW-SET CLOSURE. The org-erasure FK ledger
+ *     (orgCascadeFkOnDeleteAllowlist.ts) pins this self-FK with a reviewed
+ *     argument instead of a migration; section 5 is that argument's evidence.
  */
 import './setup';
 import { getTestDb } from './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -46,6 +50,7 @@ import {
   InvalidParentPolicyError,
   PolicyHasChildrenError,
 } from '../../services/configurationPolicy';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import type { AuthContext } from '../../middleware/auth';
 import { createPartner, createOrganization } from './db-utils';
 
@@ -929,5 +934,86 @@ describe('config policy inheritance — deletion (live DB)', () => {
       db.select({ id: configurationPolicies.id }).from(configurationPolicies)
         .where(inArray(configurationPolicies.id, [parent.id, child.id])));
     expect(remaining).toEqual([{ id: parent.id }]);
+  });
+});
+
+
+// ============================================================
+// 5. Erasure row-set closure -- the evidence behind the org-cascade FK ledger
+// ============================================================
+
+/**
+ * `orgCascadeFkOnDelete.integration.test.ts` classifies
+ * `configuration_policies(parent_policy_id)` as `self-ref-open-row-set`: the
+ * table's `org_id` is nullable (partner-wide policies, epic #2135), so from the
+ * catalog alone it cannot tell whether `DELETE ... WHERE org_id = $1` removes a
+ * row set closed under the self-reference. It is pinned in the ledger with the
+ * argument that the W01 constraint trigger closes it. That argument is only
+ * worth something if it is checked, so these tests check it (#5123).
+ *
+ * Closure needs exactly one thing: no row that SURVIVES the erasure statement
+ * may reference a row it deletes. The surviving rows are the partner-wide ones
+ * and other orgs' rows, so the two forges below are the COMPLETE set of edges
+ * that could break it -- both refused, in SYSTEM scope, which is the widest
+ * scope any erasure or merge path runs under. The third test then runs the real
+ * cascade rather than a hand-written DELETE, so a later change to the erasure
+ * SQL (a per-row loop, a different WHERE) is caught here as well.
+ */
+describe('config policy inheritance -- erasure row-set closure (live DB)', () => {
+  it('SYSTEM scope still refuses a partner-wide child under an org-owned parent', async () => {
+    const t = await seedTenancy();
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+
+    // The edge that would break closure: this child SURVIVES
+    // `DELETE ... WHERE org_id = a1` (its org_id IS NULL) while its parent does not.
+    await expectSqlState(
+      () => seedPolicy({
+        partnerId: t.p1,
+        name: 'forged partner-wide child',
+        parentPolicyId: orgParent.id,
+      }),
+      '23514',
+      'configuration_policies_parent_guard',
+    );
+  });
+
+  it("SYSTEM scope still refuses a child of ANOTHER org's parent", async () => {
+    const t = await seedTenancy();
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+
+    // The other surviving shape: a2's row referencing a1's row.
+    await expectSqlState(
+      () => seedPolicy({
+        orgId: t.a2,
+        name: 'forged cross-org child',
+        parentPolicyId: orgParent.id,
+      }),
+      '23514',
+      'configuration_policies_parent_guard',
+    );
+  });
+
+  it('the real org erasure removes a parent+child family and leaves the partner-wide baseline', async () => {
+    const t = await seedTenancy();
+    const baseline = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+    const orgChild = await seedPolicy({
+      orgId: t.a1, name: 'A1 child', parentPolicyId: orgParent.id,
+    });
+    const inheritsBaseline = await seedPolicy({
+      orgId: t.a1, name: 'A1 child of the MSP baseline', parentPolicyId: baseline.id,
+    });
+
+    // cascadeDeleteOrg, not a hand-written DELETE: this is the statement the
+    // ledger entry's argument is actually about.
+    await expect(cascadeDeleteOrg(t.a1, randomUUID(), 'config-policy-erasure@test.invalid'))
+      .resolves.toBeDefined();
+
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: configurationPolicies.id }).from(configurationPolicies)
+        .where(inArray(configurationPolicies.id, [
+          baseline.id, orgParent.id, orgChild.id, inheritsBaseline.id,
+        ])));
+    expect(remaining).toEqual([{ id: baseline.id }]);
   });
 });
