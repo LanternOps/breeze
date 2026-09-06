@@ -19,8 +19,16 @@
  *   5. `ambiguous` (more than one candidate at the tier that was checked) or
  *      `none` (no candidate at any tier).
  * Candidates for tiers 3-4 exclude inactive remote entities and remote IDs
- * already claimed by another Breeze entity's mapping row. Soft-deleted orgs
- * never enter the candidate/target set at all (query-level filter).
+ * already claimed by another Breeze entity's mapping row. Soft-deleted orgs and
+ * the hidden per-partner `quick_support` org never enter the candidate/target
+ * set at all (query-level filters — `deletedAt IS NULL` and
+ * `notQuickSupportOrg`). Those two are NOT symmetric afterwards: a soft-deleted
+ * org's mapping row keeps its claim on a remote id (it still occupies the
+ * `accounting_entity_mappings_remote_uniq` slot), whereas the hidden org's rows
+ * are ignored by id — as claims, as backfill targets, and in
+ * `saveMappingDecision`'s conflict scan — so a remote Customer it once claimed
+ * can be proposed to, and confirmed by, a real org. See
+ * `loadQuickSupportOrgIds`.
  *
  * Ordinary suggestions (tiers 3-5) are NOT persisted — they are cheap to
  * recompute and must not become stale rows merely because a user opened the
@@ -301,13 +309,47 @@ function findExactMatch<T extends { id: string }>(
 /**
  * `organizations.type <> 'quick_support'`.
  *
- * A function rather than a shared constant so each query composes its own
- * fragment. Mirrors the exclusion `GET /orgs/organizations` already applies
+ * Mirrors the exclusion `GET /orgs/organizations` already applies
  * (routes/orgs.ts) — the hidden org sits inside `accessibleOrgIds` by design so
  * RLS lets a tech reach their own support session, which means every query that
  * enumerates or resolves a customer org has to exclude it explicitly.
+ *
+ * A module-level constant: drizzle condition objects are immutable ASTs and
+ * `and()` wraps its operands rather than mutating them, so one instance is
+ * safely shared across every query below.
  */
-const notQuickSupportOrg = () => ne(organizations.type, 'quick_support');
+const notQuickSupportOrg = ne(organizations.type, 'quick_support');
+
+/**
+ * Ids of the partner's hidden `quick_support` orgs (in practice exactly one).
+ *
+ * `accounting_entity_mappings` and `organization_external_links` are keyed by
+ * org id and carry no org `type` of their own, so excluding the hidden org from
+ * the org QUERY alone is not enough: a mapping row confirmed against it before
+ * the exclusion existed still claims a remote Customer, and the tier-2 backfill
+ * loop would still write new rows for it. Those rows have to be recognised by
+ * id, which is what this set is for.
+ *
+ * Deliberately "which orgs are HIDDEN" rather than the complement, "which orgs
+ * are in the proposal list": a SOFT-DELETED org's mapping row still occupies
+ * the `accounting_entity_mappings_remote_uniq` slot, so its claim must keep
+ * suppressing that remote id (existing contract — see the
+ * 'excludes a remote customer already claimed by another Breeze entity mapping'
+ * test). Only the hidden org's claims are dropped, and only because
+ * `saveMappingDecision` drops them from the conflict scan in the same breath,
+ * so a remote id freed here can actually be confirmed.
+ */
+async function loadQuickSupportOrgIds(partnerId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(
+      eq(organizations.partnerId, partnerId),
+      eq(organizations.type, 'quick_support'),
+      isNull(organizations.deletedAt),
+    ));
+  return new Set(rows.map((r) => r.id));
+}
 
 async function proposeOrgMappings(
   partnerId: string,
@@ -352,7 +394,7 @@ async function buildOrgProposals(
       // and must never be offered as a QuickBooks Customer to map. Same
       // exclusion GET /orgs/organizations already applies (routes/orgs.ts), and
       // this query bypasses that route entirely.
-      notQuickSupportOrg(),
+      notQuickSupportOrg,
       isNull(organizations.deletedAt),
     ));
 
@@ -373,13 +415,22 @@ async function buildOrgProposals(
       eq(organizationExternalLinks.system, 'quickbooks'),
     ));
 
-  const mappingByOrgId = new Map(mappingRows.map((m) => [m.breezeEntityId, m as MappingRow]));
+  // Neither read above carries the org query's `type` filter, so both can still
+  // surface the hidden org by id — see `loadQuickSupportOrgIds`.
+  const hiddenOrgIds = await loadQuickSupportOrgIds(partnerId);
+
+  const mappingByOrgId = new Map(
+    mappingRows
+      .filter((m) => !hiddenOrgIds.has(m.breezeEntityId))
+      .map((m) => [m.breezeEntityId, m as MappingRow]),
+  );
 
   // Backfill imported-customer provenance into a durable confirmed mapping the
   // first time reconciliation sees it — every later call hits this as a
   // current-mapping (tier 1) row instead of re-deriving it. ON CONFLICT DO
   // NOTHING: a concurrent caller may have already inserted the same row.
   for (const link of links) {
+    if (hiddenOrgIds.has(link.orgId)) continue;
     if (mappingByOrgId.has(link.orgId)) continue;
     const [inserted] = await db
       .insert(accountingEntityMappings)
@@ -597,19 +648,31 @@ export interface SyncMappedEntityInput {
 type OrgRow = typeof organizations.$inferSelect;
 type CatalogItemRow = typeof catalogItems.$inferSelect;
 
-async function loadOwnedOrg(orgId: string, partnerId: string): Promise<OrgRow> {
+/**
+ * `allowQuickSupport` opts OUT of the hidden-org exclusion, and only the
+ * `unlinked` decision may pass it.
+ *
+ * The exclusion is defense in depth for the proposal-list filter in
+ * `buildOrgProposals`: the decision/sync routes take the Breeze entity id from
+ * the request body, so hiding the org from the list does not on its own keep it
+ * out of QuickBooks. But `unlinked` is purely local — it writes
+ * `remoteEntityId: null` and never calls the provider — and it is the ONLY API
+ * path that can clear a mapping row confirmed against the hidden org before the
+ * exclusion existed. 404-ing it too would leave such a row invisible in the
+ * workbench and unremovable through the API.
+ */
+async function loadOwnedOrg(
+  orgId: string,
+  partnerId: string,
+  opts: { allowQuickSupport?: boolean } = {},
+): Promise<OrgRow> {
   const rows = await db
     .select()
     .from(organizations)
     .where(and(
       eq(organizations.id, orgId),
       eq(organizations.partnerId, partnerId),
-      // Defense in depth for the proposal-list exclusion in
-      // `buildOrgProposals`: the decision/sync routes take the Breeze entity id
-      // from the request body, so hiding the hidden org from the list is not on
-      // its own enough to keep it out of QuickBooks. A stale mapping row (or a
-      // hand-rolled call) resolves to `entity_not_found` here instead.
-      notQuickSupportOrg(),
+      opts.allowQuickSupport ? undefined : notQuickSupportOrg,
       isNull(organizations.deletedAt),
     ));
   const org = rows[0] as OrgRow | undefined;
@@ -754,17 +817,32 @@ export async function saveMappingDecision(
 
   // Phase 1 — connection, ownership and the current mapping rows, in ONE short
   // context that commits before the `confirmed` path's QuickBooks list call.
-  const { conn, mappingRows, existing } = await runInDbContext(async () => {
+  const { conn, mappingRows, hiddenOrgIds, existing } = await runInDbContext(async () => {
     const conn = await resolveConnection(partnerId, provider);
 
     if (breezeEntityType === 'org') {
-      await loadOwnedOrg(breezeEntityId, partnerId);
+      // `unlinked` never reaches QuickBooks, so it stays available for the
+      // hidden org — see loadOwnedOrg's doc comment.
+      await loadOwnedOrg(breezeEntityId, partnerId, { allowQuickSupport: decision === 'unlinked' });
     } else {
       await loadOwnedCatalogItem(breezeEntityId, partnerId);
     }
 
     const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
-    return { conn, mappingRows, existing: mappingRows.find((m) => m.breezeEntityId === breezeEntityId) ?? null };
+    // A mapping row owned by the hidden org must not block a REAL org from
+    // claiming that remote id — `buildOrgProposals` already stopped treating
+    // those rows as claims, and a suggestion it offers has to be confirmable.
+    // The row itself stays put; only its veto is dropped. (Catalog items have
+    // no org axis, so the set is only needed for the org branch.)
+    const hiddenOrgIds = breezeEntityType === 'org'
+      ? await loadQuickSupportOrgIds(partnerId)
+      : new Set<string>();
+    return {
+      conn,
+      mappingRows,
+      hiddenOrgIds,
+      existing: mappingRows.find((m) => m.breezeEntityId === breezeEntityId) ?? null,
+    };
   });
 
   let fields: MappingDecisionFields;
@@ -774,7 +852,11 @@ export async function saveMappingDecision(
       throw new AccountingMappingError('entity_not_found', 404, 'A remote entity id is required to confirm a mapping');
     }
 
-    const conflict = mappingRows.find((m) => m.remoteEntityId === remoteEntityId && m.breezeEntityId !== breezeEntityId);
+    const conflict = mappingRows.find((m) => (
+      m.remoteEntityId === remoteEntityId
+      && m.breezeEntityId !== breezeEntityId
+      && !hiddenOrgIds.has(m.breezeEntityId)
+    ));
     if (conflict) {
       throw new AccountingMappingError(
         'mapping_conflict',
