@@ -1,14 +1,25 @@
 import { Hono } from 'hono';
+import type { Context, MiddlewareHandler, Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, isInteractiveUserSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
-import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
+import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
+import {
+  MAINTENANCE_ENTRY_ALLOWED_STATUSES,
+  MaintenanceLeaseError,
+  applyMaintenanceEntry,
+  clearMaintenanceLease,
+} from '../../services/deviceMaintenanceLease';
+import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant, type StepUpGrantBinding } from '../../services/mfaStepUpGrant';
+import { getUserEpochs } from '../../services/authEpochs';
+import { lockMaintenanceAssurance } from '../../services/maintenanceAuthorization';
+import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
@@ -259,6 +270,178 @@ commandsRoutes.post(
   }
 );
 
+// POST /devices/bulk/maintenance - Enter maintenance mode on many devices
+//
+// RMM-QA-176 D2. ENTRY ONLY (exit stays per-device — ending suppression needs
+// no batching). Registered before the `/:id/…` routes IN THIS FILE so `bulk` is
+// never read as a device id: `POST /:id/maintenance` is registered further down
+// this file, so this handler must appear above it or Hono matches it with
+// id='bulk'. (`POST /bulk/commands` directly above is the existing precedent
+// for static-before-:id in this file.) That is not hypothetical: before this
+// route existed, `POST /devices/bulk/maintenance` reached the `/:id/maintenance`
+// handler and was rejected 400 by `maintenanceModeSchema` — the RED for this
+// task. Cross-router shadowing is not the hazard: no other router under
+// routes/devices registers POST /bulk/* or /:id/maintenance. Note commandsRoutes
+// is NOT mounted last — it is at routes/devices/index.ts:103 with 14 routers
+// after it — but later mounts cannot shadow an already-registered path, so the
+// mount position is moot.
+//
+// The gates and helpers this route reuses (requireInteractiveSession,
+// STEP_UP_REQUIRED_BODY, maintenanceLeaseErrorResponse) are declared further
+// down beside the single-device route; the function declaration is hoisted and
+// the consts are only read inside this handler, which runs long after module
+// evaluation.
+//
+// Admission and write order:
+//   1. PREFLIGHT, no writes — validate the grant against the digest of the
+//      WHOLE deduplicated set, then authorize every device, collecting the
+//      ineligible ones. Authorization is decided before anything is written.
+//   2. One transaction: SHARE-lock the actor, recheck token/grant epochs,
+//      consume the grant once, then lock devices in sorted order and recheck
+//      each authorized location before writing. A failed batch rolls back
+//      device writes; a consumed Redis grant requires a fresh factor on retry.
+commandsRoutes.post(
+  '/bulk/maintenance',
+  requireScope('organization', 'partner', 'system'),
+  requireInteractiveSession(),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
+  zValidator('json', bulkMaintenanceSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const data = c.req.valid('json');
+    const now = new Date();
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const deviceIds = [...new Set(data.deviceIds)].sort();
+
+    type BulkMaintenanceFailureCode = 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED' | 'DECOMMISSIONED' | 'STATE_CONFLICT';
+    const failed: Array<{ deviceId: string; code: BulkMaintenanceFailureCode; message: string }> = [];
+    const eligible: Array<{ id: string; orgId: string; siteId?: string | null; hostname: string | null; displayName?: string | null }> = [];
+
+    let grantBinding: StepUpGrantBinding | null = null;
+    if (ENABLE_2FA) {
+      const epochs = await getUserEpochs(auth.user.id);
+      const sid = auth.token?.sid;
+      if (!epochs || !sid) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+      grantBinding = {
+        userId: auth.user.id,
+        operation: 'device_maintenance',
+        authEpoch: epochs.authEpoch,
+        mfaEpoch: epochs.mfaEpoch,
+        sid,
+        // The digest covers the WHOLE deduplicated set: one grant for the set
+        // the technician was shown, not one per device.
+        resourceDigest: maintenanceResourceDigest({
+          deviceIds,
+          reason: data.reason,
+          durationHours: data.durationHours,
+        }),
+      };
+      if (!data.stepUpGrant || !(await validateStepUpGrant(data.stepUpGrant, grantBinding))) {
+        return c.json(STEP_UP_REQUIRED_BODY, 403);
+      }
+    }
+
+    // Phase 1 — preflight. No writes.
+    for (const deviceId of deviceIds) {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
+        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found.' });
+        continue;
+      }
+      // Same precedence as the single-device and bulk-command paths: site
+      // denial wins over device-state denials so a state code never confirms
+      // the existence of a device the caller may not see.
+      if (!canAccessDeviceSite(device, permissions)) {
+        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
+        continue;
+      }
+      if (device.status === 'decommissioned') {
+        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot change maintenance mode for a decommissioned device.' });
+        continue;
+      }
+      if (!(MAINTENANCE_ENTRY_ALLOWED_STATUSES as readonly string[]).includes(device.status)) {
+        failed.push({ deviceId, code: 'STATE_CONFLICT', message: `Cannot enter maintenance mode while the device is "${device.status}".` });
+        continue;
+      }
+      eligible.push(device);
+    }
+
+    // Nothing to do: report and leave the grant unspent so the technician can
+    // fix the selection and retry without a second factor prompt.
+    if (eligible.length === 0) {
+      return c.json({ succeeded: [], failed });
+    }
+
+    // Phase 3 — one transaction, all-or-nothing.
+    let results: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }>;
+    try {
+      results = await db.transaction(async (tx) => {
+        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+          || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
+          throw new MaintenanceStepUpConsumedError();
+        }
+        const applied: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }> = [];
+        for (const device of eligible) {
+          applied.push({
+            device,
+            result: await applyMaintenanceEntry(tx, {
+              deviceId: device.id,
+              authorizedLocation: device,
+              reason: data.reason,
+              durationHours: data.durationHours,
+              actorUserId: auth.user.id,
+              now,
+            }),
+          });
+        }
+        return applied;
+      });
+    } catch (err) {
+      if (err instanceof MaintenanceStepUpConsumedError) return c.json(STEP_UP_REQUIRED_BODY, 403);
+      // A state change that surfaced only under the lock aborts the whole batch
+      // — reported, not partially applied.
+      if (err instanceof MaintenanceLeaseError) {
+        return maintenanceLeaseErrorResponse(c, err);
+      }
+      throw err;
+    }
+
+    // Per-device audit rows after commit — same shape as the single route, no
+    // aggregate row, so the trail stays per-resource like bulk wake.
+    for (const { device, result } of results) {
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: result.action === 'extend' ? 'device.maintenance.extend' : 'device.maintenance.enable',
+        resourceType: 'device',
+        resourceId: result.device.id,
+        resourceName: result.device.hostname ?? result.device.displayName ?? device.hostname,
+        details: {
+          reason: data.reason,
+          durationHours: data.durationHours,
+          maintenanceUntil: result.until.toISOString(),
+          maintenanceStartedAt: result.startedAt.toISOString(),
+          previousMaintenanceUntil: result.previousUntil?.toISOString() ?? null,
+          previousReason: result.previousReason,
+          stepUp: grantBinding ? 'grant' : 'disabled_2fa',
+          bulk: true,
+        },
+      });
+    }
+
+    return c.json({
+      succeeded: results.map(({ result }) => ({
+        deviceId: result.device.id,
+        action: result.action,
+        maintenanceUntil: result.until.toISOString(),
+      })),
+      failed,
+    });
+  }
+);
+
 // POST /devices/:id/commands - Queue a command for device
 commandsRoutes.post(
   '/:id/commands',
@@ -395,16 +578,69 @@ commandsRoutes.post(
   }
 );
 
-// POST /devices/:id/maintenance - Toggle maintenance mode
+const STEP_UP_REQUIRED_BODY = { error: 'Step-up required', code: 'STEP_UP_REQUIRED' } as const;
+
+/** Thrown inside the write transaction when the grant lost a consume race. */
+class MaintenanceStepUpConsumedError extends Error {}
+
+/**
+ * "A human must be doing this" — UNCONDITIONAL, on entry AND exit
+ * (RMM-QA-176 D1). NOT redundant with requireMfa(): API-key and MCP-OAuth
+ * contexts are built with `token: {}` (routes/mcpServer.ts:2246), and
+ * hasSatisfiedMfa returns true for ANY context when ENABLE_2FA is off — so on
+ * such a deployment the MFA gate would ADMIT a machine principal. This gate is
+ * what makes "API-key denial with zero state change" independent of MFA
+ * configuration. Placed before the device lookup so a denial costs no query.
+ */
+function requireInteractiveSession(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const auth = c.get('auth') as AuthContext | undefined;
+    if (!auth || !isInteractiveUserSession(auth)) {
+      return c.json({ error: 'Interactive user session required' }, 403);
+    }
+    return next();
+  };
+}
+
+/**
+ * Entry and extension need an assured session; EXIT deliberately does not —
+ * "keep exit safely available" (D3). Sits AFTER zValidator so `enable` is
+ * parsed, not read off an unvalidated body.
+ */
+function requireMaintenanceEntryMfa(): MiddlewareHandler {
+  const mfaGate = requireMfa();
+  return async (c: Context, next: Next) => {
+    const data = (c.req as unknown as { valid: (t: 'json') => { enable: boolean } }).valid('json');
+    if (data?.enable !== true) return next();
+    return mfaGate(c, next);
+  };
+}
+
+function maintenanceLeaseErrorResponse(c: Context, err: MaintenanceLeaseError) {
+  const body = err.code === 'state_conflict'
+    ? { error: err.message, code: 'MAINTENANCE_STATE_CONFLICT' as const }
+    : { error: err.message };
+  return c.json(body, err.status as 400 | 404 | 409);
+}
+
+// POST /devices/:id/maintenance - Enter, extend or exit maintenance mode
+//
+// RMM-QA-176: entry and extension mutate monitoring posture, so they require an
+// assured session AND a single-use, operation-bound step-up grant; exit is
+// un-gated but truthful. Preflight denials avoid a transaction; denials found
+// under locks roll back the transaction with no maintenance state change.
 commandsRoutes.post(
   '/:id/maintenance',
   requireScope('organization', 'partner', 'system'),
+  requireInteractiveSession(),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
   zValidator('json', maintenanceModeSchema),
+  requireMaintenanceEntryMfa(),
   async (c) => {
-    const auth = c.get('auth');
+    const auth = c.get('auth') as AuthContext;
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
+    const now = new Date();
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -413,40 +649,135 @@ commandsRoutes.post(
     if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
-
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot change maintenance mode for a decommissioned device' }, 400);
     }
 
-    const targetStatus = data.enable ? 'maintenance' : 'online';
-    const [updatedDevice] = await db
-      .update(devices)
-      .set({
-        status: targetStatus,
-        updatedAt: new Date()
-      })
-      .where(eq(devices.id, deviceId))
-      .returning();
-
-    if (!updatedDevice) {
-      return c.json({ error: 'Failed to update maintenance mode' }, 500);
+    if (!data.enable) {
+      let result: Awaited<ReturnType<typeof clearMaintenanceLease>>;
+      try {
+        result = await db.transaction(async (tx) => clearMaintenanceLease(tx, { deviceId, now, authorizedLocation: device }));
+      } catch (err) {
+        if (err instanceof MaintenanceLeaseError) return maintenanceLeaseErrorResponse(c, err);
+        throw err;
+      }
+      // No audit row when nothing changed: an audit event must never claim a
+      // transition that did not happen.
+      if (result.changed) {
+        writeRouteAudit(c, {
+          orgId: device.orgId,
+          action: 'device.maintenance.disable',
+          resourceType: 'device',
+          resourceId: result.device.id,
+          resourceName: result.device.hostname ?? result.device.displayName ?? device.hostname,
+          details: {
+            previousMaintenanceUntil: result.previousUntil?.toISOString() ?? null,
+            previousReason: result.previousReason,
+            resolvedStatus: result.resolvedStatus,
+            endedEarly: result.previousUntil != null && result.previousUntil.getTime() > now.getTime(),
+          },
+        });
+      }
+      return c.json({ success: true, changed: result.changed, device: result.device });
     }
 
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: data.enable ? 'device.maintenance.enable' : 'device.maintenance.disable',
-      resourceType: 'device',
-      resourceId: updatedDevice.id,
-      resourceName: updatedDevice.hostname ?? updatedDevice.displayName ?? device.hostname,
-      details: {
-        durationHours: data.durationHours ?? null
-      }
-    });
+    // Advisory pre-check so a state denial costs no lock and no write; the
+    // lease service re-checks under the FOR UPDATE lock.
+    if (!(MAINTENANCE_ENTRY_ALLOWED_STATUSES as readonly string[]).includes(device.status)) {
+      return c.json(
+        { error: `Cannot enter maintenance mode while the device is "${device.status}"`, code: 'MAINTENANCE_STATE_CONFLICT' },
+        409,
+      );
+    }
 
-    return c.json({ success: true, device: updatedDevice });
+    // `maintenance_reason` is varchar(500) and deviceMaintenanceLease does NOT
+    // clamp — the caller owns that contract. `maintenanceReasonSchema` is
+    // `.trim().min(3).max(500)`, so the value reaching the service is already
+    // trimmed and <= 500; an over-long reason is REJECTED with a named 400
+    // rather than silently truncated, which is the better direction for a
+    // field that ends up in an audit trail.
+    let grantBinding: StepUpGrantBinding | null = null;
+    if (ENABLE_2FA) {
+      const epochs = await getUserEpochs(auth.user.id);
+      const sid = auth.token?.sid;
+      if (!epochs || !sid) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+      grantBinding = {
+        userId: auth.user.id,
+        operation: 'device_maintenance',
+        authEpoch: epochs.authEpoch,
+        mfaEpoch: epochs.mfaEpoch,
+        sid,
+        resourceDigest: maintenanceResourceDigest({
+          deviceIds: [deviceId],
+          reason: data.reason,
+          durationHours: data.durationHours,
+        }),
+      };
+      // Missing, stale and mismatched are ONE response on purpose: telling a
+      // caller which of the three it hit is a probing oracle for the binding.
+      if (!data.stepUpGrant || !(await validateStepUpGrant(data.stepUpGrant, grantBinding))) {
+        return c.json(STEP_UP_REQUIRED_BODY, 403);
+      }
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        // Consume INSIDE the transaction, before the write: a grant burned by a
+        // racing request must abort this one with no row change.
+        if (grantBinding && (!(await lockMaintenanceAssurance(tx, auth, grantBinding))
+          || !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding)))) {
+          throw new MaintenanceStepUpConsumedError();
+        }
+        return applyMaintenanceEntry(tx, {
+          deviceId,
+          authorizedLocation: device,
+          reason: data.reason,
+          durationHours: data.durationHours,
+          actorUserId: auth.user.id,
+          now,
+        });
+      });
+
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: result.action === 'extend' ? 'device.maintenance.extend' : 'device.maintenance.enable',
+        resourceType: 'device',
+        resourceId: result.device.id,
+        resourceName: result.device.hostname ?? result.device.displayName ?? device.hostname,
+        details: {
+          reason: data.reason,
+          durationHours: data.durationHours,
+          maintenanceUntil: result.until.toISOString(),
+          maintenanceStartedAt: result.startedAt.toISOString(),
+          previousMaintenanceUntil: result.previousUntil?.toISOString() ?? null,
+          previousReason: result.previousReason,
+          stepUp: grantBinding ? 'grant' : 'disabled_2fa',
+        },
+      });
+
+      return c.json({
+        success: true,
+        action: result.action,
+        maintenance: {
+          until: result.until.toISOString(),
+          startedAt: result.startedAt.toISOString(),
+          reason: data.reason,
+        },
+        device: result.device,
+      });
+    } catch (err) {
+      if (err instanceof MaintenanceStepUpConsumedError) {
+        return c.json(STEP_UP_REQUIRED_BODY, 403);
+      }
+      if (err instanceof MaintenanceLeaseError) {
+        return maintenanceLeaseErrorResponse(c, err);
+      }
+      throw err;
+    }
   }
 );
-
 
 // POST /devices/:id/auto-update - Set auto_update configuration
 commandsRoutes.post(

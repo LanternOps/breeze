@@ -21,6 +21,7 @@ import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -174,24 +175,22 @@ function getModalConfig(
         confirmLabel: t("deviceActions.confirm.shutdown.confirm"),
         variant: "destructive",
       };
+    // RMM-QA-176 D10: only EXIT still confirms. Entry needs a reason, a
+    // duration and possibly a step-up factor, none of which a yes/no confirm
+    // can collect — `handleAction` routes it to the parent's
+    // MaintenanceModeDialog instead, so this case is only reached for exit.
+    // (The `deviceActions.confirm.enterMaintenance.*` keys stay in the locale
+    // files: nothing else reads them, and deleting a key across eight locales
+    // to re-add it later is churn.)
     case "maintenance":
-      return device.status === "maintenance"
-        ? {
-            title: t("deviceActions.confirm.exitMaintenance.title"),
-            message: t("deviceActions.confirm.exitMaintenance.message", {
-              hostname: device.hostname,
-            }),
-            confirmLabel: t("deviceActions.confirm.exitMaintenance.confirm"),
-            variant: "warning",
-          }
-        : {
-            title: t("deviceActions.confirm.enterMaintenance.title"),
-            message: t("deviceActions.confirm.enterMaintenance.message", {
-              hostname: device.hostname,
-            }),
-            confirmLabel: t("deviceActions.confirm.enterMaintenance.confirm"),
-            variant: "warning",
-          };
+      return {
+        title: t("deviceActions.confirm.exitMaintenance.title"),
+        message: t("deviceActions.confirm.exitMaintenance.message", {
+          hostname: device.hostname,
+        }),
+        confirmLabel: t("deviceActions.confirm.exitMaintenance.confirm"),
+        variant: "warning",
+      };
     case "install-homebrew":
       return {
         title: t("deviceActions.confirm.installHomebrew.title"),
@@ -239,7 +238,9 @@ export default function DeviceActions({
       action === "reboot" ||
       action === "reboot_safe_mode" ||
       action === "shutdown" ||
-      action === "maintenance" ||
+      // Entry falls THROUGH to the parent (see getModalConfig); only exit
+      // confirms here.
+      (action === "maintenance" && isInMaintenance(device)) ||
       action === "decommission" ||
       action === "clear-sessions" ||
       action === "install-homebrew"
@@ -454,7 +455,7 @@ export default function DeviceActions({
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === "maintenance"
+                {isInMaintenance(device)
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
@@ -609,7 +610,7 @@ export default function DeviceActions({
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === "maintenance"
+                {isInMaintenance(device)
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
@@ -647,7 +648,7 @@ export default function DeviceActions({
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
-                {device.status === "maintenance"
+                {isInMaintenance(device)
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>

@@ -60,6 +60,17 @@ const remoteToolsDeniedPolicy = {
 // every jsdom case, so query the DOM element directly and read its props.
 const button = (name: RegExp) => screen.getByRole('button', { name });
 
+it.each(['power', 'menu'])('labels an active lease as exit in the %s menu after a heartbeat reports online', async (menu) => {
+  const onAction = vi.fn();
+  render(<DeviceActions device={{ ...onlineDevice, maintenanceUntil: new Date(Date.now() + 3600000).toISOString() }} onAction={onAction} />);
+  await userEvent.click(menu === 'power' ? button(/^power$/i) : screen.getByTestId('device-actions-menu'));
+  const action = button(/^exit maintenance$/i);
+  expect(screen.queryByRole('button', { name: /^enter maintenance$/i })).not.toBeInTheDocument();
+  await userEvent.click(action);
+  expect(onAction).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: 'Exit Maintenance Mode' })).toBeInTheDocument();
+});
+
 describe('DeviceActions — offline gating (issue #2013)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -346,7 +357,7 @@ describe('DeviceActions — maintenance mode in the Power menu (#4936)', () => {
     vi.clearAllMocks();
   });
 
-  it('offers maintenance in the Power menu and confirms into onAction("maintenance")', async () => {
+  it('offers maintenance in the Power menu and dispatches to the reason/duration dialog', async () => {
     const user = userEvent.setup();
     const onAction = vi.fn();
     render(<DeviceActions device={onlineDevice} onAction={onAction} />);
@@ -354,12 +365,7 @@ describe('DeviceActions — maintenance mode in the Power menu (#4936)', () => {
     await user.click(button(/^power$/i));
     await user.click(screen.getByTestId('device-power-action-maintenance'));
 
-    // Gated behind the same confirm dialog as every other Power action, so a
-    // mis-click cannot silently suppress monitoring on a device.
-    expect(onAction).not.toHaveBeenCalled();
-    expect(await screen.findByText('Enter Maintenance Mode')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Enter Maintenance' }));
+    // Entry opens the parent's form; exit alone retains the yes/no confirmation.
     expect(onAction).toHaveBeenCalledWith(
       'maintenance',
       expect.objectContaining({ id: 'device-1' }),
