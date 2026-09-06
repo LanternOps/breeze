@@ -102,7 +102,9 @@
         "closed": "Fermé"
       },
       "newTicket": "Nouveau billet",
-      "loadFailed": "Les billets n’ont pas été chargés."
+      "loadFailed": "Les billets n’ont pas été chargés.",
+      "forbidden": "Vous n'avez pas l'autorisation de consulter les billets.",
+      "truncated": "Affichage de {{shown}} billets sur {{total}}."
     },
     "billing": {
       "sections": {

@@ -11,7 +11,6 @@ import {
   Copy,
   Check,
   CreditCard,
-  FileSignature,
   Fingerprint,
   Globe,
   Monitor,
@@ -60,7 +59,11 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
       { key: 'contacts', hash: 'contacts', label: 'orgSettingsPage.nav.contacts', description: 'orgSettingsPage.nav.contactsDescription', icon: Contact },
-      { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
+      // 'contracts' is intentionally NOT a nav item anymore — it moved to the
+      // organization record's Contracts & Billing tab (#5075 W03). It stays a
+      // resolvable TabKey (see getTabFromHash's explicit case below) purely so
+      // an old `#contracts` bookmark/link still redirects there instead of
+      // landing on General with a silently-ignored hash.
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
       { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
       { key: 'extensions', hash: 'extensions', label: 'orgSettingsPage.nav.extensions', description: 'orgSettingsPage.nav.extensionsDescription', icon: Puzzle },
@@ -99,6 +102,10 @@ function getTabFromHash(): TabKey | null {
   if (typeof window === 'undefined') return null;
   const hash = window.location.hash.replace('#', '');
   const key = hash.split('/')[0] ?? '';
+  // 'contracts' has no nav entry (see TAB_GROUPS above) so it's absent from
+  // TAB_BY_KEY, but an old `#contracts` link must still resolve to the
+  // redirect effect rather than silently falling through to the default tab.
+  if (key === 'contracts') return 'contracts';
   return key in TAB_BY_KEY ? (key as TabKey) : null;
 }
 

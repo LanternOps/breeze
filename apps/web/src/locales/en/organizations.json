@@ -102,7 +102,9 @@
         "closed": "Closed"
       },
       "newTicket": "New ticket",
-      "loadFailed": "Tickets failed to load."
+      "loadFailed": "Tickets failed to load.",
+      "forbidden": "You don't have permission to view tickets.",
+      "truncated": "Showing {{shown}} of {{total}} tickets."
     },
     "billing": {
       "sections": {

@@ -102,7 +102,9 @@
         "closed": "Chiusi"
       },
       "newTicket": "Nuovo ticket",
-      "loadFailed": "Impossibile caricare i ticket."
+      "loadFailed": "Impossibile caricare i ticket.",
+      "forbidden": "Non hai l'autorizzazione per visualizzare i ticket.",
+      "truncated": "Visualizzazione di {{shown}} ticket su {{total}}."
     },
     "billing": {
       "sections": {

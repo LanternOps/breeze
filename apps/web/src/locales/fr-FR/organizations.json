@@ -102,7 +102,9 @@
         "closed": "Fermé"
       },
       "newTicket": "Nouveau ticket",
-      "loadFailed": "Les tickets n’ont pas été chargés."
+      "loadFailed": "Les tickets n’ont pas été chargés.",
+      "forbidden": "Vous n'avez pas l'autorisation de consulter les tickets.",
+      "truncated": "Affichage de {{shown}} tickets sur {{total}}."
     },
     "billing": {
       "sections": {

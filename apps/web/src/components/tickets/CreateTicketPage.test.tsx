@@ -86,7 +86,9 @@ describe('CreateTicketPage', () => {
   });
 
   it('pre-fills the organization from a #orgId= deep link (the org record\'s Tickets tab)', async () => {
-    window.location.hash = '#orgId=org-b';
+    // `replaceState`, not `location.hash =` — see the org-scope-fixes test
+    // below for why (a jsdom-only async hashchange dispatch this avoids).
+    window.history.replaceState(null, '', '#orgId=org-b');
     mockOptionsApi();
     render(<CreateTicketPage />);
     await screen.findByTestId('create-ticket-form');
@@ -350,6 +352,49 @@ describe('CreateTicketPage', () => {
         expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' }));
       });
       const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === '/tickets' && init?.method === 'POST');
+      const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
+      expect(body.orgId).toBe('org-1');
+    });
+
+    it('an org-scoped session ignores a crafted #orgId= hash — the session org always wins', async () => {
+      // A tech's own org-scoped session is org-1; a stale/crafted deep link
+      // names a different org. The lock must win — never submit to org-2.
+      //
+      // `history.replaceState` (not `location.hash =`) to seed it: jsdom's
+      // `SessionHistory` schedules an async `hashchange` dispatch off a plain
+      // hash assignment, which would re-apply the SAME hash later in this test
+      // and falsely look like the org lock had been un-done — a jsdom-only
+      // artifact, since a real browser never fires `hashchange` for a fragment
+      // already present at initial navigation (only for a LATER change).
+      // `replaceState` sets the fragment without that dispatch, matching how
+      // the fragment is actually seen at initial page load.
+      window.history.replaceState(null, '', '#orgId=org-2');
+      mockGetJwtClaims.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+        if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
+        if (url === '/tickets' && init?.method === 'POST') return makeJsonResponse({ data: { id: 'tk-1', internalNumber: 'T-1' } });
+        return makeJsonResponse({ error: 'unexpected' }, false, 404);
+      });
+
+      render(<CreateTicketPage />);
+      await screen.findByTestId('create-ticket-form');
+      expect(screen.queryByTestId('create-ticket-org-input')).toBeNull();
+
+      // The hash-derived 'org-2' and the session lock's 'org-1' both trigger a
+      // device fetch; whichever settles LAST decides what canSubmit reflects at
+      // any instant. Wait for the org-1 fetch specifically — proof the lock has
+      // actually landed — rather than for the submit button's not-disabled
+      // state alone, which can go true on the earlier (org-2) fetch first.
+      await waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('orgId=org-1'))).toBe(true));
+
+      fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Printer down' } });
+      await waitFor(() => expect(screen.getByTestId('create-ticket-submit')).not.toBeDisabled());
+      fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tickets', expect.objectContaining({ method: 'POST' })));
+      const postCall = fetchMock.mock.calls.find(([url, i]) => String(url) === '/tickets' && i?.method === 'POST');
       const body = JSON.parse(String(postCall?.[1]?.body)) as Record<string, unknown>;
       expect(body.orgId).toBe('org-1');
     });

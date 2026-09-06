@@ -102,7 +102,9 @@
         "closed": "Kapalı"
       },
       "newTicket": "Yeni bilet",
-      "loadFailed": "Biletler yüklenemedi."
+      "loadFailed": "Biletler yüklenemedi.",
+      "forbidden": "Biletleri görüntüleme izniniz yok.",
+      "truncated": "{{total}} biletten {{shown}} tanesi gösteriliyor."
     },
     "billing": {
       "sections": {

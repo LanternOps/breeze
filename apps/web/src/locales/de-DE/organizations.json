@@ -102,7 +102,9 @@
         "closed": "Geschlossen"
       },
       "newTicket": "Neues Ticket",
-      "loadFailed": "Die Tickets konnten nicht geladen werden."
+      "loadFailed": "Die Tickets konnten nicht geladen werden.",
+      "forbidden": "Sie sind nicht berechtigt, Tickets anzuzeigen.",
+      "truncated": "{{shown}} von {{total}} Tickets werden angezeigt."
     },
     "billing": {
       "sections": {

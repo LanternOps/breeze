@@ -95,16 +95,18 @@ function invoiceDepositBadge(inv: InvoiceSummary): 'unpaid' | 'paid' | null {
   return cents(inv.amountPaid) < cents(inv.depositDue) ? 'unpaid' : 'paid';
 }
 
-interface Props {
+export interface InvoicesPageProps {
   /** When set (e.g. embedded in the org record's Contracts & Billing tab), the
    *  list is locked to this org: the org column is hidden, the "New invoice"
-   *  dialog pre-selects it, and hash-filter writes are skipped so the host
-   *  page's own hash-based tab routing is never fought (mirrors
-   *  `ContractsList`'s `lockedOrgId`). */
+   *  dialog pre-selects it and disables the org picker, and hash-filter
+   *  writes are skipped so the host page's own hash-based tab routing is
+   *  never fought — follows the same `lockedOrgId` contract as
+   *  `ContractsList` (the two dialogs differ in shape: a plain link there vs.
+   *  an inline picker here). */
   lockedOrgId?: string;
 }
 
-export function InvoicesPage({ lockedOrgId }: Props = {}) {
+export function InvoicesPage({ lockedOrgId }: InvoicesPageProps = {}) {
   const { t, i18n } = useTranslation('billing');
   const { can } = usePermissions();
   // POST /accounting/quickbooks/invoices/push-bulk is `requireScope('partner',
@@ -176,8 +178,21 @@ export function InvoicesPage({ lockedOrgId }: Props = {}) {
     if (res.status === 401) return UNAUTHORIZED();
     if (!res.ok) { handleActionError(new Error(res.statusText), t('invoicesPage.errors.loadOrganizations')); return; }
     const body = (await res.json()) as { data?: Organization[]; organizations?: Organization[] };
-    setOrgs(body.data ?? body.organizations ?? []);
-  }, [t]);
+    const list = body.data ?? body.organizations ?? [];
+    // `/orgs/organizations` is a single, server-default-sized page — a
+    // partner with more orgs than that page holds can lock to one that isn't
+    // in it. Without this, the create dialog's org <select> would render its
+    // "Select organization…" placeholder (no matching <option>) while still
+    // submitting for the correct-but-invisible locked org — silently
+    // confusing, not silently wrong. Fetch that one org directly so the
+    // picker always has something to show.
+    if (lockedOrgId && !list.some((o) => o.id === lockedOrgId)) {
+      const lockedRes = await fetchWithAuth(`/orgs/organizations/${lockedOrgId}`);
+      const lockedOrg = lockedRes.ok ? ((await lockedRes.json().catch(() => null)) as Organization | null) : null;
+      if (lockedOrg?.id) list.unshift(lockedOrg);
+    }
+    setOrgs(list);
+  }, [t, lockedOrgId]);
 
   const loadInvoices = useCallback(async (f: Filters) => {
     // Latest-request-wins. A deep-linked load (`/invoices#status=paid`) fires
@@ -250,7 +265,7 @@ export function InvoicesPage({ lockedOrgId }: Props = {}) {
     setMode('assemble');
     // Locked embeds always target their own org; otherwise default to the
     // header's context when one is selected.
-    const contextOrgId = lockedOrgId ?? (useOrgStore.getState().currentOrgId ?? '');
+    const contextOrgId = lockedOrgId || useOrgStore.getState().currentOrgId || '';
     setAssembleOrgId(contextOrgId);
     setAssembleSiteId('');
     setAssembleSites([]);
@@ -467,7 +482,11 @@ export function InvoicesPage({ lockedOrgId }: Props = {}) {
     <div className="space-y-5" data-testid="invoices-page">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">{t('invoicesPage.title')}</h1>
+          {lockedOrgId ? (
+            <h2 className="text-lg font-semibold">{t('invoicesPage.title')}</h2>
+          ) : (
+            <h1 className="text-xl font-semibold">{t('invoicesPage.title')}</h1>
+          )}
           <p className="mt-1 text-sm text-muted-foreground">
             {t('invoicesPage.subtitle')}
           </p>

@@ -55,7 +55,7 @@ describe('OrgTicketsTab', () => {
     // makeOrgFetch(orgId) is the production wiring; here we assert the tab
     // calls through the SAME orgFetch it was given (never a bare fetchWithAuth),
     // which is what carries the pin — see OrganizationRecordPage's orgFetch prop.
-    const calls = (orgFetch as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    const calls = (orgFetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];
     expect(calls.some(([path]) => path.startsWith('/tickets?'))).toBe(true);
     // Never silently reaches for a different org's id.
     expect(calls.every(([path]) => !path.includes(OTHER_ORG_ID))).toBe(true);
@@ -74,13 +74,65 @@ describe('OrgTicketsTab', () => {
     expect(screen.queryByTestId('tickets-queue-empty')).toBeNull();
   });
 
+  it('shows a non-retryable forbidden state on a 403 — never the generic failure message', async () => {
+    const orgFetch = vi.fn(async () => json({ error: 'forbidden' }, 403)) as unknown as OrgFetch;
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    await waitFor(() => expect(screen.getByTestId('org-tickets-forbidden')).toBeTruthy());
+    expect(screen.queryByTestId('org-tickets-error')).toBeNull();
+    // A 403 can never succeed on retry, so no retry button is offered.
+    expect(screen.queryByRole('button', { name: /retry|try again/i })).toBeNull();
+  });
+
+  it('shows a "showing N of total" note when the queue is truncated at the page limit', async () => {
+    const orgFetch = vi.fn(async () =>
+      json({ data: [ticket()], pagination: { page: 1, limit: 100, total: 137 } }),
+    ) as unknown as OrgFetch;
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    const note = await screen.findByTestId('org-tickets-truncated-note');
+    expect(note.textContent).toContain('137');
+  });
+
+  it('never shows the truncated note when every ticket fits on one page', async () => {
+    const orgFetch = vi.fn(async () =>
+      json({ data: [ticket()], pagination: { page: 1, limit: 100, total: 1 } }),
+    ) as unknown as OrgFetch;
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    await screen.findByText('Printer is down');
+    expect(screen.queryByTestId('org-tickets-truncated-note')).toBeNull();
+  });
+
+  it('drops a rejection from an already-superseded request instead of clobbering the newer result', async () => {
+    // The FIRST call (fired by the initial mount) rejects, but only after the
+    // SECOND call (fired by clicking "closed") has already resolved — proving
+    // the stale rejection is dropped by useLatest rather than overwriting the
+    // fresh, successful state with an error.
+    let call = 0;
+    const orgFetch = vi.fn((path: string) => {
+      call += 1;
+      if (call === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('stale network failure')), 20);
+        });
+      }
+      return Promise.resolve(json({ data: [ticket({ id: 't-2', subject: 'Closed ticket' })] }));
+    }) as unknown as OrgFetch;
+
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    await userEvent.click(screen.getByTestId('org-tickets-tab-closed'));
+    await screen.findByText('Closed ticket');
+    // Give the first (stale) call's delayed rejection a chance to land.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(screen.queryByTestId('org-tickets-error')).toBeNull();
+    expect(screen.getByText('Closed ticket')).toBeTruthy();
+  });
+
   it('re-fetches the selected status group when the tab changes', async () => {
     const orgFetch = vi.fn(async () => json({ data: [] })) as unknown as OrgFetch;
     render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
     await waitFor(() => expect(orgFetch).toHaveBeenCalled());
     await userEvent.click(screen.getByTestId('org-tickets-tab-closed'));
     await waitFor(() =>
-      expect((orgFetch as ReturnType<typeof vi.fn>).mock.calls.some((call) => String(call[0]).includes('statusGroup=closed'))).toBe(true),
+      expect((orgFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => String(call[0]).includes('statusGroup=closed'))).toBe(true),
     );
   });
 
@@ -97,5 +149,22 @@ describe('OrgTicketsTab', () => {
     const row = await screen.findByText('Printer is down');
     await userEvent.click(row);
     expect(navigateTo).toHaveBeenCalledWith('/tickets/t-1');
+  });
+
+  it('hides the redundant per-row org name — the record page already names this one org', async () => {
+    const orgFetch = vi.fn(async () => json({ data: [ticket({ orgName: 'Acme Dental' })] })) as unknown as OrgFetch;
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    await screen.findByText('Printer is down');
+    expect(screen.queryByText('Acme Dental')).toBeNull();
+  });
+
+  it('exposes the status filter as an ARIA tablist for assistive tech', async () => {
+    const orgFetch = vi.fn(async () => json({ data: [] })) as unknown as OrgFetch;
+    render(<OrgTicketsTab orgId={ORG_ID} orgFetch={orgFetch} />);
+    expect(screen.getByTestId('org-tickets-status-tabs')).toHaveAttribute('role', 'tablist');
+    const openTab = screen.getByTestId('org-tickets-tab-open');
+    expect(openTab).toHaveAttribute('role', 'tab');
+    expect(openTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('org-tickets-tab-closed')).toHaveAttribute('aria-selected', 'false');
   });
 });

@@ -27,8 +27,6 @@ import { OrganizationRecordPage } from '../pages/OrganizationRecordPage';
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(clearRefreshState);
 
-const stamp = Date.now();
-
 /** Recover the access token the app itself is using (see multi-currency.spec.ts
  *  for why: the durable credential is an httpOnly refresh cookie, and minting a
  *  fresh token here would rotate it and revoke the page's own session mid-test). */
@@ -65,10 +63,15 @@ async function apiJson<T>(
 }
 
 test.describe('organization record', () => {
-  test('open from the list, deep-link a tab, stay org-pinned under a mismatched switcher, and Work in this org', async ({ authedPage: page }) => {
+  test('open from the list, deep-link a tab, stay org-pinned under a mismatched switcher, and Work in this org', async ({ authedPage: page }, testInfo) => {
     test.setTimeout(120_000);
     const record = new OrganizationRecordPage(page);
     const token = await readAccessToken(page);
+
+    // Include the retry count: a CI retry inside the same worker would
+    // otherwise re-POST the identical slug from the failed attempt and die on
+    // a duplicate-slug 409 before the real assertions ever run.
+    const stamp = `${Date.now()}-${testInfo.retry}`;
 
     // Two orgs: A is the record under test, B is what the switcher points at
     // during scenario 3 — the mismatch the record must survive.

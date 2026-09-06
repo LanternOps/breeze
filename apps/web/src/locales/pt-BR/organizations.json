@@ -102,7 +102,9 @@
         "closed": "Fechados"
       },
       "newTicket": "Novo chamado",
-      "loadFailed": "Falha ao carregar chamados."
+      "loadFailed": "Falha ao carregar chamados.",
+      "forbidden": "Você não tem permissão para visualizar chamados.",
+      "truncated": "Exibindo {{shown}} de {{total}} chamados."
     },
     "billing": {
       "sections": {

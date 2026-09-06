@@ -349,5 +349,35 @@ describe('QuotesPage', () => {
       fireEvent.change(screen.getByTestId('quotes-filter-status'), { target: { value: 'draft' } });
       expect(window.location.hash).toBe('#billing');
     });
+
+    it('demotes the page title to an h2 instead of duplicating the host page\'s own h1', async () => {
+      fetchMock.mockImplementation(async (input: string) => {
+        if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+        if (input.startsWith('/quotes')) return json({ data: QUOTES });
+        return json({}, false, 404);
+      });
+      render(<QuotesPage lockedOrgId="org-1" />);
+      await waitFor(() => expect(screen.getByTestId('quotes-table')).toBeInTheDocument());
+      expect(screen.queryByRole('heading', { level: 1, name: 'Quotes' })).not.toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Quotes' })).toBeInTheDocument();
+    });
+
+    // The org list is a single, server-default-sized page — a partner with
+    // more orgs than that page holds can lock to one outside it (#5110 review).
+    it('fetches the locked org directly and shows it in the create dialog when it falls outside the default org-list page', async () => {
+      fetchMock.mockImplementation(async (input: string) => {
+        // Deliberately excludes 'org-3' — the locked org — from the paginated list.
+        if (input === '/orgs/organizations') return json({ data: ORGS });
+        if (input === '/orgs/organizations/org-3') return json({ id: 'org-3', name: 'Off-Page Org' });
+        if (input.startsWith('/quotes')) return json({ data: [] });
+        return json({}, false, 404);
+      });
+      render(<QuotesPage lockedOrgId="org-3" />);
+      await waitFor(() => expect(screen.getByTestId('quotes-empty')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('quotes-create-open'));
+      const orgSelect = screen.getByTestId('quotes-create-org') as HTMLSelectElement;
+      await waitFor(() => expect(orgSelect.value).toBe('org-3'));
+      expect(within(orgSelect).getByText('Off-Page Org')).toBeInTheDocument();
+    });
   });
 });
