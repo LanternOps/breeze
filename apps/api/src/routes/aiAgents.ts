@@ -1037,13 +1037,18 @@ aiAgentsRoutes.get(
         costCents: aiAgentRuns.costCents,
       })
       .from(aiAgentRuns)
-      // LEFT, not INNER: ai_agents is a dual-ownership table (#2135) whose RLS
-      // policy denies partner-wide rows to an org-scoped caller entirely
-      // (breeze_has_partner_access is false — org tokens carry no accessible
-      // partner ids). ai_agent_runs itself is plain org-scoped and stays
-      // visible, so an inner join would silently drop every run produced by
-      // a partner-wide agent from this list. agentName instead comes back
-      // null for those rows (see AiAgentRunListItemDto.agentName).
+      // LEFT, not INNER. ai_agents is a dual-ownership table (#2135), and until
+      // 2026-10-11-150000-ai-partner-wide-select.sql its RLS denied partner-wide
+      // rows to an org-scoped caller outright (breeze_has_partner_access is
+      // false — org tokens carry no accessible partner ids), so every run
+      // produced by a partner-wide agent would have been dropped by an inner
+      // join. That branch now makes the OWNING partner's partner-wide rows
+      // readable from an org context, so agentName resolves in the common case.
+      // The LEFT stays because the gap is narrowed, not closed: the branch keys
+      // on the CALLER's own partner, so a run whose org has since been moved to
+      // a different partner (org move/merge) still sees an invisible agent row,
+      // and agentName comes back null for it (see
+      // AiAgentRunListItemDto.agentName) rather than the run vanishing.
       .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
       .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
       .where(and(...conditions))
@@ -1115,9 +1120,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       deviceHostname: devices.hostname,
     })
     .from(aiAgentRuns)
-    // LEFT, not INNER — same RLS-visibility gap as `GET /runs` above: a
-    // partner-wide agent's ai_agents row is invisible to an org-scoped
-    // caller, but the run it produced must still be returned rather than
+    // LEFT, not INNER — same residual RLS-visibility gap as `GET /runs` above.
+    // Since 2026-10-11-150000-ai-partner-wide-select.sql an org-scoped caller
+    // CAN see its own partner's partner-wide agent rows, so this usually
+    // resolves; it still does not for a run whose org has since moved to
+    // another partner. In that case the run must still be returned rather than
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
