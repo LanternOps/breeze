@@ -10,6 +10,7 @@ import ScriptPickerModal, {
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
 import {
   sendDeviceCommand,
@@ -232,7 +233,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     void navigateTo("/devices");
   };
 
-  const handleAction = async (action: string, device: Device) => {
+  const handleAction = async (
+    action: string,
+    device: Device,
+    // #3987: RemoveDeviceDialog's agent answer, present only for Remove.
+    opts?: DeviceActionOptions,
+  ) => {
     if (actionInProgress) return;
 
     try {
@@ -395,7 +401,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({
                 type: "success",
                 message: `${device.hostname} has been removed`,
