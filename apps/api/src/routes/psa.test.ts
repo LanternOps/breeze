@@ -1046,6 +1046,35 @@ describe('psa routes', () => {
       expect(countChain.where).toHaveBeenCalled();
     });
 
+    it('GET /connections/:id anchors the lookup on the access axis, not id alone', async () => {
+      // Review finding (#4998): with the partner-wide SELECT branch in RLS, an
+      // org caller can now fetch a partner-wide row by id and relies solely on
+      // ensureConnectionAccess to reject it. The lookup must carry the same
+      // axis filter the list route uses so a future caller that forgets the
+      // gate gets "not found" rather than the row.
+      const orgCondition = vi.fn((col: unknown) => ({ orgEq: col, value: 'org-123' }));
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          partnerOrgAccess: null,
+          orgId: 'org-123',
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (orgId: string) => orgId === 'org-123',
+          accessibleOrgIds: ['org-123'],
+          orgCondition
+        });
+        return next();
+      });
+      const chain = makeChain([connectionRow({ partnerId: null })]);
+      selectMock.mockReturnValueOnce(chain as never);
+
+      const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(orgCondition).toHaveBeenCalledWith('psa_connections.org_id');
+    });
+
     it('serializes ownerScope organization for an org-owned row', async () => {
       selectMock.mockReturnValueOnce(makeChain([connectionRow({ partnerId: null })]) as never);
 
@@ -1066,7 +1095,8 @@ describe('psa routes', () => {
         orgId: null,
         user: { id: 'user-123', email: 'test@example.com' },
         canAccessOrg: () => false,
-        accessibleOrgIds: []
+        accessibleOrgIds: [],
+        orgCondition: (col: unknown) => ({ orgIn: col, value: [] })
       });
       return next();
     });
