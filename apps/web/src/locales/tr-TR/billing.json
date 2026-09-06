@@ -1838,6 +1838,7 @@
       "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
       "docNumber": "QuickBooks belgesi {{docNumber}}",
       "lastSynced": "Son eşitleme: {{when}}",
+      "syncing": "Eşitleniyor…",
       "push": "QuickBooks'a gönder",
       "pushed": "Fatura QuickBooks'a gönderildi.",
       "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
