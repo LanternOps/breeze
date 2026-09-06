@@ -69,6 +69,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/groupMembership', () => ({
   pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue({ removed: 0 }),
+  evaluateGroupMembership: vi.fn().mockResolvedValue({ evaluatedGroups: 1, added: 0, removed: 0 }),
 }));
 
 vi.mock('../../jobs/peripheralJobs', () => ({
@@ -109,7 +110,7 @@ vi.mock('@hono/zod-validator', () => ({
 
 import { groupsRoutes } from './groups';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
+import { pruneGroupMembershipsOutsideSite, evaluateGroupMembership } from '../../services/groupMembership';
 import { DeviceGroupDeleteError } from '../../services/deviceGroupDelete';
 
 // ---------------------------------------------------------------------------
@@ -360,6 +361,29 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       const json = await res.json();
       expect(json.id).toBe(GROUP_ID);
       expect(writeRouteAudit).toHaveBeenCalled();
+      expect(evaluateGroupMembership).not.toHaveBeenCalled();
+    });
+
+    // #4630 — parity with POST /groups (routes/groups.ts): a dynamic group's
+    // filter must be evaluated immediately on create, on this route too.
+    it('evaluates membership for a dynamic group carrying filterConditions', async () => {
+      const created = {
+        id: GROUP_ID,
+        orgId: ORG_A,
+        name: 'Servers',
+        type: 'dynamic',
+        filterConditions: { operator: 'AND', conditions: [] },
+      };
+      mockInsert.mockReturnValue(chainInsert([created]));
+
+      const res = await app.request('/devices/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_A, name: 'Servers', type: 'dynamic' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
     });
 
     it('returns 403 when org-scoped user targets a different org', async () => {
@@ -585,6 +609,49 @@ describe('Device Groups routes — multi-tenant isolation', () => {
         DEVICE_1,
         'dynamic_membership_changed',
       );
+    });
+
+    // #4630 — parity with PATCH /groups/:id (routes/groups.ts): a dynamic
+    // group's filter must be re-evaluated when its site changes.
+    it('evaluates membership for a dynamic group with filterConditions when its site changes', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = {
+        ...groupInOrgA,
+        type: 'dynamic',
+        siteId: oldSiteId,
+        filterConditions: { operator: 'AND', conditions: [] },
+      };
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
+    });
+
+    it('does not evaluate membership for a static group whose site changes', async () => {
+      const oldSiteId = 'eeee0001-eeee-eeee-eeee-eeeeeeeeeeee';
+      const group = { ...groupInOrgA, siteId: oldSiteId };
+      mockSelect
+        .mockReturnValueOnce(chainSelect([group]))
+        .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
+      mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+
+      const res = await app.request(`/devices/groups/${GROUP_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId: SITE_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(evaluateGroupMembership).not.toHaveBeenCalled();
     });
 
     it('rolls back a legacy site reassignment when membership pruning fails', async () => {
