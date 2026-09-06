@@ -792,6 +792,39 @@ export async function notePaymentJobSkipped(
   }
 }
 
+/**
+ * Does this mapping owe a delete it cannot yet address — `pending_op = 'delete'`
+ * with NO `remote_entity_id`?
+ *
+ * The sync worker asks before it short-circuits a payment job for a
+ * disconnected realm (review finding 8). `deletePaymentInAccounting`'s
+ * `PAYMENT_DELETE_UNRESOLVED_GRACE_MS` drop-and-alert path is for exactly this
+ * row — a Breeze payment destroyed while its create was in flight — and it needs
+ * NO live realm: every branch it takes runs before `resolveConnection`. Returning
+ * at the not-connected gate therefore made a path whose own comment says it must
+ * work for a disconnected realm unreachable, and the row simply waited for a
+ * reconnect that may never come.
+ *
+ * Best-effort by design: a read failure answers `false`, which falls back to the
+ * ordinary skip note. Opens its own short context through the worker's runner,
+ * so the coordinator is still entered with none.
+ */
+export async function paymentDeleteAwaitsRemoteRef(
+  mappingId: string,
+  partnerId: string,
+  runInDbContext: DbContextRunner,
+): Promise<boolean> {
+  try {
+    const row = await runInDbContext(() => loadMappingById(mappingId, partnerId));
+    return row !== null && row.pendingOp === 'delete' && row.remoteEntityId === null;
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingPaymentPush', mappingId, partnerId,
+    });
+    return false;
+  }
+}
+
 /** `markPaymentMappingError` in its OWN short, self-committing transaction, and
  *  still best-effort: opening the context can fail (pool exhaustion), and that
  *  must not replace the caller's real typed error with a raw one. Sentry has the

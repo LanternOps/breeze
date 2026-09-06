@@ -49,8 +49,9 @@ vi.mock('../services/accounting/accountingInvoicePush', async (importOriginal) =
   };
 });
 
-const { pushPaymentMock, deletePaymentMock, noteSkippedMock } = vi.hoisted(() => ({
+const { pushPaymentMock, deletePaymentMock, noteSkippedMock, awaitsRemoteRefMock } = vi.hoisted(() => ({
   pushPaymentMock: vi.fn(), deletePaymentMock: vi.fn(), noteSkippedMock: vi.fn(),
+  awaitsRemoteRefMock: vi.fn(),
 }));
 // The REAL AccountingPaymentPushError class and PAYMENT_NOT_CONNECTED_MESSAGE
 // are kept so the worker's instanceof/terminal branch exercises the real
@@ -62,6 +63,7 @@ vi.mock('../services/accounting/accountingPaymentPush', async (importOriginal) =
     pushPaymentToAccounting: pushPaymentMock,
     deletePaymentInAccounting: deletePaymentMock,
     notePaymentJobSkipped: noteSkippedMock,
+    paymentDeleteAwaitsRemoteRef: awaitsRemoteRefMock,
   };
 });
 
@@ -292,6 +294,7 @@ describe('payment jobs', () => {
     getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'auto', pullPayments: true, pushPayments: true });
     pushPaymentMock.mockResolvedValue('pushed');
     deletePaymentMock.mockResolvedValue('deleted');
+    awaitsRemoteRefMock.mockResolvedValue(false);
   });
 
   it('runs a push-payment job through the coordinator with a SYSTEM runner and no ambient context', async () => {
@@ -334,6 +337,33 @@ describe('payment jobs', () => {
       [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
       [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
     ]);
+  });
+
+  it('runs a delete-payment that has NO remote id through the coordinator even while disconnected', async () => {
+    // deletePaymentInAccounting's PAYMENT_DELETE_UNRESOLVED_GRACE_MS drop-and-alert
+    // path exists precisely for a row whose create was in flight when the payment
+    // was destroyed, and it needs NO live realm — everything it does happens
+    // before `resolveConnection`. Returning at the not-connected gate made it
+    // unreachable, so such a row waited on a reconnect that may never come.
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    awaitsRemoteRefMock.mockResolvedValue(true);
+    deletePaymentMock.mockResolvedValue('unresolved_dropped');
+
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+    expect(noteSkippedMock).not.toHaveBeenCalled();
+  });
+
+  it('still records the skip for a disconnected delete-payment that DOES carry a remote id', async () => {
+    // That one genuinely needs a live realm to reach QuickBooks with.
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+    awaitsRemoteRefMock.mockResolvedValue(false);
+
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(deletePaymentMock).not.toHaveBeenCalled();
+    expect(noteSkippedMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE);
   });
 
   it('records the same skip when there is no QuickBooks connection row at all', async () => {

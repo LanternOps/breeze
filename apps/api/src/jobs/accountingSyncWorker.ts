@@ -61,6 +61,7 @@ import {
   pushPaymentToAccounting,
   deletePaymentInAccounting,
   notePaymentJobSkipped,
+  paymentDeleteAwaitsRemoteRef,
   AccountingPaymentPushError,
   PAYMENT_NOT_CONNECTED_MESSAGE,
   type AccountingPaymentPushErrorCode,
@@ -154,7 +155,10 @@ export function getAccountingSyncQueue(): Queue<AccountingSyncJobData> {
  *
  * Gating:
  *   - No QuickBooks connection, or one not in `status: 'connected'` — return
- *     without calling the coordinator (nothing to sync against).
+ *     without calling the coordinator (nothing to sync against). The ONE
+ *     exception is a `delete-payment` whose mapping has no remote id: its
+ *     grace-window resolution needs no live realm — see
+ *     `paymentDeleteAwaitsRemoteRef`.
  *   - `pushMode: 'manual'` gates INVOICE PUSH jobs only. VOID jobs always
  *     process when a mapping exists — books must not keep a voided invoice
  *     open in QuickBooks just because auto-push is off;
@@ -182,6 +186,17 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
       // attempt — which is also what eventually retires a doomed PUSH row
       // (PAYMENT_PUSH_MAX_ATTEMPTS); a `delete` row keeps waiting, because
       // Breeze still owes QuickBooks that removal once the realm comes back.
+      if (data.type === 'delete-payment'
+        && await paymentDeleteAwaitsRemoteRef(data.mappingId, data.partnerId, runInDbContext)) {
+        // ...EXCEPT a delete that has no remote id to aim at. That row's whole
+        // resolution — park inside PAYMENT_DELETE_UNRESOLVED_GRACE_MS, then drop
+        // it loudly — happens before the coordinator resolves a connection at
+        // all, and its own comment says it must work for a disconnected realm.
+        // Returning here made it unreachable (review finding 8), so a payment
+        // destroyed mid-create waited on a reconnect that may never come.
+        await processPaymentJob(data, runInDbContext);
+        return;
+      }
       if (data.type === 'push-payment' || data.type === 'delete-payment') {
         await notePaymentJobSkipped(data.mappingId, data.partnerId, PAYMENT_NOT_CONNECTED_MESSAGE);
       }
