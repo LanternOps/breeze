@@ -284,6 +284,19 @@ export async function processDeviceGroupReevaluation(
     // has already removed any memberships and there is nothing to evaluate.
     // Without the delay this branch would also swallow "committing right now",
     // silently dropping the evaluation with no error and no retry.
+    //
+    // EXCEPT on device.created: that row must exist, and the one way it can be
+    // missing after the delay is an enrolment transaction still open past 5s
+    // (hosted `issueMtlsCertForDevice` is an unbounded Cloudflare fetch) or
+    // rolled back. Completing here would drop the device's first-ever
+    // evaluation with nothing to rescue it later, so throw: `attempts` retries
+    // with backoff, and a genuine rollback ends in removeOnFail retention
+    // where it is visible — never a silent no-op (#5039 round-3 review).
+    if (data.eventType === 'device.created') {
+      throw new Error(
+        `device.created re-evaluation found no row for device ${data.deviceId}; retrying (enrolment not yet committed?)`,
+      );
+    }
     return { evaluated: false, orgId: null };
   }
 

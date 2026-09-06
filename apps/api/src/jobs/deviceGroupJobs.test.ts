@@ -355,6 +355,20 @@ describe('processDeviceGroupReevaluation', () => {
     expect(mockEmitDeviceChange).not.toHaveBeenCalled();
   });
 
+  // #5039 round-3 review: on device.created the row MUST exist — its absence
+  // means the enrolling transaction is still open (a slow mTLS issuance can hold
+  // it past the 5s delay) or rolled back. Completing silently would drop the
+  // device's first-ever evaluation with no retry; throw so `attempts` retries
+  // and a true rollback ends in removeOnFail retention, visible.
+  it('THROWS when a device.created job finds no row — retry, never a silent no-op', async () => {
+    mockSelect.mockReturnValue(selectResolving([]));
+
+    await expect(
+      processDeviceGroupReevaluation(jobData({ eventType: 'device.created', changedFields: [] })),
+    ).rejects.toThrow(/device\.created/);
+    expect(mockEmitDeviceChange).not.toHaveBeenCalled();
+  });
+
   // #5039 review finding 2. emitDeviceChange used to swallow handler
   // rejections, so `attempts: 5` never fired: a 40P01 deadlock inside the
   // membership evaluation completed the job and left membership stale.

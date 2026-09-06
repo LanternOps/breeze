@@ -433,7 +433,7 @@ describe('enqueue-before-commit race (#5039)', () => {
       await commitGate;
     });
 
-    let sawUncommitted: { evaluated: boolean; orgId: string | null } | undefined;
+    let sawUncommitted: unknown;
     try {
       await enqueued;
 
@@ -444,6 +444,9 @@ describe('enqueue-before-commit race (#5039)', () => {
       // which is exactly the thing the real worker cannot do. This is what the
       // worker would have concluded had the job been runnable immediately: the
       // bug, reproduced.
+      // Round 3: on device.created the processor THROWS for a missing row rather
+      // than completing — the retry is the safety net for an enrolment held
+      // open past the delay. Capture the rejection as the reproduced bug.
       sawUncommitted = await runDeviceGroupReevaluationJob({
         type: 'group-reevaluation',
         deviceId,
@@ -452,7 +455,10 @@ describe('enqueue-before-commit race (#5039)', () => {
         changedFields: [],
         reason: 'negative-control',
         queuedAt: new Date().toISOString(),
-      });
+      }).then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
 
       // Give the ready worker a real chance to grab the job early.
       await new Promise((resolve) => setTimeout(resolve, 750));
@@ -469,8 +475,10 @@ describe('enqueue-before-commit race (#5039)', () => {
       await enrolment;
     }
 
-    // The bug, as it would have happened without the delay.
-    expect(sawUncommitted).toEqual({ evaluated: false, orgId: null });
+    // The bug, as it would have happened without the delay: the row was not
+    // visible — and the processor refused to treat that as success.
+    expect(sawUncommitted).toBeInstanceOf(Error);
+    expect(String(sawUncommitted)).toMatch(/device\.created/);
 
     // And the fix: once the delay elapses the device is visible and evaluated.
     await completed;
