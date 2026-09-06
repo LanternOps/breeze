@@ -1,15 +1,22 @@
 /**
  * Wire types for the RMM custom-field importer (#3257).
  *
- * DEPENDENCY-FREE ON PURPOSE. This module imports nothing — not the db, not a
- * service, not a schema — so W07's definition importer and W08's value importer
- * can both depend on it without an import cycle. Everything here is either a
- * type (erased at compile time) or a frozen literal list. Never add a runtime
- * import to this file; put the code in the service module that needs it.
+ * DEPENDENCY-FREE ON PURPOSE, WITH ONE EXCEPTION: the `@breeze/shared` import
+ * below for `MAX_IMPORT_ROWS`/`MAX_IMPORT_VALUES` (W09, #4777) — those two
+ * numbers must be the same constant the web wizard chunks against, and
+ * `packages/shared` carries no db/service/schema code of its own, so it does
+ * not reintroduce the import cycle this rule exists to prevent. Otherwise this
+ * module imports nothing — not the db, not a service, not a schema — so W07's
+ * definition importer and W08's value importer can both depend on it without
+ * an import cycle. Everything else here is either a type (erased at compile
+ * time) or a frozen literal list. Never add another runtime import to this
+ * file; put the code in the service module that needs it.
  *
  * Created in W06 and extended by W07/W08 — the row and outcome vocabulary is
  * shared across every stage of the pipeline.
  */
+
+export { MAX_IMPORT_ROWS, MAX_IMPORT_VALUES } from '@breeze/shared';
 
 /** The system a row was exported from. Free-form on the wire; this is the set the UI offers. */
 export const IMPORT_SYSTEMS = ['datto_rmm', 'ninjaone', 'cw_automate', 'n_central', 'csv'] as const;
@@ -159,25 +166,6 @@ export interface DeviceCustomFieldImportRow {
  * and its own lifecycle, so it shares the module but none of the row shapes
  * above.
  * ────────────────────────────────────────────────────────────────────────── */
-
-/**
- * Same cap as the org and contact importers
- * (`services/contacts/types.ts:43`). One number across all four import routes
- * so the browser can chunk once and target every one of them.
- */
-export const MAX_IMPORT_ROWS = 1000;
-
-/**
- * A SEPARATE, lower ceiling on `sum(row.values.length)` for the VALUES importer
- * (W08). One device row carries up to 30 values, so 1000 rows x 30 values is
- * 30,000 writes in one request — a cap on rows alone does not bound the work.
- * Rejected at the zod layer with copy telling the browser to split the chunk.
- *
- * Declared here rather than in W08 because both caps are part of the same wire
- * contract the browser chunks against, and this module is the one place both
- * importers already share.
- */
-export const MAX_IMPORT_VALUES = 5000;
 
 /** Mirrors the `custom_field_type` Postgres enum (`db/schema/customFields.ts`). */
 export type CustomFieldType = 'text' | 'number' | 'boolean' | 'dropdown' | 'date';

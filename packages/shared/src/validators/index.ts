@@ -35,6 +35,7 @@ export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
 export * from './deviceRoles';
+export * from './customFieldImport';
 
 // ============================================
 // Device Roles
