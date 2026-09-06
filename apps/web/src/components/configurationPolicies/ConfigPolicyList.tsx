@@ -295,14 +295,26 @@ export default function ConfigPolicyList({
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
-                        statusConfig[policy.status].color,
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
+                          statusConfig[policy.status].color,
+                        )}
+                      >
+                        {statusConfig[policy.status].label}
+                      </span>
+                      {policy.parentPolicyId && (
+                        <span
+                          className="inline-flex items-center rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                          data-testid="config-policy-inherits-badge"
+                        >
+                          {i18n.t(
+                            "policies:configurationPolicies.configPolicyList.inheritsBadge",
+                          )}
+                        </span>
                       )}
-                    >
-                      {statusConfig[policy.status].label}
-                    </span>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">

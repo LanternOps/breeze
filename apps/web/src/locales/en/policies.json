@@ -141,6 +141,7 @@
     "configPolicyList": {
       "archived": "Archived",
       "configurationPolicies": "Configuration Policies",
+      "inheritsBadge": "Inherits",
       "of": "of",
       "policies": "policies",
       "searchPolicies": "Search policies...",
@@ -160,6 +161,7 @@
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
       "failedToDeletePolicy": "Failed to delete policy",
+      "deleteBlockedByChildren": "Delete the policies that inherit from this one first:",
       "loadingConfigurationPolicies": "Loading configuration policies...",
       "tryAgain": "Try again",
       "configurationPolicies": "Configuration Policies",
