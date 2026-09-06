@@ -423,9 +423,13 @@ aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
  * projected for the create/edit form so an org-scoped caller can see what a
  * new org row would be capped to WITHOUT being able to read the partner row
  * itself (`effectivePolicy.ts:341-350` — an org token carries a partnerId but
- * never passes `breeze_has_partner_access`). `null` for a partner/system-scope
- * session (the partner row IS the ceiling there — nothing to project) or when
- * no live baseline exists for that kind yet.
+ * never passes `breeze_has_partner_access`). A partner-scope caller gets the
+ * same projection when editing/creating an ORG-owned row for its own
+ * partner — a partner token CAN read its own partner rows directly, so this
+ * exposes nothing new; `loadPartnerBaselineCeiling` just saves it a second
+ * round trip. `null` for a system-scope session (nothing to project a
+ * ceiling onto), when the caller carries no `partnerId` at all (self-hosted),
+ * or when no live baseline exists for that kind yet.
  */
 aiAgentsRoutes.get(
   '/ceiling',
@@ -434,7 +438,7 @@ aiAgentsRoutes.get(
   zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS) })),
   async (c) => {
     const auth = c.get('auth');
-    if (auth.scope !== 'organization') return c.json({ data: null });
+    if (auth.scope === 'system' || !auth.partnerId) return c.json({ data: null });
     const { kind } = c.req.valid('query');
     return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
   },

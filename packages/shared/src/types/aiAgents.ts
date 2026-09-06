@@ -588,13 +588,22 @@ export interface AgentToolCatalogDto {
   capabilities: { id: string; tone: 'standard' | 'high' }[];
   tools: AgentToolCatalogToolDto[];
   presets: Record<AiAgentKind, string[]>;
+  /**
+   * Every registered tool NOT in `tools` — not in `TOOL_TIERS`,
+   * `AGENT_HUMAN_ONLY_TOOLS`, `BLOCKED_TOOLS`, or secret-bearing. Lets the
+   * picker tell a stale allowlist entry that names a real-but-unreachable
+   * tool (`unreachable_tool`) apart from one that never existed
+   * (`unknown_tool`) — see `apps/api/src/services/aiAgents/agentToolCatalog.ts`'s
+   * `listUnreachableRegisteredTools`.
+   */
+  unreachableTools: string[];
 }
 
 /**
  * `GET /ai/agents/ceiling?kind=` response body's `data` — the partner-wide
- * baseline's tool ceiling for one `kind`, projected for an org-scoped caller
- * that cannot read the partner row itself. `null` for a partner/system-scope
- * session or when no live baseline exists for that kind.
+ * baseline's tool ceiling for one `kind`, projected for an org- or
+ * partner-scoped caller. `null` for a system-scope session, a caller with no
+ * `partnerId` at all, or when no live baseline exists for that kind.
  */
 export interface AgentCeilingDto {
   toolAllowlist: string[];

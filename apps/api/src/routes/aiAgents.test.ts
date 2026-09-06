@@ -405,6 +405,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
       },
     ],
     presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    unreachableTools: [],
     ...overrides,
   };
 }
@@ -3647,9 +3648,27 @@ describe('GET /ai-agents/ceiling', () => {
     expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
   });
 
-  it('returns null for a partner-scope session (the partner row IS the ceiling)', async () => {
+  it('projects the partner baseline allowlist for a partner-scope session too (a partner token can read its own partner rows)', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
+
     const res = await buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null })
       .request('/ai-agents/ceiling?kind=triage');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { toolAllowlist: ['manage_services'], supervisedActionKeys: [] } });
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+  });
+
+  it('returns null for a system-scope session (nothing to project a ceiling onto)', async () => {
+    const res = await buildApp(false, { scope: 'system', partnerId: PARTNER_ID, orgId: null })
+      .request('/ai-agents/ceiling?kind=triage');
+
+    expect(await res.json()).toEqual({ data: null });
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the session carries no partnerId at all (self-hosted, no partner)', async () => {
+    const res = await buildApp(false, { partnerId: null }).request('/ai-agents/ceiling?kind=triage');
 
     expect(await res.json()).toEqual({ data: null });
     expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();

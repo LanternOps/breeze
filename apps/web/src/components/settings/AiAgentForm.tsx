@@ -27,6 +27,8 @@ import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerSc
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
+import CapabilityPicker from './aiAgents/CapabilityPicker';
+import { useAgentToolCatalog } from './aiAgents/useAgentToolCatalog';
 
 // Severities come from @breeze/shared, the same constant the server validator
 // uses. A local copy meant draftFrom() would silently DROP a stored severity
@@ -426,14 +428,11 @@ export default function AiAgentForm({
   const permissionsHeadingId = useId();
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
-  const toolSuggestInputId = useId();
-  const toolSuggestListId = useId();
   const rolesGroupBaseId = useId();
   const severitiesGroupId = useId();
   const policyKeyNoteBaseId = useId();
   const nameInputId = useId();
   const nameErrorId = useId();
-  const [toolSuggestion, setToolSuggestion] = useState('');
   /** Name has been left at least once. Until then an empty Name is "not
    *  filled in yet", not an error — a form that goes red before the operator
    *  has reached the field is scolding them for a field they were on their
@@ -462,33 +461,6 @@ export default function AiAgentForm({
       : t(/* i18n-dynamic */ `aiAgentsPage.policyKeys.actions.${entry.toolName}.${entry.action}`, {
         defaultValue: sentenceCase(entry.action),
       });
-
-  /**
-   * Autocomplete source for the tool allowlist. There is no tool-name
-   * registry endpoint: `ACT_ELIGIBLE_TOOL_NAMES` is API-only and the
-   * allowlist's own validator accepts any `TOOL_REF`-shaped string, so the
-   * closest thing the client can source is the policy-decidable registry it
-   * already fetched — offered as BOTH the bare tool name and the scoped
-   * `tool:action` form, the two shapes `checkAgentGuardrails` admits.
-   */
-  const toolSuggestions = useMemo(() => {
-    const names = new Set<string>();
-    for (const entry of policyKeys) {
-      names.add(entry.toolName);
-      names.add(entry.key);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  }, [policyKeys]);
-
-  const addSuggestedTool = () => {
-    const value = toolSuggestion.trim();
-    if (value === '') return;
-    // `lines()` is the same de-duplicating reader the save body uses, so an
-    // entry already present (however the operator typed it) never doubles.
-    const next = [...new Set([...lines(draft.toolAllowlist), value])];
-    patch({ toolAllowlist: next.join('\n') });
-    setToolSuggestion('');
-  };
 
   // ---- Mode: the privileged choice --------------------------------------
   const modeHeadingId = useId();
@@ -640,6 +612,22 @@ export default function AiAgentForm({
       cancelled = true;
     };
   }, []);
+
+  // Task 10 (#5050): the capability picker replaces the free-text tool
+  // allowlist textarea. `catalog` is fetched once per mount; `ceiling`
+  // re-fetches whenever kind or ownerScope changes (only meaningful for an
+  // organization-owned draft — see the hook's own doc). Neither fetch ever
+  // blocks this form: a failed/absent catalog falls back to the old
+  // textarea below (see the Permissions section).
+  const { catalog: fetchedCatalog, ceiling, loading: catalogLoading } = useAgentToolCatalog({
+    kind: draft.kind,
+    ownerScope: draft.ownerScope,
+  });
+  // Defensive, same reasoning as the policy-decidable-keys row filter above:
+  // this catalog is server-owned, so a shape the picker cannot use must
+  // degrade to the textarea fallback, never crash the form on
+  // `catalog.tools`/`catalog.presets`.
+  const catalog = fetchedCatalog && Array.isArray(fetchedCatalog.tools) && fetchedCatalog.presets ? fetchedCatalog : null;
 
   const save = useCallback(async () => {
     if (saving) return;
@@ -1055,10 +1043,45 @@ export default function AiAgentForm({
    */
   const orgOwnedKeysReadOnly = draft.ownerScope === 'organization';
 
-  /** The registry checkboxes, grouped by tool with translated labels — shared
-   *  between the plain (org, act-only) rendering and the partner-wide
-   *  `<details>` wrapper below, so the two never drift out of sync. */
-  const policyKeysBody = policyKeysFailed ? (
+  /** Registry entries keyed by their `key`, so an org row's read-only list
+   *  below can translate its currently-held keys without walking the full
+   *  registry-grouped-by-tool structure `policyKeysBody` builds for the
+   *  interactive (partner) rendering. */
+  const policyKeysByKey = useMemo(
+    () => new Map(policyKeys.map((entry) => [entry.key, entry] as const)),
+    [policyKeys],
+  );
+
+  /**
+   * #5049: an org row can never change its own supervisedActionKeys through
+   * this form (a save can only narrow the list — see the comment on
+   * `orgOwnedKeysReadOnly` — so there is nothing here for a checkbox to DO).
+   * A read-only `<ul>` of the row's own currently-held keys replaces the full
+   * registry-as-disabled-checkboxes rendering: showing every OTHER
+   * registered operation, unselected and disabled, described a control that
+   * cannot be operated either way, which is not information — it's noise.
+   */
+  const orgHeldKeysList = draft.supervisedActionKeys.length === 0 ? (
+    <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+      {t('aiAgentsPage.fields.supervisedActionKeysNoneHeld')}
+    </p>
+  ) : (
+    <ul className="list-disc space-y-1 pl-5 text-sm" data-testid="ai-agent-supervised-keys-readonly-list">
+      {draft.supervisedActionKeys.map((key) => {
+        const entry = policyKeysByKey.get(key);
+        return (
+          <li key={key} data-testid={`ai-agent-supervised-key-${key}`}>
+            {entry ? policyActionLabel(entry) : sentenceCase(key)}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  /** The registry checkboxes, grouped by tool with translated labels — the
+   *  interactive rendering, now reached only for a PARTNER row (org rows
+   *  render `orgHeldKeysList` above instead; see `policyKeysBody` below). */
+  const policyKeysCheckboxes = policyKeysFailed ? (
     <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
       {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
     </p>
@@ -1083,7 +1106,6 @@ export default function AiAgentForm({
                     type="checkbox"
                     className="mt-0.5"
                     checked={draft.supervisedActionKeys.includes(entry.key)}
-                    disabled={orgOwnedKeysReadOnly}
                     onChange={() =>
                       patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
                     aria-describedby={noteId}
@@ -1107,6 +1129,10 @@ export default function AiAgentForm({
       ))}
     </div>
   );
+
+  /** Org rows get the read-only list; partner rows keep the interactive
+   *  checkbox registry — see the two blocks above. */
+  const policyKeysBody = orgOwnedKeysReadOnly ? orgHeldKeysList : policyKeysCheckboxes;
 
   /* Wave 5 Part B (#3827). Gated the same way as the act-warning block above
    * (draft.mode === 'act' only) for ORG rows — the "act acknowledgement
@@ -1433,45 +1459,41 @@ export default function AiAgentForm({
                 {t('aiAgentsPage.sections.permissionsDescription')}
               </p>
             </div>
-            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
-            {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
-            {/* No tool-name registry endpoint exists (the API's
-                ACT_ELIGIBLE_TOOL_NAMES / the MCP tool set are server-only), so
-                this is autocomplete over the ONE name source the client already
-                holds — the policy-decidable registry this form fetches for the
-                act-mode section. Deliberately labelled as a partial list rather
-                than presented as the closed set of tools. */}
-            {toolSuggestions.length > 0 && (
-              <div className="space-y-1">
-                <label className="block text-xs font-medium" htmlFor={toolSuggestInputId}>
-                  {t('aiAgentsPage.fields.toolSuggestLabel')}
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    id={toolSuggestInputId}
-                    className={`${inputCls} font-mono sm:w-64`}
-                    list={toolSuggestListId}
-                    value={toolSuggestion}
-                    onChange={(e) => setToolSuggestion(e.target.value)}
-                    data-testid="ai-agent-toolallowlist-suggest"
-                  />
-                  <datalist id={toolSuggestListId} data-testid="ai-agent-toolallowlist-suggestions">
-                    {toolSuggestions.map((name) => (
-                      <option key={name} value={name} />
-                    ))}
-                  </datalist>
-                  <button
-                    type="button"
-                    onClick={addSuggestedTool}
-                    disabled={toolSuggestion.trim() === ''}
-                    className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-60"
-                    data-testid="ai-agent-toolallowlist-add"
-                  >
-                    {t('aiAgentsPage.fields.toolSuggestAdd')}
-                  </button>
-                </div>
-                <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolSuggestHint')}</p>
-              </div>
+            {/* Task 10 (#5050): the free-text tool-allowlist textarea and its
+                autocomplete datalist are replaced by the server-backed
+                capability picker (spec §4.5) — it lists only tools this
+                agent can actually reach, grouped by capability, with
+                per-operation outcome and ceiling badges. `entries`/`onChange`
+                round-trip through the SAME newline-string draft field the
+                textarea used, so the save body at `policy.toolAllowlist`
+                above is untouched.
+                The picker's own catalog+ceiling fetch (`useAgentToolCatalog`)
+                never blocks this form: while the fetch is still in flight, a
+                muted loading line replaces the picker rather than flashing
+                the textarea fallback first — the fallback is reserved for an
+                actual failure (or an unusable shape), not the normal time it
+                takes the catalog to arrive. */}
+            {catalog ? (
+              <CapabilityPicker
+                catalog={catalog}
+                ceiling={ceiling}
+                kind={draft.kind}
+                mode={draft.mode}
+                entries={lines(draft.toolAllowlist)}
+                onChange={(next) => patch({ toolAllowlist: next.join('\n') })}
+              />
+            ) : catalogLoading ? (
+              <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-loading">
+                {t('aiAgentsPage.catalog.loading')}
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground" data-testid="ai-agent-catalog-unavailable">
+                  {t('aiAgentsPage.catalog.catalogUnavailable')}
+                </p>
+                <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.toolAllowlistHint')}</p>
+                {listField('ai-agent-toolallowlist', t('aiAgentsPage.fields.toolAllowlist'), draft.toolAllowlist, (v) => patch({ toolAllowlist: v }), 4)}
+              </>
             )}
             <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.protectedHint')}</p>
             <div className="grid gap-3 md:grid-cols-3">
