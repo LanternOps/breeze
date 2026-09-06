@@ -36,6 +36,11 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
+import {
+  APPROVED_EXECUTING_MESSAGE,
+  APPROVED_EXECUTING_STATUS,
+  isToolHandoffResult,
+} from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -1184,10 +1189,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // (see DURABLE_RELEASE_ONLY_TOOLS). Winning the CAS here and then
           // discovering that would leave the intent claimed by a releaser that
           // must not run it, and the inline path cannot safely un-claim.
+          //
+          // APPROVAL HANDOFF, NOT A FAILURE (#5107): the human approved and
+          // the worker is executing. `allowed: false` here means only "this
+          // session will not run it" — so it carries `handoff`, which makes
+          // aiAgentSdkTools.ts publish the tool result with `isError: false`
+          // and `status: 'approved_executing'`. The COORDINATION INVARIANT is
+          // untouched: this branch still returns BEFORE the
+          // `approved -> executing` CAS below, so the worker's claim remains
+          // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
             return await failMatchedPlanStep({
               allowed: false,
-              error: 'This action was approved and is being completed by the approval worker.',
+              error: APPROVED_EXECUTING_MESSAGE,
+              handoff: APPROVED_EXECUTING_STATUS,
             });
           }
 
@@ -1216,9 +1231,22 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // already claimed this intent for execution. Do NOT run the tool
             // inline — that would double-execute a real side effect. The worker
             // owns the ledger write and the intent's final result/error_code.
+            //
+            // Same APPROVAL HANDOFF as the durable-release branch above, and
+            // the one that actually fires today (DURABLE_RELEASE_ONLY_TOOLS is
+            // still empty, so a human-approved intent reaches the user as
+            // "FAILED" through THIS exit — #5107's recording). Losing the CAS
+            // is the mutual-exclusion working, not an error: the action is
+            // approved and running under the worker. `handoff` is what stops
+            // the chat painting it deny-red.
+            //
+            // Nothing about the invariant changes: the CAS was attempted and
+            // lost, we still refuse to execute inline, and we still do not
+            // touch the intent (the winner owns every subsequent transition).
             return await failMatchedPlanStep({
               allowed: false,
-              error: 'This action is already being completed by the approval worker; it will not run twice.',
+              error: APPROVED_EXECUTING_MESSAGE,
+              handoff: APPROVED_EXECUTING_STATUS,
             });
           }
 
@@ -1961,6 +1989,15 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     }
 
     // 2e. Write audit event (fire-and-forget, non-blocking)
+    //
+    // An approval handoff (#5107) is neither: the tool did not fail here, but
+    // it also did not run here — the durable worker owns the execution and
+    // writes the intent's own terminal record. `result` has only
+    // success/failure, so flipping isError to false must NOT silently turn
+    // "handed to the worker" into "ai.tool.manage_services succeeded" for
+    // anyone auditing whether the restart actually happened. Stamp the real
+    // outcome in `details` instead of letting the absent `result` imply one.
+    const handoffStatus = isToolHandoffResult(parsedOutput) ? parsedOutput.status : undefined;
     if (session.auditSnapshot) {
       writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
         orgId,
@@ -1976,6 +2013,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           toolInput: input,
           durationMs,
           tier: guardrailCheck.tier,
+          ...(handoffStatus ? { toolOutcome: handoffStatus } : {}),
           // `approved` is true only when this specific call was explicitly
           // decided (human approver / PAM / an approved plan step);
           // `approvalMethod` records the concrete path. Auto-executions

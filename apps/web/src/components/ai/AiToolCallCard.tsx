@@ -6,8 +6,10 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  ShieldCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { aiToolLabel, isAiToolHandoffOutput } from "@breeze/shared";
 
 interface AiToolCallCardProps {
   toolName: string;
@@ -40,16 +42,22 @@ export default function AiToolCallCard({
   const inputPreview = useMemo(() => stringifyForPreview(input), [input]);
   const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
 
-  const StatusIcon = isExecuting
-    ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
-    : isError
-      ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
-      : output !== undefined
-        ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
-        : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
+  // #5107 — a human approved this and the durable approval worker is running
+  // it; this session declined to run it twice. Checked BEFORE `isError` so a
+  // stale server (or a message row persisted before the fix) still renders as
+  // approved rather than reverting to the red FAILED row the user saw right
+  // after tapping Approve. Shape-based, never a text match on the output.
+  const isApprovedExecuting = isAiToolHandoffOutput(output);
 
-  const formatToolName = (name: string) =>
-    name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const StatusIcon = isApprovedExecuting
+    ? () => <ShieldCheck className="h-3.5 w-3.5 text-amber-400" />
+    : isExecuting
+      ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+      : isError
+        ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
+        : output !== undefined
+          ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
+          : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
 
   return (
     <div className="my-1 rounded-md border border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50">
@@ -64,11 +72,15 @@ export default function AiToolCallCard({
         )}
         <StatusIcon />
         <span className="font-medium text-gray-700 dark:text-gray-300">
-          {formatToolName(toolName)}
+          {aiToolLabel(toolName, isExecuting ? "running" : "completed")}
         </span>
-        {isExecuting && (
+        {isApprovedExecuting ? (
+          <span className="text-amber-400">
+            {t("aiToolCallCard.approvedRunning")}
+          </span>
+        ) : isExecuting ? (
           <span className="text-gray-500">{t("aiToolCallCard.running")}</span>
-        )}
+        ) : null}
       </button>
 
       {expanded && (

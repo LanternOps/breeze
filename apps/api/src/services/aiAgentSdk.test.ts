@@ -5,6 +5,7 @@ import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGu
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
+import { APPROVED_EXECUTING_MESSAGE } from './aiToolHandoff';
 
 // ============================================
 // Mocks
@@ -1150,9 +1151,14 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
 
+      // #5107: losing the CAS is the worker executing an APPROVED action, not
+      // a failure — the decision carries the handoff marker so the tool result
+      // is published with isError:false instead of painting "FAILED" in the
+      // chat the user just approved from.
       expect(result).toEqual({
         allowed: false,
-        error: 'This action is already being completed by the approval worker; it will not run twice.',
+        error: APPROVED_EXECUTING_MESSAGE,
+        handoff: 'approved_executing',
       });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
@@ -2777,6 +2783,12 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     // Not executed inline...
     expect(result).toEqual(expect.objectContaining({ allowed: false }));
+    // ...but NOT reported as a failure (#5107): the human approved and the
+    // worker is running it, so the decision carries the handoff marker that
+    // makes the tool result publish with isError:false.
+    expect(result).toEqual(
+      expect.objectContaining({ handoff: 'approved_executing', error: APPROVED_EXECUTING_MESSAGE }),
+    );
     // ...and critically, the CAS was never even attempted, so the worker's
     // claim is still available and the intent is not stranded in `executing`.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
@@ -2837,7 +2849,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     expect(result).toEqual({
       allowed: false,
-      error: 'This action is already being completed by the approval worker; it will not run twice.',
+      error: APPROVED_EXECUTING_MESSAGE,
+      handoff: 'approved_executing',
     });
     expect(session.currentPlanStepIndex).toBe(0);
   });
