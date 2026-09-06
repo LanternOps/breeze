@@ -39,7 +39,9 @@ vi.mock('../../services/deviceActions', () => ({
   sendDeviceCommand: vi.fn(),
   sendBulkCommand: vi.fn(),
   executeScript: vi.fn(),
-  toggleMaintenanceMode: vi.fn(),
+  enterMaintenanceMode: vi.fn(),
+  exitMaintenanceMode: vi.fn(),
+  bulkEnterMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
   restoreDevice: vi.fn(),
@@ -201,11 +203,12 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
       data-include-decommissioned={includeDecommissioned ? 'true' : 'false'}
+      data-can-hide-decommissioned={onHideDecommissioned ? 'true' : 'false'}
       data-filter-ids={serverFilterIds ? [...serverFilterIds].sort().join(',') : ''}
       data-hostnames={devices.map(d => d.hostname ?? '').join(',')}
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
@@ -289,6 +292,15 @@ vi.mock('./DeviceList', () => ({
           onClick={() => onShowDecommissioned()}
         >
           show decommissioned
+        </button>
+      )}
+      {onHideDecommissioned && (
+        <button
+          type="button"
+          data-testid="stub-hide-decommissioned"
+          onClick={() => onHideDecommissioned()}
+        >
+          hide decommissioned
         </button>
       )}
     </div>
@@ -733,6 +745,17 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     expect(list.getAttribute('data-wan-ips')).toBe('');
   });
 
+  // RMM-QA-176 D10: bulk `maintenance-on` no longer fires N requests from the
+  // click. It opens MaintenanceModeDialog, which collects the now-REQUIRED
+  // reason + duration and makes ONE call to POST /devices/bulk/maintenance
+  // under ONE step-up grant. These helpers drive that dialog so the cases below
+  // keep asserting the same intent against the new shape.
+  async function submitMaintenanceDialog(reason = 'scheduled patching') {
+    const textarea = await screen.findByTestId('maintenance-reason');
+    fireEvent.change(textarea, { target: { value: reason } });
+    fireEvent.click(screen.getByTestId('maintenance-submit'));
+  }
+
   async function renderWithFleet() {
     const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValue(null); // no advanced filter
@@ -751,21 +774,33 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     return list;
   }
 
-  it('skips the network row and only toggles maintenance on the 3 agent devices', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+  // FLIPPED (RMM-QA-176). Was: 'skips the network row and only toggles
+  // maintenance on the 3 agent devices' — it asserted
+  // toggleMaintenanceMode toHaveBeenCalledTimes(3) and the targeted-id list of
+  // the client loop. Same intent, now against the single server-side call.
+  it('sends ONE bulk maintenance call carrying the 3 agent ids, never the network asset id', async () => {
+    const { bulkEnterMaintenanceMode, enterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(toggleMaintenanceMode).mockResolvedValue({ success: true, device: {} } as never);
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_1, DEV_2, DEV_3].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [],
+    } as never);
 
     await renderWithFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
 
     await waitFor(() => {
-      expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1);
     });
-    // The network asset id must NEVER have been sent to the maintenance endpoint.
-    const targetedIds = vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]);
-    expect(targetedIds).not.toContain(NET_1);
-    expect(targetedIds.sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+    // One call for the whole set — N single-device calls would demand N
+    // step-up grants and 403 on every one of them.
+    expect(vi.mocked(enterMaintenanceMode)).not.toHaveBeenCalled();
+    const body = vi.mocked(bulkEnterMaintenanceMode).mock.calls[0][0];
+    // The network asset id must NEVER reach the maintenance endpoint.
+    expect(body.deviceIds).not.toContain(NET_1);
+    expect([...body.deviceIds].sort()).toEqual([DEV_1, DEV_2, DEV_3].sort());
+    expect(body.reason).toBe('scheduled patching');
 
     // User is told the network device was skipped, then the success summary.
     const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
@@ -773,31 +808,67 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
     expect(messages.some(m => /3 devices put into maintenance mode/i.test(m))).toBe(true);
   });
 
-  it('does not abort the batch when one agent device fails mid-loop (per-item catch)', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+  // FLIPPED (RMM-QA-176). Was: 'does not abort the batch when one agent device
+  // fails mid-loop (per-item catch)'. The per-item catch is gone with the loop;
+  // the server now reports per-device outcomes in `failed[]`, and the SAME
+  // intent — one device's failure neither aborts the batch nor is swallowed —
+  // is asserted against that list.
+  it('renders the partial-failure summary from the response failed[] (a 200 is not a success)', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    // The FIRST agent device throws (as a 404 on a real-but-stale id would).
-    // Without the per-item catch this aborts the loop and DEV_2/DEV_3 are
-    // silently skipped — exactly the bug. With the fix all 3 are attempted.
-    vi.mocked(toggleMaintenanceMode)
-      .mockRejectedValueOnce(new Error('404 not found'))
-      .mockResolvedValue({ success: true, device: {} } as never);
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_2, DEV_3].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [{ deviceId: DEV_1, code: 'STATE_CONFLICT', message: 'nope' }],
+    } as never);
 
     await renderWithFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
 
-    await waitFor(() => {
-      // All 3 agent devices were attempted despite the first throwing.
-      expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(3);
-    });
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
 
-    // A partial-failure summary toast is shown — not a generic abort.
-    const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-    expect(messages.some(m => /2 device.*maintenance mode.*1 failed/i.test(m))).toBe(true);
+    const toasts = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    const summary = toasts.find(x => /2 device.*maintenance mode.*1 failed/i.test(x.message ?? ''));
+    expect(summary).toBeDefined();
+    expect(summary!.type).toBe('error');
+  });
+
+  // The negative case that "always report success" would pass without: the
+  // bulk route answers 200 with an EMPTY `succeeded` when every device fails
+  // preflight. Reporting that as success would tell the technician the fleet
+  // is suppressed when nothing is.
+  it('reports an ALL-FAILED 200 as a failure, never as success', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [],
+      failed: [DEV_1, DEV_2, DEV_3].map(deviceId => ({
+        deviceId,
+        code: 'DECOMMISSIONED',
+        message: 'Cannot change maintenance mode for a decommissioned device.',
+      })),
+    } as never);
+
+    await renderWithFleet();
+    fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+    await submitMaintenanceDialog();
+
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
+
+    const afterSubmit = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    const allFailed = afterSubmit.find(x => /failed to update maintenance mode for all 3/i.test(x.message ?? ''));
+    expect(allFailed).toBeDefined();
+    expect(allFailed!.type).toBe('error');
+    // And nothing anywhere claimed devices went INTO maintenance.
+    expect(
+      afterSubmit.some(x => x.type === 'success' && /maintenance mode/i.test(x.message ?? '')),
+    ).toBe(false);
   });
 
   it('blocks a network-only selection from an agent-only action with a clear message', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+    // Unchanged in meaning: the agent-only maintenance endpoint must not be
+    // reached at all. Only the service name moved.
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
 
     const { decodeFilterFromHash } = await import('./filterUrl');
@@ -821,7 +892,7 @@ describe('DevicesPage — bulk actions exclude network rows + survive per-item f
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
       expect(messages.some(m => /applies to agent devices only/i.test(m))).toBe(true);
     });
-    expect(vi.mocked(toggleMaintenanceMode)).not.toHaveBeenCalled();
+    expect(vi.mocked(bulkEnterMaintenanceMode)).not.toHaveBeenCalled();
   });
 });
 
@@ -943,13 +1014,13 @@ describe('DevicesPage — row selection routes by device class (#1424)', () => {
 });
 
 // #2251 — decommissioned devices are hidden by default with no cue that they
-// exist. The page must surface a "N decommissioned hidden — show" hint in both
-// views, and "show" applies the Decommissioned status filter (the existing
-// unhide mechanism — includeDecommissioned flips true when the active filter
-// targets that status).
-describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
-  it('grid view shows the hint; clicking "show" applies the Decommissioned filter and reveals the rows', async () => {
-    const { decodeFilterFromHash } = await import('./filterUrl');
+// exist. The page must surface a "N removed hidden — show" hint in both
+// views. #5023 paper cut: "show" ADDS the removed rows to whatever is on
+// screen (page-level showRemoved flag) instead of swapping the view to a
+// removed-only status filter; the hint then flips to "N removed shown — hide".
+describe('DevicesPage — hidden-decommissioned hint (#2251, #5023)', () => {
+  it('grid view: "show" adds the removed cards alongside the active one, leaves the filter alone, and offers "hide"', async () => {
+    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce(null);
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [
@@ -958,15 +1029,6 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
         { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
       ],
     } as never);
-    // The decommissioned status filter resolves to the two decommissioned rows.
-    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
-      if (url.startsWith('/filters/preview')) {
-        return jsonResponse({
-          data: { totalCount: 2, deviceIds: [DEV_2, DEV_3], evaluatedAt: new Date().toISOString() },
-        });
-      }
-      return jsonResponse({ data: [] });
-    });
 
     render(<DevicesPage />);
     fireEvent.click(await screen.findByLabelText('Grid view'));
@@ -979,25 +1041,64 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
 
     fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
 
-    // The status filter now targets decommissioned → those cards render, the
-    // online card drops out (filtered), and the hint disappears.
+    // The removed cards are ADDED — the active card stays, the hidden hint
+    // gives way to the "shown — hide" line.
     expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
     expect(screen.getByTestId(`device-card-${DEV_3}`)).toBeTruthy();
-    await waitFor(() => {
-      expect(screen.queryByTestId(`device-card-${DEV_1}`)).toBeNull();
-    });
+    expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    const shown = screen.getByTestId('decommissioned-shown-hint');
+    expect(shown).toHaveTextContent('2 removed shown');
 
-    // The applied condition is the toolbar-equivalent status filter.
-    const previewCall = vi.mocked(fetchWithAuth).mock.calls.find(([url]) =>
-      String(url).startsWith('/filters/preview')
-    );
-    expect(previewCall).toBeDefined();
-    const body = JSON.parse(previewCall![1]?.body as string);
-    expect(body.conditions).toEqual({
-      operator: 'AND',
-      conditions: [{ field: 'status', operator: 'equals', value: 'decommissioned' }],
+    // No filter was applied or rewritten — the advanced filter is untouched.
+    expect(vi.mocked(writeFilterToHash).mock.calls.some(([f]) => f !== null)).toBe(false);
+    expect(
+      vi.mocked(fetchWithAuth).mock.calls.some(([url]) => String(url).startsWith('/filters/preview'))
+    ).toBe(false);
+
+    // "hide" restores the default view.
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-hide'));
+    await waitFor(() => {
+      expect(screen.queryByTestId(`device-card-${DEV_2}`)).toBeNull();
     });
+    expect(screen.getByTestId(`device-card-${DEV_1}`)).toBeTruthy();
+    expect(screen.getByTestId('decommissioned-hidden-hint')).toHaveTextContent('2 removed hidden');
+  });
+
+  it('grid view: the hint counts only removed devices the advanced filter admits', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
+      operator: 'AND',
+      conditions: [{ field: 'os', operator: 'equals', value: 'windows' }],
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+    // The os filter admits the active device and ONE of the two removed ones.
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: { totalCount: 2, deviceIds: [DEV_1, DEV_2], evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByLabelText('Grid view'));
+
+    const hint = await screen.findByTestId('decommissioned-hidden-hint');
+    await waitFor(() => expect(hint).toHaveTextContent('1 removed hidden'));
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-show'));
+    expect(await screen.findByTestId(`device-card-${DEV_2}`)).toBeTruthy();
+    // DEV_3 is excluded by the filter, not by the hidden-by-default rule.
+    expect(screen.queryByTestId(`device-card-${DEV_3}`)).toBeNull();
+    expect(screen.getByTestId('decommissioned-shown-hint')).toHaveTextContent('1 removed shown');
   });
 
   it('grid view renders no hint when no decommissioned devices exist', async () => {
@@ -1011,111 +1112,54 @@ describe('DevicesPage — hidden-decommissioned hint (#2251)', () => {
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
   });
 
-  it('list view: onShowDecommissioned replaces an existing status value and keeps other conditions', async () => {
+  it('list view: "show" flips includeDecommissioned without rewriting the existing filter; "hide" flips it back', async () => {
     const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
-      operator: 'AND',
+    const existing = {
+      operator: 'AND' as const,
       conditions: [
-        { field: 'os', operator: 'equals', value: 'windows' },
-        { field: 'status', operator: 'equals', value: 'online' },
+        { field: 'os', operator: 'equals' as const, value: 'windows' },
+        { field: 'status', operator: 'equals' as const, value: 'online' },
       ],
-    });
+    };
+    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(existing);
 
     render(<DevicesPage />);
     const list = await screen.findByTestId('device-list');
     expect(list.getAttribute('data-include-decommissioned')).toBe('false');
-
-    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
-
-    // status=online is REPLACED (single-select per field, like the toolbar);
-    // the os condition is preserved.
-    await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          { field: 'os', operator: 'equals', value: 'windows' },
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
-    });
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
-  });
-});
-
-// #2251 — the two trickier handleShowDecommissioned branches: an OR sentence
-// from the Advanced drawer must be nested (not rewritten to AND, and the
-// status condition must stay top-level where the includeDecommissioned memo
-// looks), and a multi-select `in` status condition must be replaced, not
-// stacked into a contradictory AND.
-describe('DevicesPage — show-decommissioned filter rewrite edge cases (#2251)', () => {
-  it('nests an OR group and keeps the status condition top-level', async () => {
-    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    const orGroup = {
-      operator: 'OR' as const,
-      conditions: [
-        { field: 'os', operator: 'equals' as const, value: 'windows' },
-        { field: 'os', operator: 'equals' as const, value: 'macos' },
-      ],
-    };
-    vi.mocked(decodeFilterFromHash).mockReturnValueOnce(orGroup);
-
-    render(<DevicesPage />);
-    const list = await screen.findByTestId('device-list');
-    expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
 
     fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
 
     await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          orGroup,
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
+      expect(list.getAttribute('data-include-decommissioned')).toBe('true');
     });
-    // The top-level status condition is what flips includeDecommissioned —
-    // a condition buried inside the nested group would leave the rows hidden.
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('true');
+    // status=online is NOT replaced — the tech's filter survives "show".
+    const lastWritten = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
+    expect(lastWritten).toEqual(existing);
+
+    fireEvent.click(screen.getByTestId('stub-hide-decommissioned'));
+    await waitFor(() => {
+      expect(list.getAttribute('data-include-decommissioned')).toBe('false');
+    });
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
   });
 
-  it('replaces a multi-select `in` status condition and preserves nested subgroups', async () => {
-    const { decodeFilterFromHash, writeFilterToHash } = await import('./filterUrl');
-    const nestedGroup = {
-      operator: 'OR' as const,
-      conditions: [
-        { field: 'os', operator: 'equals' as const, value: 'windows' },
-        { field: 'os', operator: 'equals' as const, value: 'linux' },
-      ],
-    };
+  it('list view: an explicit Decommissioned status filter shows the rows with no "hide" affordance', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
     vi.mocked(decodeFilterFromHash).mockReturnValueOnce({
       operator: 'AND',
-      conditions: [
-        nestedGroup,
-        { field: 'status', operator: 'in', value: ['online', 'offline'] },
-      ],
+      conditions: [{ field: 'status', operator: 'equals', value: 'decommissioned' }],
     });
 
     render(<DevicesPage />);
     const list = await screen.findByTestId('device-list');
-
-    fireEvent.click(screen.getByTestId('stub-show-decommissioned'));
-
-    // A leftover `status in [...]` would AND with the new equals to an
-    // always-empty result; it must be replaced. The nested subgroup survives.
     await waitFor(() => {
-      const last = vi.mocked(writeFilterToHash).mock.calls.at(-1)?.[0];
-      expect(last).toEqual({
-        operator: 'AND',
-        conditions: [
-          nestedGroup,
-          { field: 'status', operator: 'equals', value: 'decommissioned' },
-        ],
-      });
+      expect(list.getAttribute('data-include-decommissioned')).toBe('true');
     });
-    expect(list.getAttribute('data-include-decommissioned')).toBe('true');
+    // The filter (not the showRemoved flag) is what unhid them, so "hide"
+    // would be a no-op — it must not be offered.
+    expect(list.getAttribute('data-can-hide-decommissioned')).toBe('false');
   });
 });
 
@@ -2047,16 +2091,26 @@ describe('DevicesPage — ungated bulk actions still work on an all-offline flee
     expect([...submitted.map(d => d.id)].sort()).toEqual([DEV_1, DEV_2].sort());
   });
 
-  it('flags every offline device into maintenance — no gate, no confirm', async () => {
-    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
-    vi.mocked(toggleMaintenanceMode).mockResolvedValue({ success: true, device: {} } as never);
+  // FLIPPED (RMM-QA-176): the loop became one bulk call. The property under
+  // test is unchanged — no decommissioned-skip confirm gates an offline fleet,
+  // and both offline devices are targeted.
+  it('flags every offline device into maintenance — no decommissioned-skip gate', async () => {
+    const { bulkEnterMaintenanceMode } = await import('../../services/deviceActions');
+    vi.mocked(bulkEnterMaintenanceMode).mockResolvedValue({
+      succeeded: [DEV_1, DEV_2].map(deviceId => ({ deviceId, action: 'enable', maintenanceUntil: 'x' })),
+      failed: [],
+    } as never);
 
     await renderOfflineFleet();
     fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
-
-    await waitFor(() => expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect(vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]).sort()).toEqual(
+
+    const textarea = await screen.findByTestId('maintenance-reason');
+    fireEvent.change(textarea, { target: { value: 'scheduled patching' } });
+    fireEvent.click(screen.getByTestId('maintenance-submit'));
+
+    await waitFor(() => expect(vi.mocked(bulkEnterMaintenanceMode)).toHaveBeenCalledTimes(1));
+    expect([...vi.mocked(bulkEnterMaintenanceMode).mock.calls[0][0].deviceIds].sort()).toEqual(
       [DEV_1, DEV_2].sort(),
     );
   });

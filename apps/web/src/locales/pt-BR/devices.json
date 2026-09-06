@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removidos ocultos",
-    "show": "mostrar"
+    "show": "mostrar",
+    "shownLabel": "{{count}} removidos exibidos",
+    "hide": "ocultar"
   },
   "deviceActions": {
     "unavailable": {
@@ -181,12 +183,12 @@
       },
       "exitMaintenance": {
         "title": "Sair do modo de manutenção",
-        "message": "Tem certeza de que deseja encerrar o modo de manutenção de {{hostname}}? Os alertas e o monitoramento serão retomados.",
+        "message": "Tem certeza de que deseja encerrar o modo de manutenção de {{hostname}}?",
         "confirm": "Sair da manutenção"
       },
       "enterMaintenance": {
         "title": "Entrar no modo de manutenção",
-        "message": "Tem certeza de que deseja colocar {{hostname}} no modo de manutenção? Os alertas serão suprimidos enquanto estiver nesse modo.",
+        "message": "Tem certeza de que deseja colocar {{hostname}} no modo de manutenção?",
         "confirm": "Entrar em manutenção"
       },
       "decommission": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Desativar manutenção",
     "wakeSelected": "Acordar selecionados",
     "compareSelected": "Comparar selecionados",
+    "compareMaxDevices": "A comparação suporta até {{count}} dispositivos",
     "linkAsMultiBoot": "Vincular como multi-boot",
     "decommissionSelected": "Remover selecionados",
     "restoreSelected": "Restaurar selecionados",
@@ -2171,6 +2174,30 @@
       "unknown": "Desconhecida"
     },
     "title": "Permissões do macOS"
+  },
+  "maintenanceModeDialog": {
+    "title": "Ativar o modo de manutenção",
+    "titleMany": "Ativar o modo de manutenção em {{deviceCount}} dispositivos",
+    "description": "Registra uma janela de manutenção em {{hostname}} e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
+    "descriptionMany": "Registra uma janela de manutenção nos dispositivos selecionados e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
+    "reasonLabel": "Motivo",
+    "reasonPlaceholder": "Por que entrará em manutenção?",
+    "reasonHint": "De 3 a 500 caracteres. Registrado no dispositivo e na trilha de auditoria.",
+    "durationLabel": "Duração",
+    "durationOptionOne": "1 hora a partir de agora",
+    "durationOptionOther": "{{hours}} horas a partir de agora",
+    "durationHint": "A janela sempre começa agora — estendê-la substitui a janela atual em vez de somar a ela.",
+    "stepUpHeading": "Confirme sua identidade",
+    "stepUpIntro": "Sua organização exige um segundo fator antes de iniciar o modo de manutenção.",
+    "stepUpCodeLabel": "Código do autenticador",
+    "stepUpPasskeyNote": "Você confirmará com sua chave de acesso.",
+    "noStepUpFactor": "Adicione um app autenticador ou uma chave de acesso à sua conta antes de colocar dispositivos em modo de manutenção.",
+    "mfaRequired": "Conclua primeiro o login com MFA e tente novamente.",
+    "submit": "Iniciar manutenção",
+    "submitStepUp": "Verificar e iniciar",
+    "submitting": "Processando…",
+    "cancel": "Cancelar",
+    "genericError": "Não foi possível iniciar o modo de manutenção."
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Voltar para dispositivos",

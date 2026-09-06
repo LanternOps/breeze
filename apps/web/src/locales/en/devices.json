@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
-    "show": "show"
+    "show": "show",
+    "shownLabel": "{{count}} removed shown",
+    "hide": "hide"
   },
   "deviceActions": {
     "unavailable": {
@@ -181,12 +183,12 @@
       },
       "exitMaintenance": {
         "title": "Exit Maintenance Mode",
-        "message": "Are you sure you want to exit maintenance mode for {{hostname}}? Alerting and monitoring will resume.",
+        "message": "Are you sure you want to exit maintenance mode for {{hostname}}?",
         "confirm": "Exit Maintenance"
       },
       "enterMaintenance": {
         "title": "Enter Maintenance Mode",
-        "message": "Are you sure you want to put {{hostname}} into maintenance mode? Alerting will be suppressed while in this mode.",
+        "message": "Are you sure you want to put {{hostname}} into maintenance mode?",
         "confirm": "Enter Maintenance"
       },
       "decommission": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Disable Maintenance",
     "wakeSelected": "Wake Selected",
     "compareSelected": "Compare Selected",
+    "compareMaxDevices": "Compare supports up to {{count}} devices",
     "linkAsMultiBoot": "Link as multi-boot",
     "decommissionSelected": "Remove Selected",
     "restoreSelected": "Restore Selected",
@@ -2171,6 +2174,30 @@
       "unknown": "Unknown"
     },
     "title": "macOS Permissions"
+  },
+  "maintenanceModeDialog": {
+    "title": "Enter maintenance mode",
+    "titleMany": "Enter maintenance mode on {{deviceCount}} devices",
+    "description": "Records a maintenance window on {{hostname}} and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
+    "descriptionMany": "Records a maintenance window on the selected devices and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
+    "reasonLabel": "Reason",
+    "reasonPlaceholder": "Why is this going into maintenance?",
+    "reasonHint": "3–500 characters. Recorded on the device and in the audit trail.",
+    "durationLabel": "Duration",
+    "durationOptionOne": "1 hour from now",
+    "durationOptionOther": "{{hours}} hours from now",
+    "durationHint": "The window always runs from now — extending replaces the current window instead of adding to it.",
+    "stepUpHeading": "Confirm it's you",
+    "stepUpIntro": "Your organization requires a second factor before maintenance mode can start.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpPasskeyNote": "You'll confirm with your passkey.",
+    "noStepUpFactor": "Add an authenticator app or passkey to your account before putting devices into maintenance mode.",
+    "mfaRequired": "Complete MFA sign-in first, then try again.",
+    "submit": "Start maintenance",
+    "submitStepUp": "Verify and start",
+    "submitting": "Working…",
+    "cancel": "Cancel",
+    "genericError": "Failed to start maintenance mode."
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Back to devices",

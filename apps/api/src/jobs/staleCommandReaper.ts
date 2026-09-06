@@ -23,6 +23,7 @@ import {
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getCommandTimeoutMs, EXCLUDED_COMMAND_TYPES, SCRIPT_GRACE_BUFFER_MS } from '../services/commandTimeouts';
+import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
@@ -32,6 +33,7 @@ import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { attachWorkerObservability } from './workerObservability';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
 import { CANCEL_GRACE_MS } from '../services/scriptCancellation';
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../services/commandResultAcceptance';
@@ -95,18 +97,18 @@ const BACKUP_OFFLINE_GRACE_MS = 10 * 60 * 1000;      // device offline mid-job (
 const BACKUP_ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // legacy agents: no progress signal exists
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
 
-// Mirrors DEFAULT_OFFLINE_THRESHOLD_MINUTES in jobs/offlineDetector.ts (not
-// exported from there). Same condition shape: a device counts as offline
-// once it's flipped to 'offline', OR it's still marked online/updating but
-// hasn't heartbeat-ed in this long — i.e. disconnected but the async
-// offline-detection sweep hasn't caught up yet.
-const OFFLINE_DETECTOR_DEFAULT_THRESHOLD_MINUTES = 5;
+// Reads the threshold from services/deviceLiveness, its single owner (D7).
+// This file used to carry its own `= 5` copy, mirroring what was then a
+// private const in jobs/offlineDetector.ts. Same condition shape: a device
+// counts as offline once it's flipped to 'offline', OR it's still marked
+// online/updating but hasn't heartbeat-ed in this long — i.e. disconnected
+// but the async offline-detection sweep hasn't caught up yet.
 
 function isDeviceOfflineForReap(status: string | null | undefined, lastSeenAt: Date | null | undefined): boolean {
   if (status === 'offline') return true;
   if (status !== 'online' && status !== 'updating') return false;
   if (!lastSeenAt) return false;
-  const thresholdTime = Date.now() - OFFLINE_DETECTOR_DEFAULT_THRESHOLD_MINUTES * 60 * 1000;
+  const thresholdTime = Date.now() - DEFAULT_OFFLINE_THRESHOLD_MINUTES * 60 * 1000;
   return lastSeenAt.getTime() < thresholdTime;
 }
 
@@ -1424,6 +1426,7 @@ export async function initializeStaleCommandReaper(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'staleCommandReaper');
   reaperWorker.on('error', (error) => {
     console.error('[StaleCommandReaper] Worker error:', error);
     captureException(error);

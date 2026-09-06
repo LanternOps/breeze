@@ -164,6 +164,19 @@ export const SENTRY_EVENT_CODES = [
    * job can prune it — raise the job's batch-size / max-batches knobs.
    */
   'retention_backlog_remaining',
+
+  // --- server-side i18n (#3860) -----------------------------------------
+  /** `tApi` was asked for a key no bundle defines — the raw key string is
+   *  what shipped in the email/PDF/notification. Code↔en drift; the parity
+   *  suite only checks en↔translations. */
+  'i18n_missing_key',
+  /** A `{{var}}` in the resolved string had no value supplied — rendered as
+   *  an empty slot. */
+  'i18n_missing_interpolation',
+  /** `resolveRecipientLocale` was given ids but no tier resolved and no
+   *  partner row was readable — the recipient got English. A steady stream
+   *  for one partner means misconfiguration or an RLS-invisible row. */
+  'recipient_locale_unresolved',
 ] as const;
 
 /**

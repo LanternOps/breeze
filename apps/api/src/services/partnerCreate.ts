@@ -110,6 +110,12 @@ export async function createPartner(
         name: 'Partner Admin',
         description: 'Full access to partner and all organizations',
         isSystem: true,
+        // RMM-QA-164: the system Partner Admin role forces MFA on every
+        // creation path. A literal, not a copy of the global template: the
+        // template lookup happens after this insert, and the invariant is
+        // "system Partner Admin forces MFA", not "whatever the template says".
+        // MFA_FORCE_FOR_PARTNER_ADMIN=false is the only relief valve.
+        forceMfa: true,
       })
       .returning();
 

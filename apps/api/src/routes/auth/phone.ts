@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
@@ -27,6 +28,7 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getTwilioService } from '../../services/twilio';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { EpochAdvancePreconditionError } from '../../services/authLifecycle';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema, smsMfaEnableSchema } from './schemas';
@@ -63,6 +65,10 @@ const { db, withSystemDbAccessContext } = dbModule;
 
 export const phoneRoutes = new Hono();
 
+function phoneDigest(phoneNumber: string): string {
+  return createHash('sha256').update(phoneNumber).digest('hex');
+}
+
 function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
   if (error instanceof AuthBindingRotationRequiredError) {
     installAuthBindingReplacement(c, error.replacement);
@@ -86,6 +92,9 @@ phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerify
 
   const auth = c.get('auth');
   const { phoneNumber, currentPassword } = c.req.valid('json');
+  if (!Number.isSafeInteger(auth.token?.aep) || !Number.isSafeInteger(auth.token?.mep)) {
+    return c.json({ error: 'Authentication state changed. Please sign in again.' }, 409);
+  }
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
     rejectionStatus: MFA_PROOF_REJECTION_STATUS,
@@ -132,6 +141,13 @@ phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerify
     return c.json({ error: 'Failed to send verification code' }, 500);
   }
 
+  // The provider binds a code to a phone, not to our user's reset generation.
+  // A delayed send can recreate this record after reset cleanup; the old
+  // token epochs ensure that record cannot authorize a fresh-session write.
+  await redis.set(`sms:phone-setup:${auth.user.id}`, JSON.stringify({
+    phoneDigest: phoneDigest(phoneNumber), authEpoch: auth.token!.aep, mfaEpoch: auth.token!.mep,
+  }), 'EX', 600);
+
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
     orgId: orgId ?? undefined,
@@ -153,6 +169,11 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
 
   const auth = c.get('auth');
   const { phoneNumber, code, currentPassword, stepUpGrantId } = c.req.valid('json');
+  const authEpoch = auth.token?.aep;
+  const mfaEpoch = auth.token?.mep;
+  if (!Number.isSafeInteger(authEpoch) || !Number.isSafeInteger(mfaEpoch)) {
+    return c.json({ error: 'Authentication state changed. Please sign in again.' }, 409);
+  }
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
     rejectionStatus: MFA_PROOF_REJECTION_STATUS,
@@ -181,6 +202,18 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   const redis = getRedis();
   if (!redis) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const setupRaw = await redis.get(`sms:phone-setup:${auth.user.id}`);
+  let setup: { phoneDigest?: unknown; authEpoch?: unknown; mfaEpoch?: unknown } | null = null;
+  try {
+    setup = setupRaw ? JSON.parse(setupRaw) : null;
+  } catch {
+    // A malformed or legacy setup cannot establish current proof authority.
+  }
+  if (!setup || setup.phoneDigest !== phoneDigest(phoneNumber)
+    || setup.authEpoch !== authEpoch || setup.mfaEpoch !== mfaEpoch) {
+    return c.json({ error: 'Phone verification expired. Please request a new code.' }, 400);
   }
 
   // Rate limit confirmation attempts
@@ -236,18 +269,28 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   const isSmsFactorReplacement = cur?.mfaEnabled === true && cur.mfaMethod === 'sms';
 
   let assuranceResult: Awaited<ReturnType<typeof invalidateMfaAssuranceAfterFactorChange>> | null = null;
-  if (isSmsFactorReplacement) {
-    assuranceResult = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'phone-replacement', async (tx) => {
-      await tx
+  try {
+    if (isSmsFactorReplacement) {
+      assuranceResult = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'phone-replacement', async (tx) => {
+        await tx
+          .update(users)
+          .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+          .where(eq(users.id, auth.user.id));
+      }, { authEpoch, mfaEpoch, status: 'active' });
+    } else {
+      const updated = await db
         .update(users)
         .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
-        .where(eq(users.id, auth.user.id));
-    });
-  } else {
-    await db
-      .update(users)
-      .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
-      .where(eq(users.id, auth.user.id));
+        .where(and(eq(users.id, auth.user.id), eq(users.authEpoch, authEpoch!),
+          eq(users.mfaEpoch, mfaEpoch!), eq(users.status, 'active')))
+        .returning({ id: users.id });
+      if (updated.length !== 1) throw new EpochAdvancePreconditionError();
+    }
+  } catch (error) {
+    if (error instanceof EpochAdvancePreconditionError) {
+      return c.json({ error: 'Authentication state changed. Please sign in again.' }, 409);
+    }
+    throw error;
   }
 
   writeAuthAudit(c, {

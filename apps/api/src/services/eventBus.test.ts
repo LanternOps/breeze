@@ -66,6 +66,19 @@ describe('eventBus service', () => {
     _resetEventSubscriberRegistryForTests();
   });
 
+  it('preserves an outbox event identity and timestamp on every publication attempt', async () => {
+    const eventId = '88888888-8888-4888-8888-888888888888';
+    const occurredAt = '2026-09-05T00:00:00.000Z';
+    const options = { eventId, occurredAt };
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', options);
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', options);
+    const entries = vi.mocked(mockRedis.xadd!).mock.calls.map((args) => JSON.parse(args.at(-1) as string));
+    expect(entries).toHaveLength(2); // at-least-once attempts, one logical identity
+    expect(entries[0].id).toBe(eventId);
+    expect(entries[1]).toEqual(entries[0]);
+    expect(entries[0].metadata.timestamp).toBe(occurredAt);
+  });
+
   describe('publishUserEvent — addressed to one user', () => {
     it('writes ONLY the live channel: no stream, no global channel', async () => {
       // This is the containment property. publish() also writes the org's Redis

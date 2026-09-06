@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
-    "show": "göster"
+    "show": "göster",
+    "shownLabel": "{{count}} kaldırılmış gösteriliyor",
+    "hide": "gizle"
   },
   "deviceActions": {
     "unavailable": {
@@ -181,12 +183,12 @@
       },
       "exitMaintenance": {
         "title": "Bakım Modundan Çık",
-        "message": "{{hostname}} için bakım modundan çıkmak istediğinizden emin misiniz? Uyarı ve izleme devam edecek.",
+        "message": "{{hostname}} için bakım modundan çıkmak istediğinizden emin misiniz?",
         "confirm": "Bakımdan Çık"
       },
       "enterMaintenance": {
         "title": "Bakım Moduna Girin",
-        "message": "{{hostname}}'yi bakım moduna geçirmek istediğinizden emin misiniz? Bu moddayken uyarı bastırılacaktır.",
+        "message": "{{hostname}}'yi bakım moduna geçirmek istediğinizden emin misiniz?",
         "confirm": "Bakıma Girin"
       },
       "decommission": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Bakımı Devre Dışı Bırak",
     "wakeSelected": "Uyandırma Seçilen",
     "compareSelected": "Seçilenleri Karşılaştır",
+    "compareMaxDevices": "Karşılaştırma en fazla {{count}} cihazı destekler",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
     "decommissionSelected": "Seçilenleri Çıkar",
     "restoreSelected": "Seçilenleri Geri Yükle",
@@ -2171,6 +2174,30 @@
       "unknown": "Bilinmiyor"
     },
     "title": "macOS İzinler"
+  },
+  "maintenanceModeDialog": {
+    "title": "Bakım modunu başlat",
+    "titleMany": "{{deviceCount}} cihazda bakım modunu başlat",
+    "description": "{{hostname}} için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
+    "descriptionMany": "Seçili cihazlar için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
+    "reasonLabel": "Gerekçe",
+    "reasonPlaceholder": "Neden bakıma alınıyor?",
+    "reasonHint": "3–500 karakter. Cihazda ve denetim kaydında saklanır.",
+    "durationLabel": "Süre",
+    "durationOptionOne": "Şu andan itibaren 1 saat",
+    "durationOptionOther": "Şu andan itibaren {{hours}} saat",
+    "durationHint": "Pencere her zaman şu andan başlar — uzatmak mevcut pencereyi eklemek yerine değiştirir.",
+    "stepUpHeading": "Kimliğinizi doğrulayın",
+    "stepUpIntro": "Kuruluşunuz, bakım modu başlamadan önce ikinci bir faktör istiyor.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpPasskeyNote": "Geçiş anahtarınızla onaylayacaksınız.",
+    "noStepUpFactor": "Cihazları bakım moduna almadan önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+    "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "submit": "Bakımı başlat",
+    "submitStepUp": "Doğrula ve başlat",
+    "submitting": "İşleniyor…",
+    "cancel": "İptal",
+    "genericError": "Bakım modu başlatılamadı."
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Cihazlara geri dön",

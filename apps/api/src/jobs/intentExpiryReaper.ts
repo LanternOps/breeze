@@ -10,6 +10,7 @@ import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reaps `action_intents` rows past their deadline (spec
@@ -407,6 +408,7 @@ export async function initializeIntentExpiryReaper(): Promise<void> {
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'intentExpiryReaper');
   reaperWorker.on('error', (error) => {
     console.error('[IntentExpiryReaper] Worker error:', error);
     captureException(error);

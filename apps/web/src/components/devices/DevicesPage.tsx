@@ -4,7 +4,7 @@ import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
+import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
@@ -35,7 +35,10 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import type { BulkMaintenanceResponse } from '../../services/deviceActions';
+import MaintenanceModeDialog from './MaintenanceModeDialog';
+import { isInMaintenance } from '../../lib/maintenanceResource';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
@@ -189,6 +192,10 @@ export default function DevicesPage() {
     h === 'import-definitions' || h === 'import-values' ? true : undefined,
   );
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  // Non-null = MaintenanceModeDialog is open for exactly these devices. Holding
+  // the SET (not just a flag) is what lets the completion handler name the
+  // devices the server reported back on.
+  const [maintenanceDialogDevices, setMaintenanceDialogDevices] = useState<Device[] | null>(null);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
   const [vmHostPickerDevices, setVmHostPickerDevices] = useState<Device[] | null>(null);
@@ -329,10 +336,17 @@ export default function DevicesPage() {
   // set into DeviceList, which combines it with its local quick-filters
   // (search/status/os/etc. stay list-only).
   //
-  // Decommissioned devices are hidden by default (old list behavior). Show them
-  // only when the active filter group explicitly targets the 'decommissioned'
-  // status, so a user filtering FOR decommissioned still sees them.
-  const includeDecommissioned = useMemo(() => {
+  // Decommissioned devices are hidden by default (old list behavior). They
+  // become visible in two ways: the active filter group explicitly targets
+  // the 'decommissioned' status (a user filtering FOR removed devices still
+  // sees them), or the tech clicked "show" on the hidden-removed hint, which
+  // flips the page-level showRemoved flag. The flag ADDS the removed rows to
+  // whatever is on screen — it does not touch the advanced filter (#5023
+  // paper cut: "show" used to swap the view to a removed-only status filter,
+  // dropping every active device the tech was looking at). Transient session
+  // state on purpose: a reload returns to the hidden-by-default view.
+  const [showRemoved, setShowRemoved] = useState(false);
+  const filterTargetsDecommissioned = useMemo(() => {
     const conds = advancedFilter?.conditions ?? [];
     return conds.some(c => {
       if ('conditions' in c) return false; // nested groups: ignore (rare)
@@ -342,30 +356,14 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
+  const includeDecommissioned = showRemoved || filterTargetsDecommissioned;
 
-  // "Show" action for the hidden-decommissioned hint (#2251): applies the
-  // Decommissioned status filter — the same unhide mechanism the toolbar's
-  // status picker uses — replacing any other status equals/in value. Same
-  // single-select-per-field semantics as DeviceFilterToolbar's addCondition
-  // (independent implementation; chip order may differ — the replacement is
-  // appended rather than placed in the replaced condition's slot). Other
-  // filter conditions are preserved. If the current group is an OR sentence
-  // built in the Advanced drawer, nest it instead of rewriting it so its
-  // meaning is kept and the status condition stays top-level (where the
-  // includeDecommissioned memo looks); the AND intersection can be empty if
-  // the OR sentence itself constrains status — the rows still unhide, but
-  // zero of them may match.
-  const handleShowDecommissioned = useCallback(() => {
-    setAdvancedFilter(prev => {
-      const statusCond: FilterCondition = { field: 'status', operator: 'equals', value: 'decommissioned' };
-      if (!prev) return { operator: 'AND', conditions: [statusCond] };
-      if (prev.operator === 'OR') return { operator: 'AND', conditions: [prev, statusCond] };
-      const rest = prev.conditions.filter(
-        c => 'conditions' in c || c.field !== 'status' || (c.operator !== 'equals' && c.operator !== 'in')
-      );
-      return { operator: 'AND', conditions: [...rest, statusCond] };
-    });
-  }, []);
+  const handleShowDecommissioned = useCallback(() => setShowRemoved(true), []);
+  const handleHideDecommissioned = useCallback(() => setShowRemoved(false), []);
+  // "hide" is only meaningful while the flag (not an explicit status filter)
+  // is what unhid the rows; otherwise clicking it would visibly do nothing.
+  const onHideDecommissioned =
+    showRemoved && !filterTargetsDecommissioned ? handleHideDecommissioned : undefined;
 
   // Per-segment counts come from the full merged fleet so each segment shows its
   // true total regardless of which one is active. Gated to the network arm; with
@@ -377,26 +375,33 @@ export default function DevicesPage() {
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
-  const gridDevices = useMemo(
-    () => {
-      const base = includeDecommissioned
+  // Rows the advanced filter admits, before the hidden-by-default
+  // decommissioned rule — the removed-hint counts come from this set so they
+  // only promise rows "show" can actually reveal (#2251/#5023).
+  const gridMatchingDevices = useMemo(
+    () =>
+      advancedFilterIds === null
         ? classFilteredDevices
-        : classFilteredDevices.filter(d => d.status !== 'decommissioned');
-      return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
-    },
-    [classFilteredDevices, advancedFilterIds, includeDecommissioned]
+        : classFilteredDevices.filter(d => advancedFilterIds.has(d.id)),
+    [classFilteredDevices, advancedFilterIds]
   );
-  // How many decommissioned devices the default view is hiding (#2251) — drives
-  // the grid view's hint line (the list view computes its own from the same
-  // classFilteredDevices set, so the two stay in lockstep). The page fetches
-  // with includeDecommissioned: true, so this is a cheap client-side count.
-  const hiddenDecommissionedCount = useMemo(
+  const gridDevices = useMemo(
     () =>
       includeDecommissioned
-        ? 0
-        : classFilteredDevices.filter(d => d.status === 'decommissioned').length,
-    [classFilteredDevices, includeDecommissioned]
+        ? gridMatchingDevices
+        : gridMatchingDevices.filter(d => d.status !== 'decommissioned'),
+    [gridMatchingDevices, includeDecommissioned]
   );
+  // How many decommissioned devices the grid is hiding / showing (#2251) —
+  // drives the grid view's hint line (the list view computes its own from the
+  // same inputs, so the two stay in lockstep). The page fetches with
+  // includeDecommissioned: true, so this is a cheap client-side count.
+  const decommissionedCount = useMemo(
+    () => gridMatchingDevices.filter(d => d.status === 'decommissioned').length,
+    [gridMatchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  const shownDecommissionedCount = includeDecommissioned ? decommissionedCount : 0;
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -499,6 +504,11 @@ export default function DevicesPage() {
           architecture: d.architecture as string | undefined,
           isHeadless: typeof d.isHeadless === 'boolean' ? d.isHeadless : undefined,
           pendingReboot: d.pendingReboot === true,
+          // RMM-QA-176: the manual maintenance lease end. This transform is an
+          // explicit whitelist, so omitting it would silently make every
+          // leased device look "not in maintenance" to isInMaintenance while
+          // every other test stayed green.
+          maintenanceUntil: typeof d.maintenanceUntil === 'string' ? d.maintenanceUntil : null,
           // Collision enrollment (#2764). A non-null uuid means this row may be
           // replacing an earlier device with the same hostname; the list shows
           // a "Possible duplicate" badge and the device page a review banner.
@@ -942,14 +952,20 @@ export default function DevicesPage() {
         }
 
         case 'maintenance':
-          const isCurrentlyMaintenance = device.status === 'maintenance';
-          await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
+          // RMM-QA-176 D10: exit is a one-click, un-gated operation; ENTRY
+          // needs a reason, a duration and possibly a step-up factor, so it
+          // opens MaintenanceModeDialog instead of firing a request here.
+          if (!isInMaintenance(device)) {
+            setMaintenanceDialogDevices([device]);
+            break;
+          }
+          await exitMaintenanceMode(device.id);
           showToast({
             type: 'success',
-            message: isCurrentlyMaintenance
-              ? t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname })
-              : t('devicesPage.toasts.maintenanceOn', { hostname: device.hostname }),
+            message: t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname }),
           });
+          // Refetch rather than assume: exit returns the device to its REAL
+          // liveness state, never a blind 'online'.
           await refreshDevices();
           break;
 
@@ -1062,6 +1078,59 @@ export default function DevicesPage() {
     } finally {
       setActionInProgress(false);
     }
+  };
+
+  /**
+   * Report the outcome of a maintenance ENTRY (RMM-QA-176 D2/D10).
+   *
+   * `POST /devices/bulk/maintenance` answers **200 even when every device
+   * failed preflight** (not found / site denied / decommissioned / state
+   * conflict) — an empty eligible set is a legitimate 200 with an all-`failed`
+   * body and the grant left unspent. So `succeeded`/`failed`, never the HTTP
+   * status, decides whether this was a success: reporting the resolved promise
+   * as success would tell the technician N devices are suppressed when none
+   * are, and they would find out from the alert storm.
+   */
+  const reportMaintenanceEntryOutcome = (targets: Device[], result: unknown) => {
+    const hostnameFor = (deviceId: string) =>
+      targets.find(d => d.id === deviceId)?.hostname || deviceId;
+    const bulk = result as Partial<BulkMaintenanceResponse> | null;
+    if (bulk && Array.isArray(bulk.succeeded) && Array.isArray(bulk.failed)) {
+      const verb = t('devicesPage.maintenanceVerb.on');
+      const failedNames = bulk.failed.map(f => hostnameFor(f.deviceId));
+      if (failedNames.length === 0) {
+        showToast({
+          type: 'success',
+          message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: bulk.succeeded.length, verb }),
+        });
+      } else if (bulk.succeeded.length === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceAllFailed', {
+            count: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', {
+            succeeded: bulk.succeeded.length,
+            verb,
+            failed: failedNames.length,
+            devices: summarizeFailedDevices(failedNames),
+          }),
+        });
+      }
+      return;
+    }
+    // Single device: every failure arrived as a REJECTED promise inside the
+    // dialog (the single route uses status codes, not a failed[] list), so
+    // reaching here means that one device entered maintenance.
+    showToast({
+      type: 'success',
+      message: t('devicesPage.toasts.maintenanceOn', { hostname: targets[0]?.hostname ?? '' }),
+    });
   };
 
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
@@ -1248,12 +1317,20 @@ export default function DevicesPage() {
           break;
         }
 
-        case 'maintenance-on':
+        // RMM-QA-176 D2/D10: the two halves are no longer symmetric, so they
+        // no longer share a case. ENTRY is ONE server-side call under ONE
+        // step-up grant (POST /devices/bulk/maintenance) — the old N-single-
+        // calls loop would demand N grants and 403 on every one of them, and
+        // it had no way to collect the now-required reason. EXIT is un-gated
+        // and stays a loop, because there is no bulk exit route (ending
+        // suppression needs no batching).
+        case 'maintenance-on': {
+          setMaintenanceDialogDevices(selectedDevices);
+          break;
+        }
+
         case 'maintenance-off': {
-          const enabling = action === 'maintenance-on';
-          const mLabel = enabling
-            ? t('devicesPage.progress.enablingMaintenance')
-            : t('devicesPage.progress.disablingMaintenance');
+          const mLabel = t('devicesPage.progress.disablingMaintenance');
           setBulkProgress({ current: 0, total: deviceCount, label: mLabel });
           let mDone = 0;
           const mFailed: string[] = [];
@@ -1262,7 +1339,7 @@ export default function DevicesPage() {
           // failures and report them in a single summary toast (#1322).
           for (const device of selectedDevices) {
             try {
-              await toggleMaintenanceMode(device.id, enabling);
+              await exitMaintenanceMode(device.id);
             } catch {
               mFailed.push(device.hostname || device.id);
             }
@@ -1271,7 +1348,7 @@ export default function DevicesPage() {
           }
           setBulkProgress(null);
           const mSucceeded = deviceCount - mFailed.length;
-          const mVerb = enabling ? t('devicesPage.maintenanceVerb.on') : t('devicesPage.maintenanceVerb.off');
+          const mVerb = t('devicesPage.maintenanceVerb.off');
           if (mFailed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkMaintenanceSuccess', { count: mSucceeded, verb: mVerb }) });
           } else if (mSucceeded === 0) {
@@ -1734,6 +1811,7 @@ export default function DevicesPage() {
           serverFilterError={advancedFilterError}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}
+          onHideDecommissioned={onHideDecommissioned}
           listFilters={listFilters}
           onListFiltersChange={setListFilters}
           onCreateGroup={() => setShowCreateGroup(true)}
@@ -1765,6 +1843,15 @@ export default function DevicesPage() {
               <DecommissionedHiddenHint
                 count={hiddenDecommissionedCount}
                 onShow={handleShowDecommissioned}
+              />
+            </p>
+          )}
+          {onHideDecommissioned && shownDecommissionedCount > 0 && (
+            <p>
+              <DecommissionedHiddenHint
+                mode="shown"
+                count={shownDecommissionedCount}
+                onHide={onHideDecommissioned}
               />
             </p>
           )}
@@ -1806,6 +1893,18 @@ export default function DevicesPage() {
           busy={actionInProgress}
           onConfirm={hostId => void handleVmHostConfirm(hostId)}
           onClose={() => setVmHostPickerDevices(null)}
+        />
+      )}
+
+      {maintenanceDialogDevices && (
+        <MaintenanceModeDialog
+          open={true}
+          devices={maintenanceDialogDevices.map(d => ({ id: d.id, hostname: d.hostname }))}
+          onClose={() => setMaintenanceDialogDevices(null)}
+          onCompleted={result => {
+            reportMaintenanceEntryOutcome(maintenanceDialogDevices, result);
+            void fetchDevices();
+          }}
         />
       )}
 
