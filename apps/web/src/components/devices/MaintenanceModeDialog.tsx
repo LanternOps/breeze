@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Wrench } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
@@ -62,9 +62,10 @@ export default function MaintenanceModeDialog({
 }: MaintenanceModeDialogProps) {
   const { t } = useTranslation('devices');
   // A scope change can unmount this dialog while step-up proof is pending.
-  // Never send the captured device selection after the dialog is cancelled.
+  // Invalidate at unmount commit, before a pending proof can resume; passive
+  // cleanup can run after promise continuations.
   const live = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     live.current = open;
     return () => { live.current = false; };
   }, [open]);
