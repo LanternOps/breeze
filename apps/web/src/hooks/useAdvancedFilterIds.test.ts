@@ -234,7 +234,7 @@ describe('complete filter scope lifecycle (RMM-QA-153)', () => {
     });
 
   it('offers retry after invalid JSON and closes during the retry', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError(); } } as Response);
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError(); } } as unknown as Response);
     const { result } = renderHook(() => useAdvancedFilterIds(filter));
     await waitFor(() => expect(result.current.state).toBe('error'));
     mockPreviewResponse(['dev-1']);
