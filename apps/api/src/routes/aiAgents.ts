@@ -209,17 +209,12 @@ export function mapError(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
   }
   // Wave 5 Part B (#3827): actAssets.supervisedActionKeys failed write-time
-  // registry validation (validateAuthorizationKeys, policyDecidable.ts).
-  // `rejected` names exactly which keys and why, same shape as `missing`
-  // above, so the client (Task 5's editor) can render an actionable message.
-  if (err instanceof InvalidSupervisedActionKeysError) {
-    return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
-  }
-  // Spec §4.4 (Task 5, #5049): an org row tried to add a pre-authorized key
-  // outside the four-eyes grant executor. Same `rejected` shape as
-  // InvalidSupervisedActionKeysError above so the client can render it the
-  // same way.
-  if (err instanceof SupervisedKeysGrantOnlyError) {
+  // registry validation (validateAuthorizationKeys, policyDecidable.ts) —
+  // OR (Spec §4.4, Task 5, #5049) an org row tried to add a pre-authorized
+  // key outside the four-eyes grant executor. Both name exactly which keys
+  // and why via the same `rejected` shape, so the client (Task 5's editor)
+  // can render an actionable message either way.
+  if (err instanceof InvalidSupervisedActionKeysError || err instanceof SupervisedKeysGrantOnlyError) {
     return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {

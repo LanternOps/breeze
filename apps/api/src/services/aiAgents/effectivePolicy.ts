@@ -315,6 +315,19 @@ export function mergeAgentPolicies(
 }
 
 /**
+ * The "live partner-wide baseline row" predicate, shared by every reader that
+ * projects the partner axis: `loadPartnerBaselineKinds`, `loadPartnerBaselineCeiling`,
+ * and `resolveEffectiveAgentInner`'s own partner-row lookup. `kind` is
+ * optional because `loadPartnerBaselineKinds` scans every kind at once — the
+ * other two callers pin a single kind.
+ */
+function livePartnerBaselineWhere(partnerId: string, kind?: AiAgentKind) {
+  return kind === undefined
+    ? and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), isNull(aiAgents.disabledAt))
+    : and(eq(aiAgents.partnerId, partnerId), isNull(aiAgents.orgId), eq(aiAgents.kind, kind), isNull(aiAgents.disabledAt));
+}
+
+/**
  * Which `AiAgentKind`s currently have an active (non-disabled) partner-wide
  * baseline row for `partnerId` — i.e. which kinds `resolveEffectiveAgentInner`
  * would NOT reject at its `if (!partnerRow) return null` gate above.
@@ -343,11 +356,7 @@ export async function loadPartnerBaselineKinds(
     db
       .select({ kind: aiAgents.kind })
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, partnerId),
-        isNull(aiAgents.orgId),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(partnerId))
       // Bounded by the partial unique index (`ai_agents_partner_kind_uq`): at
       // most one live partner-wide row per kind, so this can never return more
       // than AI_AGENT_KINDS.length rows.
@@ -372,12 +381,7 @@ export async function loadPartnerBaselineCeiling(
     db
       .select({ toolAllowlist: aiAgents.toolAllowlist, actAssets: aiAgents.actAssets })
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, partnerId),
-        isNull(aiAgents.orgId),
-        eq(aiAgents.kind, kind),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(partnerId, kind))
       .limit(1));
 
   const row = rows[0];
@@ -461,12 +465,7 @@ async function resolveEffectiveAgentInner(
     db
       .select()
       .from(aiAgents)
-      .where(and(
-        eq(aiAgents.partnerId, org.partnerId),
-        isNull(aiAgents.orgId),
-        eq(aiAgents.kind, kind),
-        isNull(aiAgents.disabledAt),
-      ))
+      .where(livePartnerBaselineWhere(org.partnerId, kind))
       .limit(1));
 
   // No partner baseline means the org override cannot self-enable the agent.

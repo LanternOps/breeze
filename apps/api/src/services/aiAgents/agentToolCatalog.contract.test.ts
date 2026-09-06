@@ -4,7 +4,8 @@ import '../aiTools'; // populates the registry
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
-import { AGENT_HUMAN_ONLY_TOOLS } from '../aiGuardrails';
+import { AGENT_HUMAN_ONLY_TOOLS, BLOCKED_TOOLS } from '../aiGuardrails';
+import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import {
   AGENT_CAPABILITIES, TOOL_CAPABILITY, AGENT_KIND_PRESETS,
@@ -21,7 +22,7 @@ describe('agentToolCatalog contract', () => {
     for (const id of Object.values(TOOL_CAPABILITY)) expect(capabilityIds.has(id)).toBe(true);
   });
 
-  it('reachable = registry ∩ TOOL_TIERS − session-only − human-only', () => {
+  it('reachable = registry ∩ TOOL_TIERS − session-only − human-only − blocked − secret-bearing', () => {
     const reachable = new Set(listAgentReachableTools());
     for (const name of reachable) {
       expect(aiTools.has(name)).toBe(true);
@@ -29,6 +30,15 @@ describe('agentToolCatalog contract', () => {
       expect(name in m365ToolTiers).toBe(false);
       expect(name in googleToolTiers).toBe(false);
       expect(AGENT_HUMAN_ONLY_TOOLS.has(name)).toBe(false);
+      // Same runtime deny set `checkAgentGuardrails` enforces unconditionally
+      // (aiGuardrails.ts ~1692-1697): a blocked or secret-bearing tool must
+      // never be reachable, even though nothing in the current headless
+      // registry actually trips either check today (BLOCKED_TOOLS is empty;
+      // the two SECRET_BEARING_TOOLS are session-only and excluded above
+      // already) — this pins the exclusion so it still holds the day either
+      // set gains a headless member.
+      expect(BLOCKED_TOOLS.has(name)).toBe(false);
+      expect(isSecretBearingTool(name)).toBe(false);
     }
     for (const name of aiTools.keys()) {
       if (name in TOOL_TIERS && !AGENT_HUMAN_ONLY_TOOLS.has(name)) expect(reachable.has(name)).toBe(true);
@@ -66,6 +76,29 @@ describe('agentToolCatalog contract', () => {
     }
     const cmd = catalog.tools.find((t) => t.name === 'execute_command')!;
     expect(cmd.operations.some((op) => op.action === 'restart_service' && op.tier === 3)).toBe(true);
+  });
+
+  it('actEligible is derived from ACT_MANIFEST membership, not a synthetic-input matches() probe', () => {
+    // run_script/execute_playbook match on scriptId / playbookId+deviceId — a
+    // synthetic `{}` or `{ action }` input never carries those, so probing
+    // `resolveActOperation` here always came back null for bare-tool
+    // ACT_MANIFEST members even though they ARE act-eligible.
+    const catalog = buildAgentToolCatalog();
+    const runScript = catalog.tools.find((t) => t.name === 'run_script')!;
+    expect(runScript.operations).toHaveLength(1);
+    expect(runScript.operations[0]).toMatchObject({ key: 'run_script', actEligible: true });
+
+    const executePlaybook = catalog.tools.find((t) => t.name === 'execute_playbook')!;
+    expect(executePlaybook.operations).toHaveLength(1);
+    expect(executePlaybook.operations[0]).toMatchObject({ key: 'execute_playbook', actEligible: true });
+
+    const services = catalog.tools.find((t) => t.name === 'manage_services')!;
+    const byAction = Object.fromEntries(services.operations.map((op) => [op.action, op]));
+    expect(byAction.start).toMatchObject({ actEligible: false });
+
+    const diskCleanup = catalog.tools.find((t) => t.name === 'disk_cleanup')!;
+    const byDiskAction = Object.fromEntries(diskCleanup.operations.map((op) => [op.action, op]));
+    expect(byDiskAction.execute).toMatchObject({ actEligible: true });
   });
 
   it('every catalog tool has at least one operation and a single-operation tool uses the bare key', () => {

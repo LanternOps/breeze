@@ -58,11 +58,8 @@ export function intersectToolRefs(a: readonly string[], b: readonly string[]): s
     for (const entry of from) {
       const colon = entry.indexOf(':');
       const tool = colon === -1 ? entry : entry.slice(0, colon);
-      if (colon === -1) {
-        if (other.includes(tool)) out.add(tool);
-      } else if (other.includes(entry) || other.includes(tool)) {
-        out.add(entry);
-      }
+      const action = colon === -1 ? undefined : entry.slice(colon + 1);
+      if (isToolAllowlisted(other, tool, action)) out.add(entry);
     }
   };
   keep(a, b);

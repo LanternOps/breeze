@@ -13,14 +13,16 @@ import type {
   AgentToolOperationDto,
 } from '@breeze/shared/types/aiAgents';
 import { aiTools } from '../aiToolNames';
-import { getToolDefinitions } from '../aiTools';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
-import { AGENT_HUMAN_ONLY_TOOLS, TIER2_READONLY_TOOLS, TOOL_ACTION_INPUT_KEYS, checkGuardrails } from '../aiGuardrails';
-import { toolInputSchemas } from '../aiToolSchemas';
+import {
+  AGENT_HUMAN_ONLY_TOOLS, TOOL_ACTION_INPUT_KEYS, BLOCKED_TOOLS,
+  checkGuardrails, isReadOnlyResolution, toolActionEnum,
+} from '../aiGuardrails';
+import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
-import { resolveActOperation } from './actManifest';
+import { ACT_MANIFEST } from './actManifest';
 
 export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
@@ -304,9 +306,21 @@ function isSessionOnly(name: string): boolean {
   return name in m365ToolTiers || name in googleToolTiers;
 }
 
+/**
+ * The runtime deny set `checkAgentGuardrails` enforces unconditionally,
+ * regardless of policy: a blocked tool (tier 4) and a secret-bearing tool
+ * (`isSecretBearingTool` — never available to agents, aiGuardrails.ts
+ * ~1692-1697) are never reachable, so the catalog must exclude both here
+ * rather than let a reachable-but-always-denied tool appear in the picker.
+ */
 export function listAgentReachableTools(): string[] {
   return [...aiTools.keys()]
-    .filter((name) => name in TOOL_TIERS && !isSessionOnly(name) && !AGENT_HUMAN_ONLY_TOOLS.has(name))
+    .filter((name) =>
+      name in TOOL_TIERS
+      && !isSessionOnly(name)
+      && !AGENT_HUMAN_ONLY_TOOLS.has(name)
+      && !BLOCKED_TOOLS.has(name)
+      && !isSecretBearingTool(name))
     .sort();
 }
 
@@ -314,39 +328,47 @@ export function listUnreachableRegisteredTools(): string[] {
   return [...aiTools.keys()].filter((name) => !(name in TOOL_TIERS)).sort();
 }
 
-/** Same two sources as aiGuardrails.approvalScope.contract.test.ts, unioned. */
-function discriminatorValues(toolName: string): string[] | null {
-  const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const values = new Set<string>();
-  const definition = getToolDefinitions().find((d) => d.name === toolName);
-  const props = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
-  const jsonEnum = (props?.[key] as { enum?: unknown[] } | undefined)?.enum;
-  if (Array.isArray(jsonEnum)) for (const v of jsonEnum) if (typeof v === 'string') values.add(v);
-  const zodField = (toolInputSchemas[toolName] as { shape?: Record<string, unknown> } | undefined)?.shape?.[key];
-  const zodEnum = (zodField as { options?: unknown[] } | undefined)?.options;
-  if (Array.isArray(zodEnum)) for (const v of zodEnum) if (typeof v === 'string') values.add(v);
-  return values.size > 0 ? [...values] : null;
-}
+/**
+ * Frozen colon-keyed act-manifest surface, derived from `ACT_MANIFEST` once:
+ * `'manage_services.restart'` -> `'manage_services:restart'`; a dotless key
+ * (`'run_script'`, `'execute_playbook'`) stays bare. The virtual
+ * `remediation_suggestion` entry is excluded — it has no real `toolName` an
+ * agent call can ever carry (see actManifest.ts's docstring on that entry).
+ */
+const ACT_ELIGIBLE_OPERATION_KEYS: ReadonlySet<string> = new Set(
+  ACT_MANIFEST
+    .filter((op) => op.key !== 'remediation_suggestion')
+    .map((op) => {
+      const dot = op.key.indexOf('.');
+      return dot === -1 ? op.key : `${op.key.slice(0, dot)}:${op.key.slice(dot + 1)}`;
+    }),
+);
 
 function resolveOperation(toolName: string, action: string | null): AgentToolOperationDto {
   const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
   const input: Record<string, unknown> = action === null ? {} : { [key]: action };
   const check = checkGuardrails(toolName, input);
-  // checkGuardrails' tier is typed 1|2|3|4, but 4 ("blocked"/"unknown tool")
-  // never occurs here — every tool this is called for is a member of
-  // `aiTools` and `TOOL_TIERS` by construction (listAgentReachableTools).
-  // Clamp defensively so the DTO's tier stays 1|2|3 rather than widening it
-  // to 4 for every consumer.
-  const tier = check.tier === 4 ? 3 : check.tier;
-  const readOnly = tier === 1 || (tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+  // Every tool this is called for is a member of `aiTools` and `TOOL_TIERS`
+  // by construction (listAgentReachableTools), so tier 4 ("blocked"/"unknown
+  // tool") is a reachability-filter bug, not a value to paper over — throw
+  // rather than clamp it into a false tier 3.
+  if (check.tier === 4) {
+    throw new Error(`agentToolCatalog: ${toolName} resolves to tier 4 but passed the reachability filter`);
+  }
+  const readOnly = isReadOnlyResolution(toolName, check);
   const opKey = action === null ? toolName : `${toolName}:${action}`;
   return {
     key: opKey,
     action,
-    tier,
+    tier: check.tier,
     readOnly,
     policyDecidable: isPolicyDecidableKey(opKey),
-    actEligible: resolveActOperation(toolName, input)?.toolName === toolName && !readOnly,
+    // Membership in the frozen manifest surface, not a synthetic-input probe
+    // of `matches()` — `run_script`/`execute_playbook` match on scriptId /
+    // playbookId+deviceId, which this operation's synthetic `{ action }`
+    // input never carries, so probing `resolveActOperation` here always came
+    // back null for them.
+    actEligible: ACT_ELIGIBLE_OPERATION_KEYS.has(opKey) && !readOnly,
   };
 }
 
@@ -355,17 +377,21 @@ let memo: AgentToolCatalogDto | null = null;
 export function buildAgentToolCatalog(): AgentToolCatalogDto {
   if (memo) return memo;
   const tools: AgentToolCatalogToolDto[] = listAgentReachableTools().map((name) => {
-    const actions = discriminatorValues(name);
+    const actions = toolActionEnum(name);
     const operations = actions ? actions.sort().map((a) => resolveOperation(name, a)) : [resolveOperation(name, null)];
     const baseTier = aiTools.get(name)!.tier;
-    const tier = baseTier === 4 ? 3 : baseTier;
+    // Same reachability invariant as resolveOperation's tier check above —
+    // throw rather than silently clamp a tier-4 tool into a false tier 3.
+    if (baseTier === 4) {
+      throw new Error(`agentToolCatalog: ${name} has base tier 4 but passed the reachability filter`);
+    }
     return {
       name,
       // Non-null: the contract test's completeness check guarantees every
       // name in listAgentReachableTools() (a subset of aiTools.keys()) has a
       // TOOL_CAPABILITY entry; noUncheckedIndexedAccess can't see that.
       capability: TOOL_CAPABILITY[name]!,
-      tier,
+      tier: baseTier,
       readOnly: operations.every((op) => op.readOnly),
       operations,
     };
