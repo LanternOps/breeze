@@ -107,16 +107,20 @@ END $$;
 -- ---------------------------------------------------------------------------
 -- The enforcement trigger.
 --
--- READ THIS BEFORE CHANGING THE FUNCTION HEADER. Both `SET` clauses are
+-- READ THIS BEFORE CHANGING THE FUNCTION HEADER OR THE FIRST/LAST LINES OF THE
+-- BODY. `SET search_path` and the in-body scope elevation are both
 -- load-bearing and neither is boilerplate.
 --
 --   SET search_path = pg_catalog, public
 --     Standard SECURITY DEFINER hygiene: the function must not resolve
 --     `custom_field_definitions` through a caller-controlled search_path.
+--     `search_path` is a BUILT-IN GUC, so the attribute form is available to
+--     any role -- unlike the custom `breeze.scope` GUC below.
 --
---   SET "breeze.scope" = 'system'
+--   PERFORM set_config('breeze.scope', 'system', true)  -- first line of body
 --     WITHOUT THIS THE TRIGGER IS A NO-OP FOR THE EXACT CASE IT EXISTS TO
---     CATCH. The blind spot is not hypothetical and it is not symmetric:
+--     CATCH, on any deployment whose lookups are subject to RLS. The blind
+--     spot is not hypothetical and it is not symmetric:
 --
 --       * An ORG-scoped session inserting an org-owned `udf7` must look for a
 --         PARTNER-WIDE `udf7`. custom_field_definitions has no partner-wide
@@ -131,36 +135,63 @@ END $$;
 --         org-owned rows across ALL of that partner's orgs -- including orgs
 --         outside the caller's own accessible_org_ids.
 --
---     SECURITY DEFINER DOES NOT FIX THIS, AND HIDES IT IN CI. It switches to the
---     function OWNER -- the role that applied the migration. Locally and in CI
---     that role is a BYPASSRLS SUPERUSER (breeze_test: rolsuper=t,
---     rolbypassrls=t), which ignores RLS outright, so the guard behaves
---     identically with or without this line. In PRODUCTION the owner is
---     `doadmin` on managed DO Postgres: not a superuser, and bound by FORCE ROW
---     LEVEL SECURITY like every other role. RLS visibility is then decided by
---     the `breeze.scope` GUC that breeze_has_org_access /
---     breeze_has_partner_access read (0008-tenant-rls.sql,
---     2026-04-11-a-rls-function-bootstrap.sql).
+--     SECURITY DEFINER IS NOT A SUBSTITUTE, AND IT HIDES THE GAP IN CI. It
+--     switches to the function OWNER -- the role that applied the migration --
+--     so whether RLS still applies depends entirely on that role's attributes,
+--     which differ per deployment and which this file cannot know:
+--       - CI and local: `breeze_test` (rolsuper=t, rolbypassrls=t) ignores RLS
+--         outright, so the guard behaves identically with or without the
+--         elevation. Nothing here can be defended behaviourally on this stack.
+--       - Hosted prod: `doadmin` on managed DO Postgres is NOT a superuser but
+--         DOES carry BYPASSRLS (this is why the 122 legacy row-writing
+--         migrations still apply -- see scripts/check-migrations-nonsuperuser.ts,
+--         which reproduces exactly that attribute set). So hosted prod is
+--         probably covered by ownership alone TODAY.
+--       - Self-hosted / any future owner without BYPASSRLS: not covered. FORCE
+--         ROW LEVEL SECURITY binds the owner, breeze_current_scope() defaults
+--         to 'none', and breeze_has_org_access / breeze_has_partner_access are
+--         then both false (0008-tenant-rls.sql,
+--         2026-04-11-a-rls-function-bootstrap.sql).
+--     The elevation is what makes the guard correct in ALL THREE cases instead
+--     of only the two we happen to run today. It is not redundant with
+--     SECURITY DEFINER; it is what stops the guard from being silently
+--     ownership-dependent.
 --
---     MEASURED, not assumed (local PG16, this migration set, A/B with the SET
---     clause as the sole variable): two otherwise identical SECURITY DEFINER
---     lookups reassigned to the non-superuser `breeze_app` and called under an
---     org-scoped context returned unelevated => row NOT found, elevated => row
---     found. And with `ALTER FUNCTION ... RESET "breeze.scope"` applied, every
---     behavioural test in customFieldShadowing.integration.test.ts still passed.
---     So NO behavioural test can defend this line on a superuser stack; the
---     catalog assertion in that suite ('pins the function-level scope
---     elevation') is what does. Do not delete either half.
+--     MEASURED, not assumed (local PG16, this migration set, A/B with the
+--     elevation as the sole variable): two otherwise identical SECURITY DEFINER
+--     lookups reassigned to the non-superuser, non-BYPASSRLS `breeze_app` and
+--     called under an org-scoped context returned unelevated => row NOT found,
+--     elevated => row found. And with the elevation stripped, every
+--     behavioural test in customFieldShadowing.integration.test.ts still
+--     passed, because this stack's owner is a superuser. So NO behavioural test
+--     can defend these lines here; the catalog assertion in that suite ('pins
+--     the in-body scope elevation') is what does. Do not delete either half.
 --
---     WHY THE FUNCTION-LEVEL `SET` AND NOT set_config() IN THE BODY. A
---     function-level SET is saved on entry and restored by PostgreSQL when the
---     function exits -- normally OR through an error, because it unwinds with
---     the GUC nest level. A hand-rolled set_config('breeze.scope','system',true)
---     in the body would leave the CALLER'S transaction running at system scope
---     on every path that does not reach an explicit restore, which is a
---     tenant-isolation hole an order of magnitude worse than the bug being
---     fixed. The elevation here is bounded to this function body, which does
---     nothing but two SELECTs and a RAISE -- no writes, no dynamic SQL.
+--     WHY IN-BODY set_config AND NOT A FUNCTION-LEVEL `SET "breeze.scope"`.
+--     The attribute form is the more elegant one -- PostgreSQL saves it on
+--     entry and restores it on every exit path including through an error --
+--     BUT SETTING A CUSTOM (dotted) GUC AS A FUNCTION ATTRIBUTE IS
+--     SUPERUSER-ONLY. A non-superuser migration role gets
+--     `42501 permission denied to set parameter "breeze.scope"`
+--     (guc.c validate_option_array_item) the moment the CREATE FUNCTION runs,
+--     which on prod means the deploy crash-loops on boot. That is the v0.97.0
+--     EU incident, and src/db/migrationGucAttributes.test.ts exists to keep it
+--     from recurring; Check Migrations (non-superuser) is the backstop.
+--     `set_config()` at RUNTIME is not privilege-gated, so the sanctioned
+--     pattern is save/elevate/restore in the body -- reference implementation:
+--     2026-07-27-a-feature-policy-reference-ownership.sql
+--     (breeze_revalidate_config_policy_feature_references).
+--
+--     THE RESTORE IS NOT OPTIONAL AND THE BODY IS SHAPED AROUND IT. A missed
+--     restore would leave the CALLER'S transaction running at system scope,
+--     which is a tenant-isolation hole worse than the bug being fixed. Two
+--     things make that unreachable here: the body has exactly ONE `RETURN`,
+--     immediately preceded by the restore (there is deliberately no early
+--     return -- the `owner_partner IS NULL` case falls through instead), and
+--     every RAISE path aborts the (sub)transaction, which rolls the GUC back
+--     to its saved value without any code running. The elevated region does
+--     nothing but two SELECTs, an advisory lock and a RAISE -- no writes, no
+--     dynamic SQL.
 --
 -- ON `CONSTRAINT =` IN THE RAISEs. P0001 is Postgres's GENERIC code for any
 -- unqualified RAISE EXCEPTION, so a route branching on the code alone would
@@ -194,12 +225,24 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-SET "breeze.scope" = 'system'
 AS $$
 DECLARE
+  -- Saved on entry, restored immediately before the single RETURN below. NULL
+  -- when the caller never set the GUC at all; COALESCE'd to '' on restore,
+  -- which breeze_current_scope() reads back as 'none' -- the same value
+  -- current_setting(..., true) would have returned. Matches
+  -- breeze_revalidate_config_policy_feature_references (2026-07-27-a).
+  _prev_scope   text := current_setting('breeze.scope', true);
   owner_partner uuid;
   conflicting   uuid;
 BEGIN
+  -- Elevate for the cross-tenant lookups below. See the header: without this
+  -- the guard is silently ownership-dependent, and on any deployment whose
+  -- migration role lacks BYPASSRLS it is a no-op for the exact case it exists
+  -- to catch. Restored before the RETURN; every RAISE path below restores it
+  -- via the (sub)transaction rollback, so there is nothing to unwind by hand.
+  PERFORM set_config('breeze.scope', 'system', true);
+
   IF NEW.org_id IS NOT NULL THEN
     SELECT o.partner_id INTO owner_partner
       FROM public.organizations o
@@ -210,26 +253,25 @@ BEGIN
     -- (organizations.partner_id is itself NOT NULL, so a real org always has
     -- one). There is no partner namespace to check against, and the row is
     -- doomed regardless: custom_field_definitions.org_id carries an FK, and FK
-    -- checks run AFTER BEFORE-ROW triggers, so returning here hands the write
+    -- checks run AFTER BEFORE-ROW triggers, so falling through hands the write
     -- to the FK, which rejects it with 23503. Raising our own P0001 instead
     -- would replace an accurate "no such organization" with a misleading
-    -- shadowing message.
-    IF owner_partner IS NULL THEN
-      RETURN NEW;
-    END IF;
+    -- shadowing message. This is a fall-through and NOT an early RETURN on
+    -- purpose -- the restore below must be on every non-error path.
+    IF owner_partner IS NOT NULL THEN
+      PERFORM pg_advisory_xact_lock(1000257, hashtext(owner_partner::text || ':' || NEW.field_key));
 
-    PERFORM pg_advisory_xact_lock(1000257, hashtext(owner_partner::text || ':' || NEW.field_key));
+      SELECT f.id INTO conflicting
+        FROM public.custom_field_definitions f
+       WHERE f.org_id IS NULL
+         AND f.partner_id = owner_partner
+         AND f.field_key = NEW.field_key
+       LIMIT 1;
 
-    SELECT f.id INTO conflicting
-      FROM public.custom_field_definitions f
-     WHERE f.org_id IS NULL
-       AND f.partner_id = owner_partner
-       AND f.field_key = NEW.field_key
-     LIMIT 1;
-
-    IF conflicting IS NOT NULL THEN
-      RAISE EXCEPTION 'custom field key "%" already exists as an all-organizations field for this partner', NEW.field_key
-        USING ERRCODE = 'P0001', CONSTRAINT = 'custom_field_definitions_no_shadow';
+      IF conflicting IS NOT NULL THEN
+        RAISE EXCEPTION 'custom field key "%" already exists as an all-organizations field for this partner', NEW.field_key
+          USING ERRCODE = 'P0001', CONSTRAINT = 'custom_field_definitions_no_shadow';
+      END IF;
     END IF;
 
   ELSIF NEW.partner_id IS NOT NULL THEN
@@ -248,6 +290,7 @@ BEGIN
     END IF;
   END IF;
 
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
   RETURN NEW;
 END;
 $$;

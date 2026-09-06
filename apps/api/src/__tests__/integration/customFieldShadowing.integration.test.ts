@@ -32,24 +32,41 @@
  * its lookups run as its OWNER — the role that applied the migration. On this
  * stack and in CI that role is a SUPERUSER with BYPASSRLS (`breeze_test`:
  * rolsuper=t, rolbypassrls=t), which ignores RLS outright. So every behavioural
- * test in this file passes IDENTICALLY with or without
- * `SET "breeze.scope" = 'system'` on the function header — measured, not assumed:
- * after `ALTER FUNCTION … RESET "breeze.scope"` the four tenant-scope tests below
- * still went 4/4 green.
+ * test in this file passes IDENTICALLY with or without the in-body
+ * `set_config('breeze.scope', 'system', true)` elevation — measured, not
+ * assumed: with the elevation stripped, the four tenant-scope tests below still
+ * went 4/4 green.
  *
- * In PRODUCTION the owner is `doadmin` on managed DO Postgres, which is NOT a
- * superuser and IS bound by `FORCE ROW LEVEL SECURITY`. A/B on this same
+ * Whether the elevation matters therefore depends on the owner, which differs
+ * per deployment: hosted prod's `doadmin` is not a superuser but does carry
+ * BYPASSRLS (see apps/api/scripts/check-migrations-nonsuperuser.ts), so it is
+ * probably covered by ownership alone today; a self-hosted owner without
+ * BYPASSRLS is bound by `FORCE ROW LEVEL SECURITY` and is not. A/B on this same
  * database with an otherwise identical pair of SECURITY DEFINER lookups
- * reassigned to the non-superuser `breeze_app`, called under an org-scoped
- * context, gave: unelevated → row NOT found; elevated → row found. That is the
- * whole bug the `SET` prevents, and it is invisible to every behavioural test
- * here. This is the same CI-superuser blind spot that `migrationRlsScope.test.ts`
+ * reassigned to the non-superuser, non-BYPASSRLS `breeze_app`, called under an
+ * org-scoped context, gave: unelevated → row NOT found; elevated → row found.
+ * That is the bug the elevation prevents, and it is invisible to every
+ * behavioural test here. Same CI-superuser blind spot `migrationRlsScope.test.ts`
  * exists for.
  *
- * Hence `pins the function-level scope elevation on the trigger function` below
- * asserts `pg_proc.proconfig` from the CATALOG rather than through behaviour. It
- * is not belt-and-braces; on this stack it is the ONLY assertion in the file that
- * can fail when the elevation is removed. Do not delete it as redundant.
+ * Hence `pins the in-body scope elevation on the trigger function` below asserts
+ * the function's stored BODY from the CATALOG (`pg_get_functiondef`) rather than
+ * through behaviour. It is not belt-and-braces; on this stack it is the ONLY
+ * assertion in the file that can fail when the elevation is removed. Do not
+ * delete it as redundant.
+ *
+ * WHY THE BODY AND NOT `pg_proc.proconfig`. The elegant form of this is the
+ * function attribute `SET "breeze.scope" = 'system'`, which Postgres saves and
+ * restores automatically and which lands in `proconfig`. It cannot ship: setting
+ * a CUSTOM (dotted) GUC as a function attribute is superuser-only, so prod's
+ * non-superuser migration role gets `42501 permission denied to set parameter`
+ * at CREATE FUNCTION time and the deploy crash-loops (the v0.97.0 EU incident;
+ * `src/db/migrationGucAttributes.test.ts` and the `Check Migrations
+ * (non-superuser)` job both guard it). `proconfig` is therefore NULL by design
+ * for this function apart from search_path, and the sanctioned pattern is
+ * in-body save/elevate/restore — reference implementation
+ * `breeze_revalidate_config_policy_feature_references`
+ * (2026-07-27-a-feature-policy-reference-ownership.sql).
  *
  * ORDERING NOTE. W02's XOR is a CHECK constraint, so under a tenant context RLS
  * `WITH CHECK` rejects the row with 42501 *before* the constraint is evaluated
@@ -498,7 +515,7 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
    * They do not, on this stack: the function is SECURITY DEFINER owned by the
    * migration role, which is a BYPASSRLS superuser locally and in CI, so these
    * four tests measured 4/4 green with the elevation stripped. The catalog
-   * assertion further down is what covers it.
+   * body assertion further down is what covers it.
    */
   describe('under a tenant RLS context', () => {
     it("refuses a shadowing insert under the caller's own org scope, even though an org token cannot see the partner-wide row", async () => {
@@ -581,12 +598,21 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
     });
 
     /**
-     * The elevation is bounded to the trigger function. PostgreSQL saves a
-     * function-level `SET` on entry and restores it on exit — including through
-     * an error, because it unwinds with the GUC nest level. If it ever leaked,
-     * the caller's remaining statements would run at system scope, which is a
-     * far worse hole than the one being fixed. Read the GUC back through the
-     * SAME pooled connection right after a successful trigger firing.
+     * The elevation is bounded to the trigger function. The body saves
+     * `breeze.scope` into `_prev_scope` on entry and restores it immediately
+     * before its single RETURN; error paths restore it for free, because a
+     * RAISE aborts the (sub)transaction and a transaction-local `set_config`
+     * rolls back with it. If it ever leaked, the caller's remaining statements
+     * would run at system scope, which is a far worse hole than the one being
+     * fixed. Read the GUC back through the SAME pooled connection right after a
+     * successful trigger firing.
+     *
+     * UNLIKE the four tenant-scope tests above, this one is NOT blinded by the
+     * CI superuser: the restore is plain plpgsql that runs regardless of who
+     * owns the function, so deleting the restore line reds this test here and
+     * in CI. (It could not, while the elevation was a function attribute —
+     * Postgres restored that one itself. Moving to the in-body form is what
+     * made a dropped restore locally detectable.)
      */
     it('does not leak system scope into the calling transaction', async () => {
       const partner = await createPartner();
@@ -679,24 +705,76 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
      * REMOVED. See the file header for the measurement: the function is SECURITY
      * DEFINER, its owner is the migration role, and that role is a BYPASSRLS
      * superuser locally and in CI — so no behavioural test here can see the
-     * difference. In production the owner is `doadmin`, which is bound by FORCE
-     * RLS, and an unelevated lookup silently finds nothing: the trigger stops
-     * refusing anything, with no error and no failing test anywhere.
+     * difference. On a deployment whose migration role lacks BYPASSRLS the owner
+     * is bound by FORCE RLS and an unelevated lookup silently finds nothing: the
+     * trigger stops refusing anything, with no error and no failing test
+     * anywhere.
      *
-     * That is why this reads `pg_proc` from the catalog instead. It is a
-     * deliberate structural assertion standing in for a behavioural one that this
-     * environment cannot express — the same reason `migrationRlsScope.test.ts`
-     * greps migration text rather than running it. Deleting it as "redundant"
-     * removes the last thing standing between prod and a decorative trigger.
+     * That is why this reads the function's STORED BODY from the catalog
+     * instead. It is a deliberate structural assertion standing in for a
+     * behavioural one that this environment cannot express — the same reason
+     * `migrationRlsScope.test.ts` greps migration text rather than running it.
+     * Deleting it as "redundant" removes the last thing standing between a
+     * non-BYPASSRLS deployment and a decorative trigger.
+     *
+     * NOT `pg_proc.proconfig`: the function-attribute form of this elevation
+     * (`SET "breeze.scope" = 'system'`, which is what lands in proconfig) is
+     * superuser-only for a custom dotted GUC and 42501s prod's migration role at
+     * CREATE FUNCTION time — the v0.97.0 EU crash-loop, guarded by
+     * `src/db/migrationGucAttributes.test.ts` and `Check Migrations
+     * (non-superuser)`. proconfig therefore carries search_path and nothing
+     * else, BY DESIGN, and asserting `breeze.scope=system` there would demand
+     * the one form that cannot ship.
+     *
+     * Both halves of the save/restore are asserted. Dropping the restore is the
+     * likelier accident of the two and is strictly worse than dropping the
+     * elevation: it leaks system scope into the caller's transaction. The
+     * `does not leak system scope into the calling transaction` test above
+     * covers that behaviourally on the happy path (and unlike the tenant-scope
+     * tests it is NOT superuser-blinded); this covers it structurally, next to
+     * the elevation it belongs with.
      */
-    it('pins the function-level scope elevation on the trigger function', async () => {
+    it('pins the in-body scope elevation on the trigger function', async () => {
       const rows = await sys(() => db.execute(sql`
-        SELECT proconfig, prosecdef FROM pg_proc
+        SELECT prosecdef,
+               proconfig,
+               pg_get_functiondef(oid) AS def
+          FROM pg_proc
          WHERE proname = 'breeze_custom_field_no_cross_axis_shadow'`));
-      const fn = (rows as unknown as { proconfig: string[] | null; prosecdef: boolean }[])[0];
+      const fn = (rows as unknown as {
+        prosecdef: boolean;
+        proconfig: string[] | null;
+        def: string;
+      }[])[0];
       expect(fn?.prosecdef, 'the guard must be SECURITY DEFINER').toBe(true);
-      expect(fn?.proconfig ?? []).toContain('breeze.scope=system');
-      expect((fn?.proconfig ?? []).some((c) => c.startsWith('search_path='))).toBe(true);
+      expect(
+        (fn?.proconfig ?? []).some((c) => c.startsWith('search_path=')),
+        'SECURITY DEFINER without a pinned search_path is a hijackable lookup',
+      ).toBe(true);
+
+      const def = fn?.def ?? '';
+      expect(
+        def.includes("set_config('breeze.scope', 'system', true)"),
+        'the trigger body must elevate to system scope before its cross-tenant lookups — without it the guard is a silent no-op wherever the function owner lacks BYPASSRLS',
+      ).toBe(true);
+      expect(
+        def.includes("set_config('breeze.scope', COALESCE(_prev_scope, ''), true)"),
+        "the trigger body must restore the caller's scope before its RETURN — a missed restore leaves the caller's transaction at system scope",
+      ).toBe(true);
+
+      // The restore is only sound because there is exactly ONE return path;
+      // an early RETURN added above it would skip the restore silently.
+      expect(
+        (def.match(/RETURN NEW;/g) ?? []).length,
+        'the body must keep its single RETURN — every added return path needs its own restore',
+      ).toBe(1);
+
+      // And the attribute form must not creep back in: it is what 42501s a
+      // non-superuser migration role at CREATE FUNCTION time.
+      expect(
+        (fn?.proconfig ?? []).some((c) => c.startsWith('breeze.scope=')),
+        'breeze.scope as a function ATTRIBUTE is superuser-only and crash-loops prod (v0.97.0) — keep the in-body form',
+      ).toBe(false);
     });
   });
 });
