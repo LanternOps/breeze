@@ -9,7 +9,7 @@ import { useOrgScope } from '@/hooks/useOrgScope';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import SetupStepper from '../../setup/SetupStepper';
 import { useAgentToolCatalog } from './useAgentToolCatalog';
-import { ALERT_SEVERITY_KINDS, buildAgentSaveBody, draftFrom, firstFreeKind, type Draft } from './agentDraft';
+import { ALERT_SEVERITY_KINDS, buildAgentSaveBody, draftFrom, firstFreeKind, freeKinds, type Draft } from './agentDraft';
 import type { PolicyDecidableKeyOption } from './PolicyKeysCheckboxes';
 import PurposeStep from './steps/PurposeStep';
 import WhatItDoesStep from './steps/WhatItDoesStep';
@@ -101,6 +101,11 @@ export default function AgentCreateFlow({
   const actKeysWillBeOmitted =
     draft.ownerScope !== 'organization' && draft.mode !== 'act' && draft.supervisedActionKeys.length > 0;
   const actSupported = SUPPORTED_AGENT_MODES.includes('act');
+  // Mirrors the drawer's `availableKinds.length === 0` Save guard
+  // (AiAgentForm.tsx): every kind for this owner is already taken, so
+  // there is nothing a further step could do but submit a duplicate that
+  // the server would 409 on `agent_kind_exists` anyway.
+  const kindsExhausted = freeKinds(agents, draft.ownerScope, orgScope.orgId).length === 0;
 
   const { catalog: fetchedCatalog, ceiling, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
@@ -190,7 +195,7 @@ export default function AgentCreateFlow({
   // needs the acknowledgement before the operator can move past this step —
   // there is nothing else here for "Next" to gate on for act mode, since a
   // create draft is always "entering" act the first time it's selected.
-  const nextDisabled = step === 0 && enteringActMode && !actAck;
+  const nextDisabled = step === 0 && ((enteringActMode && !actAck) || kindsExhausted);
 
   const create = useCallback(async () => {
     if (saving) return;
@@ -345,7 +350,7 @@ export default function AgentCreateFlow({
           <button
             type="button"
             onClick={() => void create()}
-            disabled={saving}
+            disabled={saving || kindsExhausted}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="agent-create-flow-create"
           >

@@ -130,6 +130,24 @@ describe('buildAgentPreview', () => {
     expect(preview.operations).toEqual([]);
   });
 
+  it('a bare entry whose tool has no mutating operations goes to unrecognised, never proposed, never dropped', () => {
+    const preview = buildAgentPreview(draft({ toolAllowlist: ['query_devices'] }), null, catalog);
+    expect(preview.operations).toEqual([]);
+    expect(preview.unrecognised).toEqual(['query_devices']);
+  });
+
+  it('a scoped key naming a read-only operation goes to unrecognised, never proposed, never dropped', () => {
+    const preview = buildAgentPreview(draft({ toolAllowlist: ['manage_services:list'] }), null, catalog);
+    expect(preview.operations).toEqual([]);
+    expect(preview.unrecognised).toEqual(['manage_services:list']);
+  });
+
+  it('a bare multi-op entry both expands into operations AND is reported in unrecognised (mirrors the web\'s bare_multi_op)', () => {
+    const preview = buildAgentPreview(draft({ toolAllowlist: ['manage_services'] }), null, catalog);
+    expect(opKeys(preview)).toEqual(['manage_services:restart', 'manage_services:stop']);
+    expect(preview.unrecognised).toEqual(['manage_services']);
+  });
+
   it('computes readOnlyToolCount from the catalog, independent of the selected allowlist', () => {
     const preview = buildAgentPreview(draft({ toolAllowlist: [] }), null, catalog);
     expect(preview.readOnlyToolCount).toBe(1); // only query_devices is fully read-only

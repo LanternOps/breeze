@@ -3738,10 +3738,25 @@ describe('POST /ai-agents/preview', () => {
     expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
   });
 
-  it('does not resolve a ceiling for a partner-scope caller (its own row IS the ceiling)', async () => {
+  it('resolves the ceiling for a partner-scope caller previewing an org-owned draft (mirrors GET /ceiling\'s own scope gate)', async () => {
+    loadPartnerBaselineCeilingMock.mockResolvedValueOnce({ toolAllowlist: [], supervisedActionKeys: [] });
+
     const res = await previewRequest(
       buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null }),
-      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'] },
+      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).toHaveBeenCalledWith(PARTNER_ID, 'triage');
+    const body = (await res.json()) as { data: { operations: Array<{ withinCeiling: boolean }> } };
+    // ceiling's toolAllowlist is empty, so the draft's tool falls outside it.
+    expect(body.data.operations[0]!.withinCeiling).toBe(false);
+  });
+
+  it('does not resolve a ceiling for a partner-scope caller previewing its own partner-wide draft (its own row IS the ceiling)', async () => {
+    const res = await previewRequest(
+      buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: ['manage_services:restart'], ownerScope: 'partner' },
     );
 
     expect(res.status).toBe(200);
@@ -3754,6 +3769,26 @@ describe('POST /ai-agents/preview', () => {
     const res = await previewRequest(
       buildApp(false, { partnerId: PARTNER_ID }),
       { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'partner' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a ceiling for a system-scope caller', async () => {
+    const res = await previewRequest(
+      buildApp(false, { scope: 'system', partnerId: PARTNER_ID, orgId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(loadPartnerBaselineCeilingMock).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a ceiling when the caller carries no partnerId at all (self-hosted)', async () => {
+    const res = await previewRequest(
+      buildApp(false, { partnerId: null }),
+      { kind: 'triage', mode: 'shadow', toolAllowlist: [], ownerScope: 'organization' },
     );
 
     expect(res.status).toBe(200);

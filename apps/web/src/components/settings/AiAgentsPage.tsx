@@ -150,7 +150,14 @@ export default function AiAgentsPage() {
   // a re-enable) re-opened the drawer the operator had just closed.
   const appliedHashRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!hashAgentId || appliedHashRef.current === hashAgentId) return;
+    // The guided create flow (Task 13, #5051) is mutually exclusive with the
+    // edit drawer — nothing opens both. Bail rather than force-close it: its
+    // own Cancel already discards the in-progress draft with no confirmation
+    // (`onCancel={() => setCreating(false)}` below), so a stray hash must not
+    // silently do the same to a draft the operator never asked to abandon.
+    // `creating` is a dependency so the link is honoured once the flow
+    // closes (Cancel or Create) and the hash is still unlatched.
+    if (creating || !hashAgentId || appliedHashRef.current === hashAgentId) return;
     // Live rows only. The list deliberately carries soft-deleted agents
     // (`includeDisabled=1`), so a stale link would otherwise open the full
     // editor on one — every field live, and a Save aimed at a PATCH the server
@@ -163,7 +170,7 @@ export default function AiAgentsPage() {
     if (!target) return;
     appliedHashRef.current = hashAgentId;
     setEditing({ agent: target });
-  }, [agents, hashAgentId]);
+  }, [agents, creating, hashAgentId]);
 
   /**
    * Closing the editor, from any affordance.
@@ -380,10 +387,6 @@ export default function AiAgentsPage() {
             // policy. Keying on the target remounts it instead.
             key={editing.agent?.id ?? 'new'}
             agent={editing.agent}
-            agents={agents}
-            partnerBaselineKinds={partnerBaselineKinds}
-            showOwnerScope={isPartnerScope}
-            defaultOwnerScope={defaultOwnerScope}
             onClose={closeEditor}
             onDirtyChange={setEditorDirty}
             onSaved={() => {

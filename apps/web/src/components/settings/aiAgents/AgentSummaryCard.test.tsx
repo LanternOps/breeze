@@ -114,8 +114,21 @@ describe('AgentSummaryCard', () => {
 
     const preview = buildPreview({ protectedResources: { services: ['spooler'], paths: ['C:\\Windows'], registryKeys: [], deviceTags: [] } });
     rerender(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
-    expect(screen.getByTestId('agent-summary-never-touches-chip-spooler')).toBeInTheDocument();
-    expect(screen.getByTestId('agent-summary-never-touches-chip-C:\\Windows')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-summary-never-touches-chip-services-spooler')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-summary-never-touches-chip-paths-C:\\Windows')).toBeInTheDocument();
+  });
+
+  it('keys/test-ids "never touches" chips by category, not just the value, so the same value in two categories does not collide', () => {
+    const preview = buildPreview({
+      protectedResources: { services: ['shared'], paths: ['shared'], registryKeys: [], deviceTags: [] },
+    });
+    render(<AgentSummaryCard preview={preview} name="Bot" orgName="Acme" />);
+
+    const serviceChip = screen.getByTestId('agent-summary-never-touches-chip-services-shared');
+    const pathChip = screen.getByTestId('agent-summary-never-touches-chip-paths-shared');
+    expect(serviceChip).not.toBe(pathChip);
+    expect(serviceChip).toHaveTextContent('shared');
+    expect(pathChip).toHaveTextContent('shared');
   });
 
   it('reads the six-limit sentence from preview.limits plus the sibling cooldownSeconds, with currency and percent formatting', () => {

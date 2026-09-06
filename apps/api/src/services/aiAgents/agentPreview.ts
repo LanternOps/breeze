@@ -14,6 +14,7 @@ import type {
   AgentToolOperationDto,
 } from '@breeze/shared/types/aiAgents';
 import type { PreviewAiAgentInput } from '@breeze/shared/validators/aiAgents';
+import { outcomeFor } from '@breeze/shared';
 import { intersectToolRefs, isToolAllowlisted } from './toolAllowlist';
 
 /** `'manage_services:restart'` -> `{ tool: 'manage_services', action: 'restart' }`; a bare entry -> `action: null`. */
@@ -25,52 +26,46 @@ function splitEntry(entry: string): { tool: string; action: string | null } {
 }
 
 /**
- * Resolves one raw `toolAllowlist` entry against the catalog. `null` means
- * the entry could not be resolved at all (unknown tool, or an unreachable
- * action on a known tool) — the caller routes that to `unrecognised`, never
- * to a fabricated operation.
+ * Resolves one raw `toolAllowlist` entry against the catalog, mirroring the
+ * web's `entriesToSelection` (`capabilityModel.ts`) exactly so the two never
+ * classify the same entry differently. `unrecognised: true` means the entry
+ * contributes no operation and the raw entry surfaces on the review card
+ * instead — either because it could not be resolved at all (unknown tool, or
+ * an unreachable action on a known tool), because it names an operation that
+ * is always-on and read-only (a bare entry whose tool has no mutating
+ * operations, or a scoped key naming a read-only operation — neither is ever
+ * a proposed or approved operation in its own right; both are already
+ * counted in `readOnlyToolCount`), or because a bare entry needed
+ * disambiguation (the tool has more than one named action) — that case
+ * ALSO still returns its mutating operations, so the same entry can both
+ * expand into `operations` and be flagged (the web's `bare_multi_op`).
  *
- * A bare entry on a single-operation tool IS that tool's one operation
- * (`agentToolCatalog.ts`'s own invariant: `operations.length === 1 &&
- * operations[0].action === null` whenever `key === name`). A bare entry on a
- * multi-operation tool is shorthand for "every action" (spec §4.3), so it
- * expands to that tool's MUTATING operations only — its read-only operations
- * are already counted in `readOnlyToolCount` and are never a proposed or
- * approved operation in their own right.
+ * A bare entry on a genuinely single-operation tool (`operations.length ===
+ * 1 && operations[0].action === null`, `agentToolCatalog.ts`'s own
+ * invariant whenever `key === name`) IS that tool's one operation, with no
+ * flag — but only when that one operation is mutating; an all-read-only
+ * single-op tool falls into the read-only case above instead.
  */
 function resolveEntry(
   entry: string,
   toolsByName: ReadonlyMap<string, AgentToolCatalogToolDto>,
-): AgentToolOperationDto[] | null {
+): { ops: AgentToolOperationDto[]; unrecognised: boolean } {
   const { tool: toolName, action } = splitEntry(entry);
   const tool = toolsByName.get(toolName);
-  if (!tool) return null;
+  if (!tool) return { ops: [], unrecognised: true };
 
   if (action !== null) {
     const op = tool.operations.find((candidate) => candidate.action === action);
-    return op ? [op] : null;
+    if (!op || op.readOnly) return { ops: [], unrecognised: true };
+    return { ops: [op], unrecognised: false };
   }
 
-  if (tool.operations.length === 1 && tool.operations[0]!.action === null) {
-    return [tool.operations[0]!];
+  const mutatingOps = tool.operations.filter((op) => !op.readOnly);
+  if (mutatingOps.length === 0) return { ops: [], unrecognised: true };
+  if (mutatingOps.length === 1 && mutatingOps[0]!.action === null) {
+    return { ops: mutatingOps, unrecognised: false };
   }
-  return tool.operations.filter((op) => !op.readOnly);
-}
-
-/**
- * `mode === 'act' && op.actEligible` -> unattended (the run loop will
- * actually dispatch it without a human, per `ACT_MANIFEST`); otherwise the
- * guardrail tier decides whether a human approves it up front (tier 3) or it
- * is logged as an already-applied proposal (tier 2) — the same split
- * `capabilityModel.outcomeFor` computes on the web side, computed here
- * server-side so the review card cannot drift from it.
- */
-function resolveOutcome(
-  op: AgentToolOperationDto,
-  mode: PreviewAiAgentInput['mode'],
-): AgentPreviewDto['operations'][number]['outcome'] {
-  if (mode === 'act' && op.actEligible) return 'unattended';
-  return op.tier === 3 ? 'approval_request' : 'logged_proposal';
+  return { ops: mutatingOps, unrecognised: true };
 }
 
 export function buildAgentPreview(
@@ -83,12 +78,9 @@ export function buildAgentPreview(
   const unrecognised = new Set<string>();
 
   for (const entry of input.toolAllowlist) {
-    const resolved = resolveEntry(entry, toolsByName);
-    if (resolved === null) {
-      unrecognised.add(entry);
-      continue;
-    }
-    for (const op of resolved) opsByKey.set(op.key, op);
+    const { ops, unrecognised: flagged } = resolveEntry(entry, toolsByName);
+    if (flagged) unrecognised.add(entry);
+    for (const op of ops) opsByKey.set(op.key, op);
   }
 
   // No ceiling (a partner draft, or an org draft with no live partner
@@ -104,7 +96,7 @@ export function buildAgentPreview(
     return {
       key: op.key,
       capability: toolsByName.get(tool)!.capability,
-      outcome: resolveOutcome(op, input.mode),
+      outcome: outcomeFor(op, input.mode),
       preauthorized: isToolAllowlisted(supervisedCeiling, tool, action),
       withinCeiling: ceiling ? isToolAllowlisted(ceiling.toolAllowlist, tool, action) : true,
     };

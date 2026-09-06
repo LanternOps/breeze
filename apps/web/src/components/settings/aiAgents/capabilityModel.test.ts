@@ -109,7 +109,13 @@ describe('capabilityModel', () => {
     expect(outcomeFor(restart, 'shadow')).toBe('approval_request');
     expect(outcomeFor(restart, 'act')).toBe('unattended');
     expect(outcomeFor({ ...restart, actEligible: false }, 'act')).toBe('approval_request');
-    expect(outcomeFor({ ...list, readOnly: false }, 'shadow')).toBe('logged_proposal');
+    // `outcomeFor`'s shared signature (packages/shared/src/utils/agentOutcome.ts)
+    // narrows its `op` parameter to just `{ tier, actEligible }`, so a fresh
+    // object literal carrying `readOnly` (a field outside that shape) trips
+    // TS's excess-property check on the literal — assign to a typed variable
+    // first, same as `restart`/`list` above.
+    const listReadWrite: typeof list = { ...list, readOnly: false };
+    expect(outcomeFor(listReadWrite, 'shadow')).toBe('logged_proposal');
   });
 
   it('treats a bare ceiling entry as a wildcard', () => {

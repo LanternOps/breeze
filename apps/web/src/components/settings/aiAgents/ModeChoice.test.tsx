@@ -88,4 +88,19 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
     expect(screen.getByTestId('ai-agent-mode-off')).toHaveAttribute('tabindex', '0');
     expect(screen.getByTestId('ai-agent-mode-act')).toHaveAttribute('tabindex', '-1');
   });
+
+  // Moved from AiAgentForm.test.tsx (Task 10, #5051 review): this asserts the
+  // component's own layout, not anything specific to the drawer that used to
+  // be the only place it was tested through — the guided create flow's
+  // PurposeStep renders the identical control.
+  it('top-aligns the option cards so the three labels share a baseline', () => {
+    // A <button>'s content box is vertically centred by the UA stylesheet, so
+    // three cards of unequal height put their labels on three different lines.
+    setup();
+    for (const mode of ['off', 'shadow', 'act']) {
+      const card = screen.getByTestId(`ai-agent-mode-${mode}`);
+      expect(card.className).toContain('flex-col');
+      expect(card.className).toContain('items-start');
+    }
+  });
 });

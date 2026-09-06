@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { AiAgentMode, AiAgentOwnerScope } from '@breeze/shared';
 
 /**
  * Task 13 (#5051): extracted from `AiAgentForm.tsx` (a pure move — every test
@@ -83,6 +84,29 @@ export function policyActionLabel(t: TranslateFn, entry: PolicyDecidableKeyOptio
     : t(/* i18n-dynamic */ `aiAgentsPage.policyKeys.actions.${entry.toolName}.${entry.action}`, {
       defaultValue: sentenceCase(entry.action),
     });
+}
+
+/**
+ * A partner row's registry is collapsed behind a native `<details>` while the
+ * row is NOT acting — placed below Permissions rather than above it, since
+ * these checkboxes refine the tool allowlist Permissions already sets, not
+ * precede it. The summary counts the selection rather than repeating the
+ * full ceiling explanation (still given underneath, once opened), so a
+ * shadow-mode baseline reads as one scannable line instead of a checkbox
+ * list that authorizes nothing on its own from this row. The moment the row
+ * enters act mode the list is unwrapped entirely (not just opened) — that is
+ * the one mode where THIS row's own dispatch can be gated by these keys, so
+ * it earns the same plain treatment an org row always gets; the ceiling
+ * caveat still prints beneath it as a fact that survives the mode, not as
+ * something act mode makes disappear.
+ *
+ * Shared between `AiAgentForm.tsx` (the edit drawer) and `SafetyStep.tsx`
+ * (the guided create flow's Safety step, partner drafts only) so the two
+ * surfaces can never disagree on when a partner row's registry is worth
+ * collapsing.
+ */
+export function collapsedForCeiling(ownerScope: AiAgentOwnerScope, mode: AiAgentMode): boolean {
+  return ownerScope === 'partner' && mode !== 'act';
 }
 
 export interface PolicyKeysCheckboxesProps {

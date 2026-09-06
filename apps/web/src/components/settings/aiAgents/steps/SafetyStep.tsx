@@ -1,29 +1,14 @@
 import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
-import PolicyKeysCheckboxes, { type PolicyDecidableKeyOption } from '../PolicyKeysCheckboxes';
+import PolicyKeysCheckboxes, { collapsedForCeiling, type PolicyDecidableKeyOption } from '../PolicyKeysCheckboxes';
+import { listField, numberField, RecipientRolesFieldset, type RoleOption } from '../agentFields';
 import { lines, toggle, type Draft } from '../agentDraft';
 
-const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
-
-/** GET /roles projection. Duplicated from `AiAgentForm.tsx` (small, and the
- *  two never need to stay byte-identical) rather than exported from it —
- *  `AiAgentForm.tsx` has no reason to know this step file exists. */
-export interface RoleOption {
-  id: string;
-  name: string;
-  /** `roles.scope` as GET /roles projects it. Optional on the type because an
-   *  older API build omits it; such a role is grouped with the organization
-   *  roles rather than dropped — a recipient must never disappear because a
-   *  field it never had is missing. */
-  scope?: 'partner' | 'organization';
-}
-
-function roleScope(role: RoleOption): 'partner' | 'organization' {
-  return role.scope === 'partner' ? 'partner' : 'organization';
-}
-
-/** Rendered in this order; a group with no roles is skipped entirely. */
-const ROLE_GROUPS = ['partner', 'organization'] as const;
+// Re-exported so `AgentCreateFlow.tsx`'s `import { type RoleOption } from
+// './steps/SafetyStep'` keeps resolving — `RoleOption` itself now lives in
+// `agentFields.tsx` (Task 13, #5051 review) alongside the field helpers this
+// step shares with `AiAgentForm.tsx`.
+export type { RoleOption };
 
 export interface SafetyStepProps {
   draft: Draft;
@@ -33,51 +18,6 @@ export interface SafetyStepProps {
   policyKeys: PolicyDecidableKeyOption[];
   policyKeysFailed: boolean;
 }
-
-const listField = (
-  testId: string,
-  label: string,
-  value: string,
-  onChange: (next: string) => void,
-) => (
-  <label className="space-y-1 text-sm">
-    <span className="font-medium">{label}</span>
-    <textarea
-      className={`${inputCls} font-mono`}
-      rows={2}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      data-testid={testId}
-    />
-  </label>
-);
-
-const numberField = (
-  testId: string,
-  label: string,
-  value: number,
-  min: number,
-  max: number,
-  onChange: (next: number) => void,
-) => (
-  <label className="space-y-1 text-sm">
-    <span className="font-medium">{label}</span>
-    <input
-      type="number"
-      className={inputCls}
-      min={min}
-      max={max}
-      value={value}
-      onChange={(e) => {
-        // Clearing a number input yields '' -> NaN, which JSON.stringify
-        // emits as null and the server rejects with a bare 400.
-        const next = Number(e.target.value);
-        onChange(Number.isFinite(next) ? next : min);
-      }}
-      data-testid={testId}
-    />
-  </label>
-);
 
 /**
  * Step 3 of the guided create flow (spec §4.6): protected resources, the six
@@ -92,12 +32,22 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
   const { t } = useTranslation('settings');
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
-  const rolesGroupBaseId = useId();
 
-  const ROLE_GROUP_LABEL: Record<(typeof ROLE_GROUPS)[number], string> = {
-    partner: t('aiAgentsPage.fields.recipientRolesPartner'),
-    organization: t('aiAgentsPage.fields.recipientRolesOrganization'),
-  };
+  // The registry rendering, shared with everything the collapsed/uncollapsed
+  // branches below both need.
+  const policyKeysCheckboxes = (
+    <PolicyKeysCheckboxes
+      policyKeys={policyKeys}
+      policyKeysFailed={policyKeysFailed}
+      selectedKeys={draft.supervisedActionKeys}
+      onToggle={(key) => patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, key) })}
+    />
+  );
+  const ceilingHint = (
+    <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-ceiling-hint">
+      {t('aiAgentsPage.graduation.ceilingHint')}
+    </p>
+  );
 
   return (
     <div className="space-y-3">
@@ -119,15 +69,30 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
             {t('aiAgentsPage.sections.policyDecide')}
           </legend>
           <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
-          <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-ceiling-hint">
-            {t('aiAgentsPage.graduation.ceilingHint')}
-          </p>
-          <PolicyKeysCheckboxes
-            policyKeys={policyKeys}
-            policyKeysFailed={policyKeysFailed}
-            selectedKeys={draft.supervisedActionKeys}
-            onToggle={(key) => patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, key) })}
-          />
+          {/* Same collapse rule as the edit drawer (`AiAgentForm.tsx`'s
+              `policyDecideFieldset`, via the shared `collapsedForCeiling`
+              helper): a shadow/off partner draft's registry starts collapsed
+              behind a summary that counts the selection, since ticking a key
+              here authorizes nothing on its own until the row is acting.
+              Entering act mode unwraps it entirely. */}
+          {collapsedForCeiling(draft.ownerScope, draft.mode) ? (
+            <details data-testid="ai-agent-policy-keys-details">
+              <summary className="cursor-pointer text-xs font-medium">
+                {t('aiAgentsPage.fields.supervisedActionKeysCeilingSummary', {
+                  count: draft.supervisedActionKeys.length,
+                })}
+              </summary>
+              <div className="mt-1 space-y-2">
+                {ceilingHint}
+                {policyKeysCheckboxes}
+              </div>
+            </details>
+          ) : (
+            <>
+              {ceilingHint}
+              {policyKeysCheckboxes}
+            </>
+          )}
         </fieldset>
       )}
 
@@ -153,48 +118,14 @@ export default function SafetyStep({ draft, patch, roles, rolesFailed, policyKey
         </div>
       </fieldset>
 
-      <fieldset className="space-y-2 rounded-md border p-3">
-        <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-          {t('aiAgentsPage.sections.notifications')}
-        </legend>
-        <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.recipientRolesHint')}</p>
-        {rolesFailed ? (
-          <p className="text-sm text-destructive" data-testid="ai-agent-roles-failed">
-            {t('aiAgentsPage.fields.recipientRolesFailed')}
-          </p>
-        ) : roles.length === 0 ? (
-          <p className="text-sm text-muted-foreground" data-testid="ai-agent-roles-empty">
-            {t('aiAgentsPage.fields.recipientRolesEmpty')}
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {ROLE_GROUPS.map((scope) => {
-              const group = roles.filter((role) => roleScope(role) === scope);
-              if (group.length === 0) return null;
-              return (
-                <div key={scope} role="group" aria-labelledby={`${rolesGroupBaseId}-${scope}`}>
-                  <p id={`${rolesGroupBaseId}-${scope}`} className="text-xs font-medium">
-                    {ROLE_GROUP_LABEL[scope]}
-                  </p>
-                  <div className="mt-1 flex flex-wrap gap-3" data-testid={`ai-agent-roles-${scope}`}>
-                    {group.map((role) => (
-                      <label key={role.id} className="flex items-center gap-1 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={draft.roleIds.includes(role.id)}
-                          onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
-                          data-testid={`ai-agent-role-${role.id}`}
-                        />
-                        {role.name}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </fieldset>
+      <RecipientRolesFieldset
+        className="space-y-2 rounded-md border p-3"
+        t={t}
+        roles={roles}
+        rolesFailed={rolesFailed}
+        roleIds={draft.roleIds}
+        onToggleRole={(id) => patch({ roleIds: toggle(draft.roleIds, id) })}
+      />
     </div>
   );
 }

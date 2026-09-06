@@ -1104,6 +1104,24 @@ describe('AiAgentsPage deep link (#4187 UI critique)', () => {
     await waitFor(() => screen.getByTestId('ai-agent-row-a2'));
     expect(screen.queryByTestId('ai-agent-editor-drawer')).toBeNull();
   });
+
+  // Task 13 (#5051): the guided create flow and the edit drawer are mutually
+  // exclusive. A hash change while the flow is open must not silently
+  // discard the in-progress draft and pop the drawer open underneath/over it.
+  it('does not mount the edit drawer for a hash change while the create flow is open', async () => {
+    mockEndpoints([PARTNER_AGENT, ORG_AGENT]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+    await screen.findByTestId('agent-create-flow');
+
+    window.location.hash = '#agent=a2';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(screen.queryByTestId('ai-agent-editor-drawer')).toBeNull();
+    expect(screen.getByTestId('agent-create-flow')).toBeInTheDocument();
+  });
 });
 
 describe('AiAgentsPage re-enable (#4187 UI critique round 2)', () => {

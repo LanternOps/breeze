@@ -16,7 +16,7 @@ vi.mock('../../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
-import { type AgentToolCatalogDto, type AiAgentDto } from '@breeze/shared';
+import { AI_AGENT_KINDS, type AgentToolCatalogDto, type AiAgentDto } from '@breeze/shared';
 import AgentCreateFlow from './AgentCreateFlow';
 import { fetchWithAuth } from '../../../stores/auth';
 import { buildAgentSaveBody, draftFrom } from './agentDraft';
@@ -269,6 +269,42 @@ describe('AgentCreateFlow — kind cards and owner scope (moved from AiAgentsPag
     renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set() });
     expect(screen.getByTestId('ai-agent-no-baseline-hint')).toBeInTheDocument();
   });
+
+  // Ported from AiAgentForm.test.tsx (Task 10, #5051 review): the hint is
+  // create-only and no longer rendered by the drawer at all now that it only
+  // ever edits — this is its sole remaining coverage.
+  it('does not warn when a partner baseline already exists for the selected kind', async () => {
+    mockEndpoints();
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
+    await screen.findByTestId('ai-agent-kind-card-triage');
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+  });
+
+  it('does not warn when creating a partner-wide agent', async () => {
+    mockEndpoints();
+    renderFlow({ partnerBaselineKinds: new Set() }); // defaultOwnerScope defaults to 'partner'
+    await screen.findByTestId('ai-agent-kind-card-triage');
+    expect(screen.queryByTestId('ai-agent-no-baseline-hint')).toBeNull();
+  });
+
+  it('disables Next on Purpose (and Create) once every kind is already taken for the current owner, mirroring the drawer\'s availableKinds guard', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const allKindsTaken: AiAgentDto[] = AI_AGENT_KINDS.map((kind, i) => ({
+      ...makeAgents()[0]!,
+      id: `taken-${i}`,
+      kind,
+    }));
+    mockEndpoints();
+    renderFlow({ defaultOwnerScope: 'organization', agents: allKindsTaken });
+
+    expect(screen.getByTestId('ai-agent-kinds-exhausted')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-create-flow-next')).toBeDisabled();
+
+    // Switching to the partner axis frees it up again (nothing taken there).
+    fireEvent.click(screen.getByTestId('ai-agent-owner-partner'));
+    expect(screen.queryByTestId('ai-agent-kinds-exhausted')).toBeNull();
+    expect(screen.getByTestId('agent-create-flow-next')).not.toBeDisabled();
+  });
 });
 
 describe('AgentCreateFlow — Safety step (moved from AiAgentsPage.test.tsx)', () => {
@@ -288,18 +324,47 @@ describe('AgentCreateFlow — Safety step (moved from AiAgentsPage.test.tsx)', (
     expect(screen.queryByTestId('ai-agent-roles-empty')).toBeNull();
   });
 
-  it('keeps a cleared numeric limit as a finite number in the create body', async () => {
+  it('falls back a cleared numeric limit to its minimum, never 0 (Number(\'\') is 0, not NaN)', async () => {
+    // The old guard only checked `Number.isFinite(next)` on the theory that
+    // clearing the box yields `'' -> NaN` — it does not, `Number('')` is `0`,
+    // which IS finite, so the guard never fired and a cleared limit silently
+    // stored 0 rather than falling back at all.
     mockEndpoints();
     renderFlow();
     await advanceToSafety();
 
     fireEvent.change(screen.getByTestId('ai-agent-limit-devices'), { target: { value: '' } });
+    expect(screen.getByTestId('ai-agent-limit-devices')).toHaveValue(1); // this field's min
+
     fireEvent.click(screen.getByTestId('agent-create-flow-next'));
     fireEvent.click(await screen.findByTestId('agent-create-flow-create'));
 
     const limits = () => postBody().limits as { maxDevicesPerRun: number };
     await waitFor(() => expect(limits().maxDevicesPerRun).toBeTypeOf('number'));
-    expect(Number.isFinite(limits().maxDevicesPerRun)).toBe(true);
+    expect(limits().maxDevicesPerRun).toBe(1);
+  });
+
+  it('collapses a partner draft\'s supervised-key registry behind a summary while shadow/off, mirroring the drawer', async () => {
+    mockEndpoints();
+    renderFlow(); // defaultOwnerScope: 'partner', mode defaults to 'shadow'
+    await advanceToSafety();
+
+    const details = await screen.findByTestId('ai-agent-policy-keys-details');
+    expect(details.tagName).toBe('DETAILS');
+    expect(details).not.toHaveAttribute('open');
+
+    // Entering act mode unwraps the registry entirely — go back to Purpose,
+    // switch to act, and return.
+    fireEvent.click(screen.getByTestId('setup-stepper-step-0'));
+    fireEvent.click(screen.getByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+
+    expect(screen.queryByTestId('ai-agent-policy-keys-details')).toBeNull();
+    expect(screen.getByTestId('ai-agent-policy-decide')).toBeInTheDocument();
   });
 });
 

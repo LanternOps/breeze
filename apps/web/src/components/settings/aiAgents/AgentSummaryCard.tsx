@@ -183,10 +183,15 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
   if (anyPreauthorized) executesUnattendedText = `${executesUnattendedText} ${t('aiAgentsPage.summary.preauthorizedNote')}`;
 
   // --- Never touches ---
+  // Tagged with which list each entry came from: the three protected-resource
+  // lists are independent (a service name and a path can coincidentally be
+  // the same string), so a flat `entry` alone is not a stable React key or a
+  // unique test-id — two chips from different categories with the same value
+  // collided on both.
   const protectedChips = [
-    ...preview.protectedResources.services,
-    ...preview.protectedResources.paths,
-    ...preview.protectedResources.registryKeys,
+    ...preview.protectedResources.services.map((entry) => ({ category: 'services', entry })),
+    ...preview.protectedResources.paths.map((entry) => ({ category: 'paths', entry })),
+    ...preview.protectedResources.registryKeys.map((entry) => ({ category: 'registryKeys', entry })),
   ];
 
   // --- Limits (six exposed limits: the five in `limits` plus the sibling `cooldownSeconds`) ---
@@ -287,8 +292,12 @@ export default function AgentSummaryCard({ preview, name, orgName, enabled = fal
             t('aiAgentsPage.summary.neverTouchesEmpty')
           ) : (
             <ul className="flex flex-wrap gap-1.5">
-              {protectedChips.map((entry) => (
-                <li key={entry} className="rounded-full border px-2 py-0.5 font-mono text-xs" data-testid={`agent-summary-never-touches-chip-${entry}`}>
+              {protectedChips.map(({ category, entry }) => (
+                <li
+                  key={`${category}-${entry}`}
+                  className="rounded-full border px-2 py-0.5 font-mono text-xs"
+                  data-testid={`agent-summary-never-touches-chip-${category}-${entry}`}
+                >
                   {entry}
                 </li>
               ))}

@@ -10,17 +10,16 @@ import { useTranslation } from 'react-i18next';
 import {
   AI_AGENT_KINDS,
   ALERT_SEVERITIES,
-  SUPPORTED_AGENT_MODES,
   type AiAgentDto,
   type AiAgentKind,
   type AiAgentMode,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
-import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
@@ -28,16 +27,17 @@ import CapabilityPicker from './aiAgents/CapabilityPicker';
 import { useAgentToolCatalog } from './aiAgents/useAgentToolCatalog';
 import ModeChoice from './aiAgents/ModeChoice';
 import PolicyKeysCheckboxes, {
+  collapsedForCeiling,
   policyActionLabel,
   sentenceCase,
   type PolicyDecidableKeyOption,
 } from './aiAgents/PolicyKeysCheckboxes';
+import { listField, numberField, RecipientRolesFieldset, type RoleOption } from './aiAgents/agentFields';
+import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './aiAgents/agentErrors';
 import {
   ALERT_SEVERITY_KINDS,
   buildAgentSaveBody,
   draftFrom,
-  firstFreeKind,
-  freeKinds,
   lines,
   toggle,
   type Draft,
@@ -46,44 +46,8 @@ import {
 export type { AiAgentDto };
 export type { Draft } from './aiAgents/agentDraft';
 
-interface RoleOption {
-  id: string;
-  name: string;
-  /** `roles.scope` as GET /roles projects it. Optional on the type because an
-   *  older API build omits it; such a role is grouped with the organization
-   *  roles rather than dropped — a recipient must never disappear because a
-   *  field it never had is missing. */
-  scope?: 'partner' | 'organization';
-}
-
-function roleScope(role: RoleOption): 'partner' | 'organization' {
-  return role.scope === 'partner' ? 'partner' : 'organization';
-}
-
-/** Rendered in this order; a group with no roles is skipped entirely. */
-const ROLE_GROUPS = ['partner', 'organization'] as const;
-
 interface Props {
-  /** null = create a new agent. */
-  agent: AiAgentDto | null;
-  /**
-   * Every agent visible to this session. The taken-kind set must be derived
-   * against the OWNER the draft is targeting, not flattened across both axes —
-   * uniqueness is (partner_id, kind) and (org_id, kind) independently.
-   */
-  agents: AiAgentDto[];
-  /**
-   * Kinds that already have an active partner-wide baseline for this org's
-   * partner (#4170). An org-only agent is override-only by design — with no
-   * baseline for its kind, the resolver treats it as if it did not exist —
-   * so this warns BEFORE creating an org row of a kind with no baseline yet.
-   * Reported by GET /ai/agents alongside `agents`, not derivable from
-   * `agents` itself: a not-yet-created kind has no row to read it off of.
-   */
-  partnerBaselineKinds: Set<string>;
-  /** Show the partner-wide vs org-owned selector (create-only, partner-scope users). */
-  showOwnerScope: boolean;
-  defaultOwnerScope: OwnerScope;
+  agent: AiAgentDto;
   onClose: () => void;
   onSaved: () => void;
   /**
@@ -101,78 +65,39 @@ interface Props {
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-/**
- * Machine token -> operator-facing sentence. The API answers these with a
- * `code`, and runAction's `friendly` hook is keyed on it; without this the
- * toast shows the token verbatim.
- */
-const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) | undefined> = {
-  agent_kind_exists: (t) => t('aiAgentsPage.errors.kindExists'),
-  mode_not_supported: (t) => t('aiAgentsPage.errors.modeNotSupported'),
-  // The server's 422 (Task 6, #3826) is the authoritative gate — the
-  // structured `missing[]` it carries is rendered as issues below, this is
-  // just the toast fallback so the raw machine token never reaches the user.
-  act_prerequisites_not_met: (t) => t('aiAgentsPage.errors.actPrerequisitesNotMet'),
-  // Wave 5 Part B (#3827): the server's 422 (agentService.ts's
-  // InvalidSupervisedActionKeysError) carries a structured `rejected[]` —
-  // this is just the toast fallback; the per-key detail is rendered as
-  // issues below via ACT_PREREQUISITE_COPY's sibling handling in save()'s
-  // catch block.
-  invalid_supervised_action_keys: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
-  // #5049: the server's 422 (agentService.ts's SupervisedKeysGrantOnlyError)
-  // carries the same structured `rejected[]` shape as
-  // invalid_supervised_action_keys above — mapped as the identical toast
-  // fallback and rendered by the same per-key branch in save()'s catch block.
-  supervised_keys_grant_only: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
-};
-
-/**
- * `missing[]` entries from the server's `act_prerequisites_not_met` 422
- * (Task 6, #3826 — `ActPrerequisitesNotMetError`). Mapped to translated,
- * actionable copy so the operator sees what to fix rather than a machine
- * token.
- */
-const ACT_PREREQUISITE_COPY: Record<string, (t: (key: string) => string) => string> = {
-  recipient: (t) => t('aiAgentsPage.errors.actMissingRecipient'),
-  act_eligible_tool: (t) => t('aiAgentsPage.errors.actMissingTool'),
-};
-
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
 
 /**
- * Create/edit form for one AI agent policy row.
- *
- * `kind` and `ownerScope` are create-only: the API has no update path for
- * either (an agent's identity is `(owner, kind)`, and both unique indexes are
- * partial on `disabled_at IS NULL`), so offering them on edit would promise a
- * change the server cannot make.
+ * Edit form for one existing AI agent policy row. Create is handled entirely
+ * by the guided create flow (`AgentCreateFlow.tsx`, Task 13 #5051) —
+ * `AiAgentsPage.tsx` opens this drawer only for `openEditor`, never for
+ * "New agent" — so `kind` and `ownerScope` are fixed for the life of this
+ * form: the API has no update path for either (an agent's identity is
+ * `(owner, kind)`, and both unique indexes are partial on `disabled_at IS
+ * NULL`), which is exactly why they are rendered read-only below rather than
+ * as the editable controls the create flow's Purpose step offers.
  */
 export default function AiAgentForm({
   agent,
-  agents,
-  partnerBaselineKinds,
-  showOwnerScope,
-  defaultOwnerScope,
   onClose,
   onSaved,
   onDirtyChange,
 }: Props) {
   const { t } = useTranslation('settings');
   const orgScope = useOrgScope();
-  // Read from the single source of the partner-scope rule rather than reusing
-  // `showOwnerScope`: that prop means "offer the create-only owner selector",
-  // which happens to be the same boolean today but is not the same QUESTION —
-  // the schedules section asks whether this session may write partner-wide
-  // policy at all (canManagePartnerWidePolicies' client-side counterpart).
+  // The schedules section asks whether this session may write partner-wide
+  // policy at all (canManagePartnerWidePolicies' client-side counterpart) —
+  // independent of this agent's own `ownerScope`.
   const { isPartnerScope } = useDefaultOwnerScope();
-  const isCreate = agent === null;
 
+  // `agent.ownerScope`/`agent.kind` feed `draftFrom`'s `defaults` param only
+  // as a type-satisfying placeholder — `agent` is always present here (this
+  // form is edit-only), so `draftFrom`'s own `agent?.ownerScope ?? defaults.*`
+  // fallbacks never actually reach for it. The create flow
+  // (`AgentCreateFlow.tsx`) is the caller that exercises real defaults.
   const [draft, setDraft] = useState<Draft>(() =>
-    draftFrom(agent, {
-      ownerScope: defaultOwnerScope,
-      kind: firstFreeKind(agents, defaultOwnerScope, orgScope.orgId) ?? AI_AGENT_KINDS[0],
-    }),
+    draftFrom(agent, { ownerScope: agent.ownerScope, kind: agent.kind }),
   );
 
   // Captured once at mount (the parent keys this form by agent id, so a new
@@ -180,18 +105,10 @@ export default function AiAgentForm({
   // "does not carry a stale draft" below). The acknowledgement gate only
   // applies to a genuine transition INTO act mode, not to every subsequent
   // edit of an agent that is already acting.
-  const [initialMode] = useState<AiAgentMode>(agent?.mode ?? 'off');
+  const [initialMode] = useState<AiAgentMode>(agent.mode);
   const [actAck, setActAck] = useState(false);
   const enteringActMode = draft.mode === 'act' && initialMode !== 'act';
 
-  // Recomputed on every owner-scope flip. Flattening this across both axes is
-  // what previously hid `triage` from the PARTNER-WIDE create form as soon as
-  // any single org owned a triage agent — and with no partner baseline,
-  // resolveEffectiveAgent returns null, so triage was dead for every org.
-  const availableKinds = useMemo(
-    () => freeKinds(agents, draft.ownerScope, orgScope.orgId),
-    [agents, draft.ownerScope, orgScope.orgId],
-  );
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [rolesFailed, setRolesFailed] = useState(false);
   const [policyKeys, setPolicyKeys] = useState<PolicyDecidableKeyOption[]>([]);
@@ -248,7 +165,6 @@ export default function AiAgentForm({
   const permissionsHeadingId = useId();
   const limitsBudgetId = useId();
   const limitsTimingId = useId();
-  const rolesGroupBaseId = useId();
   const severitiesGroupId = useId();
   const nameInputId = useId();
   const nameErrorId = useId();
@@ -262,19 +178,7 @@ export default function AiAgentForm({
   const usesAlertSeverities = ALERT_SEVERITY_KINDS.has(draft.kind);
 
   // ---- Mode: the privileged choice --------------------------------------
-  // The CREATE path has no `agent` DTO yet, so the fallback must be the shared
-  // constant and never `[]` — see the long note this file already carries on
-  // the old `<option disabled>`; the reasoning survived the control change.
-  const actSupported = (agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act');
-
-  // Literal keys, same reason ModeChoice.tsx's own label maps are: the closed
-  // two-member set is spelled out so the keyUsage guard verifies both labels
-  // statically.
-  const ROLE_GROUP_LABEL: Record<(typeof ROLE_GROUPS)[number], string> = {
-    partner: t('aiAgentsPage.fields.recipientRolesPartner'),
-    organization: t('aiAgentsPage.fields.recipientRolesOrganization'),
-  };
-
+  const actSupported = agent.supportedModes.includes('act');
 
   // Recipients are role IDs, never role names: `roles` is a tenant-scoped table
   // with partner-defined names, so the picker has to show the real rows.
@@ -374,9 +278,6 @@ export default function AiAgentForm({
     if (ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
       problems.push(t('aiAgentsPage.issues.severities'));
     }
-    if (isCreate && draft.ownerScope === 'organization' && !orgScope.orgId) {
-      problems.push(t('aiAgentsPage.issues.org'));
-    }
     if (problems.length > 0) {
       setIssues(problems);
       return;
@@ -386,23 +287,19 @@ export default function AiAgentForm({
 
     // Task 13 (#5051), order-of-work step 1: the body is built by the SAME
     // `buildAgentSaveBody` the guided create flow uses, so an identical draft
-    // produces an identical POST/PATCH body from either surface — see
+    // produces an identical PATCH/POST body from either surface — see
     // `agentDraft.ts` for the merge/omission reasoning this used to carry
-    // inline.
-    const body = buildAgentSaveBody(draft, { isCreate, orgId: orgScope.orgId });
+    // inline. `isCreate: false` unconditionally: this form only ever edits
+    // (see the module doc) — the guided create flow is the only caller that
+    // ever passes `true`.
+    const body = buildAgentSaveBody(draft, { isCreate: false, orgId: orgScope.orgId });
 
     let saved = false;
     try {
       await runAction({
-        // Inline thunks: the no-silent-mutations guard is a lexical AST check,
+        // Inline thunk: the no-silent-mutations guard is a lexical AST check,
         // so a hoisted request function reads as an unwrapped mutation (#2429).
-        request: isCreate
-          ? () => fetchWithAuth('/ai/agents', { method: 'POST', body: JSON.stringify(body) })
-          : () =>
-              fetchWithAuth(`/ai/agents/${agent.id}`, {
-                method: 'PATCH',
-                body: JSON.stringify(body),
-              }),
+        request: () => fetchWithAuth(`/ai/agents/${agent.id}`, { method: 'PATCH', body: JSON.stringify(body) }),
         successMessage: t('aiAgentsPage.toasts.saved'),
         errorFallback: t('aiAgentsPage.toasts.saveFailed'),
         // Without this the operator sees the raw machine token the API puts in
@@ -418,51 +315,18 @@ export default function AiAgentForm({
       // The client-side ack checkbox is only a UX nudge — the server's 422
       // prerequisites (Task 6, #3826) are authoritative, e.g. the agent's
       // recipients or act-eligible tools changed between load and save.
-      // Surface exactly what it named as unmet, not just the generic toast.
-      if (err instanceof ActionError && err.code === 'act_prerequisites_not_met') {
-        const body = err.body as { missing?: unknown } | undefined;
-        const missing = Array.isArray(body?.missing)
-          ? body.missing.filter((entry): entry is string => typeof entry === 'string')
-          : [];
-        setIssues(
-          missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t) ?? entry),
-        );
-      }
-      // Wave 5 Part B (#3827): the server's 422 (InvalidSupervisedActionKeysError)
-      // carries a structured `rejected[]` naming exactly which keys failed and
-      // why — same "actionable, not a bare toast" pattern as the prerequisites
-      // branch above.
-      // #5049: SupervisedKeysGrantOnlyError (`supervised_keys_grant_only`)
-      // carries the identical `rejected[]` shape — this form no longer sends
-      // an org row's keys at all (see `save()`'s `actAssets` above), so this
-      // branch is defense-in-depth rather than a path this form exercises
-      // itself, same reasoning as reusing the toast copy above.
-      if (
-        err instanceof ActionError
-        && (err.code === 'invalid_supervised_action_keys' || err.code === 'supervised_keys_grant_only')
-      ) {
-        const body = err.body as { rejected?: unknown } | undefined;
-        const rejected = Array.isArray(body?.rejected)
-          ? body.rejected.filter(
-              (entry): entry is { key: string; reason: string } =>
-                typeof entry === 'object'
-                && entry !== null
-                && typeof (entry as { key?: unknown }).key === 'string'
-                && typeof (entry as { reason?: unknown }).reason === 'string',
-            )
-          : [];
-        setIssues(
-          rejected.map((entry) =>
-            t('aiAgentsPage.errors.supervisedKeyRejected', { key: entry.key, reason: entry.reason })),
-        );
-      }
+      // Surfaces exactly what the server named as unmet/rejected, not just
+      // the generic toast — same mapping the guided create flow's `create()`
+      // uses, so the two can never read a 422 differently.
+      const fieldIssues = agentSaveIssuesFromError(err, t);
+      if (fieldIssues) setIssues(fieldIssues);
     } finally {
       setSaving(false);
     }
     // Outside the try: a render error thrown by the parent's reload must not
     // be reported to the operator as "could not save the agent".
     if (saved) onSaved();
-  }, [agent, draft, isCreate, orgScope.orgId, saving, scheduleDirty, onSaved, t]);
+  }, [agent, draft, orgScope.orgId, saving, scheduleDirty, onSaved, t]);
 
   const disable = useCallback(async () => {
     // `saving` guards this too: without it a double-click fires two DELETEs and
@@ -494,52 +358,6 @@ export default function AiAgentForm({
     }
     if (disabled) onSaved();
   }, [agent, onSaved, saving, t]);
-
-  const numberField = (
-    testId: string,
-    label: string,
-    value: number,
-    min: number,
-    max: number,
-    onChange: (next: number) => void,
-  ) => (
-    <label className="space-y-1 text-sm">
-      <span className="font-medium">{label}</span>
-      <input
-        type="number"
-        className={inputCls}
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => {
-          // Clearing a number input yields '' -> NaN, which JSON.stringify
-          // emits as null and the server rejects with a bare 400.
-          const next = Number(e.target.value);
-          onChange(Number.isFinite(next) ? next : min);
-        }}
-        data-testid={testId}
-      />
-    </label>
-  );
-
-  const listField = (
-    testId: string,
-    label: string,
-    value: string,
-    onChange: (next: string) => void,
-    rows = 3,
-  ) => (
-    <label className="space-y-1 text-sm">
-      <span className="font-medium">{label}</span>
-      <textarea
-        className={`${inputCls} font-mono`}
-        rows={rows}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        data-testid={testId}
-      />
-    </label>
-  );
 
   /** The mode radiogroup, extracted to `ModeChoice.tsx` (Task 13, #5051) so
    *  the guided create flow's Purpose step renders the identical control —
@@ -649,8 +467,13 @@ export default function AiAgentForm({
    * always gets; the ceiling caveat still prints beneath it as a fact that
    * survives the mode, not as something act mode makes disappear. An org row
    * has no ceiling caveat to begin with and is only ever shown in act mode,
-   * so it renders the list directly with no wrapper at all. */
-  const collapsedForCeiling = draft.ownerScope === 'partner' && draft.mode !== 'act';
+   * so it renders the list directly with no wrapper at all.
+   *
+   * The collapse condition itself is `collapsedForCeiling` (imported from
+   * `PolicyKeysCheckboxes.tsx`), shared with the guided create flow's
+   * `SafetyStep.tsx` so the two surfaces can never disagree on when a
+   * partner row's registry is worth collapsing. */
+  const isCollapsedForCeiling = collapsedForCeiling(draft.ownerScope, draft.mode);
   const ceilingNote = draft.ownerScope === 'partner' && (
     <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-ceiling-hint">
       {t('aiAgentsPage.graduation.ceilingHint')}
@@ -670,7 +493,7 @@ export default function AiAgentForm({
         {t('aiAgentsPage.sections.policyDecide')}
       </legend>
       <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
-      {collapsedForCeiling ? (
+      {isCollapsedForCeiling ? (
         <details data-testid="ai-agent-policy-keys-details">
           <summary className="cursor-pointer text-xs font-medium">
             {t('aiAgentsPage.fields.supervisedActionKeysCeilingSummary', {
@@ -709,77 +532,28 @@ export default function AiAgentForm({
         <div className="grid gap-3 md:grid-cols-2">
           {modeChoice}
 
-          {isCreate && showOwnerScope && (
-            <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-ownerscope">
-              <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-                {t('aiAgentsPage.editor.scopeLegend')}
-              </legend>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="ai-agent-owner"
-                  value="partner"
-                  checked={draft.ownerScope === 'partner'}
-                  onChange={() => patch({ ownerScope: 'partner', kind: firstFreeKind(agents, 'partner', orgScope.orgId) ?? draft.kind })}
-                  data-testid="ai-agent-owner-partner"
-                />
-                {t('aiAgentsPage.editor.allOrgs')}{' '}
-                <span className="text-muted-foreground">{t('aiAgentsPage.editor.allOrgsHint')}</span>
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="ai-agent-owner"
-                  value="organization"
-                  checked={draft.ownerScope === 'organization'}
-                  onChange={() => patch({ ownerScope: 'organization', kind: firstFreeKind(agents, 'organization', orgScope.orgId) ?? draft.kind })}
-                  data-testid="ai-agent-owner-org"
-                />
-                {t('aiAgentsPage.editor.thisOrg')}
-              </label>
-            </fieldset>
-          )}
-
-          {/* #4170: an org-only agent overrides a partner-wide baseline of the
-              same kind — it is never a standalone policy. Not nested inside
-              `showOwnerScope` above: an org-scoped session's default (and
-              only) create path never renders that selector at all, and is
-              exactly the common case this warns for. */}
-          {isCreate && draft.ownerScope === 'organization' && !partnerBaselineKinds.has(draft.kind) && (
-            <p
-              className="rounded-md border border-amber-300 bg-amber-100 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200 md:col-span-2"
-              data-testid="ai-agent-no-baseline-hint"
-            >
-              {t('aiAgentsPage.inertBadge.hint')}
-            </p>
-          )}
-
-          {isCreate && availableKinds.length === 0 && (
-            <p className="text-sm text-muted-foreground md:col-span-2" data-testid="ai-agent-kinds-exhausted">
-              {t('aiAgentsPage.issues.allKindsTaken')}
-            </p>
-          )}
-
+          {/* `kind` and `ownerScope` are create-only (see the module doc) —
+              this form only ever edits, so both render as fixed rather than
+              as the editable owner-scope selector / kind picker the create
+              flow's Purpose step offers. */}
           <label className="space-y-1 text-sm">
             <span className="font-medium">{t('aiAgentsPage.fields.kind')}</span>
             <select
               className={inputCls}
               value={draft.kind}
-              disabled={!isCreate}
+              disabled
               onChange={(e) => patch({ kind: e.target.value as AiAgentKind })}
               data-testid="ai-agent-kind"
             >
-              {(isCreate ? availableKinds : AI_AGENT_KINDS).map((kind) => (
+              {AI_AGENT_KINDS.map((kind) => (
                 <option key={kind} value={kind}>
                   {t(/* i18n-dynamic */ `aiAgentsPage.kinds.${kind}`)}
                 </option>
               ))}
             </select>
-            {!isCreate && (
-              <span className="block text-xs text-muted-foreground">
-                {t('aiAgentsPage.fields.kindImmutable')}
-              </span>
-            )}
+            <span className="block text-xs text-muted-foreground">
+              {t('aiAgentsPage.fields.kindImmutable')}
+            </span>
           </label>
 
           {/* The only required free-text field on the form, and it used to
@@ -833,34 +607,22 @@ export default function AiAgentForm({
             <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-hint">
               {t('aiAgentsPage.fields.enabledHint')}
             </p>
-            {/* Create only: an unticked box on a brand-new form reads as
-                something the operator forgot, not as the product's deliberate
-                choice. Naming it turns the box into the last, explicit step. */}
-            {isCreate && (
-              <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-create-hint">
-                {t('aiAgentsPage.fields.enabledCreateHint')}
-              </p>
-            )}
           </div>
 
-          {/* Graduation evidence (P2-5, #4192). Edit-only, for the same reason
-              the schedules section is: the evidence ledger is keyed to a
-              persisted agent that does not exist until the first save. NOT gated
-              on `draft.mode === 'act'` — evidence an agent already earned is a
-              fact about the past, so toggling an unsaved draft back to shadow
-              must not make it disappear. The panel is read-only-useful with
+          {/* Graduation evidence (P2-5, #4192). NOT gated on `draft.mode ===
+              'act'` — evidence an agent already earned is a fact about the
+              past, so toggling the draft back to shadow must not make it
+              disappear. The panel is read-only-useful with
               `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` off; see its module doc.
               `agent.kind` (stored), not `draft.kind`, since kind is create-only.
               An org-owned agent always reads its OWN org's evidence; a partner
               baseline follows the org switcher, and falls through to the
               partner-wide grouping when it is on "all organizations". */}
-          {!isCreate && (
-            <AiAgentGraduationPanel
-              orgId={agent.orgId ?? orgScope.orgId}
-              kind={agent.kind}
-              isPartnerScope={isPartnerScope}
-            />
-          )}
+          <AiAgentGraduationPanel
+            orgId={agent.orgId ?? orgScope.orgId}
+            kind={agent.kind}
+            isPartnerScope={isPartnerScope}
+          />
 
           <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
@@ -1025,60 +787,20 @@ export default function AiAgentForm({
             </div>
           </fieldset>
 
-          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
-            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-              {t('aiAgentsPage.sections.notifications')}
-            </legend>
-            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.recipientRolesHint')}</p>
-            {rolesFailed ? (
-              <p className="text-sm text-destructive" data-testid="ai-agent-roles-failed">
-                {t('aiAgentsPage.fields.recipientRolesFailed')}
-              </p>
-            ) : roles.length === 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="ai-agent-roles-empty">
-                {t('aiAgentsPage.fields.recipientRolesEmpty')}
-              </p>
-            ) : (
-              // Nine flat checkboxes with partner and organization roles
-              // interleaved read as one undifferentiated list, and the two
-              // answer different questions: who at the MSP hears about this,
-              // and who at the customer does. Grouped, not filtered — every
-              // control the flat list carried is still here.
-              <div className="space-y-3">
-                {ROLE_GROUPS.map((scope) => {
-                  const group = roles.filter((role) => roleScope(role) === scope);
-                  if (group.length === 0) return null;
-                  return (
-                    <div key={scope} role="group" aria-labelledby={`${rolesGroupBaseId}-${scope}`}>
-                      <p id={`${rolesGroupBaseId}-${scope}`} className="text-xs font-medium">
-                        {ROLE_GROUP_LABEL[scope]}
-                      </p>
-                      <div className="mt-1 flex flex-wrap gap-3" data-testid={`ai-agent-roles-${scope}`}>
-                        {group.map((role) => (
-                          <label key={role.id} className="flex items-center gap-1 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={draft.roleIds.includes(role.id)}
-                              onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
-                              data-testid={`ai-agent-role-${role.id}`}
-                            />
-                            {role.name}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </fieldset>
+          <RecipientRolesFieldset
+            className="space-y-2 rounded-md border p-3 md:col-span-2"
+            t={t}
+            roles={roles}
+            rolesFailed={rolesFailed}
+            roleIds={draft.roleIds}
+            onToggleRole={(id) => patch({ roleIds: toggle(draft.roleIds, id) })}
+          />
 
-          {/* Scheduled sweeps (P2-2, #4189). Edit-only, because a schedule row
-              references a persisted agent id that does not exist until the first
-              save; triage-only, because the API refuses every other kind
-              (`agent_kind_not_triage`). Gated on the STORED kind, not the draft:
-              kind is create-only, so the two cannot diverge on this form. */}
-          {!isCreate && agent.kind === 'triage' && (
+          {/* Scheduled sweeps (P2-2, #4189). Triage-only, because the API
+              refuses every other kind (`agent_kind_not_triage`). Gated on the
+              STORED kind, not the draft: kind is create-only, so the two
+              cannot diverge on this form. */}
+          {agent.kind === 'triage' && (
             <AiAgentSchedulesSection
               agentId={agent.id}
               agentOwnerScope={agent.ownerScope}
@@ -1132,7 +854,6 @@ export default function AiAgentForm({
             disabled={
               saving
               || scheduleDirty
-              || (isCreate && availableKinds.length === 0)
               || (enteringActMode && !actAck)
             }
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
