@@ -1,8 +1,12 @@
 import type { ComponentProps } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
+import type { Permission } from '@/stores/auth';
+
+const withScriptsExecute: Permission[] = [{ resource: 'scripts', action: 'execute' }];
 
 function baseExecution(overrides: Partial<ScriptExecution> = {}): ScriptExecution {
   return {
@@ -171,5 +175,54 @@ describe('ExecutionDetails duration (no `duration` field on the wire)', () => {
 
     const durationLabel = screen.getByText('Duration');
     expect(durationLabel.parentElement).toHaveTextContent('—');
+  });
+});
+
+// #4767 — this mirrors ExecutionHistory's own Stop wiring (same
+// CANCELLABLE_STATUSES/DEFAULT_GRACE_SECONDS constants, deliberately kept
+// local rather than shared — see the file header comment), so it needs its
+// own regression coverage rather than relying on ExecutionHistory's tests to
+// stand in for it.
+describe('ExecutionDetails Stop affordance', () => {
+  it.each(['pending', 'queued', 'running'] as const)('offers Stop on %s', (status) => {
+    renderExecution({ status }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.getByTestId('cancel-execution')).toBeInTheDocument();
+  });
+
+  it.each(['completed', 'failed', 'timeout', 'cancelled'] as const)('has no Stop button on %s', (status) => {
+    renderExecution({ status }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+  });
+
+  it('hides Stop without scripts:execute', () => {
+    renderExecution({ status: 'running' }, { onCancel: vi.fn(), permissions: [] });
+    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+  });
+
+  it('shows a disabled Stopping… button while cancelling', () => {
+    renderExecution({ status: 'cancelling' }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.getByTestId('cancel-execution')).toBeDisabled();
+  });
+
+  it('Force stop sends graceSeconds 0', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn().mockResolvedValue(undefined);
+    renderExecution({ status: 'running' }, { onCancel, permissions: withScriptsExecute });
+
+    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('confirm-force-stop'));
+
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'exec-1' }), 0);
+  });
+
+  it('the primary Stop confirm sends the default 5s grace', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn().mockResolvedValue(undefined);
+    renderExecution({ status: 'running' }, { onCancel, permissions: withScriptsExecute });
+
+    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('confirm-stop'));
+
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'exec-1' }), 5);
   });
 });

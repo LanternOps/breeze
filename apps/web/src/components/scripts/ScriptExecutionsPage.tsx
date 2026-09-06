@@ -13,7 +13,7 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
 import { deviceScriptsHref, scriptExecutionsHref } from '@/lib/deviceScriptsLink';
 import type { ScriptAdmissionResult } from '@breeze/shared';
-import { runAction, ActionError } from '@/lib/runAction';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { usePermissions } from '@/lib/permissions';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -83,7 +83,18 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
         throw new Error(t('scriptExecutionsPage.errors.fetchExecutions'));
       }
       const data = await response.json();
-      setExecutions(asList(data, 'executions'));
+      const list = asList(data, 'executions') as ScriptExecution[];
+      setExecutions(list);
+      // #4767 review: the details modal holds its own snapshot
+      // (selectedExecution), so without this a Stop/Force-stop clicked from
+      // INSIDE the modal never reflects back into it — the header would keep
+      // reading "Running" and stay clickable after a successful cancel,
+      // inviting a second request that only ever gets a 409.
+      setSelectedExecution((prev) => {
+        if (!prev) return prev;
+        const updated = list.find((e) => e.id === prev.id);
+        return updated ? { ...prev, ...updated } : prev;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptExecutionsPage.errors.generic'));
     } finally {
@@ -146,8 +157,7 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       });
       await fetchExecutions();
     } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      // Any other ActionError was already toasted by runAction.
+      handleActionError(err, t('executionHistory.errors.cancelFailed'));
     }
   }, [t, fetchExecutions]);
 

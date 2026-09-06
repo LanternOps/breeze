@@ -49,8 +49,11 @@ async function apiJson<T>(
   return (await res.json()) as T;
 }
 
+// Mirrors packages/shared/src/types/scriptAdmission.ts (not imported directly:
+// e2e-tests is a standalone npm package outside the pnpm workspace, so
+// @breeze/shared does not resolve here).
 type ScriptAdmissionResult = {
-  targets: Array<{ deviceId: string; admission: string; executionId?: string }>;
+  targets: Array<{ requestedDeviceId: string; admission: string; executionId?: string }>;
 };
 
 test.describe('Stop a running script execution (#4767)', () => {
@@ -82,7 +85,7 @@ test.describe('Stop a running script execution (#4767)', () => {
       page.request, token, 'post', `/api/v1/scripts/${script.id}/execute`,
       { deviceIds: [SEEDED_DEVICE_ID], parameters: {}, runAs: 'system' },
     );
-    const target = admission.targets.find((t) => t.deviceId === SEEDED_DEVICE_ID);
+    const target = admission.targets.find((t) => t.requestedDeviceId === SEEDED_DEVICE_ID);
     expect(target?.admission, JSON.stringify(admission)).toBe('admitted');
     const executionId = target!.executionId!;
     expect(executionId).toBeTruthy();

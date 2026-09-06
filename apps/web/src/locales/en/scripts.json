@@ -274,6 +274,8 @@
       "partnerScopeTooltip": "This run applies to every organization under your partner account. Ask a full partner admin to cancel it, or stop individual executions on your own devices instead.",
       "confirmCancelRunTitle": "Cancel this run?",
       "confirmCancelRunMessage": "Breeze will stop every execution this run is still waiting on. Actions already in progress may finish before they can be stopped.",
+      "cancelRunSuccess_one": "Cancelled — {{count}} execution stopped.",
+      "cancelRunSuccess_other": "Cancelled — {{count}} executions stopped.",
       "uncancellableActions_one": "{{count}} action could not be stopped and may still be running on its own.",
       "uncancellableActions_other": "{{count}} actions could not be stopped and may still be running on their own."
     },

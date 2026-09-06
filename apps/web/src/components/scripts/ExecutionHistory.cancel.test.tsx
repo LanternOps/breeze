@@ -6,8 +6,9 @@ import type { Permission } from '@/stores/auth';
 
 const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
 const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
+const { navigateToMock } = vi.hoisted(() => ({ navigateToMock: vi.fn() }));
 
-vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 vi.mock('../../stores/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../stores/auth')>();
   return { ...actual, fetchWithAuth: fetchWithAuthMock };
@@ -151,9 +152,25 @@ describe('ScriptExecutionsPage cancel + polling', () => {
   beforeEach(() => {
     fetchWithAuthMock.mockReset();
     showToastMock.mockReset();
+    navigateToMock.mockReset();
   });
 
-  it('a 409 surfaces a toast rather than a silent no-op', async () => {
+  it('a 401 redirects to login rather than silently no-opping', async () => {
+    mockApi(baseRow(), () => jsonResponse({ error: 'Unauthorized' }, 401));
+    const user = userEvent.setup();
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    await screen.findByText('alpha-01');
+
+    await user.click(screen.getByTestId(`cancel-execution-${EXECUTION_ID}`));
+    await user.click(screen.getByTestId('confirm-stop'));
+
+    await waitFor(() => {
+      expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+    });
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('a 409 surfaces the friendly "no longer cancellable" message, not the raw server text', async () => {
     mockApi(baseRow(), () => jsonResponse({ error: 'Cannot cancel execution with status: completed' }, 409));
     const user = userEvent.setup();
     render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
@@ -163,8 +180,31 @@ describe('ScriptExecutionsPage cancel + polling', () => {
     await user.click(screen.getByTestId('confirm-stop'));
 
     await waitFor(() => {
-      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: 'This execution already finished and can no longer be stopped.',
+        }),
+      );
     });
+  });
+
+  it('a successful cancel refreshes the execution list', async () => {
+    mockApi(baseRow(), () => jsonResponse({ success: true, execution: { id: EXECUTION_ID, status: 'cancelling' } }));
+    const user = userEvent.setup();
+    render(<ScriptExecutionsPage scriptId={SCRIPT_ID} />);
+    await screen.findByText('alpha-01');
+
+    const executionsCallsBefore = fetchWithAuthMock.mock.calls.filter(([u]) => u === `/scripts/${SCRIPT_ID}/executions`).length;
+
+    await user.click(screen.getByTestId(`cancel-execution-${EXECUTION_ID}`));
+    await user.click(screen.getByTestId('confirm-stop'));
+
+    await waitFor(() => {
+      const executionsCallsAfter = fetchWithAuthMock.mock.calls.filter(([u]) => u === `/scripts/${SCRIPT_ID}/executions`).length;
+      expect(executionsCallsAfter).toBeGreaterThan(executionsCallsBefore);
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
   it('polls while any row is running or cancelling', async () => {

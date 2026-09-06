@@ -269,6 +269,11 @@ export default function ExecutionDetails({
     setSubmitting(true);
     try {
       await onCancel(execution, graceSeconds);
+    } catch (err) {
+      // Backstop only — see the identical comment in ExecutionHistory.tsx.
+      if (import.meta.env.DEV) {
+        console.warn('[ExecutionDetails] onCancel rejected without reporting its own failure', err);
+      }
     } finally {
       setSubmitting(false);
       setConfirming(false);

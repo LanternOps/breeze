@@ -272,7 +272,9 @@
       "confirmCancelRunTitle": "Diese Ausführung abbrechen?",
       "confirmCancelRunMessage": "Breeze stoppt jede Skriptausführung, auf die diese Ausführung noch wartet. Bereits laufende Aktionen können abgeschlossen werden, bevor sie gestoppt werden können.",
       "uncancellableActions_one": "{{count}} Aktion konnte nicht gestoppt werden und läuft möglicherweise weiterhin eigenständig.",
-      "uncancellableActions_other": "{{count}} Aktionen konnten nicht gestoppt werden und laufen möglicherweise weiterhin eigenständig."
+      "uncancellableActions_other": "{{count}} Aktionen konnten nicht gestoppt werden und laufen möglicherweise weiterhin eigenständig.",
+      "cancelRunSuccess_one": "Abgebrochen — {{count}} Ausführung gestoppt.",
+      "cancelRunSuccess_other": "Abgebrochen — {{count}} Ausführungen gestoppt."
     },
     "timestamps": {
       "started": "Gestartet: {{date}}",

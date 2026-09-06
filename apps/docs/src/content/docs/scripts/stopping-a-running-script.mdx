@@ -37,6 +37,10 @@ A stop request is not a guarantee. Breeze only ever marks an execution **Cancell
 An execution that never reports back — because the device went offline, or an older agent didn't understand the request — settles the same way: Breeze does not claim a stop it cannot prove.
 
 <Aside type="caution">
+The distinctions above ("too late", "stop failed") depend on the execution list carrying its stop outcome end to end — a piece of plumbing still being finished. Until it lands, an execution the device could not confirm may briefly read as a plain status instead of the more specific copy described here; it never reads as a false **Cancelled**.
+</Aside>
+
+<Aside type="caution">
 Older agents (deployed before this feature shipped) don't recognize the stop command at all. Devices on an outdated agent version will answer "unknown command," which Breeze records as an unconfirmed stop rather than a failure — the script itself is unaffected either way.
 </Aside>
 

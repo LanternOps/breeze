@@ -255,6 +255,10 @@ const TARGET_GLOBS = [
   'src/components/scripts/ExecutionHistory.tsx',
   'src/components/scripts/ExecutionDetails.tsx',
   'src/components/scripts/ScriptExecutionsPage.tsx',
+  // #4767 review — Cancel run's own POST /automations/runs/:runId/cancel
+  // lives inside this component (it has no owning page-level fetch layer),
+  // so it needs the same guard as the scripts-side files above.
+  'src/components/automations/AutomationRunHistory.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -568,11 +572,12 @@ describe('no silent mutations in targeted set', () => {
     // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
     // main added 3 in parallel, so the true merged count was 113. A prior
     // commit added 1 more (TrustQueue.tsx) to reach 114. A prior commit added 1
-    // more (AssignmentsTab.tsx) to reach 115. This commit adds 3 more (#4767 —
-    // ExecutionHistory.tsx, ExecutionDetails.tsx, ScriptExecutionsPage.tsx), so
-    // the count is now 118 — bump it deliberately on every merge, never by
-    // resolving the hunk.
-    expect(absoluteFiles.length).toBe(118);
+    // more (AssignmentsTab.tsx) to reach 115. A prior commit added 3 more
+    // (#4767 — ExecutionHistory.tsx, ExecutionDetails.tsx,
+    // ScriptExecutionsPage.tsx) to reach 118. This commit adds 1 more
+    // (AutomationRunHistory.tsx), so the count is now 119 — bump it
+    // deliberately on every merge, never by resolving the hunk.
+    expect(absoluteFiles.length).toBe(119);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

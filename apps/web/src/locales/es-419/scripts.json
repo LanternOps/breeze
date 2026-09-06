@@ -272,7 +272,9 @@
       "confirmCancelRunTitle": "¿Cancelar esta ejecución?",
       "confirmCancelRunMessage": "Breeze detendrá cada ejecución de script que esta ejecución aún esté esperando. Las acciones ya en curso pueden finalizar antes de poder detenerse.",
       "uncancellableActions_one": "{{count}} acción no se pudo detener y puede seguir ejecutándose por su cuenta.",
-      "uncancellableActions_other": "{{count}} acciones no se pudieron detener y pueden seguir ejecutándose por su cuenta."
+      "uncancellableActions_other": "{{count}} acciones no se pudieron detener y pueden seguir ejecutándose por su cuenta.",
+      "cancelRunSuccess_one": "Cancelado: {{count}} ejecución detenida.",
+      "cancelRunSuccess_other": "Cancelado: {{count}} ejecuciones detenidas."
     },
     "timestamps": {
       "started": "Iniciado: {{date}}",

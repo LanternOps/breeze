@@ -272,7 +272,9 @@
       "confirmCancelRunTitle": "Bu çalıştırma iptal edilsin mi?",
       "confirmCancelRunMessage": "Breeze, bu çalıştırmanın hâlâ beklediği her komut dosyası yürütmesini durduracak. Zaten devam etmekte olan işlemler durdurulmadan önce tamamlanabilir.",
       "uncancellableActions_one": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
-      "uncancellableActions_other": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir."
+      "uncancellableActions_other": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "cancelRunSuccess_one": "İptal edildi — {{count}} yürütme durduruldu.",
+      "cancelRunSuccess_other": "İptal edildi — {{count}} yürütme durduruldu."
     },
     "timestamps": {
       "started": "Başlangıç: {{date}}",

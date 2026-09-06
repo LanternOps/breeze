@@ -272,7 +272,9 @@
       "confirmCancelRunTitle": "Annullare questa esecuzione?",
       "confirmCancelRunMessage": "Breeze interromperà ogni esecuzione di script che questa esecuzione sta ancora attendendo. Le azioni già in corso potrebbero terminare prima di poter essere interrotte.",
       "uncancellableActions_one": "{{count}} azione non è stata interrotta e potrebbe essere ancora in esecuzione per conto proprio.",
-      "uncancellableActions_other": "{{count}} azioni non sono state interrotte e potrebbero essere ancora in esecuzione per conto proprio."
+      "uncancellableActions_other": "{{count}} azioni non sono state interrotte e potrebbero essere ancora in esecuzione per conto proprio.",
+      "cancelRunSuccess_one": "Annullato — {{count}} esecuzione interrotta.",
+      "cancelRunSuccess_other": "Annullato — {{count}} esecuzioni interrotte."
     },
     "timestamps": {
       "started": "Avviata: {{date}}",

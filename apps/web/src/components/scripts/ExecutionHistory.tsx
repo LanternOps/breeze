@@ -176,6 +176,15 @@ export default function ExecutionHistory({
     setSubmittingId(execution.id);
     try {
       await onCancel(execution, graceSeconds);
+    } catch (err) {
+      // onCancel's real (and only) implementation, ScriptExecutionsPage's
+      // handleCancel, already reports every failure via runAction/
+      // handleActionError — this is only a backstop against a FUTURE onCancel
+      // that throws instead, so that becomes a loud dev warning rather than
+      // ever landing as a silent unhandled promise rejection.
+      if (import.meta.env.DEV) {
+        console.warn('[ExecutionHistory] onCancel rejected without reporting its own failure', err);
+      }
     } finally {
       setSubmittingId(null);
       setConfirming(null);

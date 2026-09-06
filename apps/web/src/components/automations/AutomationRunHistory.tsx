@@ -14,7 +14,8 @@ import {
   Terminal,
   Calendar,
   Timer,
-  Square
+  Square,
+  Info
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -22,8 +23,9 @@ import { formatNumber } from '@/lib/i18n/format';
 import { hasPermission } from '@/lib/permissions';
 import type { Permission } from '@/stores/auth';
 import { fetchWithAuth } from '@/stores/auth';
-import { runAction, ActionError } from '@/lib/runAction';
+import { runAction, handleActionError } from '@/lib/runAction';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import { navigateTo } from '@/lib/navigation';
 
 type ScriptsT = TFunction<'scripts'>;
 
@@ -114,8 +116,12 @@ type AutomationRunHistoryProps = {
   timezone?: string;
   /** When provided, expanding a run lazily fetches its per-device breakdown. */
   onLoadRunDetail?: RunDetailLoader;
-  // #4767 — UX-only gate mirroring the API's own requirePermission(scripts:execute)
-  // on the cancel route. Cancel run is HIDDEN, never merely disabled, without it.
+  // #4767 — UX-only gate mirroring the cancel route's own
+  // requireAutomationWrite (automations:write) — see the requirePermission
+  // call in apps/api/src/routes/automations.ts's POST /runs/:runId/cancel.
+  // NOT scripts:execute, which gates the separate, execution-level cancel
+  // route ExecutionHistory/ExecutionDetails call. Cancel run is HIDDEN,
+  // never merely disabled, without it.
   permissions?: Permission[];
   // #4767 — mirrors canManagePartnerWidePolicies(auth) server-side (OD7-A): an
   // org-scoped operator may still cancel individual executions on their own
@@ -347,23 +353,37 @@ function RunItem({
   const [uncancellableActions, setUncancellableActions] = useState<UncancellableAction[] | null>(null);
 
   const isRunning = run.status === 'running';
-  const canExecuteScripts = hasPermission(permissions, 'scripts', 'execute');
+  // #4767/#4766 (W05, apps/api/src/routes/automations.ts) — the route this
+  // button calls is gated on requireAutomationWrite (automations:write), NOT
+  // scripts:execute. scripts:execute stays the gate on the SIBLING
+  // execution-level route (POST /scripts/executions/:id/cancel) that
+  // ExecutionHistory/ExecutionDetails call — the two are easy to conflate
+  // but they are different permissions on different routes.
+  const canManageAutomations = hasPermission(permissions, 'automations', 'write');
   const isPartnerOwned = run.ownerScope === 'partner';
-  const canCancelRun = isRunning && canExecuteScripts && (!isPartnerOwned || canManagePartnerWide);
-  const cancelHiddenByPartnerScope = isRunning && canExecuteScripts && isPartnerOwned && !canManagePartnerWide;
+  const canCancelRun = isRunning && canManageAutomations && (!isPartnerOwned || canManagePartnerWide);
+  const cancelHiddenByPartnerScope = isRunning && canManageAutomations && isPartnerOwned && !canManagePartnerWide;
 
   const handleConfirmCancelRun = async () => {
     setCancelling(true);
     try {
-      const result = await runAction<{ executionsCancelled: number; uncancellableActions?: UncancellableAction[] }>({
+      // Real shape from apps/api/src/routes/automations.ts's
+      // POST /runs/:runId/cancel (#4766/W05): { success, run: {id, status},
+      // alreadyCancelling, actionsCancelled, executionsCancelled, executions,
+      // uncancellableActions }.
+      const result = await runAction<{
+        executionsCancelled: number;
+        uncancellableActions?: UncancellableAction[];
+      }>({
         request: () => fetchWithAuth(`/automations/runs/${run.id}/cancel`, { method: 'POST' }),
         errorFallback: t('automationRunHistory.errors.cancelRun'),
+        successMessage: (data) => t('automationRunHistory.actions.cancelRunSuccess', { count: data.executionsCancelled }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       setUncancellableActions(result.uncancellableActions ?? []);
       onRunCancelled?.(run.id);
     } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      // Any other ActionError was already toasted by runAction.
+      handleActionError(err, t('automationRunHistory.errors.cancelRun'));
     } finally {
       setCancelling(false);
       setConfirmingCancel(false);
@@ -494,12 +514,16 @@ function RunItem({
             </button>
           )}
           {cancelHiddenByPartnerScope && (
+            // #4767 review: the full explanation is long (and longer still in
+            // some locales) — it belongs in `title`, not as inline row text,
+            // or it blows out every partner-owned run row.
             <span
               data-testid="cancel-run-partner-tooltip"
               title={t('automationRunHistory.actions.partnerScopeTooltip')}
-              className="text-xs text-muted-foreground"
+              className="flex h-8 w-8 items-center justify-center text-muted-foreground"
             >
-              {t('automationRunHistory.actions.partnerScopeTooltip')}
+              <Info className="h-4 w-4" />
+              <span className="sr-only">{t('automationRunHistory.actions.partnerScopeTooltip')}</span>
             </span>
           )}
           <button
