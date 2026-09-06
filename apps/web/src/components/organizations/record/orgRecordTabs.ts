@@ -63,7 +63,11 @@ export const SERVICE_MANAGEMENT_TABS: ReadonlySet<OrgRecordTab> = new Set<OrgRec
 const MODE_HIDDEN_TABS: Record<ServiceManagementMode, ReadonlySet<OrgRecordTab>> = {
   native: new Set<OrgRecordTab>(),
   off: SERVICE_MANAGEMENT_TABS,
-  external: new Set<OrgRecordTab>(['billing']),
+  // Derived, not a second hand-written list: "external hides everything the
+  // module owns EXCEPT Tickets" stays true when a third service-management tab
+  // is added, instead of that tab silently staying visible in external mode
+  // because nobody remembered to edit a duplicate set.
+  external: new Set<OrgRecordTab>([...SERVICE_MANAGEMENT_TABS].filter((tab) => tab !== 'tickets')),
 };
 
 const TAB_IDS = new Set<string>(ORG_RECORD_TABS);

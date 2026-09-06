@@ -60,11 +60,13 @@
       "activity": {
         "title": "Actividad reciente",
         "empty": "Aún no hay actividad registrada.",
+        "failed": "No se pudo cargar la actividad reciente.",
         "viewAll": "Ver toda la actividad"
       },
       "criticalAlerts": {
         "title": "Alertas críticas abiertas",
         "empty": "No hay alertas críticas abiertas.",
+        "failed": "No se pudieron verificar las alertas críticas abiertas.",
         "viewAll": "Ver todas las alertas"
       },
       "lastActivity": "Última actividad {{date}}",

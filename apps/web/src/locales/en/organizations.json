@@ -60,11 +60,13 @@
       "activity": {
         "title": "Recent activity",
         "empty": "No recorded activity yet.",
+        "failed": "Couldn't load recent activity.",
         "viewAll": "View all activity"
       },
       "criticalAlerts": {
         "title": "Open critical alerts",
         "empty": "No open critical alerts.",
+        "failed": "Couldn't check for open critical alerts.",
         "viewAll": "View all alerts"
       },
       "lastActivity": "Last activity {{date}}",

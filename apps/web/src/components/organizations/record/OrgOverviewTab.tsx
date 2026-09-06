@@ -25,6 +25,38 @@ interface Tile {
 const CRITICAL_ALERTS_PATH = '/alerts?status=active&severity=critical&limit=10';
 const RECENT_ACTIVITY_PATH = '/audit-logs/logs?limit=20&skipCount=true';
 
+/** `null` = still loading; `'failed'` = we could not find out; otherwise rows. */
+type FeedState<T> = T[] | 'failed' | null;
+
+/**
+ * One feed load, with "we could not find out" kept distinct from "there is
+ * nothing".
+ *
+ * A non-2xx is a FAILURE, not an empty list. Collapsing a 403 (no
+ * `alerts:read`) or a 500 into `[]` renders "No open critical alerts" — a
+ * confident false negative in a monitoring tool, which a tech triaging a
+ * customer could reasonably act on by not escalating. It is the same lie the
+ * summary tiles deliberately avoid by omitting a section rather than showing a
+ * zero; the feeds have to hold the same line.
+ */
+async function loadFeed<T>(
+  request: Promise<Response>,
+  pick: (body: Record<string, unknown>) => T[],
+  label: string,
+): Promise<T[] | 'failed'> {
+  try {
+    const res = await request;
+    if (!res.ok) {
+      console.warn(`[OrgRecord] ${label} feed failed: HTTP ${res.status}`);
+      return 'failed';
+    }
+    return pick((await res.json()) as Record<string, unknown>);
+  } catch (err) {
+    console.warn(`[OrgRecord] ${label} feed failed`, err);
+    return 'failed';
+  }
+}
+
 /**
  * The record's landing tab: the counts an MSP tech needs before opening a
  * customer's ticket, plus the two feeds that answer "what has been happening
@@ -32,36 +64,35 @@ const RECENT_ACTIVITY_PATH = '/audit-logs/logs?limit=20&skipCount=true';
  *
  * A tile whose summary section is ABSENT is not rendered at all — the section
  * is missing because the caller lacks the read permission, and a "0" there
- * would be a confident lie about a customer's fleet.
+ * would be a confident lie about a customer's fleet. The two feeds below hold
+ * the same line: a failed load says so, rather than rendering the empty state.
  */
 export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed }: OrgOverviewTabProps) {
   const { t } = useTranslation('organizations');
   const formatAuditAction = useAuditActionFormatter();
-  const [activity, setActivity] = useState<AuditLogEntry[] | null>(null);
-  const [alerts, setAlerts] = useState<AlertRow[] | null>(null);
-  const activityLatest = useLatest<AuditLogEntry[]>();
-  const alertsLatest = useLatest<AlertRow[]>();
+  const [activity, setActivity] = useState<FeedState<AuditLogEntry>>(null);
+  const [alerts, setAlerts] = useState<FeedState<AlertRow>>(null);
+  const activityLatest = useLatest<AuditLogEntry[] | 'failed'>();
+  const alertsLatest = useLatest<AlertRow[] | 'failed'>();
 
   const loadFeeds = useCallback(async () => {
-    // Both feeds are best-effort decoration around the tiles: a 403 for one of
-    // them (a tech without audit:read) must not blank the other or the page.
+    // The two feeds are independent: one failing (a tech without audit:read
+    // gets a 403 on activity) must leave the other, and the tiles, intact.
     const activityRun = activityLatest
       .run(
-        orgFetch(RECENT_ACTIVITY_PATH)
-          .then(async (r) => (r.ok ? ((await r.json()) as Record<string, unknown>) : null))
-          .then((j) => (j ? ((j.logs ?? j.auditLogs ?? j.data ?? []) as AuditLogEntry[]) : [])),
+        loadFeed<AuditLogEntry>(
+          orgFetch(RECENT_ACTIVITY_PATH),
+          (j) => (j.logs ?? j.auditLogs ?? j.data ?? []) as AuditLogEntry[],
+          'activity',
+        ),
       )
-      .then((rows) => rows !== undefined && setActivity(rows))
-      .catch(() => setActivity([]));
+      .then((result) => result !== undefined && setActivity(result));
 
     const alertsRun = alertsLatest
       .run(
-        orgFetch(CRITICAL_ALERTS_PATH)
-          .then(async (r) => (r.ok ? ((await r.json()) as { data?: AlertRow[] }) : null))
-          .then((j) => (j?.data ?? []) as AlertRow[]),
+        loadFeed<AlertRow>(orgFetch(CRITICAL_ALERTS_PATH), (j) => (j.data ?? []) as AlertRow[], 'critical alerts'),
       )
-      .then((rows) => rows !== undefined && setAlerts(rows))
-      .catch(() => setAlerts([]));
+      .then((result) => result !== undefined && setAlerts(result));
 
     await Promise.all([activityRun, alertsRun]);
   }, [orgFetch, activityLatest, alertsLatest]);
@@ -192,6 +223,13 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
               <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
               <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
             </div>
+          ) : alerts === 'failed' ? (
+            <div data-testid="org-overview-critical-alerts-failed" className="px-4 py-4 text-sm">
+              <p className="text-muted-foreground">{t('orgRecord.overview.criticalAlerts.failed')}</p>
+              <button type="button" onClick={() => void loadFeeds()} className="mt-2 text-xs text-primary hover:underline">
+                {t('orgRecord.actions.retry')}
+              </button>
+            </div>
           ) : alerts.length === 0 ? (
             <p className="px-4 py-4 text-sm text-muted-foreground">{t('orgRecord.overview.criticalAlerts.empty')}</p>
           ) : (
@@ -225,6 +263,13 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
             <div className="space-y-2 px-4 py-3">
               <div className="h-3 w-2/3 animate-pulse rounded bg-muted" />
               <div className="h-3 w-1/2 animate-pulse rounded bg-muted" />
+            </div>
+          ) : activity === 'failed' ? (
+            <div data-testid="org-overview-activity-failed" className="px-4 py-4 text-sm">
+              <p className="text-muted-foreground">{t('orgRecord.overview.activity.failed')}</p>
+              <button type="button" onClick={() => void loadFeeds()} className="mt-2 text-xs text-primary hover:underline">
+                {t('orgRecord.actions.retry')}
+              </button>
             </div>
           ) : activity.length === 0 ? (
             <p className="px-4 py-4 text-sm text-muted-foreground">{t('orgRecord.overview.activity.empty')}</p>

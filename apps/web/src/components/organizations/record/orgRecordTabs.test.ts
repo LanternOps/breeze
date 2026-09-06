@@ -81,6 +81,17 @@ describe('visibleTabs — Service Management mode', () => {
   it('defaults to native when no mode is given, so the shell works before the mode is wired', () => {
     expect(visibleTabs(ADMIN)).toEqual(visibleTabs(ADMIN, 'native'));
   });
+
+  it('hides, in external mode, exactly the service-management tabs except Tickets', () => {
+    // Pins the DERIVATION rather than today's two tab ids: when a third
+    // service-management tab is added to SERVICE_MANAGEMENT_TABS, external mode
+    // must hide it too, and this fails if someone hand-maintains a stale list.
+    const external = new Set(visibleTabs(ADMIN, 'external'));
+    for (const tab of SERVICE_MANAGEMENT_TABS) {
+      if (tab === 'tickets') expect(external.has(tab)).toBe(true);
+      else expect(external.has(tab), `external mode should hide ${tab}`).toBe(false);
+    }
+  });
 });
 
 describe('TAB_PERMISSION registry', () => {

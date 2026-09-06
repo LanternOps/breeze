@@ -10,7 +10,15 @@ import { fetchWithAuth, type FetchWithAuthOptions } from '@/stores/auth';
  * as real data rather than as an error. Every request from inside the record
  * therefore names its org explicitly.
  */
-export type OrgFetch = (path: string, init?: Omit<FetchWithAuthOptions, 'orgIdOverride'>) => Promise<Response>;
+export type OrgFetch = (
+  path: string,
+  // Both escape hatches are omitted, not just `orgIdOverride`: the two are
+  // merged into one options bag below, and `skipOrgIdInjection` un-pins the
+  // request just as effectively — silently, since it is the arm `applyOrgId`
+  // takes first. Omitting only the obvious one would leave the pin defeatable
+  // by the less obvious one, which is the whole guarantee this type exists for.
+  init?: Omit<FetchWithAuthOptions, 'orgIdOverride' | 'skipOrgIdInjection'>,
+) => Promise<Response>;
 
 /**
  * The organization row as `GET /orgs/organizations/:id` returns it — only the

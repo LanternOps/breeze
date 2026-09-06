@@ -1307,6 +1307,16 @@ export function applyOrgId(
   const params = new URLSearchParams(qIdx >= 0 ? base.slice(qIdx + 1) : '');
   const existing = params.get('orgId');
 
+  // Pin-and-skip are contradictory instructions, and skip silently winning is
+  // how an org-pinned surface loses its pin: `makeOrgFetch` merges an
+  // `orgIdOverride` into whatever init the caller passed, so a caller that
+  // adds `skipOrgIdInjection` un-pins a tenant-scoped read with no error. Same
+  // reasoning as the URL-vs-override conflict below — refuse rather than
+  // silently choose.
+  if (typeof o.orgIdOverride === 'string' && o.skipOrgIdInjection) {
+    throw new Error(`fetchWithAuth: orgIdOverride=${o.orgIdOverride} conflicts with skipOrgIdInjection`);
+  }
+
   if (o.orgIdOverride === null || o.skipOrgIdInjection) {
     // The caller owns its scoping entirely.
   } else if (typeof o.orgIdOverride === 'string') {

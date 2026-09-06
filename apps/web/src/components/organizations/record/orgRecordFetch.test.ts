@@ -45,6 +45,19 @@ describe('makeOrgFetch', () => {
     const orgFetch = makeOrgFetch('record-org');
     await expect(orgFetch('/devices?orgId=some-other-org')).rejects.toThrow(/some-other-org/);
   });
+
+  it('refuses a caller that tries to un-pin via skipOrgIdInjection', async () => {
+    // `OrgFetch` omits this key from its init type, so this is a compile error
+    // at every real call site. The runtime refusal is the second layer: the
+    // type cannot see through an options bag assembled elsewhere and handed in
+    // as `FetchWithAuthOptions`, and un-pinning silently is the one failure
+    // this whole module exists to prevent.
+    const orgFetch = makeOrgFetch('record-org');
+    await expect(
+      orgFetch('/devices', { skipOrgIdInjection: true } as Parameters<typeof orgFetch>[1]),
+    ).rejects.toThrow(/skipOrgIdInjection/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('useLatest', () => {

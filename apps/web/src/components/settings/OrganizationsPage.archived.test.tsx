@@ -507,12 +507,15 @@ describe('OrganizationsPage — org mid-archive-drain (#4166)', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(`/orgs/organizations/${DRAINING_ORG.id}/restore`, { method: 'POST' });
     // Back in the active list, and the detail pane is mutable again. The status
-    // pill is exception-only for `active` rows (#5076), so the ABSENCE of any
-    // pill is now what says "active" — asserting on pill text would be
-    // asserting on copy that is deliberately not rendered.
+    // pill is exception-only for `active` rows (#5075), so the ABSENCE of any
+    // pill is now what says "active". Every NON-active label is checked, not
+    // just the two obvious ones: a restore that landed the org on `suspended`
+    // or `purging` instead of `active` is exactly the bug this guards, and
+    // spot-checking 'Offboarding'/'Archived' alone would let it through.
     const row = screen.getByTestId(`org-row-${DRAINING_ORG.id}`);
-    expect(within(row).queryByText('Offboarding')).not.toBeInTheDocument();
-    expect(within(row).queryByText('Archived')).not.toBeInTheDocument();
+    for (const label of ['Trial', 'Suspended', 'Churned', 'Offboarding', 'Merging', 'Archived', 'Purging']) {
+      expect(within(row).queryByText(label), `unexpected "${label}" pill on a restored org`).not.toBeInTheDocument();
+    }
     expect(screen.queryByTestId('org-archived-row')).not.toBeInTheDocument();
     const panel = screen.getByTestId('org-detail-panel');
     expect(within(panel).queryByTestId('org-restore')).not.toBeInTheDocument();

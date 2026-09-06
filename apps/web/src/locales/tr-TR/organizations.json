@@ -60,11 +60,13 @@
       "activity": {
         "title": "Son etkinlik",
         "empty": "Henüz kayıtlı etkinlik yok.",
+        "failed": "Son etkinlik yüklenemedi.",
         "viewAll": "Tüm etkinliği görüntüle"
       },
       "criticalAlerts": {
         "title": "Açık kritik uyarılar",
         "empty": "Açık kritik uyarı yok.",
+        "failed": "Açık kritik uyarılar kontrol edilemedi.",
         "viewAll": "Tüm uyarıları görüntüle"
       },
       "lastActivity": "Son etkinlik {{date}}",

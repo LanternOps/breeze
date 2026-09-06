@@ -50,6 +50,16 @@ describe('applyOrgId', () => {
     }
   });
 
+  it('throws when an override is combined with skipOrgIdInjection', () => {
+    // Pin-and-skip are contradictory. Skip silently winning is how an
+    // org-pinned surface loses its pin: makeOrgFetch merges the override into
+    // whatever init a caller passed, so a caller adding skipOrgIdInjection
+    // would quietly widen a tenant-scoped read back to the ambient scope.
+    expect(() => applyOrgId('/devices', { orgIdOverride: 'p', skipOrgIdInjection: true, ambient: 'a' })).toThrow(
+      /skipOrgIdInjection/,
+    );
+  });
+
   it('injects nothing when orgIdOverride is null', () => {
     expect(applyOrgId('/fleet/findings', { orgIdOverride: null, ambient: 'a' })).toBe('/fleet/findings');
   });
