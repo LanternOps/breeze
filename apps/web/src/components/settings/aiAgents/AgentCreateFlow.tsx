@@ -258,12 +258,22 @@ export default function AgentCreateFlow({
             />
           )}
           {step === 1 && (
-            <WhatItDoesStep draft={draft} patch={patch} catalog={catalog} ceiling={ceiling} catalogLoading={catalogLoading} />
+            <WhatItDoesStep
+              draft={draft}
+              patch={patch}
+              catalog={catalog}
+              ceiling={ceiling}
+              catalogLoading={catalogLoading}
+              // #5065: scripts ticked on the Safety step drive run_script's
+              // outcome here (partner ∩ org, like effectivePolicy.ts).
+              authorizedScriptCount={draft.scriptIds.filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length}
+            />
           )}
           {step === 2 && (
             <SafetyStep
               draft={draft}
               patch={patch}
+              ceiling={ceiling}
               roles={roles}
               rolesFailed={rolesFailed}
               policyKeys={policyKeys}

@@ -1617,7 +1617,14 @@
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Bu aracı zaten etkin.",
-      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin."
+      "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin.",
+      "invalidScriptIds": "Bir veya daha fazla betik bu aracı için yetkilendirilemiyor.",
+      "scriptRejected": "Betik {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "bu aracının sahibinin görebildiği bir betik değil",
+        "not_in_partner_baseline": "partner taban çizgisinde yok",
+        "run_script_not_allowed": "\"Betik çalıştır\" bu aracı için izinli değil"
+      }
     },
     "actions": {
       "add": "Yeni aracı",
@@ -2718,7 +2725,9 @@
       "approvers_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{roles}} sorulur. İlk karar geçerli olur.",
       "approversCount_one": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
       "approversCount_other": "Gelen kutusu, sohbet ve mobil push aracılığıyla {{count}} rol sorulur. İlk karar geçerli olur.",
-      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur."
+      "scriptGateNote": "{{list}}, bu aracı için bir betik yetkilendirilene kadar gözetimsiz çalışmaz; o zamana kadar bir onay isteği oluşturur.",
+      "scriptsAuthorized_one": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi.",
+      "scriptsAuthorized_other": "{{count}} betik gözetimsiz çalışmak üzere yetkilendirildi."
     },
     "flow": {
       "title": "Yeni ajan",
@@ -2772,6 +2781,18 @@
         "recommendedPrefix": "Önerilen:",
         "taken": "Bu sahip için zaten kullanımda"
       }
+    },
+    "scripts": {
+      "legend": "Gözetimsiz çalışmasına izin verilen betikler",
+      "hint": "Uygula modunda \"Betik çalıştır\" yalnızca burada işaretlenen betikler için onaysız çalışır. Diğer her şey onay isteği olarak kalır.",
+      "ceilingHint": "Partner düzeyindeki betikler bir üst sınırdır: bir kuruluşun aracısı yalnızca bu listeden seçim yapabilir.",
+      "runScriptRequired": "Betikleri yetkilendirmeden önce \"Ne yapar\" altında \"Betik çalıştır\" seçeneğini ekleyin.",
+      "loading": "Betikler yükleniyor…",
+      "failed": "Betikler yüklenemedi, bu nedenle gözetimsiz betik yetkilendirmesi şu anda değiştirilemez.",
+      "empty": "Kullanılabilir betik yok.",
+      "searchPlaceholder": "Betik ara…",
+      "selectedCount_one": "{{count}} betik yetkilendirildi",
+      "selectedCount_other": "{{count}} betik yetkilendirildi"
     }
   },
   "apiKeyForm": {

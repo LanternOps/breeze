@@ -55,6 +55,7 @@ import {
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
   InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
+import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
 import { buildAgentPreview } from '../services/aiAgents/agentPreview';
 import {
@@ -217,6 +218,12 @@ export function mapError(c: Context, err: unknown) {
   // and why via the same `rejected` shape, so the client (Task 5's editor)
   // can render an actionable message either way.
   if (err instanceof InvalidSupervisedActionKeysError || err instanceof SupervisedKeysGrantOnlyError) {
+    return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
+  }
+  // #5065: actAssets.scriptIds names a script the owner cannot see, one the
+  // partner baseline does not list, or the row does not allow run_script —
+  // same `rejected` shape, one entry per id with its reason.
+  if (err instanceof InvalidScriptIdsError) {
     return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {

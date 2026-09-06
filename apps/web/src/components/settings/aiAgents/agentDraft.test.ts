@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   ALERT_SEVERITY_KINDS,
+  allowsRunScript,
   buildAgentSaveBody,
   draftFrom,
   firstFreeKind,
@@ -37,6 +38,7 @@ function baseDraft(overrides: Partial<Draft> = {}): Draft {
     roleIds: ['role-1'],
     instructions: '',
     supervisedActionKeys: [],
+    scriptIds: [],
     ticketAutonomousWrites: false,
     ...overrides,
   };
@@ -116,14 +118,19 @@ describe('buildAgentSaveBody', () => {
       cooldownSeconds: 900,
       recipients: { roleIds: ['role-1'] },
       instructions: null,
-      actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+      actAssets: { supervisedActionKeys: ['manage_services:restart'], scriptIds: [] },
       kind: 'triage',
       ownerScope: 'partner',
     });
   });
 
-  it('pins the ORG draft body: create-only orgId set, actAssets OMITTED entirely (#5049 grant-only)', () => {
-    const draft = baseDraft({ ownerScope: 'organization', mode: 'act', supervisedActionKeys: ['manage_services:restart'] });
+  it('pins the ORG draft body: create-only orgId set, actAssets carries scriptIds only (#5049 grant-only keys, #5065 scripts)', () => {
+    const draft = baseDraft({
+      ownerScope: 'organization',
+      mode: 'act',
+      supervisedActionKeys: ['manage_services:restart'],
+      scriptIds: ['3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b'],
+    });
     const body = buildAgentSaveBody(draft, { isCreate: true, orgId: 'org-1' });
     expect(body).toEqual({
       name: 'Triage bot',
@@ -140,11 +147,13 @@ describe('buildAgentSaveBody', () => {
       cooldownSeconds: 900,
       recipients: { roleIds: ['role-1'] },
       instructions: null,
+      actAssets: { scriptIds: ['3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b'] },
       kind: 'triage',
       ownerScope: 'organization',
       orgId: 'org-1',
     });
-    expect(body).not.toHaveProperty('actAssets');
+    // Never the keys: an org row's supervisedActionKeys are grant-only.
+    expect(body.actAssets).not.toHaveProperty('supervisedActionKeys');
   });
 
   it('a PATCH body (isCreate: false) carries the policy fields only — no kind/ownerScope/orgId', () => {
@@ -165,6 +174,13 @@ describe('buildAgentSaveBody', () => {
   it('sends actAssets.supervisedActionKeys as [] on a partner draft not in act mode, even if the draft holds a stale selection', () => {
     const draft = baseDraft({ ownerScope: 'partner', mode: 'shadow', supervisedActionKeys: ['manage_services:restart'] });
     const body = buildAgentSaveBody(draft, { isCreate: true, orgId: null });
-    expect(body.actAssets).toEqual({ supervisedActionKeys: [] });
+    expect(body.actAssets).toEqual({ supervisedActionKeys: [], scriptIds: [] });
+  });
+
+  it('allowsRunScript recognises the bare and scoped forms only (#5065)', () => {
+    expect(allowsRunScript('manage_services:restart\nrun_script')).toBe(true);
+    expect(allowsRunScript('run_script:execute')).toBe(true);
+    expect(allowsRunScript('manage_services:restart\nrun_playbook')).toBe(false);
+    expect(allowsRunScript('')).toBe(false);
   });
 });

@@ -103,6 +103,10 @@ export interface Draft {
   /** Wave 5 Part B (#3827). Operator's per-agent opt-in to unattended
    *  policy-decided authorization — see actAssets in `buildAgentSaveBody` below. */
   supervisedActionKeys: string[];
+  /** #5065. Scripts `run_script` may execute UNATTENDED in act mode
+   *  (`actAssets.scriptIds`). A partner row's list is the ceiling; an org row
+   *  picks a subset of it (`ScriptAuthorizationPicker`). */
+  scriptIds: string[];
   /** P2-4 (#4191). Org-row-only opt-in that lifts the forced-shadow behavior
    *  for ticket-triggered runs — same "reads ONLY the org's own override"
    *  merge semantics as `anomalyEnabled` (never itself surfaced on this
@@ -149,8 +153,16 @@ export function draftFrom(
     roleIds: agent?.recipients?.roleIds ?? [],
     instructions: agent?.instructions ?? '',
     supervisedActionKeys: agent?.actAssets?.supervisedActionKeys ?? [],
+    scriptIds: agent?.actAssets?.scriptIds ?? [],
     ticketAutonomousWrites: agent?.triggers?.ticketAutonomousWrites ?? false,
   };
+}
+
+/** Whether the draft's tool allowlist admits `run_script` (bare, or any
+ *  scoped form) — the precondition for authorizing scripts. Never auto-added
+ *  by the picker: that would silently widen a separate control. */
+export function allowsRunScript(toolAllowlist: string): boolean {
+  return lines(toolAllowlist).some((entry) => entry === 'run_script' || entry.startsWith('run_script:'));
 }
 
 /**
@@ -196,13 +208,10 @@ export function buildAgentSaveBody(
     cooldownSeconds: draft.cooldownSeconds,
     recipients: { roleIds: draft.roleIds },
     instructions: draft.instructions.trim() ? draft.instructions.trim() : null,
-    // Wave 5 Part B (#3827): scriptIds is not this form's field to send —
-    // omitting it here relies on the SAME one-level PATCH merge the
-    // top-of-function comment already documents (updatePolicyColumns
-    // merges { ...stored.actAssets, ...input.actAssets }), so an existing
-    // scriptIds value survives a save that only ever touches
-    // supervisedActionKeys. On create, the server's createAiAgentSchema
-    // defaults the omitted scriptIds to [].
+    // #5065: `scriptIds` is a real form field on BOTH owner scopes now
+    // (`ScriptAuthorizationPicker`); the server validates every addition
+    // against the owner's visible library and, for an org row, the partner
+    // ceiling (`scriptAuthorization.ts`), so what is sent is what was ticked.
     //
     // P2 review fix: the draft KEEPS its supervisedActionKeys selection
     // across a mode change, but a non-act mode can never use them — sent as
@@ -210,20 +219,19 @@ export function buildAgentSaveBody(
     // them server-side, not just in the UI, while still letting the
     // operator's selection reappear if they return to act before saving.
     //
-    // #5049: an ORG row OMITS `actAssets` entirely instead — the server
-    // now 422s (`supervised_keys_grant_only`) any org-row write that ADDS
-    // a key the row does not already hold, because a key goes live on an
-    // org row only through the four-eyes grant executor (spec §4.4). Neither
-    // caller offers an org row an editable selection, so there is nothing of
-    // the operator's to send; omitting the property is what "leave the
-    // stored value alone" means to the same one-level PATCH merge this
-    // function already relies on for scriptIds above, and the server
-    // defaults a create's omitted key to `[]`. Partner rows are the ceiling
-    // and are still edited directly here, so they keep the
-    // live-selection behavior.
-    ...(draft.ownerScope === 'organization'
-      ? {}
-      : { actAssets: { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [] } }),
+    // #5049: an ORG row never sends `supervisedActionKeys` — the server 422s
+    // (`supervised_keys_grant_only`) any org-row write that ADDS a key the
+    // row does not already hold, because a key goes live on an org row only
+    // through the four-eyes grant executor (spec §4.4). Neither caller offers
+    // an org row an editable selection, so there is nothing of the
+    // operator's to send; leaving the property out of `actAssets` is what
+    // "leave the stored value alone" means to the one-level PATCH merge
+    // (updatePolicyColumns merges { ...stored.actAssets, ...input.actAssets }),
+    // and the server defaults a create's omitted key to `[]`. Partner rows are
+    // the ceiling and are still edited directly here.
+    actAssets: draft.ownerScope === 'organization'
+      ? { scriptIds: draft.scriptIds }
+      : { supervisedActionKeys: draft.mode === 'act' ? draft.supervisedActionKeys : [], scriptIds: draft.scriptIds },
   };
 
   if (!opts.isCreate) return policy;

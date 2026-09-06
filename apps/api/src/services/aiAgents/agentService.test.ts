@@ -113,6 +113,7 @@ vi.mock('./recipients', () => {
 // is isolated the same way ./recipients is above: a controllable stub whose
 // CONTRACT (called with exactly the keys this write is setting, before
 // anything is written) is what agentService.ts owns and this suite asserts.
+vi.mock('./scriptAuthorization', () => ({ assertScriptIdsAuthorizable: vi.fn(async () => undefined) }));
 vi.mock('../actionIntents/policyDecidable', () => ({
   validateAuthorizationKeys: state.validateAuthorizationKeys,
 }));

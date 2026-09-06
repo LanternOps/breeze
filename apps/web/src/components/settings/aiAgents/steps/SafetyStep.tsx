@@ -1,13 +1,15 @@
 import { useId, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { AgentCeilingDto } from '@breeze/shared';
 import PolicyKeysCheckboxes, {
   collapsedForCeiling,
   policyActionLabel,
   sentenceCase,
   type PolicyDecidableKeyOption,
 } from '../PolicyKeysCheckboxes';
+import ScriptAuthorizationPicker from '../ScriptAuthorizationPicker';
 import { listField, numberField, RecipientRolesFieldset, type RoleOption } from '../agentFields';
-import { toggle, type Draft } from '../agentDraft';
+import { allowsRunScript, toggle, type Draft } from '../agentDraft';
 
 // Re-exported so `AgentCreateFlow.tsx`'s `import { type RoleOption } from
 // './steps/SafetyStep'` keeps resolving — `RoleOption` itself now lives in
@@ -18,6 +20,10 @@ export type { RoleOption };
 export interface SafetyStepProps {
   draft: Draft;
   patch: (values: Partial<Draft>) => void;
+  /** The partner baseline's projection for an org draft (`useAgentToolCatalog`);
+   *  `null` for a partner draft or when no baseline exists. Narrows which
+   *  scripts an org row may authorize (#5065). */
+  ceiling: AgentCeilingDto | null;
   roles: RoleOption[];
   rolesFailed: boolean;
   policyKeys: PolicyDecidableKeyOption[];
@@ -57,6 +63,7 @@ export interface SafetyStepProps {
 export default function SafetyStep({
   draft,
   patch,
+  ceiling,
   roles,
   rolesFailed,
   policyKeys,
@@ -167,6 +174,19 @@ export default function SafetyStep({
             </>
           )}
         </fieldset>
+      )}
+
+      {/* #5065: the scripts `run_script` may execute unattended — shown under
+          the same gate as the registry above (act mode, or a partner row
+          whose list is the ceiling for its organizations). */}
+      {showPolicyDecide && (
+        <ScriptAuthorizationPicker
+          ownerScope={draft.ownerScope}
+          ceiling={ceiling}
+          runScriptAllowed={allowsRunScript(draft.toolAllowlist)}
+          selectedIds={draft.scriptIds}
+          onChange={(scriptIds) => patch({ scriptIds })}
+        />
       )}
 
       <fieldset className="space-y-3 rounded-md border p-3">

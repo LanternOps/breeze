@@ -1617,7 +1617,14 @@
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Dieser Agent ist bereits aktiv.",
-      "actRecipientsUnreachable": "Die ausgewählten Benachrichtigungsrollen haben keine aktiven Mitglieder, sodass niemand gefragt werden könnte. Wählen Sie eine Rolle mit Mitgliedern, bevor Sie den Handlungsmodus aktivieren."
+      "actRecipientsUnreachable": "Die ausgewählten Benachrichtigungsrollen haben keine aktiven Mitglieder, sodass niemand gefragt werden könnte. Wählen Sie eine Rolle mit Mitgliedern, bevor Sie den Handlungsmodus aktivieren.",
+      "invalidScriptIds": "Ein oder mehrere Skripte können für diesen Agenten nicht autorisiert werden.",
+      "scriptRejected": "Skript {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "kein Skript, das der Besitzer dieses Agenten sehen kann",
+        "not_in_partner_baseline": "nicht in der Partner-Baseline",
+        "run_script_not_allowed": "„Skript ausführen“ ist für diesen Agenten nicht erlaubt"
+      }
     },
     "actions": {
       "add": "Neuer Agent",
@@ -2718,7 +2725,9 @@
       "approvers_other": "{{roles}} werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
       "approversCount_one": "{{count}} Rolle wird gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
       "approversCount_other": "{{count}} Rollen werden gefragt, über Posteingang, Chat und mobile Push-Benachrichtigungen. Die erste Entscheidung zählt.",
-      "scriptGateNote": "{{list}} läuft erst unbeaufsichtigt, wenn ein Skript für diesen Agenten autorisiert ist; bis dahin wird eine Genehmigungsanfrage ausgelöst."
+      "scriptGateNote": "{{list}} läuft erst unbeaufsichtigt, wenn ein Skript für diesen Agenten autorisiert ist; bis dahin wird eine Genehmigungsanfrage ausgelöst.",
+      "scriptsAuthorized_one": "{{count}} Skript ist für die unbeaufsichtigte Ausführung autorisiert.",
+      "scriptsAuthorized_other": "{{count}} Skripte sind für die unbeaufsichtigte Ausführung autorisiert."
     },
     "flow": {
       "title": "Neuer Agent",
@@ -2772,6 +2781,18 @@
         "recommendedPrefix": "Empfohlen:",
         "taken": "Für diesen Eigentümer bereits vergeben"
       }
+    },
+    "scripts": {
+      "legend": "Skripte, die unbeaufsichtigt laufen dürfen",
+      "hint": "Im Handlungsmodus führt „Skript ausführen“ nur die hier angehakten Skripte ohne Genehmigung aus. Alles andere bleibt eine Genehmigungsanfrage.",
+      "ceilingHint": "Skripte auf Partnerebene sind eine Obergrenze: der Agent einer Organisation kann nur aus dieser Liste wählen.",
+      "runScriptRequired": "Fügen Sie unter „Was er tut“ zuerst „Skript ausführen“ hinzu, bevor Sie Skripte autorisieren.",
+      "loading": "Skripte werden geladen…",
+      "failed": "Skripte konnten nicht geladen werden, daher lässt sich die unbeaufsichtigte Skriptautorisierung gerade nicht ändern.",
+      "empty": "Keine Skripte verfügbar.",
+      "searchPlaceholder": "Skripte durchsuchen…",
+      "selectedCount_one": "{{count}} Skript autorisiert",
+      "selectedCount_other": "{{count}} Skripte autorisiert"
     }
   },
   "apiKeyForm": {

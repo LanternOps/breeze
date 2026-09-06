@@ -304,7 +304,8 @@ export default function AiAgentForm({
     />
   );
 
-  // The row's own scriptIds, narrowed by the partner ceiling the way
+  // The DRAFT's scriptIds (#5065 — live as the operator ticks scripts on
+  // the Safety step below), narrowed by the partner ceiling the way
   // effectivePolicy.ts computes the effective list (partner ∩ org) — a
   // script only the org row lists is never dispatched unattended. Until an
   // org row's ceiling has actually resolved, nothing counts as authorized:
@@ -313,7 +314,7 @@ export default function AiAgentForm({
   // (#5063 review).
   const authorizedScriptCount = !ceilingResolved
     ? 0
-    : (agent.actAssets?.scriptIds ?? []).filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
+    : draft.scriptIds.filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
@@ -448,6 +449,7 @@ export default function AiAgentForm({
             <SafetyStep
               draft={draft}
               patch={patch}
+              ceiling={ceiling}
               editing
               roles={roles}
               rolesFailed={rolesFailed}

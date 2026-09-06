@@ -119,6 +119,7 @@ export function buildAgentPreview(
     mode: input.mode,
     kind: input.kind,
     readOnlyToolCount: catalog.tools.filter((tool) => tool.readOnly).length,
+    authorizedScriptCount: authorizedScriptIds.length,
     operations,
     unrecognised: [...unrecognised],
     triggers: {

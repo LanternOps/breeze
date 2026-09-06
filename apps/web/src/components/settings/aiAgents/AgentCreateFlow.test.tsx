@@ -119,7 +119,7 @@ function buildFakePreview() {
   return {
     mode: 'shadow',
     kind: 'triage',
-    readOnlyToolCount: 3,
+    readOnlyToolCount: 3, authorizedScriptCount: 0,
     operations: [],
     unrecognised: [],
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true, ticketAutonomousWrites: false },

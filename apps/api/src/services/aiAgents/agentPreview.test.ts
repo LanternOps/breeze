@@ -215,6 +215,9 @@ describe('buildAgentPreview', () => {
       catalog,
     );
     expect(both.operations[0]).toMatchObject({ outcome: 'unattended', unattendedBlockedBy: null });
+    // The card's "N scripts authorized" note reads the same intersection.
+    expect(orgOnly.authorizedScriptCount).toBe(0);
+    expect(both.authorizedScriptCount).toBe(1);
   });
 
   it('act mode: a non-act-eligible tier-3 operation still falls back to approval_request', () => {

@@ -24,7 +24,7 @@ function buildPreview(overrides: Partial<AgentPreviewDto> = {}): AgentPreviewDto
   return {
     mode: 'shadow',
     kind: 'triage',
-    readOnlyToolCount: 14,
+    readOnlyToolCount: 14, authorizedScriptCount: 0,
     operations: baseOperations,
     unrecognised: [],
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true, ticketAutonomousWrites: false },
@@ -206,6 +206,20 @@ describe('AgentSummaryCard', () => {
     expect(text).toContain('1 raises an approval request');
     expect(text).toContain('1 is logged as a proposal');
     expect(text).toContain('2 run unattended');
+  });
+
+  it('act mode: says how many scripts are authorized to run unattended, once any are (#5065)', () => {
+    const none = buildPreview({ mode: 'act', authorizedScriptCount: 0 });
+    const { rerender } = render(<AgentSummaryCard preview={none} name="Bot" orgName="Acme" />);
+    expect(screen.queryByTestId('agent-summary-scripts')).toBeNull();
+
+    rerender(<AgentSummaryCard preview={buildPreview({ mode: 'act', authorizedScriptCount: 1 })} name="Bot" orgName="Acme" />);
+    expect(screen.getByTestId('agent-summary-scripts')).toHaveTextContent('1 script is authorized');
+    rerender(<AgentSummaryCard preview={buildPreview({ mode: 'act', authorizedScriptCount: 3 })} name="Bot" orgName="Acme" />);
+    expect(screen.getByTestId('agent-summary-scripts')).toHaveTextContent('3 scripts are authorized');
+    // Never in shadow — nothing runs unattended there.
+    rerender(<AgentSummaryCard preview={buildPreview({ mode: 'shadow', authorizedScriptCount: 3 })} name="Bot" orgName="Acme" />);
+    expect(screen.queryByTestId('agent-summary-scripts')).toBeNull();
   });
 
   it('act mode: explains a script-gated operation that stays an approval request until a script is authorized (#5048 QA)', () => {
