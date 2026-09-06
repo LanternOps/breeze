@@ -95,6 +95,11 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
     // timer in the store, no surface offered Stop, so a timer started offline
     // could never be stopped offline — and the span the whole offline design
     // exists to record was lost.
+    //
+    // No ticketNumber/ticketSubject here: this timer only exists on-device, so
+    // there is no server-joined entry to read them from yet. TimerBar's label
+    // falls back to its own ticket-list lookup for this case (unchanged by
+    // #5105 — only the online-start path above needed the fix).
     return {
       ...base(),
       startRunning: {
