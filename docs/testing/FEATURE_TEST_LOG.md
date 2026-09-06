@@ -40,6 +40,8 @@ Use the `feature-testing` skill to run structured verification and record result
 7. **Default owner scope (P3):** with no partner baseline, step 1 defaults to "This organization only" and then warns the agent has no effect until a baseline exists; default to "All organizations" when no baseline exists.
 8. Retracted: `get_device — This tool no longer exists` is correct (not a registered tool).
 
+**Fixed in PR #5064** (items 1–7; a11y item 6 covers the stepper name only — the empty `role=status` region is by design, it announces the act-keys-cleared notice). Re-checked on the same stack after the fix: partner-wide default with the `patch` kind and no hint; "isolate" narrows to `s1_isolate_device` alone; `run_script` in act mode reads "Approval request — Stays an approval request until a script is authorized for this agent." and the summary says "1 approval request, 0 logged proposals, 0 unattended"; Safety marks every empty role "(no active members)"; Review reads "Up to 1 device per run … 15 minutes between runs", "Partner Technician is asked", "1 operation across 1 capability: 1 raises an approval request…", plus the script-gate sentence under Executes unattended; the title Edit leaves step 4 clickable (aria-label "1. Purpose and posture") and returns straight to Review; Create with an empty role shows "The selected notification roles have no active members…" alongside the act-eligible-tool issue.
+
 ### Notes
 - #5059 (stale "no partner-wide baseline" notice) did not reproduce on the list after the partner triage agent was created.
 - Stack: `pnpm wt-stack up` on the worktree; `.env` copied from `fix-3750` + AI flags appended.
