@@ -1185,7 +1185,7 @@ describe('pushPaymentToAccounting', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
-  it('is record_failed (terminal, pending_op cleared) when phase 2 cannot record the result', async () => {
+  it('is record_failed (terminal for THIS attempt) when phase 2 cannot record the result', async () => {
     createPaymentMock.mockImplementationOnce(async () => {
       // The mapping row disappears between the create and phase 2. Since
       // `requestPaymentDelete` no longer deletes a Breeze-origin push row, the
@@ -1199,6 +1199,32 @@ describe('pushPaymentToAccounting', () => {
       .rejects.toMatchObject({ code: 'record_failed', status: 502 });
     const [[error]] = captureExceptionMock.mock.calls as [[Error]];
     expect(error.message).toContain('181');
+  });
+
+  it('leaves a record_failed row DISTINGUISHABLE from removed-remotely, so no fan-out re-own can duplicate the Payment', async () => {
+    // QuickBooks accepted the create; Breeze could not record it. Clearing
+    // `pending_op` here made the row byte-identical to what the pull's
+    // `breeze_origin_removed_remotely` leaves behind (breeze_origin, no remote
+    // id, nothing owed) — and THAT state is exactly what `fanOutOwedPayments`
+    // re-owns, so the next invoice push created a SECOND QuickBooks Payment for
+    // money that only moved once. Keeping `pending_op = 'push'` makes the two
+    // states distinguishable, keeps the row adoptable by the CDC echo (which
+    // requires pending_op IN ('push','delete')), and lets the attempt ceiling
+    // bound the retries.
+    createPaymentMock.mockImplementationOnce(async () => {
+      currentInvoices = []; // phase 2 cannot lock the invoice
+      return { id: '181', syncToken: '0' };
+    });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'record_failed', status: 502 });
+    expect(mapping()).toMatchObject({ pendingOp: 'push', remoteEntityId: null, syncStatus: 'error' });
+
+    currentInvoices = [invRow()];
+    createPaymentMock.mockClear();
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(mapping()).toMatchObject({ pendingOp: 'push', pushGeneration: 0 });
+    expect(createPaymentMock).not.toHaveBeenCalled();
   });
 });
 

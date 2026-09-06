@@ -524,15 +524,12 @@ export async function requestPaymentPush(
  *  - a pre-call terminal refusal — `invoice_void`, `customer_not_mapped`, a
  *    currency-contract failure, or a push row that burned through
  *    `PAYMENT_PUSH_MAX_ATTEMPTS`;
- *  - `record_failed` with no remote id — QuickBooks accepted a create whose
- *    result Breeze could not record. THE ACCEPTED COST IS HERE: before this
- *    branch, the mapping survived the void and the CDC pull could still adopt
- *    the orphaned Payment by its `PrivateNote` marker and fill the id in. Now
- *    the row is dropped, so that orphan stays in QuickBooks. It is not lost
- *    silently — `record_failed` already raised a Sentry event and stamped
- *    "do not retry; contact support to reconcile", and the void writes its own
- *    audit entry — and the adoption was itself unlikely to fire, since it
- *    requires the `invoice_payments` row this void is deleting. Accepted.
+ *
+ * `record_failed` — QuickBooks accepted a create whose result Breeze could not
+ * record — deliberately does NOT reach that shape any more (review finding 1):
+ * it keeps `pending_op = 'push'`, so this helper flips it to `delete` like any
+ * other in-flight create and the orphaned Payment stays adoptable by its
+ * `PrivateNote` marker until the delete worker or the CDC pull resolves it.
  *
  * Returns the mapping id to enqueue a `delete-payment` job for, or `null`.
  * Zero rows is LEGITIMATE and deliberately not a throw: a manual or Stripe
@@ -1363,10 +1360,34 @@ export async function pushPaymentToAccounting(
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingPaymentPush', mappingId, remotePaymentId: ref.id,
     });
-    const message = `QuickBooks accepted the payment (remote id ${ref.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
-    // `pending_op` CLEARED: a retry would create a SECOND QuickBooks Payment for
-    // money that only moved once. The CDC echo will adopt the orphan instead.
-    await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: true });
+    const message = `QuickBooks accepted the payment (remote id ${ref.id}) but Breeze failed to record it — contact support to reconcile`;
+    // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
+    // holds the Payment (review finding 1). Clearing it produced a row that was
+    // byte-identical to the one `accountingPaymentPull`'s
+    // `breeze_origin_removed_remotely` leaves behind — `breeze_origin = true`,
+    // `remote_entity_id IS NULL`, nothing owed — which is EXACTLY the state
+    // `fanOutOwedPayments`/`reownPushMapping` re-own. The next invoice push
+    // therefore bumped `push_generation` (a fresh QBO requestid) and created a
+    // SECOND Payment for money that only moved once. The claimed mitigation did
+    // not cover it either: `adoptBreezeOriginPayment` only adopts a row whose
+    // `pending_op` is `push` or `delete`, so a cleared row was not adoptable by
+    // the CDC echo at all.
+    //
+    // Keeping `push` fixes both halves. The row is no longer re-ownable (the CAS
+    // requires `pending_op IS NULL`), and the CDC echo CAN adopt the orphan by
+    // its `PrivateNote` marker — the intended recovery. The retries this keeps
+    // alive are safe and are themselves a second recovery: `push_generation` is
+    // unchanged, so every one of them resends the SAME `requestid` and
+    // QuickBooks replays the original create response for 24 hours, which lets a
+    // later phase 2 stamp the very Payment this attempt could not record.
+    // `PAYMENT_PUSH_MAX_ATTEMPTS` bounds it at ~5 hours, well inside that window.
+    //
+    // RESIDUAL, stated rather than argued away: a row that burns the whole
+    // ceiling gives up with `pending_op` cleared and lands back in the
+    // re-ownable shape. That needs ~5 hours of continuous phase-2 failure AND a
+    // manual re-push afterwards, and the operator is looking at a `last_error`
+    // naming the orphan by remote id when they do it.
+    await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: false });
     throw new AccountingPaymentPushError('record_failed', 502, message);
   }
 
