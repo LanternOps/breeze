@@ -25,6 +25,13 @@
  *    is still collectable destroys the only thing that will ever clean the
  *    endpoint). Neither is re-implemented here; both are counted and skipped.
  *
+ *  - THAT STATUS RE-CHECK IS NOT SUFFICIENT ON ITS OWN, so the ORG and the
+ *    ELIGIBILITY WINDOW are re-read in the same statement that takes the lock
+ *    (`purgeOneRemovedDevice`). The candidate SELECT is unlocked and its rows
+ *    are purged sequentially, so a device can be moved to another tenant, or
+ *    restored and re-removed, long after it was chosen and while `status`
+ *    stays `decommissioned`. See that function's own note.
+ *
  *  - ONE AUDIT ROW PER DELETION. The devices row is gone afterwards, so the
  *    audit entry is the ONLY durable record that this happened. It carries
  *    `retentionPolicy: true` and the window that authorised it, so an operator
@@ -34,7 +41,7 @@
  * short-lived system contexts, per-org loop, `recordRetentionRun`).
  */
 import { Queue, Worker } from 'bullmq';
-import { and, asc, eq, isNotNull, lt } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getBullMQConnection, getRedis } from '../services/redis';
@@ -111,20 +118,79 @@ interface EligibleDevice {
   decommissionedAt: Date | null;
 }
 
+/** Why one device was not purged. `null` means it was. */
+export type RemovedDevicePurgeSkip =
+  | DeviceLifecycleError['code']
+  | 'ORG_CHANGED'
+  | 'NO_LONGER_ELIGIBLE';
+
+export interface RemovedDevicePurgeCandidate {
+  deviceId: string;
+  /** The org the device was in when the candidate SELECT chose it. */
+  orgId: string;
+  /** The cutoff that SELECT applied — re-applied here, under the lock. */
+  cutoff: Date;
+}
+
 /**
- * One device, in its own system-scoped transaction.
+ * One device, in its own system-scoped transaction, with the eligibility facts
+ * RE-CHECKED under the row lock.
  *
- * Returns the skip code, or `null` when the device was purged. Only
+ * `purgeRemovedDevice` re-checks `status` under its own `FOR UPDATE`, and that
+ * alone is not enough. The candidate SELECT is unlocked and its results are
+ * purged sequentially, up to 200 per org, so minutes can pass between "this
+ * device is eligible" and "this device is being deleted". Two things can change
+ * in that window while `status` stays `decommissioned`:
+ *
+ *   - MOVE-ORG. The device now belongs to a different tenant, whose policy may
+ *     say nothing about purging at all. Deleting it here destroys a device
+ *     under a window its current owner never agreed to, and writes the audit
+ *     row — the only surviving record — against the OLD org.
+ *   - RESTORE THEN RE-REMOVE. `decommissioned_at` is refreshed to now, so the
+ *     device is freshly removed and nowhere near the window; `status` is
+ *     `decommissioned` again, so the status re-check waves it through.
+ *
+ * So both facts are re-read in the same statement that takes the lock, exactly
+ * as `jobs/deviceBulkPurge.ts` re-derives ownership before its own purge. The
+ * second `FOR UPDATE` the service then takes on this row in this transaction is
+ * a no-op on a lock we already hold.
+ *
+ * Returns the skip reason, or `null` when the device was purged. Only
  * `DeviceLifecycleError` is translated; anything else propagates so the caller
  * can count it as a failure and report it — a deadlock or a constraint
  * violation is not a "skip".
+ *
+ * Exported so a test can prove the re-check directly, with a deliberately stale
+ * cutoff, rather than trying to win a race against a whole sweep.
  */
-async function purgeOne(deviceId: string): Promise<DeviceLifecycleError['code'] | null> {
+export async function purgeOneRemovedDevice(
+  candidate: RemovedDevicePurgeCandidate,
+): Promise<RemovedDevicePurgeSkip | null> {
   try {
-    await inSystemContext('removedDevicePurge.purgeOne', () =>
-      db.transaction((tx) => purgeRemovedDevice(tx, deviceId)));
-    return null;
+    return await inSystemContext('removedDevicePurge.purgeOne', () =>
+      db.transaction(async (tx): Promise<RemovedDevicePurgeSkip | null> => {
+        const rows = (await tx.execute(
+          sql`SELECT org_id, decommissioned_at FROM devices WHERE id = ${candidate.deviceId} FOR UPDATE`,
+        )) as unknown as Array<{ org_id: string; decommissioned_at: Date | string | null }>;
+        const row = Array.isArray(rows) ? rows[0] : undefined;
+
+        // Gone already (a concurrent purge, or a cascading org delete). Not an
+        // error — the outcome this run wanted is the outcome that happened.
+        if (!row) return 'NOT_FOUND';
+        if (row.org_id !== candidate.orgId) return 'ORG_CHANGED';
+
+        const stamp = row.decommissioned_at === null ? null : new Date(row.decommissioned_at);
+        // `null` here means the removal time became unknown under the lock,
+        // which is the same fail-closed answer the candidate query gives it.
+        if (stamp === null || Number.isNaN(stamp.getTime())) return 'NO_LONGER_ELIGIBLE';
+        if (stamp.getTime() >= candidate.cutoff.getTime()) return 'NO_LONGER_ELIGIBLE';
+
+        await purgeRemovedDevice(tx, candidate.deviceId);
+        return null;
+      }));
   } catch (err) {
+    // Deliberately caught OUTSIDE the transaction so a DeviceLifecycleError
+    // still rolls it back, exactly as before.
     if (err instanceof DeviceLifecycleError) return err.code;
     throw err;
   }
@@ -222,9 +288,16 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
     let purgedThisOrg = 0;
 
     for (const candidate of candidates) {
-      let code: DeviceLifecycleError['code'] | null;
+      let code: RemovedDevicePurgeSkip | null;
       try {
-        code = await purgeOne(candidate.id);
+        code = await purgeOneRemovedDevice({
+          deviceId: candidate.id,
+          orgId,
+          // The SAME cutoff the candidate query used, re-applied under the
+          // lock. Recomputing it from a fresh `now()` would let a long run
+          // widen its own window as it goes.
+          cutoff,
+        });
       } catch (err) {
         // One device's failure must not abort the org, let alone the run.
         console.error(`${LOG_PREFIX} Unexpected error purging device ${candidate.id} (org ${orgId}):`, err);
@@ -240,8 +313,9 @@ export async function runRemovedDevicePurgeOnce(now: Date = new Date()): Promise
         continue;
       }
       if (code !== null) {
-        // NOT_REMOVED / NOT_FOUND — restored or already deleted between the
-        // SELECT and the lock. The operator's action beat the job; not an error.
+        // NOT_REMOVED / NOT_FOUND / ORG_CHANGED / NO_LONGER_ELIGIBLE — restored,
+        // moved, re-removed or already deleted between the SELECT and the lock.
+        // Something else beat the job to the row; none of it is an error.
         summary.skippedRaced += 1;
         continue;
       }

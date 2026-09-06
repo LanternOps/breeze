@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const {
   addMock,
@@ -105,6 +107,7 @@ vi.mock('./workerObservability', () => ({
 
 import {
   runRemovedDevicePurgeOnce,
+  purgeOneRemovedDevice,
   REMOVED_DEVICE_PURGE_MAX_PER_ORG_PER_RUN,
   initializeRemovedDevicePurge,
   shutdownRemovedDevicePurge,
@@ -118,21 +121,62 @@ const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 interface DeviceRow {
   id: string;
   hostname: string | null;
+  orgId: string;
   decommissionedAt: Date;
+}
+
+/** What the per-device `SELECT ... FOR UPDATE` re-check sees under the lock. */
+interface LockedRow {
+  org_id: string;
+  decommissioned_at: Date | null;
 }
 
 /**
  * Scripts the two query shapes the job issues, keyed by the ORDER they run in:
  * one org-list select, then one device-select per org that has a policy.
  *
- * `deviceSelects` records the compiled WHERE of each device query so an
+ * `deviceWheres` records the compiled WHERE of each device query so an
  * eligibility assertion cannot pass against a predicate that selects the wrong
- * rows.
+ * rows. `lockedStatements` records every `tx.execute` so the per-device
+ * re-check cannot be silently deleted.
+ *
+ * The tx double serves the locked row from the SCRIPTED DEVICE by default, so
+ * the ordinary path exercises the real re-check rather than bypassing it; a
+ * test simulating a race overrides one device's locked row via `lockRowFor`.
  */
 const deviceWheres: unknown[] = [];
 const deviceLimits: number[] = [];
+const lockedStatements: unknown[] = [];
+const scriptedDevices = new Map<string, DeviceRow>();
+const lockRowOverrides = new Map<string, LockedRow | null>();
+
+/** The device id bound into a `... WHERE id = $1 FOR UPDATE` statement. */
+function executedDeviceId(query: unknown): string | undefined {
+  const { params } = new PgDialect().sqlToQuery(query as SQL);
+  return params.find((p): p is string => typeof p === 'string');
+}
+
+function makeTx() {
+  return {
+    execute: async (query: unknown) => {
+      lockedStatements.push(query);
+      const id = executedDeviceId(query);
+      if (id !== undefined && lockRowOverrides.has(id)) {
+        const override = lockRowOverrides.get(id);
+        return override ? [override] : [];
+      }
+      const scripted = id === undefined ? undefined : scriptedDevices.get(id);
+      return scripted
+        ? [{ org_id: scripted.orgId, decommissioned_at: scripted.decommissionedAt }]
+        : [];
+    },
+  };
+}
 
 function rigQueries(orgIds: string[], devicesByCall: DeviceRow[][]) {
+  for (const batch of devicesByCall) {
+    for (const d of batch) scriptedDevices.set(d.id, d);
+  }
   let call = 0;
   dbSelectMock.mockImplementation(() => {
     const index = call++;
@@ -152,17 +196,29 @@ function rigQueries(orgIds: string[], devicesByCall: DeviceRow[][]) {
       resolve(index === 0 ? orgIds.map((id) => ({ orgId: id })) : (devicesByCall[index - 1] ?? []));
     return chain;
   });
-  dbTransactionMock.mockImplementation(async (cb: (tx: unknown) => unknown) => cb({}));
+  dbTransactionMock.mockImplementation(async (cb: (tx: unknown) => unknown) => cb(makeTx()));
 }
 
-function device(id: string, hostname = `host-${id}`): DeviceRow {
-  return { id, hostname, decommissionedAt: new Date('2026-01-01T00:00:00.000Z') };
+function device(
+  id: string,
+  overrides: { hostname?: string | null; orgId?: string; decommissionedAt?: Date } = {},
+): DeviceRow {
+  return {
+    id,
+    hostname: overrides.hostname ?? `host-${id}`,
+    orgId: overrides.orgId ?? ORG_A,
+    // Comfortably older than any cutoff the tests use.
+    decommissionedAt: overrides.decommissionedAt ?? new Date('2026-01-01T00:00:00.000Z'),
+  };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   deviceWheres.length = 0;
   deviceLimits.length = 0;
+  lockedStatements.length = 0;
+  scriptedDevices.clear();
+  lockRowOverrides.clear();
   purgeRemovedDeviceMock.mockResolvedValue({ linkGroupId: null, linkGroupDissolved: false });
 });
 
@@ -285,7 +341,7 @@ describe('runRemovedDevicePurgeOnce', () => {
 
   it('skips an org whose policy lookup throws and moves to the next one — never purges on an unresolved policy', async () => {
     // Only ONE device select is scripted: ORG_A must never issue one at all.
-    rigQueries([ORG_A, ORG_B], [[device('dev-1')]]);
+    rigQueries([ORG_A, ORG_B], [[device('dev-1', { orgId: ORG_B })]]);
     getOrgPurgeRemovedAfterDaysMock
       .mockRejectedValueOnce(new Error('policy read failed'))
       .mockResolvedValueOnce(30);
@@ -297,6 +353,90 @@ describe('runRemovedDevicePurgeOnce', () => {
     expect(result.purged).toBe(1);
     // ORG_A issued no eligibility query at all.
     expect(deviceWheres).toHaveLength(1);
+  });
+
+  // ------------------------------------------------------------------
+  // The per-device re-check under the lock.
+  //
+  // The candidate SELECT is unlocked and covers up to 200 devices purged
+  // SEQUENTIALLY, so minutes can pass between "this device is eligible" and
+  // "this device is being deleted". `purgeRemovedDevice` re-checks `status`
+  // under its own lock, but nothing re-checked the two facts that made the
+  // device eligible in the first place: which org it is in, and whether its
+  // removal is still past the window.
+  // ------------------------------------------------------------------
+
+  it('re-reads the device under a lock before purging it, not just its status', async () => {
+    rigQueries([ORG_A], [[device('dev-1')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+
+    await runRemovedDevicePurgeOnce();
+
+    // Without this, dropping the re-check entirely would still leave every
+    // other assertion in this block satisfiable by the scripted defaults.
+    const locked = lockedStatements.map((q) => new PgDialect().sqlToQuery(q as SQL).sql).join(' | ');
+    expect(locked).toMatch(/FOR UPDATE/i);
+    expect(locked).toMatch(/org_id/i);
+    expect(locked).toMatch(/decommissioned_at/i);
+  });
+
+  it('refuses a device that moved to another org between the SELECT and the lock', async () => {
+    rigQueries([ORG_A], [[device('dev-1'), device('dev-2')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    lockRowOverrides.set('dev-1', {
+      org_id: ORG_B,
+      decommissioned_at: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    // move-org happened in the window. Deleting it here would destroy a device
+    // under a retention policy its CURRENT owner never agreed to, and audit the
+    // deletion against the wrong tenant.
+    expect(result.skippedRaced).toBe(1);
+    expect(result.purged).toBe(1);
+    expect(purgeRemovedDeviceMock).toHaveBeenCalledTimes(1);
+    expect(purgeRemovedDeviceMock.mock.calls[0]![1]).toBe('dev-2');
+    expect(createAuditLogMock).toHaveBeenCalledTimes(1);
+    expect(createAuditLogMock.mock.calls[0]![0]).toMatchObject({ resourceId: 'dev-2' });
+  });
+
+  it('refuses a device that was restored and re-removed inside the window', async () => {
+    rigQueries([ORG_A], [[device('dev-1'), device('dev-2')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    // Still `decommissioned`, so the status re-check passes — but removed again
+    // moments ago, which puts it far inside the 30-day window.
+    lockRowOverrides.set('dev-1', { org_id: ORG_A, decommissioned_at: new Date() });
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.skippedRaced).toBe(1);
+    expect(result.purged).toBe(1);
+    expect(purgeRemovedDeviceMock.mock.calls.map((c) => c[1])).toEqual(['dev-2']);
+  });
+
+  it('refuses a device whose removal stamp was cleared under the lock', async () => {
+    rigQueries([ORG_A], [[device('dev-1')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    lockRowOverrides.set('dev-1', { org_id: ORG_A, decommissioned_at: null });
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.skippedRaced).toBe(1);
+    expect(result.purged).toBe(0);
+    expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it('counts a device that vanished under the lock as a race, not a failure', async () => {
+    rigQueries([ORG_A], [[device('dev-1')]]);
+    getOrgPurgeRemovedAfterDaysMock.mockResolvedValue(30);
+    lockRowOverrides.set('dev-1', null); // FOR UPDATE returns no row
+
+    const result = await runRemovedDevicePurgeOnce();
+
+    expect(result.skippedRaced).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
   });
 
   it('caps the number of devices it will purge for one org in one run', async () => {
@@ -365,6 +505,57 @@ describe('runRemovedDevicePurgeOnce', () => {
     await runRemovedDevicePurgeOnce();
 
     expect(dbTransactionMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('purgeOneRemovedDevice', () => {
+  it('is exported so a caller can prove the re-check independently of a whole sweep', () => {
+    expect(purgeOneRemovedDevice).toBeTypeOf('function');
+  });
+
+  it('reports ORG_CHANGED without touching the device when the locked row names another org', async () => {
+    rigQueries([], []);
+    scriptedDevices.set('dev-1', device('dev-1', { orgId: ORG_B }));
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: 'dev-1',
+      orgId: ORG_A,
+      cutoff: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    expect(outcome).toBe('ORG_CHANGED');
+    expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it('reports NO_LONGER_ELIGIBLE when the locked stamp is no longer past the cutoff', async () => {
+    rigQueries([], []);
+    scriptedDevices.set(
+      'dev-1',
+      device('dev-1', { decommissionedAt: new Date('2026-06-02T00:00:00.000Z') }),
+    );
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: 'dev-1',
+      orgId: ORG_A,
+      cutoff: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    expect(outcome).toBe('NO_LONGER_ELIGIBLE');
+    expect(purgeRemovedDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it('purges when the locked row still satisfies both facts that made it eligible', async () => {
+    rigQueries([], []);
+    scriptedDevices.set('dev-1', device('dev-1'));
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: 'dev-1',
+      orgId: ORG_A,
+      cutoff: new Date('2026-06-01T00:00:00.000Z'),
+    });
+
+    expect(outcome).toBeNull();
+    expect(purgeRemovedDeviceMock).toHaveBeenCalledTimes(1);
   });
 });
 

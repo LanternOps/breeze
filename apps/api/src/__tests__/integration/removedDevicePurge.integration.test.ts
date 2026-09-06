@@ -59,7 +59,7 @@ import {
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { getOrgPurgeRemovedAfterDays } from '../../services/deviceLifecyclePolicy';
-import { runRemovedDevicePurgeOnce } from '../../jobs/removedDevicePurge';
+import { purgeOneRemovedDevice, runRemovedDevicePurgeOnce } from '../../jobs/removedDevicePurge';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -336,6 +336,69 @@ describe('removedDevicePurge (integration)', () => {
 
     // The skip is per device, not per org: its neighbour still goes.
     expect(await deviceExists(alsoEligible.id)).toBe(false);
+  });
+
+  // ------------------------------------------------------------------
+  // The per-device re-check under the lock, driven directly.
+  //
+  // Winning a real race against a whole sweep is not something a test can do
+  // reliably, so these call the per-device function with the state the race
+  // WOULD have produced: a cutoff that is now stale relative to the row.
+  // Postgres is doing the FOR UPDATE and returning a real timestamptz here,
+  // which is the part the unit suite's fake tx cannot prove.
+  // ------------------------------------------------------------------
+
+  it('refuses a device that was restored and re-removed after the candidate SELECT chose it', async () => {
+    const a = await seedTenant();
+    const device = await seedRemovedDevice(a.org.id, a.site.id, 10);
+    // The cutoff a 7-day window would have produced when the sweep started.
+    const cutoff = new Date(Date.now() - 7 * DAY_MS);
+
+    // The race: restored and removed again while the sweep worked through
+    // earlier candidates. Still `decommissioned`, so the status re-check inside
+    // purgeRemovedDevice waves it through — only the stamp says otherwise.
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.execute(sql`UPDATE devices SET decommissioned_at = now() WHERE id = ${device.id}`),
+    );
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: device.id,
+      orgId: a.org.id,
+      cutoff,
+    });
+
+    expect(outcome).toBe('NO_LONGER_ELIGIBLE');
+    expect(await deviceExists(device.id)).toBe(true);
+  });
+
+  it('refuses a device that moved to another org after the candidate SELECT chose it', async () => {
+    const a = await seedTenant();
+    const b = await seedTenant();
+    const device = await seedRemovedDevice(b.org.id, b.site.id, 10);
+
+    // The sweep chose it while it belonged to org A; it is org B's now.
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: device.id,
+      orgId: a.org.id,
+      cutoff: new Date(Date.now() - 7 * DAY_MS),
+    });
+
+    expect(outcome).toBe('ORG_CHANGED');
+    expect(await deviceExists(device.id)).toBe(true);
+  });
+
+  it('purges when the locked row still satisfies both facts — the positive control for the two refusals above', async () => {
+    const a = await seedTenant();
+    const device = await seedRemovedDevice(a.org.id, a.site.id, 10);
+
+    const outcome = await purgeOneRemovedDevice({
+      deviceId: device.id,
+      orgId: a.org.id,
+      cutoff: new Date(Date.now() - 7 * DAY_MS),
+    });
+
+    expect(outcome).toBeNull();
+    expect(await deviceExists(device.id)).toBe(false);
   });
 
   it("replaying the migration's backfill stamps an already-removed device that has no stamp", async () => {
