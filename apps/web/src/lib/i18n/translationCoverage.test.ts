@@ -209,7 +209,9 @@ const namespaceDuplicateBaselines = {
     'common.json': 105,
     // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
     // and "Description" (snmpFields.sysDescr) are identical French cognates.
-    'devices.json': 137,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    'devices.json': 138,
     'discovery.json': 15,
     'integrations.json': 38,
     'patches.json': 20,
@@ -289,7 +291,9 @@ const namespaceDuplicateBaselines = {
     'common.json': 107,
     // +2: networkDeviceDetailPage copy clarity pass — "Type" (fields.assetType)
     // and "Description" (snmpFields.sysDescr) are identical French cognates.
-    'devices.json': 137,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    'devices.json': 138,
     'discovery.json': 15,
     'integrations.json': 40,
     'patches.json': 20,

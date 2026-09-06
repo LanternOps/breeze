@@ -204,7 +204,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         {/* Same breadcrumb the loaded page renders (below) — an error must
             not drop the operator into a different navigational frame. */}
         <Breadcrumbs items={[
-          { label: t('devicesPage.title'), href: '/devices' },
+          { label: t('devicesPage.title'), href: '/devices#deviceClass=network' },
           { label: t('networkDeviceDetailPage.networkDevice') },
         ]} />
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
@@ -270,7 +270,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         {liveMessage}
       </div>
       <Breadcrumbs items={[
-        { label: t('devicesPage.title'), href: '/devices' },
+        { label: t('devicesPage.title'), href: '/devices#deviceClass=network' },
         { label: displayName || t('networkDeviceDetailPage.networkDevice') },
       ]} />
 

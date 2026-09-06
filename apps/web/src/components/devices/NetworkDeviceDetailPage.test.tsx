@@ -1388,6 +1388,16 @@ describe('NetworkDeviceDetailPage', () => {
       await waitFor(() => expect(focusSpy).toHaveBeenCalled());
     });
 
+    it('breadcrumb back link returns to the Devices list filtered to network devices', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([]));
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      const back = screen.getByRole('link', { name: 'Devices' });
+      expect(back.getAttribute('href')).toBe('/devices#deviceClass=network');
+    });
+
     // #reviewFix8: announce() set the same string twice in a row — React
     // bails out on the no-op state update, so the live region's DOM text
     // never actually changes and a screen reader never hears the repeat.

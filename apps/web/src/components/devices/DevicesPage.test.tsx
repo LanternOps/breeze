@@ -423,7 +423,8 @@ describe('DevicesPage — advanced filter applies to BOTH views', () => {
   });
 });
 
-// The network arm is behind ENABLE_NETWORK_DEVICES_IN_LIST and OFF by default.
+// The network arm is behind ENABLE_NETWORK_DEVICES_IN_LIST (on by default; this
+// block covers the opt-out).
 describe('DevicesPage — network arm disabled by default (#1322 flag)', () => {
   it('does not fetch network devices when the flag is off', async () => {
     flagState.ENABLE_NETWORK_DEVICES_IN_LIST = false;
@@ -2010,5 +2011,61 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
     expect(vi.mocked(showToast)).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: expect.stringContaining('at least 2') }),
     );
+  });
+});
+
+// 2026-09-06 critique P0: the server filter engine cannot see network rows,
+// so the page evaluates them client-side and the segment badges must count
+// the SAME rows the list renders — never an unfiltered total.
+describe('DevicesPage — class segment badges tell the truth under a filter', () => {
+  const NET_ON = '77777777-7777-7777-7777-777777777777';
+  const NET_OFF = '88888888-8888-8888-8888-888888888888';
+
+  function rawNetworkDevice(id: string, hostname: string, status: string) {
+    return {
+      id,
+      deviceClass: 'network',
+      assetType: 'switch',
+      hostname,
+      status,
+      lastSeenAt: new Date().toISOString(),
+      orgId: 'org-1',
+      siteId: 'site-1',
+      tags: [],
+    };
+  }
+
+  beforeEach(() => {
+    history.replaceState(null, '', '/devices');
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [rawNetworkDevice(NET_ON, 'core-sw', 'online'), rawNetworkDevice(NET_OFF, 'old-cam', 'offline')],
+      total: 2,
+      pagesWalked: 1,
+    } as never);
+  });
+
+  it('counts only the rows the Online filter leaves: 2 agents from the server id set, 1 network from the client evaluator', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter); // status = online
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    await waitFor(() => expect(screen.getByTestId('device-class-segment-all')).toHaveTextContent('3'));
+    expect(screen.getByTestId('device-class-segment-agent')).toHaveTextContent('2');
+    expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('1');
+    expect(screen.queryByTestId('hidden-network-notice')).toBeNull();
+  });
+
+  it('says how many network rows an agent-only filter hides, and which field caused it', async () => {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue({
+      operator: 'AND',
+      conditions: [{ field: 'patches.pending', operator: 'equals', value: 'yes' }],
+    });
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    const notice = await screen.findByTestId('hidden-network-notice');
+    expect(notice.textContent).toMatch(/2 network devices hidden/);
+    expect(notice.textContent).toMatch(/Needs Patches/);
+    await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
   });
 });

@@ -976,7 +976,15 @@
     }
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} con agente, {{network}} de red",
+    "agentOnlyBulkAction": "Solo aplica a dispositivos con agente",
+    "eligibleOfSelected": "{{count}} de {{total}}",
+    "linkAsVmHost": "Vincular como host de VM + invitados",
+    "notApplicable": "No aplica",
+    "viewDevice": "Ver {{name}}",
     "tableColumns": {
+      "class": "Clase",
+      "type": "Tipo",
       "device": "Dispositivo",
       "organization": "Organización",
       "site": "Sitio",
@@ -988,6 +996,8 @@
       "lastSeen": "Visto por última vez"
     },
     "sortBy": {
+      "class": "Ordenar por clase",
+      "type": "Ordenar por tipo",
       "device": "Ordenar por dispositivo",
       "organization": "Ordenar por organización",
       "site": "Ordenar por sitio",
@@ -1756,6 +1766,9 @@
     "selectedOrganization": "la organización seleccionada",
     "subtitle": "Gestiona y monitoriza su flota.",
     "title": "Dispositivos",
+    "hiddenNetworkNotice_one": "1 dispositivo de red oculto — {{fields}} solo aplica a dispositivos con agente.",
+    "hiddenNetworkNotice_other": "{{count}} dispositivos de red ocultos — {{fields}} solo aplica a dispositivos con agente.",
+    "hiddenNetworkNotice": "{{count}} dispositivos de red ocultos — {{fields}} solo aplica a dispositivos con agente.",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
@@ -1786,7 +1799,9 @@
       "maintenanceOff": "Mantenimiento desactivado",
       "maintenanceOn": "Mantenimiento activado",
       "multibootLinked": "Arranque múltiple vinculado",
-      "networkSkipped": "Dispositivos de red {{count}} omitidos: esta acción se aplica solo a los dispositivos del agente.",
+      "networkSkipped_one": "1 dispositivo de red omitido — esta acción solo aplica a dispositivos con agente.",
+      "networkSkipped_other": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
+      "networkSkipped": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
       "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "permanentDeleteCancelled": "Eliminación permanente cancelada",
       "permanentDeleting": "Eliminación permanente",
@@ -2240,7 +2255,7 @@
       "critical": "Crítico",
       "lowDisk": "Disco bajo",
       "needsPatches": "Necesita parches",
-      "notSeen7d": "No visto7d",
+      "notSeen7d": "No visto 7 d",
       "offline": "Desconectado",
       "online": "En línea",
       "rebootNeeded": "Reiniciar necesario",

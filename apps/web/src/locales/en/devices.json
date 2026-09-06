@@ -976,7 +976,15 @@
     "online": "Online"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} agent, {{network}} network",
+    "agentOnlyBulkAction": "Applies to agent devices only",
+    "eligibleOfSelected": "{{count}} of {{total}}",
+    "linkAsVmHost": "Link as VM host + guests",
+    "notApplicable": "Not applicable",
+    "viewDevice": "View {{name}}",
     "tableColumns": {
+      "class": "Class",
+      "type": "Type",
       "device": "Device",
       "organization": "Organization",
       "site": "Site",
@@ -988,6 +996,8 @@
       "lastSeen": "Last Seen"
     },
     "sortBy": {
+      "class": "Sort by class",
+      "type": "Sort by type",
       "device": "Sort by device",
       "organization": "Sort by organization",
       "site": "Sort by site",
@@ -1760,6 +1770,9 @@
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",
+    "hiddenNetworkNotice_one": "1 network device hidden — {{fields}} applies to agent devices only.",
+    "hiddenNetworkNotice_other": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
+    "hiddenNetworkNotice": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
@@ -1791,7 +1804,9 @@
       "maintenanceOff": "Maintenance Off",
       "maintenanceOn": "Maintenance On",
       "multibootLinked": "Multiboot Linked",
-      "networkSkipped": "{{count}} network device(s) skipped — this action applies to agent devices only.",
+      "networkSkipped_one": "1 network device skipped — this action applies to agent devices only.",
+      "networkSkipped_other": "{{count}} network devices skipped — this action applies to agent devices only.",
+      "networkSkipped": "{{count}} network devices skipped — this action applies to agent devices only.",
       "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "permanentDeleteCancelled": "Permanent Delete Cancelled",
       "permanentDeleting": "Permanent Deleting",
@@ -2240,7 +2255,7 @@
       "critical": "Critical",
       "lowDisk": "Low Disk",
       "needsPatches": "Needs Patches",
-      "notSeen7d": "Not Seen7d",
+      "notSeen7d": "Not seen 7d",
       "offline": "Offline",
       "online": "Online",
       "rebootNeeded": "Reboot Needed",

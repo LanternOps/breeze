@@ -976,7 +976,15 @@
     "online": "Online"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} con agente, {{network}} di rete",
+    "agentOnlyBulkAction": "Si applica solo ai dispositivi con agente",
+    "eligibleOfSelected": "{{count}} di {{total}}",
+    "linkAsVmHost": "Collega come host VM + guest",
+    "notApplicable": "Non applicabile",
+    "viewDevice": "Visualizza {{name}}",
     "tableColumns": {
+      "class": "Classe",
+      "type": "Tipo",
       "device": "Dispositivo",
       "organization": "Organizzazione",
       "site": "Sito",
@@ -988,6 +996,8 @@
       "lastSeen": "Ultimo contatto"
     },
     "sortBy": {
+      "class": "Ordina per classe",
+      "type": "Ordina per tipo",
       "device": "Ordina per dispositivo",
       "organization": "Ordina per organizzazione",
       "site": "Ordina per sito",
@@ -1760,6 +1770,9 @@
     "selectedOrganization": "l'organizzazione selezionata",
     "subtitle": "Gestisci e monitora la tua flotta.",
     "title": "Dispositivi",
+    "hiddenNetworkNotice_one": "1 dispositivo di rete nascosto — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNetworkNotice_other": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNetworkNotice": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
@@ -1790,6 +1803,8 @@
       "maintenanceOff": "Manutenzione disattivata",
       "maintenanceOn": "Manutenzione attivata",
       "multibootLinked": "Multiboot collegato",
+      "networkSkipped_one": "1 dispositivo di rete ignorato — questa azione si applica solo ai dispositivi con agente.",
+      "networkSkipped_other": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "networkSkipped": "{{count}} dispositivi di rete ignorati — questa azione si applica solo ai dispositivi con agente.",
       "compareNeedsTwo": "Il confronto richiede almeno 2 dispositivi con agente.",
       "permanentDeleteCancelled": "Eliminazione permanente annullata",

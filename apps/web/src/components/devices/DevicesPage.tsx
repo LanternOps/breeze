@@ -42,6 +42,8 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
+import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNetworkDevices } from './mergedListFilter';
+import { FILTER_FIELDS } from '../filters/filterFields';
 import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -321,24 +323,46 @@ export default function DevicesPage() {
     });
   }, []);
 
-  // Per-segment counts come from the full merged fleet so each segment shows its
-  // true total regardless of which one is active. Gated to the network arm; with
-  // the flag off the segment isn't rendered and these go unused.
-  const deviceClassCounts = useMemo(() => countDevicesByClass(devices), [devices]);
+  // The fleet as the active filters (advanced filter, search, decommissioned
+  // rule) leave it — the SAME predicate DeviceList applies, so the segment
+  // badges below count exactly the rows a segment will render. Class is not
+  // applied here: each badge shows its own class's filtered total.
+  const fleetFilteredDevices = useMemo(
+    () =>
+      devices.filter(d =>
+        matchesMergedListFilters(d, {
+          serverFilterIds: advancedFilterIds,
+          advancedFilter,
+          includeDecommissioned,
+          query: listFilters.search,
+        })
+      ),
+    [devices, advancedFilterIds, advancedFilter, includeDecommissioned, listFilters.search]
+  );
+  const deviceClassCounts = useMemo(() => countDevicesByClass(fleetFilteredDevices), [fleetFilteredDevices]);
   // Narrow the merged list by the chosen class before either view consumes it,
-  // so the list and grid stay in lockstep.
+  // so the list and grid stay in lockstep. DeviceList re-applies the shared
+  // predicate itself (it owns paging and the VPN facet).
   const classFilteredDevices = useMemo(
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
+  // Network rows the active filter hides only because it asks about agent-only
+  // fields (patches, alerts, metrics…). Scoped to the chosen class so the
+  // notice matches what the tech is looking at.
+  const hiddenNetwork = useMemo(
+    () => summarizeHiddenNetworkDevices(classFilteredDevices, advancedFilter),
+    [classFilteredDevices, advancedFilter]
+  );
+  const hiddenNetworkFieldLabels = useMemo(
+    () => hiddenNetwork.fields.map(f => FILTER_FIELDS.find(d => d.key === f)?.label ?? f).join(', '),
+    [hiddenNetwork.fields]
+  );
+  // Grid view: same filtered rows as the table (search included) in the same
+  // default order, instead of the raw fetch concatenation.
   const gridDevices = useMemo(
-    () => {
-      const base = includeDecommissioned
-        ? classFilteredDevices
-        : classFilteredDevices.filter(d => d.status !== 'decommissioned');
-      return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
-    },
-    [classFilteredDevices, advancedFilterIds, includeDecommissioned]
+    () => sortByDisplayName(filterDevicesByClass(fleetFilteredDevices, deviceClassFilter)),
+    [fleetFilteredDevices, deviceClassFilter]
   );
   // How many decommissioned devices the default view is hiding (#2251) — drives
   // the grid view's hint line (the list view computes its own from the same
@@ -1395,11 +1419,18 @@ export default function DevicesPage() {
           both arms; hidden entirely in the agent-only (flag-off) view. Applies
           to both the list and grid (both consume classFilteredDevices). */}
       {ENABLE_NETWORK_DEVICES_IN_LIST && (
-        <DeviceClassSegment
-          value={deviceClassFilter}
-          counts={deviceClassCounts}
-          onChange={handleDeviceClassChange}
-        />
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <DeviceClassSegment
+            value={deviceClassFilter}
+            counts={deviceClassCounts}
+            onChange={handleDeviceClassChange}
+          />
+          {hiddenNetwork.count > 0 && (
+            <p role="status" data-testid="hidden-network-notice" className="text-sm text-muted-foreground">
+              {t('devicesPage.hiddenNetworkNotice', { count: hiddenNetwork.count, fields: hiddenNetworkFieldLabels })}
+            </p>
+          )}
+        </div>
       )}
 
       {bulkProgress && (
@@ -1445,6 +1476,7 @@ export default function DevicesPage() {
           onAction={handleDeviceAction}
           onBulkAction={handleBulkAction}
           serverFilterIds={advancedFilterIds}
+          advancedFilter={advancedFilter}
           serverFilterLoading={advancedFilterLoading}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}

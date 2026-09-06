@@ -976,7 +976,15 @@
     }
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} Agent, {{network}} Netzwerk",
+    "agentOnlyBulkAction": "Gilt nur für Agent-Geräte",
+    "eligibleOfSelected": "{{count}} von {{total}}",
+    "linkAsVmHost": "Als VM-Host + Gäste verknüpfen",
+    "notApplicable": "Nicht zutreffend",
+    "viewDevice": "{{name}} anzeigen",
     "tableColumns": {
+      "class": "Klasse",
+      "type": "Typ",
       "device": "Gerät",
       "organization": "Organisation",
       "site": "Standort",
@@ -988,6 +996,8 @@
       "lastSeen": "Zuletzt gesehen"
     },
     "sortBy": {
+      "class": "Nach Klasse sortieren",
+      "type": "Nach Typ sortieren",
       "device": "Nach Gerät sortieren",
       "organization": "Nach Organisation sortieren",
       "site": "Nach Standort sortieren",
@@ -1756,6 +1766,9 @@
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",
+    "hiddenNetworkNotice_one": "1 Netzwerkgerät ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
+    "hiddenNetworkNotice_other": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
+    "hiddenNetworkNotice": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
@@ -1786,7 +1799,9 @@
       "maintenanceOff": "Wartung aus",
       "maintenanceOn": "Wartung eingeschaltet",
       "multibootLinked": "Multiboot-verknüpft",
-      "networkSkipped": "{{count}} Netzwerkgerät(e) übersprungen – diese Aktion gilt nur für Agent-Geräte.",
+      "networkSkipped_one": "1 Netzwerkgerät übersprungen — diese Aktion gilt nur für Agent-Geräte.",
+      "networkSkipped_other": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
+      "networkSkipped": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "Endgültiges Löschen",
@@ -2240,7 +2255,7 @@
       "critical": "Kritisch",
       "lowDisk": "Wenig Festplattenspeicher",
       "needsPatches": "Benötigt Patches",
-      "notSeen7d": "Nicht gesehen7d",
+      "notSeen7d": "Nicht gesehen 7 T.",
       "offline": "Offline",
       "online": "Online",
       "rebootNeeded": "Neustart erforderlich",

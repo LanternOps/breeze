@@ -328,7 +328,7 @@ export function DeviceFilterToolbar({
           quick-preset chips, and the "+ Add filter" picker. The bar itself owns
           the border + focus ring; everything inside is borderless/chip-light so
           the controls read as one cohesive tool, not three stacked widgets. */}
-      <div className="flex items-center gap-2 rounded-lg border bg-background px-2 py-1.5 transition focus-within:ring-2 focus-within:ring-ring">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-background px-2 py-1.5 transition focus-within:ring-2 focus-within:ring-ring sm:flex-nowrap">
         {/* Device search — borderless, blends into the bar (the one live filter). */}
         <div className="flex w-40 shrink-0 items-center gap-2 sm:w-56">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -348,7 +348,10 @@ export function DeviceFilterToolbar({
         {/* Quick-preset chips — scroll horizontally if they outgrow the row.
             The scrollbar is hidden, so left/right gradient fades are the cue
             that more chips exist off-screen. */}
-        <div className="relative flex min-w-0 flex-1 items-center">
+        {/* On narrow screens the chip strip takes its own full-width row (and
+            sorts last) so it keeps a real scroll port instead of collapsing to
+            zero width beside the search box. */}
+        <div className="relative order-last flex min-w-0 flex-1 basis-full items-center sm:order-none sm:basis-auto">
           <div
             ref={chipsRef}
             data-testid="quick-add-chips"
@@ -365,7 +368,7 @@ export function DeviceFilterToolbar({
                   data-testid={`quick-add-${chip.id}`}
                   aria-pressed={active}
                   onClick={() => togglePreset(chip.condition)}
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
+                  className={`inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors ${
                     active
                       ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
                       : "hover:bg-muted"

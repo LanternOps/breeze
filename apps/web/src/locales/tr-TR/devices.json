@@ -976,7 +976,15 @@
     "online": "Çevrimiçi"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} ajanlı, {{network}} ağ",
+    "agentOnlyBulkAction": "Yalnızca ajanlı cihazlar için geçerlidir",
+    "eligibleOfSelected": "{{count}} / {{total}}",
+    "linkAsVmHost": "VM ana bilgisayarı + konuklar olarak bağla",
+    "notApplicable": "Geçerli değil",
+    "viewDevice": "{{name}} görüntüle",
     "tableColumns": {
+      "class": "Sınıf",
+      "type": "Tür",
       "device": "Cihaz",
       "organization": "Organizasyon",
       "site": "Sitesi",
@@ -988,6 +996,8 @@
       "lastSeen": "Son Görülme"
     },
     "sortBy": {
+      "class": "Sınıfa göre sırala",
+      "type": "Türe göre sırala",
       "device": "Cihaza göre sırala",
       "organization": "Kuruluşa göre sırala",
       "site": "Siteye göre sırala",
@@ -1760,6 +1770,9 @@
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
+    "hiddenNetworkNotice_one": "1 ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
+    "hiddenNetworkNotice_other": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
+    "hiddenNetworkNotice": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
@@ -1791,7 +1804,9 @@
       "maintenanceOff": "Bakım Kapalı",
       "maintenanceOn": "Bakım Açık",
       "multibootLinked": "Çoklu Önyükleme Bağlantılı",
-      "networkSkipped": "{{count}} ağ cihazı/cihazları atlandı — bu eylem yalnızca aracı cihazlar için geçerlidir.",
+      "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
+      "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "Kalıcı Silme",
@@ -2240,7 +2255,7 @@
       "critical": "Kritik",
       "lowDisk": "Düşük Disk",
       "needsPatches": "Yamalara İhtiyaç Var",
-      "notSeen7d": "Görülmedi7d",
+      "notSeen7d": "7 gündür görülmedi",
       "offline": "Çevrimdışı",
       "online": "Çevrimiçi",
       "rebootNeeded": "Yeniden Başlatma Gerekiyor",

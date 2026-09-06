@@ -976,7 +976,15 @@
     }
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} avec agent, {{network}} réseau",
+    "agentOnlyBulkAction": "S’applique uniquement aux appareils avec agent",
+    "eligibleOfSelected": "{{count}} sur {{total}}",
+    "linkAsVmHost": "Lier comme hôte de VM + invités",
+    "notApplicable": "Sans objet",
+    "viewDevice": "Voir {{name}}",
     "tableColumns": {
+      "class": "Classe",
+      "type": "Type",
       "device": "Dispositif",
       "organization": "Organisation",
       "site": "Site",
@@ -988,6 +996,8 @@
       "lastSeen": "Dernière apparition"
     },
     "sortBy": {
+      "class": "Trier par classe",
+      "type": "Trier par type",
       "device": "Trier par appareil",
       "organization": "Trier par organisation",
       "site": "Trier par site",
@@ -1756,6 +1766,9 @@
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
+    "hiddenNetworkNotice_one": "1 appareil réseau masqué — {{fields}} s’applique uniquement aux appareils avec agent.",
+    "hiddenNetworkNotice_other": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
+    "hiddenNetworkNotice": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
@@ -1785,7 +1798,9 @@
       "maintenanceOff": "Maintenance désactivée",
       "maintenanceOn": "Maintenance en marche",
       "multibootLinked": "Multidémarrage associé",
-      "networkSkipped": "{{count}} Périphérique(s) réseau sauté(s) — cette action s’applique uniquement aux dispositifs agent.",
+      "networkSkipped_one": "1 appareil réseau ignoré — cette action s’applique uniquement aux appareils avec agent.",
+      "networkSkipped_other": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
+      "networkSkipped": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
       "permanentDeleting": "Suppression permanente",
