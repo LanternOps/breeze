@@ -65,6 +65,7 @@ import {
 } from '../../db';
 import type { AuthContext } from '../../middleware/auth';
 import {
+  loadPartnerBaselineCeiling,
   loadPartnerBaselineKinds,
   mergeAgentPolicies,
   normalizeAgentPolicy,
@@ -399,6 +400,20 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(mergeAgentPolicies(legacyPartner, orgWithKeys, { allowedModels: null }).effective.actAssets)
       .toEqual({ scriptIds: [], supervisedActionKeys: [] });
   });
+
+  it('toolAllowlist: an org row that scopes what the partner left bare keeps the scoped entries (not ∅)', () => {
+    const partner = policy({ toolAllowlist: ['manage_services', 'run_script'] });
+    const org = policy({ toolAllowlist: ['manage_services:restart', 'run_script'] });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.toolAllowlist)
+      .toEqual(['run_script', 'manage_services:restart']);
+  });
+
+  it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {
+    const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services'] } });
+    const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets.supervisedActionKeys)
+      .toEqual([KEY_A]);
+  });
 });
 
 // Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for anomaly
@@ -611,6 +626,65 @@ describe('loadPartnerBaselineKinds (#4170)', () => {
     const result = await loadPartnerBaselineKinds(PARTNER_ID);
 
     expect(result).toEqual(new Set(['triage']));
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadPartnerBaselineCeiling (Task 4, #5049)', () => {
+  it('returns null without querying when partnerId is null', async () => {
+    const result = await loadPartnerBaselineCeiling(null, 'triage');
+
+    expect(result).toBeNull();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('returns null when no active partner-wide row exists for this kind', async () => {
+    dbMockState.aiAgentRows = [[]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toBeNull();
+  });
+
+  it('projects the toolAllowlist and supervisedActionKeys off the live baseline row', async () => {
+    dbMockState.aiAgentRows = [[{
+      toolAllowlist: ['manage_services', 'run_script:execute'],
+      actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+    }]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({
+      toolAllowlist: ['manage_services', 'run_script:execute'],
+      supervisedActionKeys: ['manage_services:restart'],
+    });
+  });
+
+  it('defaults supervisedActionKeys to empty and toolAllowlist to empty on a bare row', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: null, actAssets: {} }]];
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({ toolAllowlist: [], supervisedActionKeys: [] });
+  });
+
+  it('elevates the read the same way loadPartnerBaselineKinds does', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: [], actAssets: {} }]];
+
+    await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the escalation when already inside a system context', async () => {
+    dbMockState.aiAgentRows = [[{ toolAllowlist: ['manage_services'], actAssets: {} }]];
+    dbMockState.ambientContext = { scope: 'system' };
+
+    const result = await loadPartnerBaselineCeiling(PARTNER_ID, 'triage');
+
+    expect(result).toEqual({ toolAllowlist: ['manage_services'], supervisedActionKeys: [] });
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });

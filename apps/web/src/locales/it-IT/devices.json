@@ -190,6 +190,11 @@
         "message": "Vuoi davvero rimuovere {{hostname}}? Il dispositivo verrà tolto dalla tua flotta attiva e non sarà più monitorato. La cronologia viene conservata e potrai ripristinarlo in seguito.",
         "confirm": "Rimuovi"
       },
+      "permanentDelete": {
+        "title": "Eliminare {{hostname}} definitivamente?",
+        "message": "Questa operazione elimina tutta la cronologia del dispositivo: ticket, avvisi, record di patch e backup. Non è reversibile.",
+        "confirm": "Elimina definitivamente"
+      },
       "clearSessions": {
         "title": "Cancella sessioni",
         "message": "Terminare tutte le sessioni remote attive per {{hostname}}? Verranno disconnessi tutti gli utenti attualmente collegati tramite terminale, desktop o trasferimento file.",
@@ -1894,7 +1899,8 @@
     "unknownDevice": "Sconosciuto",
     "unknownOrg": "Organizzazione sconosciuta",
     "unknownSite": "Sito sconosciuto",
-    "viewInstallationGuide": "Visualizza la guida di installazione"
+    "viewInstallationGuide": "Visualizza la guida di installazione",
+    "importFromRmm": "Importa da un altro RMM"
   },
   "filterAddDropdown": {
     "addFilter": "Aggiungi filtro",
@@ -2425,5 +2431,160 @@
     "failed": "Disinstallazione dell'agent non riuscita",
     "cancelled": "Disinstallazione dell'agent annullata",
     "none": "L'agent è stato lasciato installato"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Importa da un altro RMM",
+    "description": "Trasferisci i campi personalizzati e i loro valori dal tuo RMM precedente.",
+    "close": "Chiudi",
+    "sourceLabel": "Origine",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "CSV generico"
+    },
+    "steps": {
+      "definitions": "Definizioni dei campi",
+      "values": "Valori dei dispositivi"
+    },
+    "backToDefinitions": "Torna alle definizioni dei campi"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Trascina qui un CSV con l'elenco dei campi del fornitore precedente, oppure clicca per selezionarlo",
+    "errors": {
+      "previewFailed": "Impossibile visualizzare l'anteprima di queste definizioni di campo",
+      "importFailed": "Impossibile importare queste definizioni di campo",
+      "allRefused": "Nessuna di queste definizioni di campo è stata importata — vedi gli errori qui sotto"
+    },
+    "ownerScope": {
+      "legend": "A chi appartengono questi campi",
+      "allOrganizations": "Tutte le organizzazioni",
+      "thisOrganizationOnly": "Solo questa organizzazione"
+    },
+    "grid": {
+      "heading": "Trovato {{count}} campo — rinomina e tipizza ciascuno",
+      "heading_other": "Trovati {{count}} campi — rinomina e tipizza ciascuno",
+      "sourceLabel": "Campo di origine",
+      "name": "Nome",
+      "type": "Tipo"
+    },
+    "actions": {
+      "preview": "Anteprima",
+      "previewing": "Anteprima in corso…",
+      "import": "Crea campi",
+      "importing": "Creazione…",
+      "skipToValues": "Salta — continua con i valori"
+    },
+    "preview": {
+      "heading": "Anteprima"
+    },
+    "annotations": {
+      "create": "Verrà creato",
+      "already-exists": "Già esistente",
+      "type-conflict": "Conflitto di tipo",
+      "key-shadowed": "Chiave già usata nell'altro ambito",
+      "org-not-found": "Organizzazione non trovata",
+      "partner-wide-denied": "Non puoi creare campi per tutte le organizzazioni"
+    },
+    "summary": "{{created}} creati, {{skipped}} saltati, {{failed}} falliti"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Trascina qui un CSV con i valori dei dispositivi, oppure clicca per selezionarlo",
+    "errors": {
+      "previewFailed": "Impossibile visualizzare l'anteprima di questi valori",
+      "importFailed": "Impossibile importare questi valori"
+    },
+    "mode": {
+      "label": "Quando un valore è già impostato",
+      "skip": "Lascialo invariato",
+      "update": "Sovrascrivilo"
+    },
+    "dateFormat": {
+      "label": "Formato data",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Sostituisci i dati di garanzia del produttore",
+    "mapping": {
+      "ignore": "Ignora questa colonna",
+      "identifierGroup": "Abbina dispositivo per…",
+      "identifiers": {
+        "deviceId": "ID dispositivo",
+        "externalSystem": "Sistema di origine",
+        "externalId": "ID dispositivo nell'origine",
+        "serialNumber": "Numero di serie",
+        "hostname": "Hostname",
+        "organizationId": "ID organizzazione"
+      },
+      "customField": "Campo personalizzato…",
+      "warrantyGroup": "Garanzia",
+      "warranty": {
+        "warrantyStartDate": "Data di inizio garanzia",
+        "warrantyEndDate": "Data di fine garanzia",
+        "manufacturer": "Produttore"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} riga saltata — nessun identificatore o valore mappato",
+      "droppedRows_other": "{{count}} righe saltate — nessun identificatore o valore mappato"
+    },
+    "actions": {
+      "preview": "Anteprima di {{count}} riga",
+      "preview_other": "Anteprima di {{count}} righe",
+      "previewing": "Anteprima in corso…",
+      "import": "Importa {{count}} riga",
+      "import_other": "Importa {{count}} righe",
+      "importing": "Importazione…"
+    },
+    "chunkedNotice": "Questo file è più grande di una singola richiesta — verrà inviato automaticamente a blocchi.",
+    "progress": "Blocco {{done}} di {{total}}",
+    "summary": "{{applied}} applicati, {{skipped}} saltati, {{failed}} valori falliti",
+    "notAttempted": "{{count}} riga non tentata perché una parte precedente non è riuscita — correggi l'errore qui sotto e riesegui l'importazione per le righe rimanenti",
+    "notAttempted_other": "{{count}} righe non tentate perché una parte precedente non è riuscita — correggi l'errore qui sotto e riesegui l'importazione per le righe rimanenti",
+    "errorRow": "Riga {{index}}",
+    "previewStale": "La mappatura è cambiata da questa anteprima — riesegui l'anteprima prima di importare"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Seleziona tutto",
+    "unresolved": "Non risolto",
+    "columns": {
+      "device": "Dispositivo",
+      "status": "Stato",
+      "values": "Valori"
+    },
+    "rowOutcomes": {
+      "matched": "Abbinato",
+      "linkMatch": "Collegato",
+      "ambiguous": "Ambiguo",
+      "notFound": "Non trovato",
+      "orgNotFound": "Organizzazione non trovata",
+      "identityConflict": "Corrispondenza in conflitto"
+    },
+    "valueOutcomes": {
+      "applied": "Applicato",
+      "skippedAlreadySet": "Già impostato",
+      "skippedProviderOwned": "Gestito dal fornitore",
+      "noDefinition": "Campo inesistente",
+      "typeError": "Errore di tipo",
+      "notApplicable": "Non applicabile a questo dispositivo",
+      "deviceUnresolved": "Dispositivo non risolto"
+    },
+    "hideCandidates": "Nascondi candidati",
+    "showCandidates": "Mostra {{count}} candidato",
+    "showCandidates_other": "Mostra {{count}} candidati",
+    "picked": "Selezionato {{deviceId}}",
+    "candidate": {
+      "serial": "Seriale: {{value}}",
+      "os": "SO: {{value}}",
+      "enrolled": "Registrato: {{value}}",
+      "lastSeen": "Ultimo accesso: {{value}}",
+      "pick": "Seleziona",
+      "picked": "Selezionato"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Data di inizio garanzia",
+      "warrantyEndDate": "Data di fine garanzia",
+      "manufacturer": "Produttore"
+    },
+    "identityConflictNote": "Gli identificatori di questa riga puntano a dispositivi diversi e non possono essere importati così come sono — correggi il file e riesegui l'anteprima. I candidati qui sotto sono mostrati solo come riferimento."
   }
 }

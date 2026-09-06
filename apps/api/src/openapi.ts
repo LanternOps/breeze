@@ -156,6 +156,106 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           }
         }
       },
+      DeviceCustomFieldImportValue: {
+        type: 'object',
+        required: ['target', 'value'],
+        properties: {
+          target: {
+            oneOf: [
+              {
+                type: 'object',
+                required: ['kind', 'fieldKey'],
+                properties: {
+                  kind: { type: 'string', enum: ['customField'] },
+                  fieldKey: { type: 'string', minLength: 1, maxLength: 100 }
+                }
+              },
+              {
+                type: 'object',
+                required: ['kind', 'field'],
+                properties: {
+                  kind: { type: 'string', enum: ['warranty'] },
+                  field: {
+                    type: 'string',
+                    enum: ['warrantyStartDate', 'warrantyEndDate', 'manufacturer'],
+                    description:
+                      'device_warranty columns an import may write. "status" is COMPUTED from the end date and never accepted; '
+                      + '"is_subscription" is never written at all — a true value suppresses expiry alerting and an import cannot know it.'
+                  }
+                }
+              }
+            ]
+          },
+          value: {
+            nullable: true,
+            oneOf: [{ type: 'string', maxLength: 10000 }, { type: 'number' }, { type: 'boolean' }],
+            description: 'null is an explicit clear, not "absent".'
+          }
+        }
+      },
+      DeviceCustomFieldImportRow: {
+        type: 'object',
+        required: ['values'],
+        description:
+          'Every identifier is optional and EVERY supplied one is resolved — a row whose identifiers point at different '
+          + 'devices is refused as identity-conflict rather than letting the first hit win. Resolution order: deviceId, '
+          + '(externalSystem, externalId) via device_external_links, serialNumber, hostname.',
+        properties: {
+          organizationId: { type: 'string', format: 'uuid', nullable: true, description: 'Narrows resolution to one organization. Out of reach ⇒ org-not-found.' },
+          deviceId: { type: 'string', format: 'uuid', nullable: true },
+          externalSystem: { type: 'string', maxLength: 64, nullable: true },
+          externalId: { type: 'string', maxLength: 255, nullable: true, description: 'Recorded as a durable device_external_links row on the first non-link match, so the next run resolves exactly.' },
+          externalSourceInstance: { type: 'string', maxLength: 255, nullable: true, description: 'Reserved; always null today.' },
+          serialNumber: { type: 'string', maxLength: 255, nullable: true },
+          hostname: { type: 'string', maxLength: 255, nullable: true },
+          values: { type: 'array', items: { $ref: '#/components/schemas/DeviceCustomFieldImportValue' } },
+          expectedOutcome: {
+            type: 'string',
+            enum: ['matched', 'link-match', 'ambiguous', 'not-found', 'org-not-found', 'identity-conflict'],
+            description: 'COMMIT only. The row outcome preview returned; the row is rejected "annotation-changed" if it has since moved.'
+          },
+          expectedDeviceId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'COMMIT only. REQUIRED when expectedOutcome is "ambiguous" — pins the acknowledgement to the device the operator picked.'
+          }
+        }
+      },
+      DeviceCustomFieldImportRequest: {
+        type: 'object',
+        required: ['rows'],
+        properties: {
+          partnerId: {
+            type: 'string',
+            format: 'uuid',
+            description: 'System scope only may name a partner other than its own; anyone else supplying a different one gets 403.'
+          },
+          externalSystem: {
+            type: 'string',
+            maxLength: 64,
+            default: 'csv',
+            description: 'Which RMM the file came from. Used for the audit trail when a row does not name its own.'
+          },
+          mode: {
+            type: 'string',
+            enum: ['skip', 'update'],
+            default: 'skip',
+            description: 'What to do with a field that already holds a value. Per VALUE, not per row.'
+          },
+          overrideProviderWarranty: {
+            type: 'boolean',
+            default: false,
+            description: 'Replace warranty rows whose data_source is "provider" (a manufacturer API lookup). Off by default: a vendor answer outranks a CSV.'
+          },
+          rows: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1000,
+            description: 'Capped at 1000 rows AND 5000 total values per request — the row cap alone does not bound the work.',
+            items: { $ref: '#/components/schemas/DeviceCustomFieldImportRow' }
+          }
+        }
+      },
       // Common schemas
       Pagination: {
         type: 'object',
@@ -2707,6 +2807,157 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           },
           '400': { description: 'Invalid input (row cap exceeded, unpinned "already-exists" acknowledgement)' },
           '403': { description: 'Access denied to this partner, or partner-wide rows without full partner org access' },
+        },
+      },
+    },
+
+    // ============================================
+    // DEVICE CUSTOM FIELD VALUE IMPORT (#3257 W08)
+    // ============================================
+    '/devices/custom-fields/import/preview': {
+      post: {
+        operationId: 'previewDeviceCustomFieldImport',
+        tags: ['Devices'],
+        summary: 'Preview a device custom-field value import',
+        description:
+          'Resolve each row to a device and annotate EVERY VALUE on it, without writing anything. '
+          + 'Annotation is per value, not per row: the normal case is a row where most values land, one names a field '
+          + 'this organization has never defined, and one fails type validation. '
+          + 'Requires organization, partner or system scope, devices:write and MFA; JWT only (an X-API-Key caller gets 401).',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DeviceCustomFieldImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Annotated rows',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    rows: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          outcome: {
+                            type: 'string',
+                            enum: ['matched', 'link-match', 'ambiguous', 'not-found', 'org-not-found', 'identity-conflict'],
+                            description:
+                              'How the DEVICE resolved. link-match = an existing device_external_links row (needs no acknowledgement); '
+                              + 'ambiguous = several devices match and the operator must pick one explicitly — the importer never auto-selects; '
+                              + 'identity-conflict = two identifiers each pinned a different device; '
+                              + 'org-not-found = the organization is absent or out of reach (deliberately the same answer for both).',
+                          },
+                          deviceId: { type: 'string', format: 'uuid', nullable: true },
+                          method: { type: 'string', enum: ['id', 'link', 'serial', 'hostname'], nullable: true },
+                          organizationId: { type: 'string', format: 'uuid', nullable: true },
+                          candidates: { type: 'array', items: { type: 'object' }, description: 'Ranked, for ambiguous / identity-conflict. Ranking is presentational and never selects.' },
+                          conflictingMethods: { type: 'array', items: { type: 'string' } },
+                          discardedIdentifiers: { type: 'array', items: { type: 'string' }, description: 'Identifiers the row supplied that carried no information (today: a serial on the agent junk denylist).' },
+                          values: {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                target: { type: 'object' },
+                                outcome: {
+                                  type: 'string',
+                                  enum: ['applied', 'skipped-already-set', 'no-definition', 'type-error', 'not-applicable-to-device', 'device-unresolved'],
+                                  description:
+                                    'skipped-already-set covers both an identical re-import and a differing value the default "skip" mode declines to overwrite; '
+                                    + 'no-definition = run the DEFINITIONS import first; '
+                                    + 'not-applicable-to-device = the definition is scoped to other deviceTypes; '
+                                    + 'device-unresolved = the row itself did not resolve, so no value on it can be judged.',
+                                },
+                                reason: { type: 'string', enum: ['invalid_type', 'out_of_range', 'not_a_choice', 'too_long', 'invalid_date'] },
+                                warning: { type: 'string', description: 'Advisory and orthogonal to outcome — e.g. a key that feeds the device\'s partner-integration stableIdentifiers.' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap or value cap exceeded, unknown mapping target)' },
+          '403': { description: 'Access denied to this partner, MFA required, or missing devices:write' },
+        },
+      },
+    },
+    '/devices/custom-fields/import': {
+      post: {
+        operationId: 'commitDeviceCustomFieldImport',
+        tags: ['Devices'],
+        summary: 'Commit a device custom-field value import',
+        description:
+          'Write the acknowledged values. Device resolution and every value annotation are RE-DERIVED against fresh state '
+          + 'inside the request and never taken from preview: a row whose outcome moved is rejected "annotation-changed", '
+          + 'and an "ambiguous" acknowledgement must pin expectedDeviceId or it is rejected "match-unconfirmed" / "match-changed". '
+          + 'Each row is written in its own transaction — its values, its durable external link and its warranty together — '
+          + 'so a failure rolls back that device alone and later rows still commit. '
+          + 'Always responds 200, even when errors[] is non-empty: a partial import must not read as a total failure.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DeviceCustomFieldImportRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Import summary (may report per-row errors)',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    appliedValues: { type: 'integer', description: 'Counts VALUES, not rows, so the total reconciles against the file.' },
+                    skippedValues: { type: 'integer' },
+                    failedValues: { type: 'integer' },
+                    linksCreated: { type: 'integer' },
+                    rows: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          deviceId: { type: 'string', format: 'uuid' },
+                          organizationId: { type: 'string', format: 'uuid' },
+                          method: { type: 'string', enum: ['id', 'link', 'serial', 'hostname'] },
+                          externalSystem: { type: 'string', nullable: true },
+                          applied: { type: 'integer' },
+                          skipped: { type: 'integer' },
+                          failed: { type: 'integer' },
+                          appliedFieldKeys: { type: 'array', items: { type: 'string' }, description: 'Field KEYS only — a value never enters the audit payload.' },
+                          warranty: { type: 'string', enum: ['applied', 'skipped-provider-owned', 'skipped-already-set', 'none'] },
+                          linkCreated: { type: 'boolean' },
+                        },
+                      },
+                    },
+                    errors: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          index: { type: 'integer' },
+                          error: { type: 'string' },
+                          code: {
+                            type: 'string',
+                            enum: ['org-not-found', 'not-found', 'identity-conflict', 'annotation-changed', 'match-changed', 'match-unconfirmed', 'write-failed'],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid input (row cap or value cap exceeded, unpinned "ambiguous" acknowledgement)' },
+          '403': { description: 'Access denied to this partner, MFA required, or missing devices:write' },
         },
       },
     },

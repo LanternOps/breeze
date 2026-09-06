@@ -554,6 +554,117 @@ export interface AiAgentDto {
 }
 
 /**
+ * Agent tool catalog (spec `2026-09-06-ai-agent-builder-design.md` §4.1). One
+ * operation within a reachable tool's catalog entry: a bare tool (no
+ * discriminator) has exactly one operation with `action: null` whose `key`
+ * equals the tool name; a multi-operation tool has one entry per
+ * discriminator value with `key: '<tool>:<action>'`. `tier`/`readOnly` are
+ * resolved through `checkGuardrails`, never hand-declared — see
+ * `apps/api/src/services/aiAgents/agentToolCatalog.ts`.
+ */
+export interface AgentToolOperationDto {
+  key: string;
+  action: string | null;
+  tier: 1 | 2 | 3;
+  readOnly: boolean;
+  /** `key` is a member of `POLICY_DECIDABLE_TIER3`. */
+  policyDecidable: boolean;
+  /** `key`'s tool (at this action) is one `ACT_MANIFEST` can dispatch unattended. */
+  actEligible: boolean;
+}
+
+/** One agent-reachable tool's catalog entry — `capability` is an `AgentCapabilityId`. */
+export interface AgentToolCatalogToolDto {
+  name: string;
+  capability: string;
+  tier: 1 | 2 | 3;
+  /** True only when every operation on this tool is read-only. */
+  readOnly: boolean;
+  operations: AgentToolOperationDto[];
+}
+
+/** `GET /ai/agents/tool-catalog` response body's `data`. */
+export interface AgentToolCatalogDto {
+  capabilities: { id: string; tone: 'standard' | 'high' }[];
+  tools: AgentToolCatalogToolDto[];
+  presets: Record<AiAgentKind, string[]>;
+  /**
+   * Every registered tool NOT in `tools` — not in `TOOL_TIERS`,
+   * `AGENT_HUMAN_ONLY_TOOLS`, `BLOCKED_TOOLS`, or secret-bearing. Lets the
+   * picker tell a stale allowlist entry that names a real-but-unreachable
+   * tool (`unreachable_tool`) apart from one that never existed
+   * (`unknown_tool`) — see `apps/api/src/services/aiAgents/agentToolCatalog.ts`'s
+   * `listUnreachableRegisteredTools`.
+   */
+  unreachableTools: string[];
+}
+
+/**
+ * `GET /ai/agents/ceiling?kind=` response body's `data` — the partner-wide
+ * baseline's tool ceiling for one `kind`, projected for an org- or
+ * partner-scoped caller. `null` for a system-scope session, a caller with no
+ * `partnerId` at all, or when no live baseline exists for that kind.
+ */
+export interface AgentCeilingDto {
+  toolAllowlist: string[];
+  supervisedActionKeys: string[];
+}
+
+/**
+ * `POST /ai/agents/preview` response body's `data` (Task 11, #5051; spec
+ * §4.6 step 4). Evaluates a DRAFT agent policy through the SAME
+ * `AgentToolCatalogDto` and `AgentCeilingDto` the picker and run loop use, so
+ * the guided create flow's review card can never drift from what
+ * create/update would actually enforce. Built by
+ * `apps/api/src/services/aiAgents/agentPreview.ts`'s `buildAgentPreview` —
+ * pure, no DB read beyond the ceiling the route already resolved.
+ */
+export interface AgentPreviewDto {
+  mode: AiAgentMode;
+  kind: AiAgentKind;
+  /** `catalog.tools.filter(t => t.readOnly).length` — the "always on" reads, independent of `operations` below. */
+  readOnlyToolCount: number;
+  /**
+   * One entry per resolved MUTATING operation the draft's `toolAllowlist`
+   * admits, deduplicated by `key`. A bare entry on a multi-operation tool
+   * expands to every one of that tool's non-read-only operations (its
+   * always-on reads are already counted in `readOnlyToolCount`, not listed
+   * here); an entry the catalog cannot resolve — unknown tool, unreachable
+   * tool, or an action the tool does not have — contributes to
+   * `unrecognised` instead of an operation here.
+   */
+  operations: Array<{
+    key: string;
+    capability: string;
+    /**
+     * `mode === 'act' && op.actEligible` -> `'unattended'`; else tier 3 ->
+     * `'approval_request'`; else (tier 1/2, never selected alone but
+     * reachable via a bare multi-op expansion) -> `'logged_proposal'`.
+     */
+    outcome: 'approval_request' | 'logged_proposal' | 'unattended';
+    /** `key` is inside the intersection of the ceiling's and the draft's own `supervisedActionKeys` (or just the draft's own, on a partner draft with no ceiling). */
+    preauthorized: boolean;
+    /** `true` unconditionally when there is no ceiling (a partner draft, or an org draft with no live partner baseline yet). */
+    withinCeiling: boolean;
+  }>;
+  /** Raw `toolAllowlist` entries the catalog could not resolve, verbatim (never rewritten). */
+  unrecognised: string[];
+  triggers: {
+    alertSeverities: AiAgentTriggers['alertSeverities'];
+    respectMaintenanceWindows: boolean;
+    ticketAutonomousWrites: boolean;
+  };
+  protectedResources: AiAgentProtectedResources;
+  limits: AiAgentLimits;
+  /** `AiAgentPolicy.cooldownSeconds` is a sibling of `limits`, not one of its
+   *  fields — carried through separately so the review card's "six exposed
+   *  limits" (spec §4.6 step 4) can render it alongside the five in `limits`
+   *  without reaching into a differently-shaped policy row. */
+  cooldownSeconds: number;
+  recipients: AiAgentRecipients;
+}
+
+/**
  * Wave 4 Part B — act mode verdicts.
  *
  * `execution` reports the tool dispatch outcome for a manifest-matched call

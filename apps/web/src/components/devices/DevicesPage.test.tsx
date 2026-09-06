@@ -2173,15 +2173,18 @@ describe('DevicesPage — permanent delete toasts success, with no warning branc
 
   async function runPermanentDelete() {
     render(<DevicesPage />);
-    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    // #5023: the kebab only opens the confirm now — the delete and its undo
+    // window start from the dialog.
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
 
     // Only setTimeout is faked, and fake timers must be installed BEFORE the
-    // click — the 5s undo-window timer is scheduled synchronously inside the
-    // click handler, so installing fake timers after the click would leave it
-    // running on the real clock.
+    // confirm — the 5s undo-window timer is scheduled synchronously inside the
+    // handler, so installing fake timers after it would leave it running on
+    // the real clock.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      fireEvent.click(trigger);
+      fireEvent.click(confirmBtn);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000);
       });
@@ -2232,8 +2235,8 @@ describe('DevicesPage — permanent delete toasts success, with no warning branc
     const { showToast } = await import('../shared/Toast');
 
     render(<DevicesPage />);
-    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
-    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    fireEvent.click(await screen.findByTestId('confirm-device-action'));
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(
@@ -2586,5 +2589,174 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
         }),
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5023 — a mutation must re-resolve the SERVER-side advanced filter, not just
+// the device rows.
+//
+// Advanced filters ("Status is Removed") are resolved server-side into an id
+// set by useAdvancedFilterIds and handed to the list/grid as `serverFilterIds`.
+// `fetchDevices()` after a mutation refreshed the ROWS only, so a Restore left
+// the now-non-matching device in that stale id set and it stayed on screen,
+// with a stale count, until a full page reload. Asserting the row disappears
+// alone is not enough — the refreshed rows still carry the restored device, so
+// what has to be pinned is that the id set was re-resolved.
+// ---------------------------------------------------------------------------
+describe('DevicesPage — post-mutation refresh re-resolves the advanced filter (#5023)', () => {
+  /**
+   * Stand in for a "Status is Removed" advanced filter over a removed fleet:
+   * the first resolution matches both devices, every later one matches only
+   * the device that is still removed.
+   */
+  async function removedFilterFleet() {
+    // An earlier describe pins decodeFilterFromHash to null with
+    // mockReturnValue, and vi.clearAllMocks() does not restore an
+    // implementation — re-arm the active filter explicitly rather than
+    // depending on suite order.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
+
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+
+    const state = { previewCalls: 0 };
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        state.previewCalls += 1;
+        const deviceIds = state.previewCalls === 1 ? [DEV_1, DEV_3] : [DEV_3];
+        return jsonResponse({
+          data: { totalCount: deviceIds.length, deviceIds, evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+    return state;
+  }
+
+  async function renderAndSettle(state: { previewCalls: number }) {
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() =>
+      expect(list.getAttribute('data-filter-ids')).toBe([DEV_1, DEV_3].sort().join(',')),
+    );
+    expect(state.previewCalls).toBe(1);
+  }
+
+  const filterIds = () => screen.getByTestId('device-list').getAttribute('data-filter-ids');
+
+  it('single Restore drops the restored device from the resolved id set', async () => {
+    const { restoreDevice } = await import('../../services/deviceActions');
+    vi.mocked(restoreDevice).mockResolvedValue({ success: true } as never);
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+
+  it('bulk Restore re-resolves the id set too', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [],
+    });
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() => expect(vi.mocked(bulkRestoreDevices)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5023 — single "Delete permanently" is gated like every other destructive
+// action.
+//
+// Bulk purge has always demanded a typed device count (BulkPurgeDialog), but
+// the row/card kebab's single Delete permanently went straight to the 5s undo
+// toast. Same irreversible operation, one accidental click away in a dense
+// list — and unlike Remove there is nothing to restore afterwards.
+// ---------------------------------------------------------------------------
+describe('DevicesPage — single permanent delete asks first (#5023)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
+    } as never);
+  });
+
+  it('opens a purge-framed confirm dialog instead of deleting immediately', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+
+    expect(await screen.findByText('Delete host-alpha permanently?')).toBeTruthy();
+    // The copy has to say what is actually destroyed — "are you sure?" would
+    // read as the (reversible) Remove the operator already knows.
+    expect(
+      screen.getByText(/deletes all history for this device/i),
+    ).toBeTruthy();
+
+    const confirmBtn = screen.getByTestId('confirm-device-action');
+    expect(confirmBtn.textContent).toBe('Delete permanently');
+    // Irreversible: the stop-octagon variant, not the caution triangle.
+    expect(confirmBtn.className).toContain('bg-destructive');
+
+    // Nothing has been queued — not even the undo toast, which is the point:
+    // the gate must precede the timer, not race it.
+    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(vi.mocked(showToast).mock.calls.some(([toast]) => toast.type === 'undo')).toBe(false);
+  });
+
+  it('cancelling deletes nothing', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    await screen.findByTestId('confirm-device-action');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-device-action')).toBeNull());
+    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+  });
+
+  it('confirming still deletes, undo window and all', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
+
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      // The confirm replaces the click as the trigger; the undo window it
+      // starts is kept, so a mis-confirm is still recoverable for 5s.
+      expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(vi.mocked(permanentDeleteDevice)).toHaveBeenCalledWith(DEV_1);
   });
 });

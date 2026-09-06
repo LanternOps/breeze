@@ -666,6 +666,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Elimina definitivamente i dispositivi rimossi",
+        "offKeepRemovedDevicesUntilDeletedManually": "Disattivato: i dispositivi rimossi vengono conservati finché non vengono eliminati manualmente.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "I dispositivi rimossi vengono eliminati definitivamente {{days}} giorni dopo la rimozione.",
+        "permanentlyDeleteRemovedDevicesAfter": "Elimina definitivamente i dispositivi rimossi dopo",
+        "days": "giorni",
+        "enterAWholeNumberOfDaysBetween": "Inserisci un numero intero di giorni compreso tra 1 e 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "L'eliminazione è irreversibile e distrugge lo storico",
+        "aDailyJobPermanentlyDeletesTheDevice": "Un processo giornaliero elimina definitivamente il record del dispositivo e tutto ciò che vi è collegato: avvisi, script, patch, log e inventario. I dispositivi con una disinstallazione dell'agente ancora in coda vengono saltati finché non viene completata. Vince il criterio più vicino, quindi un'organizzazione può disattivare questa opzione per escludersi da una finestra valida per tutte le organizzazioni."
+      },
       "eventLogTab": {
         "security": "Sicurezza",
         "hardware": "Hardware",

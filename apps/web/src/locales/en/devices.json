@@ -194,6 +194,11 @@
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
       },
+      "permanentDelete": {
+        "title": "Delete {{hostname}} permanently?",
+        "message": "This deletes all history for this device — tickets, alerts, patch and backup records. It cannot be undone.",
+        "confirm": "Delete permanently"
+      },
       "clearSessions": {
         "title": "Clear Sessions",
         "message": "End all active remote sessions for {{hostname}}? This will disconnect any users currently connected via terminal, desktop, or file transfer.",
@@ -1802,6 +1807,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
+    "importFromRmm": "Import from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",
@@ -2425,5 +2431,160 @@
     "failed": "Agent uninstall failed",
     "cancelled": "Agent uninstall cancelled",
     "none": "Agent was left installed"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Import from another RMM",
+    "description": "Bring custom fields and their values over from your previous RMM.",
+    "close": "Close",
+    "sourceLabel": "Source",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Generic CSV"
+    },
+    "steps": {
+      "definitions": "Field definitions",
+      "values": "Device values"
+    },
+    "backToDefinitions": "Back to field definitions"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Drop a CSV of your incumbent's field list here, or click to browse",
+    "errors": {
+      "previewFailed": "Couldn't preview these field definitions",
+      "importFailed": "Couldn't import these field definitions",
+      "allRefused": "None of these field definitions could be imported — see the errors below"
+    },
+    "ownerScope": {
+      "legend": "Who owns these fields",
+      "allOrganizations": "All organizations",
+      "thisOrganizationOnly": "This organization only"
+    },
+    "grid": {
+      "heading": "{{count}} field found — rename and type each one",
+      "heading_other": "{{count}} fields found — rename and type each one",
+      "sourceLabel": "Source field",
+      "name": "Name",
+      "type": "Type"
+    },
+    "actions": {
+      "preview": "Preview",
+      "previewing": "Previewing…",
+      "import": "Create fields",
+      "importing": "Creating…",
+      "skipToValues": "Skip — continue to values"
+    },
+    "preview": {
+      "heading": "Preview"
+    },
+    "annotations": {
+      "create": "Will be created",
+      "already-exists": "Already exists",
+      "type-conflict": "Type conflict",
+      "key-shadowed": "Key already used on the other scope",
+      "org-not-found": "Organization not found",
+      "partner-wide-denied": "You can't create all-organizations fields"
+    },
+    "summary": "Created {{created}}, skipped {{skipped}}, failed {{failed}}"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Drop a CSV of device values here, or click to browse",
+    "errors": {
+      "previewFailed": "Couldn't preview these values",
+      "importFailed": "Couldn't import these values"
+    },
+    "mode": {
+      "label": "When a value is already set",
+      "skip": "Leave it alone",
+      "update": "Overwrite it"
+    },
+    "dateFormat": {
+      "label": "Date format",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Override manufacturer-provided warranty data",
+    "mapping": {
+      "ignore": "Ignore this column",
+      "identifierGroup": "Match device by…",
+      "identifiers": {
+        "deviceId": "Device ID",
+        "externalSystem": "Source system",
+        "externalId": "Source device ID",
+        "serialNumber": "Serial number",
+        "hostname": "Hostname",
+        "organizationId": "Organization ID"
+      },
+      "customField": "Custom field…",
+      "warrantyGroup": "Warranty",
+      "warranty": {
+        "warrantyStartDate": "Warranty start date",
+        "warrantyEndDate": "Warranty end date",
+        "manufacturer": "Manufacturer"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} row skipped — no identifier or value mapped",
+      "droppedRows_other": "{{count}} rows skipped — no identifier or value mapped"
+    },
+    "actions": {
+      "preview": "Preview {{count}} row",
+      "preview_other": "Preview {{count}} rows",
+      "previewing": "Previewing…",
+      "import": "Import {{count}} row",
+      "import_other": "Import {{count}} rows",
+      "importing": "Importing…"
+    },
+    "chunkedNotice": "This file is larger than one request — it will be sent in chunks automatically.",
+    "progress": "Chunk {{done}} of {{total}}",
+    "summary": "Applied {{applied}}, skipped {{skipped}}, failed {{failed}} values",
+    "notAttempted": "{{count}} row was not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "notAttempted_other": "{{count}} rows were not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "errorRow": "Row {{index}}",
+    "previewStale": "The mapping changed since this preview — re-run preview before importing"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Select all",
+    "unresolved": "Unresolved",
+    "columns": {
+      "device": "Device",
+      "status": "Status",
+      "values": "Values"
+    },
+    "rowOutcomes": {
+      "matched": "Matched",
+      "linkMatch": "Linked",
+      "ambiguous": "Ambiguous",
+      "notFound": "Not found",
+      "orgNotFound": "Organization not found",
+      "identityConflict": "Conflicting match"
+    },
+    "valueOutcomes": {
+      "applied": "Applied",
+      "skippedAlreadySet": "Already set",
+      "skippedProviderOwned": "Provider-owned",
+      "noDefinition": "No such field",
+      "typeError": "Type error",
+      "notApplicable": "Not applicable to this device",
+      "deviceUnresolved": "Device unresolved"
+    },
+    "hideCandidates": "Hide candidates",
+    "showCandidates": "Show {{count}} candidate",
+    "showCandidates_other": "Show {{count}} candidates",
+    "identityConflictNote": "This row's identifiers point at different devices and cannot be imported as-is — correct the file and re-run preview. The candidates below are shown for reference only.",
+    "picked": "Picked {{deviceId}}",
+    "candidate": {
+      "serial": "Serial: {{value}}",
+      "os": "OS: {{value}}",
+      "enrolled": "Enrolled: {{value}}",
+      "lastSeen": "Last seen: {{value}}",
+      "pick": "Pick",
+      "picked": "Picked"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Warranty start date",
+      "warrantyEndDate": "Warranty end date",
+      "manufacturer": "Manufacturer"
+    }
   }
 }

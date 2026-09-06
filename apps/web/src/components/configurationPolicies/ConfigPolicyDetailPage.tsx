@@ -23,6 +23,7 @@ import {
   ListChecks,
   Cloud,
   Info,
+  Trash2,
 } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ import HelperTab from './featureTabs/HelperTab';
 import RemoteAccessTab from './featureTabs/RemoteAccessTab';
 import PamTab from './featureTabs/PamTab';
 import VulnerabilityTab from './featureTabs/VulnerabilityTab';
+import DeviceLifecycleTab from './featureTabs/DeviceLifecycleTab';
 import OneDriveHelperTab from './featureTabs/OneDriveHelperTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 
@@ -117,6 +119,7 @@ const featureTabIcons: Record<FeatureType, React.ReactNode> = {
   remote_access: <Monitor className="h-4 w-4" />,
   pam: <KeyRound className="h-4 w-4" />,
   vulnerability: <ShieldAlert className="h-4 w-4" />,
+  device_lifecycle: <Trash2 className="h-4 w-4" />,
   onedrive_helper: <Cloud className="h-4 w-4" />,
 };
 // Which feature tabs the editor renders, in display order. Derived from
@@ -449,6 +452,7 @@ export default function ConfigPolicyDetailPage({
       case 'remote_access': return <RemoteAccessTab {...props} />;
       case 'pam': return <PamTab {...props} />;
       case 'vulnerability': return <VulnerabilityTab {...props} />;
+      case 'device_lifecycle': return <DeviceLifecycleTab {...props} />;
       case 'onedrive_helper': return <OneDriveHelperTab {...props} />;
     }
   };

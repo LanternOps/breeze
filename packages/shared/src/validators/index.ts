@@ -35,6 +35,7 @@ export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
 export * from './psa';
 export * from './deviceRoles';
+export * from './customFieldImport';
 
 // ============================================
 // Device Roles
@@ -588,8 +589,35 @@ export const configFeatureInlineSettingsSchema = z
     }
   });
 
+/**
+ * `device_lifecycle` inline settings (#2787 item 4): "permanently delete
+ * removed devices N days after removal".
+ *
+ * Pure JSONB (Pattern B) — no normalized table, same posture as pam /
+ * vulnerability. `.strict()` so an unknown key is rejected rather than
+ * persisted-and-echoed as if it took effect.
+ *
+ * `purgeRemovedAfterDays` is deliberately THREE-valued:
+ *   - absent   → the policy exists but says nothing; nothing is purged.
+ *   - null     → explicitly off. Meaningful in its own right: an org-level
+ *                link with null OVERRIDES a partner-wide window, which is how
+ *                one customer opts out of an MSP-wide retention rule.
+ *   - 1..3650  → the retention window in days.
+ *
+ * The floor is 1, not 0: this setting drives an IRREVERSIBLE delete, so
+ * "purge immediately" must not be expressible by a stray zero. The ceiling is
+ * ten years, past which the feature is indistinguishable from "off".
+ */
+export const deviceLifecycleInlineSettingsSchema = z
+  .object({
+    purgeRemovedAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
+  })
+  .strict();
+
+export type DeviceLifecycleInlineSettings = z.infer<typeof deviceLifecycleInlineSettingsSchema>;
+
 export const addFeatureLinkSchema = z.object({
-  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability']),
+  featureType: z.enum(['patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance', 'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data', 'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability', 'device_lifecycle']),
   featurePolicyId: z.string().guid().optional(),
   inlineSettings: configFeatureInlineSettingsSchema.optional(),
 }).refine(

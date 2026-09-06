@@ -71,6 +71,41 @@ export class InvalidSupervisedActionKeysError extends Error {
 }
 
 /**
+ * Spec §4.4. A pre-authorized key goes live on an ORG row only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, a direct `.update(aiAgents)`
+ * under an advisory lock) — never through create/update, no matter how the
+ * caller got here. `rejected` names exactly which keys the write tried to
+ * add so the client can render an actionable message rather than a bare 422.
+ */
+export class SupervisedKeysGrantOnlyError extends Error {
+  readonly code = 'supervised_keys_grant_only';
+
+  constructor(public rejected: Array<{ key: string; reason: 'grant_only' }>) {
+    super(`supervised_keys_grant_only: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'SupervisedKeysGrantOnlyError';
+  }
+}
+
+/**
+ * Spec §4.4: on an ORG row a pre-authorized key goes live only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, direct UPDATE under an
+ * advisory lock) — never through create/update. Removals stay open so manual
+ * revoke and auto-demotion keep working. Partner rows are the CEILING and are
+ * edited directly, so this is a no-op for them.
+ */
+export function assertOrgRowSupervisedKeysGrantOnly(
+  owner: AgentOwner,
+  existing: readonly string[],
+  next: readonly string[] | undefined,
+): void {
+  if (next === undefined || owner.orgId === null) return;
+  const added = next.filter((key) => !existing.includes(key));
+  if (added.length > 0) {
+    throw new SupervisedKeysGrantOnlyError(added.map((key) => ({ key, reason: 'grant_only' as const })));
+  }
+}
+
+/**
  * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
  * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
  * at least one recipient that currently resolves to a real user (an
@@ -530,6 +565,11 @@ export async function createAgent(
   // reason as recipients above — a rejected key must never be persisted.
   assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
 
+  // Spec §4.4: a brand-new ORG row starts with no granted keys, so any create
+  // that supplies a non-empty supervisedActionKeys is trying to add one —
+  // grant-only, refused here regardless of value-validity above.
+  assertOrgRowSupervisedKeysGrantOnly(owner, [], input.actAssets.supervisedActionKeys);
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -618,6 +658,15 @@ export async function updateAgent(
     // the merged/stored value — see assertSupervisedActionKeysValid's doc.
     if (input.actAssets?.supervisedActionKeys !== undefined) {
       assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+      // Spec §4.4: same grant-only rule as createAgent — a patch may keep or
+      // remove an ORG row's already-granted keys, but adding one outside the
+      // four-eyes grant executor is refused before the UPDATE runs.
+      assertOrgRowSupervisedKeysGrantOnly(
+        owner,
+        stored.actAssets.supervisedActionKeys ?? [],
+        input.actAssets.supervisedActionKeys,
+      );
     }
 
     // Task 6 (#3826): prerequisites are checked against what the update will

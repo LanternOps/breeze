@@ -67,6 +67,10 @@ const TARGET_GLOBS = [
   // an unreported failure on the surface that governs autonomous agents.
   'src/components/settings/AiAgentsPage.tsx',
   'src/components/settings/AiAgentForm.tsx',
+  // Task 13 (#5051): the guided create flow's own POST /ai/agents — the same
+  // surface AiAgentForm.tsx's create path already guards, just reached
+  // through the four-step flow instead of the drawer.
+  'src/components/settings/aiAgents/AgentCreateFlow.tsx',
   // Sweep schedules (P2-2, #4189): the section writes partner-wide baselines
   // and per-org overrides that decide what runs against customer machines on a
   // cron, unattended. A silent create/update/delete here is invisible until the
@@ -259,6 +263,13 @@ const TARGET_GLOBS = [
   // lives inside this component (it has no owning page-level fetch layer),
   // so it needs the same guard as the scripts-side files above.
   'src/components/automations/AutomationRunHistory.tsx',
+  // #3257: the RMM custom-field importer. Every preview and commit POST is a
+  // multi-tenant write of customer data with a partial-success body — exactly
+  // the class this guard exists for, and the class where a silent failure
+  // looks identical to "nothing matched".
+  'src/components/devices/RmmCustomFieldImport.tsx',
+  'src/components/devices/CustomFieldDefinitionImportStep.tsx',
+  'src/components/devices/CustomFieldValueImportStep.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -575,9 +586,10 @@ describe('no silent mutations in targeted set', () => {
     // more (AssignmentsTab.tsx) to reach 115. A prior commit added 3 more
     // (#4767 — ExecutionHistory.tsx, ExecutionDetails.tsx,
     // ScriptExecutionsPage.tsx) to reach 118. This commit adds 1 more
-    // (AutomationRunHistory.tsx), so the count is now 119 — bump it
+    // (AutomationRunHistory.tsx), so the count was 119. Task 13 (#5051) adds
+    // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
     // deliberately on every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(119);
+    expect(absoluteFiles.length).toBe(123);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
