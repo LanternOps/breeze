@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
-    "show": "göster"
+    "show": "göster",
+    "shownLabel": "{{count}} kaldırılmış gösteriliyor",
+    "hide": "gizle"
   },
   "deviceActions": {
     "unavailable": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Bakımı Devre Dışı Bırak",
     "wakeSelected": "Uyandırma Seçilen",
     "compareSelected": "Seçilenleri Karşılaştır",
+    "compareMaxDevices": "Karşılaştırma en fazla {{count}} cihazı destekler",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
     "decommissionSelected": "Seçilenleri Çıkar",
     "restoreSelected": "Seçilenleri Geri Yükle",

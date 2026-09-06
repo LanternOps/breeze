@@ -91,6 +91,10 @@ import {
 import { groupLinkedDevices } from "./linkedDevices";
 import { useOrgStore } from "@/stores/orgStore";
 import DecommissionedHiddenHint from "./DecommissionedHiddenHint";
+
+// DeviceCompare's selection limit (see DeviceCompare.tsx). Kept here so the
+// bulk menu can explain the cap instead of silently dropping the item.
+const COMPARE_MAX_DEVICES = 4;
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
@@ -359,6 +363,12 @@ type DeviceListProps = {
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  /**
+   * Offered only while the rows are visible via the page-level showRemoved
+   * flag (not via an explicit Decommissioned status filter, where hiding
+   * would be a no-op) — renders the "N removed shown — hide" line (#5023).
+   */
+  onHideDecommissioned?: () => void;
   // Applies the Decommissioned status filter upstream (#2251) — the existing
   // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
   // tests) the "N decommissioned hidden — show" hint is not rendered.
@@ -599,6 +609,7 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onHideDecommissioned,
   onShowDecommissioned,
   serverFilterIds = null,
   serverFilterLoading = false,
@@ -777,17 +788,15 @@ export default function DeviceList({
     setCurrentPage(1);
   }, [query, classFilter, vpnFilter, serverFilterIds]);
 
-  const filteredDevices = useMemo(() => {
+  // Every filter EXCEPT the hidden-by-default decommissioned rule. Split out
+  // so the removed-hint counts (#2251/#5023) can be taken from the rows the
+  // tech's filters would actually let through — a decommissioned device the
+  // server filter or search already excludes is not "hidden by default" and
+  // must not be counted as showable.
+  const matchingDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter((device) => {
-      // Hide decommissioned by default — preserves the old list's hygiene
-      // (status='all' implicitly excluded them). Filtering FOR decommissioned
-      // via a status chip flips includeDecommissioned true upstream.
-      if (!includeDecommissioned && device.status === "decommissioned") {
-        return false;
-      }
-
       // Apply server-side advanced filter (status/os/role/org/site/group/… all
       // resolve through this id set now — they are no longer client-side).
       if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
@@ -818,23 +827,35 @@ export default function DeviceList({
 
       return matchesClass && matchesVpn && matchesQuery;
     });
-  }, [
-    devices,
-    query,
-    classFilter,
-    vpnFilter,
-    serverFilterIds,
-    includeDecommissioned,
-  ]);
+  }, [devices, query, classFilter, vpnFilter, serverFilterIds]);
 
-  // How many decommissioned devices the default view is hiding (#2251). Zero
-  // when they're already visible (includeDecommissioned) so the hint and the
-  // count math below stay consistent with what the table actually shows.
-  const hiddenDecommissionedCount = useMemo(
+  // Hide decommissioned by default — preserves the old list's hygiene
+  // (status='all' implicitly excluded them). Filtering FOR decommissioned via
+  // a status chip, or "show" on the hint, flips includeDecommissioned upstream.
+  const filteredDevices = useMemo(
     () =>
       includeDecommissioned
-        ? 0
-        : devices.filter(d => d.status === 'decommissioned').length,
+        ? matchingDevices
+        : matchingDevices.filter((d) => d.status !== "decommissioned"),
+    [matchingDevices, includeDecommissioned]
+  );
+
+  // Removed devices the current filters would let through (#2251/#5023) —
+  // the ones "show" can actually reveal / "hide" actually removes. Zero on
+  // the hidden side once they're visible (and vice versa) so the hint and
+  // the count line stay consistent with what the table actually shows.
+  const decommissionedCount = useMemo(
+    () => matchingDevices.filter((d) => d.status === "decommissioned").length,
+    [matchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  // Count-line denominator: the fleet minus every decommissioned row while
+  // they're hidden (regardless of whether the filters would admit them).
+  const countLineTotal = useMemo(
+    () =>
+      includeDecommissioned
+        ? devices.length
+        : devices.filter((d) => d.status !== "decommissioned").length,
     [devices, includeDecommissioned]
   );
 
@@ -1925,13 +1946,34 @@ export default function DeviceList({
     },
   };
 
+  // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
+  // so above that the item renders disabled with the cap as its label + title
+  // instead of disappearing (#5023 paper cut). Shared by the active and the
+  // all-removed branches of the menu.
+  const renderCompareItem = () => {
+    const overCap = selectedIds.size > COMPARE_MAX_DEVICES;
+    const capLabel = t("deviceList.compareMaxDevices", { count: COMPARE_MAX_DEVICES });
+    return (
+      <button
+        type="button"
+        data-testid="bulk-compare"
+        disabled={overCap}
+        title={overCap ? capLabel : undefined}
+        onClick={() => handleBulkAction("compare")}
+        className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        {overCap ? capLabel : t("deviceList.compareSelected")}
+      </button>
+    );
+  };
+
   return (
     <div>
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             {filteredDevices.length} {t("deviceList.of")}{" "}
-            {devices.length - hiddenDecommissionedCount}{" "}
+            {countLineTotal}{" "}
             {t("deviceList.devices")}{" "}
             {serverFilterError ? (
               <span
@@ -1958,6 +2000,15 @@ export default function DeviceList({
                 <DecommissionedHiddenHint
                   count={hiddenDecommissionedCount}
                   onShow={onShowDecommissioned}
+                />
+              </span>
+            )}
+            {onHideDecommissioned && includeDecommissioned && decommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  mode="shown"
+                  count={decommissionedCount}
+                  onHide={onHideDecommissioned}
                 />
               </span>
             )}
@@ -2200,18 +2251,10 @@ export default function DeviceList({
                 >
                   {t("deviceList.wakeSelected")}{" "}
                 </button>
-                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
-                    so the item only shows for a 2-4 selection. */}
-                {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                  <button
-                    type="button"
-                    data-testid="bulk-compare"
-                    onClick={() => handleBulkAction("compare")}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                  >
-                    {t("deviceList.compareSelected")}{" "}
-                  </button>
-                )}
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit).
+                    Above the cap the item stays put but disabled with the cap
+                    spelled out — it used to vanish silently (#5023). */}
+                {selectedIds.size >= 2 && renderCompareItem()}
                 {selectedIds.size >= 2 && (
                   <button
                     type="button"
@@ -2256,16 +2299,7 @@ export default function DeviceList({
                     {/* Same 2-4 cap as the active branch — DeviceCompare's own
                         selection limit. A removed device is a legitimate (if
                         approximate) comparison subject. */}
-                    {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                      <button
-                        type="button"
-                        data-testid="bulk-compare"
-                        onClick={() => handleBulkAction("compare")}
-                        className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                      >
-                        {t("deviceList.compareSelected")}
-                      </button>
-                    )}
+                    {selectedIds.size >= 2 && renderCompareItem()}
                     <hr className="my-1" />
                     <button
                       type="button"

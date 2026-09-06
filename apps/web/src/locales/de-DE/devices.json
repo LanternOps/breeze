@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} Entfernte ausgeblendet",
-    "show": "anzeigen"
+    "show": "anzeigen",
+    "shownLabel": "{{count}} entfernte angezeigt",
+    "hide": "ausblenden"
   },
   "deviceActions": {
     "unavailable": {
@@ -1142,6 +1144,7 @@
     "disableMaintenance": "Wartungsmodus deaktivieren",
     "wakeSelected": "Ausgewählte Geräte aufwecken",
     "compareSelected": "Ausgewählte vergleichen",
+    "compareMaxDevices": "Vergleich unterstützt bis zu {{count}} Geräte",
     "linkAsMultiBoot": "Link als Multiboot",
     "decommissionSelected": "Auswahl entfernen",
     "restoreSelected": "Auswahl wiederherstellen",

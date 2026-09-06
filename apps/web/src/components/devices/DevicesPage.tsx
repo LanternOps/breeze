@@ -4,7 +4,7 @@ import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
+import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
 import DeviceCard from './DeviceCard';
@@ -336,10 +336,17 @@ export default function DevicesPage() {
   // set into DeviceList, which combines it with its local quick-filters
   // (search/status/os/etc. stay list-only).
   //
-  // Decommissioned devices are hidden by default (old list behavior). Show them
-  // only when the active filter group explicitly targets the 'decommissioned'
-  // status, so a user filtering FOR decommissioned still sees them.
-  const includeDecommissioned = useMemo(() => {
+  // Decommissioned devices are hidden by default (old list behavior). They
+  // become visible in two ways: the active filter group explicitly targets
+  // the 'decommissioned' status (a user filtering FOR removed devices still
+  // sees them), or the tech clicked "show" on the hidden-removed hint, which
+  // flips the page-level showRemoved flag. The flag ADDS the removed rows to
+  // whatever is on screen — it does not touch the advanced filter (#5023
+  // paper cut: "show" used to swap the view to a removed-only status filter,
+  // dropping every active device the tech was looking at). Transient session
+  // state on purpose: a reload returns to the hidden-by-default view.
+  const [showRemoved, setShowRemoved] = useState(false);
+  const filterTargetsDecommissioned = useMemo(() => {
     const conds = advancedFilter?.conditions ?? [];
     return conds.some(c => {
       if ('conditions' in c) return false; // nested groups: ignore (rare)
@@ -349,30 +356,14 @@ export default function DevicesPage() {
         : c.value === 'decommissioned';
     });
   }, [advancedFilter]);
+  const includeDecommissioned = showRemoved || filterTargetsDecommissioned;
 
-  // "Show" action for the hidden-decommissioned hint (#2251): applies the
-  // Decommissioned status filter — the same unhide mechanism the toolbar's
-  // status picker uses — replacing any other status equals/in value. Same
-  // single-select-per-field semantics as DeviceFilterToolbar's addCondition
-  // (independent implementation; chip order may differ — the replacement is
-  // appended rather than placed in the replaced condition's slot). Other
-  // filter conditions are preserved. If the current group is an OR sentence
-  // built in the Advanced drawer, nest it instead of rewriting it so its
-  // meaning is kept and the status condition stays top-level (where the
-  // includeDecommissioned memo looks); the AND intersection can be empty if
-  // the OR sentence itself constrains status — the rows still unhide, but
-  // zero of them may match.
-  const handleShowDecommissioned = useCallback(() => {
-    setAdvancedFilter(prev => {
-      const statusCond: FilterCondition = { field: 'status', operator: 'equals', value: 'decommissioned' };
-      if (!prev) return { operator: 'AND', conditions: [statusCond] };
-      if (prev.operator === 'OR') return { operator: 'AND', conditions: [prev, statusCond] };
-      const rest = prev.conditions.filter(
-        c => 'conditions' in c || c.field !== 'status' || (c.operator !== 'equals' && c.operator !== 'in')
-      );
-      return { operator: 'AND', conditions: [...rest, statusCond] };
-    });
-  }, []);
+  const handleShowDecommissioned = useCallback(() => setShowRemoved(true), []);
+  const handleHideDecommissioned = useCallback(() => setShowRemoved(false), []);
+  // "hide" is only meaningful while the flag (not an explicit status filter)
+  // is what unhid the rows; otherwise clicking it would visibly do nothing.
+  const onHideDecommissioned =
+    showRemoved && !filterTargetsDecommissioned ? handleHideDecommissioned : undefined;
 
   // Per-segment counts come from the full merged fleet so each segment shows its
   // true total regardless of which one is active. Gated to the network arm; with
@@ -384,26 +375,33 @@ export default function DevicesPage() {
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
-  const gridDevices = useMemo(
-    () => {
-      const base = includeDecommissioned
+  // Rows the advanced filter admits, before the hidden-by-default
+  // decommissioned rule — the removed-hint counts come from this set so they
+  // only promise rows "show" can actually reveal (#2251/#5023).
+  const gridMatchingDevices = useMemo(
+    () =>
+      advancedFilterIds === null
         ? classFilteredDevices
-        : classFilteredDevices.filter(d => d.status !== 'decommissioned');
-      return advancedFilterIds === null ? base : base.filter(d => advancedFilterIds.has(d.id));
-    },
-    [classFilteredDevices, advancedFilterIds, includeDecommissioned]
+        : classFilteredDevices.filter(d => advancedFilterIds.has(d.id)),
+    [classFilteredDevices, advancedFilterIds]
   );
-  // How many decommissioned devices the default view is hiding (#2251) — drives
-  // the grid view's hint line (the list view computes its own from the same
-  // classFilteredDevices set, so the two stay in lockstep). The page fetches
-  // with includeDecommissioned: true, so this is a cheap client-side count.
-  const hiddenDecommissionedCount = useMemo(
+  const gridDevices = useMemo(
     () =>
       includeDecommissioned
-        ? 0
-        : classFilteredDevices.filter(d => d.status === 'decommissioned').length,
-    [classFilteredDevices, includeDecommissioned]
+        ? gridMatchingDevices
+        : gridMatchingDevices.filter(d => d.status !== 'decommissioned'),
+    [gridMatchingDevices, includeDecommissioned]
   );
+  // How many decommissioned devices the grid is hiding / showing (#2251) —
+  // drives the grid view's hint line (the list view computes its own from the
+  // same inputs, so the two stay in lockstep). The page fetches with
+  // includeDecommissioned: true, so this is a cheap client-side count.
+  const decommissionedCount = useMemo(
+    () => gridMatchingDevices.filter(d => d.status === 'decommissioned').length,
+    [gridMatchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  const shownDecommissionedCount = includeDecommissioned ? decommissionedCount : 0;
 
   const fetchDevices = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -1813,6 +1811,7 @@ export default function DevicesPage() {
           serverFilterError={advancedFilterError}
           includeDecommissioned={includeDecommissioned}
           onShowDecommissioned={handleShowDecommissioned}
+          onHideDecommissioned={onHideDecommissioned}
           listFilters={listFilters}
           onListFiltersChange={setListFilters}
           onCreateGroup={() => setShowCreateGroup(true)}
@@ -1844,6 +1843,15 @@ export default function DevicesPage() {
               <DecommissionedHiddenHint
                 count={hiddenDecommissionedCount}
                 onShow={handleShowDecommissioned}
+              />
+            </p>
+          )}
+          {onHideDecommissioned && shownDecommissionedCount > 0 && (
+            <p>
+              <DecommissionedHiddenHint
+                mode="shown"
+                count={shownDecommissionedCount}
+                onHide={onHideDecommissioned}
               />
             </p>
           )}
