@@ -13,6 +13,7 @@ import {
   ShieldOff
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { useHashTab } from '@/lib/useHashState';
 
@@ -420,6 +421,10 @@ export default function RemoteToolsPage({
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
   const [processLoading, setProcessLoading] = useState(false);
+  // Reason the last process-list fetch failed, or null. Kept separate from
+  // `processes` because an empty list and a failed fetch must not render the
+  // same thing (#4935).
+  const [processError, setProcessError] = useState<string | null>(null);
 
   // Services state
   const [services, setServices] = useState<WindowsService[]>([]);
@@ -524,12 +529,28 @@ export default function RemoteToolsPage({
     setProcessLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/processes?limit=500`);
-      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchProcesses'));
+      if (!res.ok) {
+        // An offline device answers 503 with
+        // `{ error: 'The device is offline.', code: 'device_offline' }`
+        // (apps/api/src/routes/systemTools/fileBrowserHelpers.ts). Discarding
+        // that body and logging in the catch below is what made this tab read
+        // "Processes 0 / No Data" — indistinguishable from a genuinely idle
+        // box (#4935). Keep the server's reason so the pane says why.
+        const body = await res.json().catch(() => null);
+        throw new Error(extractApiError(body, t('remoteToolsPage.errors.fetchProcesses')));
+      }
       const json = await res.json();
       const data: ApiProcess[] = Array.isArray(json.data) ? json.data : [];
       setProcesses(data.map(mapProcess));
+      setProcessError(null);
     } catch (err) {
       console.error('Failed to fetch processes:', err);
+      // Drop any rows from an earlier successful fetch: leaving them beside the
+      // error banner would show a stale list as if it were current.
+      setProcesses([]);
+      setProcessError(
+        err instanceof Error ? err.message : t('remoteToolsPage.errors.fetchProcesses')
+      );
     } finally {
       setProcessLoading(false);
     }
@@ -923,6 +944,7 @@ export default function RemoteToolsPage({
             deviceName={resolvedDeviceName}
             processes={processes}
             loading={processLoading}
+            loadError={processError}
             onRefresh={fetchProcesses}
             onKillProcess={handleKillProcess}
             onGetProcess={handleGetProcess}

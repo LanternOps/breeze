@@ -139,10 +139,40 @@ vi.mock('../services', () => {
         }),
       }),
     };
-    await input.persistFactor(tx, input.recoveryCodeHashes);
+    // A factor REMOVAL (#4934 /mfa/disable) omits the code pair entirely — the
+    // real service defaults both to [], so the mock must too.
+    await input.persistFactor(tx, input.recoveryCodeHashes ?? []);
     return {
       value: undefined,
-      recoveryCodes: [...input.recoveryCodes],
+      recoveryCodes: [...(input.recoveryCodes ?? [])],
+      issued: {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        refreshJti: 'replacement-jti',
+        expiresInSeconds: 900,
+        familyId: 'replacement-family',
+        transitionId: 'transition-1',
+        generation: 1,
+      },
+      mfaEpoch: 2,
+      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+    };
+  }),
+  completeMfaFactorRemoval: vi.fn(async (input: any) => {
+    // Minimal drizzle-shaped tx so the caller's persistFactor runs for real.
+    const tx = {
+      update: () => ({
+        set: () => ({
+          where: () => ({ returning: async () => [{ id: input.userId }] }),
+        }),
+      }),
+    };
+    // A factor REMOVAL (#4934 /mfa/disable) omits the code pair entirely — the
+    // real service defaults both to [], so the mock must too.
+    await input.persistFactor(tx, input.recoveryCodeHashes ?? []);
+    return {
+      value: undefined,
+      recoveryCodes: [...(input.recoveryCodes ?? [])],
       issued: {
         accessToken: 'replacement-access-token',
         refreshToken: 'replacement-refresh-token',
@@ -385,11 +415,13 @@ import {
   AuthIssuanceCapabilityError,
   AuthIssuanceConflictError,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
   bindIssuedUserSession,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
+import type { AuthorizedUserSession } from '../services/userSession';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
 import {
   getPasswordResetEligibility,
@@ -3893,6 +3925,262 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    // #4934: turning MFA OFF used to route through
+    // invalidateMfaAssuranceAfterFactorChange, which bumps mfa_epoch and revokes
+    // every refresh family WITHOUT re-issuing the actor — so the caller's own
+    // next request 401s on the stale `mep`, its refresh fails against a revoked
+    // family, and the web client hard-redirects to /login?reason=session-expired.
+    // Same class #4480/#4646 fixed for recovery-code rotation: evict everyone
+    // else, keep the caller.
+    describe('#4934 MFA disable keeps the calling session', () => {
+      // The two reads /auth/mfa/disable makes, in order: the password step-up
+      // hash, then the factor row it is about to remove. One mock serves both
+      // because the row carries every field either read asks for.
+      function mockProtectedTotpUser() {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                passwordHash: '$argon2id$hash',
+                mfaEnabled: true,
+                mfaMethod: 'totp',
+                mfaSecret: encryptMfaSecret('PLAINTEXTSECRET'),
+                phoneNumber: null,
+              }]),
+            }),
+          }),
+        } as any);
+      }
+
+      function mockSuccessfulDisable() {
+        mockProtectedTotpUser();
+        vi.mocked(verifyPassword).mockResolvedValue(true);
+        vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      }
+
+      // The self-disable gate resolves the EFFECTIVE policy and 403s while MFA is
+      // still mandated. Spied (and restored inline, per the idiom above) so these
+      // tests never depend on the resolver's own role-join/settings reads.
+      function allowSelfDisable() {
+        return vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
+          required: false,
+          allowedMethods: { totp: true, sms: true, passkey: true },
+          source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        });
+      }
+
+      function postDisable(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+        return app.request('/auth/mfa/disable', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer valid-token',
+            'Content-Type': 'application/json',
+            ...headers,
+          },
+          body: JSON.stringify(body),
+        });
+      }
+
+      const proof = { code: '123456', currentPassword: 'OldStrongPass123' };
+
+      it('re-issues the caller session instead of evicting it', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({
+          success: true,
+          message: 'MFA disabled successfully',
+          // The replacement access token is what keeps the caller authenticated
+          // past its own epoch bump.
+          tokens: { accessToken: 'replacement-access-token', expiresInSeconds: 900 },
+        });
+        // ...and the rotated refresh cookie is what survives the family revoke.
+        expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
+
+        expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
+        expect(input).toMatchObject({
+          userId: 'user-123',
+          // Every OTHER session still dies. The "factor must still exist when
+          // the bump lands" precondition (a concurrent second disable loses
+          // with a 409) is now fixed inside completeMfaFactorRemoval itself —
+          // asserted in mfaEnrollmentSession.test.ts — so it no longer appears
+          // on the call-site input.
+          revokeReason: 'mfa-disable',
+        });
+        // A removal installs NO code set — the account must be left holding none.
+        expect(input.recoveryCodes ?? []).toHaveLength(0);
+        expect(input.recoveryCodeHashes ?? []).toHaveLength(0);
+      });
+
+      it('does not clear the session cookies', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        const cookies = res.headers.getSetCookie?.() ?? [];
+        expect(cookies.length).toBeGreaterThan(0);
+        for (const cookie of cookies) {
+          // A cleared cookie is `<name>=; ... Max-Age=0` — the shape the eviction
+          // path used to leave the browser with.
+          expect(cookie).not.toContain('Max-Age=0');
+          expect(cookie).not.toMatch(/breeze_(refresh|csrf)_token=;/);
+        }
+        expect(cookies.find((cookie) => cookie.startsWith('breeze_refresh_token=')))
+          .toContain('replacement-refresh-token');
+      });
+
+      it('still clears the factor inside the replacement transaction', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+        const capturedSets: Array<Record<string, unknown>> = [];
+        vi.mocked(completeMfaFactorRemoval).mockImplementationOnce(async (input: any) => {
+          const tx = {
+            update: () => ({
+              set: (values: Record<string, unknown>) => {
+                capturedSets.push(values);
+                return { where: () => ({ returning: async () => [{ id: input.userId }] }) };
+              },
+            }),
+          };
+          await input.persistFactor(tx, input.recoveryCodeHashes ?? []);
+          return {
+            value: undefined,
+            recoveryCodes: [],
+            issued: {
+              accessToken: 'replacement-access-token',
+              refreshToken: 'replacement-refresh-token',
+              refreshJti: 'replacement-jti',
+              expiresInSeconds: 900,
+              familyId: 'replacement-family',
+              transitionId: 'transition-1',
+              generation: 1,
+            } as unknown as AuthorizedUserSession,
+            mfaEpoch: 2,
+            cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+          };
+        });
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        expect(capturedSets).toHaveLength(1);
+        expect(capturedSets[0]).toMatchObject({
+          mfaEnabled: false,
+          mfaSecret: null,
+          mfaMethod: null,
+          mfaRecoveryCodes: null,
+          phoneNumber: null,
+          phoneVerified: false,
+        });
+      });
+
+      // SR-001 + the "carry forward, never elevate" rule the rotation path
+      // follows: the replacement inherits the SIGNED `mdid` binding (never the
+      // forgeable header) and the caller's own assurance claim.
+      it('carries the signed binding and the caller assurance into the replacement', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+        vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            token: {
+              sid: 'family-123', sub: 'user-123', type: 'access',
+              aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+            },
+            orgId: 'org-5',
+            partnerId: 'partner-2',
+            scope: 'organization',
+          });
+          return next();
+        }) as never);
+
+        const res = await postDisable(proof, { 'x-breeze-mobile-device-id': 'forged-device-header' });
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
+        expect(input.expectedAuthEpoch).toBe(4);
+        expect(input.expectedMfaEpoch).toBe(9);
+        expect(input.identity).toMatchObject({
+          userId: 'user-123',
+          roleId: 'role-7',
+          orgId: 'org-5',
+          partnerId: 'partner-2',
+          scope: 'organization',
+          mfa: true,
+          mobileDeviceId: 'signed-device-1',
+        });
+        expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
+      });
+
+      // The mutation check for the assurance rule: removing a factor must NOT
+      // upgrade a session that was never MFA-assured. Hard-coding `mfa: true`
+      // (what a post-disable login mints vacuously) would pass the test above
+      // and fail this one.
+      it('does not elevate an unassured caller into an MFA-assured session', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+        vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            token: { sid: 'family-123', sub: 'user-123', type: 'access', aep: 4, mep: 9, mfa: false },
+            orgId: null,
+            partnerId: 'partner-2',
+            scope: 'partner',
+          });
+          return next();
+        }) as never);
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
+        expect(input.identity.mfa).toBe(false);
+      });
+
+      // Post-commit: the factor is already gone, so a failure installing the
+      // replacement must not turn a completed disable into an error the user
+      // retries against an account that no longer has MFA (a retry answers 400
+      // 'MFA is not enabled').
+      it('still reports success when the replacement session install fails', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+        vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.success).toBe(true);
+        // The refresh JTI was never bound, so the access token would die at its
+        // first refresh — withhold it rather than sell the caller a few minutes.
+        expect(body.tokens).toBeUndefined();
+      });
+
+      it('surfaces a lost issuance race as 409 and cancels the issuance', async () => {
+        mockSuccessfulDisable();
+        const policySpy = allowSelfDisable();
+        vi.mocked(completeMfaFactorRemoval).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+        const res = await postDisable(proof);
+        policySpy.mockRestore();
+
+        expect(res.status).toBe(409);
+        expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('POST /auth/mfa/sms/enable should reject missing currentPassword', async () => {

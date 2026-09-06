@@ -24,6 +24,7 @@ import {
   generateProvisionHandleToken,
   provisionHandleExpiresAt,
 } from '../../services/provisionCredentialHandle';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 
 export const provisionRoutes = new Hono();
 
@@ -296,6 +297,18 @@ provisionRoutes.post(
       captureException(err instanceof Error ? err : new Error(String(err)));
       return c.json({ error: 'Failed to provision device' }, 500);
     }
+
+    // #4630 — evaluate the new device against every dynamic group in its org
+    // immediately, so a group filtering on hostname/site (already correct at
+    // insert) doesn't have to wait for a heartbeat that would never report a
+    // diff for those fields. Enqueue only, never awaited: the evaluation must
+    // not run on this request's still-open withDbAccessContext transaction.
+    void requestDeviceGroupReevaluation({
+      deviceId: device.id,
+      orgId: data.orgId,
+      eventType: 'device.created',
+      reason: 'device_provisioned',
+    });
 
     // ----------- mTLS cert + manifest trust keys for the config blob -----------
     const mtlsCert = await issueMtlsCertForDevice(device.id, data.orgId);

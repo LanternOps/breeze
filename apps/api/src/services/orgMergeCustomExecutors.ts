@@ -330,6 +330,68 @@ const mergePlaybookDefinitions: CustomMergeExecutor = async (loser, survivor) =>
 };
 
 // ---------------------------------------------------------------------------
+// custom_field_definitions — #3257 W02.
+//
+// The table gained `custom_field_definitions_org_key_uq (org_id, field_key)
+// WHERE org_id IS NOT NULL` in 2026-10-10-100300, so the plain `repoint` it
+// used to be now raises 23505 whenever the loser and the survivor both define
+// the same key. For two orgs imported from one Datto tenant that is EVERY key,
+// so this is not an edge case — it is the common case for exactly the customers
+// #3257 exists to serve.
+//
+// The generic `repoint-dedupe` DELETE is not a safe substitute. It is safe
+// TODAY only because nothing references a definition row; once
+// device_custom_field_values lands (W05) its `definition_id` FK makes a blind
+// dedupe DELETE cascade away every value stored under the dropped definition.
+// Using `rehomeChildrenThenDelete` from day one means W05 adds one line to
+// CUSTOM_FIELD_DEFINITION_CHILDREN instead of rewriting this executor under
+// time pressure — which is the failure mode that produced the four executors
+// this helper was extracted from.
+//
+// Dedupe key is `field_key` ALONE, matching the unique index. `type` is
+// deliberately NOT part of the key: two same-keyed definitions of DIFFERENT
+// types still collide in the index, so including type would leave the 23505 in
+// place for precisely the divergent case the note below warns the operator
+// about.
+// ---------------------------------------------------------------------------
+
+/**
+ * Inbound FKs to re-point before the duplicate definition is deleted.
+ *
+ * `device_custom_field_values.definition_id` is registered here (#3257 W05).
+ * `rehomeChildrenThenDelete` moves the loser's stored values onto the
+ * survivor's identically-keyed definition BEFORE deleting the loser's
+ * duplicate, because `definition_id` is `ON DELETE CASCADE` — a blind dedupe
+ * DELETE of the loser's definition would destroy every stored value under it
+ * instead of letting them survive under the survivor's definition.
+ */
+const CUSTOM_FIELD_DEFINITION_CHILDREN: readonly ChildRef[] = [
+  { table: 'device_custom_field_values', column: 'definition_id' },
+];
+
+const mergeCustomFieldDefinitions: CustomMergeExecutor = async (loser, survivor) => {
+  const { dropped, rehomed } = await rehomeChildrenThenDelete(
+    'custom_field_definitions',
+    ['field_key'],
+    CUSTOM_FIELD_DEFINITION_CHILDREN,
+    loser,
+    survivor,
+  );
+  const moved = await run(buildRepoint('custom_field_definitions', loser, survivor));
+  return {
+    moved,
+    dropped,
+    notes: dropped > 0
+      ? [
+        `custom_field_definitions: dropped ${dropped} duplicate field definition from the merged-away org whose field_key already existed under the survivor`
+        + (rehomed.length > 0 ? ` and re-homed its stored values onto the survivor's definition (${describeRehomed(rehomed)})` : '')
+        + " — the survivor's TYPE and dropdown choices are now authoritative for that key; compare them if the two definitions had diverged",
+      ]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // pam_signer_groups — `pam_signer_groups_org_id_name_unique (org_id, name)`.
 // FOUND BY THE FINAL-REVIEW SWEEP, not by the earlier one: this table's inbound
 // FK is `pam_rules.match_signer_group_id ON DELETE RESTRICT`, not NO ACTION.
@@ -988,6 +1050,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   discovered_assets: moveDiscoveredAssets,
   plugin_installations: mergePluginInstallations,
   playbook_definitions: mergePlaybookDefinitions,
+  custom_field_definitions: mergeCustomFieldDefinitions,
   pam_signer_groups: mergePamSignerGroups,
   incidents: mergeIncidents,
   reports: mergeReports,
@@ -1052,6 +1115,10 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
   discovered_assets: collidingRowCount('discovered_assets', DISCOVERED_ASSET_KEY),
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),
+  // Without this entry previewOrgMerge would report `custom_field_definitions:
+  // N rows, 0 dropped` for a merge that is about to delete definitions — the
+  // exact non-destructive-looking plan this map's header warns about.
+  custom_field_definitions: collidingRowCount('custom_field_definitions', ['field_key']),
   pam_signer_groups: collidingRowCount('pam_signer_groups', ['name']),
   reports: (loser, survivor) => sql`
     SELECT count(*)::int AS n FROM reports t

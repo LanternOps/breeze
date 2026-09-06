@@ -30,8 +30,24 @@ vi.mock('./redis', () => ({
 
 vi.mock('./sentry', () => ({ ...sentryMocks }));
 
+// The App Attest verifier has its own exhaustive suite against a synthetic CA
+// (attestation/appleAppAttest.test.ts). What is under test HERE is the
+// dispatcher's contract with it: which basis a pass maps to, that evidence
+// carries digests only, and that a throw is a downgrade rather than a 5xx.
+// It cannot be exercised for real through this seam — the dispatcher always
+// pins the live Apple root, by design.
+const { appAttestMock } = vi.hoisted(() => ({ appAttestMock: { verifyAppAttestAttestation: vi.fn() } }));
+// Only the FUNCTION is replaced. `AppAttestVerificationError` stays real, because
+// the dispatcher branches on `instanceof` it — a stubbed stand-in class would
+// make the "rejection vs. defect" test pass against a fake taxonomy.
+vi.mock('./attestation/appleAppAttest', async (importActual) => ({
+  ...(await importActual<typeof import('./attestation/appleAppAttest')>()),
+  ...appAttestMock,
+}));
+
 
 import { getRedis } from './redis';
+import { AppAttestVerificationError } from './attestation/appleAppAttest';
 import {
   ATTEMPT_TTL_SECONDS,
   consumeRegistrationAttempt,
@@ -169,14 +185,101 @@ describe('registration attempt lifecycle', () => {
   });
 });
 
-describe('verifyPlatformAttestation (W02 stub)', () => {
+describe('verifyPlatformAttestation', () => {
   const transcript = Buffer.alloc(32, 1);
+  const iosAttestation = { platform: 'ios' as const, attestationObject: 'cbor', keyId: 'kid' };
+  const passingVerifier = {
+    attestedPublicKeyDer: Buffer.from('app-attest-key'),
+    receiptB64: Buffer.from('receipt').toString('base64'),
+  };
 
-  it('resolves unattested for iOS — no verifier is wired until W03', async () => {
+  it('maps an ES256 approval key to the L4-trusted Secure-Enclave basis (#1374 W03)', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
     const result = await verifyPlatformAttestation({
-      attestation: { platform: 'ios', attestationObject: 'cbor', keyId: 'kid' },
+      attestation: iosAttestation,
       transcript,
       publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.basis).toBe('ios_se_p256_app_attest');
+    expect(result.verifiedAt).toBeInstanceOf(Date);
+    expect(result.appIntegrityVerifiedAt).toBeInstanceOf(Date);
+    expect(result.keyId).toBe('kid');
+  });
+
+  it('maps an RS256 approval key to the NON-L4 keychain basis — the Secure Enclave holds only P-256', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'RS256',
+    });
+    // A PASSING App Attest verification still does not make an RSA key
+    // hardware-resident. If this ever flips to ios_se_p256_app_attest the L4
+    // bypass this whole plan closes is re-opened.
+    expect(result.basis).toBe('ios_keychain_rsa_app_attest');
+    expect(result.verifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('passes the server-derived transcript through as clientDataHash', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
+    await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(appAttestMock.verifyAppAttestAttestation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attestationObjectB64: 'cbor',
+        keyIdB64: 'kid',
+        clientDataHash: transcript,
+        appId: 'D8W6N2JYMA.com.breeze.rmm',
+        environment: 'production',
+      }),
+    );
+    // The pinned root is NOT overridable from here — an injectable trust anchor
+    // on the request path would be the whole point of the pinning, undone.
+    const call = appAttestMock.verifyAppAttestAttestation.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(call).toBeDefined();
+    expect(call?.rootCertificatesPem).toBeUndefined();
+  });
+
+  it('stores DIGESTS of the attested key and receipt, never the raw receipt', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.evidence).toEqual({
+      verifier: 'apple_app_attest',
+      verifierVersion: 1,
+      appId: 'D8W6N2JYMA.com.breeze.rmm',
+      environment: 'production',
+      attestedAppAttestKeySha256: crypto
+        .createHash('sha256')
+        .update(passingVerifier.attestedPublicKeyDer)
+        .digest('hex'),
+      receiptSha256: crypto.createHash('sha256').update(Buffer.from('receipt')).digest('hex'),
+    });
+    // The receipt is a bearer artifact for Apple's fraud-metric endpoint.
+    expect(JSON.stringify(result.evidence)).not.toContain(passingVerifier.receiptB64);
+  });
+
+  it('downgrades to unattested when the verifier REJECTS — never a 5xx, never a page', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
+      throw new AppAttestVerificationError('fmt is not apple-appattest');
+    });
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
     });
     expect(result).toEqual({
       basis: 'unattested',
@@ -184,38 +287,120 @@ describe('verifyPlatformAttestation (W02 stub)', () => {
       keyId: null,
       evidence: {},
       appIntegrityVerifiedAt: null,
+      // The reason travels with the result so the route can put it in the
+      // audit row. A misconfigured appId/environment rejects 100% of genuine
+      // enrolments and looks identical, per request, to one forged blob — a
+      // console line cannot be aggregated after the fact, an audit field can.
+      failureReason: 'fmt is not apple-appattest',
     });
+    // A rejection is the verifier working. Paging on it would make every
+    // dev-build probe a Sentry event and train everyone to ignore the channel.
+    expect(sentryMocks.captureException).not.toHaveBeenCalled();
   });
 
-  it('resolves unattested for Android — no verifier is wired until W04', async () => {
+  it('REPORTS a non-rejection throw — a broken verifier is a defect, not attacker noise', async () => {
+    // A TypeError out of tiny-cbor or @peculiar/x509 after a dependency bump
+    // downgrades every legitimate iOS device in the fleet. No client can
+    // provoke this shape, so it must not share a channel with the ones that can.
+    appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
+      throw new TypeError('cbor.decode is not a function');
+    });
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.basis).toBe('unattested');
+    expect(result.failureReason).toBe('verifier error: TypeError');
+    expect(sentryMocks.captureException).toHaveBeenCalledWith(
+      expect.any(TypeError),
+      undefined,
+      expect.objectContaining({ reason: 'app_attest_verifier_error' }),
+    );
+  });
+
+  it('carries NO failureReason for a platform with no verifier wired', async () => {
+    // W03 wrote this against `platform: 'android'`, which was genuinely unwired
+    // at the time. W04 wired it, so that example now exercises "ran and
+    // refused" instead — the exact confusion this test exists to prevent. The
+    // assertion is unchanged; only the example moved to a platform the
+    // dispatcher really does fall through on.
+    const result = await verifyPlatformAttestation({
+      attestation: { platform: 'symbian' } as unknown as Parameters<
+        typeof verifyPlatformAttestation
+      >[0]['attestation'],
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    // "Not implemented" and "ran and refused" must stay distinguishable, or the
+    // audit signal above cannot be read as evidence of anything.
+    expect(result.basis).toBe('unattested');
+    expect(result.failureReason).toBeUndefined();
+  });
+
+  it('DOES carry a failureReason once Android ran and refused (#1374 W04)', async () => {
+    // The other half of the same contract, and the reason the test above had to
+    // change: a wired verifier that rejects must be distinguishable from one
+    // that was never called.
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'android', certificateChain: ['a', 'b'] },
       transcript,
       publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.basis).toBe('unattested');
+    expect(result.failureReason).toEqual(expect.stringMatching(/chain/i));
+  });
+
+  it('carries NO failureReason on the success path', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockReturnValue(passingVerifier);
+    const result = await verifyPlatformAttestation({
+      attestation: iosAttestation,
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
+    });
+    expect(result.failureReason).toBeUndefined();
+  });
+
+  it('resolves unattested for Android when the chain does not verify', async () => {
+    const result = await verifyPlatformAttestation({
+      attestation: { platform: 'android', certificateChain: ['a', 'b'] },
+      transcript,
+      publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
     });
     expect(result.basis).toBe('unattested');
     expect(result.verifiedAt).toBeNull();
+    expect(appAttestMock.verifyAppAttestAttestation).not.toHaveBeenCalled();
   });
 
   it('returns a fresh evidence object each call — a caller cannot poison the next registration', async () => {
+    appAttestMock.verifyAppAttestAttestation.mockImplementation(() => {
+      throw new AppAttestVerificationError('rejected');
+    });
     const first = await verifyPlatformAttestation({
-      attestation: { platform: 'ios', attestationObject: 'x', keyId: 'k' },
+      attestation: iosAttestation,
       transcript,
       publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
     });
     (first.evidence as Record<string, unknown>).forged = 'ios_se_p256_app_attest';
     const second = await verifyPlatformAttestation({
-      attestation: { platform: 'ios', attestationObject: 'y', keyId: 'k2' },
+      attestation: iosAttestation,
       transcript,
       publicKeySpkiB64: 'spki',
+      publicKeyAlg: 'ES256',
     });
     expect(second.evidence).toEqual({});
   });
 
-  // The cross-module half of this contract — that whatever this stub returns is
-  // NOT in L4_TRUSTED_PLATFORM_BOUND_BASES — is asserted in
-  // authenticatorAssurance.test.ts, which already stubs the db layer that
-  // importing that module pulls in.
+  // The cross-module half of this contract — that no basis this returns for an
+  // unverifiable attestation is in L4_TRUSTED_PLATFORM_BOUND_BASES — is
+  // asserted in authenticatorAssurance.test.ts, which already stubs the db
+  // layer that importing that module pulls in.
 });
 
 describe('registration proof-of-possession, end to end with real crypto', () => {

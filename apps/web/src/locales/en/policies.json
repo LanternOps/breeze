@@ -666,6 +666,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Permanently delete removed devices",
+        "offKeepRemovedDevicesUntilDeletedManually": "Off — keep removed devices until someone deletes them manually.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Removed devices are permanently deleted {{days}} days after removal.",
+        "permanentlyDeleteRemovedDevicesAfter": "Permanently delete removed devices after",
+        "days": "days",
+        "enterAWholeNumberOfDaysBetween": "Enter a whole number of days between 1 and 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "Purge is irreversible and destroys history",
+        "aDailyJobPermanentlyDeletesTheDevice": "A daily job permanently deletes the device record and everything attached to it — alerts, scripts, patches, logs and inventory. Devices with an agent uninstall still queued are skipped until it completes. The closest policy wins, so an organization can switch this off to opt out of an all-organizations window."
+      },
       "eventLogTab": {
         "security": "Security",
         "hardware": "Hardware",

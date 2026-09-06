@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const selectDefinitions = vi.fn();
 const selectDevice = vi.fn();
-const updateDevice = vi.fn();
+const persistValues = vi.fn();
 const auditCalls: unknown[] = [];
 
 vi.mock('../../db', () => ({
@@ -15,7 +15,10 @@ vi.mock('../../db', () => ({
 vi.mock('./queries', () => ({
   loadDeviceForWriteBack: (...args: unknown[]) => selectDevice(...args),
   loadScriptWritableDefinitions: (...args: unknown[]) => selectDefinitions(...args),
-  persistDeviceCustomFields: (...args: unknown[]) => updateDevice(...args),
+  // #3257 W05: the writer is now `persistDeviceCustomFieldValues`, which
+  // upserts into `device_custom_field_values` and returns the field keys
+  // that actually changed — not a boolean "matched a row" flag.
+  persistDeviceCustomFieldValues: (...args: unknown[]) => persistValues(...args),
 }));
 
 vi.mock('../auditEvents', () => ({
@@ -51,7 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auditCalls.length = 0;
   selectDevice.mockResolvedValue(DEVICE);
-  updateDevice.mockResolvedValue(true);
+  persistValues.mockResolvedValue([]);
 });
 
 describe('applyScriptCustomFieldWrites', () => {
@@ -60,19 +63,21 @@ describe('applyScriptCustomFieldWrites', () => {
     expect(out).toBeNull();
     expect(selectDevice).not.toHaveBeenCalled();
     expect(selectDefinitions).not.toHaveBeenCalled();
-    expect(updateDevice).not.toHaveBeenCalled();
+    expect(persistValues).not.toHaveBeenCalled();
   });
 
-  it('applies a value for a script-writable field and merges with existing values', async () => {
+  it('applies a value for a script-writable field and calls the writer with the resolved write', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-ram-slot-type', fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"ram_slot_type":"DDR5-5600"}')));
     expect(out).toEqual({ applied: ['ram_slot_type'], rejected: [] });
-    expect(updateDevice).toHaveBeenCalledWith(DEVICE.id, DEVICE.orgId, {
-      existing: 'keep',
-      ram_slot_type: 'DDR5-5600',
-    });
+    expect(persistValues).toHaveBeenCalledWith(
+      DEVICE.id,
+      DEVICE.orgId,
+      [{ definitionId: 'def-ram-slot-type', fieldKey: 'ram_slot_type', type: 'text', value: 'DDR5-5600' }],
+      'script',
+    );
   });
 
   it('loads definitions for the DEVICE org, never an org named by the caller', async () => {
@@ -83,11 +88,11 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('rejects a field whose definition does not opt into script writes', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'asset_tag', type: 'text', options: null, deviceTypes: null, scriptWrite: false },
+      { id: 'def-asset-tag', fieldKey: 'asset_tag', type: 'text', options: null, deviceTypes: null, scriptWrite: false },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"asset_tag":"A-1"}')));
     expect(out).toEqual({ applied: [], rejected: [{ key: 'asset_tag', reason: 'not_script_writable' }] });
-    expect(updateDevice).not.toHaveBeenCalled();
+    expect(persistValues).not.toHaveBeenCalled();
   });
 
   it('rejects a key with no definition', async () => {
@@ -98,7 +103,7 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('rejects a field not applicable to this device OS', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'brew_version', type: 'text', options: null, deviceTypes: ['macos'], scriptWrite: true },
+      { id: 'def-brew-version', fieldKey: 'brew_version', type: 'text', options: null, deviceTypes: ['macos'], scriptWrite: true },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"brew_version":"4.0"}')));
     expect(out).toEqual({
@@ -109,30 +114,56 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('rejects a value that fails type validation and still applies the sibling that passes', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'slots', type: 'number', options: null, deviceTypes: null, scriptWrite: true },
-      { fieldKey: 'note', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-slots', fieldKey: 'slots', type: 'number', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-note', fieldKey: 'note', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"slots":"many","note":"ok"}')));
     expect(out).toEqual({ applied: ['note'], rejected: [{ key: 'slots', reason: 'invalid_type' }] });
-    expect(updateDevice).toHaveBeenCalledWith(DEVICE.id, DEVICE.orgId, { existing: 'keep', note: 'ok' });
+    expect(persistValues).toHaveBeenCalledWith(
+      DEVICE.id,
+      DEVICE.orgId,
+      [{ definitionId: 'def-note', fieldKey: 'note', type: 'text', value: 'ok' }],
+      'script',
+    );
   });
 
-  it('skips the UPDATE when the merged object is unchanged', async () => {
+  // #3257 W05: the compare-before-write moved OUT of scriptWriteBack.ts and
+  // INTO persistDeviceCustomFieldValues (queries.ts), as a `setWhere` on the
+  // upsert so all three write paths share it. The no-op skip itself (no
+  // UPDATE, no WAL, no trigger fire) is therefore no longer this unit's
+  // behaviour to assert — it is covered against real Postgres by
+  // deviceCustomFieldValues.integration.test.ts's "is a no-op when the stored
+  // value already equals the incoming one". This test only pins that
+  // scriptWriteBack still resolves the write and still calls the writer +
+  // audits, even for a value that (unknown to this layer) may turn out to be
+  // unchanged.
+  it('calls the writer with the resolved write for an already-current value, and still audits (no-op skip itself lives in persistDeviceCustomFieldValues)', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'existing', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-existing', fieldKey: 'existing', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"existing":"keep"}')));
     expect(out).toEqual({ applied: ['existing'], rejected: [] });
-    expect(updateDevice).not.toHaveBeenCalled();
+    expect(persistValues).toHaveBeenCalledWith(
+      DEVICE.id,
+      DEVICE.orgId,
+      [{ definitionId: 'def-existing', fieldKey: 'existing', type: 'text', value: 'keep' }],
+      'script',
+    );
+    expect(auditCalls).toHaveLength(1);
   });
 
   it('clears a field when the marker sends null', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'existing', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-existing', fieldKey: 'existing', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     const out = await applyScriptCustomFieldWrites(input(marker('{"existing":null}')));
     expect(out).toEqual({ applied: ['existing'], rejected: [] });
-    expect(updateDevice).toHaveBeenCalledWith(DEVICE.id, DEVICE.orgId, { existing: null });
+    expect(persistValues).toHaveBeenCalledWith(
+      DEVICE.id,
+      DEVICE.orgId,
+      [{ definitionId: 'def-existing', fieldKey: 'existing', type: 'text', value: null }],
+      'script',
+    );
   });
 
   it('carries marker parse failures into the rejected list', async () => {
@@ -143,7 +174,7 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('audits keys only, never values, with actorType agent', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-ram-slot-type', fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     await applyScriptCustomFieldWrites(input(marker('{"ram_slot_type":"DDR5-5600"}')));
     expect(auditCalls).toHaveLength(1);
@@ -158,7 +189,7 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('never puts a rejected marker sample (raw script output) into the audit', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'ok', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-ok', fieldKey: 'ok', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     await applyScriptCustomFieldWrites(
       input(`${marker('{"ok":"v"}')}\n${marker('{"secret_soup":')}`),
@@ -173,21 +204,18 @@ describe('applyScriptCustomFieldWrites', () => {
     const out = await applyScriptCustomFieldWrites(input(marker('{"a":1}')));
     expect(out).toEqual({ applied: [], rejected: [{ key: '(device)', reason: 'device_not_found' }] });
     expect(selectDefinitions).not.toHaveBeenCalled();
-    expect(updateDevice).not.toHaveBeenCalled();
+    expect(persistValues).not.toHaveBeenCalled();
     expect(auditCalls).toHaveLength(0);
   });
 
-  it('reports device_not_found and writes no audit when the UPDATE matches no row', async () => {
-    // The device vanished between the read and the write. `applied` must be
-    // reverted — claiming a write that did not land is worse than reporting it.
-    selectDefinitions.mockResolvedValue([
-      { fieldKey: 'ram_slot_type', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
-    ]);
-    updateDevice.mockResolvedValue(false);
-    const out = await applyScriptCustomFieldWrites(input(marker('{"ram_slot_type":"DDR5-5600"}')));
-    expect(out).toEqual({ applied: [], rejected: [{ key: '(device)', reason: 'device_not_found' }] });
-    expect(auditCalls).toHaveLength(0);
-  });
+  // DELETED: "reports device_not_found and writes no audit when the UPDATE
+  // matches no row". That path no longer exists — persistDeviceCustomFieldValues
+  // has no boolean "matched no row" return (it returns the field keys that
+  // actually changed, and a same-value write legitimately returns []), so
+  // scriptWriteBack.ts has nothing left to interpret as "the device vanished
+  // between the read and the write" and no longer reverts `applied` on that
+  // basis. The remaining device_not_found coverage above (loadDeviceForWriteBack
+  // returning null) is the only device_not_found path left.
 
   it('carries an unsupported-envelope failure into the rejected list', async () => {
     selectDefinitions.mockResolvedValue([]);
@@ -205,7 +233,7 @@ describe('applyScriptCustomFieldWrites', () => {
 
   it('reports failure in the audit result when some keys were rejected', async () => {
     selectDefinitions.mockResolvedValue([
-      { fieldKey: 'ok', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
+      { id: 'def-ok', fieldKey: 'ok', type: 'text', options: null, deviceTypes: null, scriptWrite: true },
     ]);
     await applyScriptCustomFieldWrites(input(marker('{"ok":"v","nope":"x"}')));
     expect((auditCalls[0] as Record<string, any>).result).toBe('failure');

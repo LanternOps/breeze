@@ -73,6 +73,9 @@ export type EventType =
   | 'automation.started'
   | 'automation.completed'
   | 'automation.failed'
+  // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
+  // went wrong, so alerting keyed on automation.failed must not fire.
+  | 'automation.cancelled'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -588,6 +591,7 @@ export const EVENT_TYPES = {
   AUTOMATION_STARTED: 'automation.started' as const,
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
+  AUTOMATION_CANCELLED: 'automation.cancelled' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,

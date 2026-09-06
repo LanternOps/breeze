@@ -21,6 +21,7 @@ import {
   scanDueComplianceChecks,
 } from './featureConfigResolver';
 import { isManagedAutomation } from './aiAgents/managedAutomation';
+import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
 
@@ -60,6 +61,19 @@ export type PolicyEvaluationResponse = {
 type EvaluatePolicyOptions = {
   source?: string;
   requestRemediation?: boolean;
+  /**
+   * Identity of the requesting caller when evaluatePolicy runs inside a
+   * request (POST /policies/:id/evaluate). Partner-wide remediation
+   * automations (org_id NULL) are reachable only for system scope or the
+   * owning partner's own partner-scoped token; an org token carries a
+   * partnerId, and the partner-wide SELECT branch on `automations` makes those
+   * rows readable from an org RLS context as well, so the app-layer gate IS
+   * the access check (#4952).
+   *
+   * Omitted on the background/worker path (policyEvaluationWorker), which is
+   * genuinely system-scoped.
+   */
+  auth?: PartnerWideReadAuth | null;
 };
 
 type TargetConfig = {
@@ -1022,8 +1036,11 @@ function extractScriptIdFromAction(action: unknown): string | null {
   return null;
 }
 
-export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): Promise<string | null> {
-  return resolvePolicyRemediationAutomationIdForOrg(policy, policy.orgId);
+export async function resolvePolicyRemediationAutomationId(
+  policy: PolicyRow,
+  auth?: PartnerWideReadAuth | null
+): Promise<string | null> {
+  return resolvePolicyRemediationAutomationIdForOrg(policy, policy.orgId, auth);
 }
 
 /**
@@ -1031,15 +1048,26 @@ export async function resolvePolicyRemediationAutomationId(policy: PolicyRow): P
  * OR partner-wide automations (org_id NULL) owned by the org's partner. A
  * plain eq(orgId, ...) silently never matches partner-wide rows — evaluation
  * runs under a system DB context, so RLS is not the filter here.
+ *
+ * The partner-wide arm must therefore carry the CALLER's own visibility when
+ * this runs inside a request (POST /policies/:id/evaluate). An org token
+ * carries a partnerId, and automations' partner-wide SELECT branch makes those
+ * rows readable from an org context too, so nothing below this gate stops an
+ * org caller from remediating with another tenant's partner-wide automation
+ * (#4952). `auth` absent = the system/worker path, which is genuinely
+ * system-scoped.
  */
-async function automationOwnershipConditionForOrg(orgId: string): Promise<SQL> {
+async function automationOwnershipConditionForOrg(
+  orgId: string,
+  auth?: PartnerWideReadAuth | null
+): Promise<SQL> {
   const [org] = await db
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  if (!org?.partnerId) {
+  if (!org?.partnerId || !canReadPartnerWideRows(auth, org.partnerId)) {
     return eq(automations.orgId, orgId);
   }
 
@@ -1057,7 +1085,8 @@ async function automationOwnershipConditionForOrg(orgId: string): Promise<SQL> {
  */
 export async function resolvePolicyRemediationAutomationIdForOrg(
   policy: PolicyRow,
-  orgId: string | null
+  orgId: string | null,
+  auth?: PartnerWideReadAuth | null
 ): Promise<string | null> {
   const explicitAutomationId = extractRemediationAutomationId(policy.rules);
   if (explicitAutomationId) {
@@ -1069,16 +1098,26 @@ export async function resolvePolicyRemediationAutomationIdForOrg(
   }
 
   const candidates = await db
-    .select({ id: automations.id, actions: automations.actions })
+    .select({
+      id: automations.id,
+      actions: automations.actions,
+      orgId: automations.orgId,
+      partnerId: automations.partnerId,
+    })
     .from(automations)
     .where(
       and(
-        await automationOwnershipConditionForOrg(orgId),
+        await automationOwnershipConditionForOrg(orgId, auth),
         eq(automations.enabled, true)
       )
     );
 
   for (const candidate of candidates) {
+    // Defense in depth on each loaded row (#4952) — see
+    // automationOwnershipConditionForOrg.
+    if (candidate.orgId === null && !canReadPartnerWideRows(auth, candidate.partnerId)) {
+      continue;
+    }
     if (!Array.isArray(candidate.actions)) {
       continue;
     }
@@ -1203,7 +1242,8 @@ async function triggerRemediationAutomation(
   policy: PolicyRow,
   device: TargetDevice,
   status: EvaluationStatus,
-  remediationAutomationId: string | null
+  remediationAutomationId: string | null,
+  auth?: PartnerWideReadAuth | null
 ): Promise<string | null> {
   if (status !== 'non_compliant' || !remediationAutomationId) {
     return null;
@@ -1219,7 +1259,7 @@ async function triggerRemediationAutomation(
     .where(
       and(
         eq(automations.id, remediationAutomationId),
-        await automationOwnershipConditionForOrg(device.orgId)
+        await automationOwnershipConditionForOrg(device.orgId, auth)
       )
     )
     .limit(1);
@@ -1227,6 +1267,11 @@ async function triggerRemediationAutomation(
   // Both policy-remediation paths run per evaluated device, so a policy pointed
   // at the managed row would create one agent run per device in the fleet.
   if (!automation || !automation.enabled || isManagedAutomation(automation)) return null;
+
+  // Defense in depth on the loaded row (#4952): re-assert the caller's
+  // partner-wide visibility even though the ownership condition above already
+  // dropped the partner-wide arm for callers that lack it.
+  if (automation.orgId === null && !canReadPartnerWideRows(auth, automation.partnerId)) return null;
 
   const [run] = await db
     .insert(automationRuns)
@@ -1344,7 +1389,7 @@ export async function evaluatePolicy(
     if (!remediationIdByOrg.has(deviceOrgId)) {
       remediationIdByOrg.set(
         deviceOrgId,
-        await resolvePolicyRemediationAutomationIdForOrg(policy, deviceOrgId)
+        await resolvePolicyRemediationAutomationIdForOrg(policy, deviceOrgId, options.auth)
       );
     }
     return remediationIdByOrg.get(deviceOrgId) ?? null;
@@ -1495,7 +1540,13 @@ export async function evaluatePolicy(
     });
 
     const remediationRunId = requestRemediation
-      ? await triggerRemediationAutomation(policy, device, status, await remediationAutomationIdForOrg(device.orgId))
+      ? await triggerRemediationAutomation(
+          policy,
+          device,
+          status,
+          await remediationAutomationIdForOrg(device.orgId),
+          options.auth
+        )
       : null;
 
     evaluationResults.push({
@@ -1856,7 +1907,10 @@ async function triggerConfigPolicyRemediation(
   }
 
   // Find an automation that uses the remediation script — the device org's
-  // own automations plus its partner's partner-wide ones (#2133).
+  // own automations plus its partner's partner-wide ones (#2133). No `auth`
+  // argument: this path is only reachable from scanAndEvaluateConfigPolicyCompliance
+  // on the background worker, which is genuinely system-scoped. If a request
+  // route ever calls it, thread the caller's auth through (#4952).
   const deviceOrgAutomationCondition = await automationOwnershipConditionForOrg(deviceRow.orgId);
   const candidates = await db
     .select({ id: automations.id, actions: automations.actions })

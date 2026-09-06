@@ -599,6 +599,7 @@
         "driftChip": "count changed: {{stored}} → {{live}}", "refresh": "Refresh counts", "estimateError": "Couldn’t check the live device count.", "pickerError": "Couldn’t load device groups or sites. Refresh and try again.",
         "groupDeleted": "Device group “{{name}}” was deleted — pick another", "siteDeleted": "Site “{{name}}” was deleted — pick another",
         "typeLocked": "A device set cannot be changed after the line is created — remove the line and add it again.",
+        "allowanceGroupLabel": "Quantity allowance", "allowanceToggle": "Include a fixed quantity, then handle extras",
         "includedLabel": "Included quantity", "overageModeLabel": "Above the allowance", "overageBill": "Bill each extra unit", "overageFlag": "Report for review", "overagePriceLabel": "Overage price",
         "driftToast": "{{count}} line(s) no longer match the live device count: {{lines}}",
         "retargetToast": "{{count}} line(s) need a device group or site re-picked for this organization"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
         "modeReprice": "Reprice catalog lines",
         "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "modeRepriceUnavailable": "Not available — at least one line is manual or a bundle, so the price book cannot reprice it. Remove all lines instead.",
         "confirm": "I understand this changes the quote's currency.",
         "submit": "Change currency"
       },

@@ -1575,7 +1575,12 @@
       "ownership": "Propiedad",
       "mode": "Modo",
       "running": "Estado",
+      "baseline": "Base del partner",
       "lastRunStatus": "Resultado de la última ejecución"
+    },
+    "inertBadge": {
+      "label": "Inactivo",
+      "hint": "Aún no existe una línea base de todo el partner para este tipo. Un agente exclusivo de la organización solo anula una línea base, por lo que no tiene efecto hasta que se cree una."
     },
     "lastRun": {
       "never": "Nunca se ejecutó",
@@ -1711,6 +1716,7 @@
       "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones.",
       "supervisedActionKeysHint": "Operaciones que este agente puede ejecutar SIN que una persona haga clic en aprobar, cuando existe una política coincidente y el límite de exposición de la organización tiene margen. Cada una igual pasa por las protecciones en vivo, el interruptor de apagado y los límites por organización en el momento de la ejecución.",
       "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",
+      "supervisedActionKeysNoneHeld": "Este agente aún no tiene operaciones preautorizadas.",
       "supervisedActionKeysCeilingSummary_one": "Techo para organizaciones — {{count}} clave",
       "supervisedActionKeysCeilingSummary_other": "Techo para organizaciones — {{count}} claves",
       "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento.",
@@ -1718,10 +1724,7 @@
       "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
       "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
-      "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
-      "toolSuggestLabel": "Agregar una herramienta conocida",
-      "toolSuggestHint": "Las sugerencias vienen del registro de acciones decidibles por política, que no es la lista completa de herramientas. Cualquier otra que este agente pueda usar todavía se puede escribir arriba.",
-      "toolSuggestAdd": "Agregar"
+      "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación."
     },
     "policyKeys": {
       "tools": {
@@ -2130,6 +2133,7 @@
       "thresholdPerOrgNote": "Cada organización resuelve su propio umbral de promoción, por eso aquí las ejecuciones verificadas se muestran sin objetivo. Elige una sola organización en el selector de organizaciones para ver su objetivo.",
       "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
       "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
+      "grantOnlyHint": "Las claves preautorizadas de un agente de organización solo se conceden a través del panel de graduación por un segundo aprobador, y también se revocan allí.",
       "promote": "Promover",
       "revoke": "Revocar",
       "emptyTitle": "Todavía no hay evidencia",
@@ -2191,6 +2195,556 @@
       },
       "reliability": {
         "caption": "Operaciones del modo de acción, solo lectura: no son claves de política, así que nunca pueden preautorizarse."
+      }
+    },
+    "catalog": {
+      "capabilities": {
+        "alerts_monitoring": {
+          "label": "Alertas y monitoreo",
+          "description": "Ver y administrar alertas, reglas de alerta y monitores de disponibilidad o de servicios en toda la flota."
+        },
+        "services_startup": {
+          "label": "Servicios y elementos de inicio",
+          "description": "Iniciar, detener o reiniciar servicios; habilitar o deshabilitar elementos de inicio en un dispositivo."
+        },
+        "files_disk": {
+          "label": "Archivos y disco",
+          "description": "Leer, escribir o eliminar archivos y carpetas; analizar y liberar espacio en disco en un dispositivo."
+        },
+        "scripts_commands": {
+          "label": "Scripts y comandos",
+          "description": "Ejecutar scripts, playbooks y comandos del sistema, y administrar los procesos, tareas programadas y entradas del registro que involucran."
+        },
+        "tickets": {
+          "label": "Tickets de soporte",
+          "description": "Revisar tickets de la mesa de ayuda y proponer respuestas o próximos pasos."
+        },
+        "patching_software": {
+          "label": "Parches y software",
+          "description": "Aprobar, instalar o revertir parches, ejecutar implementaciones y administrar políticas de software y de anillos de actualización."
+        },
+        "security_response": {
+          "label": "Respuesta de seguridad",
+          "description": "Investigar y responder a amenazas: aislar dispositivos, ejecutar análisis de seguridad y aplicar remediaciones CIS."
+        },
+        "backup_recovery": {
+          "label": "Respaldo y recuperación",
+          "description": "Configurar trabajos de respaldo y administrar la recuperación de dispositivos y cargas de trabajo."
+        },
+        "config_policies": {
+          "label": "Políticas de configuración",
+          "description": "Crear, asignar y revisar políticas de configuración, DNS, navegador y periféricos."
+        },
+        "network": {
+          "label": "Red",
+          "description": "Descubrir dispositivos en la red y administrar líneas base relacionadas con la red."
+        },
+        "remote_access": {
+          "label": "Acceso remoto",
+          "description": "Ver la pantalla de un dispositivo y tomar el control remoto de su mouse y teclado."
+        },
+        "endpoint_agent": {
+          "label": "Agente del endpoint",
+          "description": "Inspeccionar y administrar el propio agente de Breeze: registros, diagnósticos y niveles de registro."
+        },
+        "automations_reports": {
+          "label": "Automatizaciones e informes",
+          "description": "Ejecutar automatizaciones, generar informes y administrar grupos, etiquetas y filtros guardados."
+        },
+        "business": {
+          "label": "Negocio",
+          "description": "Administrar cotizaciones, facturas, contratos y el catálogo de productos."
+        },
+        "tenancy": {
+          "label": "Gestión de organizaciones",
+          "description": "Administrar organizaciones, sitios e integraciones entre organizaciones."
+        }
+      },
+      "tools": {
+        "analyze_boot_performance": "Análisis del rendimiento de arranque",
+        "analyze_disk_usage": "Análisis del uso de disco",
+        "analyze_fleet_metrics": "Análisis de métricas de la flota",
+        "analyze_metrics": "Análisis de métricas del dispositivo",
+        "analyze_screen": "Análisis de pantalla",
+        "apply_cis_remediation": "Remediación CIS",
+        "apply_configuration_policy": "Aplicar una política de configuración",
+        "cancel_script_execution": "Cancelar una ejecución de script",
+        "capture_agent_pprof": "Capturar diagnósticos del agente",
+        "computer_control": "Control remoto",
+        "configuration_policy_compliance": "Cumplimiento de la política de configuración",
+        "delete_tenant": "Eliminar una organización",
+        "detect_log_correlations": "Detectar correlaciones de registros",
+        "disk_cleanup": "Limpieza de disco",
+        "execute_command": "Ejecutar un comando del sistema",
+        "execute_playbook": "Ejecutar un playbook",
+        "file_operations": "Operaciones con archivos",
+        "generate_report": "Informes",
+        "get_active_users": "Usuarios activos",
+        "get_catalog_item": "Búsqueda de un artículo del catálogo",
+        "get_cis_compliance": "Informe de cumplimiento CIS",
+        "get_cis_device_report": "Informe CIS del dispositivo",
+        "get_configuration_policy": "Detalles de la política de configuración",
+        "get_contract": "Detalles del contrato",
+        "get_device_context": "Contexto del dispositivo",
+        "get_device_details": "Detalles del dispositivo",
+        "get_device_vulnerabilities": "Vulnerabilidades del dispositivo",
+        "get_dns_security": "Actividad de seguridad de DNS",
+        "get_effective_configuration": "Configuración efectiva",
+        "get_fleet_findings": "Hallazgos de la flota",
+        "get_fleet_health": "Salud de la flota",
+        "get_fleet_status": "Estado de la flota",
+        "get_huntress_incidents": "Incidentes de Huntress",
+        "get_huntress_status": "Estado de Huntress",
+        "get_invoice": "Detalles de la factura",
+        "get_log_trends": "Tendencias de registros",
+        "get_playbook_history": "Historial de ejecución del playbook",
+        "get_quote": "Detalles de la cotización",
+        "get_s1_status": "Estado de SentinelOne",
+        "get_s1_threats": "Amenazas de SentinelOne",
+        "get_script_details": "Detalles del script",
+        "get_script_execution": "Detalles de la ejecución del script",
+        "get_script_execution_history": "Historial de ejecución del script",
+        "get_security_posture": "Postura de seguridad",
+        "get_service_monitoring_status": "Estado del monitoreo de servicios",
+        "get_user_experience_metrics": "Métricas de experiencia del usuario",
+        "get_vulnerability_report": "Informe de vulnerabilidades",
+        "list_configuration_policies": "Lista de políticas de configuración",
+        "list_contracts": "Lista de contratos",
+        "list_invoices": "Lista de facturas",
+        "list_organizations": "Lista de organizaciones",
+        "list_playbooks": "Lista de playbooks",
+        "list_quotes": "Lista de cotizaciones",
+        "list_script_templates": "Lista de plantillas de scripts",
+        "list_scripts": "Lista de scripts",
+        "lookup_distributor_product": "Búsqueda de un producto del distribuidor",
+        "m365_query_groups": "Grupos de Microsoft 365",
+        "m365_query_intune_devices": "Dispositivos de Microsoft Intune",
+        "m365_query_org": "Organización de Microsoft 365",
+        "m365_query_signins": "Inicios de sesión de Microsoft 365",
+        "m365_query_sites": "Sitios de Microsoft 365",
+        "m365_query_users": "Usuarios de Microsoft 365",
+        "manage_alert_rules": "Administrar reglas de alerta",
+        "manage_alerts": "Administrar alertas",
+        "manage_automations": "Administrar automatizaciones",
+        "manage_backup_configs": "Administrar configuraciones de respaldo",
+        "manage_configuration_policy": "Administrar políticas de configuración",
+        "manage_contracts": "Administrar contratos",
+        "manage_deployments": "Administrar implementaciones",
+        "manage_dns_policy": "Administrar la política de DNS",
+        "manage_groups": "Administrar grupos de dispositivos",
+        "manage_invoices": "Administrar facturas",
+        "manage_maintenance_windows": "Administrar ventanas de mantenimiento",
+        "manage_monitors": "Administrar monitores de disponibilidad",
+        "manage_organizations": "Administrar organizaciones",
+        "manage_patches": "Administrar parches",
+        "manage_peripheral_policies": "Administrar políticas de periféricos",
+        "manage_policy_feature_link": "Vincular una política a una función",
+        "manage_service_monitors": "Administrar monitores de servicios",
+        "manage_services": "Administrar servicios",
+        "manage_software_policies": "Administrar políticas de software",
+        "manage_startup_items": "Administrar elementos de inicio",
+        "manage_update_rings": "Administrar anillos de actualización",
+        "network_discovery": "Descubrimiento de red",
+        "preview_configuration_change": "Previsualizar un cambio de configuración",
+        "query_audit_log": "Consultar el registro de auditoría",
+        "query_change_log": "Consultar el registro de cambios",
+        "query_devices": "Consultar dispositivos",
+        "query_monitors": "Consultar monitores",
+        "remediate_vulnerability": "Remediar una vulnerabilidad",
+        "remove_configuration_policy_assignment": "Quitar una asignación de política de configuración",
+        "resolve_device_context": "Resolver un dispositivo",
+        "run_script": "Ejecutar un script",
+        "s1_isolate_device": "SentinelOne: aislar dispositivo",
+        "s1_threat_action": "Acciones sobre amenazas de SentinelOne",
+        "search_agent_logs": "Buscar en los registros del agente",
+        "search_catalog": "Buscar en el catálogo de productos",
+        "search_logs": "Buscar en los registros del dispositivo",
+        "security_scan": "Análisis de seguridad",
+        "set_agent_log_level": "Establecer el nivel de registro del agente",
+        "set_device_context": "Establecer el contexto del dispositivo",
+        "sync_huntress_data": "Sincronizar datos de Huntress",
+        "take_screenshot": "Tomar una captura de pantalla"
+      },
+      "actions": {
+        "apply_cis_remediation": {
+          "apply": "Aplicar remediación CIS",
+          "rollback": "Revertir remediación CIS"
+        },
+        "computer_control": {
+          "double_click": "Doble clic",
+          "key": "Presionar una tecla",
+          "left_click": "Clic izquierdo",
+          "middle_click": "Clic central",
+          "mouse_move": "Mover el mouse",
+          "right_click": "Clic derecho",
+          "screenshot": "Tomar una captura de pantalla",
+          "scroll": "Desplazar",
+          "type": "Escribir texto"
+        },
+        "configuration_policy_compliance": {
+          "status": "Estado de cumplimiento",
+          "summary": "Resumen de cumplimiento"
+        },
+        "disk_cleanup": {
+          "execute": "Ejecutar limpieza de disco",
+          "preview": "Previsualizar limpieza de disco"
+        },
+        "execute_command": {
+          "event_logs_list": "Listar registros de eventos",
+          "event_logs_query": "Consultar registros de eventos",
+          "file_list": "Listar archivos",
+          "file_read": "Leer un archivo",
+          "kill_process": "Terminar un proceso",
+          "list_processes": "Listar procesos",
+          "list_services": "Listar servicios",
+          "restart_service": "Reiniciar un servicio",
+          "start_service": "Iniciar un servicio",
+          "stop_service": "Detener un servicio"
+        },
+        "file_operations": {
+          "delete": "Eliminar un archivo",
+          "list": "Listar archivos",
+          "mkdir": "Crear una carpeta",
+          "read": "Leer un archivo",
+          "rename": "Renombrar un archivo",
+          "write": "Escribir un archivo"
+        },
+        "generate_report": {
+          "create": "Crear un informe",
+          "data": "Datos del informe",
+          "delete": "Eliminar un informe",
+          "download": "Descargar un informe",
+          "generate": "Generar un informe",
+          "history": "Historial de informes",
+          "list": "Listar informes",
+          "update": "Actualizar un informe"
+        },
+        "get_dns_security": {
+          "allowed": "Actividad de DNS permitida",
+          "blocked": "Actividad de DNS bloqueada",
+          "redirected": "Actividad de DNS redirigida"
+        },
+        "get_service_monitoring_status": {
+          "known_services": "Servicios conocidos",
+          "results": "Resultados del monitoreo",
+          "status": "Estado del monitoreo",
+          "summary": "Resumen del monitoreo"
+        },
+        "manage_alert_rules": {
+          "alert_summary": "Resumen de alertas",
+          "create_rule": "Crear una regla de alerta",
+          "delete_rule": "Eliminar una regla de alerta",
+          "get_rule": "Detalles de la regla de alerta",
+          "list_channels": "Listar canales de notificación",
+          "list_rules": "Listar reglas de alerta",
+          "list_templates": "Listar plantillas de reglas de alerta",
+          "test_rule": "Probar una regla de alerta",
+          "update_rule": "Actualizar una regla de alerta"
+        },
+        "manage_alerts": {
+          "acknowledge": "Reconocer una alerta",
+          "get": "Detalles de la alerta",
+          "list": "Listar alertas",
+          "resolve": "Resolver una alerta",
+          "suppress": "Suprimir una alerta"
+        },
+        "manage_automations": {
+          "create": "Crear una automatización",
+          "delete": "Eliminar una automatización",
+          "disable": "Deshabilitar una automatización",
+          "enable": "Habilitar una automatización",
+          "get": "Detalles de la automatización",
+          "history": "Historial de ejecución de la automatización",
+          "list": "Listar automatizaciones",
+          "run": "Ejecutar una automatización",
+          "update": "Actualizar una automatización"
+        },
+        "manage_backup_configs": {
+          "create": "Crear una configuración de respaldo",
+          "get": "Detalles de la configuración de respaldo",
+          "list": "Listar configuraciones de respaldo",
+          "update": "Actualizar una configuración de respaldo"
+        },
+        "manage_configuration_policy": {
+          "activate": "Activar una política de configuración",
+          "create": "Crear una política de configuración",
+          "deactivate": "Desactivar una política de configuración",
+          "delete": "Eliminar una política de configuración",
+          "update": "Actualizar una política de configuración"
+        },
+        "manage_contracts": {
+          "activate": "Activar un contrato",
+          "add_line": "Agregar una línea de contrato",
+          "cancel": "Cancelar un contrato",
+          "create_draft": "Crear un borrador de contrato",
+          "delete_draft": "Eliminar un borrador de contrato",
+          "pause": "Pausar un contrato",
+          "remove_line": "Quitar una línea de contrato",
+          "resume": "Reanudar un contrato",
+          "update": "Actualizar un contrato",
+          "update_line": "Actualizar una línea de contrato"
+        },
+        "manage_deployments": {
+          "cancel": "Cancelar una implementación",
+          "create": "Crear una implementación",
+          "device_status": "Estado de dispositivos de la implementación",
+          "get": "Detalles de la implementación",
+          "list": "Listar implementaciones",
+          "pause": "Pausar una implementación",
+          "resume": "Reanudar una implementación",
+          "start": "Iniciar una implementación"
+        },
+        "manage_dns_policy": {
+          "add_allow": "Permitir un dominio",
+          "add_block": "Bloquear un dominio",
+          "remove_allow": "Quitar un dominio permitido",
+          "remove_block": "Quitar un dominio bloqueado"
+        },
+        "manage_groups": {
+          "add_devices": "Agregar dispositivos a un grupo",
+          "create": "Crear un grupo de dispositivos",
+          "delete": "Eliminar un grupo de dispositivos",
+          "get": "Detalles del grupo de dispositivos",
+          "list": "Listar grupos de dispositivos",
+          "membership_log": "Historial de membresía del grupo",
+          "preview": "Previsualizar la membresía del grupo",
+          "remove_devices": "Quitar dispositivos de un grupo",
+          "update": "Actualizar un grupo de dispositivos"
+        },
+        "manage_invoices": {
+          "add_bundle_line": "Agregar una línea de paquete",
+          "add_catalog_line": "Agregar una línea de catálogo",
+          "add_contract_line": "Agregar una línea de contrato",
+          "add_manual_line": "Agregar una línea manual",
+          "assemble_from_org": "Generar una factura a partir de una organización",
+          "assemble_from_ticket": "Generar una factura a partir de un ticket",
+          "create_draft": "Crear un borrador de factura",
+          "create_pay_link": "Crear un enlace de pago",
+          "delete_draft": "Eliminar un borrador de factura",
+          "issue": "Emitir una factura",
+          "record_payment": "Registrar un pago",
+          "remove_line": "Quitar una línea de factura",
+          "update_header": "Actualizar los detalles de la factura",
+          "update_line": "Actualizar una línea de factura",
+          "void": "Anular una factura",
+          "void_payment": "Anular un pago"
+        },
+        "manage_maintenance_windows": {
+          "active_now": "Ventanas de mantenimiento activas",
+          "create": "Crear una ventana de mantenimiento",
+          "delete": "Eliminar una ventana de mantenimiento",
+          "get": "Detalles de la ventana de mantenimiento",
+          "list": "Listar ventanas de mantenimiento",
+          "update": "Actualizar una ventana de mantenimiento"
+        },
+        "manage_monitors": {
+          "create": "Crear un monitor",
+          "delete": "Eliminar un monitor",
+          "get": "Detalles del monitor",
+          "update": "Actualizar un monitor"
+        },
+        "manage_organizations": {
+          "add_contact": "Agregar un contacto de la organización",
+          "create_org": "Crear una organización",
+          "create_site": "Crear un sitio",
+          "update_org": "Actualizar una organización"
+        },
+        "manage_patches": {
+          "approve": "Aprobar un parche",
+          "bulk_approve": "Aprobar parches en lote",
+          "compliance": "Cumplimiento de parches",
+          "decline": "Rechazar un parche",
+          "defer": "Aplazar un parche",
+          "install": "Instalar un parche",
+          "list": "Listar parches",
+          "rollback": "Revertir un parche",
+          "scan": "Buscar parches",
+          "setup_auto_approval": "Configurar la aprobación automática de parches"
+        },
+        "manage_peripheral_policies": {
+          "create": "Crear una política de periféricos",
+          "get": "Detalles de la política de periféricos",
+          "list": "Listar políticas de periféricos",
+          "update": "Actualizar una política de periféricos"
+        },
+        "manage_policy_feature_link": {
+          "add": "Vincular una política a una función",
+          "list": "Listar vínculos de políticas",
+          "remove": "Quitar un vínculo de política",
+          "update": "Actualizar un vínculo de política"
+        },
+        "manage_service_monitors": {
+          "list": "Listar monitores de servicios"
+        },
+        "manage_services": {
+          "list": "Listar servicios",
+          "restart": "Reiniciar un servicio",
+          "start": "Iniciar un servicio",
+          "stop": "Detener un servicio"
+        },
+        "manage_software_policies": {
+          "create": "Crear una política de software",
+          "get": "Detalles de la política de software",
+          "list": "Listar políticas de software",
+          "update": "Actualizar una política de software"
+        },
+        "manage_startup_items": {
+          "disable": "Deshabilitar un elemento de inicio",
+          "enable": "Habilitar un elemento de inicio"
+        },
+        "manage_update_rings": {
+          "create": "Crear un anillo de actualización",
+          "get": "Detalles del anillo de actualización",
+          "list": "Listar anillos de actualización",
+          "update": "Actualizar un anillo de actualización"
+        },
+        "s1_threat_action": {
+          "kill": "Terminar el proceso de una amenaza",
+          "quarantine": "Poner en cuarentena una amenaza",
+          "rollback": "Revertir una acción sobre una amenaza"
+        },
+        "security_scan": {
+          "quarantine": "Poner en cuarentena una amenaza",
+          "remove": "Eliminar una amenaza",
+          "restore": "Restaurar una amenaza",
+          "scan": "Ejecutar un análisis de seguridad",
+          "status": "Estado del análisis de seguridad",
+          "vulnerabilities": "Buscar vulnerabilidades"
+        }
+      },
+      "alwaysOnCount_one": "{{count}} herramienta de solo lectura",
+      "alwaysOnCount_other": "{{count}} herramientas de solo lectura",
+      "highImpact": "Alto impacto",
+      "recommendedTitle": "Recomendado para {{kind}}",
+      "recommendedDescription": "Operaciones que los agentes de {{kind}} suelen necesitar.",
+      "recommendedApply": "Usar lo recomendado",
+      "recommendedApplied": "Aplicado",
+      "searchPlaceholder": "Buscar capacidades, herramientas o acciones…",
+      "showToolNames": "Mostrar nombres de herramientas",
+      "outcome": {
+        "approval_request": "Solicitud de aprobación",
+        "logged_proposal": "Propuesta registrada",
+        "unattended": "Se ejecuta sin supervisión"
+      },
+      "preauthorizable": "Esta operación se puede preautorizar para omitir la solicitud de aprobación.",
+      "notInCeiling": "No está en la línea base del partner",
+      "ceilingNote": "Esta organización solo puede habilitar operaciones que ya están presentes en la línea base de su partner.",
+      "moreCapabilities": "Más capacidades ({{count}})",
+      "moreCapabilitiesHint": "Capacidades que este tipo de agente normalmente no necesita.",
+      "unrecognisedTitle": "Entradas no reconocidas o inalcanzables",
+      "unrecognised": {
+        "unknown_tool": "Esta herramienta ya no existe.",
+        "unreachable_tool": "Esta herramienta no está disponible para los agentes.",
+        "bare_multi_op": "Esta entrada abarca todas las acciones de esta herramienta, incluidas las que se agreguen más adelante. Seleccione operaciones individuales en su lugar.",
+        "read_only": "Solo lectura: siempre disponible para el agente, por lo que esta entrada no tiene efecto."
+      },
+      "remove": "Quitar",
+      "operationsCount_one": "{{selected}} de {{total}} operación",
+      "operationsCount_other": "{{selected}} de {{total}} operaciones",
+      "capabilityCount_one": "{{count}} capacidad",
+      "capabilityCount_other": "{{count}} capacidades",
+      "summary": {
+        "shadow_one": "Lee datos de dispositivos, alertas y de la flota; puede proponer {{operations}} operación en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas); no ejecuta nada sin supervisión.",
+        "shadow_other": "Lee datos de dispositivos, alertas y de la flota; puede proponer {{operations}} operaciones en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas); no ejecuta nada sin supervisión.",
+        "act_one": "Lee datos de dispositivos, alertas y de la flota; puede proponer {{operations}} operación en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas); ejecuta las operaciones elegibles sin supervisión.",
+        "act_other": "Lee datos de dispositivos, alertas y de la flota; puede proponer {{operations}} operaciones en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas); ejecuta las operaciones elegibles sin supervisión.",
+        "off_one": "Apagado: este agente no se ejecuta. Si se activara, afectaría a {{operations}} operación en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas).",
+        "off_other": "Apagado: este agente no se ejecuta. Si se activara, afectaría a {{operations}} operaciones en {{capabilityPhrase}} ({{approvalRequests}} solicitudes de aprobación, {{loggedProposals}} propuestas registradas)."
+      },
+      "modeLine": {
+        "shadow": "Modo Sombra: nada de esto se ejecuta por sí solo. Las solicitudes de aprobación se envían a un técnico; los cambios de bajo riesgo se registran como propuestas y nunca se ejecutan.",
+        "act": "Modo Actuación: las operaciones marcadas como “Se ejecuta sin supervisión” se ejecutan sin la aprobación de un técnico; el resto sigue enviando una solicitud de aprobación o se registra como propuesta.",
+        "off": "Apagado: este agente no se ejecuta, por lo que nada de esto tiene efecto todavía."
+      },
+      "catalogUnavailable": "No se pudo cargar el catálogo de herramientas. Aun así, puede editar la lista de permisos directamente abajo.",
+      "loading": "Cargando capacidades…"
+    },
+    "summary": {
+      "edit": "Editar",
+      "createdDisabled": "Creado deshabilitado",
+      "enabled": "Habilitado",
+      "allOrganizations": "todas las organizaciones",
+      "rowLabels": {
+        "runsWhen": "Se ejecuta cuando",
+        "canRead": "Puede leer",
+        "mayPropose": "Puede proponer",
+        "executesUnattended": "Ejecuta sin supervisión",
+        "neverTouches": "Nunca toca",
+        "limits": "Límites",
+        "approvers": "Pide aprobación a"
+      },
+      "runsWhen": {
+        "triage": "Se ejecuta ante nuevas alertas de gravedad {{severities}} en cualquier dispositivo.",
+        "anySeverity": "cualquier gravedad",
+        "patch": "Se ejecuta según un cronograma, o cuando se activa manualmente, para revisar los parches faltantes.",
+        "helpdesk": "Se ejecuta cuando se crea un ticket, recibe su primera respuesta o se marca como resuelto.",
+        "maintenanceWindows": "Espera a que terminen las ventanas de mantenimiento.",
+        "ticketWrites": "Escribe actualizaciones del ticket sin esperar a un técnico."
+      },
+      "canRead": "Datos de dispositivos, alertas y flota para {{scope}}: inventario, métricas, registros, parches, copias de seguridad, tickets e historial de auditoría ({{count}} herramientas de solo lectura, siempre activas).",
+      "mayPropose": "{{operations}} operaciones en {{capabilities}} capacidades: {{approvalRequests}} generan una solicitud de aprobación que decide un técnico, y {{loggedProposals}} se registran como propuestas y nunca se ejecutan.",
+      "mayProposeNone": "Este agente todavía no propone ninguna operación.",
+      "unrecognisedLabel": "No reconocidas por el catálogo de herramientas actual:",
+      "executesUnattendedNone": "Nada. El modo sombra solo observa y propone; nada se ejecuta sin la aprobación de un técnico.",
+      "executesUnattendedNoneAct": "Todavía nada: ninguna operación seleccionada es apta para ejecutarse sin supervisión.",
+      "executesUnattendedList": "Ejecuta {{list}} sin esperar la aprobación de un técnico.",
+      "preauthorizedNote": "Algunas de estas son operaciones preautorizadas, otorgadas de antemano mediante el proceso de revisión de cuatro ojos.",
+      "neverTouchesEmpty": "Todavía no hay nada protegido.",
+      "limits": "Hasta {{devices}} dispositivos por ejecución, {{runsPerHour}} ejecuciones por hora, {{minutes}} minutos por ejecución, un presupuesto diario de {{budget}}, no más del {{fleetPercent}} de la flota por día, y {{cooldown}} minutos entre ejecuciones en el mismo dispositivo.",
+      "approvers": "Se consulta a {{count}} roles, por bandeja de entrada, chat y notificaciones push móviles. Gana la primera decisión.",
+      "approversNone": "Todavía no hay roles configurados, por lo que no se notificará a nadie."
+    },
+    "flow": {
+      "title": "Nuevo agente",
+      "stepperAriaLabel": "Pasos para el nuevo agente",
+      "back": "Atrás",
+      "next": "Siguiente: {{step}}",
+      "createAgent": "Crear agente",
+      "createdDisabledNote": "Los agentes nuevos se crean apagados. Decidirás si debe empezar a ejecutarse en el último paso, después de revisar todo.",
+      "startEnabled": "Iniciar habilitado",
+      "startEnabledHint": "Apagado es la opción segura por defecto. Revisa el resumen anterior y actívalo cuando quieras que el agente empiece a ejecutarse.",
+      "previewFailed": "No se pudo cargar una vista previa en vivo de la política de este agente. Aún puedes crearlo — revisa tus opciones con cuidado primero.",
+      "previewLoading": "Cargando vista previa…",
+      "protectedResourcesLegend": "Recursos protegidos",
+      "steps": {
+        "purpose": {
+          "label": "Propósito y postura",
+          "description": "Modo, tipo, propiedad y nombre"
+        },
+        "does": {
+          "label": "Qué hace",
+          "description": "Disparadores y capacidades"
+        },
+        "safety": {
+          "label": "Seguridad y supervisión",
+          "description": "Recursos protegidos, límites y aprobadores"
+        },
+        "review": {
+          "label": "Revisar y crear",
+          "description": "Confirma qué hará este agente"
+        }
+      },
+      "kinds": {
+        "triage": {
+          "blurb": "Vigila las alertas y propone soluciones para las que importan.",
+          "runsWhen": "una nueva alerta cruza las severidades que elijas",
+          "recommended": "reiniciar servicios bloqueados y liberar espacio en disco"
+        },
+        "patch": {
+          "blurb": "Revisa los parches faltantes y propone cuáles instalar.",
+          "runsWhen": "se activa su programación, o lo activas manualmente",
+          "recommended": "aprobar e instalar parches y luego reiniciar los servicios afectados"
+        },
+        "helpdesk": {
+          "blurb": "Trabaja los tickets a medida que se crean, reciben respuesta o se resuelven.",
+          "runsWhen": "se crea un ticket, recibe su primera respuesta o se marca como resuelto",
+          "recommended": "reiniciar servicios y liberar espacio en disco para resolver solicitudes comunes"
+        }
+      },
+      "kindCard": {
+        "runsWhenPrefix": "Se ejecuta cuando:",
+        "recommendedPrefix": "Recomendado:",
+        "taken": "Ya está en uso para este propietario"
       }
     }
   },
@@ -4133,7 +4687,8 @@
       "createField": "Crear campo",
       "saveChanges": "Guardar cambios",
       "deleting": "Eliminando...",
-      "deleteField": "Eliminar campo"
+      "deleteField": "Eliminar campo",
+      "importFromRmm": "Importar desde otro RMM"
     },
     "errors": {
       "fetch": "No se pudieron recuperar los campos personalizados",

@@ -371,6 +371,9 @@
       "criticalPending": "{{count}} parches críticos pendientes",
       "criticalPending_one": "{{count}} parche crítico pendiente",
       "criticalPending_other": "{{count}} parches críticos pendientes",
+      "unratedPending": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
+      "unratedPending_one": "{{count}} parche sin calificar pendiente (no se aprobará automáticamente)",
+      "unratedPending_other": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
       "empty": "Aún no hay datos de parches"
     },
     "vuln": {

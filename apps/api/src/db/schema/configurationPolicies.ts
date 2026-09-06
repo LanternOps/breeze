@@ -46,6 +46,7 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'pam',
   'onedrive_helper',
   'vulnerability',
+  'device_lifecycle',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [

@@ -58,7 +58,12 @@ const namespaceDuplicateBaselines = {
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
     'common.json': 102, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 159,
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // (Datto RMM / NinjaOne / ConnectWise Automate / N-central — proper
+    // product names, never translated) and dateFormat.iso's "ISO
+    // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
+    // literal format token/example key, not wording.
+    'devices.json': 165,
     'discovery.json': 17,
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -147,7 +152,11 @@ const namespaceDuplicateBaselines = {
     // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
     // in Spanish.
     'common.json': 88, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 115,
+    // +5 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
+    // format tokens, not wording.
+    'devices.json': 120,
     'discovery.json': 17,
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -238,7 +247,11 @@ const namespaceDuplicateBaselines = {
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
     'common.json': 106, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 136,
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    'devices.json': 142,
     'discovery.json': 15,
     'integrations.json': 38,
     'patches.json': 20,
@@ -334,7 +347,11 @@ const namespaceDuplicateBaselines = {
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
     'common.json': 108, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 136,
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    'devices.json': 142,
     'discovery.json': 15,
     'integrations.json': 40,
     'patches.json': 20,
@@ -435,7 +452,13 @@ const namespaceDuplicateBaselines = {
     // labels a privilege level, so the one place it must NOT be creatively
     // rendered is a control that says which account a script runs under.
     'common.json': 107, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 146,
+    // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" (literal format tokens/example keys, not wording); plus
+    // customFieldImportPreview.columns.status "Status" and grid.name "Name"
+    // — both spelled identically in German.
+    'devices.json': 154,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
@@ -573,7 +596,11 @@ const namespaceDuplicateBaselines = {
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
-    'devices.json': 77,
+    // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
+    // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
+    // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
+    // "field_key" — literal format tokens/example keys, not wording.
+    'devices.json': 83,
     'discovery.json': 9,
     'integrations.json': 22,
     'patches.json': 11,

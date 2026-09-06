@@ -688,6 +688,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const handleMfaDisable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
@@ -702,6 +704,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         );
       }
 
+      const data = await response.json();
+      // #4934: disabling MFA rotates the SESSION too — the API advances mfa_epoch
+      // and revokes every refresh family so no OTHER session survives the factor
+      // removal, and hands this caller a replacement in the same response. Adopt
+      // it before rendering success (the refresh/CSRF cookies came with it);
+      // keeping the pre-disable token means the next request 401s, its refresh
+      // fails against a revoked family, and the user is bounced to
+      // /login?reason=session-expired by the very action they just took.
+      // A refused commit (a logout raced the request) is not an error: MFA is
+      // already off, so the success message still has to be shown.
+      if (data.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
+      }
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));

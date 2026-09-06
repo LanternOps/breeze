@@ -599,6 +599,7 @@
         "driftChip": "Anzahl geändert: {{stored}} → {{live}}", "refresh": "Anzahl aktualisieren", "estimateError": "Die aktuelle Geräteanzahl konnte nicht geprüft werden.", "pickerError": "Gerätegruppen oder Standorte konnten nicht geladen werden. Aktualisieren Sie die Seite und versuchen Sie es erneut.",
         "groupDeleted": "Gerätegruppe „{{name}}“ wurde gelöscht — bitte eine andere wählen", "siteDeleted": "Standort „{{name}}“ wurde gelöscht — bitte einen anderen wählen",
         "typeLocked": "Ein Gerätesatz kann nach dem Anlegen der Position nicht geändert werden — Position entfernen und neu hinzufügen.",
+        "allowanceGroupLabel": "Mengenkontingent", "allowanceToggle": "Feste Menge einschließen, Rest separat behandeln",
         "includedLabel": "Enthaltene Menge", "overageModeLabel": "Über dem Kontingent", "overageBill": "Jede zusätzliche Einheit berechnen", "overageFlag": "Zur Prüfung melden", "overagePriceLabel": "Preis für Zusatzeinheiten",
         "driftToast": "{{count}} Position(en) entsprechen nicht mehr der aktuellen Geräteanzahl: {{lines}}",
         "retargetToast": "{{count}} Position(en) benötigen eine neu gewählte Gerätegruppe oder einen Standort für diese Organisation"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Positionen werden gelöscht. Erforderlich, wenn eine Position manuell oder ein Bündel ist.",
         "modeReprice": "Katalogpositionen neu bepreisen",
         "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "modeRepriceUnavailable": "Nicht verfügbar — mindestens eine Position ist manuell oder ein Bündel und kann nicht aus der Preisliste neu bepreist werden. Positionen stattdessen löschen.",
         "confirm": "Mir ist bewusst, dass dies die Währung des Angebots ändert.",
         "submit": "Währung ändern"
       },

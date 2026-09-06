@@ -150,7 +150,9 @@ import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
   InvalidSupervisedActionKeysError,
+  SupervisedKeysGrantOnlyError,
   UnsupportedAgentModeError,
+  assertOrgRowSupervisedKeysGrantOnly,
   createAgent,
   disableAgent,
   listAgents,
@@ -684,12 +686,41 @@ describe('agent mutations', () => {
       expect(state.audit).not.toHaveBeenCalled();
     });
 
-    it('accepts a create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
-      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } };
+    it('refuses an org-owned create adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the insert runs', async () => {
+      // Value-validation alone (validateAuthorizationKeys) would accept this
+      // key — it is a real POLICY_DECIDABLE_TIER3 key. What must still refuse
+      // it is the separate grant-only rule: an ORG row may only go from not
+      // having a key to having one via the four-eyes grant executor
+      // (supervisedKeyGrant.ts), never through create/update.
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'manage_services:restart', reason: 'grant_only' },
+      ]);
+      expect(state.insertedValues).toBeNull();
+      expect(state.audit).not.toHaveBeenCalled();
+    });
+
+    // A partner-owned row is the CEILING and is edited directly (never
+    // through the grant executor), so this fixture must own the row at the
+    // partner axis, not the org axis — an org-owned create with the same
+    // supervisedActionKeys patch is now refused by the grant-only rule above.
+    it('accepts a partner-owned create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
+      state.returnedRow = {
+        ...storedRow,
+        orgId: null,
+        partnerId: 'p1',
+        actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] },
+      };
 
       await createAgent(
         auth(),
-        { orgId: 'o1', partnerId: null },
+        { orgId: null, partnerId: 'p1' },
         { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
       );
 
@@ -723,9 +754,13 @@ describe('agent mutations', () => {
       expect(state.updatedValues).toBeNull();
     });
 
-    it('accepts an update whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
-      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
-      state.returnedRow = storedRow;
+    // A partner-owned row is the CEILING and is edited directly, so this
+    // fixture must own the row at the partner axis, not the org axis — an
+    // org-owned update adding a key it does not already hold is now refused
+    // by the grant-only rule (spec §4.4), covered separately below.
+    it('accepts an update to a partner-owned row whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
+      state.currentRow = { ...storedRow, orgId: null, partnerId: 'p1', actAssets: { scriptIds: ['s-1'] } };
+      state.returnedRow = { ...storedRow, orgId: null, partnerId: 'p1' };
 
       await updateAgent(auth(), 'a1', {
         actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
@@ -734,6 +769,36 @@ describe('agent mutations', () => {
       expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['security_scan:quarantine']);
       expect(state.updatedValues).toMatchObject({
         actAssets: { scriptIds: ['s-1'], supervisedActionKeys: ['security_scan:quarantine'] },
+      });
+    });
+
+    it('refuses an org-owned update adding a supervisedActionKeys the row does not already hold (spec §4.4, grant-only), before the update runs', async () => {
+      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
+
+      const err = await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
+      } as never).catch((e) => e);
+
+      expect(err).toBeInstanceOf(SupervisedKeysGrantOnlyError);
+      expect((err as SupervisedKeysGrantOnlyError).rejected).toEqual([
+        { key: 'security_scan:quarantine', reason: 'grant_only' },
+      ]);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('allows an org-owned update that keeps or removes an already-held supervisedActionKeys entry', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: [] } };
+
+      await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: [] },
+      } as never);
+
+      expect(state.updatedValues).toMatchObject({
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
       });
     });
 
@@ -953,5 +1018,31 @@ describe('listAgents', () => {
     state.selectWhere = undefined;
     await listAgents(auth({ scope: 'organization', orgId: 'o1', partnerOrgAccess: null }));
     expect(JSON.stringify(state.selectWhere ?? {})).not.toContain('p1');
+  });
+});
+
+describe('assertOrgRowSupervisedKeysGrantOnly (spec §4.4)', () => {
+  const org = { orgId: 'org-1', partnerId: 'p-1' };
+  const partner = { orgId: null, partnerId: 'p-1' };
+
+  it('rejects an org row adding a key it does not already hold', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, [], ['manage_services:restart']))
+      .toThrow(SupervisedKeysGrantOnlyError);
+    try {
+      assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:stop'], ['manage_services:stop', 'manage_services:restart']);
+      expect.fail('expected SupervisedKeysGrantOnlyError to throw');
+    } catch (e) {
+      expect((e as SupervisedKeysGrantOnlyError).rejected).toEqual([{ key: 'manage_services:restart', reason: 'grant_only' }]);
+    }
+  });
+
+  it('allows an org row to keep or remove keys', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], ['manage_services:restart'])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], [])).not.toThrow();
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(org, ['manage_services:restart'], undefined)).not.toThrow();
+  });
+
+  it('leaves partner rows alone (their keys are the ceiling, edited directly)', () => {
+    expect(() => assertOrgRowSupervisedKeysGrantOnly(partner, [], ['manage_services:restart'])).not.toThrow();
   });
 });

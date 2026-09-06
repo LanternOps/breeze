@@ -194,6 +194,30 @@ The **Audit** tab of the Privileged Access console renders this ledger -- filter
 
 ---
 
+## Windows Event Log
+
+Console audit is authoritative, but an auditor reviewing the *endpoint* directly -- the usual Cyber Essentials / SOC workflow -- previously saw only that the dormant `~breeze_elev` account logged on (native events 4624/4672/4688), with no link back to the Breeze user who authorized it. Every actuation the agent performs on Windows also writes a structured event to the Application log under a dedicated source, so a SIEM can answer "who approved this elevation" without cross-referencing the console.
+
+- **Source:** `Breeze-PAM` (distinct from the generic `BreezeAgent` source used for enrollment/bootstrap diagnostics, so PAM activity can be filtered on its own).
+- **Event IDs:**
+
+  | ID | Stage | Fires when |
+  |----|-------|------------|
+  | 1004 | Elevation actuated | The agent begins actuating an approved elevation request -- credential minted, before consent.exe injection or the token-launch. |
+  | 1005 | Session ended | The actuation attempt completes, successfully or not. |
+  | 1006 | Account demoted | `~breeze_elev` is removed from Administrators at the end of an actuation. Not written if the demote itself fails -- the log never claims a demote that didn't happen. |
+  | 1007 | Self-heal demote at startup | Reserved for agent startup finding the dormant account still elevated from a prior crash. Not yet wired to a call site. |
+  | 1008 | Actuation refused | The agent fail-closed refuses to actuate an otherwise-approved request (for example, an unresolved prior consent-prompt dismissal, #2610). |
+
+- **Message body:** a fixed field template -- request ID, target path, target SHA-256, subject user, requested-by name, approved-by name and email, approved-at timestamp, window-end timestamp, risk tier, and matched PAM rule name -- so a SIEM rule can parse the same shape regardless of which event ID fired. Unset fields render as `-`.
+- **Never included:** user ids, session tokens, or the elevation credential. Every identity field is a display name or email resolved server-side inside the same tenant-scoped request that queued the actuation (`POST /devices/:id/actuate-elevation`) -- the agent never holds or forwards a Breeze user id.
+- **Windows only.** macOS/Linux elevation does not yet have a separate-account model to log against; unified-log/syslog parity is tracked alongside that work.
+- **Not yet configurable.** The write is unconditional today -- there is no per-org toggle to silence it for orgs without a SIEM. A `writeEndpointEventLog` config-policy toggle is planned as a follow-up.
+
+The same fields are also appended to the agent's own local `audit.jsonl` (a tamper-evident, SHA-256 hash-chained log file the agent keeps on disk, separate from the platform [audit log](/reference/audit-logs/)) under the existing `privileged_operation` event type, so the trail survives even where the Windows Event Log write is unavailable.
+
+---
+
 ## What PAM does and does not protect against
 
 **PAM protects against:**

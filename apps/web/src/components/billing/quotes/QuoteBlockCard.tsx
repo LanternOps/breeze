@@ -927,8 +927,14 @@ export function BlockCard({
                           )}
                           <p className="text-xs text-muted-foreground">{t('quotes.editor.deviceSet.quantityAuto')}</p>
                           <fieldset className="space-y-2" data-testid={`quote-manual-device-set-allowance-group-${block.id}`}>
-                            <legend className="sr-only">{t('quotes.editor.deviceSet.includedLabel')}</legend>
-                            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={allowanceOn} onChange={(e) => setAllowanceOn(e.target.checked)} data-testid={`quote-manual-device-set-allowance-${block.id}`} />{t('quotes.editor.deviceSet.includedLabel')}</label>
+                            {/* Three different jobs, three different strings (#4937 — all three
+                                used to render deviceSet.includedLabel, so the form read
+                                "Included quantity ☐ / Included quantity [ ]" and a screen reader
+                                heard it three times). Mirrors the contract editor's allowance
+                                block: the legend names the GROUP, the checkbox names the ACTION,
+                                and only the number input below is "Included quantity". */}
+                            <legend className="sr-only">{t('quotes.editor.deviceSet.allowanceGroupLabel')}</legend>
+                            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={allowanceOn} onChange={(e) => setAllowanceOn(e.target.checked)} data-testid={`quote-manual-device-set-allowance-${block.id}`} />{t('quotes.editor.deviceSet.allowanceToggle')}</label>
                             {allowanceOn && <div className="grid gap-2 sm:grid-cols-3">
                               <label className="text-xs text-muted-foreground">{t('quotes.editor.deviceSet.includedLabel')}<input type="number" min="1" step="1" value={includedQuantity} onChange={(e) => setIncludedQuantity(e.target.value)} className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-foreground" /></label>
                               <fieldset className="space-y-1 text-xs text-muted-foreground">

@@ -1,7 +1,7 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
-import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
+import { devices, deviceCustomFieldValues, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
   FilterFieldCategory,
@@ -177,10 +177,46 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
     if (!customField) {
       throw new Error(`Invalid custom field key: ${field}`);
     }
+    // Reads the normalized table rather than jsonb_extract_path_text on
+    // devices.custom_fields (#3257 W05): the (org_id, field_key, value_text)
+    // index makes this a lookup instead of a per-row jsonb scan. The projection
+    // still exists, so nothing else in this file changes — and the returned
+    // shape is identical text, so every operator in `applyOperator` behaves as
+    // it did.
+    //
+    // LIMIT 1 is belt-and-braces, not load-bearing. (device_id, definition_id)
+    // is unique; W02's two partial unique indexes and W03's anti-shadow trigger
+    // together mean at most ONE definition with a given field_key is visible to
+    // any org; and the coherence trigger enforces visibility on every write. So
+    // (device_id, field_key) is single-valued and the subquery returns one row.
+    //
+    // It is kept because those guards can be disarmed (the test suite does it to
+    // forge legacy shapes). Degrading to an arbitrary pick among duplicates is
+    // strictly better here than a "more than one row returned by a subquery"
+    // error, which would abort every smart-group evaluation, deployment-target
+    // resolution and dynamic-group recompute that touches the affected org —
+    // a fleet-wide outage from one corrupt row. An ORDER BY would make the pick
+    // deterministic but no more correct, at the cost of implying the duplicate
+    // state is expected.
+    //
+    // No org predicate here on purpose: the outer query already pins
+    // devices.org_id, the correlation is on devices.id, and this expression is
+    // evaluated under the caller's RLS context where the table's own
+    // breeze_has_org_access(org_id) policy applies.
     return {
       table: 'devices',
       column: 'customFields',
-      computed: sql`jsonb_extract_path_text(${devices.customFields}, ${customField})`
+      computed: sql`(
+        SELECT COALESCE(
+                 v.value_text,
+                 v.value_number::text,
+                 v.value_bool::text,
+                 v.value_date::text
+               )
+          FROM ${deviceCustomFieldValues} v
+         WHERE v.device_id = ${devices.id}
+           AND v.field_key = ${customField}
+         LIMIT 1)`
     };
   }
 

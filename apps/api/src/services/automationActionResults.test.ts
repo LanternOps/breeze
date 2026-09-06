@@ -107,21 +107,25 @@ describe('automation action-result state machine', () => {
       status: 'running',
       devicesSucceeded: 1,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['skipped', 'skipped'])).toEqual({
       status: 'completed',
       devicesSucceeded: 0,
       devicesFailed: 0,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['success', 'failed', 'skipped'])).toEqual({
       status: 'partial',
       devicesSucceeded: 1,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
     expect(__testOnly.aggregateDeviceStatuses(['failed', 'skipped'])).toEqual({
       status: 'failed',
       devicesSucceeded: 0,
       devicesFailed: 1,
+      devicesCancelled: 0,
     });
   });
 

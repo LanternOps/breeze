@@ -194,6 +194,11 @@
         "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
         "confirm": "Entfernen"
       },
+      "permanentDelete": {
+        "title": "{{hostname}} endgültig löschen?",
+        "message": "Damit wird der gesamte Verlauf dieses Geräts gelöscht — Tickets, Alarme, Patch- und Backup-Datensätze. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Endgültig löschen"
+      },
       "clearSessions": {
         "title": "Sitzungen beenden",
         "message": "Alle aktiven Remote-Sitzungen für {{hostname}} beenden? Dadurch werden alle derzeit über Terminal, Desktop oder Dateiübertragung verbundenen Benutzer getrennt.",
@@ -204,6 +209,22 @@
         "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
         "confirm": "Homebrew installieren"
       }
+    },
+    "removeDialog": {
+      "titleOne": "{{hostname}} entfernen?",
+      "titleMany": "{{count}} Geräte entfernen?",
+      "bodyOne": "Es wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
+      "bodyMany": "Sie werden aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können sie später wiederherstellen.",
+      "summary": "{{online}} online, {{notOnline}} derzeit nicht online.",
+      "legend": "Was soll mit dem Breeze-Agenten geschehen?",
+      "uninstall": "Den Breeze-Agenten deinstallieren",
+      "uninstallOnline": "Jetzt eingereiht — ein Online-Agent holt den Befehl in wenigen Augenblicken ab.",
+      "uninstallQueuedWithWindow": "Eingereiht — wird ausgeführt, sobald sich das Gerät das nächste Mal meldet. Wird abgebrochen, wenn das nicht innerhalb von {{hours}} Stunden geschieht.",
+      "uninstallQueued": "Eingereiht — wird ausgeführt, sobald sich das Gerät das nächste Mal meldet.",
+      "uninstallMixed": "Online-Geräte holen den Befehl in wenigen Augenblicken ab; die übrigen führen ihn bei der nächsten Meldung aus.",
+      "leave": "Den Agenten installiert lassen",
+      "leaveHint": "Auf dem Rechner läuft der Agent weiter, er kann aber nicht verwaltet werden.",
+      "confirm": "Entfernen"
     },
     "runScript": "Skript ausführen",
     "remoteTools": "Remote-Tools",
@@ -529,7 +550,6 @@
     "s": "s",
     "decommissionCancelled": "Entfernen abgebrochen",
     "permanentDeleteCancelled": "Permanentes Löschen abgebrochen",
-    "permanentlyDeletedWithWarning": "{{hostname}} wurde gelöscht, aber {{warning}}",
     "failedToQueueScript": "Das Skript konnte nicht in die Warteschlange gestellt werden",
     "loadingDevice": "Gerät wird geladen...",
     "backToDevices": "Zurück zu den Geräten",
@@ -1124,6 +1144,8 @@
     "compareSelected": "Ausgewählte vergleichen",
     "linkAsMultiBoot": "Link als Multiboot",
     "decommissionSelected": "Auswahl entfernen",
+    "restoreSelected": "Auswahl wiederherstellen",
+    "permanentDeleteSelected": "Endgültig löschen …",
     "clearSelection": "Auswahl aufheben",
     "selectAllDevicesOnThisPage": "Wählen Sie auf dieser Seite alle Geräte aus",
     "actions": "Aktionen",
@@ -1136,6 +1158,8 @@
     "sendAWakeOnLanPacket": "Wake-on-LAN-Paket über einen online verfügbaren Peer-Agenten im LAN des Geräts senden",
     "wake": "Aufwecken",
     "settings": "Einstellungen",
+    "enterMaintenance": "Wartungsmodus aktivieren",
+    "exitMaintenance": "Wartungsmodus beenden",
     "restore": "Wiederherstellen",
     "decommission": "Entfernen",
     "permanentlyDelete": "Endgültig löschen",
@@ -1783,6 +1807,15 @@
       "shutdown": "Herunterfahren"
     },
     "addDevice": "Gerät hinzufügen",
+    "importFromRmm": "Von einer anderen RMM importieren",
+    "bulkPurge": {
+      "andMore": "und {{count}} weitere",
+      "confirm": "Endgültig löschen",
+      "message": "Das lässt sich nicht rückgängig machen. Alle Datensätze dieser Geräte — Verlauf, Warnungen, Skripte, Sitzungen — werden mit ihnen gelöscht. Tickets bleiben erhalten und werden getrennt.",
+      "multipleOrgs": "Diese Auswahl umfasst {{count}} Organisationen. Prüfen Sie den Organisationsbereich, bevor Sie fortfahren.",
+      "title": "{{count}} Gerät(e) endgültig löschen?",
+      "typeCount": "Zur Bestätigung {{count}} eingeben"
+    },
     "confirmRunAction": "Führen Sie {{script}} aus",
     "confirmScriptRun": "Bestätigen Sie die Ausführung des Skripts",
     "emptyDescription": "Beginnen Sie mit dem Hinzufügen Ihres ersten Geräts. Das Installationsprogramm und der Registrierungsschlüssel werden automatisch generiert.",
@@ -1806,6 +1839,7 @@
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
+      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt.",
       "bulkCommandPartialFailed": "Massenbefehl ist teilweise fehlgeschlagen",
       "bulkCommandSent": "Massenbefehl gesendet",
       "bulkDecommissionAllFailed": "Entfernen für alle {{count}} Geräte fehlgeschlagen: {{devices}}",
@@ -1814,11 +1848,23 @@
       "bulkMaintenanceAllFailed": "Der Wartungsmodus konnte für alle {{count}} Geräte nicht aktualisiert werden: {{devices}}",
       "bulkMaintenanceSomeFailed": "Wartungsmodus für {{succeeded}} Gerät(e) {{verb}}; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
+      "bulkMaintenanceSuccess_one": "Wartungsmodus für {{count}} Gerät {{verb}}",
+      "bulkMaintenanceSuccess_other": "Wartungsmodus für {{count}} Geräte {{verb}}",
+      "bulkPurgeDone": "{{count}} Gerät(e) endgültig gelöscht",
+      "bulkPurgeDoneWithSkips": "{{purged}} Gerät(e) endgültig gelöscht; {{skipped}} übersprungen ({{reasons}})",
+      "bulkPurgeFailed": "Endgültiges Löschen fehlgeschlagen: {{reason}}",
+      "bulkPurgeNoneDeleted": "Kein Gerät wurde gelöscht: {{reasons}}",
+      "bulkPurgeStarted": "{{count}} Gerät(e) werden endgültig gelöscht …",
+      "bulkRestoreAllFailed": "Wiederherstellung aller {{count}} Gerät(e) fehlgeschlagen",
+      "bulkRestoreSomeFailed": "{{succeeded}} Gerät(e) wiederhergestellt; {{failed}} fehlgeschlagen",
+      "bulkRestoreUninstallAlreadySent": "Bei {{count}} Gerät(en) wurde die Deinstallation bereits gesendet — auf diesen Maschinen muss der Agent ggf. neu installiert werden.",
+      "bulkRestored": "{{count}} Gerät(e) wiederhergestellt",
       "bulkWakeAllFailed": "Aufwecken aller Geräte fehlgeschlagen",
       "bulkWakeSent": "Aufweckbefehle gesendet",
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
       "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
       "commandSent": "{{action}} an {{hostname}} gesendet",
+      "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "decommissionCancelled": "Entfernen abgebrochen",
       "decommissionFailed": "Entfernen fehlgeschlagen",
       "decommissioned": "Entfernt",
@@ -1832,11 +1878,9 @@
       "maintenanceOn": "Wartung eingeschaltet",
       "multibootLinked": "Multiboot-verknüpft",
       "networkSkipped": "{{count}} Netzwerkgerät(e) übersprungen – diese Aktion gilt nur für Agent-Geräte.",
-      "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
-      "permanentlyDeleted": "Endgültig gelöscht",
-      "permanentlyDeletedWithWarning": "{{hostname}} wurde gelöscht, aber {{warning}}",
+      "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
       "restored": "Wiederhergestellt",
       "scriptQueueFailed": "Skriptwarteschlange fehlgeschlagen",
       "scriptQueuedMany": "Skriptausführungen in die Warteschlange gestellt",
@@ -1846,8 +1890,7 @@
       "unknownAction": "Unbekannte Aktion",
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
-      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt."
+      "wakeTimeout": "Zeitüberschreitung beim Aufwecken"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -2378,5 +2421,170 @@
     "colDetectedVersion": "Erkannte Version",
     "colScannedAt": "Letzter Scan",
     "loadMore": "Mehr laden"
+  },
+  "uninstallState": {
+    "pending": "Agent-Deinstallation in Warteschlange — läuft {{when}} ab",
+    "pendingNoDeadline": "Agent-Deinstallation in Warteschlange",
+    "sent": "Agent-Deinstallation zugestellt",
+    "completed": "Agent deinstalliert",
+    "expired": "Deinstallation abgelaufen — der Agent hat sich nie gemeldet und ist möglicherweise noch installiert",
+    "failed": "Agent-Deinstallation fehlgeschlagen",
+    "cancelled": "Agent-Deinstallation abgebrochen",
+    "none": "Agent wurde installiert gelassen"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Aus einer anderen RMM importieren",
+    "description": "Übertragen Sie benutzerdefinierte Felder und deren Werte aus Ihrer bisherigen RMM.",
+    "close": "Schließen",
+    "sourceLabel": "Quelle",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Allgemeine CSV-Datei"
+    },
+    "steps": {
+      "definitions": "Feld-Definitionen",
+      "values": "Gerätewerte"
+    },
+    "backToDefinitions": "Zurück zu den Feld-Definitionen"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "CSV-Datei mit der Feldliste Ihres bisherigen Anbieters hier ablegen oder klicken zum Durchsuchen",
+    "errors": {
+      "previewFailed": "Vorschau dieser Felddefinitionen fehlgeschlagen",
+      "importFailed": "Import dieser Felddefinitionen fehlgeschlagen",
+      "allRefused": "Keine dieser Felddefinitionen konnte importiert werden — siehe die Fehler unten"
+    },
+    "ownerScope": {
+      "legend": "Wem gehören diese Felder",
+      "allOrganizations": "Alle Organisationen",
+      "thisOrganizationOnly": "Nur diese Organisation"
+    },
+    "grid": {
+      "heading": "{{count}} Feld gefunden — jedes umbenennen und typisieren",
+      "heading_other": "{{count}} Felder gefunden — jedes umbenennen und typisieren",
+      "sourceLabel": "Quellfeld",
+      "name": "Name",
+      "type": "Typ"
+    },
+    "actions": {
+      "preview": "Vorschau",
+      "previewing": "Vorschau wird geladen…",
+      "import": "Felder erstellen",
+      "importing": "Wird erstellt…",
+      "skipToValues": "Überspringen — weiter zu den Werten"
+    },
+    "preview": {
+      "heading": "Vorschau"
+    },
+    "annotations": {
+      "create": "Wird erstellt",
+      "already-exists": "Bereits vorhanden",
+      "type-conflict": "Typkonflikt",
+      "key-shadowed": "Schlüssel bereits im anderen Bereich verwendet",
+      "org-not-found": "Organisation nicht gefunden",
+      "partner-wide-denied": "Sie dürfen keine organisationsübergreifenden Felder erstellen"
+    },
+    "summary": "{{created}} erstellt, {{skipped}} übersprungen, {{failed}} fehlgeschlagen"
+  },
+  "customFieldValueImport": {
+    "dropzone": "CSV-Datei mit Gerätewerten hier ablegen oder klicken zum Durchsuchen",
+    "errors": {
+      "previewFailed": "Vorschau dieser Werte fehlgeschlagen",
+      "importFailed": "Import dieser Werte fehlgeschlagen"
+    },
+    "mode": {
+      "label": "Wenn ein Wert bereits gesetzt ist",
+      "skip": "Unverändert lassen",
+      "update": "Überschreiben"
+    },
+    "dateFormat": {
+      "label": "Datumsformat",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Herstellerseitige Garantiedaten überschreiben",
+    "mapping": {
+      "ignore": "Diese Spalte ignorieren",
+      "identifierGroup": "Gerät zuordnen nach…",
+      "identifiers": {
+        "deviceId": "Geräte-ID",
+        "externalSystem": "Quellsystem",
+        "externalId": "Quellgeräte-ID",
+        "serialNumber": "Seriennummer",
+        "hostname": "Hostname",
+        "organizationId": "Organisations-ID"
+      },
+      "customField": "Benutzerdefiniertes Feld…",
+      "warrantyGroup": "Garantie",
+      "warranty": {
+        "warrantyStartDate": "Garantiebeginn",
+        "warrantyEndDate": "Garantieende",
+        "manufacturer": "Hersteller"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} Zeile übersprungen — keine Kennung oder kein Wert zugeordnet",
+      "droppedRows_other": "{{count}} Zeilen übersprungen — keine Kennung oder kein Wert zugeordnet"
+    },
+    "actions": {
+      "preview": "{{count}} Zeile in der Vorschau anzeigen",
+      "preview_other": "{{count}} Zeilen in der Vorschau anzeigen",
+      "previewing": "Vorschau wird geladen…",
+      "import": "{{count}} Zeile importieren",
+      "import_other": "{{count}} Zeilen importieren",
+      "importing": "Wird importiert…"
+    },
+    "chunkedNotice": "Diese Datei ist größer als eine Anfrage — sie wird automatisch in Teilen gesendet.",
+    "progress": "Teil {{done}} von {{total}}",
+    "summary": "{{applied}} angewendet, {{skipped}} übersprungen, {{failed}} fehlgeschlagene Werte",
+    "notAttempted": "{{count}} Zeile wurde nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "notAttempted_other": "{{count}} Zeilen wurden nicht versucht, weil ein früherer Teil fehlgeschlagen ist — beheben Sie den Fehler unten und führen Sie den Import für die verbleibenden Zeilen erneut aus",
+    "errorRow": "Zeile {{index}}",
+    "previewStale": "Die Zuordnung hat sich seit dieser Vorschau geändert — führen Sie die Vorschau erneut aus, bevor Sie importieren"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Alle auswählen",
+    "unresolved": "Nicht aufgelöst",
+    "columns": {
+      "device": "Gerät",
+      "status": "Status",
+      "values": "Werte"
+    },
+    "rowOutcomes": {
+      "matched": "Zugeordnet",
+      "linkMatch": "Verknüpft",
+      "ambiguous": "Mehrdeutig",
+      "notFound": "Nicht gefunden",
+      "orgNotFound": "Organisation nicht gefunden",
+      "identityConflict": "Widersprüchliche Zuordnung"
+    },
+    "valueOutcomes": {
+      "applied": "Angewendet",
+      "skippedAlreadySet": "Bereits gesetzt",
+      "skippedProviderOwned": "Vom Anbieter verwaltet",
+      "noDefinition": "Kein solches Feld",
+      "typeError": "Typfehler",
+      "notApplicable": "Nicht zutreffend für dieses Gerät",
+      "deviceUnresolved": "Gerät nicht aufgelöst"
+    },
+    "hideCandidates": "Kandidaten ausblenden",
+    "showCandidates": "{{count}} Kandidat anzeigen",
+    "showCandidates_other": "{{count}} Kandidaten anzeigen",
+    "picked": "{{deviceId}} ausgewählt",
+    "candidate": {
+      "serial": "Seriennummer: {{value}}",
+      "os": "Betriebssystem: {{value}}",
+      "enrolled": "Registriert: {{value}}",
+      "lastSeen": "Zuletzt gesehen: {{value}}",
+      "pick": "Auswählen",
+      "picked": "Ausgewählt"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Garantiebeginn",
+      "warrantyEndDate": "Garantieende",
+      "manufacturer": "Hersteller"
+    },
+    "identityConflictNote": "Die Kennungen dieser Zeile verweisen auf unterschiedliche Geräte und können so nicht importiert werden — korrigieren Sie die Datei und führen Sie die Vorschau erneut aus. Die unten aufgeführten Kandidaten dienen nur zur Information."
   }
 }

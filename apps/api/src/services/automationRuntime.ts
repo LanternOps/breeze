@@ -48,11 +48,20 @@ import {
   reconcileAutomationRun,
   seedAutomationActionResults,
 } from './automationActionResults';
+import {
+  assertRunNotCancelled,
+  isRunCancelledError,
+} from './automationRunCancellation';
+// scriptCancellation is imported LAZILY (see cancelDispatchIfRunCancelled) for
+// the same reason softwareDeployment is below: it pulls the
+// agentWs → commandQueue → configurationPolicy chain in at module load.
 // softwareDeployment and softwareCurrency are imported lazily inside
 // executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
 // import chain into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+/** What a runner reports back to its caller (#3525 W05 added `cancelled`). */
+export type AutomationRunOutcomeStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type AutomationOwnerAxes = { orgId: string | null; partnerId: string | null };
 
@@ -68,6 +77,160 @@ function recordAutomationRuntimeActionDispatch(
   // transaction, just like the action-side writes they describe.
   return withAutomationRuntimeDb(() => recordAutomationActionDispatch(input));
 }
+
+/**
+ * #3525 W05 — the dispatch fence, CHECK-BEFORE half.
+ *
+ * A cheap early exit, not the correctness guarantee: this runs on the pooled
+ * `db`, so the `FOR SHARE` lock lives only for the length of this one
+ * statement and is gone before the dispatch it guards begins. What it buys is
+ * that a job for a run cancelled earlier does no work at all. The guarantee
+ * that nothing is left RUNNING comes from `cancelDispatchIfRunCancelled`
+ * below — see the header of `automationRunCancellation.ts`.
+ *
+ * Throws `RunCancelledError`. Every dispatch-side caller either returns
+ * quietly on it or lets it reach `executeAutomationRun`'s handler — it must
+ * NEVER be recorded as an action failure, because nothing failed.
+ */
+function assertRunNotCancelledInRuntime(runId: string): Promise<void> {
+  return withAutomationRuntimeDb(() => assertRunNotCancelled(db, runId));
+}
+
+/**
+ * What the compensating cancel achieved for ONE racing dispatch.
+ *
+ * Deliberately not a boolean. The caller writes a line into the run log that
+ * an MSP tech reads, so "we asked" and "it stopped" and "we could not even
+ * ask" must not collapse into one value — that is precisely the dishonesty
+ * the whole cancellation design exists to prevent.
+ */
+type DispatchCompensation =
+  /** No race: the run is live, or the dispatch produced nothing stoppable. */
+  | 'not_needed'
+  /** Nothing is running any more: retracted, already terminal, or recovered. */
+  | 'settled'
+  /** A `script_cancel` is queued. The device has NOT confirmed. Not stopped. */
+  | 'requested'
+  /** We could not even ask. The script may still be running on the device. */
+  | 'failed';
+
+/**
+ * The other half of the fence.
+ *
+ * This is where the "nothing is left running" guarantee actually lives — NOT
+ * in the `FOR SHARE` check above, whose lock is released before the dispatch
+ * begins (it cannot be held across a command insert and a WebSocket send for
+ * five devices at a time without pinning the pool). So on every dispatch there
+ * is a window in which a cancel commits, its fan-out reads the executions
+ * table, and only THEN this dispatcher's own execution row lands — invisible
+ * to that sweep and running on the device.
+ *
+ * Re-reading the run after the dispatch has committed closes it, with no lock
+ * needed: whichever of {the cancel's sweep, this re-read} runs second sees the
+ * other's committed write. If the run is cancelled by now, the execution we
+ * just created is stopped here instead.
+ *
+ * Delete this and the race reopens.
+ */
+async function cancelDispatchIfRunCancelled(
+  runId: string,
+  deviceId: string,
+  result: ActionExecutionResult,
+): Promise<DispatchCompensation> {
+  // Only a script execution can be stopped after the fact, so only a dispatch
+  // that produced one pays for the extra read. `execute_command` and
+  // deployments have no agent-side stop at all — they are reported to the
+  // operator as uncancellable instead (automationRunCancellation.ts).
+  const executionId = 'scriptExecutionId' in result.outcome ? result.outcome.scriptExecutionId : undefined;
+  if (!executionId) return 'not_needed';
+
+  const cancelled = await withAutomationRuntimeDb(async () => {
+    const [row] = await db
+      .select({ status: automationRuns.status })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, runId))
+      .limit(1);
+    return row?.status === 'cancelled';
+  });
+  if (!cancelled) return 'not_needed';
+
+  try {
+    const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+    const outcome = await cancelScriptExecution({
+      executionId,
+      actorId: null,
+      actorLabel: 'automation run cancellation',
+    });
+    switch (outcome.kind) {
+      case 'cancelling':
+        // POST-COMMIT delivery, same contract as every other cancel caller.
+        if (!outcome.alreadyQueued) {
+          await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+        }
+        return 'requested';
+      // Retracted is a server-side PROOF; the other two mean the execution
+      // closed (or is closing) on its own evidence. Nothing is left running.
+      case 'retracted':
+      case 'recovered':
+      case 'already_terminal':
+      case 'idempotent':
+        return 'settled';
+      // The execution vanished, or has no paired script command. Absence is
+      // not proof that nothing is running — fail loud.
+      case 'not_found':
+      case 'inconsistent':
+        console.error('[automationRuntime] could not stop an execution dispatched into a cancelled run', {
+          runId,
+          deviceId,
+          executionId,
+          outcome: outcome.kind,
+        });
+        captureException(
+          new Error(`automation cancel compensation refused: ${outcome.kind}`),
+          undefined,
+          { runId, deviceId, executionId },
+        );
+        return 'failed';
+      default: {
+        // A new CancelOutcome variant must be classified deliberately rather
+        // than silently reported as a stop. This fails the build instead.
+        const unhandled: never = outcome;
+        throw new Error(`unhandled CancelOutcome kind: ${(unhandled as { kind: string }).kind}`);
+      }
+    }
+  } catch (err) {
+    // Losing the compensation must not turn a cancelled run into a thrown
+    // BullMQ job — but it MUST be visible, because it is the one path that can
+    // leave a script running after a cancel.
+    console.error('[automationRuntime] failed to cancel an execution dispatched into a cancelled run', {
+      runId,
+      deviceId,
+      executionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { runId, deviceId, executionId });
+    return 'failed';
+  }
+}
+
+/** The run-log line for each compensation outcome. Never overstates. */
+const DISPATCH_COMPENSATION_LOG: Record<
+  Exclude<DispatchCompensation, 'not_needed'>,
+  { level: LogLevel; message: string }
+> = {
+  settled: {
+    level: 'warning',
+    message: 'Action dispatched into a run that was cancelled; the execution was stopped',
+  },
+  requested: {
+    level: 'warning',
+    message: 'Action dispatched into a run that was cancelled; a stop was requested but the device has not confirmed it',
+  },
+  failed: {
+    level: 'error',
+    message: 'Action dispatched into a run that was cancelled and the stop could NOT be requested; the script may still be running on the device',
+  },
+};
 
 /**
  * Ownership → org fan-out (#2133). An org-owned automation targets devices in
@@ -2096,11 +2259,14 @@ async function executeAutomationActionsInOrder(args: {
   devicesSucceeded: number;
   devicesFailed: number;
   hasNonterminalActions: boolean;
+  /** True when the run was cancelled part-way and dispatch stopped early. */
+  cancelled: boolean;
 }> {
   const logs: AutomationLogEntry[] = [];
   const activeDeviceIds = new Set(args.devices.map((device) => device.id));
   const failedDeviceIds = new Set<string>();
   let hasNonterminalActions = false;
+  let cancelled = false;
 
   const handleFailure = async (
     device: OrderedAutomationDevice,
@@ -2145,6 +2311,20 @@ async function executeAutomationActionsInOrder(args: {
   for (const [actionIndex, action] of args.actions.entries()) {
     const activeDevices = args.devices.filter((device) => activeDeviceIds.has(device.id));
     if (activeDevices.length === 0) break;
+
+    // Fence, once per action: a long run stops between actions, not only
+    // between devices. Checked before the deployment batch too, which
+    // dispatches for every active device at once.
+    try {
+      await assertRunNotCancelledInRuntime(args.runId);
+    } catch (err) {
+      if (!isRunCancelledError(err)) throw err;
+      cancelled = true;
+      logs.push(logEntry('Automation run cancelled; remaining actions were not dispatched', 'warning', {
+        actionIndex,
+      }));
+      break;
+    }
 
     if (action.type === 'deploy_software') {
       try {
@@ -2191,6 +2371,9 @@ async function executeAutomationActionsInOrder(args: {
 
     await runWithConcurrency(activeDevices, 5, async (device) => {
       try {
+        // Fence, per device: a run cancelled while the previous device was
+        // being dispatched must not reach this one.
+        await assertRunNotCancelledInRuntime(args.runId);
         const result = await withAutomationRuntimeDb(() => executeAction(action, actionIndex, buildActionExecutionContext({
           automation: args.automation,
           runId: args.runId,
@@ -2201,6 +2384,16 @@ async function executeAutomationActionsInOrder(args: {
         }, device)));
         logs.push(result.log);
         await persistActionExecutionOutcome(args.runId, device.id, actionIndex, result);
+        const compensation = await cancelDispatchIfRunCancelled(args.runId, device.id, result);
+        if (compensation !== 'not_needed') {
+          cancelled = true;
+          const line = DISPATCH_COMPENSATION_LOG[compensation];
+          logs.push(logEntry(line.message, line.level, {
+            actionIndex,
+            deviceId: device.id,
+          }));
+          return;
+        }
         if (
           result.outcome.status === 'queued'
           || result.outcome.status === 'delivered'
@@ -2212,6 +2405,16 @@ async function executeAutomationActionsInOrder(args: {
           await handleFailure(device, actionIndex, result.log.message);
         }
       } catch (err) {
+        if (isRunCancelledError(err)) {
+          // Nothing failed — an operator stopped the run. Recording a failure
+          // here would report a stop as an automation defect.
+          cancelled = true;
+          logs.push(logEntry('Automation run cancelled before this device was dispatched', 'warning', {
+            actionIndex,
+            deviceId: device.id,
+          }));
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error('[automationRuntime] action threw during device dispatch', {
           deviceId: device.id,
@@ -2240,6 +2443,7 @@ async function executeAutomationActionsInOrder(args: {
     devicesSucceeded: args.devices.length - failedDeviceIds.size,
     devicesFailed: failedDeviceIds.size,
     hasNonterminalActions,
+    cancelled,
   };
 }
 
@@ -2407,13 +2611,20 @@ export async function executeAutomationRun(
   targetDeviceIdsFromQueue?: string[],
   triggerContext?: AutomationTriggerContext,
 ): Promise<{
-  status: 'running' | 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
   try {
     return await executeAutomationRunInner(runId, targetDeviceIdsFromQueue, triggerContext);
   } catch (err) {
+    // #3525 W05 — a cancelled run is NOT an execution error. Falling through
+    // would call markAutomationRunFailedAfterError, which flips every seeded
+    // device row to `failed`, and would rethrow so BullMQ retries a run an
+    // operator deliberately stopped.
+    if (isRunCancelledError(err)) {
+      return { status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+    }
     await withAutomationRuntimeDb(() => markAutomationRunFailedAfterError(runId, err)).catch((cleanupErr) => {
       console.error(
         `[AutomationRuntime] failed to mark run ${runId} failed after execution error:`,
@@ -2449,7 +2660,7 @@ async function executeAutomationRunInner(
   targetDeviceIdsFromQueue?: string[],
   triggerContext?: AutomationTriggerContext,
 ): Promise<{
-  status: 'running' | 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
@@ -2525,6 +2736,16 @@ async function executeAutomationRunInner(
   const scriptsById = resolvedReferences.scriptsById;
   const channelsById = resolvedReferences.notificationChannelsById;
 
+  // #3525 W05 — a queued job is not permission to dispatch. The run may have
+  // been cancelled between enqueue and pickup, and neither runner checked
+  // before this wave: the job ran to completion regardless.
+  try {
+    await assertRunNotCancelledInRuntime(run.id);
+  } catch (err) {
+    if (!isRunCancelledError(err)) throw err;
+    return { status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+  }
+
   // Seed a per-device result row (pending) for every targeted device so the
   // execution-history UI can show live progress as each device finishes (#2023).
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
@@ -2577,13 +2798,15 @@ async function executeAutomationRunInner(
       completedAt: new Date(),
     }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))));
   }
-  const status: 'running' | 'completed' | 'failed' | 'partial' = hasNonterminalActions
-    ? 'running'
-    : devicesFailed === 0
-      ? 'completed'
-      : devicesSucceeded === 0
-        ? 'failed'
-        : 'partial';
+  const status: AutomationRunOutcomeStatus = actionOutcome.cancelled
+    ? 'cancelled'
+    : hasNonterminalActions
+      ? 'running'
+      : devicesFailed === 0
+        ? 'completed'
+        : devicesSucceeded === 0
+          ? 'failed'
+          : 'partial';
 
   return {
     status,
@@ -2719,7 +2942,7 @@ export async function executeConfigPolicyAutomationRun(
   triggeredBy: string,
 ): Promise<{
   runId: string;
-  status: 'running' | 'completed' | 'failed' | 'partial';
+  status: AutomationRunOutcomeStatus;
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
@@ -2787,6 +3010,17 @@ export async function executeConfigPolicyAutomationRun(
       .from(devices)
       .where(inArray(devices.id, targetDeviceIds)))
     : [];
+  // #3525 W05 fence — see the standalone runner. Config-policy runs are out of
+  // scope for the cancel ROUTE (OD10-B: automation_runs' config-policy RLS arm
+  // makes partner-owned policy runs invisible), but the fence is unconditional
+  // so a run cancelled through any future door still stops here.
+  try {
+    await assertRunNotCancelledInRuntime(run.id);
+  } catch (err) {
+    if (!isRunCancelledError(err)) throw err;
+    return { runId: run.id, status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 };
+  }
+
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
   for (const device of deviceRows) {
     await seedDeviceAutomationActions(run.id, device, actions);
@@ -2859,13 +3093,15 @@ export async function executeConfigPolicyAutomationRun(
       completedAt: new Date(),
     }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.status, 'running'))));
   }
-  const status: 'running' | 'completed' | 'failed' | 'partial' = hasNonterminalActions
-    ? 'running'
-    : devicesFailed === 0
-      ? 'completed'
-      : devicesSucceeded === 0
-        ? 'failed'
-        : 'partial';
+  const status: AutomationRunOutcomeStatus = actionOutcome.cancelled
+    ? 'cancelled'
+    : hasNonterminalActions
+      ? 'running'
+      : devicesFailed === 0
+        ? 'completed'
+        : devicesSucceeded === 0
+          ? 'failed'
+          : 'partial';
 
   return {
     runId: run.id,
@@ -2881,4 +3117,9 @@ export const __testOnly = {
   buildActionExecutionContext,
   executeAction,
   executeAiTriageAction,
+  // #3525 W05 — the two halves of the dispatch fence. Exported so the
+  // compensating path (the ONLY thing standing between a mid-flight cancel and
+  // a script that keeps running) is provable without driving a full mocked run.
+  cancelDispatchIfRunCancelled,
+  executeAutomationActionsInOrder,
 };

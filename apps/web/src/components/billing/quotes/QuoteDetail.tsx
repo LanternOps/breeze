@@ -116,6 +116,21 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   const canChangeCurrency = can('quotes', 'write') && quote.status === 'draft';
   const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
 
+  // `reprice` re-resolves every line from the price book in the TARGET currency,
+  // so the server refuses the whole op with 409 CURRENCY_LOCKED unless every
+  // line is a standalone catalog line — manual lines, bundle parents and bundle
+  // children all carry amounts the price book cannot re-derive
+  // (repriceQuoteCatalogLines, quoteService.ts). The dialog already stated the
+  // rule in its hint but only the server enforced it, so an illegal choice cost
+  // a round-trip to be told no (#4937). Mirror the server predicate and disable
+  // the mode; `clear` is always legal, so nobody is dead-ended.
+  const repriceUnavailableReason = useMemo(
+    () => lines.some((l) => l.sourceType !== 'catalog' || l.catalogItemId === null || l.parentLineId !== null)
+      ? t('quotes.currency.dialog.modeRepriceUnavailable')
+      : null,
+    [lines, t],
+  );
+
   // Same cents math as the editor rail (computeQuoteProfit), fed the read-model
   // strings, so the Detail margin can never diverge from the editor margin.
   const profit = useMemo<QuoteProfit>(
@@ -420,6 +435,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
         error={currencyError}
         onSubmit={() => void submitCurrency()}
         submittable={currencySubmittable}
+        repriceUnavailableReason={repriceUnavailableReason}
         testIdPrefix="quote-currency"
         copy={{
           title: t('quotes.currency.dialog.title'),
