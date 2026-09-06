@@ -48,13 +48,20 @@ export function onDeviceChange(eventType: DeviceChangeEventType, handler: Device
 /**
  * Emit a device change event.
  *
- * One handler's failure must not stop the others, but it must not vanish
- * either: a permanently-throwing evaluation (a malformed filter, an RLS-blind
- * context) would otherwise leave dynamic groups quietly stale with nothing in
- * the logs — the #4630 failure mode all over again. Every rejection is logged
- * at error level, and the emit still resolves so the caller (the BullMQ
- * worker) treats the job as done rather than retrying a deterministic failure
- * forever.
+ * One handler's failure must not stop the others — every handler is run to
+ * completion via `Promise.allSettled` and every rejection is logged at error
+ * level — but the failure must not vanish either. This used to RESOLVE after
+ * logging, which made `attempts: 5` on the re-evaluation queue dead code: a
+ * transient 40P01 deadlock inside the evaluation (the #3911 shape, which this
+ * path can genuinely produce because `evaluateDeviceMembershipForGroup` writes
+ * `device_groups.filter_fields_used`) completed the job "successfully" and the
+ * membership stayed stale forever with only a log line.
+ *
+ * So it now THROWS an `AggregateError` carrying every rejection once all
+ * handlers have settled. Its only caller is the BullMQ processor
+ * (`jobs/deviceGroupJobs.ts`), so a throw here is exactly what makes BullMQ
+ * retry with backoff, and a genuinely deterministic failure still terminates
+ * after `attempts` and is retained by `removeOnFail` for inspection.
  */
 export async function emitDeviceChange(event: DeviceChangeEvent): Promise<void> {
   const handlers = eventHandlers.get(event.type) || [];
@@ -64,6 +71,7 @@ export async function emitDeviceChange(event: DeviceChangeEvent): Promise<void> 
     handlers.map(handler => handler(event))
   );
 
+  const failures: Error[] = [];
   results.forEach((result, index) => {
     if (result.status === 'rejected') {
       console.error(
@@ -71,8 +79,22 @@ export async function emitDeviceChange(event: DeviceChangeEvent): Promise<void> 
         + `(device ${event.deviceId}, org ${event.orgId}):`,
         result.reason,
       );
+      failures.push(asError(result.reason));
     }
   });
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `[deviceEvents] ${failures.length} of ${handlers.length} handler(s) for ${event.type} `
+      + `failed (device ${event.deviceId}, org ${event.orgId})`,
+    );
+  }
+}
+
+/** Normalise an unknown rejection reason into an Error for AggregateError. */
+function asError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason));
 }
 
 /**
@@ -258,13 +280,29 @@ export function initializeDeviceEventHandlers(): void {
       )
       .orderBy(deviceGroups.id);
 
+    // One malformed filter must not strand the remaining groups, so failures
+    // are collected rather than thrown immediately — but they are NOT
+    // swallowed. Swallowing here would defeat emitDeviceChange's throw above
+    // for the whole device.created path (enrollment + provisioning), which is
+    // precisely where a 40P01 deadlock is most likely: N concurrent enrolments
+    // in one org all UPDATE the same device_groups rows.
+    const failures: Error[] = [];
     for (const group of groups) {
       try {
         // Evaluate if device matches the group's filter
         await evaluateDeviceMembershipForGroup(group.id, event.deviceId);
       } catch (error) {
         console.error(`Failed to evaluate membership for group ${group.id}:`, error);
+        failures.push(asError(error));
       }
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `device.created: ${failures.length} of ${groups.length} dynamic group evaluations `
+        + `failed for device ${event.deviceId} (org ${event.orgId})`,
+      );
     }
   });
 

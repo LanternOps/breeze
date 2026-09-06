@@ -30,16 +30,40 @@
  *   4. the processor uses the DEVICE's own org, not the job payload's, so a
  *      stale/forged payload cannot steer the evaluation at another tenant.
  *   5. a matching device in another partner's org is never absorbed.
+ *   6. a device DELETED between enqueue and run no-ops (and that this is
+ *      distinguishable from "not committed yet" — see case 7).
+ *   7. #5039 review finding 1, the enqueue-before-commit race: the enqueue
+ *      happens INSIDE the caller's still-open transaction, so an undelayed
+ *      worker reads a snapshot without the device row and silently completes
+ *      having evaluated nothing. Driven end to end against real Redis with a
+ *      real BullMQ worker, with the undelayed behaviour as a paired negative
+ *      control in the same test.
  */
 import './setup';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
+import type { Worker } from 'bullmq';
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { deviceGroupMemberships, deviceGroups, devices } from '../../db/schema';
-import { processDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
+import {
+  deviceGroupMemberships,
+  deviceGroups,
+  devices,
+  groupMembershipLog,
+} from '../../db/schema';
+import {
+  DEVICE_GROUP_REEVALUATION_DELAY_MS,
+  createDeviceGroupReevaluationWorker,
+  deviceGroupReevaluationJobId,
+  getDeviceGroupReevaluationQueue,
+  processDeviceGroupReevaluation,
+  runDeviceGroupReevaluationJob,
+  scheduleDeviceGroupReevaluation,
+  shutdownDeviceGroupJobs,
+} from '../../jobs/deviceGroupJobs';
+import { closeRedis } from '../../services/redis';
 import {
   createOrganization,
   createPartner,
@@ -257,7 +281,55 @@ describe('dynamic device group re-evaluation on device change (#4630)', () => {
     expect(anyRowForForeign).toHaveLength(0);
   });
 
+  /**
+   * The `!device` branch means DELETED, not "committing right now".
+   *
+   * That distinction is only true because of `DEVICE_GROUP_REEVALUATION_DELAY_MS`
+   * (#5039 review finding 1). Before the delay, the same branch also absorbed a
+   * device whose INSERT had not committed yet — the enrolment path — and
+   * reported `{evaluated: false}` as a SUCCESS, so nothing retried and the
+   * device was never added to any dynamic group. Case 7 below proves the
+   * not-yet-committed device now IS evaluated, which is what makes it safe for
+   * this branch to treat a missing row as a genuine deletion.
+   */
   runDb('no-ops for a device deleted between enqueue and run', async () => {
+    const env = await setupTestEnvironment();
+    const groupId = await seedDynamicGroup(env.organization.id);
+    const deviceId = await seedDevice(env.organization.id, env.site.id, 'srv-epsilon');
+
+    // It matched and was a member before the delete.
+    await runReevaluation({
+      deviceId,
+      orgId: env.organization.id,
+      eventType: 'device.updated',
+      changedFields: ['hostname'],
+    });
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
+
+    // Delete it in the same order the device cascade does: children first.
+    // Neither device_group_memberships.device_id nor group_membership_log
+    // .device_id is ON DELETE CASCADE, so both have to go before the device
+    // (this is exactly why CORE_DEVICE_CASCADE_DELETE_TABLES exists).
+    await withSystemDbAccessContext(async () => {
+      await db.delete(groupMembershipLog).where(eq(groupMembershipLog.deviceId, deviceId));
+      await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.deviceId, deviceId));
+      await db.delete(devices).where(eq(devices.id, deviceId));
+    });
+
+    const result = await runReevaluation({
+      deviceId,
+      orgId: env.organization.id,
+      eventType: 'device.updated',
+      changedFields: ['hostname'],
+    });
+
+    expect(result).toEqual({ evaluated: false, orgId: null });
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+  });
+
+  // A device id that never existed takes the same branch — there is nothing to
+  // evaluate either way.
+  runDb('no-ops for a device id that never existed', async () => {
     const env = await setupTestEnvironment();
     await seedDynamicGroup(env.organization.id);
 
@@ -270,4 +342,171 @@ describe('dynamic device group re-evaluation on device change (#4630)', () => {
 
     expect(result).toEqual({ evaluated: false, orgId: null });
   });
+});
+
+/**
+ * #5039 review finding 1 — the enqueue-before-commit race, end to end against
+ * real Redis + real Postgres with a real BullMQ worker.
+ *
+ * Every producer (`/enroll`, `/provision`, the heartbeat) calls
+ * `requestDeviceGroupReevaluation` from INSIDE its own still-open
+ * `withDbAccessContext` / `withSystemDbAccessContext` transaction — that is the
+ * point of the queue. The worker runs on a different pooled connection, so
+ * without a delay it can start before the producer commits and read a snapshot
+ * in which the device row does not exist. That is not an error: it is
+ * `{evaluated: false}`, a COMPLETED job, no retry, and a device that is never
+ * added to any dynamic group.
+ *
+ * This is the only place in the file that goes through the real queue. Every
+ * other case calls `processDeviceGroupReevaluation` directly, which cannot
+ * observe the delay — or the race — at all.
+ */
+describe('enqueue-before-commit race (#5039)', () => {
+  const workers: Worker[] = [];
+
+  afterEach(async () => {
+    await Promise.all(workers.splice(0).map((w) => w.close()));
+    // Delayed jobs outlive the test's TRUNCATE; drop them so a later case
+    // cannot be woken by one.
+    await getDeviceGroupReevaluationQueue().obliterate({ force: true }).catch(() => {});
+  });
+
+  afterAll(async () => {
+    await shutdownDeviceGroupJobs();
+    await closeRedis();
+  });
+
+  runDb('evaluates a device whose INSERT commits only after the enqueue', async () => {
+    const env = await setupTestEnvironment();
+    const groupId = await seedDynamicGroup(env.organization.id);
+    const deviceId = randomUUID();
+
+    // The worker is running BEFORE the enqueue, so it has every opportunity to
+    // pick the job up the instant it becomes runnable. Anything that stops it
+    // from doing so is the delay, not a slow test.
+    const worker = createDeviceGroupReevaluationWorker();
+    workers.push(worker);
+    await worker.waitUntilReady();
+
+    const completed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('re-evaluation job never completed')),
+        DEVICE_GROUP_REEVALUATION_DELAY_MS + 20_000,
+      );
+      worker.on('completed', (job) => {
+        if (job.data?.deviceId !== deviceId) return;
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+    let markEnqueued!: () => void;
+    const enqueued = new Promise<void>((resolve) => { markEnqueued = resolve; });
+
+    // Stand in for the /enroll handler: INSERT the device and enqueue, both
+    // inside one transaction that stays open for a while afterwards (the real
+    // handler goes on to issue an mTLS certificate).
+    const enrolment = withSystemDbAccessContext(async () => {
+      await db.insert(devices).values({
+        id: deviceId,
+        orgId: env.organization.id,
+        siteId: env.site.id,
+        agentId: `agent-${randomUUID()}`,
+        hostname: 'srv-uncommitted',
+        osType: 'windows',
+        osVersion: '10',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+        status: 'online',
+      });
+
+      await scheduleDeviceGroupReevaluation({
+        deviceId,
+        orgId: env.organization.id,
+        eventType: 'device.created',
+        reason: 'device_enrolled',
+      });
+
+      markEnqueued();
+      await commitGate;
+    });
+
+    let sawUncommitted: { evaluated: boolean; orgId: string | null } | undefined;
+    try {
+      await enqueued;
+
+      // NEGATIVE CONTROL. Deliberately run from the TEST BODY, outside the
+      // enrolment's async-local DB context, so this opens its own transaction
+      // on its own pooled connection — a nested withSystemDbAccessContext
+      // would reuse the caller's transaction and see the uncommitted row,
+      // which is exactly the thing the real worker cannot do. This is what the
+      // worker would have concluded had the job been runnable immediately: the
+      // bug, reproduced.
+      sawUncommitted = await runDeviceGroupReevaluationJob({
+        type: 'group-reevaluation',
+        deviceId,
+        orgId: env.organization.id,
+        eventType: 'device.created',
+        changedFields: [],
+        reason: 'negative-control',
+        queuedAt: new Date().toISOString(),
+      });
+
+      // Give the ready worker a real chance to grab the job early.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+
+      const job = await getDeviceGroupReevaluationQueue()
+        .getJob(deviceGroupReevaluationJobId(deviceId));
+      expect(job, 'the job should be queued').toBeDefined();
+      expect(job!.opts.delay).toBe(DEVICE_GROUP_REEVALUATION_DELAY_MS);
+      // Still parked: the running worker has NOT been able to take it.
+      expect(await job!.getState()).toBe('delayed');
+      expect(await memberDeviceIds(groupId)).toEqual([]);
+    } finally {
+      releaseCommit();
+      await enrolment;
+    }
+
+    // The bug, as it would have happened without the delay.
+    expect(sawUncommitted).toEqual({ evaluated: false, orgId: null });
+
+    // And the fix: once the delay elapses the device is visible and evaluated.
+    await completed;
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
+  }, DEVICE_GROUP_REEVALUATION_DELAY_MS + 45_000);
+
+  runDb('coalesces a second change into the still-delayed job', async () => {
+    // The delay window doubles as the coalescing window, so `delayed` has to
+    // stay in isReusableState — otherwise every change inside the window would
+    // add a duplicate job instead of merging.
+    const env = await setupTestEnvironment();
+    await seedDynamicGroup(env.organization.id);
+    const deviceId = await seedDevice(env.organization.id, env.site.id, 'wks-coalesce');
+
+    await scheduleDeviceGroupReevaluation({
+      deviceId,
+      orgId: env.organization.id,
+      eventType: 'device.updated',
+      changedFields: ['hostname'],
+      reason: 'heartbeat_device_change',
+    });
+    const secondId = await scheduleDeviceGroupReevaluation({
+      deviceId,
+      orgId: env.organization.id,
+      eventType: 'device.updated',
+      changedFields: ['osVersion'],
+      reason: 'heartbeat_device_change',
+    });
+
+    const jobId = deviceGroupReevaluationJobId(deviceId);
+    expect(secondId).toBe(jobId);
+
+    const job = await getDeviceGroupReevaluationQueue().getJob(jobId);
+    expect(await job!.getState()).toBe('delayed');
+    // Merged, not duplicated: one job carrying the union of both changes.
+    expect([...job!.data.changedFields].sort()).toEqual(['hostname', 'osVersion']);
+    expect(await getDeviceGroupReevaluationQueue().getDelayedCount()).toBe(1);
+  }, 30_000);
 });

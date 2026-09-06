@@ -9,6 +9,14 @@
  *     not surface on the agent heartbeat/enrollment path);
  *   - the processor re-reading the device's OWN org id instead of trusting the
  *     job payload, and no-oping for a device that vanished.
+ *
+ * Plus the three #5039 review fixes:
+ *   - every job carries `delay: DEVICE_GROUP_REEVALUATION_DELAY_MS` so it
+ *     cannot run before the enqueuing request's transaction commits, and
+ *     `delayed` stays a coalescing state;
+ *   - the processor THROWS when a handler rejected, so `attempts` retries;
+ *   - the job refuses to run at all when `withSystemDbAccessContext` is
+ *     unavailable, rather than evaluating with no DB access context.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +28,7 @@ const {
   mockWithSystemDbAccessContext,
   mockEmitDeviceChange,
   mockInitializeDeviceEventHandlers,
+  dbExports,
 } = vi.hoisted(() => ({
   mockQueueAdd: vi.fn(),
   mockQueueGetJob: vi.fn(),
@@ -28,6 +37,10 @@ const {
   mockWithSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   mockEmitDeviceChange: vi.fn().mockResolvedValue(undefined),
   mockInitializeDeviceEventHandlers: vi.fn(),
+  // Mutable holder behind a getter on the '../db' mock, so one test can make
+  // `withSystemDbAccessContext` disappear the way a partially-loaded module
+  // would (#5039 review finding 3).
+  dbExports: { withSystemDbAccessContext: undefined as unknown },
 }));
 
 vi.mock('bullmq', () => ({
@@ -55,7 +68,9 @@ vi.mock('./workerObservability', () => ({
 
 vi.mock('../db', () => ({
   db: { select: mockSelect },
-  withSystemDbAccessContext: mockWithSystemDbAccessContext,
+  get withSystemDbAccessContext() {
+    return dbExports.withSystemDbAccessContext;
+  },
 }));
 
 vi.mock('../db/schema', () => ({
@@ -73,11 +88,14 @@ vi.mock('../events/deviceEvents', () => ({
   ) => ({ type, deviceId, orgId, changedFields, timestamp: new Date() }),
 }));
 
+import { isReusableState } from '../services/bullmqUtils';
 import {
+  DEVICE_GROUP_REEVALUATION_DELAY_MS,
   deviceGroupReevaluationJobId,
   mergeReevaluationRequests,
   processDeviceGroupReevaluation,
   requestDeviceGroupReevaluation,
+  runDeviceGroupReevaluationJob,
   scheduleDeviceGroupReevaluation,
   shutdownDeviceGroupJobs,
   type DeviceGroupReevaluationJobData,
@@ -116,6 +134,7 @@ beforeEach(async () => {
   mockQueueAdd.mockResolvedValue({ id: 'job-new' });
   mockQueueGetJob.mockResolvedValue(undefined);
   mockWithSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  dbExports.withSystemDbAccessContext = mockWithSystemDbAccessContext;
 });
 
 describe('mergeReevaluationRequests', () => {
@@ -161,6 +180,58 @@ describe('scheduleDeviceGroupReevaluation', () => {
     });
     expect(options.jobId).toBe(`group-reeval-${DEVICE_ID}`);
     expect(deviceGroupReevaluationJobId(DEVICE_ID)).toBe(`group-reeval-${DEVICE_ID}`);
+    // #5039 review finding 1: the caller enqueues from inside its own open
+    // transaction, so the job must not be runnable until that has committed.
+    expect(options.delay).toBe(DEVICE_GROUP_REEVALUATION_DELAY_MS);
+    expect(DEVICE_GROUP_REEVALUATION_DELAY_MS).toBeGreaterThan(0);
+  });
+
+  it('delays the follow-up job too — it is enqueued from a request path as well', async () => {
+    mockQueueGetJob.mockResolvedValue({
+      id: 'job-active',
+      data: jobData(),
+      getState: vi.fn().mockResolvedValue('active'),
+      updateData: vi.fn(),
+    });
+    mockQueueAdd.mockResolvedValue({ id: 'job-follow-up' });
+
+    await scheduleDeviceGroupReevaluation({
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+      eventType: 'device.updated',
+      changedFields: ['hostname'],
+      reason: 'heartbeat_device_change',
+    });
+
+    expect(mockQueueAdd.mock.calls[0]![2].delay).toBe(DEVICE_GROUP_REEVALUATION_DELAY_MS);
+  });
+
+  it('still coalesces while the job sits DELAYED — delayed is a reusable state', async () => {
+    // The delay window is also the coalescing window, so `delayed` has to stay
+    // in isReusableState or every change inside it would add a duplicate job.
+    expect(isReusableState('delayed')).toBe(true);
+
+    const updateData = vi.fn().mockResolvedValue(undefined);
+    mockQueueGetJob.mockResolvedValue({
+      id: 'job-delayed',
+      data: jobData({ changedFields: ['hostname'] }),
+      getState: vi.fn().mockResolvedValue('delayed'),
+      updateData,
+    });
+
+    const id = await scheduleDeviceGroupReevaluation({
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+      eventType: 'device.updated',
+      changedFields: ['osBuild'],
+      reason: 'heartbeat_device_change',
+    });
+
+    expect(id).toBe('job-delayed');
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+    expect(updateData).toHaveBeenCalledWith(expect.objectContaining({
+      changedFields: ['hostname', 'osBuild'],
+    }));
   });
 
   it('coalesces into a waiting job instead of enqueuing a second one', async () => {
@@ -281,6 +352,42 @@ describe('processDeviceGroupReevaluation', () => {
     const result = await processDeviceGroupReevaluation(jobData());
 
     expect(result).toEqual({ evaluated: false, orgId: null });
+    expect(mockEmitDeviceChange).not.toHaveBeenCalled();
+  });
+
+  // #5039 review finding 2. emitDeviceChange used to swallow handler
+  // rejections, so `attempts: 5` never fired: a 40P01 deadlock inside the
+  // membership evaluation completed the job and left membership stale.
+  it('propagates an emitDeviceChange failure so BullMQ retries the job', async () => {
+    mockSelect.mockReturnValue(selectResolving([{ orgId: ORG_ID }]));
+    const deadlock = new AggregateError([new Error('deadlock detected')], 'handlers failed');
+    mockEmitDeviceChange.mockRejectedValueOnce(deadlock);
+
+    await expect(processDeviceGroupReevaluation(jobData())).rejects.toBe(deadlock);
+  });
+});
+
+describe('runDeviceGroupReevaluationJob — the exact function the worker runs', () => {
+  it('runs the evaluation inside a system DB access context', async () => {
+    mockSelect.mockReturnValue(selectResolving([{ orgId: ORG_ID }]));
+
+    const result = await runDeviceGroupReevaluationJob(jobData());
+
+    expect(result).toEqual({ evaluated: true, orgId: ORG_ID });
+    expect(mockWithSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  // #5039 review finding 3. Falling back to a bare fn() is not a degraded
+  // mode: under forced RLS the evaluation reads zero groups and the job
+  // reports success having changed nothing.
+  it('THROWS rather than evaluating without a DB access context', async () => {
+    dbExports.withSystemDbAccessContext = undefined;
+    mockSelect.mockReturnValue(selectResolving([{ orgId: ORG_ID }]));
+
+    await expect(runDeviceGroupReevaluationJob(jobData()))
+      .rejects.toThrow(/withSystemDbAccessContext is unavailable/);
+    // And it refused BEFORE touching the database.
+    expect(mockSelect).not.toHaveBeenCalled();
     expect(mockEmitDeviceChange).not.toHaveBeenCalled();
   });
 });

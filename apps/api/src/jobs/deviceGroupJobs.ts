@@ -26,6 +26,11 @@
  *     a Redis outage can never turn into a failed heartbeat. It touches no
  *     Postgres connection, so unlike a detached DB call it cannot be stranded
  *     on a committed transaction (the #3182 materialization bug).
+ *   - Every job is DELAYED by `DEVICE_GROUP_REEVALUATION_DELAY_MS` so it cannot
+ *     run before the enqueuing request's transaction commits — the worker reads
+ *     on a different connection and would otherwise see a snapshot without the
+ *     device row (enrollment) or with the pre-UPDATE hostname (heartbeat). See
+ *     that constant for the full failure mode.
  *   - The worker wraps the evaluation in `withSystemDbAccessContext` and
  *     re-reads the device's OWN org id from the database rather than trusting
  *     the job payload, so a stale or forged payload can never steer an
@@ -49,9 +54,29 @@ import {
 } from '../events/deviceEvents';
 
 const { db } = dbModule;
+
+/**
+ * Look `withSystemDbAccessContext` up on the module object at call time rather
+ * than destructuring it at import time (the worker module is imported by
+ * `workerRegistry` before some test doubles are installed).
+ *
+ * If it is missing we THROW rather than fall through to a bare `fn()`. Running
+ * the evaluation with no DB access context is not a degraded mode: under
+ * `FORCE ROW LEVEL SECURITY` the unprivileged `breeze_app` role reads ZERO
+ * dynamic groups, so every job would report a cheerful `{evaluated: true}`
+ * having changed nothing — the exact silent-no-op shape #4630 was filed for.
+ * A thrown job is retried, then retained by `removeOnFail` where it is visible.
+ */
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+  if (typeof withSystem !== 'function') {
+    throw new Error(
+      '[DeviceGroupJobs] db.withSystemDbAccessContext is unavailable — refusing to evaluate '
+      + 'without a DB access context (forced RLS would return zero groups and the job would '
+      + 'report success having changed nothing).',
+    );
+  }
+  return withSystem(fn);
 };
 
 export const DEVICE_GROUP_REEVALUATION_QUEUE = 'device-group-reevaluation';
@@ -175,8 +200,37 @@ export async function scheduleDeviceGroupReevaluation(
   return String(job.id);
 }
 
+/**
+ * How long a re-evaluation job waits before it becomes runnable.
+ *
+ * THIS IS A CORRECTNESS CONSTANT, not a throttle. Every caller enqueues from
+ * INSIDE its own still-open `withDbAccessContext` / `withSystemDbAccessContext`
+ * transaction (that is the whole point — the enqueue must not wait on, or run
+ * after, the request's DB work). The worker opens its OWN transaction on a
+ * different pooled connection, so without a delay it races the caller's COMMIT
+ * and can read a snapshot in which the device row does not exist yet:
+ *
+ *   - enrollment/provision: `INSERT INTO devices` has not committed, so the
+ *     processor's SELECT finds nothing and returns `{evaluated: false}` — a
+ *     "successful" job that never evaluates the device, and since nothing
+ *     threw, nothing retries. The device is never added to any dynamic group.
+ *     The window is wide: `/enroll` awaits mTLS certificate issuance AFTER the
+ *     enqueue.
+ *   - heartbeat: the row exists but the SELECT reads the PRE-`UPDATE` hostname,
+ *     so the filter flip the job was queued for is invisible.
+ *
+ * 5s is far longer than any of these handlers' remaining work, and the cost is
+ * only that dynamic membership lags a device change by ~5s. Coalescing is
+ * unaffected: `delayed` is in `isReusableState` (services/bullmqUtils.ts), so a
+ * second change to the same device inside the window still merges into the
+ * waiting job rather than adding a duplicate — and, usefully, the whole delay
+ * window becomes a coalescing window for a flapping device.
+ */
+export const DEVICE_GROUP_REEVALUATION_DELAY_MS = 5000;
+
 function jobOptions() {
   return {
+    delay: DEVICE_GROUP_REEVALUATION_DELAY_MS,
     attempts: 5,
     backoff: { type: 'exponential' as const, delay: 500 },
     removeOnComplete: { count: 100 },
@@ -204,6 +258,10 @@ export function requestDeviceGroupReevaluation(
 /**
  * Run one re-evaluation. Assumes it is already inside a system DB access
  * context (the worker wraps it; the integration test wraps it explicitly).
+ *
+ * THROWS if any event handler rejected (`emitDeviceChange` aggregates them),
+ * so BullMQ's `attempts` genuinely retries — a 40P01 deadlock inside the
+ * membership evaluation must not complete as a success with stale membership.
  */
 export async function processDeviceGroupReevaluation(
   data: DeviceGroupReevaluationJobData,
@@ -218,8 +276,14 @@ export async function processDeviceGroupReevaluation(
     .limit(1);
 
   if (!device) {
-    // Device deleted (or org erased) between enqueue and run — the deletion
-    // cascade already removed its memberships. Nothing to do.
+    // The device is GONE, not merely uncommitted. `DEVICE_GROUP_REEVALUATION_DELAY_MS`
+    // is what lets us make that distinction: the job cannot run until 5s after
+    // the enqueue, by which point the enqueuing request's transaction has long
+    // since committed or rolled back. So "no row" means deleted (or the org was
+    // erased, or the enrolling transaction rolled back) — the deletion cascade
+    // has already removed any memberships and there is nothing to evaluate.
+    // Without the delay this branch would also swallow "committing right now",
+    // silently dropping the evaluation with no error and no retry.
     return { evaluated: false, orgId: null };
   }
 
@@ -235,11 +299,25 @@ export async function processDeviceGroupReevaluation(
   return { evaluated: true, orgId: device.orgId };
 }
 
-function createDeviceGroupReevaluationWorker(): Worker<DeviceGroupReevaluationJobData> {
+/**
+ * Exactly what the BullMQ worker runs for one job: the system DB access
+ * context plus the evaluation. Exported so both suites can exercise the real
+ * thing — including the refusal to run with no DB context.
+ */
+export async function runDeviceGroupReevaluationJob(
+  data: DeviceGroupReevaluationJobData,
+): Promise<{ evaluated: boolean; orgId: string | null }> {
+  return runWithSystemDbAccess(() => processDeviceGroupReevaluation(data));
+}
+
+/**
+ * Exported for the integration suite, which drives a REAL BullMQ worker against
+ * real Redis + Postgres to prove the delay actually closes the commit race.
+ */
+export function createDeviceGroupReevaluationWorker(): Worker<DeviceGroupReevaluationJobData> {
   return new Worker<DeviceGroupReevaluationJobData>(
     DEVICE_GROUP_REEVALUATION_QUEUE,
-    async (job: Job<DeviceGroupReevaluationJobData>) =>
-      runWithSystemDbAccess(() => processDeviceGroupReevaluation(job.data)),
+    async (job: Job<DeviceGroupReevaluationJobData>) => runDeviceGroupReevaluationJob(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 4,
