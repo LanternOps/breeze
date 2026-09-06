@@ -41,7 +41,9 @@ function emitDeviceEvent(event: DeviceEvent): void {
   eventStream.onEvent(event);
 }
 vi.mock('../../hooks/useAdvancedFilterIds', () => ({
-  useAdvancedFilterIds: () => ({ ids: null, loading: false }),
+  // `refetch` is part of the hook's contract (#5023) — DevicesPage pairs it
+  // with every post-mutation device refresh, so a stub that omits it throws.
+  useAdvancedFilterIds: () => ({ ids: null, loading: false, refetch: vi.fn() }),
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));

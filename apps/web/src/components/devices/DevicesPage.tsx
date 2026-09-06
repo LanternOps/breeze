@@ -232,7 +232,15 @@ export default function DevicesPage() {
   // Resolve the advanced filter to the complete (uncapped) matching id set
   // once, here, so the list AND grid views render the same filtered fleet.
   // The grid previously mapped the raw devices array and ignored the filter.
-  const { ids: advancedFilterIds, loading: advancedFilterLoading, error: advancedFilterError } = useAdvancedFilterIds(advancedFilter);
+  const {
+    ids: advancedFilterIds,
+    loading: advancedFilterLoading,
+    error: advancedFilterError,
+    // #5023: the resolution is keyed on the FILTER, so it never notices that a
+    // mutation changed a filtered attribute. Every post-mutation refresh below
+    // goes through `refreshDevices`, which re-resolves the id set as well.
+    refetch: refetchAdvancedFilterIds,
+  } = useAdvancedFilterIds(advancedFilter);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
@@ -624,6 +632,28 @@ export default function DevicesPage() {
     }
   }, [t]);
 
+  /**
+   * The post-change refresh — use this, not `fetchDevices`, anywhere something
+   * has just altered the fleet (#5023).
+   *
+   * An advanced filter is resolved SERVER-side into an id set
+   * (`serverFilterIds`), and that resolution is keyed on the filter alone, so
+   * refreshing the device rows on their own leaves the id set describing the
+   * fleet as it was BEFORE the mutation. Restoring a device inside a "Status is
+   * Removed" filter is the reported case: the row came back with a stale count
+   * and only a full page reload cleared it. The same staleness applies to every
+   * mutation that touches a filtered attribute, which is why the pairing lives
+   * here once rather than at each call site.
+   *
+   * The mount effect below deliberately keeps calling `fetchDevices` directly:
+   * the hook resolves the filter itself on mount, so going through here would
+   * just fire a second, redundant /filters/preview.
+   */
+  const refreshDevices = useCallback(async () => {
+    await fetchDevices();
+    refetchAdvancedFilterIds();
+  }, [fetchDevices, refetchAdvancedFilterIds]);
+
   useEffect(() => {
     // Org context not usable for scoping yet (#4147). A request now would go
     // out unscoped: `loading` is the sub-second window before the shell's
@@ -640,8 +670,8 @@ export default function DevicesPage() {
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
     setAutoSelectGroupId(newGroupId);
-    await fetchDevices();
-  }, [fetchDevices]);
+    await refreshDevices();
+  }, [refreshDevices]);
 
   const handleAutoSelectConsumed = useCallback(() => {
     setAutoSelectGroupId(null);
@@ -682,9 +712,11 @@ export default function DevicesPage() {
       // fleet-wide list on screen. Nothing is lost by skipping: the mount
       // effect fetches as soon as the scope resolves.
       if (orgScopeResolving || orgContextFailed) return;
-      fetchDevices();
+      // An enrol/decommission changes `status`, which is a filterable
+      // attribute — refresh the resolved id set with the rows (#5023).
+      void refreshDevices();
     }
-  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
+  }, [refreshDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
@@ -860,7 +892,7 @@ export default function DevicesPage() {
               .then(async (outcome) => {
                 if (outcome === 'online') {
                   showToast({ type: 'success', message: t('devicesPage.toasts.deviceOnline', { hostname }) });
-                  await fetchDevices();
+                  await refreshDevices();
                 } else if (outcome === 'timeout') {
                   showToast({
                     type: 'error',
@@ -901,7 +933,7 @@ export default function DevicesPage() {
               ? t('devicesPage.toasts.maintenanceOff', { hostname: device.hostname })
               : t('devicesPage.toasts.maintenanceOn', { hostname: device.hostname }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'deploy-software':
@@ -942,7 +974,7 @@ export default function DevicesPage() {
             try {
               await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({ type: 'success', message: t('devicesPage.toasts.decommissioned', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.decommissionFailed', { hostname: device.hostname }) });
             }
@@ -953,7 +985,7 @@ export default function DevicesPage() {
         case 'restore':
           await restoreDevice(device.id);
           showToast({ type: 'success', message: t('devicesPage.toasts.restored', { hostname: device.hostname }) });
-          await fetchDevices();
+          await refreshDevices();
           break;
 
         case 'permanent-delete': {
@@ -975,7 +1007,7 @@ export default function DevicesPage() {
               // No warning branch: the API returns `{ success: true }` and
               // nothing else since #2787 (see permanentDeleteDevice).
               showToast({ type: 'success', message: t('devicesPage.toasts.permanentlyDeleted', { hostname: device.hostname }) });
-              await fetchDevices();
+              await refreshDevices();
             } catch (err) {
               showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.deleteFailed', { hostname: device.hostname }) });
             }
@@ -1007,7 +1039,7 @@ export default function DevicesPage() {
         message: `Linked ${targets.length - 1} guest VM${targets.length - 1 === 1 ? '' : 's'} under ${host?.displayName || host?.hostname || 'the host server'}.`,
       });
       setVmHostPickerDevices(null);
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to link devices' });
     } finally {
@@ -1161,7 +1193,7 @@ export default function DevicesPage() {
             type: 'success',
             message: t('devicesPage.toasts.multibootLinked', { count: deviceCount }),
           });
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1230,7 +1262,7 @@ export default function DevicesPage() {
           } else {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1262,7 +1294,7 @@ export default function DevicesPage() {
           if (dispatched > 0) {
             showToast({ type: 'warning', message: t('devicesPage.toasts.bulkRestoreUninstallAlreadySent', { count: dispatched }) });
           }
-          await fetchDevices();
+          await refreshDevices();
           break;
         }
 
@@ -1378,7 +1410,7 @@ export default function DevicesPage() {
               : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
           });
         }
-        await fetchDevices();
+        await refreshDevices();
         return;
       }
 
@@ -1392,13 +1424,13 @@ export default function DevicesPage() {
         });
         // The job may have deleted some devices before failing, so the list is
         // stale either way.
-        await fetchDevices();
+        await refreshDevices();
         return;
       }
 
       scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
     },
-    [fetchDevices, stopPurgePolling, t],
+    [refreshDevices, stopPurgePolling, t],
   );
 
   const runBulkPurge = async (targets: Device[]) => {
@@ -1463,7 +1495,7 @@ export default function DevicesPage() {
           }),
         });
       }
-      await fetchDevices();
+      await refreshDevices();
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'decommission' }) });
     } finally {
@@ -1539,7 +1571,7 @@ export default function DevicesPage() {
           <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
           <button
             type="button"
-            onClick={() => void fetchDevices()}
+            onClick={() => void refreshDevices()}
             className="text-xs font-medium text-primary hover:underline"
           >
             {t('devicesPage.tryAgain')}
@@ -1893,7 +1925,7 @@ export default function DevicesPage() {
           device={settingsDevice}
           isOpen={!!settingsDevice}
           onClose={() => setSettingsDevice(null)}
-          onSaved={fetchDevices}
+          onSaved={refreshDevices}
           onAction={handleDeviceAction}
         />
       )}

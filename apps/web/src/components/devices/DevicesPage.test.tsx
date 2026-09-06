@@ -2588,3 +2588,93 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #5023 — a mutation must re-resolve the SERVER-side advanced filter, not just
+// the device rows.
+//
+// Advanced filters ("Status is Removed") are resolved server-side into an id
+// set by useAdvancedFilterIds and handed to the list/grid as `serverFilterIds`.
+// `fetchDevices()` after a mutation refreshed the ROWS only, so a Restore left
+// the now-non-matching device in that stale id set and it stayed on screen,
+// with a stale count, until a full page reload. Asserting the row disappears
+// alone is not enough — the refreshed rows still carry the restored device, so
+// what has to be pinned is that the id set was re-resolved.
+// ---------------------------------------------------------------------------
+describe('DevicesPage — post-mutation refresh re-resolves the advanced filter (#5023)', () => {
+  /**
+   * Stand in for a "Status is Removed" advanced filter over a removed fleet:
+   * the first resolution matches both devices, every later one matches only
+   * the device that is still removed.
+   */
+  async function removedFilterFleet() {
+    // An earlier describe pins decodeFilterFromHash to null with
+    // mockReturnValue, and vi.clearAllMocks() does not restore an
+    // implementation — re-arm the active filter explicitly rather than
+    // depending on suite order.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
+
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+
+    const state = { previewCalls: 0 };
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        state.previewCalls += 1;
+        const deviceIds = state.previewCalls === 1 ? [DEV_1, DEV_3] : [DEV_3];
+        return jsonResponse({
+          data: { totalCount: deviceIds.length, deviceIds, evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+    return state;
+  }
+
+  async function renderAndSettle(state: { previewCalls: number }) {
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() =>
+      expect(list.getAttribute('data-filter-ids')).toBe([DEV_1, DEV_3].sort().join(',')),
+    );
+    expect(state.previewCalls).toBe(1);
+  }
+
+  const filterIds = () => screen.getByTestId('device-list').getAttribute('data-filter-ids');
+
+  it('single Restore drops the restored device from the resolved id set', async () => {
+    const { restoreDevice } = await import('../../services/deviceActions');
+    vi.mocked(restoreDevice).mockResolvedValue({ success: true } as never);
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId(`row-restore-${DEV_1}`));
+
+    await waitFor(() => expect(vi.mocked(restoreDevice)).toHaveBeenCalledWith(DEV_1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+
+  it('bulk Restore re-resolves the id set too', async () => {
+    const { bulkRestoreDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkRestoreDevices).mockResolvedValue({
+      succeeded: [{ deviceId: DEV_1, uninstallAlreadyDispatched: false }],
+      failed: [],
+    });
+
+    const state = await removedFilterFleet();
+    await renderAndSettle(state);
+
+    fireEvent.click(screen.getByTestId('bulk-restore'));
+
+    await waitFor(() => expect(vi.mocked(bulkRestoreDevices)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.previewCalls).toBe(2));
+    await waitFor(() => expect(filterIds()).toBe(DEV_3));
+  });
+});
