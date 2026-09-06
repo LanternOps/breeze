@@ -2,7 +2,7 @@
  * Cross-axis `field_key` shadowing — #3257 W03.
  *
  * Migration under test:
- * `2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql`.
+ * `2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql`.
  *
  * THE RULE. One EFFECTIVE `field_key` namespace per device. `devices.custom_fields`
  * is a flat jsonb object keyed by a bare string, so if an org-owned `udf7` and a
@@ -90,7 +90,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql',
+  '../../../migrations/2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql',
 );
 
 /**
@@ -629,6 +629,77 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
 
       expect(observed).toBe('organization');
     });
+
+    /**
+     * The same restore, under a PARTNER-scoped caller. The trigger's two
+     * branches are separate code paths — an org caller takes the `NEW.org_id IS
+     * NOT NULL` branch, a partner-wide insert takes the `ELSIF` — and only the
+     * single shared restore at the bottom returns either of them to the
+     * caller's scope. Covering just one branch would leave the other's leak
+     * behaviour asserted by nothing.
+     */
+    it('does not leak system scope into a partner-scoped transaction', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const observed = await withDbAccessContext(partnerContext(partner.id, [org.id]), async () => {
+        createdKeys.push('shadow_no_leak_partner');
+        await db.execute(sql`
+          INSERT INTO custom_field_definitions (partner_id, name, field_key, type)
+          VALUES (${partner.id}::uuid, 'Clean', 'shadow_no_leak_partner', 'text')`);
+        const rows = await db.execute(sql`SELECT public.breeze_current_scope() AS scope`);
+        return (rows as unknown as { scope: string }[])[0]?.scope;
+      });
+
+      expect(observed).toBe('partner');
+    });
+
+    /**
+     * The `COALESCE(_prev_scope, '')` half of the restore — the branch taken
+     * when the caller never set `breeze.scope` AT ALL, so `current_setting(...,
+     * true)` returns NULL rather than a scope name.
+     *
+     * Nothing else in this file reaches it: every other insert goes through
+     * `withDbAccessContext`, which always stamps a scope before the statement
+     * runs. This one uses the privileged test client directly, which does not —
+     * the same shape as a migration, a psql session, or any future caller that
+     * touches this table outside the request path.
+     *
+     * Restoring to `''` is behaviourally identical to leaving the GUC unset:
+     * `breeze_current_scope()` is
+     * `COALESCE(NULLIF(current_setting('breeze.scope', true), ''), 'none')`, so
+     * both read back as 'none'. Asserting that read-back is the point — a
+     * restore written as `COALESCE(_prev_scope, 'system')`, which is the
+     * plausible slip, would leave the connection elevated and fail here.
+     *
+     * The whole thing runs inside ONE transaction on purpose: `set_config(...,
+     * true)` is transaction-local, so a GUC read issued on a different pooled
+     * connection would trivially say 'none' and prove nothing.
+     */
+    it("restores to an unset scope when the caller never set one (the COALESCE branch)", async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const observed = await getTestDb().transaction(async (tx) => {
+        // Control: this connection really is scope-less to begin with. Without
+        // it, a leaked 'none' from anywhere would make the assertion vacuous.
+        const before = await tx.execute(sql`SELECT public.breeze_current_scope() AS scope`);
+        expect((before as unknown as { scope: string }[])[0]?.scope).toBe('none');
+
+        createdKeys.push('shadow_no_prev_scope');
+        await tx.execute(sql`
+          INSERT INTO custom_field_definitions (org_id, name, field_key, type)
+          VALUES (${org.id}::uuid, 'Clean', 'shadow_no_prev_scope', 'text')`);
+
+        const after = await tx.execute(sql`SELECT public.breeze_current_scope() AS scope`);
+        return (after as unknown as { scope: string }[])[0]?.scope;
+      });
+
+      expect(
+        observed,
+        "the trigger must hand back a scope-less connection exactly as it found it — 'system' here means the elevation outlived the trigger",
+      ).toBe('none');
+    });
   });
 
   /**
@@ -752,20 +823,31 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
         'SECURITY DEFINER without a pinned search_path is a hijackable lookup',
       ).toBe(true);
 
-      const def = fn?.def ?? '';
+      // pg_get_functiondef reproduces a plpgsql body VERBATIM — Postgres stores
+      // `prosrc` as opaque text and never reparses or reformats it. That is what
+      // makes this assertion possible at all, and it is also the trap: the
+      // body's own comments come back too, so a commented-out elevation would
+      // satisfy a naive substring check. Strip line comments first, then match
+      // case- and whitespace-insensitively, because plpgsql is case-insensitive
+      // and `RETURN  new ;` is just as much a second return path as `RETURN NEW;`.
+      const def = (fn?.def ?? '')
+        .split('\n')
+        .map((line) => line.replace(/--.*$/, ''))
+        .join('\n');
+
       expect(
-        def.includes("set_config('breeze.scope', 'system', true)"),
+        /PERFORM\s+set_config\(\s*'breeze\.scope'\s*,\s*'system'\s*,\s*true\s*\)/i.test(def),
         'the trigger body must elevate to system scope before its cross-tenant lookups — without it the guard is a silent no-op wherever the function owner lacks BYPASSRLS',
       ).toBe(true);
       expect(
-        def.includes("set_config('breeze.scope', COALESCE(_prev_scope, ''), true)"),
+        /PERFORM\s+set_config\(\s*'breeze\.scope'\s*,\s*COALESCE\(\s*_prev_scope\s*,\s*''\s*\)\s*,\s*true\s*\)/i.test(def),
         "the trigger body must restore the caller's scope before its RETURN — a missed restore leaves the caller's transaction at system scope",
       ).toBe(true);
 
       // The restore is only sound because there is exactly ONE return path;
       // an early RETURN added above it would skip the restore silently.
       expect(
-        (def.match(/RETURN NEW;/g) ?? []).length,
+        (def.match(/\bRETURN\s+NEW\s*;/gi) ?? []).length,
         'the body must keep its single RETURN — every added return path needs its own restore',
       ).toBe(1);
 

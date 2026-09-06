@@ -25,7 +25,7 @@
  * note warns about.
  *
  * W03 ADDENDUM — why the anti-shadowing trigger is classified BENIGN.
- * `2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql` puts a
+ * `2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql` puts a
  * BEFORE INSERT OR UPDATE OF org_id row trigger on this table, and the merge's
  * final step is `UPDATE custom_field_definitions SET org_id = <survivor>`. That
  * makes it a candidate blocker in `orgMergeRegistry.integration.test.ts`, where
@@ -141,9 +141,38 @@ describe('org merge — duplicate custom-field keys (#3257 W02)', () => {
     f = await seedFixture();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
     else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+
+    // Belt-and-braces re-arm for the forge test below, which disables the W03
+    // anti-shadowing trigger. Its own `finally` handles the ordinary paths, but
+    // a test TIMEOUT does not unwind the body — vitest fails the test and moves
+    // on while the awaited statement is still in flight, so the `finally` may
+    // not have run when the next test starts. A trigger left disabled would not
+    // fail anything: `customFieldShadowing.integration.test.ts` would simply
+    // stop refusing the inserts it exists to refuse and go green on a guard
+    // that is not there. `ALTER TABLE ... ENABLE TRIGGER` is idempotent, so
+    // paying one statement per test in this file is the cheap side of that
+    // trade. Swallow errors: this is cleanup, and a failure here must not mask
+    // the real assertion failure that preceded it.
+    try {
+      await getTestDb().execute(sql`
+        ALTER TABLE public.custom_field_definitions
+          ENABLE TRIGGER custom_field_definitions_no_shadow`);
+    } catch (reEnableError) {
+      // Log rather than swallow silently (the convention cleanupDatabase() uses
+      // for the audit_logs TRUNCATE guard in setup.ts): if this fails for a real
+      // reason — lock contention, not just "the trigger isn't there" — the guard
+      // is now OFF in the test DB and the next file's rejection tests will fail
+      // for a reason that has nothing to do with their own code. Do not rethrow:
+      // an afterEach throw would replace the actual assertion failure that
+      // preceded it.
+      console.error(
+        'customFieldDefinitionsMerge afterEach: failed to re-enable custom_field_definitions_no_shadow — the W03 shadowing guard may be OFF in the test DB',
+        reEnableError,
+      );
+    }
   });
 
   runDb('preview reports the colliding definition as a drop before the merge runs', async () => {

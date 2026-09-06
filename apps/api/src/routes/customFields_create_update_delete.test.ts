@@ -637,7 +637,7 @@ describe('customFields routes', () => {
      * BOTH are the caller's own to fix:
      *
      *  - P0001 from the anti-shadowing trigger (#3257 W03,
-     *    2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql) — the key
+     *    2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql) — the key
      *    collides with one on the OTHER ownership axis under this partner.
      *  - 23505 from W02's per-axis unique indexes — the key already exists on
      *    THIS axis.

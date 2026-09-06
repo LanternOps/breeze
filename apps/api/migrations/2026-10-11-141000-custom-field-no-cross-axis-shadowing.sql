@@ -1,4 +1,4 @@
--- 2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql   (#3257 W03)
+-- 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql   (#3257 W03)
 --
 -- ONE EFFECTIVE field_key NAMESPACE PER DEVICE.
 --
@@ -36,7 +36,7 @@
 -- wraps each file in client.begin; only an exception rolls it back), which
 -- would leave prod permanently without the trigger while the ledger claims
 -- otherwise. A read-only preflight
--- (migrations/preflight/2026-10-11-140000-custom-field-shadowing-preflight.sql)
+-- (migrations/preflight/2026-10-11-141000-custom-field-shadowing-preflight.sql)
 -- ran against both prod regions before this merged -- see the PR body.
 --
 -- WHY THE SCOPE ELEVATION, on a file that writes no rows. CLAUDE.md states the
@@ -46,14 +46,21 @@
 -- SECURITY, which binds the table OWNER -- the role migrations run as.
 -- breeze_current_scope() defaults to 'none', under which breeze_has_org_access
 -- and breeze_has_partner_access are both false, so on any connection that does
--- not bypass RLS (prod is managed DO Postgres, where migrations run as the
--- non-superuser `doadmin`) the detection block below would join ZERO rows to
--- ZERO rows and cheerfully RAISE WARNING '... 0 cross-axis shadowed keys'. The
--- deploy would then proceed to install the trigger over dirty data, and the
--- first operator to touch either definition would get an unactionable P0001
--- from a trigger nobody knew was armed. CI runs as a superuser and would never
--- reveal the difference. set_config(..., true) is transaction-local, and
--- autoMigrate's per-file client.begin is that transaction.
+-- not bypass RLS the detection block below would join ZERO rows to ZERO rows
+-- and cheerfully RAISE WARNING '... 0 cross-axis shadowed keys'. The deploy
+-- would then proceed to install the trigger over dirty data, and the first
+-- operator to touch either definition would get an unactionable P0001 from a
+-- trigger nobody knew was armed.
+--
+-- WHICH DEPLOYMENTS THAT IS. Not hosted prod, most likely: `doadmin` on managed
+-- DO Postgres is a non-superuser but DOES carry BYPASSRLS (this is why the 122
+-- legacy row-writing migrations still apply -- scripts/check-migrations-nonsuperuser.ts
+-- reproduces exactly that attribute set), and CI runs as an outright superuser.
+-- It is a self-hosted or future migration role WITHOUT BYPASSRLS that reads
+-- blind here, and neither of the two environments we actually run can show it.
+-- Same reasoning applies to the trigger function further down; see its header.
+-- set_config(..., true) is transaction-local, and autoMigrate's per-file
+-- client.begin is that transaction.
 SELECT set_config('breeze.scope', 'system', true);
 
 -- Blindness probe. Prints what the detection block below is actually able to
@@ -172,9 +179,9 @@ END $$;
 --     entry and restores it on every exit path including through an error --
 --     BUT SETTING A CUSTOM (dotted) GUC AS A FUNCTION ATTRIBUTE IS
 --     SUPERUSER-ONLY. A non-superuser migration role gets
---     `42501 permission denied to set parameter "breeze.scope"`
---     (guc.c validate_option_array_item) the moment the CREATE FUNCTION runs,
---     which on prod means the deploy crash-loops on boot. That is the v0.97.0
+--     `42501 permission denied to set parameter "breeze.scope"` the moment the
+--     CREATE FUNCTION runs, which on prod means the deploy crash-loops on boot
+--     before it serves a request. That is the v0.97.0
 --     EU incident, and src/db/migrationGucAttributes.test.ts exists to keep it
 --     from recurring; Check Migrations (non-superuser) is the backstop.
 --     `set_config()` at RUNTIME is not privilege-gated, so the sanctioned

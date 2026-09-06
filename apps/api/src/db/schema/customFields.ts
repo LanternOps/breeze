@@ -19,7 +19,7 @@ export const customFieldTypeEnum = pgEnum('custom_field_type', [
  *  - `custom_field_definitions_{org,partner}_key_uq` (#3257 W02): `field_key` is
  *    unique per owner, on each axis independently. Violations raise 23505.
  *  - `custom_field_definitions_no_shadow` (#3257 W03,
- *    `2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql`): a BEFORE
+ *    `2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql`): a BEFORE
  *    INSERT/UPDATE trigger forbidding an org-owned `field_key` from colliding
  *    with a partner-wide one under that org's partner, in either direction.
  *    Violations raise **P0001** with operator-facing copy naming the key and the

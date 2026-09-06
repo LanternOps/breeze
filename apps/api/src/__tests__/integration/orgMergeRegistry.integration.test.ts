@@ -238,7 +238,7 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'agent_health_observations.agent_health_observations_immutable_trg': 'org_id-only device-owner restamp',
   'software_inventory_observations.software_inventory_observations_immutable_trg': 'org_id-only device-owner restamp',
   // Cross-axis field_key namespace guard (#3257 W03,
-  // 2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql). RAISEs P0001
+  // 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql). RAISEs P0001
   // only when the DESTINATION org's partner already owns a partner-wide row
   // with the same field_key. A merge is same-partner (orgMerge.ts:289,
   // re-validated against fresh rows inside the merge transaction at :605), so

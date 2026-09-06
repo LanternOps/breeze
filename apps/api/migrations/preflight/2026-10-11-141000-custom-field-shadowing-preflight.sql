@@ -1,5 +1,5 @@
 -- READ-ONLY preflight for
--- 2026-10-11-140000-custom-field-no-cross-axis-shadowing.sql  (#3257 W03).
+-- 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql  (#3257 W03).
 --
 -- Run on EACH prod region before merging. Query (a) must come back EMPTY.
 --
