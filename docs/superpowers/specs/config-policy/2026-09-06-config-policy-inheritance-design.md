@@ -92,14 +92,24 @@ Enforced twice:
    parent being deleted between check and insert, is closed by the FK: the insert fails with
    23503 and is mapped to the same 400 as "parent not found". The other race, the parent gaining
    a parent, cannot happen because `parent_policy_id` is immutable after create.
-2. **Database trigger** `configuration_policies_parent_guard` (BEFORE INSERT, and BEFORE UPDATE
-   OF `parent_policy_id`) as defense in depth. It re-checks the rule by selecting the parent as
-   the invoking role, so under FORCE RLS a parent the caller cannot see is treated as not found.
-   It also rejects any UPDATE that changes a non-null `parent_policy_id` (immutability). It
-   deliberately does **not** fire on `UPDATE OF org_id`: org merge re-points `org_id` on parent
-   and child in separate statements inside one transaction, and both rows move to the same
-   target org, so the rule holds again by commit. The guard raises SQLSTATE 23514 with a fixed
-   constraint name so the route can map it to a 400 with a stable error code.
+2. **Database constraint trigger** `configuration_policies_parent_guard`: an AFTER ROW
+   **constraint trigger**, `DEFERRABLE INITIALLY IMMEDIATE`, on `configuration_policies` for
+   `INSERT` and `UPDATE OF parent_policy_id, org_id, partner_id`. It validates **both directions**
+   of the edge for the affected row: the row's own parent (outgoing) and every row that names
+   this row as parent (incoming), against the ownership rule and the one-level rule. It also
+   enforces immutability: any UPDATE where `parent_policy_id IS DISTINCT FROM` the old value is
+   rejected, including `NULL → value`, so an existing baseline can never acquire a parent later.
+   It reads the other rows as the invoking role, so under FORCE RLS a parent the caller cannot see
+   is treated as not found. Because it is a constraint trigger, org merge's
+   `SET CONSTRAINTS ALL DEFERRED` postpones it to commit, by which time parent and child have both
+   moved to the target org and the rule holds again; no `org_id` exclusion is needed. A matching
+   constraint trigger on `organizations` for `UPDATE OF partner_id` re-validates that org's
+   children of partner-wide parents (no code path changes an org's partner today; the trigger is
+   cheap insurance so the invariant does not depend on that staying true). Both raise SQLSTATE
+   23514 with a fixed constraint name so the route maps it to a 400 with a stable error code.
+   Residual race: a child created concurrently with a system-context ownership move of its parent
+   is validated in each transaction's own snapshot; ownership moves are org merges, which already
+   serialize the orgs they touch, so this is accepted and documented rather than locked against.
 
 Error surface: `400 { error: 'INVALID_PARENT_POLICY' }` for not-found / not-eligible /
 cross-tenant / has-its-own-parent, one message for all of them so it is not an existence oracle.
@@ -138,7 +148,8 @@ ALTER TABLE configuration_policies ADD CONSTRAINT configuration_policies_not_own
   CHECK (parent_policy_id IS NULL OR parent_policy_id <> id);
 CREATE INDEX IF NOT EXISTS config_policies_parent_policy_id_idx
   ON configuration_policies (parent_policy_id) WHERE parent_policy_id IS NOT NULL;
--- trigger function + trigger: see Ownership rule. CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS, CREATE TRIGGER.
+-- constraint triggers: see Ownership rule. CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS,
+-- CREATE CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY IMMEDIATE ... FOR EACH ROW.
 ```
 
 **Effective-links view** (first view in the repo; the reasons it is a view and not a helper are
@@ -168,9 +179,16 @@ GRANT SELECT ON config_policy_effective_feature_links TO breeze_app;
   `config_policy_feature_links_partner_wide_select` branch, which is also populated on the
   agent-auth path (`currentPartnerId`), so agent config delivery inherits correctly without any
   system-context escalation.
-- Drizzle: declare with `pgView(...).existing()` so drizzle-kit never tries to manage it; the
-  `id` column is the underlying link id (an inherited row reuses the parent link's id, which is
-  what feature-link-id keyed readers such as the automation schedule trigger already expect).
+- Drizzle: declare with `pgView(...).existing()` so drizzle-kit never tries to manage it.
+- **An inherited row keeps the parent link's `id` on purpose.** The normalized per-feature
+  settings tables (`config_policy_patch_settings`, `config_policy_backup_settings`,
+  `config_policy_onedrive_settings`, `config_policy_automations`, ...) are keyed by
+  `feature_link_id`, and every resolver that needs them joins on `links.id`
+  (`featureConfigResolver.ts` L683 for patch). A synthetic id would break those joins. The
+  consequence, that one link id now maps to the parent **and** its children, is handled by the
+  execution-identity rule in Resolver sweep. `inline_settings` is a compatibility mirror that some
+  migrated links omit; readers that need assembled settings keep joining their normalized table
+  through `id`, exactly as they do today, so the view changes nothing about assembly.
 - `pnpm db:check-drift` must be run in W01 to confirm the drift checker is view-neutral; if it is
   not, the fix is in `scripts/check-drift.ts`, not in the migration.
 - `rls-coverage.integration.test.ts` enumerates tables; a view carries no RLS of its own and must
@@ -192,18 +210,43 @@ so this is documented on the registry entry, not handled.
   `createConfigPolicySchema`). Validated per Ownership rule. `updateConfigPolicySchema` does not
   accept it.
 - `GET /configuration-policies/:id`: adds `parentPolicyId: string | null`,
-  `parentPolicy: { id, name, status } | null`, `childPolicies: { id, name }[]`. `featureLinks`
-  stays the policy's **own** links (the editor must never show inherited rows as authored).
-- `GET /configuration-policies` (list): adds `parentPolicyId` per row (and `parentName` when
-  cheap via the existing join) so the list can badge children and the create page can filter
-  eligible parents client-side (`parentPolicyId === null` and owner-compatible).
+  `parentPolicy: { id, name, status, featureLinks } | null` (the parent's **assembled** links, the
+  same shape `listFeatureLinks` returns), `childPolicies: { id, name }[]`. `featureLinks` stays
+  the policy's **own** links (the editor must never show inherited rows as authored).
+  The parent embed is fetched server-side through RLS, **not** through `policyAccessCondition`:
+  that condition deliberately hides partner-wide policies from org-scoped get/list so the org UI
+  never offers to edit the MSP's shared policies, and it stays that way. The embed is read-only,
+  is only ever the parent of a policy the caller can already see, and the parent's rows are
+  already SELECT-visible under RLS (the same visibility the agent path relies on). The web
+  renders it read-only and links to the parent page only when the caller can open it.
+- `GET /configuration-policies/eligible-parents?ownerScope=organization&orgId=…` (or
+  `ownerScope=partner`): `{ id, name, ownerScope }[]`, filtered server-side by the ownership rule
+  and `parent_policy_id IS NULL`. For an org-scoped caller this includes the partner-wide
+  policies of their partner by name only; no links, no other partner's rows (tested). This is the
+  one narrow, names-only widening of org-scoped read visibility, and it exists so an org tech can
+  inherit the MSP baseline, which is the product story.
+- `GET /configuration-policies` (list): adds `parentPolicyId` per row so the list can badge
+  children. The create page uses the eligible-parents endpoint, not the list.
+- **MFA gate follows effectiveness, not the verb.** Today POST/PATCH of a `patch` or
+  `maintenance` link requires a satisfied-MFA session and DELETE does not, because removing a
+  link ends suppression (`featureLinks.ts` L66-80). With inheritance a DELETE of a child's
+  override can *restore* the parent's suppression, and creating a child of a parent that has such
+  a link *enables* it. Rule: any transition that makes an MFA-gated feature type effective on a
+  policy requires the same session-MFA check: POST/PATCH of that type (unchanged), DELETE of an
+  override whose parent has a link of that type, and `POST /configuration-policies` with a
+  `parentPolicyId` whose parent has a link of that type.
 - `GET /configuration-policies/effective/:deviceId` and the diff preview: each resolved feature
   adds `inheritedFromPolicyId: string | null` and `inheritedFromPolicyName: string | null`.
 - `DELETE /configuration-policies/:id`: `409 POLICY_HAS_CHILDREN` as above.
 - Partner API configuration export (`routes/partnerApi/configuration.ts`): add `parentPolicyId`
-  to the policy shape. Links remain the authored form (own links only) plus the parent pointer;
-  consumers derive the effective set. This keeps the per-org export clocks correct without fanning
-  a partner-wide parent's change out to every child org.
+  to the policy shape, and export the **parent closure**: `policySource` selects policies through
+  their assignments, so an unassigned baseline would vanish while its exported children reference
+  it. Parents of exported policies are included (as `sourceScope` rows with no assignment org
+  binding beyond the child's) so a consumer can reconstruct inheritance. Links remain the authored
+  form (own links only); consumers derive the effective set. The material clocks already fan a
+  partner-wide policy's change out to every org under the partner (the clock triggers join
+  `organizations` on `org_id IS NULL AND partner_id`), so no clock change is needed. Full and
+  incremental export tests cover a parent edit surfacing on the child's org.
 
 ## Resolver sweep
 
@@ -231,15 +274,31 @@ Readers that must switch (file → functions):
 - `services/helperPermissions.ts` → `resolveHelperPermissionLevelForDevice`
 - `services/warrantyAlertEvaluator.ts` → `resolveWarrantySettings`, `evaluateWarrantyAlerts`
 - `routes/remote/helpers.ts` → `resolveRemoteSessionPromptConfig`
-- `jobs/automationWorker.ts` → `processTriggerConfigPolicySchedule` (**id-keyed**: it resolves a
-  `featureLinkId` to a policy; through the view one link id maps to the parent **and** every
-  child, so the plan must decide per call site whether the dispatch fans out per assigned
-  policy or stays keyed on the authoring policy. Do not switch it blindly.)
 - `jobs/backupWorker.ts` → `processCheckSchedules`
 - `jobs/patchSchedulerWorker.ts` → `scanAndCreateJobs`
+- `services/configPolicyPatching.ts` → `loadPolicyLocalPatchConfig(configPolicyId)` (joins the
+  authored links; after the scheduler scan switches, an inherited child would be discovered and
+  then skipped as `null` here). Becomes an **effective** loader through the view, returning
+  `sourcePolicyId`. Its other callers, `services/patchJobSnapshot.ts` and the manual patch
+  operations in `routes/configurationPolicies/patchJobs.ts`, get inheritance through it.
 - `services/patchJobService.ts` → `createPatchJobFromConfigPolicy`,
-  `createPatchJobForDeviceFromPolicy`
-- `services/automationRuntime.ts` → `resolveConfigPolicyAutomationContext`
+  `createPatchJobForDeviceFromPolicy` (see execution identity)
+- `jobs/automationWorker.ts` → `scanScheduledAutomations` grouping and
+  `processTriggerConfigPolicySchedule`; `services/automationRuntime.ts` →
+  `resolveConfigPolicyAutomationContext` (see execution identity)
+
+**Execution identity.** Three call sites reverse-map a link id to "the" policy with `LIMIT 1`
+(`automationRuntime.ts` L2835, `automationWorker.ts` L769, `patchJobService.ts` L126), and the
+automation scan groups candidates by automation id (`automationWorker.ts` L209). Through the view
+one link id belongs to the parent and every child, so a reverse map picks an arbitrary policy and
+the run-time ownership clamp (#2286) would clamp to the wrong org. Rule: **the assigned policy id
+travels with the link id.** Resolver results already return `configPolicyId`
+(`ResolvedPatchConfigDetails`); patch job creation consumes that instead of the reverse map.
+Automation schedule grouping keys on `(automation id, assigned policy id)`, the job payload
+carries `configPolicyId`, and the run-time clamp re-reads ownership from `configuration_policies`
+by that id and verifies the link is effective for that policy through the view. Integration test:
+one partner-wide parent with an automation link, two children in two orgs, one scheduled tick →
+two runs, each scoped to its own org's devices.
 
 Readers that keep the base table (they edit or report a policy's **own** links):
 `configurationPolicy.ts` link CRUD (`addFeatureLink`, `updateFeatureLink`, `removeFeatureLink`,
@@ -285,11 +344,15 @@ that adds its own resolver against the base table goes red in **Test API**, not 
   "Inherited by N policies" line with links on a parent's Overview tab.
 - **List page**: a small "inherits ← <parent>" badge on child rows. Delete of a parent shows the
   409 children list in the confirm modal's error state.
-- **Feature tabs**: the 13 inline-settings tabs send `featurePolicyId: null` (not
-  `linkedPolicyId`). Security, Sensitive Data, and Remote Access gain the same
-  `isInherited` / `effectiveLink` / Override / Revert treatment via `FeatureTabShell`. Backup,
-  Peripheral Control, and Software Policy already handle the feature entity id correctly and
-  stay as they are.
+- **Feature tabs**: the plan carries a per-tab payload matrix (18 rows: what `featurePolicyId`
+  legitimately means for that tab, if anything). Inline-settings tabs send `featurePolicyId:
+  null` instead of `linkedPolicyId`; tabs whose `featurePolicyId` is a real entity (Patch = update
+  ring, Backup = profile, Software Policy, Peripheral Control) keep it. Security, Sensitive Data,
+  and Remote Access gain the same `isInherited` / `effectiveLink` / Override / Revert treatment
+  via `FeatureTabShell`. Software Policy and Peripheral Control initialise their selection once
+  from `effectiveLink` before the parent's links have loaded (`SoftwarePolicyTab.tsx` L31,
+  `PeripheralControlTab.tsx` L46); they must re-sync when `parentLink` arrives, with a
+  delayed-parent-load test.
 - **Effective configuration tab** (`DeviceEffectiveConfigTab.tsx`): when a feature carries
   `inheritedFromPolicyId`, render "via <child> ← inherited from <parent>".
 - i18n: new keys in all 8 locales; the existing `inheritingFrom` / `parentPolicy` /
@@ -326,8 +389,25 @@ Each wave: TDD, `tsc`, targeted tests, then the contract suites that a live DB n
   one agent helper before/after as `breeze_app`.
 - **Org merge.** Trigger excluded from `UPDATE OF org_id`; `orgLifecycleFoundations` and
   `orgMerge` integration suites run in W01.
+- **Execution identity.** A missed reverse map silently runs a child's automation under the
+  parent's org clamp. The contract test forbids direct base-table reads; the plan additionally
+  greps for `.limit(1)` against the view and requires the assigned policy id at each site.
 - **Semantics surprise: archived parent still inherited.** Surfaced in the UI (children count on
   the parent, "inherited from <parent> (inactive)" banner state on the child) and in docs.
+
+## Review log
+
+- 2026-09-06 quorum on the approach (Fable + Codex gpt-5.6-sol xhigh): option A, one level.
+- 2026-09-06 spec review (Codex gpt-6-astra xhigh, read-only against the repo), 9 findings, all
+  verified in code and folded in: immutability must reject `NULL → value` (Ownership 2);
+  ownership must stay valid after insert → constraint trigger on both directions, deferrable for
+  merge (Ownership 2); shared link ids need an explicit execution identity (Resolver sweep);
+  `configPolicyPatching.loadPolicyLocalPatchConfig` was missing from the sweep; the view keeps
+  the parent link id for normalized-table joins (Data model); `policyAccessCondition` hides
+  partner-wide parents from org-scoped reads → parent embed + eligible-parents endpoint (API);
+  maintenance-link removal is MFA-exempt on a premise inheritance breaks (API); partner export
+  selects through assignments and its clocks already fan out (API); Software Policy and Peripheral
+  Control tabs initialise before parent links load (Web).
 
 ## Release notes
 
