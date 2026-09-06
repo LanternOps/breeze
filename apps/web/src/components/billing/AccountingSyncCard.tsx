@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, Clock, Loader2 } from 'lucide-react';
 import '../../lib/i18n';
@@ -43,10 +43,88 @@ function isPushable(status: AccountingSyncSummary['syncStatus']): boolean {
   return status === 'pending' || status === 'error';
 }
 
+/** The QuickBooks push is asynchronous: `/invoices/:id/issue` (auto push mode)
+ *  and `/accounting/quickbooks/invoices/:id/push` both return as soon as the
+ *  job is enqueued, and the worker lands a beat later. Anything below is a
+ *  settled outcome — the watch stops the moment the refetched mapping row
+ *  reads one of them. */
+function isSettled(status: AccountingSyncSummary['syncStatus']): boolean {
+  return status === 'synced' || status === 'synced_with_tax_variance' || status === 'error';
+}
+
+/** Poll cadence and ceiling for the post-issue / post-push watch. The ceiling
+ *  matters more than the cadence: the watch is a courtesy, and on timeout the
+ *  card must fall back to the honest "Not pushed yet" + manual button rather
+ *  than spin forever. */
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 60000;
+/** How many probes to spend waiting for a mapping row to appear at all. A
+ *  partner with no QuickBooks connection has no row and never will, so the
+ *  watch gives up after two probes instead of refetching the invoice twenty
+ *  times for every invoice they issue. */
+const MAX_PROBES_WITHOUT_ROW = 2;
+
 export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, canPush, onChanged }: Props) {
   const { t } = useTranslation('billing');
   const [pushing, setPushing] = useState(false);
+  // The push is in flight somewhere server-side; poll the invoice until the
+  // mapping row settles. Started by the draft -> issued transition (auto push
+  // mode) and by a successful manual push.
+  const [watching, setWatching] = useState(false);
+  const deadlineRef = useRef(0);
+  const probesRef = useRef(0);
+  // Keep the latest `onChanged` reachable from the interval without making the
+  // interval's identity depend on it — the parent re-creates the callback on
+  // every render, which would otherwise tear down and restart the timer (and
+  // reset the cadence) on each poll's own refetch.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => { onChangedRef.current = onChanged; });
 
+  const startWatch = useCallback(() => {
+    deadlineRef.current = Date.now() + POLL_TIMEOUT_MS;
+    probesRef.current = 0;
+    setWatching(true);
+  }, []);
+
+  // Watch the invoice's own lifecycle rather than being told about the Issue
+  // click: the primary actions live in two places (the detail rail and the
+  // workspace header), and both funnel through the same detail refetch, so the
+  // draft -> non-draft prop transition is the one signal that covers both.
+  const prevStatusRef = useRef(invoiceStatus);
+  useEffect(() => {
+    const previous = prevStatusRef.current;
+    prevStatusRef.current = invoiceStatus;
+    if (previous === 'draft' && invoiceStatus !== 'draft' && invoiceStatus !== 'void') startWatch();
+  }, [invoiceStatus, startWatch]);
+
+  // Stop as soon as the refetched row reports a settled outcome.
+  const settled = !!sync && isSettled(sync.syncStatus);
+  useEffect(() => {
+    if (settled) setWatching(false);
+  }, [settled]);
+
+  // Read inside the interval (which must not restart when `sync` changes).
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setInterval(() => {
+      // Clear the interval imperatively as well as flipping state: the state
+      // update only tears the timer down on the NEXT commit, and a stop
+      // decided from inside the callback must not get one more tick in.
+      const stop = () => { clearInterval(timer); setWatching(false); };
+      probesRef.current += 1;
+      if (Date.now() >= deadlineRef.current) { stop(); return; }
+      onChangedRef.current();
+      if (!syncRef.current && probesRef.current >= MAX_PROBES_WITHOUT_ROW) stop();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [watching]);
+
+  // A watch with no mapping row to show yet renders nothing — a partner with
+  // no QuickBooks connection must not see a QuickBooks card appear just
+  // because they issued an invoice.
   if (!sync) return null;
 
   const { syncStatus } = sync;
@@ -59,20 +137,25 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
   // the mapping row's own status doesn't change when the invoice is voided.
   const voided = invoiceStatus === 'void';
   const statusPushable = isPushable(syncStatus);
-  const pushable = canPush && statusPushable && !voided && !remoteDeleted;
-  const statusLabel = t(
-    /* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`,
-  );
-  const pillTone =
-    syncStatus === 'synced'
+  // While the watch is live the push is already in flight server-side: the
+  // affordance has to go, or the operator double-submits the very push they
+  // are waiting on.
+  const pushable = canPush && statusPushable && !voided && !remoteDeleted && !watching;
+  const statusLabel = watching
+    ? t('invoiceDetail.accountingSync.syncing')
+    : t(/* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`);
+  const pillTone = watching
+    ? 'border-sky-200 bg-sky-50 text-sky-700'
+    : syncStatus === 'synced'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
       : syncStatus === 'error'
         ? 'border-red-200 bg-red-50 text-red-700'
         : syncStatus === 'synced_with_tax_variance'
           ? 'border-amber-200 bg-amber-50 text-amber-800'
           : 'border-slate-200 bg-slate-50 text-slate-600';
-  const PillIcon =
-    syncStatus === 'synced'
+  const PillIcon = watching
+    ? Loader2
+    : syncStatus === 'synced'
       ? CheckCircle2
       : syncStatus === 'pending'
         ? Clock
@@ -88,6 +171,10 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
         successMessage: t('invoiceDetail.accountingSync.pushed'),
         onUnauthorized: UNAUTHORIZED,
       });
+      // The route only enqueues the job, so the fresh refetch will still read
+      // `pending` — start the same watch the auto-push path uses rather than
+      // dropping the operator back onto a button they just pressed.
+      startWatch();
       onChanged();
     } catch (err) {
       // A typed 409 (currency_mismatch, customer_not_mapped, …) has already
@@ -109,7 +196,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
           data-testid="invoice-accounting-sync-status"
           className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${pillTone}`}
         >
-          <PillIcon className="h-3.5 w-3.5" /> {statusLabel}
+          <PillIcon className={`h-3.5 w-3.5 ${watching ? 'animate-spin' : ''}`} /> {statusLabel}
         </span>
 
         {syncStatus === 'synced_with_tax_variance' && (

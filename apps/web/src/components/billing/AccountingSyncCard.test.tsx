@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AccountingSyncCard from './AccountingSyncCard';
 import type { AccountingSyncSummary } from './invoiceTypes';
@@ -296,5 +296,140 @@ describe('AccountingSyncCard', () => {
       expect.objectContaining({ type: 'error', message: expect.stringContaining('deleted') }),
     ));
     expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Live sync status after Issue (paper cut, prod v0.110.0). The auto-push
+ * worker lands a second or two AFTER the issue response, so the card used to
+ * sit on the stale "Not pushed yet" + "Push to QuickBooks" it was rendered
+ * with until the operator hand-reloaded — inviting a double submit or a
+ * "auto-push is broken" bug report. The card now watches the invoice's own
+ * draft -> issued transition (works no matter which copy of InvoiceActions
+ * owns the Issue button) and polls the invoice refetch until the mapping row
+ * reaches a terminal status, then falls back to the old view on timeout.
+ */
+describe('AccountingSyncCard live sync watch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const issued = (onChanged: () => void, initialSync: AccountingSyncSummary | null = null) => {
+    const view = render(
+      <AccountingSyncCard invoiceId="inv-1" sync={initialSync} invoiceStatus="draft" canPush onChanged={onChanged} />,
+    );
+    const show = (next: AccountingSyncSummary | null) =>
+      act(() => {
+        view.rerender(
+          <AccountingSyncCard invoiceId="inv-1" sync={next} invoiceStatus="sent" canPush onChanged={onChanged} />,
+        );
+      });
+    // The Issue action flips the invoice out of draft and the refetch brings
+    // back the freshly-claimed (still pending) mapping row.
+    show(sync());
+    return { ...view, show };
+  };
+
+  it('shows Syncing and hides the Push button once the invoice leaves draft', () => {
+    issued(vi.fn());
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+  });
+
+  it('polls the invoice every 3s while syncing and stops as soon as the row reads synced', () => {
+    const onChanged = vi.fn();
+    const { show } = issued(onChanged);
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    show(sync({ syncStatus: 'synced', remoteDocNumber: 'QB-1042', lastSyncedAt: '2026-09-01T10:00:00Z' }));
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Synced');
+    expect(screen.getByTestId('invoice-accounting-sync-docnumber')).toHaveTextContent('QB-1042');
+
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops polling and surfaces the failure when the row reads error', () => {
+    const onChanged = vi.fn();
+    const { show } = issued(onChanged);
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    show(sync({ syncStatus: 'error', lastError: 'QuickBooks rejected the invoice sync (HTTP 500)' }));
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Sync failed');
+    expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent('HTTP 500');
+    // Error is a retryable state, so the manual affordance comes back.
+    expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
+
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to Not pushed yet with the Push button when the watch times out', () => {
+    const onChanged = vi.fn();
+    issued(onChanged);
+
+    act(() => { vi.advanceTimersByTime(60000); });
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Not pushed yet');
+    expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
+    const calls = onChanged.mock.calls.length;
+    // Discriminating: the fallback must be reached by the watch EXPIRING, not
+    // by a watch that never polled in the first place.
+    expect(calls).toBeGreaterThan(1);
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).toHaveBeenCalledTimes(calls);
+  });
+
+  it('clears the poll timer on unmount', () => {
+    const onChanged = vi.fn();
+    const { unmount } = issued(onChanged);
+    // Control: the watch really did install a timer, so the post-unmount
+    // assertions below discriminate instead of passing on an empty queue.
+    expect(vi.getTimerCount()).toBe(1);
+
+    unmount();
+    act(() => { vi.advanceTimersByTime(30000); });
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('starts the watch after a manual push so the card does not offer a second submit', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockResolvedValue(json({ syncStatus: 'pending' }));
+
+    render(<AccountingSyncCard invoiceId="inv-1" sync={sync()} invoiceStatus="sent" canPush onChanged={onChanged} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
+    });
+
+    expect(screen.getByTestId('invoice-accounting-sync-status')).toHaveTextContent('Syncing');
+    expect(screen.queryByTestId('invoice-accounting-sync-push')).not.toBeInTheDocument();
+  });
+
+  it('gives up quickly when no QuickBooks mapping row ever appears', () => {
+    const onChanged = vi.fn();
+    const view = render(
+      <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="draft" canPush onChanged={onChanged} />,
+    );
+    act(() => {
+      view.rerender(
+        <AccountingSyncCard invoiceId="inv-1" sync={null} invoiceStatus="sent" canPush onChanged={onChanged} />,
+      );
+    });
+
+    act(() => { vi.advanceTimersByTime(60000); });
+    // Two probes, then the watch gives up: a partner with no QuickBooks
+    // connection must not refetch the invoice for a full minute per issue.
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
