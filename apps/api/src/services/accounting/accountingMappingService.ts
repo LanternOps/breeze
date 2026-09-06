@@ -22,7 +22,7 @@
  * already claimed by another Breeze entity's mapping row. Soft-deleted orgs and
  * the hidden per-partner `quick_support` org never enter the candidate/target
  * set at all (query-level filters — `deletedAt IS NULL` and
- * `notQuickSupportOrg`). Those two are NOT symmetric afterwards: a soft-deleted
+ * `notQuickSupportOrg()`). Those two are NOT symmetric afterwards: a soft-deleted
  * org's mapping row keeps its claim on a remote id (it still occupies the
  * `accounting_entity_mappings_remote_uniq` slot), whereas the hidden org's rows
  * are ignored by id — as claims, as backfill targets, and in
@@ -314,11 +314,14 @@ function findExactMatch<T extends { id: string }>(
  * RLS lets a tech reach their own support session, which means every query that
  * enumerates or resolves a customer org has to exclude it explicitly.
  *
- * A module-level constant: drizzle condition objects are immutable ASTs and
- * `and()` wraps its operands rather than mutating them, so one instance is
- * safely shared across every query below.
+ * A function, not a module-level constant — NOT because drizzle conditions are
+ * mutable (they are immutable ASTs; `and()` wraps its operands), but because
+ * `ne(organizations.type, …)` evaluated at import time touches the schema
+ * table, and test files that `vi.mock('../db/schema')` without exporting
+ * `organizations` (e.g. routes/portal.compat.test.ts, which imports this
+ * module transitively via accountingInvoicePush) would throw on load.
  */
-const notQuickSupportOrg = ne(organizations.type, 'quick_support');
+const notQuickSupportOrg = () => ne(organizations.type, 'quick_support');
 
 /**
  * Ids of the partner's hidden `quick_support` orgs (in practice exactly one).
@@ -394,7 +397,7 @@ async function buildOrgProposals(
       // and must never be offered as a QuickBooks Customer to map. Same
       // exclusion GET /orgs/organizations already applies (routes/orgs.ts), and
       // this query bypasses that route entirely.
-      notQuickSupportOrg,
+      notQuickSupportOrg(),
       isNull(organizations.deletedAt),
     ));
 
@@ -672,7 +675,7 @@ async function loadOwnedOrg(
     .where(and(
       eq(organizations.id, orgId),
       eq(organizations.partnerId, partnerId),
-      opts.allowQuickSupport ? undefined : notQuickSupportOrg,
+      opts.allowQuickSupport ? undefined : notQuickSupportOrg(),
       isNull(organizations.deletedAt),
     ));
   const org = rows[0] as OrgRow | undefined;
