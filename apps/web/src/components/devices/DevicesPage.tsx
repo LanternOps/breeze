@@ -42,7 +42,8 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
-import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNetworkDevices } from './mergedListFilter';
+import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNetworkDevices, VPN_FACET_FIELD } from './mergedListFilter';
+import { COLUMN_LABELS } from './columnVisibility';
 import { FILTER_FIELDS } from '../filters/filterFields';
 import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -327,35 +328,42 @@ export default function DevicesPage() {
   // rule) leave it — the SAME predicate DeviceList applies, so the segment
   // badges below count exactly the rows a segment will render. Class is not
   // applied here: each badge shows its own class's filtered total.
+  const listFilterContext = useMemo(
+    () => ({
+      serverFilterIds: advancedFilterIds,
+      advancedFilter,
+      includeDecommissioned,
+      query: listFilters.search,
+      vpn: listFilters.vpn ?? 'all',
+    }),
+    [advancedFilterIds, advancedFilter, includeDecommissioned, listFilters.search, listFilters.vpn]
+  );
   const fleetFilteredDevices = useMemo(
-    () =>
-      devices.filter(d =>
-        matchesMergedListFilters(d, {
-          serverFilterIds: advancedFilterIds,
-          advancedFilter,
-          includeDecommissioned,
-          query: listFilters.search,
-        })
-      ),
-    [devices, advancedFilterIds, advancedFilter, includeDecommissioned, listFilters.search]
+    () => devices.filter(d => matchesMergedListFilters(d, listFilterContext)),
+    [devices, listFilterContext]
   );
   const deviceClassCounts = useMemo(() => countDevicesByClass(fleetFilteredDevices), [fleetFilteredDevices]);
-  // Narrow the merged list by the chosen class before either view consumes it,
-  // so the list and grid stay in lockstep. DeviceList re-applies the shared
-  // predicate itself (it owns paging and the VPN facet).
+  // The merged list narrowed by class only — what the table receives.
+  // DeviceList applies the shared predicate itself (it owns paging), while the
+  // grid below applies it here; both start from the same class-narrowed set.
   const classFilteredDevices = useMemo(
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
-  // Network rows the active filter hides only because it asks about agent-only
-  // fields (patches, alerts, metrics…). Scoped to the chosen class so the
-  // notice matches what the tech is looking at.
+  // Network rows the active filters hide only because they ask about agent-only
+  // things (filter fields like patches/alerts/metrics, or the VPN facet).
+  // Scoped to the chosen class so the notice matches what the tech is looking
+  // at; rows already hidden by search or the decommissioned rule are not
+  // counted (see summarizeHiddenNetworkDevices).
   const hiddenNetwork = useMemo(
-    () => summarizeHiddenNetworkDevices(classFilteredDevices, advancedFilter),
-    [classFilteredDevices, advancedFilter]
+    () => summarizeHiddenNetworkDevices(classFilteredDevices, listFilterContext),
+    [classFilteredDevices, listFilterContext]
   );
   const hiddenNetworkFieldLabels = useMemo(
-    () => hiddenNetwork.fields.map(f => FILTER_FIELDS.find(d => d.key === f)?.label ?? f).join(', '),
+    () =>
+      hiddenNetwork.fields
+        .map(f => (f === VPN_FACET_FIELD ? COLUMN_LABELS.vpn : FILTER_FIELDS.find(d => d.key === f)?.label ?? f))
+        .join(', '),
     [hiddenNetwork.fields]
   );
   // Grid view: same filtered rows as the table (search included) in the same
@@ -552,6 +560,7 @@ export default function DevicesPage() {
         // which is exactly what the LAN IP column wants (#2503).
         wanIp: null,
         lanIp: typeof d.ipAddress === 'string' ? d.ipAddress : null,
+        macAddress: typeof d.macAddress === 'string' ? d.macAddress : null,
         tags: (d.tags ?? []) as string[],
         manufacturer: (d.manufacturer ?? null) as string | null,
         model: (d.model ?? null) as string | null,
@@ -1416,8 +1425,9 @@ export default function DevicesPage() {
       )}
 
       {/* Class segment (#1424) — only meaningful when the merged list carries
-          both arms; hidden entirely in the agent-only (flag-off) view. Applies
-          to both the list and grid (both consume classFilteredDevices). */}
+          both arms; hidden entirely in the agent-only (flag-off) view. Narrows
+          both views: the table via classFilteredDevices, the grid via
+          gridDevices (same class rule over the filtered fleet). */}
       {ENABLE_NETWORK_DEVICES_IN_LIST && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <DeviceClassSegment

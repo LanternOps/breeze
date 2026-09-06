@@ -89,6 +89,11 @@ export function useNetworkAsset(assetId: string) {
     } catch (err) {
       if (!background) {
         setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
+      } else {
+        // Keep the working page as-is, but leave a trail: a 404 here means the
+        // asset was removed while the tab was hidden and every later refresh
+        // will fail the same way.
+        console.warn('[network-device] background refresh failed', assetId, err);
       }
     } finally {
       if (!background) setLoading(false);

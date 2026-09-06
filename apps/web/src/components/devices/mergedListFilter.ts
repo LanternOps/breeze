@@ -8,7 +8,8 @@
 // metrics, OS, software…) can never be true for a network row; instead of
 // silently dropping the row we report the field so the page can tell the
 // tech "N network devices hidden — X applies to agent devices only".
-import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
+import { activeVpnList } from '@/lib/vpnProviders';
 import type { Device } from './DeviceList';
 
 export type NetworkFilterVerdict = {
@@ -18,7 +19,7 @@ export type NetworkFilterVerdict = {
   inapplicableFields: string[];
 };
 
-type Scalar = string | number | boolean | null | undefined;
+type Scalar = string | number | boolean | Date | null | undefined;
 
 const isNetwork = (d: Device) => (d.deviceClass ?? 'agent') === 'network';
 
@@ -49,7 +50,7 @@ function networkFieldValue(field: string, d: Device): { applicable: boolean; val
     case 'lastSeenIp':
       return { applicable: true, value: d.lanIp ?? null };
     case 'network.macAddress':
-      return { applicable: true, value: (d as { macAddress?: string | null }).macAddress ?? null };
+      return { applicable: true, value: d.macAddress ?? null };
     case 'hardware.manufacturer':
       return { applicable: true, value: d.manufacturer ?? null };
     case 'hardware.model':
@@ -58,8 +59,10 @@ function networkFieldValue(field: string, d: Device): { applicable: boolean; val
       const t = Date.parse(d.lastSeen);
       return { applicable: true, value: Number.isNaN(t) ? null : (Date.now() - t) / DAY_MS };
     }
-    case 'lastSeenAt':
-      return { applicable: true, value: d.lastSeen || null };
+    case 'lastSeenAt': {
+      const t = Date.parse(d.lastSeen);
+      return { applicable: true, value: Number.isNaN(t) ? null : new Date(t) };
+    }
     default:
       return { applicable: false, value: undefined };
   }
@@ -70,7 +73,57 @@ const asList = (v: unknown): string[] =>
 
 const lower = (v: unknown) => String(v ?? '').toLowerCase();
 
-function compareScalar(operator: string, actual: Scalar | string[], expected: unknown): boolean {
+const UNIT_MS: Record<string, number> = {
+  minutes: 60_000,
+  hours: 3_600_000,
+  days: 86_400_000,
+  weeks: 7 * 86_400_000,
+  months: 30 * 86_400_000,
+};
+
+function compareDate(operator: FilterOperator, actual: Date, expected: unknown): boolean {
+  const t = actual.getTime();
+  const parse = (v: unknown) => {
+    const n = v instanceof Date ? v.getTime() : Date.parse(String(v));
+    return Number.isNaN(n) ? null : n;
+  };
+  switch (operator) {
+    case 'equals':
+    case 'notEquals': {
+      const e = parse(expected);
+      const same = e !== null && e === t;
+      return operator === 'equals' ? same : !same;
+    }
+    case 'before': {
+      const e = parse(expected);
+      return e !== null && t < e;
+    }
+    case 'after': {
+      const e = parse(expected);
+      return e !== null && t > e;
+    }
+    case 'between': {
+      const r = expected as { from?: unknown; to?: unknown } | null;
+      const from = r ? parse(r.from) : null;
+      const to = r ? parse(r.to) : null;
+      return from !== null && to !== null && t >= from && t <= to;
+    }
+    case 'withinLast':
+    case 'notWithinLast': {
+      const r = expected as { amount?: number; unit?: string } | null;
+      const ms = r && typeof r.amount === 'number' ? r.amount * (UNIT_MS[r.unit ?? ''] ?? NaN) : NaN;
+      if (Number.isNaN(ms)) return false;
+      const within = Date.now() - t <= ms;
+      return operator === 'withinLast' ? within : !within;
+    }
+    default:
+      return false;
+  }
+}
+
+// `operator` is the shared FilterOperator union on purpose: a misspelled case
+// label here is a type error, not a silent "no network row ever matches".
+function compareScalar(operator: FilterOperator, actual: Scalar | string[], expected: unknown): boolean {
   if (Array.isArray(actual)) {
     const have = actual.map(lower);
     const want = asList(expected).map(lower);
@@ -105,6 +158,7 @@ function compareScalar(operator: string, actual: Scalar | string[], expected: un
       return actual != null && actual !== '';
   }
   if (actual == null) return false;
+  if (actual instanceof Date) return compareDate(operator, actual, expected);
   if (typeof actual === 'number') {
     const n = typeof expected === 'number' ? expected : Number(expected);
     switch (operator) {
@@ -114,11 +168,11 @@ function compareScalar(operator: string, actual: Scalar | string[], expected: un
         return actual !== n;
       case 'greaterThan':
         return actual > n;
-      case 'greaterThanOrEqual':
+      case 'greaterThanOrEquals':
         return actual >= n;
       case 'lessThan':
         return actual < n;
-      case 'lessThanOrEqual':
+      case 'lessThanOrEquals':
         return actual <= n;
       case 'between': {
         const r = expected as { from?: number; to?: number } | null;
@@ -200,7 +254,20 @@ export type MergedListFilterContext = {
   includeDecommissioned: boolean;
   // Already lower-cased/trimmed search text ('' = none).
   query: string;
+  // VPN facet: 'all' | 'any' | a provider id. An agent-only concept — a
+  // network row has no VPN client — so anything but 'all' hides network rows
+  // and is reported by summarizeHiddenNetworkDevices under the 'vpn' key.
+  vpn?: string;
 };
+
+export const VPN_FACET_FIELD = 'vpn';
+
+function matchesVpnFacet(d: Device, vpn: string): boolean {
+  if (vpn === 'all') return true;
+  if (isNetwork(d)) return false;
+  const active = activeVpnList(d.activeVpns);
+  return vpn === 'any' ? active.length > 0 : active.some((v) => v.provider === vpn);
+}
 
 export function matchesSearchQuery(d: Device, query: string): boolean {
   if (query.length === 0) return true;
@@ -216,6 +283,7 @@ export function matchesSearchQuery(d: Device, query: string): boolean {
 // segment badges can never disagree with the rows underneath them.
 export function matchesMergedListFilters(d: Device, ctx: MergedListFilterContext): boolean {
   if (!ctx.includeDecommissioned && d.status === 'decommissioned') return false;
+  if (!matchesVpnFacet(d, ctx.vpn ?? 'all')) return false;
   if (ctx.serverFilterIds !== null) {
     if (isNetwork(d) && ctx.advancedFilter !== undefined) {
       if (!evaluateNetworkAssetFilter(ctx.advancedFilter, d).matches) return false;
@@ -226,21 +294,31 @@ export function matchesMergedListFilters(d: Device, ctx: MergedListFilterContext
   return matchesSearchQuery(d, ctx.query.trim().toLowerCase());
 }
 
-// Network rows the active filter drops purely because it asks about agent-only
-// fields — the ones the page owes the tech an explanation for.
+// Network rows the active filters drop purely because they ask about agent-only
+// things (agent-only filter fields, or the VPN facet) — the ones the page owes
+// the tech an explanation for. Rows already hidden for an ordinary reason
+// (search, decommissioned, an applicable condition) are not counted, so the
+// notice never promises rows that clearing the agent-only part wouldn't show.
 export function summarizeHiddenNetworkDevices(
   devices: readonly Device[],
-  advancedFilter: FilterConditionGroup | null | undefined,
+  ctx: MergedListFilterContext,
 ): { count: number; fields: string[] } {
-  if (!advancedFilter) return { count: 0, fields: [] };
+  const vpn = ctx.vpn ?? 'all';
+  if (!ctx.advancedFilter && vpn === 'all') return { count: 0, fields: [] };
+  const query = ctx.query.trim().toLowerCase();
   let count = 0;
   const fields = new Set<string>();
   for (const d of devices) {
     if (!isNetwork(d)) continue;
-    const v = evaluateNetworkAssetFilter(advancedFilter, d);
-    if (v.matches || v.inapplicableFields.length === 0) continue;
+    if (!ctx.includeDecommissioned && d.status === 'decommissioned') continue;
+    if (!matchesSearchQuery(d, query)) continue;
+    const v = evaluateNetworkAssetFilter(ctx.advancedFilter, d);
+    if (!v.matches && v.inapplicableFields.length === 0) continue; // an ordinary rejection
+    const blame = [...v.inapplicableFields];
+    if (vpn !== 'all') blame.push(VPN_FACET_FIELD);
+    if (blame.length === 0) continue;
     count += 1;
-    v.inapplicableFields.forEach((f) => fields.add(f));
+    blame.forEach((f) => fields.add(f));
   }
   return { count, fields: Array.from(fields) };
 }

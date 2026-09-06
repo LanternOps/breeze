@@ -135,13 +135,13 @@ describe('matchesMergedListFilters', () => {
 describe('summarizeHiddenNetworkDevices', () => {
   it('counts network rows dropped only because the filter uses agent-only fields, with the field list', () => {
     const group = and({ field: 'status', operator: 'equals', value: 'online' }, { field: 'patches.pending', operator: 'equals', value: 'yes' });
-    const s = summarizeHiddenNetworkDevices([net(), net({ id: 'b2', status: 'offline' }), agent()], group);
+    const s = summarizeHiddenNetworkDevices([net(), net({ id: 'b2', status: 'offline' }), agent()], { serverFilterIds: null, advancedFilter: group, includeDecommissioned: false, query: '', vpn: 'all' });
     // The offline one fails on status (an applicable field), so it is not "hidden by agent-only".
     expect(s).toEqual({ count: 1, fields: ['patches.pending'] });
   });
 
   it('is empty with no filter', () => {
-    expect(summarizeHiddenNetworkDevices([net()], null)).toEqual({ count: 0, fields: [] });
+    expect(summarizeHiddenNetworkDevices([net()], { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false, query: '', vpn: 'all' })).toEqual({ count: 0, fields: [] });
   });
 });
 
@@ -155,5 +155,92 @@ describe('sortByDisplayName', () => {
       agent({ id: 'x', hostname: 'zzz', displayName: 'alpha' }),
     ];
     expect(sortByDisplayName(rows).map((d) => d.id)).toEqual(['x', 'y', 'z', 'a', 'b']);
+  });
+});
+
+// Review round (2026-09-06): operator names must match the shared FilterOperator
+// union, datetime fields need the date operators the UI offers, MAC must be
+// mapped, nested groups must recurse, VPN is an agent-only facet that the
+// predicate and the hidden-notice both understand.
+describe('evaluateNetworkAssetFilter — operator coverage', () => {
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400_000).toISOString();
+
+  it('uses the canonical *OrEquals operator names', () => {
+    const stale = net({ lastSeen: daysAgo(7.5) });
+    expect(evaluateNetworkAssetFilter(and({ field: 'daysSinceLastSeen', operator: 'greaterThanOrEquals', value: 7 }), stale).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'daysSinceLastSeen', operator: 'lessThanOrEquals', value: 7 }), stale).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'daysSinceLastSeen', operator: 'between', value: { from: 7, to: 8 } }), stale).matches).toBe(true);
+  });
+
+  it('supports the datetime operators on lastSeenAt', () => {
+    const fresh = net();
+    const stale = net({ lastSeen: daysAgo(10) });
+    const within1d = and({ field: 'lastSeenAt', operator: 'withinLast', value: { amount: 1, unit: 'days' } });
+    expect(evaluateNetworkAssetFilter(within1d, fresh).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(within1d, stale).matches).toBe(false);
+    const notWithin = and({ field: 'lastSeenAt', operator: 'notWithinLast', value: { amount: 1, unit: 'weeks' } });
+    expect(evaluateNetworkAssetFilter(notWithin, stale).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(notWithin, fresh).matches).toBe(false);
+    const between = and({ field: 'lastSeenAt', operator: 'between', value: { from: new Date(daysAgo(11)), to: new Date(daysAgo(9)) } });
+    expect(evaluateNetworkAssetFilter(between, stale).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(between, fresh).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'lastSeenAt', operator: 'before', value: daysAgo(5) }), stale).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'lastSeenAt', operator: 'after', value: daysAgo(5) }), fresh).matches).toBe(true);
+  });
+
+  it('matches MAC address for network rows', () => {
+    const sw = net({ macAddress: '00:1C:73:AB:12:01' });
+    expect(evaluateNetworkAssetFilter(and({ field: 'network.macAddress', operator: 'startsWith', value: '00:1c:73' }), sw).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'network.macAddress', operator: 'equals', value: 'ff:ff' }), sw).matches).toBe(false);
+  });
+
+  it('covers the array, string and regex operators', () => {
+    const tagged = net({ tags: ['core', 'idf-1'] });
+    expect(evaluateNetworkAssetFilter(and({ field: 'tags', operator: 'hasAny', value: ['idf-1', 'x'] }), tagged).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'tags', operator: 'hasAll', value: ['idf-1', 'x'] }), tagged).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'tags', operator: 'notContains', value: 'core' }), tagged).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hostname', operator: 'endsWith', value: '-SW' }), net()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hostname', operator: 'notEquals', value: 'core-sw' }), net()).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hostname', operator: 'matches', value: '^core-' }), net()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hostname', operator: 'matches', value: '(' }), net()).matches).toBe(false);
+    expect(evaluateNetworkAssetFilter(and({ field: 'siteId', operator: 'notIn', value: ['site-1'] }), net()).matches).toBe(false);
+  });
+
+  it('recurses into nested groups and bubbles agent-only fields out of them', () => {
+    const inner = or({ field: 'status', operator: 'equals', value: 'offline' }, { field: 'alerts.critical', operator: 'equals', value: 'yes' });
+    const outer = and(inner, { field: 'hostname', operator: 'contains', value: 'core' });
+    expect(evaluateNetworkAssetFilter(outer, net())).toEqual({ matches: false, inapplicableFields: ['alerts.critical'] });
+    expect(evaluateNetworkAssetFilter(outer, net({ status: 'offline' })).matches).toBe(true);
+  });
+
+  it('does not blame agent-only fields when an applicable condition already rejects the row', () => {
+    const v = evaluateNetworkAssetFilter(
+      and({ field: 'status', operator: 'equals', value: 'offline' }, { field: 'patches.pending', operator: 'equals', value: 'yes' }),
+      net(),
+    );
+    expect(v).toEqual({ matches: false, inapplicableFields: [] });
+  });
+});
+
+describe('VPN facet in the shared predicate', () => {
+  const base = { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false, query: '' };
+  const vpnAgent = agent({ activeVpns: [{ provider: 'tailscale', active: true }] as Device['activeVpns'] });
+
+  it('agent rows match by active VPN and provider; network rows never match a VPN facet', () => {
+    expect(matchesMergedListFilters(vpnAgent, { ...base, vpn: 'any' })).toBe(true);
+    expect(matchesMergedListFilters(vpnAgent, { ...base, vpn: 'tailscale' })).toBe(true);
+    expect(matchesMergedListFilters(vpnAgent, { ...base, vpn: 'wireguard' })).toBe(false);
+    expect(matchesMergedListFilters(agent(), { ...base, vpn: 'any' })).toBe(false);
+    expect(matchesMergedListFilters(net(), { ...base, vpn: 'any' })).toBe(false);
+    expect(matchesMergedListFilters(net(), { ...base, vpn: 'all' })).toBe(true);
+  });
+
+  it('the hidden-network summary names the VPN facet and skips rows hidden by search or decommission', () => {
+    const rows = [net(), net({ id: 'b2', hostname: 'other' }), net({ id: 'b3', status: 'decommissioned' })];
+    // The decommissioned row is hidden by an ordinary rule, so it is not blamed on the VPN facet.
+    expect(summarizeHiddenNetworkDevices(rows, { ...base, vpn: 'any' })).toEqual({ count: 2, fields: ['vpn'] });
+    expect(summarizeHiddenNetworkDevices(rows, { ...base, vpn: 'any', query: 'core' })).toEqual({ count: 1, fields: ['vpn'] });
+    const patches = and({ field: 'patches.pending', operator: 'equals', value: 'yes' });
+    expect(summarizeHiddenNetworkDevices(rows, { ...base, advancedFilter: patches, vpn: 'all' })).toEqual({ count: 2, fields: ['patches.pending'] });
   });
 });

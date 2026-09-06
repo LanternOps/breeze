@@ -33,7 +33,7 @@ Use the `feature-testing` skill to run structured verification and record result
 
 ### Notes
 - Seeded agents flip to offline once `devices.last_seen_at` ages past the online threshold; the popover then shows "No online agent can reach …" and hides Connect (correct behavior, but bump `last_seen_at` before re-testing the proxy flow).
-- `docker-compose.override.yml.dev` now maps `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` (default false); set it in the worktree `.env` and `--force-recreate web`.
+- `docker-compose.override.yml.dev` now maps `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` (empty → the web default, which is on); set `false` in the worktree `.env` and `--force-recreate web` to see the agent-only list.
 
 ## Auth browser/native transition Phase 1 foundation (#3852) — 2026-08-23
 

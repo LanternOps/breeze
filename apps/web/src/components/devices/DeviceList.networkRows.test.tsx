@@ -209,3 +209,55 @@ describe('DeviceList — columns adapt to the classes on screen (critique minor)
     expect(screen.queryByText('Up')).toBeNull();
   });
 });
+
+describe('DeviceList — review round fixes', () => {
+  it('prunes a selected row that a search hides, even though the devices prop is unchanged', () => {
+    const devices = [A_MAC, N_SW];
+    const { rerender } = render(<DeviceList devices={devices} pageSize={50} networkDevicesEnabled listFilters={{ search: '', vpn: 'all' }} />);
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    expect(screen.getByTestId('bulk-selection-summary').textContent).toMatch(/2 selected/);
+    rerender(<DeviceList devices={devices} pageSize={50} networkDevicesEnabled listFilters={{ search: 'core-sw', vpn: 'all' }} />);
+    expect(screen.getByTestId('bulk-selection-summary').textContent).toMatch(/1 selected/);
+  });
+
+  it('offers Compare for 2 and 4 selected agents but not for 5', () => {
+    const agents = [1, 2, 3, 4, 5].map((n) => agent(`a0000000-0000-0000-0000-00000000000${n}`, `box-${n}`));
+    render(<DeviceList devices={agents} pageSize={50} networkDevicesEnabled />);
+    const check = (n: number) => fireEvent.click(screen.getByLabelText(`Select box-${n}`));
+    check(1); check(2);
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    expect(screen.getByTestId('bulk-compare')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    check(3); check(4);
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    expect(screen.getByTestId('bulk-compare')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    check(5);
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+  });
+
+  it('hides the VPN facet when only network rows are on screen (it can never match them)', () => {
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'vpn']);
+    const { rerender } = render(<DeviceList devices={[A_MAC, N_SW]} pageSize={50} networkDevicesEnabled />);
+    expect(screen.getByTestId('device-vpn-filter')).toBeTruthy();
+    rerender(<DeviceList devices={[N_SW, N_FW]} pageSize={50} networkDevicesEnabled />);
+    expect(screen.queryByTestId('device-vpn-filter')).toBeNull();
+  });
+
+  it('lifts the VPN facet into listFilters so the page can count it', () => {
+    writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'vpn']);
+    const onChange = vi.fn();
+    render(
+      <DeviceList
+        devices={[A_MAC, N_SW]}
+        pageSize={50}
+        networkDevicesEnabled
+        listFilters={{ search: '', vpn: 'all' }}
+        onListFiltersChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByTestId('device-vpn-filter'), { target: { value: 'any' } });
+    expect(onChange).toHaveBeenCalledWith({ search: '', vpn: 'any' });
+  });
+});

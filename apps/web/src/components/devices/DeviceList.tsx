@@ -165,6 +165,8 @@ export type Device = {
    * for network-discovered rows it is the discovered asset's own IP.
    */
   lanIp?: string | null;
+  // Discovered assets carry a MAC; agent rows leave it unset.
+  macAddress?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -321,8 +323,8 @@ type DeviceListProps = {
   // DevicesPage and shared with DeviceFilterToolbar. Every other structured
   // filter lives in the server-resolved group (serverFilterIds). Defaults keep
   // DeviceList usable on its own (tests render it standalone).
-  // `onListFiltersChange` is accepted for API symmetry; DeviceList itself no
-  // longer mutates the search filter (the toolbar owns the input).
+  // The toolbar owns the search input; DeviceList only writes the VPN facet
+  // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
   // Initial page size if the user has no stored preference for this browser.
@@ -592,6 +594,7 @@ export default function DeviceList({
   serverFilterLoading = false,
   networkDevicesEnabled = false,
   listFilters,
+  onListFiltersChange,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   // Use provided timezone or browser default
@@ -608,7 +611,17 @@ export default function DeviceList({
   // Client-side VPN facet (#2139): 'all' | 'any' (any active VPN) | a provider
   // id. Operates on already-loaded cached inventory, mirroring the class facet
   // — no server round-trip, no live command fan-out.
-  const [vpnFilter, setVpnFilter] = useState<"all" | "any" | string>("all");
+  // The VPN facet lives in listFilters (page-owned) so DevicesPage's class
+  // counts and hidden-network notice see it; a standalone render (no
+  // onListFiltersChange) keeps it local.
+  const [localVpnFilter, setLocalVpnFilter] = useState<string>("all");
+  const vpnFilter: string = onListFiltersChange
+    ? (filters.vpn ?? "all")
+    : localVpnFilter;
+  const setVpnFilter = (next: string) => {
+    if (onListFiltersChange) onListFiltersChange({ ...filters, vpn: next });
+    else setLocalVpnFilter(next);
+  };
   const [currentPage, setCurrentPage] = useState(1);
   // Live, user-controllable page size. Initialized from localStorage; the
   // pageSize prop is just the fallback when no preference is stored.
@@ -751,10 +764,10 @@ export default function DeviceList({
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
-  // Reset to page 1 whenever the active filters change (device search, the
-  // class facet, and the server-resolved id set are the only things that narrow
-  // the list now). This replaces the per-control setCurrentPage(1) calls that
-  // lived on each filter input before the toolbar was extracted.
+  // Reset to page 1 whenever a list-local narrowing changes (device search,
+  // the VPN facet, the server-resolved id set). The page-level class segment
+  // hands in a new `devices` array instead; a data refresh does too, and must
+  // NOT yank the user back to page 1, so `devices` is deliberately not a dep.
   useEffect(() => {
     setCurrentPage(1);
   }, [query, vpnFilter, serverFilterIds]);
@@ -776,23 +789,13 @@ export default function DeviceList({
           advancedFilter,
           includeDecommissioned,
           query: normalizedQuery,
+          vpn: vpnFilter,
         })
       ) {
         return false;
       }
 
-      // VPN facet (#2139): 'all' passes everything; 'any' requires ≥1 active
-      // VPN; a provider id requires that provider to be active on the device.
-      let matchesVpn = true;
-      if (vpnFilter !== "all") {
-        const active = activeVpnList(device.activeVpns);
-        matchesVpn =
-          vpnFilter === "any"
-            ? active.length > 0
-            : active.some((v) => v.provider === vpnFilter);
-      }
-
-      return matchesVpn;
+      return true;
     });
   }, [
     devices,
@@ -935,23 +938,25 @@ export default function DeviceList({
   };
 
   // Selection must never outlive the rows it points at: when a class change,
-  // filter or refresh drops a selected device from the list, drop it from the
-  // selection too — otherwise the bar reads "4 selected" over an empty table.
+  // a search/VPN/advanced filter, or a refresh drops a selected device out of
+  // the visible set (filteredDevices — every narrowing, before paging), drop
+  // it from the selection too. Otherwise the bar reads "4 selected" over an
+  // empty table and a bulk action can hit a device nobody can see.
   useEffect(() => {
     setSelectedIds((prev) => {
       if (prev.size === 0) return prev;
-      const present = new Set(devices.map((d) => d.id));
+      const present = new Set(filteredDevices.map((d) => d.id));
       const next = new Set<string>();
       prev.forEach((id) => {
         if (present.has(id)) next.add(id);
       });
       return next.size === prev.size ? prev : next;
     });
-  }, [devices]);
+  }, [filteredDevices]);
 
   const selectedDevices = useMemo(
-    () => devices.filter((d) => selectedIds.has(d.id)),
-    [devices, selectedIds],
+    () => filteredDevices.filter((d) => selectedIds.has(d.id)),
+    [filteredDevices, selectedIds],
   );
   const selectedAgentCount = useMemo(
     () => selectedDevices.filter((d) => (d.deviceClass ?? "agent") === "agent").length,
@@ -1028,6 +1033,12 @@ export default function DeviceList({
       devices.some((d) => (d.deviceClass ?? "agent") === "network"),
     [networkDevicesEnabled, devices],
   );
+  // The VPN facet is agent-only; never leave it narrowing an all-network view
+  // after its control has gone (the critique's "unmounted filter" dead end).
+  useEffect(() => {
+    if (!hasAgentRows && vpnFilter !== "all") setVpnFilter("all");
+  }, [hasAgentRows, vpnFilter]);
+
   const classAllowsColumn = (id: ColumnId) =>
     (hasAgentRows || !AGENT_ONLY_COLUMNS.has(id)) &&
     (hasNetworkRows || !NETWORK_ONLY_COLUMNS.has(id));
@@ -1953,11 +1964,12 @@ export default function DeviceList({
               </span>
             )}
           </p>
-          {/* Search / Status / OS / quick chips / More / Advanced now live in
-              DeviceFilterToolbar (rendered by DevicesPage). DeviceList keeps
-              only the class facet and the Columns menu next to the count. */}
+          {/* Search / Status / OS / quick chips / More / Advanced live in
+              DeviceFilterToolbar and the class segment in DevicesPage. What
+              stays next to the count is list-local: the VPN facet, the
+              "Collapse linked" toggle and the Columns menu. */}
           <div className="flex flex-wrap items-center gap-2">
-            {visibleColumns.has("vpn") && (
+            {visibleColumns.has("vpn") && hasAgentRows && (
               <select
                 aria-label={t("deviceList.filterByVpn")}
                 data-testid="device-vpn-filter"

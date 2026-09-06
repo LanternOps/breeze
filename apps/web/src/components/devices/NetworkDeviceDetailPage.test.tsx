@@ -1398,6 +1398,45 @@ describe('NetworkDeviceDetailPage', () => {
       expect(back.getAttribute('href')).toBe('/devices#deviceClass=network');
     });
 
+    it('sends skipTlsVerify only when HTTPS is chosen and the self-signed box is ticked', async () => {
+      vi.spyOn(window, 'open').mockImplementation(() => null);
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-42' } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]))
+        .mockResolvedValueOnce(makeJsonResponse({ tunnel: { id: 'tunnel-2' } }, true, 201));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+      expect((screen.getByTestId('proxy-popover-scheme-select') as HTMLSelectElement).value).toBe('https');
+      fireEvent.click(screen.getByLabelText(/self-signed certificate/i));
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/tunnels/proxy-connect', expect.anything()));
+      const call = fetchWithAuthMock.mock.calls.find(([url]) => url === '/tunnels/proxy-connect');
+      expect(JSON.parse((call![1] as RequestInit).body as string).skipTlsVerify).toBe(true);
+    });
+
+    it('shows the MFA inline message when the server answers MFA_REQUIRED', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-42' } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]))
+        .mockResolvedValueOnce(makeJsonResponse({ error: 'Step-up required', code: 'MFA_REQUIRED' }, false, 403));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/two-factor/i);
+      expect(screen.getByTestId('network-detail-proxy-popover-443')).toBeTruthy();
+    });
+
     // #reviewFix8: announce() set the same string twice in a row — React
     // bails out on the no-op state update, so the live region's DOM text
     // never actually changes and a screen reader never hears the repeat.

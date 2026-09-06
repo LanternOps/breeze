@@ -65,6 +65,7 @@ export function LinkManuallyControl({
     if (!deviceId) return;
     setLinking(true);
     setError(undefined);
+    let linked = false;
     try {
       await runAction({
         request: () =>
@@ -75,9 +76,9 @@ export function LinkManuallyControl({
         successMessage: t('networkDeviceDetailPage.toasts.linked'),
         errorFallback: t('networkDeviceDetailPage.toasts.linkFailed'),
       });
+      linked = true;
       setOpen(false);
       setDeviceId('');
-      await onLinked();
     } catch (err) {
       // runAction's message is already extractApiError's output — reuse it
       // for the inline error instead of a second, possibly different string.
@@ -85,6 +86,10 @@ export function LinkManuallyControl({
     } finally {
       setLinking(false);
     }
+    // The link itself succeeded and was toasted; a failed refresh afterwards is
+    // not a link failure, so it stays outside the try above (the picker is
+    // already closed and could not show an inline error anyway).
+    if (linked) await Promise.resolve(onLinked()).catch(() => undefined);
   }, [deviceId, assetId, onLinked, t]);
 
   if (!open) {

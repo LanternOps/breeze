@@ -8,6 +8,7 @@ import { Globe, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
+import { showToast } from '../../shared/Toast';
 import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 import { useClickOutside } from '../../../hooks/useClickOutside';
 import { useEscapeClose } from '../../../hooks/useEscapeClose';
@@ -279,6 +280,11 @@ export function ProxyConnectPopover({
         setInlineError(t('networkDeviceDetailPage.proxyErrors.disabled'));
       } else if (err instanceof ActionError && err.code === 'MFA_REQUIRED') {
         setInlineError(t('networkDeviceDetailPage.proxyErrors.mfaRequired'));
+      } else if (!(err instanceof ActionError)) {
+        // runAction only toasts ActionErrors; anything else (e.g. the tab
+        // failing to open after the tunnel was created) would otherwise end
+        // silently with a re-enabled Connect button.
+        showToast({ type: 'error', message: t('networkDeviceDetailPage.toasts.proxyConnectFailed') });
       }
     } finally {
       setConnecting(false);
