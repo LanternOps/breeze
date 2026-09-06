@@ -2,7 +2,9 @@
  * maintenance_windows RLS — dual-axis (org OR partner) enforcement
  * (#2131, epic #2135).
  *
- * Migration under test: 2026-07-01-maintenance-windows-partner-ownership.sql.
+ * Migration under test: 2026-07-01-maintenance-windows-partner-ownership.sql,
+ * plus the SELECT-only own-partner read branch added by
+ * 2026-10-10-100100-notification-maintenance-partner-wide-select.sql (#4955).
  *
  * A maintenance window is owned by EITHER an org (org_id set, partner_id
  * NULL) OR a partner (partner_id set, org_id NULL — partner-wide / "all
@@ -67,13 +69,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An org-scoped session. `currentPartnerId` defaults to NULL, which is NOT the
+ * shape a real org token has: `buildDbAccessContext` (middleware/auth.ts) sets
+ * it from the token's partnerId, and `maintenance_windows_partner_wide_select`
+ * keys on exactly that GUC. Pass the partner id when the test is about what an
+ * org token can actually read. `accessiblePartnerIds` stays empty either way —
+ * an org token never passes `breeze_has_partner_access`, which is what keeps
+ * the read branch read-only.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -149,15 +161,41 @@ describe('maintenance_windows RLS — dual-axis (2026-07-01 migration)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('an org-scope caller cannot see a partner-wide window owned by its partner (suppression still applies via workers)', async () => {
+  // This used to assert org scope could NOT see a partner-wide window — but
+  // the fixture never set `currentPartnerId`, so it was asserting the
+  // NULL-GUC shape and passed for the wrong reason.
+  // `maintenance_windows_partner_wide_select`
+  // (2026-10-10-100100-notification-maintenance-partner-wide-select.sql,
+  // #4955) now grants an org token a SELECT-only view of its OWN partner's
+  // partner-wide windows. Org tokens still never pass
+  // `breeze_has_partner_access`, so every WRITE path is exactly as strict as
+  // before. Exhaustive per-table proof (incl. cross-partner and NULL-GUC
+  // controls): notificationMaintenancePartnerWideSelect.integration.test.ts.
+  it('org scope can READ (not write) a partner-wide window owned by its partner', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const id = await seedPartnerWindow(partner.id);
 
-    const visibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const visibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select({ id: maintenanceWindows.id }).from(maintenanceWindows).where(eq(maintenanceWindows.id, id)),
     );
-    expect(visibleToOrg).toEqual([]);
+    expect(visibleToOrg.map((r) => r.id)).toEqual([id]);
+
+    // FOR SELECT only — RLS filters the write's target rows silently, so the
+    // row COUNT is the assertion that has teeth.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(maintenanceWindows)
+        .set({ name: 'HIJACKED' })
+        .where(eq(maintenanceWindows.id, id))
+        .returning({ id: maintenanceWindows.id }),
+    );
+    expect(updated).toEqual([]);
+
+    const deleted = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db.delete(maintenanceWindows).where(eq(maintenanceWindows.id, id)).returning({ id: maintenanceWindows.id }),
+    );
+    expect(deleted).toEqual([]);
   });
 
   it('occurrences of a partner-owned window are visible to the owning partner (window-join partner branch)', async () => {

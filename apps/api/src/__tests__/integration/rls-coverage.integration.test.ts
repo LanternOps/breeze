@@ -645,10 +645,6 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
   ['automations', 'TODO(#4952): no breeze_current_partner_id() SELECT branch yet.'],
   ['sensitive_data_policies', 'TODO(#4953): no breeze_current_partner_id() SELECT branch yet.'],
   ['peripheral_policies', 'TODO(#4954): no breeze_current_partner_id() SELECT branch yet.'],
-  ['maintenance_windows', 'TODO(#4955): no breeze_current_partner_id() SELECT branch yet.'],
-  ['notification_channels', 'TODO(#4956): no breeze_current_partner_id() SELECT branch yet.'],
-  ['notification_routing_rules', 'TODO(#4957): no breeze_current_partner_id() SELECT branch yet.'],
-  ['escalation_policies', 'TODO(#4958): no breeze_current_partner_id() SELECT branch yet.'],
   ['sso_providers', 'TODO(#4959): no breeze_current_partner_id() SELECT branch yet.'],
   ['ticket_forms', 'TODO(#4960): no breeze_current_partner_id() SELECT branch yet.'],
   ['contract_templates', 'TODO(#4961): no breeze_current_partner_id() SELECT branch yet.'],
@@ -665,7 +661,7 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT: ReadonlyMap<string, string> = new Map<s
 // follow-up issue, not a free ride into an already-frozen exemption. Both
 // constants are asserted by 'the partner-wide SELECT branch exemption map
 // only shrinks' below.
-const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 23;
+const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_CEILING = 19;
 const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'ai_agents',
   'ai_agent_schedules',
@@ -681,10 +677,6 @@ const PARTNER_WIDE_SELECT_BRANCH_EXEMPT_FROZEN_NAMES: ReadonlySet<string> = new 
   'automations',
   'sensitive_data_policies',
   'peripheral_policies',
-  'maintenance_windows',
-  'notification_channels',
-  'notification_routing_rules',
-  'escalation_policies',
   'sso_providers',
   'ticket_forms',
   'contract_templates',
