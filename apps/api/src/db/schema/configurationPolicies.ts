@@ -1,5 +1,6 @@
 import {
   pgTable,
+  pgView,
   uuid,
   varchar,
   text,
@@ -12,6 +13,7 @@ import {
   index,
   uniqueIndex,
   primaryKey,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
@@ -75,6 +77,15 @@ export const configurationPolicies = pgTable('configuration_policies', {
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description'),
   status: configPolicyStatusEnum('status').notNull().default('active'),
+  // One-level, create-only inheritance parent (#5080). Lazy
+  // `(): AnyPgColumn =>` self-reference. Default FK action (NO ACTION): a
+  // parent with children cannot be deleted alone (the route maps that to a 409),
+  // while an org cascade that deletes parent and children in ONE statement still
+  // succeeds. Immutability and the ownership rule (same org, or partner-wide of
+  // the org's partner; parent must itself be a root) are enforced by the
+  // constraint trigger `configuration_policies_parent_guard`, migration
+  // 2026-10-12-100000-config-policy-inheritance.sql.
+  parentPolicyId: uuid('parent_policy_id').references((): AnyPgColumn => configurationPolicies.id),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -82,6 +93,9 @@ export const configurationPolicies = pgTable('configuration_policies', {
   orgIdIdx: index('config_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('config_policies_partner_id_idx').on(table.partnerId),
   statusIdx: index('config_policies_status_idx').on(table.status),
+  parentPolicyIdIdx: index('config_policies_parent_policy_id_idx')
+    .on(table.parentPolicyId)
+    .where(sql`${table.parentPolicyId} IS NOT NULL`),
 }));
 
 // Coarse per-organization material clocks for desired-configuration exports.
@@ -112,6 +126,35 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
     .where(sql`${table.featurePolicyId} IS NOT NULL`),
   uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique').on(table.configPolicyId, table.featureType),
 }));
+
+// A policy's own feature links PLUS its parent's links for feature types the
+// policy has no link of its own (#5080). Created and owned by migration
+// 2026-10-12-100000-config-policy-inheritance.sql with
+// `WITH (security_invoker = true)`, hence `.existing()` — drizzle-kit must never
+// manage it, because regenerating it without security_invoker would turn the
+// view into a full RLS bypass.
+//
+// `id` is the UNDERLYING link id: an inherited row keeps the PARENT link's id so
+// joins on config_policy_*_settings.feature_link_id keep working unchanged. The
+// consequence — one link id maps to the parent AND each of its children — is why
+// callers must carry the ASSIGNED policy id alongside the link id rather than
+// reverse-mapping a link to "the" policy (spec: execution identity, W02).
+// `sourcePolicyId` names which policy actually authored the link.
+//
+// Resolvers, agent config delivery, and workers read THIS view; feature-link CRUD
+// and standalone-entity delete guards keep reading `configPolicyFeatureLinks`
+// (contract test: services/featureLinkReaders.contract.test.ts, W02).
+export const configPolicyEffectiveFeatureLinks = pgView('config_policy_effective_feature_links', {
+  id: uuid('id').notNull(),
+  configPolicyId: uuid('config_policy_id').notNull(),
+  sourcePolicyId: uuid('source_policy_id').notNull(),
+  featureType: configFeatureTypeEnum('feature_type').notNull(),
+  featurePolicyId: uuid('feature_policy_id'),
+  inlineSettings: jsonb('inline_settings'),
+  createdAt: timestamp('created_at').notNull(),
+  updatedAt: timestamp('updated_at').notNull(),
+  inherited: boolean('inherited').notNull(),
+}).existing();
 
 export const configPolicyAssignments = pgTable('config_policy_assignments', {
   id: uuid('id').primaryKey().defaultRandom(),
