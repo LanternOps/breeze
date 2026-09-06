@@ -27,6 +27,8 @@ const state: {
   actionUpdateWheres: unknown[];
   actionSelectWheres: unknown[];
   cancelledActionIds: string[];
+  /** Run UPDATEs issued OUTSIDE the fence transaction. */
+  tailRunUpdates: Array<{ patch: Record<string, unknown>; where: unknown }>;
 } = {
   run: null,
   actionRows: [],
@@ -37,6 +39,7 @@ const state: {
   actionUpdateWheres: [],
   actionSelectWheres: [],
   cancelledActionIds: [],
+  tailRunUpdates: [],
 };
 
 function tableName(table: unknown): string {
@@ -97,6 +100,18 @@ function makeTx() {
 vi.mock('../db', () => ({
   db: {
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(makeTx()),
+    // The tail "finish a run that never seeded an action row" stamp runs
+    // outside the fence transaction, on the module db.
+    update: (table: unknown) => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: (where: unknown) => {
+          if (tableName(table) === 'automation_runs') {
+            state.tailRunUpdates.push({ patch, where });
+          }
+          return Promise.resolve([]);
+        },
+      }),
+    }),
     select: () => ({
       from: (table: unknown) => ({
         where: (where: unknown) => {
@@ -156,6 +171,7 @@ beforeEach(() => {
   state.actionUpdateWheres = [];
   state.actionSelectWheres = [];
   state.cancelledActionIds = [];
+  state.tailRunUpdates = [];
   cancelExecutionsForRunMock.mockClear();
   reconcileAutomationRunMock.mockReset().mockResolvedValue(undefined);
   cancelExecutionsForRunMock.mockResolvedValue({
@@ -241,16 +257,22 @@ describe('cancelAutomationRun', () => {
     expect(Object.keys(call)).not.toContain('orgId');
   });
 
-  it('counts requested and retracted executions, not the ones already in flight', async () => {
+  it('reports PROVEN stops separately from mere requests', async () => {
+    // Folding these together is how a "cancel this run" summary ends up
+    // claiming five scripts stopped when only two provably did.
     cancelExecutionsForRunMock.mockResolvedValue({
       requested: 3, retracted: 2, alreadyCancelling: 4, noActionNeeded: 1, failed: 1,
     });
     const out = await cancelAutomationRun({ runId: 'run-1', ...actor });
     expect(out).toMatchObject({
       kind: 'cancelled',
-      executionsCancelled: 5,
-      executions: { requested: 3, retracted: 2, alreadyCancelling: 4 },
+      executionsStopped: 2,
+      executionsRequested: 3,
+      executions: { requested: 3, retracted: 2, alreadyCancelling: 4, failed: 1 },
     });
+    // alreadyCancelling is in neither headline number: those were asked by an
+    // earlier call and have not stopped.
+    expect(out).not.toMatchObject({ executionsStopped: 6 });
   });
 
   it('reports in-flight execute_command and deployment actions as uncancellable', async () => {
@@ -290,6 +312,15 @@ describe('cancelAutomationRun', () => {
     // The fence write and the fan-out both happened before reconcile.
     expect(state.runUpdatePatches.at(0)).toMatchObject({ status: 'cancelled' });
     expect(cancelExecutionsForRunMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes a run that never seeded an action row, which reconciliation cannot see', async () => {
+    await cancelAutomationRun({ runId: 'run-1', ...actor });
+    const tail = state.tailRunUpdates.at(-1)!;
+    expect(tail.patch).toEqual({ completedAt: expect.any(Date) });
+    // Guarded so it only ever fires for a run with no action rows at all.
+    expect(renderSql(tail.where)).toContain('NOT EXISTS');
+    expect(renderSql(tail.where).toLowerCase()).toContain('completed_at" is null');
   });
 
   it('is idempotent: a second cancel re-asks the devices but does not rewrite the run', async () => {

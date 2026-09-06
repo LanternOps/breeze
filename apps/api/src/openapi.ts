@@ -3350,7 +3350,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                     },
                     alreadyCancelling: { type: 'boolean', description: 'The run had already been cancelled; the devices were asked again.' },
                     actionsCancelled: { type: 'integer', description: 'Action rows that had never been dispatched and are now terminal.' },
-                    executionsCancelled: { type: 'integer', description: 'Executions this call asked to stop or proved stopped. Excludes ones whose cancel was already in flight.' },
+                    executionsStopped: { type: 'integer', description: 'Executions PROVEN stopped: the server retracted the command before the device saw it.' },
+                    executionsRequested: { type: 'integer', description: 'Executions a stop was sent to. NOT yet stopped — the device has not confirmed and may never.' },
                     executions: {
                       type: 'object',
                       description: 'Per-kind breakdown of the script-execution sweep. Exactly one bucket per execution.',

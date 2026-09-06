@@ -2065,7 +2065,8 @@ describe('automations routes — POST /runs/:runId/cancel (#3525 W05)', () => {
     kind: 'cancelled',
     alreadyCancelling: false,
     actionsCancelled: 2,
-    executionsCancelled: 3,
+    executionsStopped: 0,
+    executionsRequested: 3,
     executions: { requested: 3, retracted: 0, alreadyCancelling: 1, noActionNeeded: 0, failed: 0 },
     uncancellableActions: [
       { actionIndex: 4, actionType: 'deploy_software', reason: 'Software deployments cannot be recalled.' },
@@ -2174,7 +2175,9 @@ describe('automations routes — POST /runs/:runId/cancel (#3525 W05)', () => {
     expect(body).toMatchObject({
       success: true,
       run: { id: RUN_ID, status: 'cancelled' },
-      executionsCancelled: 3,
+      // Nothing was PROVEN stopped: three devices were merely asked.
+      executionsStopped: 0,
+      executionsRequested: 3,
       actionsCancelled: 2,
       executions: { alreadyCancelling: 1 },
       uncancellableActions: [{ actionIndex: 4, actionType: 'deploy_software' }],

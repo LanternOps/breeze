@@ -100,7 +100,14 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
-const publishEventMock = vi.hoisted(() => vi.fn(async () => undefined));
+const publishEventMock = vi.hoisted(() => vi.fn(
+  async (
+    _type: string,
+    _orgId: string,
+    _payload: Record<string, unknown>,
+    _source: string,
+  ): Promise<void> => undefined,
+));
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
 
 import { __testOnly, reconcileAutomationRun } from './automationActionResults';
@@ -207,6 +214,36 @@ describe('reconciliation never re-opens a cancelled run', () => {
     expect(runPatch).toMatchObject({ devicesTargeted: 1 });
     expect(runPatch.status).toBeUndefined();
     expect(runPatch.completedAt).toBeUndefined();
+  });
+
+  it('a cancelled run whose device genuinely FAILED still publishes automation.failed', async () => {
+    // A stop must not hide a failure. There is no false-alarm cost: W03's
+    // closers stamp a PROVEN post-cancel kill as `cancelled`, never `failed`,
+    // so a device still reading `failed` here is a failure the cancellation
+    // machinery did not account for.
+    state.run.status = 'cancelled';
+    seedActions(['failed']);
+    state.deviceRows = [{ deviceId: 'device-1', status: 'failed' }];
+    await reconcileAutomationRun('run-1');
+
+    const types = publishEventMock.mock.calls.map((call) => call[0]);
+    expect(types).toContain('automation.cancelled');
+    expect(types).toContain('automation.failed');
+    // The run KEEPS its cancelled label — relabelling a deliberate stop as a
+    // failure is the other half of the dishonesty.
+    for (const call of publishEventMock.mock.calls) {
+      expect(call[2]).toMatchObject({ status: 'cancelled', devicesFailed: 1 });
+    }
+    expect(state.runUpdates.at(-1)!.status).toBeUndefined();
+  });
+
+  it('a cancelled run with no failures publishes ONLY automation.cancelled', async () => {
+    state.run.status = 'cancelled';
+    seedActions(['cancelled']);
+    state.deviceRows = [{ deviceId: 'device-1', status: 'cancelled' }];
+    await reconcileAutomationRun('run-1');
+    const types = publishEventMock.mock.calls.map((call) => call[0]);
+    expect(types).toEqual(['automation.cancelled']);
   });
 
   it('stamps completedAt exactly once on a cancelled run whose children are all terminal', async () => {

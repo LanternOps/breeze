@@ -862,7 +862,8 @@ automationRoutes.post(
         // What the REQUEST achieved, never an assumed stop.
         alreadyCancelling: outcome.alreadyCancelling,
         actionsCancelled: outcome.actionsCancelled,
-        executionsCancelled: outcome.executionsCancelled,
+        executionsStopped: outcome.executionsStopped,
+        executionsRequested: outcome.executionsRequested,
         executions: outcome.executions,
         uncancellableActions: outcome.uncancellableActions,
         ...(graceSeconds === undefined ? {} : { graceSeconds }),
@@ -874,7 +875,9 @@ automationRoutes.post(
       run: { id: runId, status: 'cancelled' as const },
       alreadyCancelling: outcome.alreadyCancelling,
       actionsCancelled: outcome.actionsCancelled,
-      executionsCancelled: outcome.executionsCancelled,
+      // Two numbers, not one: `stopped` is proven, `requested` is only asked.
+      executionsStopped: outcome.executionsStopped,
+      executionsRequested: outcome.executionsRequested,
       executions: outcome.executions,
       uncancellableActions: outcome.uncancellableActions,
     });

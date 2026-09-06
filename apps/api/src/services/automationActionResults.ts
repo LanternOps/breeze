@@ -371,14 +371,10 @@ async function reconcileInCurrentContext(
   // must not later find it labelled `completed`.
   const runWasCancelled = run.status === 'cancelled';
 
-  const buildPublications = (status: AutomationRunStatus): Publication[] => {
+  const publicationsOfType = (type: Publication['type'], status: AutomationRunStatus): Publication[] => {
     const orgIds = [...new Set(actionRows.map((row) => row.orgId))];
     return orgIds.map((orgId) => ({
-      type: status === 'completed'
-        ? 'automation.completed'
-        : status === 'cancelled'
-          ? 'automation.cancelled'
-          : 'automation.failed',
+      type,
       orgId,
       payload: {
         ...(run.automationId ? { automationId: run.automationId } : {
@@ -392,6 +388,15 @@ async function reconcileInCurrentContext(
       },
     }));
   };
+
+  const buildPublications = (status: AutomationRunStatus): Publication[] => publicationsOfType(
+    status === 'completed'
+      ? 'automation.completed'
+      : status === 'cancelled'
+        ? 'automation.cancelled'
+        : 'automation.failed',
+    status,
+  );
 
   if (aggregate.status === 'running') {
     if (runWasCancelled) {
@@ -421,7 +426,21 @@ async function reconcileInCurrentContext(
         .where(and(eq(automationRuns.id, runId), eq(automationRuns.status, 'cancelled')));
       return [];
     }
-    return buildPublications('cancelled');
+    // The run KEEPS the `cancelled` label: a deliberate human stop is the most
+    // specific explanation of why it ended, and relabelling it `failed` would
+    // page an MSP for every cancel whose SIGKILL produced a nonzero exit.
+    //
+    // But a stop must not HIDE a failure either, so when devices failed we
+    // publish `automation.failed` alongside. There is no false-alarm cost:
+    // W03's closers stamp a PROVEN post-cancel kill as `cancelled`, never
+    // `failed`, so a device still reading `failed` on a cancelled run is a
+    // failure the cancellation machinery did not account for — exactly what
+    // failure alerting exists for. Both events ride the same
+    // `completed_at IS NULL` transition, so each fires exactly once.
+    return [
+      ...publicationsOfType('automation.cancelled', 'cancelled'),
+      ...(aggregate.devicesFailed > 0 ? publicationsOfType('automation.failed', 'cancelled') : []),
+    ];
   }
 
   const isRepairingPriorTerminal = priorAggregate?.status === run.status;

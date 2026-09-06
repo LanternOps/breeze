@@ -416,6 +416,8 @@ describe('executeConfigPolicyAutomationRun', () => {
     seedActionResultsMock.mockResolvedValue(undefined);
     recordActionDispatchMock.mockResolvedValue(true);
     reconcileRunMock.mockResolvedValue(undefined);
+    // Default fence read: no row, i.e. "not cancelled".
+    vi.mocked(db.execute).mockResolvedValue([] as any);
   });
 
   it('throws when orgId cannot be resolved', async () => {
@@ -1054,6 +1056,66 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
   });
 
+  // #3525 W05 — the config-policy runner carries the same fence. Cancelling a
+  // config-policy run is out of scope for the ROUTE (OD10-B), but the fence is
+  // unconditional so a run cancelled through any other door still stops here.
+  it('refuses to seed a config-policy run that was already cancelled', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [{ type: 'execute_command', command: 'echo nope' }],
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online' },
+            ]),
+          }),
+        } as any;
+      }
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+    });
+
+    const run = { id: 'run-cp-cancelled', automationId: null, status: 'cancelled', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // The FOR SHARE fence read sees the cancelled run.
+    vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
+
+    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+
+    expect(result).toEqual({
+      runId: 'run-cp-cancelled',
+      status: 'cancelled',
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+    });
+    expect(seedActionResultsMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+    expect(reconcileRunMock).not.toHaveBeenCalled();
+  });
+
   it('propagates reconciliation publication failures', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo ok' }],
@@ -1256,7 +1318,7 @@ describe('executeAutomationRun durable dispatch', () => {
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     } as any);
     // The fence read (SELECT ... FOR SHARE) sees the cancelled run.
-    vi.mocked(db.execute).mockResolvedValue([{ status: 'cancelled' }] as any);
+    vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
 
     const result = await executeAutomationRun(run.id, ['dev-1']);
 

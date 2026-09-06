@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
   db,
   getCurrentDbAccessContext,
@@ -27,24 +27,41 @@ const loadRunSweep = () => import('./scriptCancellation');
  *
  * ## The fence, and what it actually guarantees
  *
+ * Read this before touching either half — the two halves look redundant and
+ * are not.
+ *
  * `cancelAutomationRun` marks the run `cancelled` while holding `FOR UPDATE`
- * on its row. Every dispatch-side entry point calls `assertRunNotCancelled`,
- * which reads that row `FOR SHARE`, so:
+ * on its row, then sweeps the run's executions AFTER that transaction commits.
+ * Every dispatch-side entry point calls `assertRunNotCancelled` first, which
+ * reads the same row `FOR SHARE`.
  *
- *  - a dispatcher that acquires `FOR SHARE` first blocks the cancel until it
- *    commits, which means whatever it created is visible to the fan-out below;
- *  - a dispatcher that arrives after the cancel committed sees `cancelled` and
- *    throws `RunCancelledError` before dispatching anything.
+ * **CHECK-BEFORE is not the guarantee.** In production the runtime calls it
+ * with the pooled `db`, so the `FOR SHARE` lock is taken and released by that
+ * single statement, long before the dispatch it guards (an execution insert,
+ * an encrypt, a WebSocket send) even begins. It cannot be held across the
+ * dispatch: that would pin a pooled connection across a network round trip for
+ * five concurrent devices at a time — the double-hold CLAUDE.md calls out, and
+ * a self-deadlock once the pool is exhausted, since `dispatchScriptToDevice`
+ * opens connections of its own. So treat check-before as what it is: a cheap
+ * early exit that stops the common case (a queued job for a run cancelled
+ * minutes ago) from doing any work at all.
  *
- * The lock is deliberately NOT held across the dispatch itself. Doing that
- * would pin a pooled connection across a device command insert and a WebSocket
- * send for five concurrent devices at a time — the double-hold that CLAUDE.md
- * calls out, and a self-deadlock once the pool is exhausted. The residual
- * window (an execution row committed microseconds after the fan-out's read) is
- * closed on the dispatch side instead: `automationRuntime` re-checks the run
- * after recording a dispatch and cancels the execution it just created. So an
- * execution belonging to a cancelled run is either caught by the sweep here or
- * cancelled by its own dispatcher — never left running.
+ * **CHECK-AFTER is the guarantee.** `automationRuntime`'s
+ * `cancelDispatchIfRunCancelled` re-reads the run once the dispatch has
+ * committed and stops the execution itself if the run went `cancelled`
+ * meanwhile. Postgres gives the needed ordering for free without any lock:
+ * whichever of {the cancel's post-commit sweep, this dispatcher's re-read}
+ * runs second sees the other's committed write. So every script execution of a
+ * cancelled run is either found by the sweep or stopped by its own dispatcher.
+ *
+ * **DO NOT delete `cancelDispatchIfRunCancelled` on the belief that the row
+ * lock already covers it.** It does not, and removing it reopens the race.
+ *
+ * Scope of the guarantee: SCRIPT EXECUTIONS only. `execute_command` and
+ * `deploy_software` actions have no agent-side stop at all — they genuinely do
+ * run to completion after a cancel, and are reported to the operator through
+ * `uncancellableActions` rather than claimed stopped (see
+ * `UNCANCELLABLE_ACTION_REASONS` below).
  */
 
 /** Thrown by `assertRunNotCancelled`; callers treat it as "stop, quietly". */
@@ -127,10 +144,15 @@ export type CancelAutomationRunOutcome =
       alreadyCancelling: boolean;
       /** Action rows that had not been dispatched and are now terminal. */
       actionsCancelled: number;
-      /** Executions this call asked to stop (`requested`) or proved stopped
-       *  (`retracted`). Deliberately excludes `alreadyCancelling`, which had
-       *  been asked by an earlier call and has NOT stopped. */
-      executionsCancelled: number;
+      /** Executions PROVEN stopped by this call — the server retracted the
+       *  command before the device ever saw it. Nothing else counts here. */
+      executionsStopped: number;
+      /** Executions a `script_cancel` went out for because of this call. Asked,
+       *  NOT stopped: the device has not confirmed and may never. Kept separate
+       *  from `executionsStopped` for the same reason `RunCancelTally` keeps
+       *  `requested` and `retracted` apart — folding them lets a caller report
+       *  a stop that has not happened. */
+      executionsRequested: number;
       /** Full per-kind breakdown, so a caller can report honestly. */
       executions: RunCancelTally;
       uncancellableActions: UncancellableAction[];
@@ -292,11 +314,30 @@ export async function cancelAutomationRun(input: {
     captureException(err, undefined, { runId });
   }
 
+  // Reconciliation returns early for a run with NO action rows — it derives
+  // everything from them, and with none there is not even an org to publish
+  // to. That is exactly the shape of a run cancelled between enqueue and
+  // worker pickup, and the fence guarantees no action row will ever appear
+  // now. Without this the run would sit `cancelled` with a null completed_at
+  // forever, reading as permanently in progress.
+  await inDeliberateSystemContext(() => db
+    .update(automationRuns)
+    .set({ completedAt: new Date() })
+    .where(and(
+      eq(automationRuns.id, runId),
+      eq(automationRuns.status, 'cancelled'),
+      isNull(automationRuns.completedAt),
+      sql`NOT EXISTS (
+        SELECT 1 FROM automation_action_results WHERE run_id = ${runId}::uuid
+      )`,
+    )));
+
   return {
     kind: 'cancelled',
     alreadyCancelling: fence.alreadyCancelling,
     actionsCancelled: fence.actionsCancelled,
-    executionsCancelled: executions.requested + executions.retracted,
+    executionsStopped: executions.retracted,
+    executionsRequested: executions.requested,
     executions,
     uncancellableActions,
   };

@@ -296,6 +296,28 @@ describe('automation run cancel fence — real PostgreSQL', () => {
     ]);
   }, 30_000);
 
+  runDb('finishes a run cancelled before any action row was ever seeded', async () => {
+    // The shape of a cancel between enqueue and worker pickup. Reconciliation
+    // derives everything from action rows and returns early when there are
+    // none, so without the explicit stamp the run would read as permanently
+    // in progress.
+    const f = await fixture();
+
+    const outcome = await cancelAutomationRun({
+      runId: f.run.id,
+      actorId: null,
+      actorLabel: 'fence-integration',
+    });
+    expect(outcome).toMatchObject({ kind: 'cancelled', actionsCancelled: 0 });
+
+    const [run] = await getTestDb()
+      .select({ status: automationRuns.status, completedAt: automationRuns.completedAt })
+      .from(automationRuns)
+      .where(eq(automationRuns.id, f.run.id));
+    expect(run).toMatchObject({ status: 'cancelled' });
+    expect(run!.completedAt).not.toBeNull();
+  }, 30_000);
+
   runDb('refuses to relabel a run that already finished on its own', async () => {
     const f = await fixture();
     await getTestDb().update(automationRuns)
