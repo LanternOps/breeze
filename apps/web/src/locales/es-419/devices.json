@@ -205,6 +205,22 @@
         "confirm": "Instalar Homebrew"
       }
     },
+    "removeDialog": {
+      "titleOne": "¿Quitar {{hostname}}?",
+      "titleMany": "¿Quitar {{count}} dispositivos?",
+      "bodyOne": "Se sacará de su flota activa y dejará de ser supervisado. El historial se conserva y puede restaurarlo más adelante.",
+      "bodyMany": "Se sacarán de su flota activa y dejarán de ser supervisados. El historial se conserva y puede restaurarlos más adelante.",
+      "summary": "{{online}} en línea, {{notOnline}} sin conexión en este momento.",
+      "legend": "¿Qué debe pasar con el agente Breeze?",
+      "uninstall": "Desinstalar el agente Breeze",
+      "uninstallOnline": "En cola ahora — un agente en línea lo recoge en unos instantes.",
+      "uninstallQueuedWithWindow": "En cola — se ejecuta la próxima vez que el dispositivo se comunique. Se cancela si no lo hace en {{hours}} horas.",
+      "uninstallQueued": "En cola — se ejecuta la próxima vez que el dispositivo se comunique.",
+      "uninstallMixed": "Los dispositivos en línea lo recogen en unos instantes; el resto lo ejecuta en su próxima comunicación.",
+      "leave": "Dejar el agente instalado",
+      "leaveHint": "La máquina sigue ejecutando el agente, pero no se puede administrar.",
+      "confirm": "Quitar"
+    },
     "runScript": "Ejecutar secuencia de comandos",
     "remoteTools": "Herramientas remotas",
     "reRunAgentInventoryCollectorsSo": "Vuelva a ejecutar los recopiladores de inventario de agentes para que UI vea datos nuevos de hardware/software/red sin esperar el siguiente ciclo de latidos.",

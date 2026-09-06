@@ -289,7 +289,31 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       await user.click(screen.getByTestId('device-action-remove'));
       expect(onAction).not.toHaveBeenCalled();
-      expect(await screen.findByText('Remove Device')).toBeInTheDocument();
+      // #3987: the generic "Remove Device" confirm was replaced by
+      // RemoveDeviceDialog, which titles itself with the hostname.
+      expect(await screen.findByText('Remove edge-01?')).toBeInTheDocument();
+    });
+
+    // #3987 items 2 + 6: Remove is no longer a bare yes/no confirm — it asks
+    // what should happen to the agent and forwards the answer, so the detail
+    // page's DELETE carries `uninstallAgent` exactly like the fleet list's.
+    it('Remove opens the agent-choice dialog and forwards the choice to onAction', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+      await user.click(screen.getByTestId('device-action-remove'));
+
+      expect(screen.getByTestId('remove-choice-uninstall')).toBeChecked();
+      await user.click(screen.getByTestId('remove-choice-leave'));
+      await user.click(screen.getByTestId('device-actions-remove-confirm'));
+
+      expect(onAction).toHaveBeenCalledWith(
+        'decommission',
+        expect.objectContaining({ id: baseDevice.id }),
+        { uninstallAgent: false },
+      );
     });
 
     // The compact variant is currently unused in production — the sole

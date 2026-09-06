@@ -205,6 +205,22 @@
         "confirm": "Installer Homebrew"
       }
     },
+    "removeDialog": {
+      "titleOne": "Retirer {{hostname}} ?",
+      "titleMany": "Retirer {{count}} appareils ?",
+      "bodyOne": "Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
+      "bodyMany": "Ils seront sortis de votre parc actif et ne seront plus surveillés. L’historique est conservé et vous pourrez les restaurer plus tard.",
+      "summary": "{{online}} en ligne, {{notOnline}} pas en ligne actuellement.",
+      "legend": "Que doit-il advenir de l’agent Breeze ?",
+      "uninstall": "Désinstaller l’agent Breeze",
+      "uninstallOnline": "Mis en file d’attente — un agent en ligne le récupère dans quelques instants.",
+      "uninstallQueuedWithWindow": "Mis en file d’attente — s’exécute à la prochaine communication de l’appareil. Annulé s’il ne se manifeste pas dans un délai de {{hours}} heures.",
+      "uninstallQueued": "Mis en file d’attente — s’exécute à la prochaine communication de l’appareil.",
+      "uninstallMixed": "Les appareils en ligne le récupèrent dans quelques instants; les autres l’exécutent à leur prochaine communication.",
+      "leave": "Laisser l’agent installé",
+      "leaveHint": "La machine continue d’exécuter l’agent, mais elle ne peut plus être gérée.",
+      "confirm": "Retirer"
+    },
     "runScript": "Exécuter un script",
     "remoteTools": "Outils à distance",
     "reRunAgentInventoryCollectorsSo": "Relancez les collecteurs d’inventaire de l’agent pour que l’interface puisse voir de nouvelles données matérielles/logicielles/réseau sans attendre le prochain cycle de battements de cœur",

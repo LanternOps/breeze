@@ -5,11 +5,13 @@ import { showToast } from "../shared/Toast";
 import DeviceDetails from "./DeviceDetails";
 import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
+import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
+import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
 import {
   sendDeviceCommand,
@@ -43,6 +45,11 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // #3987: Remove has to ask what happens to the agent before it runs.
+  // DeviceActions asks in its own dialog and passes the answer down;
+  // DeviceSettingsModal's Danger Zone button has no dialog at all, so the
+  // page owes that caller one. Set = "asked, not yet answered".
+  const [pendingRemove, setPendingRemove] = useState<Device | null>(null);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
 
@@ -232,8 +239,23 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     void navigateTo("/devices");
   };
 
-  const handleAction = async (action: string, device: Device) => {
+  const handleAction = async (
+    action: string,
+    device: Device,
+    // #3987: RemoveDeviceDialog's agent answer, present only for Remove.
+    opts?: DeviceActionOptions,
+  ) => {
     if (actionInProgress) return;
+
+    // Gate/execute split, mirroring DevicesPage. A `decommission` that carries
+    // no agent answer has not been through a dialog yet — open one and come
+    // back through here with `opts` set. Keying on the ABSENCE of `opts` (not on
+    // the caller) means any present or future Remove trigger on this page is
+    // gated by default; a caller that already asked is not asked twice.
+    if (action === "decommission" && !opts) {
+      setPendingRemove(device);
+      return;
+    }
 
     try {
       setActionInProgress(true);
@@ -395,7 +417,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({
                 type: "success",
                 message: `${device.hostname} has been removed`,
@@ -597,6 +619,19 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         onSaved={fetchDevice}
         onAction={handleAction}
       />
+      {pendingRemove && (
+        <RemoveDeviceDialog
+          open
+          targets={[{ hostname: pendingRemove.hostname, status: pendingRemove.status }]}
+          onClose={() => setPendingRemove(null)}
+          onConfirm={(choice) => {
+            const target = pendingRemove;
+            setPendingRemove(null);
+            void handleAction("decommission", target, choice);
+          }}
+          confirmTestId="detail-remove-confirm"
+        />
+      )}
       <ChangeSiteModal
         device={device}
         isOpen={changeSiteOpen}

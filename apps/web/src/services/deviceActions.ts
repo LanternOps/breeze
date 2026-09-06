@@ -376,9 +376,24 @@ export async function executeScript(
   return await response.json() as ScriptAdmissionResult;
 }
 
-export async function decommissionDevice(deviceId: string): Promise<{ success: boolean }> {
+export interface RemoveDeviceOptions {
+  /**
+   * Queue a durable self_uninstall alongside the Remove (#3986/#4001). The
+   * API defaults this to false for back-compat; the WEB defaults it to true
+   * in RemoveDeviceDialog — defaulting to "leave installed" is what produces
+   * zombie agents nobody notices (owner decision 2026-08-24).
+   */
+  uninstallAgent: boolean;
+}
+
+export async function decommissionDevice(
+  deviceId: string,
+  opts: RemoveDeviceOptions,
+): Promise<{ success: boolean; uninstallQueued?: boolean }> {
   const response = await fetchWithAuth(`/devices/${deviceId}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uninstallAgent: opts.uninstallAgent }),
   });
 
   if (!response.ok) {
@@ -387,6 +402,19 @@ export async function decommissionDevice(deviceId: string): Promise<{ success: b
 
   const data = await response.json();
   return data.data ?? data;
+}
+
+/**
+ * Read-only knobs the Remove dialog needs. `uninstallDrainWindowHours` is
+ * env-driven on the API (DEVICE_UNINSTALL_DRAIN_WINDOW_HOURS) — operators tune
+ * it per deployment, so the web must fetch it and never hardcode it.
+ */
+export async function fetchRemovalConfig(): Promise<{ uninstallDrainWindowHours: number }> {
+  const response = await fetchWithAuth('/devices/removal-config');
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, 'Failed to load removal settings'));
+  }
+  return response.json();
 }
 
 /**
@@ -483,14 +511,17 @@ export interface BulkDecommissionResult {
  * summary naming which devices failed, not just a count.
  */
 export async function bulkDecommissionDevices(
-  devices: Array<{ id: string; hostname: string }>
+  devices: Array<{ id: string; hostname: string }>,
+  opts: RemoveDeviceOptions,
 ): Promise<BulkDecommissionResult> {
   let succeeded = 0;
   const failed: BulkDecommissionFailed[] = [];
 
   for (const device of devices) {
     try {
-      await decommissionDevice(device.id);
+      // One radio for the whole selection (#3987) — every DELETE carries the
+      // same agent choice the operator made once in RemoveDeviceDialog.
+      await decommissionDevice(device.id, opts);
       succeeded++;
     } catch {
       failed.push({ id: device.id, hostname: device.hostname || device.id });

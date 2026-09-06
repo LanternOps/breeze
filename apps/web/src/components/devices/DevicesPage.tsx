@@ -11,6 +11,7 @@ import DeviceCard from './DeviceCard';
 import DecommissionedHiddenHint from './DecommissionedHiddenHint';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
+import RemoveDeviceDialog from './RemoveDeviceDialog';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
@@ -190,6 +191,9 @@ export default function DevicesPage() {
   // on which screen you were on — and the list is the dense, easy-to-mis-click
   // one, with Reboot sitting next to Run Script and Wake.
   const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
+  // #3987: bulk Remove asks the agent question ONCE for the whole selection,
+  // then runBulkRemove runs the per-device DELETE loop with that one answer.
+  const [pendingBulkRemove, setPendingBulkRemove] = useState<Device[] | null>(null);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -793,7 +797,14 @@ export default function DevicesPage() {
     await runDeviceAction(action, device);
   };
 
-  const runDeviceAction = async (action: string, device: Device) => {
+  const runDeviceAction = async (
+    action: string,
+    device: Device,
+    // #3987: the Remove dialog's agent answer. Absent for every other
+    // action, and absent means UNINSTALL — the web default, deliberately
+    // stricter than the API's back-compat `false`.
+    opts?: { uninstallAgent?: boolean },
+  ) => {
     if (actionInProgress) return;
 
     try {
@@ -921,7 +932,7 @@ export default function DevicesPage() {
           setTimeout(async () => {
             if (cancelled) return;
             try {
-              await decommissionDevice(device.id);
+              await decommissionDevice(device.id, { uninstallAgent: opts?.uninstallAgent ?? true });
               showToast({ type: 'success', message: t('devicesPage.toasts.decommissioned', { hostname: device.hostname }) });
               await fetchDevices();
             } catch (err) {
@@ -1225,31 +1236,12 @@ export default function DevicesPage() {
         }
 
         case 'decommission': {
-          const result = await bulkDecommissionDevices(
-            selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
-          );
-          if (result.failed.length === 0) {
-            showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
-          } else if (result.succeeded === 0) {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
-                count: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
-          } else {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkDecommissionFailed', {
-                succeeded: result.succeeded,
-                failed: result.failed.length,
-                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
-              }),
-            });
-          }
-          await fetchDevices();
-          break;
+          // Ask the agent question once for the whole selection (#3987). The
+          // actual DELETE loop runs in runBulkRemove once the dialog confirms.
+          // `return` inside `try` still runs the `finally` that clears
+          // actionInProgress, so the dialog's own Confirm is not dead on arrival.
+          setPendingBulkRemove(selectedDevices);
+          return;
         }
 
         case 'wake': {
@@ -1288,6 +1280,45 @@ export default function DevicesPage() {
       }
     } catch (err) {
       showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action }) });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
+  // #3987: the second half of bulk Remove. runBulkAction's `decommission` case
+  // only opens RemoveDeviceDialog; this runs once the operator has answered the
+  // agent question, with the SAME answer applied to every device in the batch.
+  const runBulkRemove = async (selectedDevices: Device[], choice: { uninstallAgent: boolean }) => {
+    if (selectedDevices.length === 0) return;
+    setActionInProgress(true);
+    try {
+      const result = await bulkDecommissionDevices(
+        selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
+        choice,
+      );
+      if (result.failed.length === 0) {
+        showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
+      } else if (result.succeeded === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
+            count: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkDecommissionFailed', {
+            succeeded: result.succeeded,
+            failed: result.failed.length,
+            devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+          }),
+        });
+      }
+      await fetchDevices();
+    } catch (err) {
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'decommission' }) });
     } finally {
       setActionInProgress(false);
     }
@@ -1641,7 +1672,28 @@ export default function DevicesPage() {
           deviceActions.confirm.* copy so the two screens read identically and
           no new locale keys are needed. Double-click safety is the shared
           components' job (#3705) — see the decommissioned-skip dialog above. */}
-      {pendingDeviceAction && (
+      {/* #3987: Remove owns its own dialog — it is the one confirm that has a
+          question to ask (uninstall the agent, or leave it?), not just a
+          yes/no. Every other gated action keeps the generic ConfirmDialog
+          below with the shared deviceActions.confirm.* copy. */}
+      {pendingDeviceAction && pendingDeviceAction.action === 'decommission' && (
+        <RemoveDeviceDialog
+          open
+          targets={[{
+            hostname: pendingDeviceAction.device.hostname,
+            status: pendingDeviceAction.device.status,
+          }]}
+          onClose={() => setPendingDeviceAction(null)}
+          onConfirm={(choice) => {
+            const p = pendingDeviceAction;
+            setPendingDeviceAction(null);
+            void runDeviceAction(p.action, p.device, choice);
+          }}
+          confirmTestId="confirm-device-action"
+        />
+      )}
+
+      {pendingDeviceAction && pendingDeviceAction.action !== 'decommission' && (
         <ConfirmDialog
           open={true}
           onClose={() => setPendingDeviceAction(null)}
@@ -1657,6 +1709,21 @@ export default function DevicesPage() {
           confirmLabel={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.confirm`)}
           variant={DESTRUCTIVE_CONFIRM_ACTIONS.has(pendingDeviceAction.action) ? 'destructive' : 'warning'}
           confirmTestId="confirm-device-action"
+        />
+      )}
+
+      {pendingBulkRemove && (
+        <RemoveDeviceDialog
+          open
+          targets={pendingBulkRemove.map(d => ({ hostname: d.hostname, status: d.status }))}
+          onClose={() => setPendingBulkRemove(null)}
+          onConfirm={(choice) => {
+            const devicesToRemove = pendingBulkRemove;
+            setPendingBulkRemove(null);
+            void runBulkRemove(devicesToRemove, choice);
+          }}
+          isLoading={actionInProgress}
+          confirmTestId="confirm-bulk-remove"
         />
       )}
 

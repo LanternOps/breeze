@@ -20,6 +20,7 @@ import {
 import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
+import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -95,9 +96,18 @@ function unavailableTitle(status: DeviceStatus, t: DeviceTranslation): string {
   }
 }
 
+/**
+ * Extra answers a confirm dialog collected from the operator (#3987). Today
+ * only Remove has one: whether to queue the agent uninstall. Passed through to
+ * the page-level handler, which turns it into the DELETE body.
+ */
+export interface DeviceActionOptions {
+  uninstallAgent?: boolean;
+}
+
 type DeviceActionsProps = {
   device: Device;
-  onAction?: (action: string, device: Device) => void;
+  onAction?: (action: string, device: Device, opts?: DeviceActionOptions) => void | Promise<void>;
   compact?: boolean;
 };
 
@@ -123,7 +133,9 @@ type ModalConfigEntry = {
 // than a bespoke modal. `destructive` = irreversible/offline-inducing; everything
 // else is `warning`.
 function getModalConfig(
-  type: Exclude<ModalType, "none">,
+  // `decommission` is deliberately absent: RemoveDeviceDialog owns the Remove
+  // copy (#3987) because Remove asks a question rather than posing a yes/no.
+  type: Exclude<ModalType, "none" | "decommission">,
   device: Device,
   t: DeviceTranslation,
 ): ModalConfigEntry {
@@ -173,15 +185,6 @@ function getModalConfig(
             confirmLabel: t("deviceActions.confirm.enterMaintenance.confirm"),
             variant: "warning",
           };
-    case "decommission":
-      return {
-        title: t("deviceActions.confirm.decommission.title"),
-        message: t("deviceActions.confirm.decommission.message", {
-          hostname: device.hostname,
-        }),
-        confirmLabel: t("deviceActions.confirm.decommission.confirm"),
-        variant: "destructive",
-      };
     case "install-homebrew":
       return {
         title: t("deviceActions.confirm.installHomebrew.title"),
@@ -248,12 +251,17 @@ export default function DeviceActions({
     }
   };
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (opts?: DeviceActionOptions) => {
     if (modalType === "none") return;
 
     setLoading(true);
     try {
-      await onAction?.(modalType, device);
+      // Only Remove collects an answer. Forwarding a bare `undefined` for every
+      // other action would change its call arity for no reason, so the two
+      // shapes stay distinct.
+      await (opts
+        ? onAction?.(modalType, device, opts)
+        : onAction?.(modalType, device));
       setModalType("none");
     } finally {
       setLoading(false);
@@ -267,7 +275,9 @@ export default function DeviceActions({
   };
 
   const modalCfg =
-    modalType === "none" ? null : getModalConfig(modalType, device, t);
+    modalType === "none" || modalType === "decommission"
+      ? null
+      : getModalConfig(modalType, device, t);
 
   // Same JSX, testids, and handlers rendered by both the compact and full
   // menu below — computed once so the two variants can't drift.
@@ -447,11 +457,20 @@ export default function DeviceActions({
           )}
         </div>
 
-        {modalCfg && (
+        {modalType === "decommission" ? (
+          <RemoveDeviceDialog
+            open
+            targets={[{ hostname: device.hostname, status: device.status }]}
+            onClose={closeModal}
+            onConfirm={(choice) => void handleConfirm(choice)}
+            isLoading={loading}
+            confirmTestId="device-actions-remove-confirm"
+          />
+        ) : modalCfg && (
           <ConfirmDialog
             open
             onClose={closeModal}
-            onConfirm={handleConfirm}
+            onConfirm={() => void handleConfirm()}
             title={modalCfg.title}
             message={modalCfg.message}
             confirmLabel={modalCfg.confirmLabel}
@@ -675,11 +694,20 @@ export default function DeviceActions({
         </div>
       </div>
 
-      {modalCfg && (
+      {modalType === "decommission" ? (
+        <RemoveDeviceDialog
+          open
+          targets={[{ hostname: device.hostname, status: device.status }]}
+          onClose={closeModal}
+          onConfirm={(choice) => void handleConfirm(choice)}
+          isLoading={loading}
+          confirmTestId="device-actions-remove-confirm"
+        />
+      ) : modalCfg && (
         <ConfirmDialog
           open
           onClose={closeModal}
-          onConfirm={handleConfirm}
+          onConfirm={() => void handleConfirm()}
           title={modalCfg.title}
           message={modalCfg.message}
           confirmLabel={modalCfg.confirmLabel}
