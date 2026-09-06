@@ -65,6 +65,11 @@ vi.mock('../../services/deviceLifecycle', () => ({
   },
 }));
 
+vi.mock('../../jobs/deviceBulkPurge', () => ({
+  enqueueDeviceBulkPurge: vi.fn(async () => ({ id: 'job' })),
+  getDeviceBulkPurgeQueue: vi.fn(),
+}));
+
 vi.mock('./helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./helpers')>()),
   getDeviceWithOrgAndSiteCheck: vi.fn(),
@@ -75,6 +80,7 @@ import { restoreRemovedDevice, DeviceLifecycleError } from '../../services/devic
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { runOutsideDbContext, withDbAccessContext } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { enqueueDeviceBulkPurge, getDeviceBulkPurgeQueue } from '../../jobs/deviceBulkPurge';
 
 function accessibleDevice(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -251,5 +257,182 @@ describe('POST /devices/bulk/restore', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+describe('POST /devices/bulk/permanent-delete', () => {
+  it('pre-rejects a non-removed device and enqueues only the removed ones', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string, id === DEV_2 ? { status: 'online' } : {}),
+    );
+
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as {
+      jobId: string;
+      accepted: number;
+      rejected: Array<{ deviceId: string; code: string }>;
+    };
+    expect(body.accepted).toBe(1);
+    expect(body.rejected).toEqual([
+      {
+        deviceId: DEV_2,
+        code: 'NOT_REMOVED',
+        message: 'Device must be removed before permanent deletion',
+      },
+    ]);
+    expect(body.jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+    expect(enqueueDeviceBulkPurge).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(enqueueDeviceBulkPurge).mock.calls[0]![0];
+    expect(sent.targets).toHaveLength(1);
+    expect(sent.targets[0]).toMatchObject({ deviceId: DEV_1, orgId: ORG_A });
+    // The status route denies another partner's run; the job payload is the
+    // only place that ownership is recorded.
+    expect(sent.partnerId).toBe('partner-1');
+    expect(sent.jobId).toBe(body.jobId);
+  });
+
+  it('returns 409 and enqueues nothing when every selected device is rejected', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null);
+
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: [DEV_1, DEV_2] });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; rejected: Array<{ code: string }> };
+    expect(body.rejected.map((r) => r.code)).toEqual(['NOT_FOUND', 'NOT_FOUND']);
+    // A job with zero targets would report "completed, 0 purged" and read to
+    // the operator as though the delete had run.
+    expect(enqueueDeviceBulkPurge).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A pending uninstall is deliberately NOT pre-checked here. The worker
+   * refuses it under the devices row lock, keeping ONE source of truth for the
+   * rule — a second copy in the route would be the thing that drifts, and it
+   * would be checking a fact that can change between enqueue and execution
+   * anyway.
+   */
+  it('does not pre-check the pending uninstall — the worker owns that refusal', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockImplementation(async (_c, id) =>
+      accessibleDevice(id as string),
+    );
+
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: [DEV_1] });
+
+    expect(res.status).toBe(202);
+    expect((await res.json()).accepted).toBe(1);
+  });
+
+  it('rejects more than 500 ids with 400', async () => {
+    const ids = Array.from(
+      { length: 501 },
+      (_v, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    );
+    const res = await post(app, '/devices/bulk/permanent-delete', { deviceIds: ids });
+    expect(res.status).toBe(400);
+    expect(enqueueDeviceBulkPurge).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /devices/bulk/purge-runs/:jobId', () => {
+  const JOB_ID = '55555555-5555-4555-8555-555555555555';
+
+  function rigJob(job: unknown) {
+    vi.mocked(getDeviceBulkPurgeQueue).mockReturnValue({
+      getJob: vi.fn(async () => job),
+    } as never);
+  }
+
+  function get(path: string) {
+    return app.request(path, { headers: { Authorization: 'Bearer t' } });
+  }
+
+  it('returns state, progress and result to the owner', async () => {
+    rigJob({
+      data: {
+        partnerId: 'partner-1',
+        targets: [{ deviceId: DEV_1, orgId: ORG_A, hostname: 'host-1' }],
+      },
+      getState: async () => 'completed',
+      progress: { done: 1, total: 1 },
+      returnvalue: { purged: [DEV_1], skipped: [] },
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      state: 'completed',
+      progress: { done: 1, total: 1 },
+      result: { purged: [DEV_1], skipped: [] },
+      failedReason: null,
+    });
+    expect(vi.mocked(getDeviceBulkPurgeQueue).mock.results[0]!.value.getJob).toHaveBeenCalledWith(
+      `device-bulk-purge-${JOB_ID}`,
+    );
+  });
+
+  it('falls back to a zero-done progress before the worker has reported any', async () => {
+    rigJob({
+      data: {
+        partnerId: 'partner-1',
+        targets: [
+          { deviceId: DEV_1, orgId: ORG_A, hostname: 'h1' },
+          { deviceId: DEV_2, orgId: ORG_A, hostname: 'h2' },
+        ],
+      },
+      getState: async () => 'waiting',
+      // BullMQ's initial progress is the number 0, not an object — reporting
+      // that raw would render "0 of undefined" in the UI.
+      progress: 0,
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(await res.json()).toMatchObject({ state: 'waiting', progress: { done: 0, total: 2 } });
+  });
+
+  it('returns 404 for an unknown job', async () => {
+    rigJob(null);
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for an org-scope caller whose accessible orgs do not cover the run', async () => {
+    // jobId is a UUID the caller was handed, not a secret, so ownership has to
+    // be re-derived here — BullMQ enforces nothing (mirrors routes/orgMerge.ts).
+    rigJob({
+      data: {
+        partnerId: 'partner-1',
+        targets: [{ deviceId: DEV_1, orgId: 'someone-elses-org', hostname: 'h1' }],
+      },
+      getState: async () => 'active',
+      progress: { done: 0, total: 1 },
+      returnvalue: null,
+      failedReason: null,
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(res.status).toBe(404);
+    // Reported as "not found", never "forbidden": a cross-tenant probe must
+    // not learn that the run exists.
+    expect(await res.json()).toEqual({ error: 'Purge run not found' });
+  });
+
+  it('surfaces failedReason for a failed run', async () => {
+    rigJob({
+      data: { partnerId: 'partner-1', targets: [{ deviceId: DEV_1, orgId: ORG_A, hostname: 'h1' }] },
+      getState: async () => 'failed',
+      progress: { done: 0, total: 1 },
+      returnvalue: null,
+      failedReason: 'Redis went away',
+    });
+
+    const res = await get(`/devices/bulk/purge-runs/${JOB_ID}`);
+    expect(await res.json()).toMatchObject({ state: 'failed', failedReason: 'Redis went away' });
   });
 });

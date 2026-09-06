@@ -378,6 +378,7 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       ['POST', `/devices/${ACCESSIBLE_DEVICE.id}/restore`, undefined],
       ['DELETE', `/devices/${ACCESSIBLE_DEVICE.id}/permanent`, undefined],
       ['POST', '/devices/bulk/restore', { deviceIds: [ACCESSIBLE_DEVICE.id] }],
+      ['POST', '/devices/bulk/permanent-delete', { deviceIds: [ACCESSIBLE_DEVICE.id] }],
     ];
     for (const [method, path, body] of lifecyclePaths) {
       const withBody = (headers: Record<string, string>) =>

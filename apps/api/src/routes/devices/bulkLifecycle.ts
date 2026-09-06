@@ -17,6 +17,7 @@
  * the state machine lives entirely in `services/deviceLifecycle.ts`.
  */
 import { Hono } from 'hono';
+import { randomUUID } from 'node:crypto';
 import { db } from '../../db';
 import { zValidator } from '../../lib/validation';
 import { runBulkIsolated } from '../../lib/bulkOps';
@@ -31,6 +32,12 @@ import {
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { restoreRemovedDevice, DeviceLifecycleError } from '../../services/deviceLifecycle';
+import {
+  enqueueDeviceBulkPurge,
+  getDeviceBulkPurgeQueue,
+  type DeviceBulkPurgeJobPayload,
+  type DeviceBulkPurgeResult,
+} from '../../jobs/deviceBulkPurge';
 import { bulkDeviceIdsSchema } from './schemas';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 
@@ -130,5 +137,157 @@ bulkLifecycleRoutes.post(
     });
 
     return c.json({ succeeded, failed });
+  },
+);
+
+/**
+ * POST /devices/bulk/permanent-delete — start an async purge of up to 500
+ * removed devices. `202 { jobId, accepted, rejected }`.
+ *
+ * ASYNC, unlike bulk restore: `deleteDeviceCascade` touches ~40 tables per
+ * device, so 500 of them cannot run inside a request without pinning a pooled
+ * connection for minutes (see jobs/deviceBulkPurge.ts). This handler only does
+ * the CHEAP checks — can the caller see the device, and is it removed — then
+ * enqueues.
+ *
+ * A pending agent uninstall is deliberately NOT pre-checked here. The worker
+ * refuses it under the devices row lock, which keeps ONE source of truth for
+ * that rule; a copy in this route would be the thing that drifts, and it would
+ * be checking a fact that can change between enqueue and execution anyway.
+ *
+ * `accepted === 0` returns 409 rather than a job: a run with zero targets
+ * completes instantly reporting "0 purged", which reads to the operator as
+ * though the delete had happened.
+ *
+ * NOT registered in `selfManagedDbContextRoutes` — this handler only reads and
+ * enqueues, so the ambient request transaction is correct for it (same call as
+ * `quotes/bulk-send`).
+ */
+bulkLifecycleRoutes.post(
+  '/bulk/permanent-delete',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
+  zValidator('json', bulkDeviceIdsSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const ids = [...new Set(c.req.valid('json').deviceIds)];
+
+    const targets: DeviceBulkPurgeJobPayload['targets'] = [];
+    const rejected: BulkFailed[] = [];
+
+    for (const deviceId of ids) {
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED) {
+        rejected.push({
+          deviceId,
+          code: 'SITE_ACCESS_DENIED',
+          message: 'Access to this site denied',
+        });
+        continue;
+      }
+      if (!device) {
+        rejected.push({ deviceId, code: 'NOT_FOUND', message: 'Device not found' });
+        continue;
+      }
+      if (device.status !== 'decommissioned') {
+        rejected.push({
+          deviceId,
+          code: 'NOT_REMOVED',
+          message: 'Device must be removed before permanent deletion',
+        });
+        continue;
+      }
+      // hostname is snapshotted for the worker's audit row: the devices row is
+      // gone by the time that row is written.
+      targets.push({
+        deviceId,
+        orgId: device.orgId,
+        hostname: device.hostname ?? device.displayName ?? deviceId,
+      });
+    }
+
+    if (targets.length === 0) {
+      return c.json({ error: 'No selected device can be permanently deleted', rejected }, 409);
+    }
+
+    const jobId = randomUUID();
+    await enqueueDeviceBulkPurge({
+      jobId,
+      targets,
+      actorUserId: auth.user.id,
+      actorEmail: auth.user.email,
+      partnerId: auth.partnerId ?? null,
+    });
+
+    // The per-device audit rows are written by the worker as each delete
+    // commits. This one records the DECISION — who asked, for how many, when —
+    // which is the part that would otherwise be lost if the job never ran.
+    writeRouteAudit(c, {
+      orgId: targets[0]!.orgId,
+      action: 'device.bulk_permanent_delete.enqueued',
+      resourceType: 'device_bulk_purge',
+      resourceId: jobId,
+      details: {
+        accepted: targets.length,
+        rejected: rejected.length,
+        orgIds: [...new Set(targets.map((t) => t.orgId))],
+      },
+    });
+
+    return c.json({ jobId, accepted: targets.length, rejected }, 202);
+  },
+);
+
+/**
+ * GET /devices/bulk/purge-runs/:jobId — poll a purge run.
+ *
+ * `DEVICES_READ`, not `DEVICES_DELETE`: reading the outcome of a run is not
+ * itself destructive, and the operator who started it may not be the one
+ * watching the tab.
+ *
+ * The jobId is a UUID the caller was handed, not a secret, and BullMQ enforces
+ * nothing — so ownership is re-derived here (mirrors routes/orgMerge.ts). A
+ * partner-scope caller is denied another partner's run; an org-scope caller is
+ * denied a run touching any org outside their access. Both are reported as
+ * "not found", never "forbidden", so a cross-tenant probe learns nothing.
+ */
+bulkLifecycleRoutes.get(
+  '/bulk/purge-runs/:jobId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const jobId = c.req.param('jobId')!;
+
+    const job = await getDeviceBulkPurgeQueue().getJob(`device-bulk-purge-${jobId}`);
+    if (!job) return c.json({ error: 'Purge run not found' }, 404);
+
+    const payload = job.data as DeviceBulkPurgeJobPayload | undefined;
+    if (auth.scope === 'partner' && payload?.partnerId !== auth.partnerId) {
+      return c.json({ error: 'Purge run not found' }, 404);
+    }
+    if (
+      auth.scope === 'organization'
+      && payload
+      && !payload.targets.every((t) => auth.canAccessOrg(t.orgId))
+    ) {
+      return c.json({ error: 'Purge run not found' }, 404);
+    }
+
+    const state = await job.getState();
+    // BullMQ's initial progress is the number 0, not an object; reporting that
+    // raw would render "0 of undefined".
+    const progress = job.progress as { done: number; total: number } | number;
+
+    return c.json({
+      state,
+      progress:
+        typeof progress === 'object' && progress !== null
+          ? progress
+          : { done: 0, total: payload?.targets.length ?? 0 },
+      result: (job.returnvalue as DeviceBulkPurgeResult | null) ?? null,
+      failedReason: job.failedReason ?? null,
+    });
   },
 );

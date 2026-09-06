@@ -574,6 +574,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #2787: async bulk permanent delete of removed devices.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Same class
+    // as orgMerge above. Do NOT flip this to 'global' without re-running
+    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
+    // and it fails the build on a wrong placement.
+    name: 'deviceBulkPurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceBulkPurge');
+      return { init: m.initializeDeviceBulkPurgeWorker, shutdown: m.shutdownDeviceBulkPurgeWorker };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {

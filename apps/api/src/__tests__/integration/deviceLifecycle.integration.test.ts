@@ -39,6 +39,11 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { queueDeviceUninstall } from '../../services/deviceUninstallDrain';
 import { purgeRemovedDevice, restoreRemovedDevice } from '../../services/deviceLifecycle';
+import {
+  processDeviceBulkPurgeJob,
+  type DeviceBulkPurgeJobPayload,
+  type DeviceBulkPurgeResult,
+} from '../../jobs/deviceBulkPurge';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -210,4 +215,79 @@ describe('deviceLifecycle (integration)', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
+  // -------------------------------------------------------------------------
+  // Bulk purge worker (#2787 Task 5) — authorisation is re-derived per device
+  // under the lock, so a device that MOVED ORG between the operator's confirm
+  // and the worker's execution must never be deleted under the stale
+  // authorisation the payload carries.
+  // -------------------------------------------------------------------------
+  it('bulk purge worker skips a device whose org changed after enqueue (ORG_CHANGED)', async () => {
+    const tenant = await seedTenant();
+    const otherOrg = await createOrganization({ partnerId: tenant.partnerId, status: 'active' });
+    const moved = await seedDevice(tenant.orgId, tenant.siteId);
+    const stayed = await seedDevice(tenant.orgId, tenant.siteId);
+
+    const payload: DeviceBulkPurgeJobPayload = {
+      jobId: '22222222-2222-4222-8222-222222222222',
+      targets: [
+        { deviceId: moved.id, orgId: tenant.orgId, hostname: moved.hostname },
+        { deviceId: stayed.id, orgId: tenant.orgId, hostname: stayed.hostname },
+      ],
+      actorUserId: tenant.userId,
+      actorEmail: tenant.userEmail,
+      partnerId: tenant.partnerId,
+    };
+
+    // The move happens AFTER the payload was built — exactly the window the
+    // re-check exists for. site_id goes with it: sites are org-scoped.
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    await withSystemDbAccessContext(() =>
+      db.execute(
+        sql`UPDATE devices SET org_id = ${otherOrg.id}::uuid, site_id = ${otherSite.id}::uuid WHERE id = ${moved.id}`,
+      ),
+    );
+
+    const progress: Array<{ done: number; total: number }> = [];
+    const result = (await processDeviceBulkPurgeJob({
+      name: 'device-bulk-purge',
+      id: `device-bulk-purge-${payload.jobId}`,
+      data: payload,
+      updateProgress: async (p: unknown) => {
+        progress.push(p as { done: number; total: number });
+      },
+    } as never)) as DeviceBulkPurgeResult;
+
+    expect(result.skipped).toContainEqual({ deviceId: moved.id, code: 'ORG_CHANGED' });
+    expect(result.purged).toEqual([stayed.id]);
+    // Skipped means SKIPPED, not "deleted with a warning".
+    expect(await deviceExists(moved.id)).toBe(true);
+    expect(await deviceExists(stayed.id)).toBe(false);
+    expect(progress).toEqual([
+      { done: 1, total: 2 },
+      { done: 2, total: 2 },
+    ]);
+  });
+
+  it('bulk purge worker skips a device whose uninstall is still pending', async () => {
+    const tenant = await seedTenant();
+    const device = await seedDevice(tenant.orgId, tenant.siteId);
+    await queueRemoveUninstall(device.id, tenant.userId);
+
+    const result = (await processDeviceBulkPurgeJob({
+      name: 'device-bulk-purge',
+      id: 'device-bulk-purge-33333333-3333-4333-8333-333333333333',
+      data: {
+        jobId: '33333333-3333-4333-8333-333333333333',
+        targets: [{ deviceId: device.id, orgId: tenant.orgId, hostname: device.hostname }],
+        actorUserId: tenant.userId,
+        actorEmail: tenant.userEmail,
+        partnerId: tenant.partnerId,
+      } satisfies DeviceBulkPurgeJobPayload,
+      updateProgress: async () => {},
+    } as never)) as DeviceBulkPurgeResult;
+
+    expect(result.purged).toEqual([]);
+    expect(result.skipped).toEqual([{ deviceId: device.id, code: 'UNINSTALL_PENDING' }]);
+    expect(await deviceExists(device.id)).toBe(true);
+  });
 });

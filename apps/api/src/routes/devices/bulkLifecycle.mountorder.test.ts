@@ -106,6 +106,11 @@ vi.mock('../agents/enrollment', () => ({
 // The bulk routes' real collaborators. The point of this file is ROUTING, so
 // everything past the handler entry is stubbed — reaching the handler at all
 // is the assertion.
+vi.mock('../../jobs/deviceBulkPurge', () => ({
+  enqueueDeviceBulkPurge: vi.fn(async () => ({ id: 'device-bulk-purge-job' })),
+  getDeviceBulkPurgeQueue: vi.fn(() => ({ getJob: vi.fn(async () => null) })),
+}));
+
 vi.mock('../../services/deviceLifecycle', () => ({
   restoreRemovedDevice: vi.fn(async () => ({
     device: { id: ORG_A_DEVICE, hostname: 'host-1' },
@@ -171,6 +176,34 @@ describe('bulk-lifecycle routes mount order (#2787)', () => {
     expect(res.status).not.toBe(404);
     expect(res.status).not.toBe(400);
     expect(res.status).toBe(200);
+  });
+
+  it('POST /devices/bulk/permanent-delete reaches the bulk handler', async () => {
+    rigDeviceLookup([
+      { id: ORG_A_DEVICE, orgId: ORG_A, siteId: 'site-1', hostname: 'host-1', status: 'decommissioned' },
+    ]);
+
+    const res = await app.request('/devices/bulk/permanent-delete', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceIds: [ORG_A_DEVICE] }),
+    });
+
+    expect(res.status).not.toBe(404);
+    expect(res.status).not.toBe(400);
+    expect(res.status).toBe(202);
+  });
+
+  it('GET /devices/bulk/purge-runs/:jobId reaches the bulk handler, not core GET /:id', async () => {
+    // The queue mock returns no job, so the handler's own 404 is the answer.
+    // That is distinguishable from a routing miss by the BODY: core's GET /:id
+    // would answer "Device not found".
+    const res = await app.request('/devices/bulk/purge-runs/abc', {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Purge run not found' });
   });
 
   it('a no-credentials request is still rejected (401) through the assembled routes', async () => {
