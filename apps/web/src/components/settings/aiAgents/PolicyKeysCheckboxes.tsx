@@ -6,11 +6,11 @@ import type { AiAgentMode, AiAgentOwnerScope } from '@breeze/shared';
  * Task 13 (#5051): extracted from `AiAgentForm.tsx` (a pure move — every test
  * id and translation key is unchanged) so the guided create flow's
  * `SafetyStep` can render the identical interactive registry a partner draft
- * gets in the edit drawer. Org rows never render this component in either
- * caller: an org row's keys are grant-only (spec §4.4), so `AiAgentForm.tsx`
- * renders its own read-only held-keys list instead (`orgHeldKeysList`), and
- * the guided create flow shows nothing at all for an org draft (there is
- * nothing held yet to show).
+ * gets in the edit drawer. Since #5063 `SafetyStep` is the ONE renderer for
+ * both surfaces: a partner row gets this interactive registry; an org row's
+ * keys are grant-only (spec §4.4), so in act mode SafetyStep renders a
+ * read-only list of the keys the row already holds instead, and outside act
+ * mode nothing at all.
  */
 
 /** GET /ai/agents/policy-decidable-keys — the read-only POLICY_DECIDABLE_TIER3
@@ -60,8 +60,8 @@ function groupByTool(entries: PolicyDecidableKeyOption[]): Map<string, PolicyDec
 
 /** Minimal shape of react-i18next's `t` this module needs — kept local so
  *  `policyToolLabel`/`policyActionLabel` stay usable from a plain function
- *  (AiAgentForm.tsx's `orgHeldKeysList`) without importing react-i18next's
- *  own generic `TFunction` type. */
+ *  (SafetyStep.tsx's read-only held-keys list) without importing
+ *  react-i18next's own generic `TFunction` type. */
 type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
 /** Registry tool -> translated group heading, falling back to the
@@ -100,10 +100,9 @@ export function policyActionLabel(t: TranslateFn, entry: PolicyDecidableKeyOptio
  * caveat still prints beneath it as a fact that survives the mode, not as
  * something act mode makes disappear.
  *
- * Shared between `AiAgentForm.tsx` (the edit drawer) and `SafetyStep.tsx`
- * (the guided create flow's Safety step, partner drafts only) so the two
- * surfaces can never disagree on when a partner row's registry is worth
- * collapsing.
+ * Read by `SafetyStep.tsx`, which renders the registry for BOTH the edit
+ * drawer and the guided create flow (#5063), so the two surfaces can never
+ * disagree on when a partner row's registry is worth collapsing.
  */
 export function collapsedForCeiling(ownerScope: AiAgentOwnerScope, mode: AiAgentMode): boolean {
   return ownerScope === 'partner' && mode !== 'act';
