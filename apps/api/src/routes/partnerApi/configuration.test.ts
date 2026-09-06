@@ -155,7 +155,8 @@ describe('partner desired-configuration exports', () => {
   it('exports policy definitions and distinct assignment records', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Server baseline', description: 'Durable desired state',
-      status: 'active', features: [{ id: SOURCE_B, type: 'patch', policyId: null, settings: patchMaterial() }],
+      status: 'active', parentPolicyId: null,
+      features: [{ id: SOURCE_B, type: 'patch', policyId: null, settings: patchMaterial() }],
     })]);
     const policy = await (await request('/configuration-policies', 'configuration:read')).json();
     expect(configurationPolicyExportEnvelopeSchema.parse(policy).data[0]).toMatchObject({
@@ -164,6 +165,15 @@ describe('partner desired-configuration exports', () => {
     });
     const policyQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
     expect(policyQuery).toContain('breeze_partner_export_effective_policy_settings');
+    // #5080: the parent id travels with the policy, and an unassigned baseline
+    // is pulled into the export by the parent closure so an exported child's
+    // parentPolicyId never dangles.
+    expect(policyQuery).toContain("'parentpolicyid', cp.parent_policy_id");
+    expect(policyQuery).toContain('parent_orgs as');
+    expect(policyQuery).toContain('join public.configuration_policies parent on parent.id = child.parent_policy_id');
+    // The closure must be independently unable to cross a tenant, not merely
+    // rely on the ownership rule holding.
+    expect(policyQuery).toContain('parent.org_id = child_ao.org_id');
 
     mocks.queryResults.push([row(SOURCE_B, ORG_A, {
       policyId: SOURCE_A, policyName: 'Server baseline', sourceScope: 'organization', level: 'site',
@@ -182,6 +192,7 @@ describe('partner desired-configuration exports', () => {
       name: 'Canonical patch policy',
       description: null,
       status: 'active',
+      parentPolicyId: null,
       features: [{
         id: SOURCE_B,
         type: 'patch',
@@ -210,6 +221,7 @@ describe('partner desired-configuration exports', () => {
       name: 'Canonical patch policy',
       description: null,
       status: 'active',
+      parentPolicyId: null,
       features: [{
         id: SOURCE_B,
         type: 'patch',
@@ -556,7 +568,7 @@ describe('partner desired-configuration exports', () => {
 function sampleDefinition(path: string): Record<string, unknown> {
   switch (path) {
     case '/configuration-policies':
-      return { sourceScope: 'organization', name: 'P', description: null, status: 'active', features: [] };
+      return { sourceScope: 'organization', name: 'P', description: null, status: 'active', parentPolicyId: null, features: [] };
     case '/configuration-assignments':
       return { policyId: SOURCE_B, policyName: 'P', sourceScope: 'organization', level: 'organization', targetId: ORG_A, priority: 0, roleFilter: null, osFilter: null };
     case '/scripts':

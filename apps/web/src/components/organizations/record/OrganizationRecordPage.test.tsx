@@ -258,11 +258,10 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
-    // Pre-existing fix, unrelated to W03: OverflowTabs renders each tab with
-    // role="tab" (an ARIA tablist), not role="button" — this assertion never
-    // matched anything on origin/main either way, so it silently passed
-    // vacuously (queryByRole('button', ...) correctly returns null for a
-    // MISSING role too) until the getByRole below started throwing instead.
+    // OverflowTabs renders each tab as role="tab" inside a tablist (#5090),
+    // so the tab's accessible role is "tab", not "button". Querying for a
+    // "button" found nothing either way, which silently made the negative
+    // assertion below vacuous as well as breaking the positive one.
     expect(screen.queryByRole('tab', { name: 'Devices' })).toBeNull();
     expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
   });

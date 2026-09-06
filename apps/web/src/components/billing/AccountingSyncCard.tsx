@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, Clock, Loader2 } from 'lucide-react';
 import '../../lib/i18n';
@@ -27,10 +27,30 @@ interface Props {
    * hide the push affordance on a voided invoice.
    */
   invoiceStatus: InvoiceStatus;
+  /**
+   * When the invoice row was last written, used ONLY to decide whether a fresh
+   * mount should arm the live sync watch (see `shouldWatchOnMount`).
+   *
+   * The detail payload carries no issue timestamp: `issueDate` is a DATE (day
+   * precision) and `sentAt` is null for a plain Issue that sent no email, so
+   * the caller passes the invoice row's `updatedAt`, which the issue write
+   * bumps. It is a proxy, deliberately: any other write in the last 90s (an
+   * inline due-date edit, say) also reads as "recent", which at worst costs a
+   * pending-row invoice one poll window and never shows a wrong status.
+   *
+   * Optional because `updatedAt` is not declared on the web's InvoiceSummary
+   * today — an older payload can omit it, and a missing timestamp means no
+   * mount watch rather than a watch armed on a guess.
+   */
+  invoiceTouchedAt?: string | null;
   /** `can('invoices','write')` — the same permission the push route requires. */
   canPush: boolean;
-  /** Refetch the invoice so the card re-renders off the persisted mapping row. */
-  onChanged: () => void;
+  /**
+   * Refetch the invoice so the card re-renders off the persisted mapping row.
+   * May return a promise (InvoiceWorkspace's `reload` does); the watch awaits
+   * it so a slow refetch never has a second one stacked behind it.
+   */
+  onChanged: () => void | Promise<void>;
 }
 
 /** Pushing is a remedy only for a row that is not (successfully) in QuickBooks
@@ -43,10 +63,114 @@ function isPushable(status: AccountingSyncSummary['syncStatus']): boolean {
   return status === 'pending' || status === 'error';
 }
 
-export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, canPush, onChanged }: Props) {
+/** The QuickBooks push is asynchronous: `/invoices/:id/issue` (auto push mode)
+ *  and `/accounting/quickbooks/invoices/:id/push` both return as soon as the
+ *  job is enqueued, and the worker lands a beat later. Anything below is a
+ *  settled outcome — the watch stops the moment the refetched mapping row
+ *  reads one of them. */
+function isSettled(status: AccountingSyncSummary['syncStatus']): boolean {
+  return status === 'synced' || status === 'synced_with_tax_variance' || status === 'error';
+}
+
+/** Poll cadence and ceiling for the post-issue / post-push watch. The ceiling
+ *  matters more than the cadence: the watch is a courtesy, and on timeout the
+ *  card must fall back to the honest "Not pushed yet" + manual button rather
+ *  than spin forever. */
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 60000;
+/** How recently the invoice must have been written for a FRESH MOUNT to arm
+ *  the watch. Wider than the poll window so a mount a few seconds after the
+ *  issue write still catches the tail of the push; anything older is a settled
+ *  fact (manual push mode, or a push that never happened), not a push in
+ *  flight, and must render the actionable view immediately. */
+const MOUNT_WATCH_MAX_AGE_MS = 90000;
+
+/** Whether a fresh mount should arm the watch. The prod flow needs this and
+ *  the draft -> issued transition does NOT cover it: InvoiceWorkspace opens a
+ *  draft on the Editor tab and only renders InvoiceDetail on the Detail tab,
+ *  so a header Issue click flips the status, unmounts the editor and mounts
+ *  this card FRESH — already issued, with no transition to observe. It also
+ *  re-arms correctly after a tab switch (which likewise unmounts the card),
+ *  so no watch state has to move up into InvoiceWorkspace. */
+function shouldWatchOnMount(
+  invoiceStatus: InvoiceStatus,
+  sync: AccountingSyncSummary | null | undefined,
+  touchedAt: string | null | undefined,
+): boolean {
+  if (invoiceStatus === 'draft' || invoiceStatus === 'void') return false;
+  if (sync && sync.syncStatus !== 'pending') return false;
+  if (!touchedAt) return false;
+  const touched = Date.parse(touchedAt);
+  if (Number.isNaN(touched)) return false;
+  const age = Date.now() - touched;
+  // A clock-skewed future timestamp reads as age < 0; treat it as recent
+  // rather than as ancient — the failure mode is a spinner that times out,
+  // not a stale button that invites a double push.
+  return age < MOUNT_WATCH_MAX_AGE_MS;
+}
+
+export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, invoiceTouchedAt, canPush, onChanged }: Props) {
   const { t } = useTranslation('billing');
   const [pushing, setPushing] = useState(false);
+  // The push is in flight somewhere server-side; poll the invoice until the
+  // mapping row settles. Armed on a fresh mount of a just-issued invoice and
+  // on the draft -> issued transition. NOT armed by the manual push button:
+  // that route awaits the QuickBooks call and returns the settled status, so
+  // the refetch behind it already reads the outcome.
+  const [watching, setWatching] = useState(() => shouldWatchOnMount(invoiceStatus, sync, invoiceTouchedAt));
+  const deadlineRef = useRef(Date.now() + POLL_TIMEOUT_MS);
+  // True from the moment a poll's refetch is dispatched until it resolves, so
+  // a slow response cannot have a second refetch stacked behind it and land
+  // out of order.
+  const refetchInFlightRef = useRef(false);
+  // Keep the latest `onChanged` reachable from the interval without making the
+  // interval's identity depend on it — the parent re-creates the callback on
+  // every render, which would otherwise tear down and restart the timer (and
+  // reset the cadence) on each poll's own refetch.
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => { onChangedRef.current = onChanged; });
 
+  const startWatch = useCallback(() => {
+    deadlineRef.current = Date.now() + POLL_TIMEOUT_MS;
+    setWatching(true);
+  }, []);
+
+  // Second trigger: the invoice's own lifecycle, for the case where the card
+  // is already mounted when Issue lands (the Detail tab's own rail copy of
+  // InvoiceActions). Keyed off the status prop rather than an Issue callback
+  // so it covers both copies of the actions without new plumbing.
+  const prevStatusRef = useRef(invoiceStatus);
+  useEffect(() => {
+    const previous = prevStatusRef.current;
+    prevStatusRef.current = invoiceStatus;
+    if (previous === 'draft' && invoiceStatus !== 'draft' && invoiceStatus !== 'void') startWatch();
+  }, [invoiceStatus, startWatch]);
+
+  // Stop on a settled row, and on a void: a spinning "Syncing…" over the
+  // "nothing to push" hint is a contradiction, and the void already tells the
+  // operator everything the watch was going to.
+  const done = invoiceStatus === 'void' || (!!sync && isSettled(sync.syncStatus));
+  useEffect(() => {
+    if (done) setWatching(false);
+  }, [done]);
+
+  useEffect(() => {
+    if (!watching) return;
+    const timer = setInterval(() => {
+      // Clear the interval imperatively as well as flipping state: the state
+      // update only tears the timer down on the NEXT commit, and a stop
+      // decided from inside the callback must not get one more tick in.
+      if (Date.now() >= deadlineRef.current) { clearInterval(timer); setWatching(false); return; }
+      if (refetchInFlightRef.current) return;
+      refetchInFlightRef.current = true;
+      void Promise.resolve(onChangedRef.current()).finally(() => { refetchInFlightRef.current = false; });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [watching]);
+
+  // A watch with no mapping row to show yet renders nothing — a partner with
+  // no QuickBooks connection must not see a QuickBooks card appear just
+  // because they issued an invoice.
   if (!sync) return null;
 
   const { syncStatus } = sync;
@@ -59,20 +183,25 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
   // the mapping row's own status doesn't change when the invoice is voided.
   const voided = invoiceStatus === 'void';
   const statusPushable = isPushable(syncStatus);
-  const pushable = canPush && statusPushable && !voided && !remoteDeleted;
-  const statusLabel = t(
-    /* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`,
-  );
-  const pillTone =
-    syncStatus === 'synced'
+  // While the watch is live the push is already in flight server-side: the
+  // affordance has to go, or the operator double-submits the very push they
+  // are waiting on.
+  const pushable = canPush && statusPushable && !voided && !remoteDeleted && !watching;
+  const statusLabel = watching
+    ? t('invoiceDetail.accountingSync.syncing')
+    : t(/* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`);
+  const pillTone = watching
+    ? 'border-sky-200 bg-sky-50 text-sky-700'
+    : syncStatus === 'synced'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
       : syncStatus === 'error'
         ? 'border-red-200 bg-red-50 text-red-700'
         : syncStatus === 'synced_with_tax_variance'
           ? 'border-amber-200 bg-amber-50 text-amber-800'
           : 'border-slate-200 bg-slate-50 text-slate-600';
-  const PillIcon =
-    syncStatus === 'synced'
+  const PillIcon = watching
+    ? Loader2
+    : syncStatus === 'synced'
       ? CheckCircle2
       : syncStatus === 'pending'
         ? Clock
@@ -88,6 +217,11 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
         successMessage: t('invoiceDetail.accountingSync.pushed'),
         onUnauthorized: UNAUTHORIZED,
       });
+      // No watch here: unlike the auto-push path, this route AWAITS the
+      // QuickBooks call and returns the settled syncStatus, so the refetch
+      // already reads the outcome. Arming the watch would strand a retry from
+      // an `error` row on a 60s spinner — the row's status would never change
+      // again to end it.
       onChanged();
     } catch (err) {
       // A typed 409 (currency_mismatch, customer_not_mapped, …) has already
@@ -109,7 +243,7 @@ export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, can
           data-testid="invoice-accounting-sync-status"
           className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${pillTone}`}
         >
-          <PillIcon className="h-3.5 w-3.5" /> {statusLabel}
+          <PillIcon className={`h-3.5 w-3.5 ${watching ? 'animate-spin' : ''}`} /> {statusLabel}
         </span>
 
         {syncStatus === 'synced_with_tax_variance' && (

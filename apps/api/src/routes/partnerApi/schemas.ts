@@ -332,6 +332,11 @@ export const partnerConfigurationPolicyExportRecordSchema = strictPartnerExportR
   name: z.string().min(1).max(255),
   description: nullableDefinitionString,
   status: z.enum(['active', 'inactive', 'archived']),
+  // One-level inheritance (#5080). `features` stays the AUTHORED links only —
+  // consumers derive the effective set by following this id. A parent of an
+  // exported policy is itself exported (the parent closure in policySource), so
+  // this never dangles inside a single export.
+  parentPolicyId: z.string().uuid().nullable(),
   features: z.array(z.object({
     id: z.string().uuid(),
     type: z.string().min(1).max(100),
