@@ -206,7 +206,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     selectReturning(deviceRow('online'));
     const { TrustDeniedError } = await import('./partnerTrust.commands');
     assertAllowedMock.mockRejectedValue(
-      new TrustDeniedError('TRUST_DENIED', 'partner_suspended', DEVICE, 'refresh_inventory')
+      new TrustDeniedError('TRUST_RESTRICTED', 'partner_suspended', DEVICE, 'refresh_inventory')
     );
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(res).toMatchObject({

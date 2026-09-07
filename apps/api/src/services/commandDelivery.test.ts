@@ -22,7 +22,12 @@ vi.mock('./scriptSecretDelivery', () => ({
     failClaimedSecretCommandsMock(...(args as [any])),
 }));
 
-import { decryptClaimedCommandsForDelivery } from './commandDelivery';
+import {
+  decryptClaimedCommandsForDelivery,
+  deliveryRefreshers,
+  prepareClaimedCommandsForDelivery,
+  refreshPayloadForDelivery,
+} from './commandDelivery';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 
 const CLAIM_DEVICE = '99999999-9999-4999-8999-999999999999';
@@ -143,8 +148,12 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
 
       expect(failClaimedSecretCommandsMock).toHaveBeenCalledTimes(1);
       // Called with the RAW claimed rows — still sealed, never the decrypted
-      // ones (the gate must never see plaintext).
-      expect(failClaimedSecretCommandsMock.mock.calls[0]![0]).toBe(claimed);
+      // ones (the gate must never see plaintext). #5128 relaxed this from
+      // reference identity to structural equality: the delivery-refresher pass
+      // now runs first and rebuilds the array (payload contents are untouched
+      // for every type without a registered refresher), so identity is no
+      // longer meaningful. What matters — sealed, not plaintext — still holds.
+      expect(failClaimedSecretCommandsMock.mock.calls[0]![0]).toStrictEqual(claimed);
       expect((claimed[1]!.payload as Record<string, unknown>).password).toBe(goodEncrypted.password);
       expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-plain', 'cmd-good']);
     });
@@ -205,5 +214,112 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
 
       expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
+  const original = { ...deliveryRefreshers };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
+    for (const key of Object.keys(deliveryRefreshers)) delete deliveryRefreshers[key];
+    Object.assign(deliveryRefreshers, original);
+  });
+
+  it('ships a software_install refresher out of the box, so no import order can silence it', () => {
+    // Registering by side effect from the owning feature module would deliver a
+    // stale installer URL in any process that happened not to import it.
+    expect(typeof deliveryRefreshers.software_install).toBe('function');
+  });
+
+  it('runs the per-type refresher before decrypt so time-limited fields are fresh at delivery', async () => {
+    deliveryRefreshers.software_install = async (p) => ({
+      ...p,
+      downloadUrl: 'https://fresh.example/installer',
+    });
+
+    const out = await prepareClaimedCommandsForDelivery([
+      {
+        id: 'cmd-sw',
+        type: 'software_install',
+        deviceId: CLAIM_DEVICE,
+        payload: { s3Key: 'k', downloadUrl: 'https://stale.example' },
+        executedAt: claimedAt,
+      },
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect((out[0]!.payload as Record<string, unknown>).downloadUrl).toBe(
+      'https://fresh.example/installer',
+    );
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it('a refresher failure releases the row instead of delivering a stale payload', async () => {
+    deliveryRefreshers.software_install = async () => {
+      throw new Error('presign down');
+    };
+
+    const out = await prepareClaimedCommandsForDelivery([
+      {
+        id: 'cmd-sw',
+        type: 'software_install',
+        deviceId: CLAIM_DEVICE,
+        payload: { s3Key: 'k', downloadUrl: 'https://stale.example' },
+        executedAt: claimedAt,
+      },
+    ]);
+
+    expect(out).toEqual([]);
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-sw', claimedAt);
+  });
+
+  it('a refresher failure never sinks its siblings in the same batch', async () => {
+    deliveryRefreshers.software_install = async () => {
+      throw new Error('presign down');
+    };
+
+    const out = await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-plain', type: 'script', deviceId: CLAIM_DEVICE, payload: { a: 1 }, executedAt: claimedAt },
+      { id: 'cmd-sw', type: 'software_install', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt },
+    ]);
+
+    expect(out.map((cmd) => cmd.id)).toEqual(['cmd-plain']);
+  });
+
+  it('a type with no registered refresher passes through untouched', async () => {
+    const out = await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-plain', type: 'script', deviceId: CLAIM_DEVICE, payload: { a: 1 }, executedAt: claimedAt },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.payload).toEqual({ a: 1 });
+  });
+
+  it('a non-object payload is handed to the refresher as an empty object, not crashed on', async () => {
+    const seen: unknown[] = [];
+    deliveryRefreshers.software_install = async (p) => {
+      seen.push(p);
+      return p;
+    };
+
+    await prepareClaimedCommandsForDelivery([
+      { id: 'cmd-sw', type: 'software_install', deviceId: CLAIM_DEVICE, payload: null, executedAt: claimedAt },
+      { id: 'cmd-sw2', type: 'software_install', deviceId: CLAIM_DEVICE, payload: [1, 2], executedAt: claimedAt },
+    ]);
+
+    expect(seen).toEqual([{}, {}]);
+  });
+
+  it('refreshPayloadForDelivery returns null on failure so the single-push path can release', async () => {
+    deliveryRefreshers.software_install = async () => {
+      throw new Error('presign down');
+    };
+    await expect(refreshPayloadForDelivery('software_install', { s3Key: 'k' })).resolves.toBeNull();
+    await expect(refreshPayloadForDelivery('script', { a: 1 })).resolves.toEqual({ a: 1 });
+  });
+
+  it('decryptClaimedCommandsForDelivery is still exported as an alias of the new name', () => {
+    expect(decryptClaimedCommandsForDelivery).toBe(prepareClaimedCommandsForDelivery);
   });
 });

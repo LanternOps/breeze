@@ -17,6 +17,8 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     deviceId: 'device_commands.device_id',
     uninstallReasons: 'device_commands.uninstall_reasons',
     deviceRemoveExpiresAt: 'device_commands.device_remove_expires_at',
+    deliverBy: 'device_commands.deliver_by',
+    submittedOrgId: 'device_commands.submitted_org_id',
   },
   restoreJobsTable: {
     id: 'restore_jobs.id',
@@ -137,7 +139,6 @@ import {
   reapStaleSoftwareDeploymentResults,
   resolveMaxReapPerRun,
   SOFTWARE_INSTALL_TIMEOUT_MS,
-  SOFTWARE_QUEUED_EXPIRY_MS,
   reapStaleScriptExecutions
 } from './staleCommandReaper';
 
@@ -195,6 +196,9 @@ describe('stale command reaper', () => {
         payload: null,
         createdAt: staleCreatedAt,
         executedAt: null,
+        // #5128: exercises the LEGACY (created_at + execution timeout) path —
+        // no deliver_by deadline set on this row.
+        deliverBy: null,
       },
       {
         id: 'cmd-vm',
@@ -203,6 +207,7 @@ describe('stale command reaper', () => {
         payload: null,
         createdAt: staleCreatedAt,
         executedAt: staleCreatedAt,
+        deliverBy: null,
       },
       {
         id: 'cmd-boot',
@@ -211,6 +216,7 @@ describe('stale command reaper', () => {
         payload: null,
         createdAt: staleCreatedAt,
         executedAt: staleCreatedAt,
+        deliverBy: null,
       },
       {
         id: 'cmd-bmr',
@@ -219,6 +225,7 @@ describe('stale command reaper', () => {
         payload: null,
         createdAt: staleCreatedAt,
         executedAt: null,
+        deliverBy: null,
       },
     ]));
 
@@ -240,12 +247,23 @@ describe('stale command reaper', () => {
       where: restoreWhere,
     }));
 
+    // propagateTimedOutDeviceCommand now unconditionally updates
+    // deploymentResults too (keyed on device_command_id, guarded on
+    // status='pending') before it ever reaches restoreJobs — needs a mock
+    // branch even though none of these rows are software-install commands.
+    const deploymentResultsSet = vi.fn(() => ({
+      where: vi.fn().mockResolvedValue(undefined),
+    }));
+
     updateMock.mockImplementation((table: unknown) => {
       if (table === deviceCommandsTable) {
         return { set: deviceCommandSet };
       }
       if (table === restoreJobsTable) {
         return { set: restoreSet };
+      }
+      if (table === deploymentResultsTable) {
+        return { set: deploymentResultsSet };
       }
       throw new Error(`Unexpected table update: ${String(table)}`);
     });
@@ -319,8 +337,13 @@ describe('stale command reaper', () => {
       // satisfy type AND reason AND deadline together to be exempted), and
       // that it sits as an OR-alternative to the offboarding arm rather than
       // replacing/widening it.
+      //
+      // #5128: the param indices below shifted from $15-$18 to $25-$28 —
+      // reapStaleDeviceCommands' WHERE now carries the two-clock OR block
+      // (deliver_by vs. legacy created_at) ahead of this exemption, adding
+      // params $4-$15 before it.
       expect(sqlText).toContain(
-        "OR (\n        $15 = 'self_uninstall'\n        AND $16 @> ARRAY[$17]::text[]\n        AND $18 > now()\n      )",
+        "OR (\n        $25 = 'self_uninstall'\n        AND $26 @> ARRAY[$27]::text[]\n        AND $28 > now()\n      )",
       );
 
       // The reason bound to the containment check is the exported constant,
@@ -336,17 +359,23 @@ describe('stale command reaper', () => {
     it('reaps it once device_remove_expires_at has passed: the deadline is compared with a strict `>` against Postgres\'s own now(), never `>=` and never a JS-computed timestamp bound as a param', async () => {
       const { sql: sqlText, params } = await compileWhere();
 
-      expect(sqlText).toContain('$18 > now()');
+      // #5128: shifted from $18 — see the param-count note above.
+      expect(sqlText).toContain('$28 > now()');
       expect(sqlText).not.toMatch(/>=\s*now\(\)/);
 
-      // now() is evaluated by Postgres itself on every poll. The only bound
-      // Date in the whole WHERE is the unrelated SQL pre-filter cutoff
-      // (`createdAt < now - SHORTEST_TIMEOUT_MS`, computed once per reaper
-      // run) — nothing stands in for "now" in the deadline arm itself,
-      // which would otherwise freeze it at reaper-start time instead of
-      // re-evaluating it fresh on every row, every poll.
+      // now() is evaluated by Postgres itself on every poll — nothing stands
+      // in for "now" in the deadline arm itself, which would otherwise
+      // freeze it at reaper-start time instead of re-evaluating it fresh on
+      // every row, every poll.
+      //
+      // #5128: the bound Date params grew from 1 to 3 — the two-clock OR
+      // block binds `nowDate` once (the deliver_by arm) and the legacy
+      // `conservativeCutoff` SQL pre-filter cutoff twice (once per arm that
+      // still uses createdAt: the deliver_by-null arm and the sent-status
+      // arm). None of the three stand in for the device_remove deadline
+      // arm's own `now()`, which stays a live Postgres call.
       const dateParams = params.filter((p) => p instanceof Date);
-      expect(dateParams).toHaveLength(1);
+      expect(dateParams).toHaveLength(3);
     });
 
     // The regression guard: this is the test that must go RED if the reason
@@ -398,6 +427,7 @@ describe('stale command reaper', () => {
           payload: null,
           createdAt: staleCreatedAt,
           executedAt: null,
+          deliverBy: null,
         },
       ]));
       const returning = vi.fn().mockResolvedValueOnce([{ id: 'cmd-abuse' }]);
@@ -1024,19 +1054,21 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     return { resultSet, resultReturning, commandSet, commandWhere };
   }
 
-  it('pins the exported timeout constants (55 min install, 7 day queued expiry)', () => {
+  it('pins the exported timeout constant (55 min install)', () => {
+    // #5128: the old 7-day "queued expiry" constant (SOFTWARE_QUEUED_EXPIRY_MS)
+    // is gone from this module entirely — `device_commands.deliver_by` is now
+    // the single owner of that deadline (reapStaleDeviceCommands).
     expect(SOFTWARE_INSTALL_TIMEOUT_MS).toBe(55 * 60 * 1000);
-    expect(SOFTWARE_QUEUED_EXPIRY_MS).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
-  it('tier 1: reaps delivered-but-silent rows past the timeout (WS-dispatched and queued-then-sent/completed)', async () => {
+  it('tier 1: reaps delivered-but-silent rows past the timeout, measured from commandExecutedAt (WS-dispatched and queued-then-sent/completed)', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      // WS-dispatched directly — no queued command row
-      { id: 'res-ws', deviceCommandId: null, dispatchedAt: minutesAgo(60), commandStatus: null },
-      // Offline-queued, agent claimed it (sent) then went silent
-      { id: 'res-sent', deviceCommandId: 'cmd-sent', dispatchedAt: minutesAgo(90), commandStatus: 'sent' },
-      // Command completed but the result POST never landed
-      { id: 'res-done', deviceCommandId: 'cmd-done', dispatchedAt: minutesAgo(90), commandStatus: 'completed' },
+      // WS-dispatched directly — no queued command row, falls back to dispatchedAt.
+      { id: 'res-ws', deviceCommandId: null, dispatchedAt: minutesAgo(60), commandStatus: null, commandExecutedAt: null },
+      // Offline-queued, agent claimed it (sent) then went silent — measured from claim time.
+      { id: 'res-sent', deviceCommandId: 'cmd-sent', dispatchedAt: minutesAgo(90), commandStatus: 'sent', commandExecutedAt: minutesAgo(90) },
+      // Command completed but the result POST never landed.
+      { id: 'res-done', deviceCommandId: 'cmd-done', dispatchedAt: minutesAgo(90), commandStatus: 'completed', commandExecutedAt: minutesAgo(90) },
     ]));
     const { resultSet, commandSet } = setUpUpdates();
 
@@ -1062,7 +1094,7 @@ describe('reapStaleSoftwareDeploymentResults', () => {
 
   it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(30), commandStatus: null },
+      { id: 'res-fresh', deviceCommandId: null, dispatchedAt: minutesAgo(30), commandStatus: null, commandExecutedAt: null },
     ]));
 
     const reaped = await reapStaleSoftwareDeploymentResults();
@@ -1071,9 +1103,16 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('tier 2: leaves a queued-offline row (device_commands still pending) alone before the 7-day expiry', async () => {
+  // #5128 — REWRITTEN (was "tier 2: leaves a queued-offline row alone before
+  // the 7-day expiry"). The old Tier 2 (a flat 7-day expiry measured from
+  // dispatchedAt, plus cancelling the queued device_commands row) is GONE.
+  // An undelivered row (commandStatus 'pending') now belongs to exactly one
+  // clock owner — reapStaleDeviceCommands, at the row's own deliver_by — so
+  // this reaper must never reap it, no matter how old dispatchedAt is.
+  it('never reaps an undelivered row (commandStatus pending), regardless of how old dispatchedAt is', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-queued', deviceCommandId: 'cmd-queued', dispatchedAt: daysAgo(2), commandStatus: 'pending' },
+      { id: 'res-queued', deviceCommandId: 'cmd-queued', dispatchedAt: daysAgo(2), commandStatus: 'pending', commandExecutedAt: null },
+      { id: 'res-ancient', deviceCommandId: 'cmd-ancient', dispatchedAt: daysAgo(30), commandStatus: 'pending', commandExecutedAt: null },
     ]));
 
     const reaped = await reapStaleSoftwareDeploymentResults();
@@ -1082,36 +1121,69 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('tier 2: reaps a queued-offline row after the 7-day expiry AND cancels the queued device_commands row', async () => {
+  // #5128 — REWRITTEN (was "tier 2: reaps a queued-offline row after the
+  // 7-day expiry AND cancels the queued device_commands row"). Cancelling an
+  // undelivered device_commands row from this reaper would race the single
+  // owner of the delivery clock, so that cancel is gone along with Tier 2
+  // itself — pin that it never happens, even for a row old enough that the
+  // former 7-day tier would have fired.
+  it('never cancels the queued device_commands row for an undelivered result, even one 8+ days old', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-expired', deviceCommandId: 'cmd-expired', dispatchedAt: daysAgo(8), commandStatus: 'pending' },
+      { id: 'res-expired', deviceCommandId: 'cmd-expired', dispatchedAt: daysAgo(8), commandStatus: 'pending', commandExecutedAt: null },
     ]));
-    const { resultSet, commandSet, commandWhere } = setUpUpdates();
+    const { commandSet } = setUpUpdates();
 
     const reaped = await reapStaleSoftwareDeploymentResults();
 
-    expect(reaped).toBe(1);
+    expect(reaped).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(commandSet).not.toHaveBeenCalled();
+  });
+
+  // #5128 — THE MOST IMPORTANT NEW TEST. This is one of the two latent
+  // defects the change fixes: the "delivered but silent" clock must measure
+  // from the command's OWN executedAt (the instant the agent claimed it),
+  // never from the deployment's dispatchedAt. Measuring from dispatch would
+  // time out an install that was delivered moments ago, purely because the
+  // device had been offline between dispatch and delivery.
+  it('measures the delivered-but-silent clock from commandExecutedAt, not dispatchedAt', async () => {
+    // dispatchedAt is 3 days old — well past SOFTWARE_INSTALL_TIMEOUT_MS on
+    // its own — but the agent only just claimed it.
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-just-claimed', deviceCommandId: 'cmd-claimed', dispatchedAt: daysAgo(3), commandStatus: 'sent', commandExecutedAt: minutesAgo(1) },
+    ]));
+
+    expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+
+    // Same row, but commandExecutedAt is itself now older than the timeout —
+    // the agent claimed it, then went silent for real.
+    vi.resetAllMocks();
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: 'res-claimed-silent',
+        deviceCommandId: 'cmd-claimed',
+        dispatchedAt: daysAgo(3),
+        commandStatus: 'sent',
+        commandExecutedAt: new Date(Date.now() - SOFTWARE_INSTALL_TIMEOUT_MS - 60 * 1000),
+      },
+    ]));
+    const { resultSet } = setUpUpdates();
+
+    expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
     expect(resultSet).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'failed',
-        errorMessage: 'Device did not come online before the deployment expired',
+        errorMessage: 'Server-side timeout: no response from agent',
       })
     );
-    expect(commandSet).toHaveBeenCalledTimes(1);
-    expect(commandSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: 'cancelled',
-        result: expect.objectContaining({ status: 'cancelled', cancelledBy: 'stale-command-reaper' }),
-      })
-    );
-    expect(commandWhere).toHaveBeenCalledTimes(1);
   });
 
   it('never touches rows whose deployment dispatchedAt is NULL (scheduled, not yet dispatched)', async () => {
     // The SQL filter excludes these; pin the defensive JS guard too.
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-scheduled', deviceCommandId: null, dispatchedAt: null, commandStatus: null },
-      { id: 'res-scheduled-2', deviceCommandId: 'cmd-x', dispatchedAt: null, commandStatus: 'pending' },
+      { id: 'res-scheduled', deviceCommandId: null, dispatchedAt: null, commandStatus: null, commandExecutedAt: null },
+      { id: 'res-scheduled-2', deviceCommandId: 'cmd-x', dispatchedAt: null, commandStatus: 'pending', commandExecutedAt: null },
     ]));
 
     const reaped = await reapStaleSoftwareDeploymentResults();
@@ -1120,9 +1192,13 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('does not count a row (or cancel its command) when a concurrent real result wins the pending-guard race', async () => {
+  // #5128 — REWRITTEN to race on the surviving (delivered) tier rather than
+  // the removed undelivered-cancel tier: a 'pending' commandStatus row is now
+  // always skipped before any update is attempted (proven above), so the
+  // pending-guard race can only still be observed on a delivered row.
+  it('does not count a row when a concurrent real result wins the pending-guard race', async () => {
     selectMock.mockReturnValueOnce(selectChain([
-      { id: 'res-race', deviceCommandId: 'cmd-race', dispatchedAt: daysAgo(8), commandStatus: 'pending' },
+      { id: 'res-race', deviceCommandId: 'cmd-race', dispatchedAt: daysAgo(8), commandStatus: 'sent', commandExecutedAt: daysAgo(8) },
     ]));
     const { commandSet } = setUpUpdates({ raced: true });
 
@@ -1132,38 +1208,21 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     expect(commandSet).not.toHaveBeenCalled();
   });
 
-  it('boundary: dispatchedAt exactly 1ms past each threshold reaps, 1ms short does not', async () => {
+  it('boundary: dispatchedAt exactly 1ms past the timeout reaps, 1ms short does not (no linked command)', async () => {
     vi.useFakeTimers();
     const T = new Date('2026-07-17T00:00:00.000Z').getTime();
     vi.setSystemTime(T);
     try {
-      // Tier 1 over/under
       setUpUpdates();
       selectMock.mockReturnValueOnce(selectChain([
-        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS - 1), commandStatus: null },
+        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS - 1), commandStatus: null, commandExecutedAt: null },
       ]));
       expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
 
       vi.resetAllMocks();
       vi.setSystemTime(T);
       selectMock.mockReturnValueOnce(selectChain([
-        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS + 1), commandStatus: null },
-      ]));
-      expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
-
-      // Tier 2 over/under
-      vi.resetAllMocks();
-      vi.setSystemTime(T);
-      setUpUpdates();
-      selectMock.mockReturnValueOnce(selectChain([
-        { id: 'r2', deviceCommandId: 'cmd-b', dispatchedAt: new Date(T - SOFTWARE_QUEUED_EXPIRY_MS - 1), commandStatus: 'pending' },
-      ]));
-      expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
-
-      vi.resetAllMocks();
-      vi.setSystemTime(T);
-      selectMock.mockReturnValueOnce(selectChain([
-        { id: 'r2', deviceCommandId: 'cmd-b', dispatchedAt: new Date(T - SOFTWARE_QUEUED_EXPIRY_MS + 1), commandStatus: 'pending' },
+        { id: 'r1', deviceCommandId: null, dispatchedAt: new Date(T - SOFTWARE_INSTALL_TIMEOUT_MS + 1), commandStatus: null, commandExecutedAt: null },
       ]));
       expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
     } finally {
@@ -1334,13 +1393,31 @@ describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
     expect(String(written.errorMessage)).not.toContain('no response from agent');
   });
 
-  it('still reports a genuine agent silence as timeout', async () => {
-    // Command never reached a terminal state — the original claim is true here
-    // and must survive, or the guard would mask real agent silence.
-    const { execSet } = arrange({
-      payload: { executionId: 'exec-1' },
-      status: 'sent',
-      result: null,
+  // #5128: a `pending`/`queued` execution whose command is still `sent` is now
+  // skipped entirely by reapStaleScriptExecutions' own delivery-clock guard
+  // (change 4 — reapStaleDeviceCommands owns that clock). So "genuine agent
+  // silence with a command that was delivered and never answered" can only
+  // still reach THIS reaper's terminal-command guard once the execution
+  // itself is `running` — the realistic shape of that scenario (the script
+  // started, then the agent went dark, and the command row is left `sent`
+  // forever). Previously this used exec status `pending`, which the #5128
+  // guard now intercepts before this code path is even reached.
+  it('still reports a genuine agent silence as timeout (running execution, command sent but never answered)', async () => {
+    const runningLongAgo = new Date(Date.now() - 60 * 60 * 1000);
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        { id: 'exec-1', status: 'running', scriptId: 'script-1', createdAt: runningLongAgo, startedAt: runningLongAgo },
+      ]))
+      .mockReturnValueOnce(selectChain([
+        { payload: { executionId: 'exec-1' }, status: 'sent', result: null },
+      ]));
+
+    const execSet = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) })),
+    }));
+    updateMock.mockImplementation((table: unknown) => {
+      if (table === scriptExecutionsTable) return { set: execSet };
+      throw new Error(`Unexpected table update: ${String(table)}`);
     });
 
     await reapStaleScriptExecutions();
@@ -1348,6 +1425,40 @@ describe('reapStaleScriptExecutions terminal-command guard (#3097)', () => {
     const written = execSet.mock.calls[0]![0];
     expect(written.status).toBe('timeout');
     expect(String(written.errorMessage)).toContain('no response from agent');
+  });
+
+  // #5128 change (4) — THE DELIVERY CLOCK HAS ONE OWNER. A not-yet-running
+  // execution whose command row is still `pending` or `sent` is waiting for
+  // the device, not stalled: only reapStaleDeviceCommands may expire it (at
+  // the row's own deliver_by). This is the new early-continue behavior.
+  describe('#5128 delivery-clock guard (change 4)', () => {
+    it('skips a queued/pending execution whose command row is still pending — 0 reaped, no UPDATE', async () => {
+      const { execSet } = arrange({
+        payload: { executionId: 'exec-1' },
+        status: 'pending',
+        result: null,
+      });
+
+      const reaped = await reapStaleScriptExecutions();
+
+      expect(reaped).toBe(0);
+      expect(execSet).not.toHaveBeenCalled();
+    });
+
+    it('still reaps a queued/pending execution whose command row is failed, exactly as before', async () => {
+      const { execSet } = arrange({
+        payload: { executionId: 'exec-1' },
+        status: 'failed',
+        result: { status: 'failed', stderr: 'boom' },
+      });
+
+      const reaped = await reapStaleScriptExecutions();
+
+      expect(reaped).toBe(1);
+      expect(execSet).toHaveBeenCalledTimes(1);
+      const written = execSet.mock.calls[0]![0];
+      expect(written.status).toBe('failed');
+    });
   });
 
   it('still reports timeout when no command row exists at all', async () => {

@@ -1962,6 +1962,29 @@ async function processCommandResult(
       }
     }
 
+    // #5128 — software installs now arrive here. A software_install pushed over
+    // this socket used to carry the synthetic
+    // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
+    // regex branch above; new dispatches persist a device_commands row FIRST and
+    // push with its UUID, so they land on this generic path instead. Without
+    // this the deployment_results row would strand as `pending` forever on the
+    // websocket transport. The regex branch above is kept for frames already in
+    // flight from before the deploy. Reconciliation is idempotent (guarded on
+    // status='pending' + matching attempt), so a result that reaches BOTH
+    // transports is still applied once.
+    if (command.type === 'software_install') {
+      try {
+        const { reconcileSoftwareInstallResult } = await import('../services/softwareDeployment');
+        // Short org wrap (#3021): deployment_results is an RLS-guarded org table.
+        await runWithAgentOrgDbAccess('agentWs.commandResult.softwareInstall', orgId, partnerId, () =>
+          reconcileSoftwareInstallResult(command, resolvedDeviceId!, normalizedResult)
+        );
+      } catch (err) {
+        console.error(`[AgentWs] Failed to reconcile software-install result ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
     // Dispatch to per-command-type handler if one is registered.
     // Short org wrap (#3021): handlers read/write RLS-guarded org tables
     // (script_executions, discovery_jobs, backup/restore jobs, …) through the

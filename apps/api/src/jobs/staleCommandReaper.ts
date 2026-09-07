@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, lt, sql, inArray, isNotNull } from 'drizzle-orm';
+import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import {
@@ -84,10 +84,9 @@ const DEPLOYMENT_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 // agent/internal/remote/tools/software_install.go:22-26), so the server only
 // declares a timeout after the agent's ceilings have provably lapsed.
 export const SOFTWARE_INSTALL_TIMEOUT_MS = 55 * 60 * 1000;
-// Tier 2 (queued for an offline device, never delivered): the queued
-// device_commands row may legitimately wait for the device to reconnect, so
-// it gets a much longer leash before the deployment expires.
-export const SOFTWARE_QUEUED_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+// #5128: the old Tier 2 constant (a flat 7-day expiry for an install queued
+// against an offline device) is gone. `device_commands.deliver_by` is the one
+// delivery deadline now, and `reapStaleDeviceCommands` is its only owner.
 const REMOTE_SESSION_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const REMOTE_SESSION_ACTIVE_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours (zombie safety net)
 
@@ -134,13 +133,55 @@ function getQueue(): Queue<ReaperJobData> {
   return reaperQueue;
 }
 
+/**
+ * Terminalise the higher-level records that own a device command the reaper
+ * just failed.
+ *
+ * #5128 — `kind` distinguishes the two clocks. `'expired'` means the delivery
+ * deadline passed and the agent never claimed the row; `'timeout'` means it was
+ * delivered and never answered. Since the per-feature reapers no longer expire
+ * undelivered work themselves (§C), this is the ONLY path by which a
+ * `script_executions` or `deployment_results` row learns that its command
+ * expired undelivered — a miss here leaves that row waiting forever.
+ */
 export async function propagateTimedOutDeviceCommand(params: {
   commandId: string;
   payload: Record<string, unknown> | null;
   errorMsg: string;
   completedAt: Date;
+  kind?: 'expired' | 'timeout';
 }): Promise<void> {
   const { commandId, payload, errorMsg, completedAt } = params;
+
+  // Script executions: the command reaper is now the single owner of the
+  // delivery clock, so an execution whose command expired undelivered is
+  // failed here rather than by reapStaleScriptExecutions' own timer.
+  const executionId =
+    payload && typeof payload.executionId === 'string' && payload.executionId.trim().length > 0
+      ? payload.executionId
+      : null;
+  if (executionId) {
+    await db
+      .update(scriptExecutions)
+      .set({ status: 'failed', errorMessage: errorMsg, completedAt })
+      .where(
+        and(
+          eq(scriptExecutions.id, executionId),
+          inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
+        ),
+      );
+  }
+
+  // Software deployment results, keyed on the owning command row.
+  await db
+    .update(deploymentResults)
+    .set({ status: 'failed', errorMessage: errorMsg, completedAt })
+    .where(
+      and(
+        eq(deploymentResults.deviceCommandId, commandId),
+        eq(deploymentResults.status, 'pending'),
+      ),
+    );
 
   await db
     .update(restoreJobs)
@@ -184,10 +225,28 @@ export async function reapStaleDeviceCommands(): Promise<number> {
   const conservativeCutoff = new Date(now - SHORTEST_TIMEOUT_MS);
   const excludedTypes = [...EXCLUDED_COMMAND_TYPES];
 
-  // Build WHERE conditions, guarding against empty exclusion set
+  const nowDate = new Date(now);
+
+  // Build WHERE conditions, guarding against empty exclusion set.
+  //
+  // #5128 — TWO CLOCKS. A `pending` row carrying a `deliver_by` is on the
+  // DELIVERY clock: it is due only when its own deadline has passed, however
+  // long its execution timeout happens to be. Legacy `pending` rows
+  // (deliver_by NULL) and every `sent` row stay on the EXECUTION clock and keep
+  // the conservative `created_at` age cutoff, which is what stops a 7-day row
+  // from being re-scanned every two minutes. The OR arm is what gets genuinely
+  // due rows selected BEFORE the per-run cap is applied.
   const whereConditions = [
     inArray(deviceCommands.status, ['pending', 'sent']),
-    lt(deviceCommands.createdAt, conservativeCutoff),
+    or(
+      and(
+        eq(deviceCommands.status, 'pending'),
+        isNotNull(deviceCommands.deliverBy),
+        lt(deviceCommands.deliverBy, nowDate),
+      ),
+      and(isNull(deviceCommands.deliverBy), lt(deviceCommands.createdAt, conservativeCutoff)),
+      and(eq(deviceCommands.status, 'sent'), lt(deviceCommands.createdAt, conservativeCutoff)),
+    ),
   ];
   if (excludedTypes.length > 0) {
     whereConditions.push(
@@ -296,6 +355,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       payload: deviceCommands.payload,
       createdAt: deviceCommands.createdAt,
       executedAt: deviceCommands.executedAt,
+      deliverBy: deviceCommands.deliverBy,
     })
     .from(deviceCommands)
     .where(and(...whereConditions))
@@ -308,32 +368,68 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       cmd.type,
       cmd.payload as Record<string, unknown> | null,
     );
-    const referenceTime = cmd.status === 'sent' && cmd.executedAt
-      ? cmd.executedAt.getTime()
-      : cmd.createdAt.getTime();
 
-    if (now - referenceTime < timeoutMs) continue;
+    // #5128 — pick the clock this row is on. `expired` (delivery deadline
+    // passed, the agent never claimed it) is deliberately distinct from
+    // `timeout` (delivered, the agent never answered): only the second is
+    // evidence about the agent. The reason is `not_delivered_before_deadline`
+    // rather than "never reconnected", because a protocol-capability exclusion
+    // can leave a row undelivered on a device that is connected.
+    let due: boolean;
+    let kind: 'expired' | 'timeout';
+    let errorMsg: string;
+    if (cmd.status === 'pending' && cmd.deliverBy) {
+      due = cmd.deliverBy.getTime() <= now;
+      kind = 'expired';
+      errorMsg = `Device did not reconnect before ${cmd.deliverBy.toISOString()}; command was never delivered`;
+    } else if (cmd.status === 'sent' && cmd.executedAt) {
+      due = now - cmd.executedAt.getTime() >= timeoutMs;
+      kind = 'timeout';
+      errorMsg = `Server-side timeout: no response from agent after ${Math.round(timeoutMs / 60000)} minutes`;
+    } else {
+      due = now - cmd.createdAt.getTime() >= timeoutMs;
+      kind = 'timeout';
+      errorMsg = `Command expired: agent never received the command (${Math.round(timeoutMs / 60000)} min timeout)`;
+    }
 
-    const errorMsg = cmd.status === 'sent'
-      ? `Server-side timeout: no response from agent after ${Math.round(timeoutMs / 60000)} minutes`
-      : `Command expired: agent never received the command (${Math.round(timeoutMs / 60000)} min timeout)`;
+    if (!due) continue;
 
     const completedAt = new Date();
+    const result =
+      kind === 'expired'
+        ? {
+            status: 'expired',
+            reason: 'not_delivered_before_deadline',
+            error: errorMsg,
+            timedOutBy: 'server',
+          }
+        : { status: 'timeout', error: errorMsg, timedOutBy: 'server' };
+
+    // #5128 — CAS on the OBSERVED state, not `status IN ('pending','sent')`.
+    // A row observed `pending` here but claimed between the SELECT and this
+    // UPDATE would otherwise be failed the instant it was delivered. Mirrors
+    // the `(id, status='sent', executed_at=<claim ts>)` fence
+    // `releaseClaimedCommandDelivery` already uses.
+    const observedGuard =
+      cmd.status === 'sent'
+        ? and(
+            eq(deviceCommands.id, cmd.id),
+            eq(deviceCommands.status, 'sent'),
+            cmd.executedAt
+              ? eq(deviceCommands.executedAt, cmd.executedAt)
+              : isNull(deviceCommands.executedAt),
+          )
+        : and(eq(deviceCommands.id, cmd.id), eq(deviceCommands.status, 'pending'));
 
     const updated = await db
       .update(deviceCommands)
       .set({
         status: 'failed',
         completedAt,
-        result: { status: 'timeout', error: errorMsg, timedOutBy: 'server' },
+        result,
         ...terminalPayloadErasureSet(),
       })
-      .where(
-        and(
-          eq(deviceCommands.id, cmd.id),
-          inArray(deviceCommands.status, ['pending', 'sent']),
-        ),
-      )
+      .where(observedGuard)
       .returning({ id: deviceCommands.id });
 
     if (updated.length === 0) continue;
@@ -359,6 +455,7 @@ export async function reapStaleDeviceCommands(): Promise<number> {
         payload: (cmd.payload as Record<string, unknown> | null) ?? null,
         errorMsg,
         completedAt,
+        kind,
       });
     } catch (error) {
       console.error(`[StaleCommandReaper] Failed to propagate stale command ${cmd.id}:`, error);
@@ -459,6 +556,16 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       .limit(1);
 
     const cmd = relatedCmd[0];
+
+    // #5128 — THE DELIVERY CLOCK HAS ONE OWNER. A not-yet-running execution
+    // whose command row is still `pending` or `sent` is waiting for the device,
+    // not stalled: only `reapStaleDeviceCommands` may expire it (at the row's
+    // own `deliver_by`), and it propagates the outcome here. Without this,
+    // a script queued for an offline laptop had its execution row failed under
+    // it by the script's own 300 s execution timeout while the command row was
+    // legitimately waiting days for the machine to come back.
+    if (exec.status !== 'running' && (cmd?.status === 'pending' || cmd?.status === 'sent')) continue;
+
     const cmdIsTerminal = cmd?.status === 'completed' || cmd?.status === 'failed';
     const cmdResultStatus = (cmd?.result as Record<string, unknown> | null | undefined)?.status;
     // Mirror handleScriptResult's mapping so a reaped row agrees with what the
@@ -934,39 +1041,45 @@ async function reapStaleDeploymentDevices(): Promise<number> {
 
 /**
  * Reap stale System-A software deployment result rows (`deployment_results`)
- * that the agent result path will never terminate on its own. Two tiers:
+ * that the agent result path will never terminate on its own.
  *
- *  Tier 1 (delivered but silent): the install command provably reached the
- *  agent — WS-dispatched directly (`device_command_id` NULL) or the linked
- *  `device_commands` row is 'sent'/'completed' — and the parent deployment's
- *  `dispatched_at` is older than SOFTWARE_INSTALL_TIMEOUT_MS.
+ *  DELIVERED BUT SILENT: the install command provably reached the agent — the
+ *  linked `device_commands` row is 'sent'/'completed', or there is no linked
+ *  row at all (pre-#5128 WS dispatches, which created none) — and more than
+ *  SOFTWARE_INSTALL_TIMEOUT_MS has passed SINCE DELIVERY.
  *
- *  Tier 2 (queued, never delivered): the linked `device_commands` row is
- *  still 'pending' (device offline, waiting to reconnect). Spared until
- *  `dispatched_at` is older than SOFTWARE_QUEUED_EXPIRY_MS, then failed AND
- *  the queued command is cancelled so it can't fire on a later reconnect.
+ * #5128 — two corrections here:
+ *
+ *  1. The "delivered but silent" clock now measures from the command's
+ *     `executed_at` (the instant the agent CLAIMED it), not the deployment's
+ *     `dispatched_at`. Measuring from dispatch timed out an install that was
+ *     delivered three days later on the reaper's very next pass, purely
+ *     because the device had been offline in between.
+ *  2. The old Tier 2 ("queued, never delivered", expiring at a flat 7 days from
+ *     dispatch) is GONE. Undelivered work belongs to exactly one clock owner —
+ *     `reapStaleDeviceCommands`, which expires the row at its own `deliver_by`
+ *     and propagates the outcome through `propagateTimedOutDeviceCommand`.
+ *     Two independent reapers racing on the same undelivered row is what made
+ *     "queued — device offline" unreliable in the first place.
  *
  * Rows whose deployment has `dispatched_at` NULL (scheduled, not yet
  * dispatched) are NEVER candidates — the SQL filter excludes them.
- *
- * A linked command in a terminal state ('failed'/'cancelled') or whose row
- * has vanished matches neither tier's delivery proof; those fall through to
- * the Tier 2 expiry as a backstop so the result row can't zombie forever
- * (the guarded command-cancel is a no-op for non-pending rows).
  */
 export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
   const now = Date.now();
   const timeoutCutoff = new Date(now - SOFTWARE_INSTALL_TIMEOUT_MS);
 
-  // Conservative SQL pre-filter at the Tier 1 cutoff (the tighter of the
-  // two); per-row tier logic below applies the precise threshold. Mirrors
-  // the SHORTEST_TIMEOUT_MS pattern used elsewhere in this file.
+  // Conservative SQL pre-filter on the deployment's dispatch age: delivery can
+  // only ever be at or after dispatch, so nothing younger than this cutoff can
+  // be due on the delivery clock either. The precise per-row threshold is
+  // applied below (the precise-threshold-in-JS pattern used elsewhere here).
   const candidates = await db
     .select({
       id: deploymentResults.id,
       deviceCommandId: deploymentResults.deviceCommandId,
       dispatchedAt: softwareDeployments.dispatchedAt,
       commandStatus: deviceCommands.status,
+      commandExecutedAt: deviceCommands.executedAt,
     })
     .from(deploymentResults)
     .innerJoin(softwareDeployments, eq(softwareDeployments.id, deploymentResults.deploymentId))
@@ -987,25 +1100,24 @@ export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
     // The SQL filter already excludes these; keep the guard for defense.
     if (!row.dispatchedAt) continue;
 
-    const dispatchedAgoMs = now - row.dispatchedAt.getTime();
-
     const delivered =
       row.deviceCommandId === null ||
       row.commandStatus === 'sent' ||
       row.commandStatus === 'completed';
 
-    let errorMessage: string;
-    if (delivered) {
-      // Tier 1 — the SQL filter already applies this cutoff; re-check per
-      // row (precise-threshold-in-JS pattern used elsewhere in this file).
-      if (dispatchedAgoMs < SOFTWARE_INSTALL_TIMEOUT_MS) continue;
-      errorMessage = 'Server-side timeout: no response from agent';
-    } else {
-      // Tier 2 — queued for an offline device (or delivery unprovable):
-      // spare until the queued-expiry window lapses.
-      if (dispatchedAgoMs < SOFTWARE_QUEUED_EXPIRY_MS) continue;
-      errorMessage = 'Device did not come online before the deployment expired';
+    if (!delivered) {
+      // #5128 — NOT this reaper's clock. The row is either still waiting for
+      // the device (`pending`) or already terminal by another path; either way
+      // `reapStaleDeviceCommands` owns the delivery deadline and propagates.
+      continue;
     }
+
+    // Measure from the claim timestamp when we have one; fall back to the
+    // deployment's dispatch time for rows with no linked command (pre-#5128
+    // WS dispatches created none) or a claim timestamp that was never written.
+    const deliveredRef = row.commandExecutedAt ?? row.dispatchedAt;
+    if (now - deliveredRef.getTime() < SOFTWARE_INSTALL_TIMEOUT_MS) continue;
+    const errorMessage = 'Server-side timeout: no response from agent';
 
     const completedAt = new Date();
 
@@ -1036,37 +1148,10 @@ export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
       completedAt,
     });
 
-    // Tier 2: cancel the still-queued device_commands row so the install
-    // can't fire when the device eventually reconnects. Guarded on
-    // status='pending' — if the agent claimed it mid-reap, leave it be.
-    if (!delivered && row.deviceCommandId) {
-      try {
-        await db
-          .update(deviceCommands)
-          .set({
-            status: 'cancelled',
-            completedAt,
-            result: {
-              status: 'cancelled',
-              error: errorMessage,
-              cancelledBy: 'stale-command-reaper',
-            },
-            ...terminalPayloadErasureSet(),
-          })
-          .where(
-            and(
-              eq(deviceCommands.id, row.deviceCommandId),
-              eq(deviceCommands.status, 'pending'),
-            ),
-          );
-      } catch (error) {
-        console.error(
-          `[StaleCommandReaper] Failed to cancel queued command ${row.deviceCommandId} for expired deployment result ${row.id}:`,
-          error,
-        );
-        captureException(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
+    // #5128 — the old Tier 2 cancel of the still-queued device_commands row is
+    // gone with Tier 2 itself. An undelivered row is never reached here now,
+    // and cancelling one from this reaper would race the single owner of the
+    // delivery clock.
   }
 
   return reaped;

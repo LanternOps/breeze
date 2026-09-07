@@ -26,7 +26,7 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
@@ -40,6 +40,7 @@ import {
   applySoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
+import { reconcileSoftwareInstallResult } from '../../services/softwareDeployment';
 
 import {
   ACCEPTED_COMMAND_RESULT_STATUSES,
@@ -207,7 +208,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   // Both the claim AND the delivery pass run inside the SAME system context.
   // This route is self-managed-context (agentAuth leaves no ambient context
   // behind on the REST paths), and since #3409 PR4c-2 the delivery pass is no
-  // longer pure CPU: `decryptClaimedCommandsForDelivery` first runs the
+  // longer pure CPU: `prepareClaimedCommandsForDelivery` first runs the
   // secret-delivery claim gate, which reads `devices` (RLS-scoped) and drives
   // offending `device_commands` / `script_executions` rows terminal. Called
   // outside the closure those would be contextless bare-pool queries (#1375).
@@ -225,7 +226,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
         // default — so read the context value, never restate the literal.
         agent.claimTypeAllowlist
       );
-      return decryptClaimedCommandsForDelivery(commands);
+      return prepareClaimedCommandsForDelivery(commands);
     })
   );
 
@@ -550,24 +551,8 @@ commandsRoutes.post(
     // replays AND results from a retry-superseded queued command a no-op.
     if (command.type === 'software_install') {
       try {
-        const payload =
-          command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
-            ? (command.payload as Record<string, unknown>)
-            : {};
-        if (typeof payload.deploymentId === 'string') {
-          await applySoftwareInstallResult({
-            deploymentId: payload.deploymentId,
-            deviceId,
-            status: normalizedData.status,
-            exitCode: normalizedData.exitCode,
-            stdout: normalizedData.stdout,
-            stderr: normalizedData.stderr,
-            error: normalizedData.error,
-            startedAt: normalizedData.startedAt,
-            durationMs: normalizedData.durationMs,
-            attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
-          });
-        }
+        // #5128: shared with the websocket transport so the two cannot drift.
+        await reconcileSoftwareInstallResult(command, deviceId, normalizedData);
       } catch (err) {
         console.error(`[agents] software install deployment-result reconciliation failed for ${commandId}:`, err);
         captureException(err);
