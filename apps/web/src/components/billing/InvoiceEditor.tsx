@@ -839,7 +839,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.billTo.title')}</h3>
             {invoice.billToName ? (
               <p className="text-sm">
-                <a href={`/organizations/${invoice.orgId}`} data-testid="org-record-link" className="hover:underline">
+                <a href={`/organizations/${encodeURIComponent(invoice.orgId)}`} data-testid="org-record-link" className="hover:underline">
                   {invoice.billToName}
                 </a>
               </p>

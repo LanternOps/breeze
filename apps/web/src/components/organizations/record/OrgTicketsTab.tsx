@@ -103,7 +103,7 @@ export default function OrgTicketsTab({ orgId, orgFetch }: OrgTicketsTabProps) {
     };
   }, []);
 
-  const newTicketHref = `/tickets/new#orgId=${orgId}`;
+  const newTicketHref = `/tickets/new#orgId=${encodeURIComponent(orgId)}`;
   const truncated = total !== null && total > tickets.length;
 
   return (
