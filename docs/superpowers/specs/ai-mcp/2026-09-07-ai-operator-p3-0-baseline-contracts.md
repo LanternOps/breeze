@@ -25,7 +25,7 @@ Line numbers drift. Cite by symbol name as well as line where the symbol is stab
 
 **Headline result: P3-1's premise holds.** The two questions that could have aborted this wave are
 both answered yes. A device command result is readable by id through an authorized route
-(`apps/api/src/routes/devices/commands.ts:960`, VERIFIED), and the proposed operation identity can
+(`apps/api/src/routes/devices/commands.ts:961`, VERIFIED), and the proposed operation identity can
 be made safe, though not in the shape §6.5 currently describes. Section 5 states the required
 change. Section 11 lists twenty corrections to the spec and plan.
 
@@ -113,10 +113,10 @@ export interface ExecutionAdapter {
 | `admit` | `createActionIntent` (`apps/api/src/services/actionIntents/intentService.ts:847`), whose input type `CreateActionIntentInput` (`:123-181`) is the full admission surface. Guardrails run before any write via `checkGuardrails` / `checkAgentGuardrails` (`apps/api/src/services/aiGuardrails.ts:1739`). VERIFIED. | Tier and guardrail gating, agent-principal pairing (`agent_source_mismatch`, `:858-868`), explicit device/ticket scope (`:170`), org resolution. | `CreateActionIntentInput` has **no** `taskId`, `taskStepKey` or `operationKey` field (VERIFIED, read the whole interface at `:123-181`). §6.5's "reserved durably before either an act dispatch or an intent is created" has no representation. Adding it is a change to this input type and to the creation transaction, exactly as §6.5 says. |
 | `dispatch` | The `approved -> executing` CAS at `apps/api/src/jobs/intentReleaseWorker.ts:676`, `transitionIntent(intentId, 'approved', 'executing', { executedAt: null, executionStartedAt: new Date() }, { requireNotExpired: 'release' })`. VERIFIED. `transitionIntent`'s signature is `(intentId, from, to, patch?, opts?) => Promise<boolean>` (`intentService.ts:2134-2140`, VERIFIED). | A single durable claim already exists and already folds the release deadline into the CAS predicate (`:2158-2164`). This is the linearization point §7.3 asks for. | The CAS predicate has no task columns, so it cannot check task state, revision, deadline or `lease_epoch`. §7.3 is explicit that these are added to the *same* conditional UPDATE, not a second claim. `transitionIntent` returns `boolean`, it does not return the row, so a task-aware claim needs either a widened return or a separate read (INFERRED from the signature). |
 | `dispatch` → `ExecutionRef` | `executeCommand` (`apps/api/src/services/commandQueue.ts:1194`) as used by `manage_services` (`apps/api/src/services/aiToolsScripts.ts:660`). Returns `CommandResult` (`commandQueue.ts:67-84`). VERIFIED. | `CommandResult.commandId` is the `device_commands` row id, attached "once a command row exists (success or failure)" (`commandQueue.ts:76-83`). That is a real, resolvable execution reference. | `commandId` is **optional** (`commandId?: string`, `:83`) and is "absent only on failures that occur before the row is created (device missing/offline, insert failure)". So `dispatch` must model a refusal with no reference. VERIFIED. |
-| `observe` | `GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:960-994`). VERIFIED. | Reads the persisted `device_commands.result` by id under `requireScope`, `requirePermission(DEVICES_READ)`, `getDeviceWithOrgCheck` and `canAccessDeviceSite`. | `device_commands` is deliberately **not** RLS-protected. It is listed in `INTENTIONAL_UNSCOPED` at `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:88` ("Agent WS path: system-scoped command queue, no tenant isolation needed"), and the migration comment at `apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:11-17` says the same. VERIFIED. The app-layer device/org/site check **is** the whole authorization boundary. §11.3's "authorized adapter read on every access" is therefore load-bearing, not defence in depth. |
+| `observe` | `GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:961-996`). VERIFIED. | Reads the persisted `device_commands.result` by id under `requireScope`, `requirePermission(DEVICES_READ)`, `getDeviceWithOrgCheck` and `canAccessDeviceSite`. | `device_commands` is deliberately **not** RLS-protected. It is listed in `INTENTIONAL_UNSCOPED` at `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:88` ("Agent WS path: system-scoped command queue, no tenant isolation needed"), and the migration comment at `apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:11-17` says the same. VERIFIED. The app-layer device/org/site check **is** the whole authorization boundary. §11.3's "authorized adapter read on every access" is therefore load-bearing, not defence in depth. |
 | `verify` | `actVerify.ts` `verifyServiceRunning` and `verifyActExecution`; `fixWatch.ts` phase 1/2. VERIFIED. | Typed verdicts already exist: `ActVerificationVerdict = 'passed' \| 'failed' \| 'inconclusive' \| 'skipped'` (`packages/shared/src/types/aiAgents.ts:719`) and `ActExecutionVerdict = 'succeeded' \| 'failed' \| 'timeout' \| 'unknown'` (`:710`). The two-axis split §6.5 wants is already the repo's vocabulary. | The two halves of the service criterion run on different clocks and cannot be combined into one call today. See §2.7. |
 | `cancelIfSupported` | `POST /devices/:id/commands/:commandId/cancel` (`apps/api/src/routes/devices/commands.ts:1000-1090`). VERIFIED. | Cancels a command still in `status='pending'` via a CAS; returns 409 `Command is not pending` once claimed. | There is **no** in-flight cancel for a claimed `restart_service`. The adapter must answer `{ cancelled: false }` and the task must record in-flight, which is what §7.3 already requires. |
-| `reconcileUnknown` | `commandAcceptsAgentResultCondition` (`apps/api/src/services/commandResultAcceptance.ts:55-66`). VERIFIED. | The device-command layer **already** treats a server-side timeout as provisional: a row that is `failed` with `result->>'status' = 'timeout'` still accepts a genuine agent result later (`:4-41`). Reconciliation of an unknown device effect is therefore possible from the reference alone. | Nothing propagates that late result back to the intent, which is terminal and immutable by then. The operation row is the only place it can land. This is precisely why §6.3/§6.5 put the result on the operation, not the intent. |
+| `reconcileUnknown` | `commandAcceptsAgentResultCondition` (`apps/api/src/services/commandResultAcceptance.ts:55-63`). VERIFIED. | The device-command layer **already** treats a server-side timeout as provisional: a row that is `failed` with `result->>'status' = 'timeout'` still accepts a genuine agent result later (`:4-41`). Reconciliation of an unknown device effect is therefore possible from the reference alone. | Nothing propagates that late result back to the intent, which is terminal and immutable by then. The operation row is the only place it can land. This is precisely why §6.3/§6.5 put the result on the operation, not the intent. |
 
 **The one contract that must not be weakened.** Every adapter read of an execution reference
 authorizes at read time. `device_commands` has no RLS and `script_executions` is restamped across
@@ -188,8 +188,13 @@ recipe must surface that as an admission refusal, not a failed operation.
 ### 2.4 Prerequisite reads
 
 - `manage_services` with `action: 'list'` maps to command type `list_services`
-  (`apps/api/src/services/aiToolsScripts.ts:651`), downgraded to Tier 1 by `checkGuardrails`
-  (`apps/api/src/services/aiGuardrails.ts:75, 156`). No approval. VERIFIED.
+  (`apps/api/src/services/aiToolsScripts.ts:651`), downgraded to **Tier 2**, not Tier 1, by
+  `checkGuardrails`. The entry is in `TIER2_READONLY_ACTIONS`
+  (`apps/api/src/services/aiGuardrails.ts:153`, `manage_services: ['list']` at `:156`), and the
+  code comment at `:51` says it is "a read downgraded from the tool's base Tier 3".
+  `TIER1_ACTIONS` is a separate table at `:178` and does not contain `manage_services`. VERIFIED.
+  Tier 2 still needs no human approval on this path, so the prerequisite read is free, but P3-1
+  must not assume Tier 1 semantics for it.
 - `actVerify.ts` issues its own `list_services` read (`apps/api/src/services/aiAgents/actVerify.ts:127-129`)
   through `executeCommandWithSystemPrecheck`. This is the same read the recipe needs for a
   baseline. VERIFIED.
@@ -208,7 +213,7 @@ One kind: `{ kind: 'device_command', commandId, deviceId }`.
   (`apps/api/src/db/schema/devices.ts:536-561`). The agent WS ingest writes it
   (`apps/api/src/routes/agentWs.ts`, the `commandResult` frame handler). VERIFIED.
 - Read path: `GET /devices/:id/commands/:commandId`
-  (`apps/api/src/routes/devices/commands.ts:960-994`). VERIFIED.
+  (`apps/api/src/routes/devices/commands.ts:961-996`). VERIFIED.
 
 **`device_commands` gets no `org_id`, on purpose.** `2026-10-13-100000-device-commands-deliver-by.sql:11-17`
 adds `submitted_org_id` and states it is "PROVENANCE, NOT TENANCY … deliberately not named `org_id`:
@@ -233,7 +238,7 @@ case, not an exceptional one.** A 30-second tool wait against a Windows service 
 waits up to 30 s for `Running` (§2.1) makes this reachable on a healthy device.
 
 Recovery exists at the device layer and must be used: `commandAcceptsAgentResultCondition`
-(`apps/api/src/services/commandResultAcceptance.ts:55-66`) keeps a server-timeout row open to a
+(`apps/api/src/services/commandResultAcceptance.ts:55-63`) keeps a server-timeout row open to a
 genuine late agent result, and its header (`:4-41`) records that narrowing this set once destroyed
 real script output. Every server-side timeout writer stamps `result.status = 'timeout'`
 (`SERVER_TIMEOUT_RESULT_STATUS`, `:47`) so the row stays reconcilable.
@@ -421,7 +426,7 @@ rather than implying a run cancel exists.
 | `services/actionIntents/intentService.ts:725-726` (`runHumanFanout`) | fail-closed when no approver is eligible | `cancelled`, `errorCode: 'no_eligible_approvers'` | **Yes**, joins the caller's transaction (`createActionIntent` at `:1334`, `runDeferredHumanFanout` at `:1884`) | the unconditional `intent_created` row still fires at `:1600` | n/a; never executed |
 | `services/approvals/decideApprovalRequest.ts:985-993` | human denial | `rejected` | **Yes**, `withSystemDbAccessContext(() => db.transaction(...))` at `:775`, bundled with the elevation mirror and the `ai_tool_executions` mirror | `intent_outbox` row, same transaction, `:1027-1032` | n/a |
 | `services/actionIntents/policyDecide.ts:349-364` (`runAuthorizeTransaction`) | policy auto-authorize | `approved` (**never terminal**) | **Yes**, one transaction | `intent_outbox` row `intent_approved`, same transaction, `:379` | n/a |
-| `routes/approvals.ts:992-994` | "report suspicious" | `rejected` | **Yes**, `runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(...)))` at `:958-960` | **nothing.** No `intentOutbox` insert exists anywhere in that file | n/a |
+| `routes/approvals.ts:992-994` | "report suspicious" | `rejected` | **Yes**, `runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(...)))` at `:957-960` | **nothing.** No `intentOutbox` insert exists anywhere in that file | n/a |
 | `services/actionIntents/intentService.ts:2043-2056` | `cancelActionIntent` | `cancelled`, from `['pending_approval','approved']` only | **Yes**, `withSystemDbAccessContext`; the outbox insert shares the transaction so a throw rolls the status back (`:2058-2072`) | `intent_outbox` row `intent_cancelled`, ids only (`:2051-2056`) | none |
 | `services/approvals/decideApprovalRequest.ts:1027-1032` | approval decision | intent CAS to `approved` (not terminal) or the denial path to `rejected` | **Yes**, inside `tx`, alongside expiring sibling `approval_requests` rows (`:1010-1019`) | `intent_outbox` row `intent_approved` / `intent_rejected`, ids only | none |
 | `services/aiAgentSdk.ts:1210` | inline session release claim | `approved -> executing` (not terminal) | bare CAS with `requireNotExpired: 'release'` | nothing | sets `executionStartedAt` |
@@ -452,8 +457,12 @@ intentOutboxEventEnum = ['intent_created', 'intent_approved', 'intent_rejected',
                          'intent_expired', 'intent_cancelled', 'pam.desired_state_changed']
 ```
 `apps/api/src/db/schema/actionIntents.ts:92-99`, matching the CHECK constraint in
-`apps/api/migrations/2026-10-08-100300-intent-cancelled-outbox-event.sql:8-13`, the latest of four
-successive widenings (`2026-07-18` → `2026-09-04` → `2026-09-16` → `2026-10-08`). VERIFIED.
+`apps/api/migrations/2026-10-08-100300-intent-cancelled-outbox-event.sql:8-13`, the newest of the
+**four** migrations that define or widen that constraint. The full set, by
+`grep -rln intent_outbox_event_type_check apps/api/migrations/`, is `2026-09-04-ai-agent-notifications.sql`,
+`2026-09-16-pam-actuation-lifecycle.sql`, `2026-09-19-ai-agents-ticket-shadow.sql` and the
+`2026-10-08` file. The table's creating migration `2026-07-18-action-intents.sql` does **not**
+name the constraint. VERIFIED by grep across the migrations directory.
 
 **There is no `intent_completed` and no `intent_failed`.** Both terminal writers that matter for the
 slice, `terminalizeIntent` and the stale-executing reaper, publish nothing. This confirms spec §2
@@ -506,7 +515,7 @@ FROM due WHERE a.id = due.id AND a.status = 'executing' AND a.executed_at IS NUL
 `result`, no `executed_at`. The execution's result has nowhere to go. VERIFIED.
 
 **Claim 2, the losing worker discards the result.** Confirmed, and the code says so itself.
-`apps/api/src/jobs/intentReleaseWorker.ts:1053-1068`:
+`apps/api/src/jobs/intentReleaseWorker.ts:1054-1068`:
 
 ```ts
 if (!completed) {
@@ -531,12 +540,12 @@ value.
 
 **The third loss, not in the spec, and it is worse than either.** All five `aiAgentSdk.ts`
 `transitionIntent` call sites (`:1279`, `:1324`, `:1387`, `:1903`, `:1918`) **ignore the return
-value**. `transitionIntent`'s own contract (`intentService.ts:2110-2112`) is that a lost race
+value**. `transitionIntent`'s own contract (`intentService.ts:2110-2114`) is that a lost race
 "returns `false`, never throws". The `try/catch` at `:1926-1928` therefore only fires on a thrown
 error; the actual race returns `false` and falls straight through. So the inline chat-session path
 can execute a real tool, lose the CAS to the durable worker or the reaper, and discard `sizedResult`
 with **no log line, no Sentry event, no audit row, no signal at all.** That is a strictly more
-silent version of the gap `intentReleaseWorker.ts:1053-1068` explicitly instruments. VERIFIED by
+silent version of the gap `intentReleaseWorker.ts:1054-1068` explicitly instruments. VERIFIED by
 reading all five call sites.
 
 This is worth raising outside the Operator program: it is a pre-existing observability hole on a
@@ -546,7 +555,7 @@ path that has already executed a customer-visible side effect.
 
 | Writer | Race | Result today |
 |---|---|---|
-| `terminalizeIntent` (`intentReleaseWorker.ts:541`) | reaper or duplicate delivery terminalized first | Discarded; Sentry event raised (`:1053-1068`) |
+| `terminalizeIntent` (`intentReleaseWorker.ts:541`) | reaper or duplicate delivery terminalized first | Discarded; Sentry event raised (`:1054-1068`) |
 | `aiAgentSdk.ts:1918` | durable worker or reaper won | Discarded **silently** |
 | `aiAgentSdk.ts:1210` / `intentReleaseWorker.ts:676` | both claim `approved -> executing` | Correct: exactly one wins, the loser does not run the tool (`aiAgentSdk.ts:1220-1229`). No loss |
 | `intentExpiryReaper.ts:274` | the worker is mid-tool | Reaper wins; worker's result then hits the `terminalizeIntent` loss above |
@@ -554,7 +563,7 @@ path that has already executed a customer-visible side effect.
 
 **The device layer does not lose the result, only the intent layer does.** A device command
 whose server-side timeout wrote `result.status = 'timeout'` still accepts the genuine agent result
-later (`apps/api/src/services/commandResultAcceptance.ts:55-66`), and double delivery stays safe
+later (`apps/api/src/services/commandResultAcceptance.ts:55-63`), and double delivery stays safe
 because the acceptance predicate is re-evaluated inside the terminal CAS (`:37-41`). VERIFIED.
 
 **Design consequence for P3-1.** The truth about the effect survives at the execution reference and
@@ -722,7 +731,7 @@ column-not-table trap CLAUDE.md calls out. VERIFIED.
 ### 5.4 Blocking question, answered
 
 **Can the device command result be read back by id?** **Yes.**
-`GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:960-994`) selects
+`GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:961-996`) selects
 `device_commands` by `(id, deviceId)` after `getDeviceWithOrgCheck` and `canAccessDeviceSite`, and
 returns the row through `sanitizeCommandForHistory`. VERIFIED. P3-1's execution reference is viable.
 The caveat is §1.2's: the table has no RLS, so this app-layer check is the only boundary and the
@@ -756,7 +765,7 @@ VERIFIED.
 | `services/aiAgents/ticketHelpdeskSubscriber.ts:303` (`admitTriageRun`) | ticket shadow | `ticket.created`, `ticket.commented` (verified-human only), `ticket.status_changed → resolved` | `:23-38`, `ticket-created:<ticketId>` shared by created and commented (first admitter wins, one triage run per ticket by design); `ticket-resolved:<ticketId>` for the resolved lane | **No** for the ticket-triage recipe: `ticket-created:` is already a "one owner per ticket" key, so a task admission would need to adopt that exact key, not add a second. |
 | `jobs/aiAgentSweepScheduler.ts:610` | schedule, narrative profile | fixed-tick `tick` → `occurrence` jobs on the `ai-agent-sweep` queue | `:618`, `` `narrative-${baseline.id}-${orgId}-${occurrenceKey}` `` | **Yes** against other profiles; **no** against a task admission for the same `(schedule, org, occurrence)`. Note the prefix is profile-namespaced on purpose (`:605-609`): a shared `sweep-` prefix would silently drop one of the two. |
 | `jobs/aiAgentSweepScheduler.ts:620` | schedule, sweep profile | same | `:628`, `` `sweep-${baseline.id}-${orgId}-${occurrenceKey}` `` | Same as above. |
-| *(excluded)* `routes/aiAgents.ts:1737` `POST /:id/runs` | human "run now" | manual, `requireMfa()` | `:1741`, `` `manual:${randomUUID()}` `` | Never dedupes, by design. Not a sunset target. |
+| *(excluded)* `routes/aiAgents.ts:1737` `POST /:id/runs` | human "run now" | manual, `requireMfa()` | `:1744`, `` `manual:${randomUUID()}` `` | Never dedupes, by design. Not a sunset target. |
 
 **Two candidates named in the plan do not exist.**
 
@@ -1325,7 +1334,7 @@ an unscoped table, and the RLS-coverage allowlist must **not** gain a new entry 
 **Non-contradictions, confirmed as written.** Spec §2's claims about `finishRun` publishing after
 the write (`runLoop.ts:1898` then `:1916`), the reaper's `failed:execution_lost`
 (`intentExpiryReaper.ts:274-276`), the losing CAS discarding the result
-(`intentReleaseWorker.ts:1053-1068`), cancel covering only `pending_approval` and `approved`
+(`intentReleaseWorker.ts:1054-1068`), cancel covering only `pending_approval` and `approved`
 (`intentService.ts:2043-2048`), the release claim at `:676`, the kill-switch reversal at `:139`, the
 run-scoped default key at `:1182`, the live-only partial unique at `:1476`, and the reuse rejection
 at `:1527` are all **VERIFIED correct**.
