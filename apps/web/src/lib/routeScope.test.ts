@@ -74,6 +74,23 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/login')).toBe('auth');
   });
 
+  it('classifies the organization RECORD as its own kind (#5075) — it pins its org from the URL', () => {
+    expect(getRouteScope('/organizations/abc123')).toBe('org-record');
+    expect(getRouteScope('/organizations/abc123/')).toBe('org-record');
+    expect(getRouteScope('/organizations/abc123/anything')).toBe('org-record');
+  });
+
+  it('leaves the bare /organizations prefix unregistered (there is no list page at that path)', () => {
+    expect(getRouteScope('/organizations')).toBeNull();
+  });
+
+  it('does NOT suppress orgId injection on the record — the page passes orgIdOverride per request', () => {
+    // isGlobalScopeRoute is the injection chokepoint. Marking the record global
+    // would strip ?orgId= from every ambient caller mounted inside it, silently
+    // widening those reads to "all accessible orgs" instead of pinning one.
+    expect(isGlobalScopeRoute('/organizations/abc123')).toBe(false);
+  });
+
   it('returns null for routes outside the registry', () => {
     expect(getRouteScope('/definitely-not-a-page')).toBeNull();
   });

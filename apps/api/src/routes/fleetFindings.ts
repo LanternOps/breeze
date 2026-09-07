@@ -14,6 +14,7 @@ import {
 import {
   applyFleetFindingLifecycle,
   getFleetFinding,
+  getFleetFindingCounts,
   getRemediationRun,
   listFleetFindings,
   type FleetFindingLifecycleAction,
@@ -139,6 +140,15 @@ fleetFindingsRoutes.get(
     return c.json(result);
   }
 );
+
+// `GET /counts` is a single path segment, so it MUST be registered before
+// `/:id` below to avoid Hono matching "counts" as a finding id (mirroring
+// the constraint documented for `/runs/:runId` etc. right below).
+fleetFindingsRoutes.get('/counts', requireScope('organization', 'partner', 'system'), requireFindingsRead, async (c) => {
+  const auth = c.get('auth');
+  const result = await getFleetFindingCounts(auth);
+  return c.json(result);
+});
 
 // `GET /runs/:runId` (top-level) and `GET /:id/runs` / `POST /:id/remediate`
 // are all two path segments, so none of them can be swallowed by the

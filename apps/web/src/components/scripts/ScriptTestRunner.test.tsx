@@ -632,7 +632,10 @@ describe('ScriptTestRunner post-run actions (#4885 / #4886)', () => {
 
   async function runToCompletion(execute: () => void) {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [
+        onlineDevice,
+        { ...onlineDevice, id: 'second-device', hostname: 'second-box' },
+      ] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         execute();
         return jsonResponse({
@@ -687,6 +690,17 @@ describe('ScriptTestRunner post-run actions (#4885 / #4886)', () => {
 
     expect(screen.queryByTestId('test-view-on-device')).toBeNull();
   });
+
+  it('keeps the completed execution link on its original device after changing the next target', async () => {
+    await runToCompletion(() => {});
+
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: 'second-device' } });
+
+    expect(screen.getByTestId('test-device-select')).toHaveValue('second-device');
+    expect(screen.getByTestId('test-view-on-device')).toHaveAttribute(
+      'href', `/devices/${DEVICE_ID}#scripts/${EXECUTION_ID}`
+    );
+  }, 10000);
 });
 
 /**

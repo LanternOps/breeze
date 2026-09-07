@@ -17,11 +17,9 @@ import { getDevices, type Device } from '../../services/api';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
-// Imported from the sibling detail screen so the raw osType -> display name
-// mapping (windows -> Windows, macos -> macOS, ...) lives in one place.
-import { osLabel } from '../../lib/osLabel';
 
 import {
+  deviceRowMeta,
   shapeDeviceList,
   statusCounts,
   type DeviceStatusFilter,
@@ -66,9 +64,14 @@ function DeviceRow({ device, onPress }: { device: Device; onPress: () => void })
           {device.name}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
-          {[device.os ? osLabel(device.os) : null, device.siteName]
-            .filter(Boolean)
-            .join(' · ') || '—'}
+          {/* #5104: org · site identifies which of a partner's orgs this
+             * device belongs to on a multi-org MSP tenant — OS is still one
+             * tap away on Device Details. Falls back gracefully: either
+             * field (or both) can be absent depending on what the backend
+             * resolved for this device. Logic lives in deviceListFilters.ts
+             * (pure, unit-tested) rather than inline — this screen can't be
+             * rendered under this project's vitest runtime. */}
+          {deviceRowMeta(device)}
         </Text>
       </View>
       <Text style={styles.seen}>

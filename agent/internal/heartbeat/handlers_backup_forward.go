@@ -3,6 +3,8 @@ package heartbeat
 import (
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backupipc"
+
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -29,8 +31,11 @@ func handleBackupList(h *Heartbeat, cmd Command) tools.CommandResult {
 	return forwardToBackupHelper(h, cmd, 30*time.Second)
 }
 
+// handleBackupStop's timeout must exceed the helper's targeted-stop drain
+// (backupipc.BackupStopDrainTimeout): the helper joins the cancelled run's
+// unwind before replying so the server never marks the row terminal mid-flush.
 func handleBackupStop(h *Heartbeat, cmd Command) tools.CommandResult {
-	return forwardToBackupHelper(h, cmd, 10*time.Second)
+	return forwardToBackupHelper(h, cmd, backupipc.BackupStopForwardTimeout)
 }
 
 func handleBackupRestore(h *Heartbeat, cmd Command) tools.CommandResult {

@@ -35,7 +35,12 @@ export type StepUpOperation =
   | 'add_factor'
   | 'register_approver_device'
   | 'agent_rollback'
-  | 'enroll_first_factor';
+  | 'enroll_first_factor'
+  // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
+  // resourceDigest to the exact { deviceIds, reason, durationHours } the
+  // technician was shown, so a grant can never be replayed against a
+  // different device set or a longer window.
+  | 'device_maintenance';
 
 export interface StepUpGrant {
   id: string;
@@ -73,6 +78,34 @@ export function rollbackResourceDigest(input: {
     deviceId: input.deviceId,
     reason: input.reason,
     targetVersion: input.targetVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+// The device-maintenance maxima moved to services/maintenanceStepUpLimits.ts —
+// see that file's header for why a constant must not live in a module this
+// many suites mock wholesale.
+
+/**
+ * Canonical digest for a device-maintenance grant.
+ *
+ * Canonicalization is part of the security contract, not a convenience: the
+ * mint route and the maintenance routes must produce byte-identical input for
+ * the same operator intent, so `deviceIds` is deduplicated and sorted and
+ * `reason` is trimmed here — in ONE function both callers use — rather than at
+ * each call site. Keys are emitted in a fixed alphabetical order because
+ * JSON.stringify preserves insertion order, which would otherwise let two
+ * equivalent objects hash differently.
+ */
+export function maintenanceResourceDigest(input: {
+  deviceIds: string[];
+  reason: string;
+  durationHours: number;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    deviceIds: [...new Set(input.deviceIds)].sort(),
+    durationHours: input.durationHours,
+    reason: input.reason.trim(),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

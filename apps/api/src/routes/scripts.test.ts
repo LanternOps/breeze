@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { scriptRoutes } from './scripts';
 
@@ -30,6 +32,27 @@ vi.mock('../services/automationActionResults', () => ({
   applyAutomationActionTerminal: (...args: unknown[]) =>
     applyAutomationActionTerminalMock(...(args as [])),
 }));
+
+// #3525 W02b — the cancel route is a thin delegation to this service, so the
+// route tests assert what it is HANDED and what is done with the outcome; the
+// state machine itself is covered by scriptCancellation.request.test.ts.
+const { cancelScriptExecutionMock, deliverCancelCommandMock } = vi.hoisted(() => ({
+  cancelScriptExecutionMock: vi.fn(),
+  deliverCancelCommandMock: vi.fn(),
+}));
+
+vi.mock('../services/scriptCancellation', async (importOriginal) => {
+  // The clamp and the bound are pure and are the contract the OpenAPI body
+  // schema is derived from — keep the real ones so a drift there is caught
+  // here rather than only in the service's own suite.
+  const actual = await importOriginal<typeof import('../services/scriptCancellation')>();
+  return {
+    MAX_GRACE_SECONDS: actual.MAX_GRACE_SECONDS,
+    clampGraceSeconds: actual.clampGraceSeconds,
+    cancelScriptExecution: (...args: unknown[]) => cancelScriptExecutionMock(...(args as [])),
+    deliverCancelCommand: (...args: unknown[]) => deliverCancelCommandMock(...(args as [])),
+  };
+});
 
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
@@ -167,6 +190,7 @@ describe('scripts routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    deliverCancelCommandMock.mockResolvedValue(true);
     app = new Hono();
     app.route('/scripts', scriptRoutes);
   });
@@ -1648,117 +1672,17 @@ describe('scripts routes', () => {
     expect(body.error).toBe('Access to this site denied');
   });
 
-  it('denies cancelling an execution when the device is outside the caller site restriction', async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        leftJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: EXECUTION_ID,
-              status: 'running',
-              deviceId: 'device-1',
-              deviceOrgId: ORG_ID,
-              deviceSiteId: 'site-denied'
-            }])
-          })
-        })
-      })
-    } as any);
+  // ==========================================================================
+  // POST /scripts/executions/:id/cancel (#3525 W02b)
+  //
+  // The route is now a thin delegation to services/scriptCancellation: it owns
+  // the org / site / permission / MFA gates and the audit row, and NOTHING
+  // else. It must never stamp a terminal status itself — only a proven stop
+  // may write `cancelled`, and the proof lives in the service.
+  // ==========================================================================
 
-    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
-    });
-
-    expect(res.status).toBe(403);
-    const body = await res.json();
-    expect(body.error).toBe('Access to this site denied');
-    // Must reject before mutating
-    expect(db.update).not.toHaveBeenCalled();
-  });
-
-  it('allows cancelling an execution when the device is within the caller site restriction', async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        leftJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: EXECUTION_ID,
-              status: 'running',
-              deviceId: 'device-1',
-              deviceOrgId: ORG_ID,
-              deviceSiteId: 'site-allowed'
-            }])
-          })
-        })
-      })
-    } as any);
-    vi.mocked(db.update)
-      .mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
-          })
-        })
-      } as any)
-      .mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
-        })
-      } as any);
-
-    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
-    });
-
-    expect(res.status).toBe(200);
-    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
-      source: 'cancellation',
-      scriptExecutionId: EXECUTION_ID,
-      terminalStatus: 'cancelled',
-    }));
-  });
-
-  it('cancels an execution unchanged when the caller has no site restriction', async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        leftJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: EXECUTION_ID,
-              status: 'running',
-              deviceId: 'device-1',
-              deviceOrgId: ORG_ID,
-              deviceSiteId: 'site-denied'
-            }])
-          })
-        })
-      })
-    } as any);
-    vi.mocked(db.update)
-      .mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ id: EXECUTION_ID, status: 'cancelled' }])
-          })
-        })
-      } as any)
-      .mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
-        })
-      } as any);
-
-    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer valid-token' }
-    });
-
-    expect(res.status).toBe(200);
-  });
-
-  it('does not terminalize automation when a concurrent result wins the cancellation CAS', async () => {
+  /** The execution the org/site gate reads, before the service is consulted. */
+  function mockCancelPreflight(overrides: Record<string, unknown> = {}) {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         leftJoin: vi.fn().mockReturnValue({
@@ -1769,27 +1693,264 @@ describe('scripts routes', () => {
               deviceId: 'device-1',
               deviceOrgId: ORG_ID,
               deviceSiteId: 'site-allowed',
+              ...overrides,
             }]),
           }),
         }),
       }),
     } as any);
-    vi.mocked(db.update).mockReturnValueOnce({
-      set: vi.fn().mockReturnValue({
+  }
+
+  /** The post-cancel re-read the route returns to the caller. */
+  function mockCancelReread(row: Record<string, unknown>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([]),
+          limit: vi.fn().mockResolvedValue([row]),
+        }),
+      }),
+    } as any);
+  }
+
+  it('denies cancelling an execution when the device is outside the caller site restriction', async () => {
+    mockCancelPreflight({ deviceSiteId: 'site-denied' });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'x-site-restricted': 'true' }
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Access to this site denied');
+    // Must reject before asking the service to do anything.
+    expect(cancelScriptExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('denies cancelling an execution outside the caller org', async () => {
+    mockCancelPreflight({ deviceOrgId: ORG_ID_2 });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(cancelScriptExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the MFA gate on the cancel route', () => {
+    // requireMfa is a pass-through in this file's auth mock, so behaviour
+    // cannot prove it; assert the route declaration still carries it, which is
+    // what the W02b rewrite could plausibly have dropped.
+    const source = readFileSync(join(__dirname, 'scripts.ts'), 'utf8');
+    const routeStart = source.indexOf("'/executions/:id/cancel'");
+    expect(routeStart).toBeGreaterThan(-1);
+    const declaration = source.slice(routeStart, source.indexOf('async (c)', routeStart));
+    expect(declaration).toContain('requireMfa()');
+    expect(declaration).toContain('SCRIPTS_EXECUTE');
+  });
+
+  it('returns 404 when the execution does not exist', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
         }),
       }),
     } as any);
 
     const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
       method: 'POST',
-      headers: { Authorization: 'Bearer valid-token' },
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 409 (not 400) when the execution is already terminal', async () => {
+    mockCancelPreflight({ status: 'completed' });
+    cancelScriptExecutionMock.mockResolvedValue({ kind: 'already_terminal', status: 'completed' });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
     });
 
     expect(res.status).toBe(409);
-    expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
-    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 and does not queue a second command when already cancelling', async () => {
+    mockCancelPreflight({ status: 'cancelling' });
+    cancelScriptExecutionMock.mockResolvedValue({ kind: 'idempotent', status: 'cancelling' });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelling', cancelState: 'requested', completedAt: null });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ success: true, execution: { status: 'cancelling' } });
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('delivers the cancel command only after the service transaction has committed', async () => {
+    mockCancelPreflight();
+    const order: string[] = [];
+    cancelScriptExecutionMock.mockImplementation(async () => {
+      order.push('cancelScriptExecution');
+      return {
+        kind: 'cancelling',
+        executionId: EXECUTION_ID,
+        cancelCommandId: 'cancel-cmd-1',
+        deviceId: 'device-1',
+        alreadyQueued: false,
+      };
+    });
+    deliverCancelCommandMock.mockImplementation(async () => { order.push('deliverCancelCommand'); return true; });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelling', cancelState: 'requested', completedAt: null });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    // A send from inside the cancel transaction lets a fast ack land against a
+    // snapshot that cannot see the command row, and it is routed as orphaned.
+    expect(order).toEqual(['cancelScriptExecution', 'deliverCancelCommand']);
+    expect(deliverCancelCommandMock).toHaveBeenCalledWith('cancel-cmd-1', 'device-1');
+    // The route never writes the execution row itself any more.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('does not re-deliver a cancel that was already queued and delivered', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({
+      kind: 'cancelling',
+      executionId: EXECUTION_ID,
+      cancelCommandId: 'cancel-cmd-existing',
+      deviceId: 'device-1',
+      alreadyQueued: true,
+    });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelling', cancelState: 'requested', completedAt: null });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 and does not mark the row cancelled when the paired command is absent', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({ kind: 'inconsistent' });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(500);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a retracted cancel as cancelled', async () => {
+    mockCancelPreflight({ status: 'pending' });
+    cancelScriptExecutionMock.mockResolvedValue({
+      kind: 'retracted', executionId: EXECUTION_ID, completedAt: new Date(),
+    });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelled', cancelState: 'confirmed', completedAt: new Date().toISOString() });
+
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ execution: { status: 'cancelled', cancelState: 'confirmed' } });
+    expect(deliverCancelCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts and forwards a graceSeconds body field, and rejects an out-of-range one', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({
+      kind: 'cancelling', executionId: EXECUTION_ID, cancelCommandId: 'c1', deviceId: 'device-1', alreadyQueued: false,
+    });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelling', cancelState: 'requested', completedAt: null });
+
+    await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graceSeconds: 0 }),
+    });
+    expect(cancelScriptExecutionMock).toHaveBeenCalledWith(expect.objectContaining({ graceSeconds: 0 }));
+
+    // Deliberately no preflight mock queued: the validation must reject before
+    // the handler reads anything, and a leftover once-mock would leak into the
+    // next test in this file.
+    const bad = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graceSeconds: 999 }),
+    });
+    // The service clamps too, but a caller asking for something the agent will
+    // not honour deserves to be told rather than silently reinterpreted.
+    expect(bad.status).toBe(400);
+  });
+
+  it('rejects a malformed JSON body instead of silently defaulting the grace', async () => {
+    // No preflight mock queued: this must reject before the handler reads
+    // anything. `c.req.json()` throws the same error for "empty" and
+    // "truncated", so swallowing it would turn a requested 30s into 5s.
+    const res = await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      body: '{"graceSeconds":30',
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('Malformed JSON body');
+    expect(cancelScriptExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('audits the refused inconsistent case so the device history records the attempt', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({ kind: 'inconsistent' });
+
+    await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'script.execution.cancel',
+      details: expect.objectContaining({ outcome: 'inconsistent' }),
+    }));
+  });
+
+  it('audits the request with the outcome, not with an assumed cancellation', async () => {
+    mockCancelPreflight();
+    cancelScriptExecutionMock.mockResolvedValue({
+      kind: 'cancelling', executionId: EXECUTION_ID, cancelCommandId: 'cancel-cmd-1', deviceId: 'device-1', alreadyQueued: false,
+    });
+    mockCancelReread({ id: EXECUTION_ID, status: 'cancelling', cancelState: 'requested', completedAt: null });
+
+    await app.request(`/scripts/executions/${EXECUTION_ID}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'script.execution.cancel',
+      resourceId: EXECUTION_ID,
+      details: expect.objectContaining({ outcome: 'cancelling', previousStatus: 'running' }),
+    }));
   });
 
   it('should validate create payload', async () => {

@@ -743,6 +743,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ...aiRunContextInputShape,
   }),
 
+  // #3525: the bound mirrors MAX_GRACE_SECONDS in services/scriptCancellation —
+  // the agent is only ever promised 0..30 s, so an assistant must not be able to
+  // ask for a grace the fleet will silently clamp.
+  cancel_script_execution: z.object({
+    executionId: uuid,
+    graceSeconds: z.number().int().min(0).max(30).optional(),
+  }),
+
   manage_services: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'start', 'stop', 'restart']),

@@ -6,6 +6,7 @@ import { getTableConfig, PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../../db/schema';
 import { aiAgentRuns } from '../../db/schema';
 import {
+  ALERT_CHILD_ORG_REWRITE_TABLES,
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceCascadeDeleteTables,
   DEVICE_DETACH_DEVICE_ID_TABLES,
@@ -35,6 +36,7 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  'offline_transition_effects', // immutable historical source route; see core.ts
   // Has org_id, but it is intentionally NOT re-stamped on move: exposure
   // history stays with the org the unattended action ran in (same
   // ai_agent_runs decision above), and a bare org_id repoint would violate
@@ -274,6 +276,235 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
     }
 
     expect(invalid, `Stale or misplaced entries in CUSTOM_ORG_REWRITE_TABLES (core.ts).`).toEqual([]);
+  });
+});
+
+/**
+ * ALERT_CHILD_ORG_REWRITE_TABLES (#4867) — the alert-axis sibling of the
+ * ticket-axis CUSTOM_ORG_REWRITE_TABLES block above.
+ *
+ * These tables denormalize `org_id` and hang off `alerts`, but have NO
+ * `device_id` column, so the generic getDeviceOrgDenormalizedTables() loop in
+ * moveOrg.ts cannot reach them — and neither can the DB-side
+ * breeze_cascade_device_org_id() trigger, which discovers its table set BY the
+ * device_id column (`breeze_device_child_orgid_tables()`). Each gets a
+ * dedicated hand-written UPDATE keyed on the alert (or the correlation group)
+ * instead.
+ *
+ * Unlike the ticket-axis list, the expected membership here is DERIVED from
+ * the schema rather than hand-enumerated: any org-scoped table that references
+ * `alerts` (directly, or one hop through another such table) without carrying
+ * its own device_id belongs in this list, so the next alert child cannot
+ * repeat #4867 by skipping both paths. `ticket_alert_links` is the one derived
+ * name that is deliberately NOT here — it is the ticket axis's row and is
+ * already rewritten by CUSTOM_ORG_REWRITE_TABLES.
+ *
+ * LIMIT OF THIS GUARD (#5005 review): the derivation walks
+ * `getTableConfig(table).foreignKeys`, which sees only the FKs DECLARED in the
+ * Drizzle schema — not the ones that exist solely in a migration. Nothing in
+ * this repo forces the two to agree: `pnpm db:check-drift` compares the schema
+ * against the migrations' DDL for columns, but drizzle-kit does not surface a
+ * migration-only FK as drift the schema must adopt (the same gap
+ * `aiAlertVerdicts.supersededBy`'s DEFERRABLE note and
+ * `deviceMtlsCertificates`' composite FK already call out from the other
+ * direction). So a future alert child whose only link to `alerts` is an FK
+ * added in raw SQL — or one that reaches alerts through an untyped uuid column
+ * with no FK at all — is invisible here and will be missed exactly the way
+ * #4867 was. When adding such a table, add it to ALERT_CHILD_ORG_REWRITE_TABLES
+ * by hand; the `stale` assertion below will then flag it, which is the prompt
+ * to declare the FK in the Drizzle schema too.
+ */
+describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
+  const alertChildSet = new Set<string>(ALERT_CHILD_ORG_REWRITE_TABLES);
+  const customSet = new Set<string>(CUSTOM_ORG_REWRITE_TABLES);
+
+  const allTables = Object.values(schema).filter(
+    (v) => v instanceof PgTable,
+  ) as PgTable<any>[];
+  const tableByName = new Map(allTables.map((t) => [getTableName(t), t] as const));
+
+  /** org-scoped (has org_id) and NOT reachable by the generic device loop. */
+  const isOrgScopedWithoutDeviceId = (table: PgTable<any>): boolean => {
+    const cols = getColumns(table);
+    return cols.some((c) => c.name === 'org_id') && !cols.some((c) => c.name === 'device_id');
+  };
+
+  const referencesTable = (table: PgTable<any>, targets: ReadonlySet<string>): boolean =>
+    getTableConfig(table).foreignKeys.some((fk) => targets.has(getTableName(fk.reference().foreignTable)));
+
+  /**
+   * Org-scoped tables that reference `alerts` but are NOT alert children: for
+   * these, `alert_id` is an OUTPUT pointer to the alert the row RAISED, not the
+   * row's tenancy axis.
+   *
+   *  - `log_correlations` belongs to its org's log-correlation RULE and
+   *    aggregates logs across MANY devices (`affected_devices` jsonb).
+   *  - `network_change_events` belongs to its org+site network BASELINE
+   *    (`baseline_id`, `site_id` both NOT NULL).
+   *
+   * Neither may follow one device's alert into another org — that would hand
+   * the source org's log/network history to an org that owns a single device
+   * out of the many the row summarises. (The mirror image of
+   * `alert_correlation_members`, which describes exactly ONE alert and so has
+   * no org-level meaning without it.)
+   *
+   * Their `alert_id` does become a cross-org pointer after a move. That is
+   * benign and deliberately left alone here: both are plain single-column FKs
+   * with no composite tenant leg, and every dereference runs under RLS, so the
+   * pointer resolves to nothing rather than leaking — the same fail-closed
+   * staleness #4867 describes, on the other side of the link.
+   */
+  const ALERT_PRODUCERS_NOT_CHILDREN: ReadonlySet<string> = new Set([
+    'log_correlations',
+    'network_change_events',
+  ]);
+
+  function deriveAlertChildOrgTables(): string[] {
+    const direct = allTables
+      .filter((t) => isOrgScopedWithoutDeviceId(t) && referencesTable(t, new Set(['alerts'])))
+      .map(getTableName)
+      .filter((name) => !customSet.has(name) && !ALERT_PRODUCERS_NOT_CHILDREN.has(name));
+    const directSet = new Set(direct);
+    // One hop further, so a future child keyed only on `group_id` (with no
+    // alert_id of its own) is still caught.
+    const indirect = allTables
+      .filter((t) => {
+        const name = getTableName(t);
+        return !directSet.has(name) && isOrgScopedWithoutDeviceId(t) && referencesTable(t, directSet);
+      })
+      .map(getTableName);
+    return [...direct, ...indirect].sort();
+  }
+
+  it('still describes the tables it excludes as alert PRODUCERS, not alert children', () => {
+    // Guards the exclusion set above against rot: if one of these ever stops
+    // matching the producer shape (drops alert_id, gains a device_id, or is
+    // deleted), the exclusion is stale and must be revisited rather than left
+    // to silently suppress a real alert child.
+    const stale = [...ALERT_PRODUCERS_NOT_CHILDREN].filter((name) => {
+      const table = tableByName.get(name);
+      return !table || !isOrgScopedWithoutDeviceId(table) || !referencesTable(table, new Set(['alerts']));
+    });
+    expect(
+      stale,
+      `These ALERT_PRODUCERS_NOT_CHILDREN entries no longer match the producer shape (org_id, no ` +
+        `device_id, an FK to alerts) — remove them from the exclusion set, or re-check whether they ` +
+        `now belong in ALERT_CHILD_ORG_REWRITE_TABLES: ${stale.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('covers every org-scoped alert child the generic loop and the DB trigger both cannot reach', () => {
+    const derived = deriveAlertChildOrgTables();
+    expect(
+      derived,
+      'sanity: the derived set should at least contain the three tables #4867 was filed for',
+    ).toEqual(expect.arrayContaining([
+      'ai_alert_verdicts',
+      'alert_correlation_groups',
+      'alert_correlation_members',
+    ]));
+
+    const missing = derived.filter((name) => !alertChildSet.has(name));
+    expect(
+      missing,
+      `These tables are org-scoped, hang off \`alerts\`, and have no device_id column, so neither ` +
+        `getDeviceOrgDenormalizedTables() nor breeze_cascade_device_org_id() can re-stamp them on a ` +
+        `device org-move — their rows would stay under the SOURCE org while their alert reads the ` +
+        `TARGET's (#4867). Add each to ALERT_CHILD_ORG_REWRITE_TABLES in core.ts AND a dedicated ` +
+        `UPDATE in moveOrg.ts. If the table only POINTS at an alert it raised (its tenancy axis is ` +
+        `something else — a rule, a baseline, a ticket), add it to ALERT_PRODUCERS_NOT_CHILDREN ` +
+        `in this block instead, with the reason.\n\n` +
+        `Missing: ${missing.join(', ')}`,
+    ).toEqual([]);
+
+    const stale = [...alertChildSet].filter((name) => !derived.includes(name));
+    expect(
+      stale,
+      `These entries no longer match the derived alert-child shape (dropped org_id, gained a ` +
+        `device_id, or stopped referencing alerts) — remove them from ALERT_CHILD_ORG_REWRITE_TABLES ` +
+        `or move them to the list that fits: ${stale.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('is ordered group -> member -> verdict, the order moveOrg.ts issues them in', () => {
+    // Load-bearing for TWO reasons, and the first is a lock order (#5005
+    // review): the correlation job (services/alertCorrelationGroups.ts) writes
+    // the GROUP then its MEMBERS on every pass, so a mover taking them the
+    // other way round forms an AB-BA with a concurrent correlation pass and
+    // loses one side to 40P01. Second, the data dependency runs the same way:
+    // the member statement and the verdict statement's group leg both read
+    // alert_correlation_groups.org_id as re-stamped by the group statement,
+    // whose own "does this group still span two orgs?" guard reads
+    // alerts.org_id from the generic loop — never members.org_id.
+    // moveOrg.test.ts pins the real statement sequence to this array.
+    expect(ALERT_CHILD_ORG_REWRITE_TABLES).toEqual([
+      'alert_correlation_groups',
+      'alert_correlation_members',
+      'ai_alert_verdicts',
+    ]);
+  });
+
+  it('is disjoint from every other move-org list', () => {
+    const overlapping = [
+      ...deviceOrgDenormalizedTables.filter((t) => alertChildSet.has(t)).map(
+        (t) => `${t} (also in getDeviceOrgDenormalizedTables())`,
+      ),
+      ...deviceCascadeDeleteTables.filter((t) => alertChildSet.has(t)).map(
+        (t) => `${t} (also in getDeviceCascadeDeleteTables())`,
+      ),
+      ...DEVICE_DETACH_DEVICE_ID_TABLES.filter((t) => alertChildSet.has(t)).map(
+        (t) => `${t} (also in DEVICE_DETACH_DEVICE_ID_TABLES)`,
+      ),
+      ...CUSTOM_ORG_REWRITE_TABLES.filter((t) => alertChildSet.has(t)).map(
+        (t) => `${t} (also in CUSTOM_ORG_REWRITE_TABLES — the ticket axis already rewrites it)`,
+      ),
+      ...[...INTENTIONALLY_NO_ORG_ID].filter((t) => alertChildSet.has(t)).map(
+        (t) => `${t} (also in INTENTIONALLY_NO_ORG_ID)`,
+      ),
+    ];
+    expect(
+      overlapping,
+      `ALERT_CHILD_ORG_REWRITE_TABLES must be disjoint from the other move-org lists — a table is ` +
+        `rewritten by exactly one path.`,
+    ).toEqual([]);
+  });
+
+  it('only lists tables that exist with an org_id column and WITHOUT a device_id column', () => {
+    const invalid: string[] = [];
+
+    for (const name of ALERT_CHILD_ORG_REWRITE_TABLES) {
+      const table = tableByName.get(name);
+      if (!table) {
+        invalid.push(`${name} (table no longer exists in the schema)`);
+        continue;
+      }
+      const cols = getColumns(table);
+      if (!cols.some((c) => c.name === 'org_id')) {
+        invalid.push(`${name} (has no org_id column — nothing to rewrite)`);
+      }
+      if (cols.some((c) => c.name === 'device_id')) {
+        invalid.push(
+          `${name} (has a device_id column — move it to getDeviceOrgDenormalizedTables(); ` +
+            `the generic loop can reach it)`,
+        );
+      }
+    }
+
+    expect(invalid, `Stale or misplaced entries in ALERT_CHILD_ORG_REWRITE_TABLES (core.ts).`).toEqual([]);
+  });
+
+  it('moveOrg.ts issues a hand-written org_id rewrite per entry', () => {
+    // The list is data; this proves the route consumes it (the same gap the
+    // DEVICE_SITE_DENORMALIZED_TABLES note above calls out).
+    const src = readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+    const missing = ALERT_CHILD_ORG_REWRITE_TABLES.filter(
+      (name) => !new RegExp(`UPDATE \\$\\{sql\\.identifier\\('${name}'\\)\\}[^]*?SET org_id`).test(src),
+    );
+    expect(
+      missing,
+      `moveOrg.ts has no \`UPDATE \${sql.identifier('<table>')} ... SET org_id\` statement for these ` +
+        `ALERT_CHILD_ORG_REWRITE_TABLES entries — the list is not self-applying: ${missing.join(', ')}`,
+    ).toEqual([]);
   });
 });
 

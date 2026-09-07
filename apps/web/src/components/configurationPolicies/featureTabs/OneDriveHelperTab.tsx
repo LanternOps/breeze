@@ -212,7 +212,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
     clearError();
     const result = await save(existingId, {
       featureType: 'onedrive_helper',
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: toPayload(settings),
     });
     if (result) onLinkChanged(result, 'onedrive_helper');

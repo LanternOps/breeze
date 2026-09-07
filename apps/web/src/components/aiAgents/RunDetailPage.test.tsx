@@ -511,6 +511,24 @@ describe('RunDetailPage sweep findings', () => {
     expect(kinds).toHaveTextContent('Failed backups');
     expect(kinds.textContent).not.toContain('service_down');
   });
+
+  // Paper cut from the pre-release sweep: unlike sweepReasonLabel (guarded by
+  // SWEEP_PROPOSAL_REASONS above), sweepKindLabel/sweepSeverityLabel had no
+  // unknown-token guard — a kind/severity outside the closed registry leaked
+  // the raw i18next key path (e.g. "aiAgentsPage.runs.sweep.kinds.foo")
+  // straight into the DOM instead of a readable fallback.
+  it('falls back instead of leaking the raw key path for an unrecognized sweep kind or severity', async () => {
+    const findings = [{ ...SWEEP.findings[0], kind: 'bogus_kind', severity: 'bogus_severity' }];
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: { ...SWEEP, findings } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const row = screen.getByTestId('ai-agent-run-sweep-finding-0');
+    expect(row.textContent).not.toContain('aiAgentsPage.runs.sweep.kinds.bogus_kind');
+    expect(row.textContent).not.toContain('aiAgentsPage.runs.sweep.severities.bogus_severity');
+    expect(row).toHaveTextContent('bogus_kind');
+    expect(row).toHaveTextContent('bogus_severity');
+  });
 });
 
 // Phase 2 wave P2-3 (#4190) — the weekly-narrative section.

@@ -69,6 +69,10 @@ export async function endSupportSession(
           watchdogTokenHash: null,
           helperTokenHash: null,
           status: 'decommissioned',
+          // #2787 item 4 — same removal stamp every other decommission path
+          // writes, so an ephemeral support device is subject to the org's
+          // retention policy rather than living forever.
+          decommissionedAt: new Date(),
         }).where(eq(devices.id, session.deviceId));
 
         disconnect = disconnectAgent(device.agentId, 4041, 'quick support session ended');

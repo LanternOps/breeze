@@ -56,7 +56,11 @@ describe('DeviceDetailPage organization breadcrumb (#3839)', () => {
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
 
     const orgLink = await screen.findByRole('link', { name: 'Acme Corp' });
-    expect(orgLink).toHaveAttribute('href', '/settings/organizations/org-42');
+    // #5076: the breadcrumb now opens the organization RECORD page, not the
+    // settings editor — the record page is the new one-click destination for
+    // "jump to this device's org" (settings stays reachable from the record
+    // page's own header action instead).
+    expect(orgLink).toHaveAttribute('href', '/organizations/org-42');
   });
 
   it('omits the organization crumb when the device has no orgId', async () => {

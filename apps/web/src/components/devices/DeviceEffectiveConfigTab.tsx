@@ -17,6 +17,7 @@ import {
   Activity,
   Usb,
   Wrench,
+  Trash2,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -68,6 +69,14 @@ type ResolvedFeature = {
   sourcePolicyId: string;
   sourcePolicyName: string;
   sourcePriority: number;
+  // #5080: present when the winning link came from the assigned policy's
+  // PARENT (baseline) rather than the assigned policy's own link. Absent (not
+  // just null) until W02 lands, and absent forever on a feature the child
+  // policy links itself — this is provenance for ONE link, not a second
+  // source. `sourcePolicyId`/`sourcePolicyName` above still describe the
+  // ASSIGNED policy that won the assignment-level competition.
+  inheritedFromPolicyId?: string | null;
+  inheritedFromPolicyName?: string | null;
 };
 
 type InheritanceEntry = {
@@ -122,6 +131,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   helper: { label: "Breeze Assist", Icon: LifeBuoy },
   onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
   vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
+  device_lifecycle: { label: "Device Lifecycle", Icon: Trash2 },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -338,6 +348,16 @@ export default function DeviceEffectiveConfigTab({
                         {LEVEL_LABELS[feature.sourceLevel]}
                       </span>
                     </p>
+                    {feature.inheritedFromPolicyId && (
+                      <p
+                        data-testid="effective-config-inherited-from"
+                        className="mt-0.5 text-xs text-muted-foreground"
+                      >
+                        {t("deviceEffectiveConfigTab.inheritedFrom", {
+                          name: feature.inheritedFromPolicyName ?? feature.inheritedFromPolicyId,
+                        })}
+                      </p>
+                    )}
                   </div>
                 </div>
 

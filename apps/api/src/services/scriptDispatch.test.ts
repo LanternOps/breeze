@@ -6,7 +6,15 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
-vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
+// #5128: scriptDispatch.ts now imports `CommandTypes` from './commandQueue'
+// (a re-export of the leaf module './commandTypes') to look up the script
+// type's default offline policy. Pull the REAL table in via a nested import
+// (rather than hand-rolling `{ SCRIPT: 'script' }`) so it cannot drift from
+// the registry `commandOfflinePolicy.ts` builds against.
+vi.mock('./commandQueue', async () => {
+  const { CommandTypes } = await import('./commandTypes');
+  return { CommandTypes, queueCommand: vi.fn() };
+});
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
   releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
@@ -280,6 +288,62 @@ describe('dispatchScriptToDevice — invariants', () => {
     const r = await dispatchScriptToDevice({ device: device({ osType: 'windows' }), source: { kind: 'saved', script: savedScript({ osTypes: ['linux'] }) } });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('os_mismatch');
+  });
+});
+
+describe('dispatchScriptToDevice — #5128 offline policy', () => {
+  it('a queued (offline) dispatch stamps deliver_by and submitted_org_id on the command row', async () => {
+    const before = Date.now();
+    const r = await dispatchScriptToDevice({
+      device: device({ orgId: 'org-a', status: 'offline' }),
+      source: { kind: 'saved', script: savedScript() },
+    });
+
+    expect(r.ok).toBe(true);
+    const queueOptions = vi.mocked(queueCommand).mock.calls[0]![4] as
+      | { deliverBy?: Date; submittedOrgId?: string }
+      | undefined;
+    expect(queueOptions?.deliverBy).toBeInstanceOf(Date);
+    expect(queueOptions?.submittedOrgId).toBe('org-a');
+
+    // Standard TTL is 7 days (168h) by default — assert it lands roughly
+    // there rather than pinning the exact env-configurable constant.
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const deliverByMs = queueOptions!.deliverBy!.getTime();
+    expect(deliverByMs).toBeGreaterThan(before + SEVEN_DAYS_MS - 60_000);
+    expect(deliverByMs).toBeLessThan(before + SEVEN_DAYS_MS + 60_000);
+
+    if (r.ok) {
+      expect(r.deliverBy).toBeInstanceOf(Date);
+      expect(r.deliverBy!.getTime()).toBe(deliverByMs);
+    }
+  });
+
+  it('requireOnline: true is still an alias for a reject policy', async () => {
+    mockLiveDeviceStatus('offline');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }),
+      requireOnline: true,
+      source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('device_offline');
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  it('an explicit offlinePolicy reject wins over the absence of requireOnline', async () => {
+    mockLiveDeviceStatus('offline');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }),
+      // requireOnline is NOT set — only the explicit policy should gate this.
+      offlinePolicy: { kind: 'reject' },
+      source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('device_offline');
+    // The reject path re-reads live status, same as requireOnline.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(queueCommand).not.toHaveBeenCalled();
   });
 });
 

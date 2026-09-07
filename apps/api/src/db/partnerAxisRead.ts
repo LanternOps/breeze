@@ -24,6 +24,12 @@ import {
  * caller's own partner are legible; it must never widen WHICH partner row can
  * be selected. Do not feed client-supplied ids through this helper.
  *
+ * SECOND CONSUMER (#3860): `services/recipientLocale.ts` wraps its `users` /
+ * `organizations` / `partners` hops in ONE call. The escape is a generic
+ * system-scope read, so it also lifts the dual-axis `users` policy (a
+ * partner-staff recipient with `org_id IS NULL` is invisible to org scope);
+ * the same "ids come from verified context only" obligation applies there.
+ *
  * AVAILABILITY: the escape is taken ONLY when it is actually needed.
  * `withDbAccessContext` opens a real `baseDb.transaction`, pinning one pooled
  * connection for the whole callback, and `runOutsideDbContext` exits the

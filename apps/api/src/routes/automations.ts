@@ -36,6 +36,8 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import { cancelAutomationRun } from '../services/automationRunCancellation';
+import { MAX_GRACE_SECONDS } from '../services/scriptCancellation';
 import {
   AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
   MANAGED_AUTOMATION_ERROR_CODE,
@@ -747,6 +749,137 @@ automationRoutes.get(
         name: automation.name,
         orgId: automation.orgId,
       },
+    });
+  },
+);
+
+/**
+ * POST /runs/:runId/cancel — stop a running automation (#3525 W05).
+ *
+ * Same guard quartet as every other mutating automation route. This route owns
+ * ONLY authorization and the audit row; the fence, the fan-out and the
+ * honest reporting live in services/automationRunCancellation so the route, a
+ * future AI tool and any worker cannot drift.
+ */
+const cancelRunBodySchema = z.object({
+  graceSeconds: z.number().int().min(0).max(MAX_GRACE_SECONDS).optional(),
+}).optional();
+
+automationRoutes.post(
+  '/runs/:runId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requireAutomationWrite,
+  requireMfa(),
+  requireValidRunId,
+  async (c) => {
+    const auth = c.get('auth');
+    const runId = c.req.param('runId')!;
+
+    // An absent body is the normal case (the Stop button sends none), so this
+    // is hand-parsed rather than zValidator'd, which would 400 on no body at
+    // all. An out-of-range value is REJECTED rather than quietly replaced by
+    // the default: the agent is only promised 0..30s and silently turning a
+    // requested 999 into 5 would misreport what the endpoint is about to do.
+    // Mirrors POST /scripts/executions/:id/cancel exactly.
+    const rawText = await c.req.text().catch(() => '');
+    let rawBody: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: 'Malformed JSON body' }, 400);
+      }
+    }
+    const parsedBody = cancelRunBodySchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return c.json({
+        error: `graceSeconds must be an integer between 0 and ${MAX_GRACE_SECONDS}`,
+      }, 400);
+    }
+    const graceSeconds = parsedBody.data?.graceSeconds;
+
+    const [run] = await db
+      .select()
+      .from(automationRuns)
+      .where(eq(automationRuns.id, runId))
+      .limit(1);
+    if (!run) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    // OD10-B: config-policy runs are out of scope. automation_runs' RLS admits
+    // that arm only through breeze_has_org_access(cp.org_id), so partner-owned
+    // policy runs are invisible today. 404 matches the GET above.
+    if (!run.automationId) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    const automation = await getAutomationWithOrgCheck(run.automationId, auth);
+    if (!automation) {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+
+    // OD7-A: an org-scoped operator may cancel individual script executions on
+    // THEIR OWN devices (those rows carry the device's org), but must not stop
+    // a run that fans out across sibling tenants.
+    if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
+    // Site scope on top: a site-restricted user must not stop a run spanning
+    // sibling sites.
+    const siteScopeDenied = await enforceAutomationSiteScope(c, automation);
+    if (siteScopeDenied) {
+      return siteScopeDenied;
+    }
+
+    const outcome = await cancelAutomationRun({
+      runId,
+      actorId: auth.user.id,
+      actorLabel: auth.user.email,
+      graceSeconds,
+    });
+
+    if (outcome.kind === 'not_found') {
+      return c.json({ error: 'Automation run not found' }, 404);
+    }
+    if (outcome.kind === 'already_terminal') {
+      // 409, matching POST /scripts/executions/:id/cancel: relabelling a run
+      // that finished on its own would be a lie.
+      return c.json({ error: `Cannot cancel a run with status: ${outcome.status}` }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: automation.orgId,
+      action: 'automation.run.cancel',
+      resourceType: 'automation_run',
+      resourceId: runId,
+      resourceName: automation.name,
+      details: {
+        runId,
+        automationId: run.automationId,
+        ownerScope: automation.orgId === null ? 'partner' : 'organization',
+        // What the REQUEST achieved, never an assumed stop.
+        alreadyCancelling: outcome.alreadyCancelling,
+        actionsCancelled: outcome.actionsCancelled,
+        executionsStopped: outcome.executionsStopped,
+        executionsRequested: outcome.executionsRequested,
+        executions: outcome.executions,
+        uncancellableActions: outcome.uncancellableActions,
+        ...(graceSeconds === undefined ? {} : { graceSeconds }),
+      },
+    });
+
+    return c.json({
+      success: true,
+      run: { id: runId, status: 'cancelled' as const },
+      alreadyCancelling: outcome.alreadyCancelling,
+      actionsCancelled: outcome.actionsCancelled,
+      // Two numbers, not one: `stopped` is proven, `requested` is only asked.
+      executionsStopped: outcome.executionsStopped,
+      executionsRequested: outcome.executionsRequested,
+      executions: outcome.executions,
+      uncancellableActions: outcome.uncancellableActions,
     });
   },
 );

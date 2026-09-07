@@ -31,6 +31,8 @@ import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+// Type-only: the runtime import stays dynamic inside the handler.
+import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
@@ -526,6 +528,95 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       return JSON.stringify({ results });
     }
+  });
+
+  // ============================================
+  // cancel_script_execution - Tier 3 (requires approval)
+  // ============================================
+
+  registerTool({
+    tier: 3,
+    // The device is derived from the execution, not supplied — so there is no
+    // device-id property for the central `enforceDeviceArgs` gate to check.
+    // The handler therefore gates inline. It uses the shared
+    // `verifyDeviceAccess` helper (org + site on the DEVICE row), which is
+    // STRICTER than `get_script_execution`'s hand-rolled site-only check on
+    // the read side: this is a write, so the device's own org is re-checked
+    // rather than inferred from the execution.
+    deviceArgs: [],
+    definition: {
+      name: 'cancel_script_execution',
+      description: 'Stop a running script execution on a device. Cancellation is a de-escalation: it never starts work. The execution moves to "cancelling" and only reports "cancelled" once the device proves the process stopped — re-read it with get_script_execution rather than assuming the stop succeeded.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          executionId: { type: 'string', description: 'UUID of the script_executions row to stop' },
+          graceSeconds: { type: 'number', description: 'Seconds to wait after SIGTERM before SIGKILL (0-30, default 5). No graceful phase on Windows.' },
+        },
+        required: ['executionId'],
+      },
+    },
+    handler: async (input, auth) => {
+      const executionId = input.executionId as string;
+
+      // Org axis on the execution itself (script_executions carries the DEVICE's
+      // org, so a partner-wide script's run is still scoped to where it ran),
+      // then the site axis and device visibility via the shared write-path gate.
+      const conditions: SQL[] = [eq(scriptExecutions.id, executionId)];
+      const orgCond = auth.orgCondition(scriptExecutions.orgId);
+      if (orgCond) conditions.push(orgCond);
+      const [execution] = await db
+        .select({ id: scriptExecutions.id, deviceId: scriptExecutions.deviceId })
+        .from(scriptExecutions)
+        .where(and(...conditions))
+        .limit(1);
+      if (!execution) return JSON.stringify({ error: 'Execution not found or access denied' });
+
+      const access = await verifyDeviceAccess(execution.deviceId, auth);
+      if ('error' in access) return JSON.stringify({ error: access.error });
+
+      // Same service the HTTP route and the automation fan-out use, so the
+      // state machine has exactly one implementation.
+      const { cancelScriptExecution, deliverCancelCommand } = await import('./scriptCancellation');
+      const outcome = await cancelScriptExecution({
+        executionId,
+        // May be a synthetic principal id; the service probes-and-degrades it
+        // against `users` rather than raising 23503.
+        actorId: auth.user.id,
+        actorLabel: `AI assistant (${auth.user.email})`,
+        graceSeconds: input.graceSeconds as number | undefined,
+      });
+
+      if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+        await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+      }
+
+      // Report the OUTCOME, never a claimed stop: only `retracted` proves the
+      // script never ran, and `cancelling` is still awaiting the device.
+      //
+      // Each kind carries a plain-English `detail` because the bare kind names
+      // are not self-describing to a model — `recovered` in particular reads as
+      // "successfully resolved" when it means the opposite: the cancel was too
+      // late and the script already finished on its own.
+      const CANCEL_OUTCOME_DETAIL: Record<CancelOutcome['kind'], string> = {
+        not_found: 'No such execution, or it is outside your access.',
+        already_terminal: 'The execution had already finished; nothing was cancelled.',
+        idempotent: 'A cancellation was already recorded for this execution; nothing new was sent.',
+        retracted: 'Proven stopped: the script had not reached the device and the command was withdrawn.',
+        recovered: 'TOO LATE — the script already finished on its own and the cancel had no effect. Read the execution to see how it ended.',
+        cancelling: 'A stop was sent to the device. The script is NOT stopped yet; re-read the execution to see whether it was.',
+        inconsistent: 'Refused: the execution has no paired command, so a stop cannot be proven either way.',
+      };
+
+      return JSON.stringify({
+        executionId,
+        outcome: outcome.kind,
+        detail: CANCEL_OUTCOME_DETAIL[outcome.kind],
+        ...(outcome.kind === 'already_terminal' || outcome.kind === 'idempotent'
+          ? { status: outcome.status }
+          : {}),
+      });
+    },
   });
 
   // ============================================

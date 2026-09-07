@@ -124,6 +124,27 @@ Breeze's discovery and SNMP monitoring run from an enrolled agent acting as the 
 
 ---
 
+## Custom Properties → Custom Fields
+
+N-central carries custom properties at customer, site, and device level. Only **device-scope custom properties** map onto Breeze [custom fields](/features/custom-fields/), and they become **partner-wide** field definitions — N-central's device scope has no per-organization narrowing, so one import covers every customer.
+
+**Customer- and site-scope custom properties are out of scope for the importer.** Breeze has no custom-field owner narrower than an organization and no site axis at all, so a customer- or site-scope property does not translate cleanly onto either ownership axis. Re-home that data as organization-level fields by hand rather than guessing at the importer.
+
+Use the **Import from another RMM** wizard (Settings → Custom Fields, or the Devices page) for the device-scope properties:
+
+<Steps>
+
+1. Export device-scope custom properties per device (the endpoint above) and note which property names are actually populated across a sample.
+2. Open the wizard, choose **N-central**, and import the definitions with owner **All organizations**.
+3. On the values step, map `$DEVICE_ID` (N-central's own device id, used in the export URL above) to **Source device ID** — and `longName` as a fallback hostname identifier — then map each property column to the matching custom field.
+4. **The device id is the durable identifier** [Custom Fields](/features/custom-fields/) records on this first run, so a later re-import — after more devices enroll — resolves exactly rather than by hostname guess.
+
+</Steps>
+
+A row the wizard can't resolve to exactly one device is reported, never guessed at. Re-run after each enrollment wave; an already-applied value is left alone by default.
+
+---
+
 ## Service Templates and AMPs
 
 **Service Templates** are N-central's bundle of service monitors with thresholds, applied by device class or filter. Rebuild them as Breeze [monitors](/features/service-monitoring/) plus [alert rules](/features/alerts/), defined partner-wide so one definition covers every customer.

@@ -104,13 +104,19 @@ export default function SecurityTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
+  parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  // #5080: inheritance display — mirrors PamTab.tsx. `effectiveLink` seeds the
+  // form from the parent's settings when this policy has no override of its
+  // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
+  // whenever isInherited is true.
+  const isInherited = !!parentLink && !existingLink;
+  const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<SecuritySettings>(() => {
-    const stored = existingLink?.inlineSettings as
+    const stored = effectiveLink?.inlineSettings as
       | Partial<SecuritySettings>
       | undefined;
     const merged = { ...defaults, ...stored };
@@ -120,18 +126,19 @@ export default function SecurityTab({
   });
   const [newExclusion, setNewExclusion] = useState("");
   useEffect(() => {
-    if (existingLink?.inlineSettings) {
+    const link = existingLink ?? parentLink;
+    if (link?.inlineSettings) {
       setSettings((prev) => {
         const merged = {
           ...prev,
-          ...(existingLink.inlineSettings as Partial<SecuritySettings>),
+          ...(link.inlineSettings as Partial<SecuritySettings>),
         };
         if (!Array.isArray(merged.exclusions))
           merged.exclusions = [...defaults.exclusions];
         return merged;
       });
     }
-  }, [existingLink]);
+  }, [existingLink, parentLink]);
   const meta = FEATURE_META.security;
   const update = <K extends keyof SecuritySettings>(
     key: K,
@@ -152,7 +159,7 @@ export default function SecurityTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "security",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings,
     });
     if (result) onLinkChanged(result, "security");
@@ -162,16 +169,36 @@ export default function SecurityTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "security");
   };
+  // Revert = delete the child's own override link, falling back to the
+  // parent's (spec "Semantics"). Reported via onLinkChanged like every other
+  // remove path, so the detail page's own featureLinks state doesn't go stale.
+  const handleRevert = async () => {
+    if (!existingLink) return;
+    const ok = await remove(existingLink.id);
+    if (ok) onLinkChanged(null, "security");
+  };
   return (
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
       icon={<ShieldCheck className="h-5 w-5" />}
-      isConfigured={!!existingLink}
+      isConfigured={!!existingLink || isInherited}
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink ? handleRemove : undefined}
+      // Gated on THIS FEATURE's own parentLink, not the policy-level
+      // linkedPolicyId the older inline tabs (PamTab, DeviceLifecycleTab, ...)
+      // use. Policy-level gating shows "Revert to Parent" whenever the policy
+      // has ANY parent, even when that parent has no link for this particular
+      // feature — reverting then "falls back" to nothing, which is misleading.
+      // Feature-level gating shows plain "Remove" in that case instead, which
+      // is accurate: there is no parent value to revert to.
+      onRemove={!parentLink ? handleRemove : undefined}
+      isInherited={isInherited}
+      onOverride={isInherited ? handleSave : undefined}
+      onRevert={
+        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
+      }
     >
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Protection toggles */}

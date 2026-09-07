@@ -173,6 +173,16 @@ function parseHash(fallbackTab: TabId): {
     return { tab: "distributors", distributorSub: hash as DistributorSubTab };
   if (accountingSubTabs.some((s) => s.id === hash))
     return { tab: "accounting", accountingSub: hash as AccountingSubTab };
+  // Panels nested INSIDE an accounting sub-tab own their own hash segment,
+  // namespaced with the sub-tab id they live under — the QuickBooks mapping
+  // workbench writes `#quickbooks-customers` / `#quickbooks-items`. There is
+  // one hash owner (this page), so those must route back to the owning tab +
+  // sub-tab; treating them as unknown made the page fall back to Webhooks the
+  // moment the workbench's Items tab was clicked, leaving it unreachable.
+  // Anything nested deeper keeps this convention: `<subTabId>-<nested...>`.
+  const nestedAccountingSub = accountingSubTabs.find((s) => hash.startsWith(`${s.id}-`));
+  if (nestedAccountingSub)
+    return { tab: "accounting", accountingSub: nestedAccountingSub.id };
   return { tab: fallbackTab };
 }
 

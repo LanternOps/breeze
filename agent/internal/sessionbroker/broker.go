@@ -1337,8 +1337,8 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 	return nil
 }
 
-// BroadcastNotification sends a desktop notification to every connected session
-// holding the "notify" scope.
+// BroadcastNotification sends a desktop notification to one connected session per
+// interactive Windows session, chosen from those holding the "notify" scope.
 //
 // The scope filter is load-bearing, not cosmetic. The Breeze Assist helper
 // connects with assist/consent_ui and the watchdog with "watchdog"; neither
@@ -1356,15 +1356,13 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 // the fix was to grant the macOS desktop helper "notify" in scopesForRole —
 // NOT to weaken this filter, which still has to keep the assist helper and
 // watchdog out of any delivery accounting built on this broadcast.
+//
+// The fan-out is one helper per Windows session, not one per notify-scoped
+// session (#4940): in always-on lifecycle mode the broker spawns a system-role
+// and a user-role helper into the same console session and both hold "notify", so
+// an unfiltered broadcast drew every toast twice. See notifyTargets.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
-	b.mu.RLock()
-	sessions := make([]*Session, 0, len(b.sessions))
-	for _, s := range b.sessions {
-		if s.HasScope("notify") {
-			sessions = append(sessions, s)
-		}
-	}
-	b.mu.RUnlock()
+	sessions := b.notifyTargets()
 
 	for _, s := range sessions {
 		if err := s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
@@ -1386,13 +1384,14 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 // or a rung and a retry easily are, would lose one answer.
 var notifyDecisionSeq atomic.Uint64
 
-// RequestNotificationDecision sends an interactive notification to every
-// notify-scoped session and returns the first answer.
+// RequestNotificationDecision sends an interactive notification to one
+// notify-scoped session per interactive Windows session and returns the first
+// answer.
 //
-// This is the response-bearing sibling of BroadcastNotification, which is
-// deliberately left alone: the reboot warning LADDER stays fire-and-forget
-// (#3197 guarantees the user is TOLD; it does not need an answer). Only the
-// rungs that offer a postponement come through here.
+// This is the response-bearing sibling of BroadcastNotification, which
+// deliberately stays fire-and-forget: the reboot warning LADDER needs no answer
+// (#3197 guarantees the user is TOLD). Only the rungs that offer a postponement
+// come through here.
 //
 // The plumbing already existed and was never usable end to end.
 // NotifyRequest.Actions and NotifyResult.ActionClicked are declared in
@@ -1412,15 +1411,17 @@ var notifyDecisionSeq atomic.Uint64
 // must not be weakened (#3255): the assist helper and the watchdog have no
 // TypeNotify handler at all, and a modal prompt is strictly more intrusive than
 // the toast that filter was written for.
+//
+// One prompt per Windows session, not per notify-scoped session (#4940). Always-on
+// lifecycle mode spawns a system-role and a user-role helper into the same console
+// session and both report canNotify=true, so the unfiltered fan-out drew two
+// identical modal dialogs — two taskbar entries, one stacked on the other.
+// First-answer-wins resolved the decision, but the losing dialog stayed on screen
+// for its whole countdown and its late notify_result was dropped as unsolicited.
+// The loser is now never asked, which is also why there is nothing to cancel: see
+// notifyTargets.
 func (b *Broker) RequestNotificationDecision(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
-	b.mu.RLock()
-	sessions := make([]*Session, 0, len(b.sessions))
-	for _, s := range b.sessions {
-		if s.HasScope("notify") {
-			sessions = append(sessions, s)
-		}
-	}
-	b.mu.RUnlock()
+	sessions := b.notifyTargets()
 
 	if len(sessions) == 0 {
 		// Not an error: a headless box, or Windows sitting at the logon screen.

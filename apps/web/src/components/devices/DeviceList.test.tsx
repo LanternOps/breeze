@@ -6,6 +6,8 @@ import { COLUMN_IDS } from './columnVisibility';
 import {
   DECOMMISSION_BLOCKED_BULK_ACTIONS,
   INTENTIONALLY_UNGATED_BULK_ACTIONS,
+  REMOVED_ONLY_BULK_ACTIONS,
+  classifyBulkSelection,
 } from './bulkActionGating';
 
 vi.mock('../../stores/auth', () => ({
@@ -530,7 +532,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
     );
 
-    const { container } = render(<DeviceList devices={[baseDevice]} networkDevicesEnabled />);
+    // Columns adapt to the classes on screen (Class/Type only render when a
+    // network row is present; OS/CPU/… only when an agent row is), so render
+    // one of each to bring the whole catalog out.
+    const networkRow: Device = {
+      ...baseDevice,
+      id: 'b1b1b1b1-0000-0000-0000-0000000000b1',
+      hostname: 'lobby-printer',
+      deviceClass: 'network',
+      assetType: 'printer',
+    };
+    const { container } = render(<DeviceList devices={[baseDevice, networkRow]} networkDevicesEnabled />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between
@@ -539,8 +551,11 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     const dataHeaders = headers.slice(1, -1);
     expect(dataHeaders.length).toBe(COLUMN_IDS.length);
     for (const th of dataHeaders) {
-      expect(th.getAttribute('title')).toMatch(/^Sort by /);
-      expect(th.className).toContain('cursor-pointer');
+      // The hint lives on a real <button> inside the cell so sorting is
+      // reachable by keyboard; the cell itself carries scope + aria-sort.
+      const button = th.querySelector('button');
+      expect(button?.getAttribute('title')).toMatch(/^Sort by /);
+      expect(th.getAttribute('scope')).toBe('col');
     }
   });
 
@@ -551,17 +566,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     ];
     render(<DeviceList devices={devices} />);
 
-    const hostHeader = screen.getByTitle('Sort by device');
-    const osHeader = screen.getByTitle('Sort by operating system');
+    const hostHeader = screen.getByTitle('Sort by device').closest('th')!;
+    const osHeader = screen.getByTitle('Sort by operating system').closest('th')!;
     // Unsorted: every header advertises aria-sort="none".
     expect(hostHeader.getAttribute('aria-sort')).toBe('none');
     expect(osHeader.getAttribute('aria-sort')).toBe('none');
 
-    fireEvent.click(hostHeader);
+    fireEvent.click(screen.getByTitle('Sort by device'));
     expect(hostHeader.getAttribute('aria-sort')).toBe('ascending');
     expect(osHeader.getAttribute('aria-sort')).toBe('none');
 
-    fireEvent.click(hostHeader);
+    fireEvent.click(screen.getByTitle('Sort by device'));
     expect(hostHeader.getAttribute('aria-sort')).toBe('descending');
   });
 
@@ -669,7 +684,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     const unscored = screen.getByTestId('device-c3c3c3c3-0000-0000-0000-000000000002-reliability');
     // Em-dash dash cell for the missing score — asserted exactly so a future
     // `score ?? 0` regression (which would render a bare "0") fails here.
-    expect(unscored.textContent).toBe('—');
+    expect(unscored.textContent).toContain('—');
   });
 
   it('does not render a trend glyph for a scored device with no trend (#1720)', () => {
@@ -785,8 +800,8 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     // Em-dash dash cell for both the null and the unparseable URL — asserted
     // exactly so the cell never leaks a raw/blank value.
-    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000001-server-url').textContent).toBe('—');
-    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000002-server-url').textContent).toBe('—');
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000001-server-url').textContent).toContain('—');
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000002-server-url').textContent).toContain('—');
   });
 });
 
@@ -998,6 +1013,78 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
     // Denominator includes the now-visible decommissioned row.
     expect(screen.getByText(/2 of 2 devices/)).toBeInTheDocument();
+  });
+
+  // #5023 paper cut: "show" now ADDS the removed rows to the current view
+  // instead of swapping to a removed-only filter, so the line flips to a
+  // "N removed shown — hide" affordance that puts the default view back.
+  it('renders "N removed shown — hide" once the rows are visible and calls onHideDecommissioned', () => {
+    const onHide = vi.fn();
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={onHide}
+      />
+    );
+
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    const hint = screen.getByTestId('decommissioned-shown-hint');
+    expect(hint).toHaveTextContent('1 removed shown');
+    // Both rows render — the active one was not filtered out by "show".
+    expect(screen.getByText(/2 of 2 devices/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('decommissioned-hidden-hide'));
+    expect(onHide).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no "shown" line when the rows are visible via an explicit status filter (no onHideDecommissioned)', () => {
+    render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-shown-hint')).toBeNull();
+  });
+
+  // Codex review on #5066: a removed device the server-side advanced filter
+  // already excludes is not "hidden by default" — "show" could not reveal it,
+  // so the hint must not count it. Same for the "shown" line.
+  it('counts only removed devices the active server filter admits', () => {
+    const { rerender } = render(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id])}
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
+    // Denominator still excludes the hidden removed row.
+    expect(screen.getByText(/1 of 1 devices/)).toBeInTheDocument();
+
+    rerender(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id])}
+        includeDecommissioned
+        onShowDecommissioned={vi.fn()}
+        onHideDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('decommissioned-shown-hint')).toBeNull();
+
+    rerender(
+      <DeviceList
+        devices={[baseDevice, decomDevice]}
+        serverFilterIds={new Set([baseDevice.id, decomDevice.id])}
+        onShowDecommissioned={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId('decommissioned-hidden-hint')).toHaveTextContent('1 removed hidden');
   });
 
   it('renders no hint when there are no decommissioned devices', () => {
@@ -1373,6 +1460,80 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     return emitted;
   }
 
+  /**
+   * Same enumeration, driven from an ALL-REMOVED selection (#2787). The bulk
+   * bar swaps its menu wholesale for that case, so the two selection states
+   * emit disjoint action sets and neither one on its own proves the contract.
+   */
+  function emittedBulkActionsForRemovedSelection(): string[] {
+    const removedDevices = (): Device[] => [
+      { ...baseDevice, id: '81111111-1111-1111-1111-111111111111', hostname: 'rm-a', status: 'decommissioned' },
+      { ...baseDevice, id: '82222222-2222-2222-2222-222222222222', hostname: 'rm-b', status: 'decommissioned' },
+    ];
+    const openRemovedBulkMenu = () => {
+      fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+      fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+      return screen.getByTestId('bulk-actions-menu');
+    };
+
+    const probe = render(
+      <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={vi.fn()} />,
+    );
+    const buttonCount = within(openRemovedBulkMenu()).getAllByRole('button').length;
+    probe.unmount();
+    expect(buttonCount).toBeGreaterThan(0);
+
+    const emitted: string[] = [];
+    for (let i = 0; i < buttonCount; i++) {
+      const onBulkAction = vi.fn();
+      const view = render(
+        <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={onBulkAction} />,
+      );
+      const buttons = within(openRemovedBulkMenu()).getAllByRole('button');
+      fireEvent.click(buttons[i]!);
+      expect(onBulkAction).toHaveBeenCalledTimes(1);
+      emitted.push(onBulkAction.mock.calls[0]![0] as string);
+      view.unmount();
+    }
+    return emitted;
+  }
+
+  it('an all-removed selection emits ONLY removed-only actions (plus compare)', () => {
+    // Everything else in the menu targets a live agent or a live device row and
+    // would be rejected per device. Compare is read-only and legitimately works
+    // on a removed device, so it survives into both menus.
+    expect(emittedBulkActionsForRemovedSelection().sort()).toEqual([
+      'compare',
+      'permanent-delete',
+      'restore',
+    ]);
+  });
+
+  it('an active selection never emits a removed-only action', () => {
+    // The inverse half. Without it, a menu that showed Restore/Delete
+    // permanently unconditionally would still pass the test above.
+    const leaked = emittedBulkActions().filter((a) => REMOVED_ONLY_BULK_ACTIONS.has(a));
+    expect(leaked).toEqual([]);
+  });
+
+  it('classifies every emitted action, in BOTH selection states, into exactly one set', () => {
+    const all = new Set([...emittedBulkActions(), ...emittedBulkActionsForRemovedSelection()]);
+    const problems: string[] = [];
+    for (const action of all) {
+      const n = [
+        DECOMMISSION_BLOCKED_BULK_ACTIONS,
+        INTENTIONALLY_UNGATED_BULK_ACTIONS,
+        REMOVED_ONLY_BULK_ACTIONS,
+      ].filter((set) => set.has(action)).length;
+      if (n !== 1) problems.push(`${action} is in ${n} of the three sets`);
+    }
+    expect(
+      problems,
+      'Every bulk action must be in EXACTLY ONE of DECOMMISSION_BLOCKED_BULK_ACTIONS, '
+        + 'INTENTIONALLY_UNGATED_BULK_ACTIONS or REMOVED_ONLY_BULK_ACTIONS (bulkActionGating.ts).',
+    ).toEqual([]);
+  });
+
   it('classifies every emitted bulk action as either decommission-gated or explicitly exempt', () => {
     const emitted = emittedBulkActions();
 
@@ -1407,6 +1568,61 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
       INTENTIONALLY_UNGATED_BULK_ACTIONS.has(a),
     );
     expect(both).toEqual([]);
+  });
+
+  // #2787 added a THIRD set. Two sets could be checked pairwise; three cannot
+  // be checked by inspection, and an action landing in two of them means the
+  // gate that runs first silently wins.
+  it('the three policy sets are pairwise disjoint', () => {
+    const sets: Array<[string, ReadonlySet<string>]> = [
+      ['DECOMMISSION_BLOCKED_BULK_ACTIONS', DECOMMISSION_BLOCKED_BULK_ACTIONS],
+      ['INTENTIONALLY_UNGATED_BULK_ACTIONS', INTENTIONALLY_UNGATED_BULK_ACTIONS],
+      ['REMOVED_ONLY_BULK_ACTIONS', REMOVED_ONLY_BULK_ACTIONS],
+    ];
+    const overlaps: string[] = [];
+    for (let i = 0; i < sets.length; i++) {
+      for (let j = i + 1; j < sets.length; j++) {
+        for (const action of sets[i]![1]) {
+          if (sets[j]![1].has(action)) {
+            overlaps.push(`${action} is in both ${sets[i]![0]} and ${sets[j]![0]}`);
+          }
+        }
+      }
+    }
+    expect(overlaps).toEqual([]);
+  });
+
+  it('REMOVED_ONLY_BULK_ACTIONS names the two actions only a removed device accepts', () => {
+    // Both call APIs that REQUIRE status='decommissioned'; offering them for an
+    // active selection is a guaranteed 400/409 per device.
+    expect([...REMOVED_ONLY_BULK_ACTIONS].sort()).toEqual(['permanent-delete', 'restore']);
+  });
+});
+
+describe('classifyBulkSelection (#2787)', () => {
+  it('reports removed only when EVERY selected device is removed', () => {
+    expect(classifyBulkSelection(['decommissioned'])).toBe('removed');
+    expect(classifyBulkSelection(['decommissioned', 'decommissioned'])).toBe('removed');
+  });
+
+  it('reports active when NO selected device is removed', () => {
+    expect(classifyBulkSelection(['online', 'offline'])).toBe('active');
+    expect(classifyBulkSelection(['maintenance'])).toBe('active');
+  });
+
+  it('reports mixed for any blend', () => {
+    expect(classifyBulkSelection(['online', 'decommissioned'])).toBe('mixed');
+    expect(classifyBulkSelection(['decommissioned', 'offline'])).toBe('mixed');
+  });
+
+  /**
+   * The empty case decides what the bar renders in the instant between the last
+   * device being deselected and the bar unmounting. 'active' keeps the ordinary
+   * menu — offering "Delete permanently" to an empty selection would be the
+   * worse default.
+   */
+  it('treats an empty selection as active, not removed', () => {
+    expect(classifyBulkSelection([])).toBe('active');
   });
 });
 
@@ -1452,11 +1668,121 @@ describe('DeviceList — Compare bulk action gating', () => {
     expect(screen.queryByTestId('bulk-compare')).toBeNull();
   });
 
-  it('hides Compare above the 4-device limit (DeviceCompare cap)', () => {
-    render(<DeviceList devices={fleet(5)} onBulkAction={vi.fn()} />);
+  // #5023 paper cut: Compare used to vanish silently at 5+ selected. It now
+  // stays in the menu, disabled, with the cap spelled out so the tech knows
+  // to trim the selection rather than wondering where the item went.
+  it('keeps Compare in the menu but disabled above the 4-device limit (DeviceCompare cap)', () => {
+    const onBulkAction = vi.fn();
+    render(<DeviceList devices={fleet(5)} onBulkAction={onBulkAction} />);
     selectAllAndOpenMenu();
-    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+    const compare = screen.getByTestId('bulk-compare');
+    expect(compare).toBeDisabled();
+    expect(compare).toHaveAttribute('title', 'Compare supports up to 4 devices');
+    expect(compare).toHaveTextContent('Compare supports up to 4 devices');
+    fireEvent.click(compare);
+    expect(onBulkAction).not.toHaveBeenCalled();
     // The uncapped 2+ actions are still offered on the same selection.
     expect(screen.getByTestId('bulk-link-multiboot')).toBeInTheDocument();
+  });
+
+  it('keeps Compare disabled above the cap for an all-removed selection too', () => {
+    const onBulkAction = vi.fn();
+    const removed = fleet(5).map(d => ({ ...d, status: 'decommissioned' as const }));
+    render(<DeviceList devices={removed} includeDecommissioned onBulkAction={onBulkAction} />);
+    selectAllAndOpenMenu();
+    const compare = screen.getByTestId('bulk-compare');
+    expect(compare).toBeDisabled();
+    fireEvent.click(compare);
+    expect(onBulkAction).not.toHaveBeenCalled();
+    expect(screen.getByTestId('bulk-restore')).toBeInTheDocument();
+  });
+});
+
+// #4936: maintenance mode was reachable ONLY through Bulk Actions — you had to
+// tick a single row's checkbox and open a bulk menu to act on that one device.
+// The row action menu now offers it directly and dispatches the SAME
+// `onAction('maintenance', device)` the page already handled, so the request is
+// the per-device POST /devices/:id/maintenance for exactly one id — no bulk
+// fan-out, no new handler.
+describe('DeviceList — row-menu maintenance mode (#4936)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const openRowMenu = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+  };
+
+  const maintenanceBtn = (id: string = baseDevice.id) =>
+    screen.getByTestId(`device-${id}-action-maintenance`);
+
+  it('offers Enter Maintenance on an online device and dispatches for that one device', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeEnabled();
+    expect(maintenanceBtn()).toHaveTextContent('Enter Maintenance');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).toHaveBeenCalledWith('maintenance', baseDevice);
+  });
+
+  it('flips to Exit Maintenance for a device already in maintenance', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'maintenance' };
+    render(<DeviceList devices={[device]} onAction={onAction} />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeEnabled();
+    expect(maintenanceBtn()).toHaveTextContent('Exit Maintenance');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).toHaveBeenCalledWith('maintenance', device);
+  });
+
+  // REGRESSION GUARD, same shape as the Run Script guard above: maintenance is
+  // a DB flag, not an agent command (bulkActionGating.ts lists `maintenance-*`
+  // under INTENTIONALLY_UNGATED_BULK_ACTIONS). Gating it on `online` would
+  // remove the ability to suppress monitoring on a box that has already gone
+  // dark — the case the flag exists for.
+  it.each(['offline', 'quarantined', 'updating', 'pending'] as const)(
+    'keeps maintenance ENABLED for a %s device (DB flag, not a live session)',
+    (status) => {
+      const onAction = vi.fn();
+      const device: Device = { ...baseDevice, status };
+      render(<DeviceList devices={[device]} onAction={onAction} />);
+      openRowMenu();
+
+      expect(maintenanceBtn()).toBeEnabled();
+      expect(maintenanceBtn()).not.toHaveAttribute('title');
+      fireEvent.click(maintenanceBtn());
+      expect(onAction).toHaveBeenCalledWith('maintenance', device);
+    },
+  );
+
+  // The one status the API genuinely refuses: commands.ts returns 400 "Cannot
+  // change maintenance mode for a decommissioned device". #3994 established the
+  // principle that no surface should offer an action the API rejects.
+  it('disables maintenance for a removed device, with a tooltip saying why', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'decommissioned' };
+    render(<DeviceList devices={[device]} onAction={onAction} includeDecommissioned />);
+    openRowMenu();
+
+    expect(maintenanceBtn()).toBeDisabled();
+    expect(maintenanceBtn()).toHaveAttribute('title', 'Device is removed');
+    fireEvent.click(maintenanceBtn());
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('targets only the row it was opened from when several devices are listed', () => {
+    const onAction = vi.fn();
+    const second: Device = { ...baseDevice, id: '22222222-2222-2222-2222-222222222222', hostname: 'host-b' };
+    render(<DeviceList devices={[baseDevice, second]} onAction={onAction} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Device actions' })[1]!);
+    fireEvent.click(maintenanceBtn(second.id));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('maintenance', second);
   });
 });

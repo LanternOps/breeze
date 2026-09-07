@@ -118,6 +118,7 @@ export default function ScriptTestRunner({
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [phase, setPhase] = useState<'idle' | 'saving' | 'starting' | 'polling'>('idle');
   const [execution, setExecution] = useState<TestRunExecution | null>(null);
+  const [executionDeviceId, setExecutionDeviceId] = useState<string>('');
   const [runError, setRunError] = useState<string | null>(null);
   // #4888 — null means "send no runAs and let the server resolve the script's
   // saved default". That has to be the initial value, not a prefill of
@@ -429,6 +430,7 @@ export default function ScriptTestRunner({
         return;
       }
 
+      setExecutionDeviceId(selectedDeviceId);
       setExecution({ id: executionId, status: 'pending' });
       onExecutionChange?.(executionId);
       setPhase('polling');
@@ -578,9 +580,9 @@ export default function ScriptTestRunner({
             the device's own Scripts tab (same hash convention as the
             post-run redirects elsewhere) rather than only the script-wide
             history list. */}
-        {execution?.id && selectedDeviceId && (
+        {execution?.id && executionDeviceId && (
           <a
-            href={deviceScriptsHref(selectedDeviceId, execution.id)}
+            href={deviceScriptsHref(executionDeviceId, execution.id)}
             data-testid="test-view-on-device"
             className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
@@ -593,7 +595,7 @@ export default function ScriptTestRunner({
             href={`/scripts/${scriptId}/executions`}
             className={cn(
               'inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground',
-              !(execution?.id && selectedDeviceId) && 'ml-auto'
+              !(execution?.id && executionDeviceId) && 'ml-auto'
             )}
           >
             {t('testRunner.viewHistory')}

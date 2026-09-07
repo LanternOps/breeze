@@ -373,6 +373,9 @@
       "criticalPending": "{{count}} critical patches pending",
       "criticalPending_one": "{{count}} critical patch pending",
       "criticalPending_other": "{{count}} critical patches pending",
+      "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
+      "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
+      "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet"
     },
     "vuln": {

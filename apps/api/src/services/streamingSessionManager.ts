@@ -1179,6 +1179,13 @@ export class StreamingSessionManager {
   private async runBackgroundProcessor(session: ActiveSession): Promise<void> {
     let currentMessageId = crypto.randomUUID();
     let messageStarted = false;
+    // #5106: whether a text content block has already started for the
+    // CURRENT assistant message. A turn can be text -> tool_use -> text (the
+    // model narrates, calls a tool, then reports back) — without a separator
+    // between the two text blocks, every client concatenates them raw
+    // ("...last night.Here's a summary"). Reset at message_start, alongside
+    // `messageStarted` above.
+    let sawTextBlockThisMessage = false;
 
     try {
       for await (const message of session.query) {
@@ -1213,6 +1220,7 @@ export class StreamingSessionManager {
             if (event.type === 'message_start') {
               currentMessageId = crypto.randomUUID();
               messageStarted = true;
+              sawTextBlockThisMessage = false;
               // Reset turn timeout — SDK is actively producing output
               this.startTurnTimeout(session);
               // Same signal, for eviction: a new assistant message is stream
@@ -1228,7 +1236,19 @@ export class StreamingSessionManager {
                 session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
               }
             } else if (event.type === 'content_block_start') {
-              if ('content_block' in event && event.content_block.type === 'tool_use') {
+              if ('content_block' in event && event.content_block.type === 'text') {
+                // #5106: every text content_block_start AFTER the first one in
+                // this assistant message means a tool_use block sat between
+                // two text blocks (text -> tool_use -> text). Emit a
+                // paragraph-break delta so streamed clients don't concatenate
+                // them raw; `assistantContent` below joins with the SAME
+                // separator so persisted history matches the stream
+                // byte-for-byte.
+                if (sawTextBlockThisMessage) {
+                  session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
+                }
+                sawTextBlockThisMessage = true;
+              } else if ('content_block' in event && event.content_block.type === 'tool_use') {
                 const block = event.content_block;
 
                 // Track toolUseId for postToolUse correlation.
@@ -1282,10 +1302,13 @@ export class StreamingSessionManager {
               session.pendingTurnUsage.cacheCreationInputTokens += apiUsage.cache_creation_input_tokens ?? 0;
             }
 
+            // #5106: joined with the SAME "\n\n" separator the stream emits
+            // at each non-first text content_block_start, so persisted
+            // history is byte-for-byte identical to what streamed clients saw.
             const assistantContent = message.message.content
               .filter((b: { type: string }) => b.type === 'text')
               .map((b: { type: string; text?: string }) => b.text ?? '')
-              .join('');
+              .join('\n\n');
 
             try {
               await withDbAccessContext(

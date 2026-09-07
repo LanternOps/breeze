@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import { NO_VALUE_OPERATORS } from '../components/devices/filterMigration';
@@ -40,6 +40,18 @@ export interface UseAdvancedFilterIdsReturn {
    * without a label.
    */
   error: boolean;
+  /**
+   * Re-run the resolution against the SAME filter (#5023).
+   *
+   * The effect below is keyed on the filter alone, so it never re-runs when
+   * the underlying devices change. A mutation that alters a filtered attribute
+   * — Restore inside a "Status is Removed" filter is the reported case —
+   * therefore left a stale id set behind, and the row stayed on screen until a
+   * full page reload. Callers refreshing their device rows after a mutation
+   * must call this alongside. Stable across renders, so it is safe in a
+   * dependency array. A no-op resolution (no filter) still just clears.
+   */
+  refetch: () => void;
 }
 
 /**
@@ -52,6 +64,10 @@ export function useAdvancedFilterIds(filter: FilterConditionGroup | null): UseAd
   const [ids, setIds] = useState<Set<string> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  // Bumping this re-runs the effect against an unchanged filter (#5023).
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const refetch = useCallback(() => setReloadToken(n => n + 1), []);
 
   useEffect(() => {
     if (!filter || !hasValidConditions(filter)) {
@@ -106,7 +122,7 @@ export function useAdvancedFilterIds(filter: FilterConditionGroup | null): UseAd
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [filter]);
+  }, [filter, reloadToken]);
 
-  return { ids, loading, error };
+  return { ids, loading, error, refetch };
 }

@@ -37,6 +37,16 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
    */
   expectedMfaEnabled: boolean;
   revokeReason: string;
+  /**
+   * The plaintext codes to hand back to the caller, paired one-for-one with
+   * `recoveryCodeHashes` (which is what actually lands in the row). REQUIRED
+   * and non-empty on this shape: a supplied set is the account's only valid
+   * one from this commit on, so an empty or missing pair would be a silent
+   * lockout. A factor REMOVAL (#4934 `/mfa/disable`) installs no codes and
+   * must go through `completeMfaFactorRemoval`, which omits these fields by
+   * TYPE rather than by convention — the #5008 review found that an optional
+   * pair here let a rotation caller forget it and persist `[]` unnoticed.
+   */
   recoveryCodes: readonly string[];
   recoveryCodeHashes: readonly string[];
   persistFactor: (tx: Tx, recoveryCodeHashes: readonly string[]) => Promise<T>;
@@ -44,6 +54,22 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
 
 export type CompleteInitialMfaEnrollmentInput<T> =
   Omit<ReplaceSessionOnMfaFactorWriteInput<T>, 'expectedMfaEnabled'>;
+
+/**
+ * Factor REMOVAL shape: the account is left holding no code set and there is
+ * no one-time secret to reveal, so the pair is absent from the type entirely.
+ * `expectedMfaEnabled` is fixed at `true` — removing a factor that is not there
+ * is a precondition failure, not a no-op.
+ */
+export type CompleteMfaFactorRemovalInput<T> = Omit<
+  ReplaceSessionOnMfaFactorWriteInput<T>,
+  'expectedMfaEnabled' | 'recoveryCodes' | 'recoveryCodeHashes'
+>;
+
+/** Internal: the union both public entry points funnel into. */
+type MfaFactorWriteCoreInput<T> =
+  | (ReplaceSessionOnMfaFactorWriteInput<T> & { factorWrite: 'install' | 'rotate' })
+  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' });
 
 export interface MfaFactorSessionReplacement<T> {
   value: T;
@@ -64,27 +90,69 @@ export interface MfaFactorSessionReplacement<T> {
  * when the response body carries a one-time secret the user has to read
  * (recovery codes, #4480): a caller signed out by its own request never sees it.
  *
+ * Three shapes exist, differing only in `expectedMfaEnabled` and whether a code
+ * set accompanies the write, and each has its own entry point: this function
+ * is ROTATION on a protected account (factor must still exist, codes required);
+ * `completeInitialMfaEnrollment` is INSTALL (factor must not exist yet, codes
+ * required); `completeMfaFactorRemoval` is REMOVAL (factor must still exist, no
+ * codes — a self-disable that evicted its own caller bounced the user to
+ * /login?reason=session-expired the moment they turned MFA off, #4934). All
+ * three funnel into the same private core.
+ *
  * Expensive recovery-code generation and hashing belong before this call; every
  * authority-bearing write happens inside finishAuthIssuance's supplied
  * transaction and plaintext codes are returned only after it commits.
  *
  * The replacement identity is the CALLER's — assurance is carried forward, never
  * elevated. Enrollment passes `mfa: true` because it just installed the factor;
- * a rotation passes whatever the caller's own token carried.
+ * a rotation or a removal passes whatever the caller's own token carried.
  */
 export async function replaceSessionOnMfaFactorWrite<T>(
   input: ReplaceSessionOnMfaFactorWriteInput<T>,
 ): Promise<MfaFactorSessionReplacement<T>> {
+  // Rotation shape (and, via completeInitialMfaEnrollment, install): the code
+  // pair is mandatory. Checked at runtime too, since JS callers can still pass
+  // `undefined` past the type.
+  const codes = (input as { recoveryCodes?: readonly string[] }).recoveryCodes;
+  const hashes = (input as { recoveryCodeHashes?: readonly string[] }).recoveryCodeHashes;
+  if (codes === undefined || hashes === undefined || codes.length === 0 || codes.length !== hashes.length) {
+    throw new Error(
+      'A factor rotation must supply a non-empty, count-matched recovery-code pair; use completeMfaFactorRemoval to remove a factor',
+    );
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, factorWrite: 'rotate' });
+}
+
+/**
+ * Factor-removal specialization (#4934 `/mfa/disable`): the account must still
+ * be protected when the bump lands, no code set is installed, and the caller's
+ * own assurance is carried forward. The only sanctioned way to call the
+ * primitive without recovery codes.
+ */
+export async function completeMfaFactorRemoval<T>(
+  input: CompleteMfaFactorRemovalInput<T>,
+): Promise<MfaFactorSessionReplacement<T>> {
+  if ('recoveryCodes' in input || 'recoveryCodeHashes' in input) {
+    throw new Error('A factor removal installs no recovery codes; use replaceSessionOnMfaFactorWrite to rotate them');
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: true, factorWrite: 'remove' });
+}
+
+async function replaceSessionOnMfaFactorWriteCore<T>(
+  input: MfaFactorWriteCoreInput<T>,
+): Promise<MfaFactorSessionReplacement<T>> {
   if (input.identity.userId !== input.userId) {
     throw new Error('Factor-write identity does not match the target user');
   }
+  const recoveryCodes = input.factorWrite === 'remove' ? [] : input.recoveryCodes;
+  const recoveryCodeHashes = input.factorWrite === 'remove' ? [] : input.recoveryCodeHashes;
   if (
     !Number.isInteger(input.expectedAuthEpoch)
     || input.expectedAuthEpoch < 0
     || !Number.isInteger(input.expectedMfaEpoch)
     || input.expectedMfaEpoch < 0
-    || input.recoveryCodes.length === 0
-    || input.recoveryCodes.length !== input.recoveryCodeHashes.length
+    || recoveryCodes.length !== recoveryCodeHashes.length
+    || (input.factorWrite !== 'remove' && recoveryCodes.length === 0)
   ) {
     throw new Error('Expected auth/MFA epochs and recovery-code counts must be valid');
   }
@@ -123,7 +191,7 @@ export async function replaceSessionOnMfaFactorWrite<T>(
       capability: input.capability,
       expectedEpochs: { authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch },
     });
-    const value = await input.persistFactor(tx, input.recoveryCodeHashes);
+    const value = await input.persistFactor(tx, recoveryCodeHashes);
     return { value, issued, mfaEpoch: epochs.mfaEpoch };
   });
 
@@ -134,7 +202,7 @@ export async function replaceSessionOnMfaFactorWrite<T>(
 
   return {
     ...committed,
-    recoveryCodes: [...input.recoveryCodes],
+    recoveryCodes: [...recoveryCodes],
     cleanup: { ...cleanup, remoteSessionsTerminated },
   };
 }
@@ -151,5 +219,17 @@ export async function completeInitialMfaEnrollment<T>(
   if (input.identity.mfa !== true) {
     throw new Error('Replacement enrollment identity must be MFA-assured');
   }
-  return replaceSessionOnMfaFactorWrite({ ...input, expectedMfaEnabled: false });
+  // Enrollment is the one factor write that must never omit its code set: the
+  // codes it returns are the only escape hatch a user locked out of their own
+  // factor has, and they exist exactly once. (An omitted pair is the
+  // removal shape — `completeMfaFactorRemoval`, #4934 — never this one.)
+  if (
+    input.recoveryCodes === undefined
+    || input.recoveryCodes.length === 0
+    || input.recoveryCodeHashes === undefined
+    || input.recoveryCodeHashes.length !== input.recoveryCodes.length
+  ) {
+    throw new Error('Initial MFA enrollment must install a count-matched recovery-code set');
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: false, factorWrite: 'install' });
 }

@@ -38,6 +38,7 @@ import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
 import { formatDeviceSummaryOs } from "./osDisplay";
 import RebootScheduledBadge from "./RebootScheduledBadge";
+import UninstallStateBadge from "./UninstallStateBadge";
 import DeviceActions from "./DeviceActions";
 import DeviceInfoTab from "./DeviceInfoTab";
 import DeviceHardwareInventory from "./DeviceHardwareInventory";
@@ -606,6 +607,13 @@ export default function DeviceDetails({
                 >
                   {statusLabels[device.status]}
                 </span>
+                {/* "Removed" says the record was offboarded; this says what
+                    happened to the agent on the actual machine (#3987).
+                    Renders nothing for any device that is not removed. */}
+                <UninstallStateBadge
+                  uninstall={device.uninstall}
+                  status={device.status}
+                />
                 {device.pendingReboot && (
                   <span
                     data-testid="device-pending-reboot-badge"

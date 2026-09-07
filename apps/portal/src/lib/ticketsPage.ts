@@ -6,7 +6,7 @@ interface PortalResponseState {
 export interface TicketsPageDecision {
   ticketsDisabled: boolean;
   usageStrictlyDisabled: boolean;
-  redirectToDevices: boolean;
+  redirectHome: boolean;
 }
 
 export function decideTicketsPage(
@@ -21,6 +21,6 @@ export function decideTicketsPage(
   return {
     ticketsDisabled,
     usageStrictlyDisabled,
-    redirectToDevices: ticketsDisabled && usageResponse.statusCode !== 200,
+    redirectHome: ticketsDisabled && usageResponse.statusCode !== 200,
   };
 }

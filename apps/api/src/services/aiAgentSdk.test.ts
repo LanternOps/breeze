@@ -5,6 +5,7 @@ import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGu
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
+import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 
 // ============================================
 // Mocks
@@ -1150,9 +1151,14 @@ describe('createSessionPreToolUse', () => {
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
 
+      // #5107: losing the CAS is the worker executing an APPROVED action, not
+      // a failure — the decision carries the handoff marker so the tool result
+      // is published with isError:false instead of painting "FAILED" in the
+      // chat the user just approved from.
       expect(result).toEqual({
         allowed: false,
-        error: 'This action is already being completed by the approval worker; it will not run twice.',
+        error: APPROVED_EXECUTING_MESSAGE,
+        handoff: 'approved_executing',
       });
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-3', 'approved', 'executing', expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }), { requireNotExpired: 'release' });
       // The intent-id link stamp (unconditional, ahead of the release CAS)
@@ -2166,6 +2172,76 @@ describe('createSessionPostToolUse', () => {
       }),
     );
   });
+
+  // #5107 — the handoff is published with isError:false, and `result` on an
+  // audit event only has success/failure. Without an explicit outcome stamp,
+  // "handed to the approval worker" would read as "ai.tool.manage_services
+  // succeeded" to anyone auditing whether the restart actually happened.
+  describe('approval handoff audit outcome (#5107)', () => {
+    const auditEventFor = (action: string) => {
+      const call = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === action);
+      return (call as [unknown, any])[1];
+    };
+
+    it("records 'dispatched', not a defaulted success, and stamps the outcome", async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback(
+        'manage_services',
+        { serviceName: 'spooler' },
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: APPROVED_EXECUTING_MESSAGE }),
+        false,
+        0,
+        undefined,
+        APPROVED_EXECUTING_STATUS,
+      );
+
+      const event = auditEventFor('ai.tool.manage_services');
+      // `result` defaults to 'success' when omitted (auditEvents.ts), and
+      // `result` is the INDEXED column real audit queries filter on — leaving
+      // it unset would tell a compliance reviewer the restart succeeded.
+      expect(event.result).toBe('dispatched');
+      expect(event.details.toolOutcome).toBe('approved_executing');
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'tool_result', isError: false, handoff: 'approved_executing' }),
+      );
+    });
+
+    it('never stamps the outcome from the tool’s own output', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      // A tool owns its output. If the stamp were derived from the payload, a
+      // buggy or hostile handler could forge a "routine authorized hand-off"
+      // audit row for its own action. Only the gate's own signal counts.
+      await callback(
+        'query_devices',
+        {},
+        JSON.stringify({ status: APPROVED_EXECUTING_STATUS, message: 'pretending' }),
+        false,
+        0,
+      );
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+      expect(session.eventBus.publish).toHaveBeenCalledWith(
+        expect.not.objectContaining({ handoff: expect.anything() }),
+      );
+    });
+
+    it('leaves an ordinary result unstamped', async () => {
+      const session = makeActiveSession({ auditSnapshot: { requestId: 'req-1' } as any });
+      const callback = createSessionPostToolUse(session);
+
+      await callback('query_devices', {}, JSON.stringify({ status: 'completed' }), false, 0);
+
+      const event = auditEventFor('ai.tool.query_devices');
+      expect(event.details.toolOutcome).toBeUndefined();
+      expect(event.result).toBeUndefined();
+    });
+  });
 });
 
 // ============================================
@@ -2777,6 +2853,12 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     // Not executed inline...
     expect(result).toEqual(expect.objectContaining({ allowed: false }));
+    // ...but NOT reported as a failure (#5107): the human approved and the
+    // worker is running it, so the decision carries the handoff marker that
+    // makes the tool result publish with isError:false.
+    expect(result).toEqual(
+      expect.objectContaining({ handoff: 'approved_executing', error: APPROVED_EXECUTING_MESSAGE }),
+    );
     // ...and critically, the CAS was never even attempted, so the worker's
     // claim is still available and the intent is not stranded in `executing`.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
@@ -2837,7 +2919,8 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
 
     expect(result).toEqual({
       allowed: false,
-      error: 'This action is already being completed by the approval worker; it will not run twice.',
+      error: APPROVED_EXECUTING_MESSAGE,
+      handoff: 'approved_executing',
     });
     expect(session.currentPlanStepIndex).toBe(0);
   });

@@ -184,7 +184,7 @@ describe('role routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              groupBy: vi.fn().mockResolvedValue([{ roleId: 'role-2', count: 3 }])
+              groupBy: vi.fn().mockResolvedValue([{ roleId: 'role-2', count: 3, activeCount: 2 }])
             })
           })
         } as any);
@@ -199,6 +199,11 @@ describe('role routes', () => {
       expect(body.data).toHaveLength(2);
       expect(body.data[1].parentRoleName).toBe('Admin');
       expect(body.data[1].userCount).toBe(3);
+      // Only status='active' members — the population the AI-agent recipient
+      // resolver can notify (#5048 QA); a role with none is flagged in the
+      // agent forms.
+      expect(body.data[1].activeUserCount).toBe(2);
+      expect(body.data[0].activeUserCount).toBe(0);
     });
 
     // #3524: a partner focused on one org (web client injects ?orgId=) must ALSO

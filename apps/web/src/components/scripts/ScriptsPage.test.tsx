@@ -320,4 +320,37 @@ describe('ScriptsPage post-run navigation (#4886)', () => {
     await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/execute')).toBe(true));
     expect(navigateTo).not.toHaveBeenCalled();
   });
+
+  it('keeps partial admission results on the page when one target is suppressed', async () => {
+    const { navigateTo } = await import('@/lib/navigation');
+    let scriptsFetchCount = 0;
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/scripts?')) {
+        scriptsFetchCount += 1;
+        return makeJsonResponse({ data: [baseScript] });
+      }
+      if (url === '/orgs/sites') return makeJsonResponse({ data: [] });
+      if (url === '/scripts/script-1') return makeJsonResponse(baseScript);
+      if (url === '/scripts/script-1/execute') {
+        return makeJsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'partially_queued',
+          targets: [
+            { requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-1' },
+            { requestedDeviceId: 'device-2', admission: 'suppressed', reasonCode: 'maintenance_suppressed' },
+          ],
+        }, true, 201);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<ScriptsPage />);
+    fireEvent.click(await screen.findByText('Run Cleanup Temp Files'));
+    fireEvent.click(await screen.findByText('Confirm Execute Multi'));
+
+    await waitFor(() => expect(scriptsFetchCount).toBe(2));
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByText('Confirm Execute Multi')).toBeInTheDocument();
+  });
 });

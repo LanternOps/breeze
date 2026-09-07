@@ -5,6 +5,7 @@ import { detectPatternCorrelation, runCorrelationRules } from '../services/logSe
 import { captureException } from '../services/sentry';
 import { isReusableState } from '../services/bullmqUtils';
 import * as dbModule from '../db';
+import { attachWorkerObservability } from './workerObservability';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
@@ -139,6 +140,7 @@ async function scheduleCorrelationDetection(): Promise<void> {
 
 export async function initializeLogCorrelationWorker(): Promise<void> {
   correlationWorker = createLogCorrelationWorker();
+  attachWorkerObservability(correlationWorker, 'logCorrelationWorker');
   correlationWorker.on('error', (error) => {
     console.error('[LogCorrelationWorker] Worker error:', error);
     captureException(error);

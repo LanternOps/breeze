@@ -371,6 +371,9 @@
       "criticalPending": "{{count}} kritik yamalar beklemede",
       "criticalPending_one": "{{count}} kritik yama bekleniyor",
       "criticalPending_other": "{{count}} kritik yamalar beklemede",
+      "unratedPending": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
+      "unratedPending_one": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
+      "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "empty": "Henüz yama verisi yok"
     },
     "vuln": {

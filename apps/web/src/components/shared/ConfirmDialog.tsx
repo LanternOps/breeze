@@ -12,6 +12,13 @@ export interface ConfirmDialogProps {
   confirmLabel?: string;
   variant?: 'destructive' | 'warning';
   isLoading?: boolean;
+  /**
+   * Blocks Confirm on a call-site precondition that is not "a request is in
+   * flight" — e.g. BulkPurgeDialog's type-the-device-count gate. Kept separate
+   * from `isLoading` because they differ in what they mean to the user (and in
+   * the label: a disabled-but-idle button must not read "Processing…").
+   */
+  confirmDisabled?: boolean;
   /** data-testid for the confirm button (e2e suites are testid-only). */
   confirmTestId?: string;
   /** Optional extra content (e.g. a note field) rendered under the message. */
@@ -27,6 +34,7 @@ export function ConfirmDialog({
   confirmLabel,
   variant = 'destructive',
   isLoading = false,
+  confirmDisabled = false,
   confirmTestId,
   children,
 }: ConfirmDialogProps) {
@@ -124,8 +132,8 @@ export function ConfirmDialog({
         </button>
         <button
           type="button"
-          onClick={isLoading ? undefined : handleConfirm}
-          aria-disabled={isLoading}
+          onClick={isLoading || confirmDisabled ? undefined : handleConfirm}
+          aria-disabled={isLoading || confirmDisabled}
           aria-busy={isLoading}
           data-testid={confirmTestId}
           className={`rounded-md px-4 py-2 text-sm font-medium transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${

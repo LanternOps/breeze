@@ -86,6 +86,16 @@ export const devices = pgTable('devices', {
   // evaluation — but NOT from the status-upkeep path, which the reaper's
   // end-user-stop detection depends on.
   isEphemeral: boolean('is_ephemeral').notNull().default(false),
+  // RMM-QA-176: manual maintenance lease. `maintenance_until > now()` — not
+  // `status` — is the truth of "a technician put this device into maintenance":
+  // the heartbeat overwrites status to 'online' on every beat, so a status read
+  // cannot distinguish entry from extension. started_at / started_by are
+  // IMMUTABLE across extensions (the original actor stays on the row; each
+  // extension's actor is on its audit event). See services/deviceMaintenanceLease.ts.
+  maintenanceStartedAt: timestamp('maintenance_started_at', { withTimezone: true }),
+  maintenanceUntil: timestamp('maintenance_until', { withTimezone: true }),
+  maintenanceReason: varchar('maintenance_reason', { length: 500 }),
+  maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
@@ -214,6 +224,13 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #2787 item 4 — WHEN this device was removed (status flipped to
+  // 'decommissioned'). NULL for every device that is not removed, and cleared
+  // again on Restore. `updated_at` cannot stand in for it: it moves on every
+  // unrelated write after removal, so a retention window built on it would
+  // silently extend itself. NULL on a decommissioned row means "removal time
+  // unknown" and the purge job treats that as NEVER PURGE (fail closed).
+  decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
@@ -533,7 +550,16 @@ export const deviceCommands = pgTable('device_commands', {
   // it -- NULL means "no exemption, no widened auth", fail-closed by
   // construction. See 2026-09-10-device-command-uninstall-provenance.sql.
   uninstallReasons: text('uninstall_reasons').array(),
-  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true })
+  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true }),
+  // #5128 -- deadline by which an agent must CLAIM this row (the DELIVERY
+  // clock). NULL = legacy rule (execution timeout measured from created_at).
+  // See services/commandOfflinePolicy.ts and jobs/staleCommandReaper.ts.
+  deliverBy: timestamp('deliver_by', { withTimezone: true }),
+  // #5128 -- the device's org at enqueue. PROVENANCE, not tenancy: compared at
+  // claim time to cancel rows whose device has since moved org. Deliberately
+  // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands
+  // system-scoped (agent WS path, no RLS -- see CLAUDE.md).
+  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' })
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

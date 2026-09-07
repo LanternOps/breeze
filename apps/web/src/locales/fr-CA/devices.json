@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} retirés masqués",
-    "show": "afficher"
+    "show": "afficher",
+    "shownLabel": "{{count}} supprimés affichés",
+    "hide": "masquer"
   },
   "deviceActions": {
     "unavailable": {
@@ -176,19 +178,24 @@
         "confirm": "Éteindre"
       },
       "exitMaintenance": {
-        "title": "Mode de maintenance de sortie",
-        "message": "Êtes-vous sûr de vouloir sortir du mode maintenance pour {{hostname}} ? Les alertes et la surveillance reprendront.",
-        "confirm": "Entretien des sorties"
+        "title": "Quitter le mode maintenance",
+        "message": "Êtes-vous sûr de vouloir sortir du mode maintenance pour {{hostname}} ?",
+        "confirm": "Désactiver la maintenance"
       },
       "enterMaintenance": {
         "title": "Entrer en mode maintenance",
-        "message": "Voulez-vous vraiment placer {{hostname}} en mode maintenance ? Les alertes seront masquées tant que ce mode sera actif.",
-        "confirm": "Voici la maintenance"
+        "message": "Voulez-vous vraiment placer {{hostname}} en mode maintenance ?",
+        "confirm": "Activer la maintenance"
       },
       "decommission": {
         "title": "Retirer l’appareil",
         "message": "Retirer {{hostname}} ? Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
         "confirm": "Retirer"
+      },
+      "permanentDelete": {
+        "title": "Supprimer {{hostname}} définitivement ?",
+        "message": "Cela supprime tout l’historique de cet appareil : billets, alertes, enregistrements de correctifs et de sauvegardes. Cette action est irréversible.",
+        "confirm": "Supprimer définitivement"
       },
       "clearSessions": {
         "title": "Effacer les sessions",
@@ -201,6 +208,22 @@
         "confirm": "Installer Homebrew"
       }
     },
+    "removeDialog": {
+      "titleOne": "Retirer {{hostname}} ?",
+      "titleMany": "Retirer {{count}} appareils ?",
+      "bodyOne": "Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
+      "bodyMany": "Ils seront sortis de votre parc actif et ne seront plus surveillés. L’historique est conservé et vous pourrez les restaurer plus tard.",
+      "summary": "{{online}} en ligne, {{notOnline}} pas en ligne actuellement.",
+      "legend": "Que doit-il advenir de l’agent Breeze ?",
+      "uninstall": "Désinstaller l’agent Breeze",
+      "uninstallOnline": "Mis en file d’attente — un agent en ligne le récupère dans quelques instants.",
+      "uninstallQueuedWithWindow": "Mis en file d’attente — s’exécute à la prochaine communication de l’appareil. Annulé s’il ne se manifeste pas dans un délai de {{hours}} heures.",
+      "uninstallQueued": "Mis en file d’attente — s’exécute à la prochaine communication de l’appareil.",
+      "uninstallMixed": "Les appareils en ligne le récupèrent dans quelques instants; les autres l’exécutent à leur prochaine communication.",
+      "leave": "Laisser l’agent installé",
+      "leaveHint": "La machine continue d’exécuter l’agent, mais elle ne peut plus être gérée.",
+      "confirm": "Retirer"
+    },
     "runScript": "Exécuter un script",
     "remoteTools": "Outils à distance",
     "reRunAgentInventoryCollectorsSo": "Relancez les collecteurs d’inventaire de l’agent pour que l’interface puisse voir de nouvelles données matérielles/logicielles/réseau sans attendre le prochain cycle de battements de cœur",
@@ -211,8 +234,8 @@
     "deploySoftware": "Déployer un logiciel",
     "clearSessions": "Effacer les sessions",
     "changeSite": "Changement de site",
-    "exitMaintenance": "Entretien des sorties",
-    "enterMaintenance": "Voici la maintenance",
+    "exitMaintenance": "Désactiver la maintenance",
+    "enterMaintenance": "Activer la maintenance",
     "decommission": "Retirer",
     "restore": "Restaurer",
     "permanentlyDelete": "Supprimer définitivement",
@@ -529,7 +552,6 @@
     "s": "s",
     "decommissionCancelled": "Retrait annulé",
     "permanentDeleteCancelled": "Suppression permanente annulée",
-    "permanentlyDeletedWithWarning": "{{hostname}} a été supprimé, mais {{warning}}",
     "failedToQueueScript": "Impossible de mettre en file d’attente le script",
     "loadingDevice": "Dispositif de chargement...",
     "backToDevices": "Retour aux appareils",
@@ -657,7 +679,8 @@
     "priority": "Priorité",
     "level": "Niveau",
     "policy2": "Politique",
-    "features": "Caractéristiques"
+    "features": "Caractéristiques",
+    "inheritedFrom": "Hérité de {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossible de récupérer les activités",
@@ -1015,7 +1038,15 @@
     }
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} avec agent, {{network}} réseau",
+    "agentOnlyBulkAction": "S’applique uniquement aux appareils avec agent",
+    "eligibleOfSelected": "{{count}} sur {{total}}",
+    "linkAsVmHost": "Lier comme hôte de VM + invités",
+    "notApplicable": "Sans objet",
+    "viewDevice": "Voir {{name}}",
     "tableColumns": {
+      "class": "Classe",
+      "type": "Type",
       "device": "Dispositif",
       "organization": "Organisation",
       "site": "Site",
@@ -1027,6 +1058,8 @@
       "lastSeen": "Dernière apparition"
     },
     "sortBy": {
+      "class": "Trier par classe",
+      "type": "Trier par type",
       "device": "Trier par appareil",
       "organization": "Trier par organisation",
       "site": "Trier par site",
@@ -1122,8 +1155,11 @@
     "disableMaintenance": "Désactiver la maintenance",
     "wakeSelected": "Wake sélectionné",
     "compareSelected": "Comparer la sélection",
+    "compareMaxDevices": "La comparaison prend en charge jusqu'à {{count}} appareils",
     "linkAsMultiBoot": "Liaison en tant que multi-boot",
     "decommissionSelected": "Retirer la sélection",
+    "restoreSelected": "Restaurer la sélection",
+    "permanentDeleteSelected": "Supprimer définitivement…",
     "clearSelection": "Effacer la sélection",
     "selectAllDevicesOnThisPage": "Sélectionnez tous les appareils sur cette page",
     "actions": "Actions",
@@ -1136,6 +1172,8 @@
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "wake": "Veillée",
     "settings": "Paramètres",
+    "enterMaintenance": "Activer la maintenance",
+    "exitMaintenance": "Désactiver la maintenance",
     "restore": "Restaurer",
     "decommission": "Retirer",
     "permanentlyDelete": "Supprimer définitivement",
@@ -1783,6 +1821,14 @@
       "shutdown": "Éteindre"
     },
     "addDevice": "Ajouter un dispositif",
+    "bulkPurge": {
+      "andMore": "et {{count}} de plus",
+      "confirm": "Supprimer définitivement",
+      "message": "Cette action est irréversible. Tous les enregistrements de ces appareils — historique, alertes, scripts, sessions — sont supprimés avec eux. Les billets sont conservés et détachés.",
+      "multipleOrgs": "Cette sélection couvre {{count}} organisations. Vérifiez la portée organisationnelle avant de continuer.",
+      "title": "Supprimer définitivement {{count}} appareil(s)?",
+      "typeCount": "Saisissez {{count}} pour confirmer"
+    },
     "confirmRunAction": "Exécuter {{script}}",
     "confirmScriptRun": "Confirmer l’exécution du script",
     "emptyDescription": "Commencez par ajouter votre premier appareil. L’installateur et la clé d’inscription sont générés automatiquement.",
@@ -1800,12 +1846,16 @@
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
+    "hiddenNetworkNotice_one": "1 appareil réseau masqué — {{fields}} s’applique uniquement aux appareils avec agent.",
+    "hiddenNetworkNotice_other": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
+    "hiddenNetworkNotice": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux appareils dotés d’un agent. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
+      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés.",
       "bulkCommandPartialFailed": "Commandement de masse partiellement échoué",
       "bulkCommandSent": "Commandement en vrac envoyé",
       "bulkDecommissionAllFailed": "Échec du retrait des {{count}} appareil(s) : {{devices}}",
@@ -1814,10 +1864,23 @@
       "bulkMaintenanceAllFailed": "Impossible de mettre à jour le mode maintenance pour tous {{count}} appareil(s) : {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} ou périphérique(s) {{verb}} mode maintenance ; {{failed}} échoué : {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
+      "bulkMaintenanceSuccess_one": "{{count}} appareil {{verb}} mode maintenance",
+      "bulkMaintenanceSuccess_other": "{{count}} appareils {{verb}} mode maintenance",
+      "bulkPurgeDone": "{{count}} appareil(s) supprimé(s) définitivement",
+      "bulkPurgeDoneWithSkips": "{{purged}} appareil(s) supprimé(s) définitivement; {{skipped}} ignoré(s) ({{reasons}})",
+      "bulkPurgeFailed": "Échec de la suppression définitive : {{reason}}",
+      "bulkPurgeNoneDeleted": "Aucun appareil n'a été supprimé : {{reasons}}",
+      "bulkPurgeStarted": "Suppression définitive de {{count}} appareil(s)…",
+      "bulkRestoreAllFailed": "Échec de la restauration des {{count}} appareil(s)",
+      "bulkRestoreSomeFailed": "{{succeeded}} appareil(s) restauré(s); {{failed}} en échec",
+      "bulkRestoreUninstallAlreadySent": "{{count}} appareil(s) avaient déjà reçu la désinstallation — l'agent devra peut-être être réinstallé sur ces machines.",
+      "bulkRestored": "{{count}} appareil(s) restauré(s)",
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
+      "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}",
       "commandSent": "{{action}} envoyé à {{hostname}}",
+      "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "decommissionCancelled": "Retrait annulé",
       "decommissionFailed": "Échec du retrait",
       "decommissioned": "Retiré",
@@ -1830,12 +1893,13 @@
       "maintenanceOff": "Maintenance désactivée",
       "maintenanceOn": "Maintenance en marche",
       "multibootLinked": "Multidémarrage associé",
-      "networkSkipped": "{{count}} Périphérique(s) réseau sauté(s) — cette action s’applique uniquement aux dispositifs agent.",
+      "networkSkipped_one": "1 appareil réseau ignoré — cette action s’applique uniquement aux appareils avec agent.",
+      "networkSkipped_other": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
+      "networkSkipped": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
-      "permanentDeleting": "Suppression permanente",
-      "permanentlyDeleted": "Supprimé définitivement",
-      "permanentlyDeletedWithWarning": "{{hostname}} a été supprimé, mais {{warning}}",
+      "permanentDeleting": "Suppression permanente de {{hostname}} en cours…",
+      "permanentlyDeleted": "{{hostname}} supprimé définitivement",
       "restored": "Restauré",
       "scriptQueueFailed": "File d’attente de scripts échouée",
       "scriptQueuedMany": "Script en file d’attente de nombreux",
@@ -1845,9 +1909,7 @@
       "unknownAction": "Action inconnue",
       "unknownBulkAction": "Action en vrac inconnue",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
-      "wakeTimeout": "Temps d’arrêt du réveil",
-      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés.",
-      "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}"
+      "wakeTimeout": "Temps d’arrêt du réveil"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",
@@ -1857,7 +1919,8 @@
     "confirmDecommissionedSkip": {
       "message": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "title": "Certains appareils sélectionnés sont retirés"
-    }
+    },
+    "importFromRmm": "Importer depuis un autre RMM"
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",
@@ -2129,33 +2192,55 @@
     },
     "title": "macOS Autorisations"
   },
+  "maintenanceModeDialog": {
+    "title": "Activer le mode maintenance",
+    "titleMany": "Activer le mode maintenance sur {{deviceCount}} appareils",
+    "description": "Enregistre une fenêtre de maintenance sur {{hostname}} et indique qui l'a démarrée. Les alertes, la surveillance, les correctifs, les scripts et les redémarrages se poursuivent normalement.",
+    "descriptionMany": "Enregistre une fenêtre de maintenance sur les appareils sélectionnés et indique qui l'a démarrée. Les alertes, la surveillance, les correctifs, les scripts et les redémarrages se poursuivent normalement.",
+    "reasonLabel": "Motif",
+    "reasonPlaceholder": "Pourquoi passer en maintenance?",
+    "reasonHint": "De 3 à 500 caractères. Consigné sur l'appareil et dans la piste d'audit.",
+    "durationLabel": "Durée",
+    "durationOptionOne": "1 heure à partir de maintenant",
+    "durationOptionOther": "{{hours}} heures à partir de maintenant",
+    "durationHint": "La fenêtre démarre toujours maintenant : la prolonger remplace la fenêtre actuelle au lieu de s'y ajouter.",
+    "stepUpHeading": "Confirmez votre identité",
+    "stepUpIntro": "Votre organisation exige un second facteur avant de démarrer le mode maintenance.",
+    "stepUpCodeLabel": "Code d'authentification",
+    "stepUpPasskeyNote": "Vous confirmerez avec votre clé d'accès.",
+    "noStepUpFactor": "Ajoutez une application d'authentification ou une clé d'accès à votre compte avant de mettre des appareils en mode maintenance.",
+    "mfaRequired": "Terminez d'abord la connexion AMF, puis réessayez.",
+    "submit": "Démarrer la maintenance",
+    "submitStepUp": "Vérifier et démarrer",
+    "submitting": "Traitement…",
+    "cancel": "Annuler",
+    "genericError": "Impossible de démarrer le mode maintenance."
+  },
   "networkDeviceDetailPage": {
     "backToDevices": "Retour aux appareils",
     "configurePrefix": "Configurer l’interrogation SNMP et les moniteurs réseau depuis le",
     "confirmUnlink": "Déconnecter cet appareil ?",
-    "connecting": "Connexion en cours…",
-    "discoveryAssetView": "Vue de l’actif de découverte",
-    "emptyPorts": "Aucun port ouvert détecté.",
+    "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez de nouveau.",
+    "connecting": "Connexion en cours",
+    "discoveryAssetView": "vue de l'actif de découverte",
+    "emptyPorts": "Aucun port ouvert trouvé lors de la dernière analyse.",
     "emptySnmp": "Aucune donnée SNMP n’a été collectée — l’appareil n’a peut-être pas répondu ou n’a pas été interrogé via SNMP. Vérifiez que la méthode SNMP est activée et que la chaîne de communauté est définie dans le profil de découverte.",
     "errors": {
-      "load": "Charge",
-      "malformed": "Malformé",
+      "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
+      "malformed": "Le serveur a renvoyé une réponse inattendue pour cet appareil réseau. Réessayez et, si le problème persiste, communiquez avec le soutien technique.",
       "notFound": "Périphérique réseau non trouvé"
     },
     "fields": {
-      "assetType": "Type d’actif",
+      "assetType": "Type",
       "discoveryMethods": "Méthodes de découverte",
       "discoveryProfile": "Profil de découverte",
       "displayName": "Nom d’affichage",
       "firstSeen": "Première apparition",
       "hostname": "Nom d’hôte",
-      "ipAddress": "Adresse IP",
-      "lastSeen": "Dernière apparition",
       "linkedDevice": "Appareil associé",
-      "macAddress": "Adresse Mac",
       "manufacturer": "Fabricant",
       "model": "Modèle",
-      "netbiosName": "Nom Netbios",
+      "netbiosName": "Nom NetBIOS",
       "networkMonitoring": "Surveillance du réseau",
       "notes": "Notes",
       "osFingerprint": "Empreinte du système d’exploitation",
@@ -2165,48 +2250,67 @@
       "tags": "Étiquettes"
     },
     "goBack": "Retour",
-    "lastSeen": "Dernière vue {{time}}",
+    "live": {
+      "webUiOpened": "L'interface Web s'est ouverte dans un nouvel onglet",
+      "refreshed": "Détails de l'appareil actualisés"
+    },
     "loading": "Chargement du dispositif réseau...",
     "manageInDiscovery": "Gérer dans Découverte",
     "manuallySet": "Réglé manuellement",
     "manuallySetWithDetected": "Réglé manuellement · balayage détecté {{type}}",
     "networkDevice": "Appareil réseau",
     "notConfigured": "Non configuré",
-    "notLinked": "Non lié",
+    "notLinked": "Pas encore lié à un appareil géré.",
     "openWebUi": "Ouvrir l'interface Web",
+    "ports": {
+      "insecure": "Non chiffré",
+      "insecureHint": "Ce service transmet les identifiants en clair. Désactivez-le sur l'appareil si possible.",
+      "kind": {
+        "mgmt": "Gestion",
+        "remote": "Accès à distance",
+        "print": "Impression",
+        "file": "Partage de fichiers"
+      }
+    },
+    "proxyPort": "Port",
+    "proxyPortInvalid": "Saisissez un port entre 1 et 65535",
     "proxyErrors": {
-      "disabled": "Cette cible a été désactivée pour l'accès proxy. Un administrateur doit la réactiver dans les paramètres avant que vous puissiez vous connecter.",
-      "mfaRequired": "L'accès à distance nécessite l'authentification à deux facteurs — activez-la dans votre profil.",
-      "noOnlineAgent": "Aucun agent en ligne n'est disponible pour relayer cette connexion. Un agent doit être en ligne pour établir un proxy vers {{ip}}."
+      "disabled": "Un administrateur a désactivé l'accès proxy à cette cible. Demandez-lui de le réactiver sous Paramètres, Accès à distance.",
+      "mfaRequired": "L'accès à distance nécessite l'authentification à deux facteurs. Activez-la dans votre profil, puis réessayez.",
+      "noOnlineAgent": "Aucun agent en ligne ne peut joindre {{ip}} pour le moment. Mettez un agent de ce réseau en ligne, puis réessayez.",
+      "agentListFailed": "Impossible de charger la liste des agents. Réessayer."
     },
     "resetToAutoDetected": "Réinitialiser en détection automatique",
+    "savingType": "Enregistrement en cours…",
+    "resettingType": "Réinitialisation en cours…",
     "sections": {
       "discovery": "Découverte",
       "identity": "Identité",
       "monitoringStatus": "Statut de surveillance",
-      "networkReachability": "Accessibilité du réseau",
       "openPorts": "Ports ouverts",
       "snmpData": "Données SNMP"
+    },
+    "stats": {
+      "asOf": "en date de {{time}}"
     },
     "tabs": {
       "overview": "Aperçu",
       "monitoring": "Surveillance"
     },
     "toasts": {
-      "proxyConnectFailed": "Échec du démarrage de la connexion proxy",
-      "typeReset": "Réinitialisation du type",
-      "typeResetFailed": "Réinitialisation du type échouée",
-      "typeUpdateFailed": "Mise à jour du type échouée",
-      "typeUpdated": "Type mis à jour",
-      "unlinkFailed": "Échouement du déliement",
-      "unlinked": "Non lié",
+      "proxyConnectFailed": "Impossible d'ouvrir l'interface Web",
+      "typeReset": "Type d'appareil réinitialisé à la détection automatique",
+      "typeResetFailed": "Impossible de réinitialiser le type d'appareil",
+      "typeUpdateFailed": "Impossible de mettre à jour le type d'appareil",
+      "typeUpdated": "Type d'appareil mis à jour",
+      "unlinkFailed": "Impossible de dissocier l'appareil",
+      "unlinked": "Appareil dissocié",
       "linked": "Appareil lié",
-      "linkFailed": "Échec de la liaison de l'appareil"
+      "linkFailed": "Impossible de lier l'appareil"
     },
     "unlink": "Délier",
     "unlinking": "Déconnexion...",
-    "viewManagedDevice": "Voir le dispositif géré",
-    "autoLinkSuppressed": "Liaison automatique désactivée — dissociée par un utilisateur",
+    "autoLinkSuppressed": "La liaison automatique est désactivée pour cet actif parce que quelqu'un l'a dissocié. Liez-le manuellement pour la réactiver.",
     "linkManually": "Lier manuellement…",
     "linkManuallySelectDevice": "Sélectionner un appareil",
     "linkManuallyLinking": "Liaison en cours…",
@@ -2219,7 +2323,17 @@
       "auto": "— détecté automatiquement",
       "manual": "— défini manuellement"
     },
-    "sameDeviceAs": "Même appareil que {{name}}"
+    "sameDeviceAs": "Même appareil que {{name}}",
+    "showMore": "Afficher plus",
+    "showLess": "Afficher moins",
+    "showAllPorts": "Tout afficher ({{count}})",
+    "showFewerPorts": "Afficher moins",
+    "tryAgain": "Réessayer",
+    "snmpFields": {
+      "sysName": "Nom du système",
+      "sysDescr": "Description",
+      "sysObjectId": "ID d'objet (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",
@@ -2378,5 +2492,170 @@
     "colDetectedVersion": "Version détectée",
     "colScannedAt": "Dernière analyse",
     "loadMore": "Charger plus"
+  },
+  "uninstallState": {
+    "pending": "Désinstallation de l'agent en file d'attente — expire {{when}}",
+    "pendingNoDeadline": "Désinstallation de l'agent en file d'attente",
+    "sent": "Désinstallation de l'agent livrée",
+    "completed": "Agent désinstallé",
+    "expired": "Désinstallation expirée — l'agent ne s'est jamais connecté et pourrait être encore installé",
+    "failed": "Échec de la désinstallation de l'agent",
+    "cancelled": "Désinstallation de l'agent annulée",
+    "none": "L'agent a été laissé installé"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Importer depuis un autre RMM",
+    "description": "Récupérez les champs personnalisés et leurs valeurs depuis votre ancien RMM.",
+    "close": "Fermer",
+    "sourceLabel": "Source",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "CSV générique"
+    },
+    "steps": {
+      "definitions": "Définitions de champs",
+      "values": "Valeurs des appareils"
+    },
+    "backToDefinitions": "Retour aux définitions de champs"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Déposez ici un CSV de la liste de champs de votre ancien fournisseur, ou cliquez pour parcourir",
+    "errors": {
+      "previewFailed": "Impossible de prévisualiser ces définitions de champs",
+      "importFailed": "Impossible d'importer ces définitions de champs",
+      "allRefused": "Aucune de ces définitions de champs n'a pu être importée — voir les erreurs ci-dessous"
+    },
+    "ownerScope": {
+      "legend": "À qui appartiennent ces champs",
+      "allOrganizations": "Toutes les organisations",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
+    "grid": {
+      "heading": "{{count}} champ trouvé — renommez et typez chacun",
+      "heading_other": "{{count}} champs trouvés — renommez et typez chacun",
+      "sourceLabel": "Champ source",
+      "name": "Nom",
+      "type": "Type"
+    },
+    "actions": {
+      "preview": "Aperçu",
+      "previewing": "Aperçu en cours…",
+      "import": "Créer les champs",
+      "importing": "Création…",
+      "skipToValues": "Passer — continuer vers les valeurs"
+    },
+    "preview": {
+      "heading": "Aperçu"
+    },
+    "annotations": {
+      "create": "Sera créé",
+      "already-exists": "Existe déjà",
+      "type-conflict": "Conflit de type",
+      "key-shadowed": "Clé déjà utilisée dans l'autre portée",
+      "org-not-found": "Organisation introuvable",
+      "partner-wide-denied": "Vous ne pouvez pas créer de champs pour toutes les organisations"
+    },
+    "summary": "{{created}} créés, {{skipped}} ignorés, {{failed}} échoués"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Déposez ici un CSV de valeurs d'appareils, ou cliquez pour parcourir",
+    "errors": {
+      "previewFailed": "Impossible de prévisualiser ces valeurs",
+      "importFailed": "Impossible d'importer ces valeurs"
+    },
+    "mode": {
+      "label": "Quand une valeur est déjà définie",
+      "skip": "La laisser telle quelle",
+      "update": "L'écraser"
+    },
+    "dateFormat": {
+      "label": "Format de date",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Remplacer les données de garantie du fabricant",
+    "mapping": {
+      "ignore": "Ignorer cette colonne",
+      "identifierGroup": "Faire correspondre l'appareil par…",
+      "identifiers": {
+        "deviceId": "ID de l'appareil",
+        "externalSystem": "Système source",
+        "externalId": "ID de l'appareil dans la source",
+        "serialNumber": "Numéro de série",
+        "hostname": "Nom d'hôte",
+        "organizationId": "ID de l'organisation"
+      },
+      "customField": "Champ personnalisé…",
+      "warrantyGroup": "Garantie",
+      "warranty": {
+        "warrantyStartDate": "Date de début de garantie",
+        "warrantyEndDate": "Date de fin de garantie",
+        "manufacturer": "Fabricant"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} ligne ignorée — aucun identifiant ni valeur associé",
+      "droppedRows_other": "{{count}} lignes ignorées — aucun identifiant ni valeur associé"
+    },
+    "actions": {
+      "preview": "Prévisualiser {{count}} ligne",
+      "preview_other": "Prévisualiser {{count}} lignes",
+      "previewing": "Aperçu en cours…",
+      "import": "Importer {{count}} ligne",
+      "import_other": "Importer {{count}} lignes",
+      "importing": "Importation…"
+    },
+    "chunkedNotice": "Ce fichier est plus volumineux qu'une seule requête — il sera envoyé automatiquement en plusieurs parties.",
+    "progress": "Partie {{done}} sur {{total}}",
+    "summary": "{{applied}} appliquées, {{skipped}} ignorées, {{failed}} valeurs échouées",
+    "notAttempted": "{{count}} ligne n'a pas été tentée car une partie précédente a échoué — corrigez l'erreur ci-dessous et relancez l'importation pour les lignes restantes",
+    "notAttempted_other": "{{count}} lignes n'ont pas été tentées car une partie précédente a échoué — corrigez l'erreur ci-dessous et relancez l'importation pour les lignes restantes",
+    "errorRow": "Ligne {{index}}",
+    "previewStale": "Le mappage a changé depuis cet aperçu — relancez l'aperçu avant d'importer"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Tout sélectionner",
+    "unresolved": "Non résolu",
+    "columns": {
+      "device": "Appareil",
+      "status": "Statut",
+      "values": "Valeurs"
+    },
+    "rowOutcomes": {
+      "matched": "Associé",
+      "linkMatch": "Lié",
+      "ambiguous": "Ambigu",
+      "notFound": "Introuvable",
+      "orgNotFound": "Organisation introuvable",
+      "identityConflict": "Correspondance en conflit"
+    },
+    "valueOutcomes": {
+      "applied": "Appliqué",
+      "skippedAlreadySet": "Déjà défini",
+      "skippedProviderOwned": "Géré par le fournisseur",
+      "noDefinition": "Champ inexistant",
+      "typeError": "Erreur de type",
+      "notApplicable": "Non applicable à cet appareil",
+      "deviceUnresolved": "Appareil non résolu"
+    },
+    "hideCandidates": "Masquer les candidats",
+    "showCandidates": "Afficher {{count}} candidat",
+    "showCandidates_other": "Afficher {{count}} candidats",
+    "picked": "{{deviceId}} choisi",
+    "candidate": {
+      "serial": "Série : {{value}}",
+      "os": "SE : {{value}}",
+      "enrolled": "Inscrit : {{value}}",
+      "lastSeen": "Vu pour la dernière fois : {{value}}",
+      "pick": "Choisir",
+      "picked": "Choisi"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Date de début de garantie",
+      "warrantyEndDate": "Date de fin de garantie",
+      "manufacturer": "Fabricant"
+    },
+    "identityConflictNote": "Les identifiants de cette ligne pointent vers des appareils différents et ne peuvent pas être importés tels quels — corrigez le fichier et relancez l'aperçu. Les candidats ci-dessous sont indiqués à titre de référence uniquement."
   }
 }

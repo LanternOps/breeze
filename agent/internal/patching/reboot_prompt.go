@@ -92,6 +92,25 @@ func planRebootRungs(plan RebootPlan) []rebootRung {
 	return rungs
 }
 
+// planRebootRungsQuietLead is planRebootRungs for a schedule that a user's own
+// postponement just re-planned (#4941).
+//
+// The lead rung of any plan fires at offset zero, so re-planning arms it at the
+// instant the postponement was granted. Left deferrable it reopens the very
+// dialog the user just answered — same question, counter decremented — which
+// reads as the click not having worked. The warning itself is untouched: it is
+// how the user learns the new restart time (#3197). Only the dialog goes away,
+// and only on that one rung, so the rest of the budget is still offered by the
+// reminder rungs of the new ladder.
+func planRebootRungsQuietLead(plan RebootPlan) []rebootRung {
+	rungs := planRebootRungs(plan)
+	if len(rungs) > 0 {
+		rungs[0].deferrable = false
+		rungs[0].promptWindow = 0
+	}
+	return rungs
+}
+
 // rebootDeferralNote is the line appended to a deferrable reboot's warning so the
 // user can see where they stand. Empty when the policy is off, which is what
 // keeps a non-deferrable reboot's copy byte-for-byte identical to today's.

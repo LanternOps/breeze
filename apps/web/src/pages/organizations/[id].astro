@@ -1,0 +1,11 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import OrganizationRecordPage from '../../components/organizations/record/OrganizationRecordPage';
+
+const { id } = Astro.params;
+if (!id) return Astro.redirect('/settings/organizations');
+---
+
+<DashboardLayout title="Organization">
+  <OrganizationRecordPage orgId={id} client:load />
+</DashboardLayout>

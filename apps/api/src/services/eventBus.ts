@@ -73,6 +73,9 @@ export type EventType =
   | 'automation.started'
   | 'automation.completed'
   | 'automation.failed'
+  // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
+  // went wrong, so alerting keyed on automation.failed must not fire.
+  | 'automation.cancelled'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -224,6 +227,10 @@ export interface BreezeEvent<T = Record<string, unknown>> {
 }
 
 export interface PublishOptions {
+  /** Stable logical identity for a durable publisher; retries may physically redeliver. */
+  eventId?: string;
+  /** Immutable source timestamp for durable publication retries. */
+  occurredAt?: string;
   priority?: EventPriority;
   correlationId?: string;
   causationId?: string;
@@ -291,7 +298,12 @@ class EventBus {
     source: string,
     options: PublishOptions = {}
   ): Promise<string> {
-    const eventId = randomUUID();
+    const eventId = options.eventId ?? randomUUID();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId)) {
+      throw new Error('Invalid eventId');
+    }
+    const occurredAt = options.occurredAt === undefined ? new Date() : new Date(options.occurredAt);
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid occurredAt');
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Normalise an empty-string siteId to "no attribution" so the WS filter
@@ -311,7 +323,7 @@ class EventBus {
         correlationId: options.correlationId || eventId,
         causationId: options.causationId,
         userId: options.userId,
-        timestamp: new Date().toISOString()
+        timestamp: occurredAt.toISOString()
       }
     };
 
@@ -579,6 +591,7 @@ export const EVENT_TYPES = {
   AUTOMATION_STARTED: 'automation.started' as const,
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
+  AUTOMATION_CANCELLED: 'automation.cancelled' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,
