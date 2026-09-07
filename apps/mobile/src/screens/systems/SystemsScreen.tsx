@@ -43,6 +43,7 @@ import {
 } from './undoAck';
 import { UndoToast } from '../../components/UndoToast';
 import { FilterChip } from './components/FilterChip';
+import { FindingsRow } from './components/FindingsRow';
 import { Hero } from './components/Hero';
 import { IssueRow } from './components/IssueRow';
 import { OrgRow } from './components/OrgRow';
@@ -156,6 +157,8 @@ export function SystemsScreen() {
     activeIssues,
     recent,
     orgRollups,
+    findingsCount,
+    activeFindingsSummary,
     filterOrgId,
     filterOrgName,
     filterOrgDeviceCounts,
@@ -205,6 +208,7 @@ export function SystemsScreen() {
           devices: filterOrgDeviceCounts ?? { total: 0, online: 0, offline: 0, maintenance: 0 },
         }
       : null,
+    findingsCount,
   );
 
   useFocusEffect(
@@ -562,8 +566,8 @@ export function SystemsScreen() {
 
   const showOrgs = !filterOrgId && orgRollups.length > 0;
   const showRecent = recent.length > 0;
-  const showActiveIssues = visibleIssues.length > 0;
-  const showActiveSkeleton = loading && activeIssues.length === 0;
+  const showActiveIssues = visibleIssues.length > 0 || activeFindingsSummary.length > 0;
+  const showActiveSkeleton = loading && activeIssues.length === 0 && activeFindingsSummary.length === 0;
   // Every section can hide independently, and the org filter suppresses the
   // Organizations list outright — so a filtered org with nothing outstanding
   // rendered a completely blank page under the chip, indistinguishable from a
@@ -746,7 +750,23 @@ export function SystemsScreen() {
                 onSwipeAcknowledge={() => scheduleAcknowledge([alert.id])}
                 selectable={selecting}
                 selected={selected.has(alert.id)}
-                showDivider={idx < visibleIssues.length - 1}
+                showDivider={idx < visibleIssues.length - 1 || activeFindingsSummary.length > 0}
+                dividerColor={theme.border}
+              />
+            ))}
+            {/*
+              Open fleet-hygiene findings (#5139 / #5117 decision 1) — one
+              summary row per org, visually distinct from alert rows (no
+              severity dot, "Finding" label). The counts endpoint returns
+              aggregate counts rather than individual finding records, so
+              there is no per-finding row or tap-through yet (later item).
+            */}
+            {activeFindingsSummary.map((finding, idx) => (
+              <FindingsRow
+                key={finding.orgId}
+                orgName={finding.orgName}
+                count={finding.count}
+                showDivider={idx < activeFindingsSummary.length - 1}
                 dividerColor={theme.border}
               />
             ))}

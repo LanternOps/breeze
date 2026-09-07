@@ -30,6 +30,14 @@ export function deriveHeroState(
   summary: MobileSummary | null,
   activeIssues: Alert[],
   orgScope: OrgHeroScope | null = null,
+  // Open fleet-hygiene finding count (#5139 / #5117 decision 1), already
+  // scoped by the caller to match `orgScope` (fleet-wide total when
+  // `orgScope` is null, that org's own count otherwise) — this function does
+  // no org filtering of its own, same contract as `activeIssues`. Findings
+  // carry no severity here (only a count), so they add to the issue count and
+  // copy ladder but do NOT contribute to the critical/warning bar segments
+  // below, which stay alert-severity-driven.
+  findingsCount = 0,
 ): HeroState {
   const deviceCounts = orgScope ? orgScope.devices : summary?.devices ?? null;
   if (!deviceCounts) {
@@ -52,7 +60,7 @@ export function deriveHeroState(
   const online = deviceCounts.online;
   const offline = deviceCounts.offline;
   const maintenance = deviceCounts.maintenance;
-  const issueCount = activeIssues.length;
+  const issueCount = activeIssues.length + findingsCount;
   // Scoped to a single org by construction — "issues across N organizations"
   // never applies once a filter is active.
   const orgCount = orgScope ? 1 : uniqueOrgCount(activeIssues);

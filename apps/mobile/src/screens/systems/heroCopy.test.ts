@@ -228,4 +228,41 @@ describe('deriveHeroState', () => {
       expect(s.legend).toBeNull();
     });
   });
+
+  describe('open fleet findings fold into the issue count (#5139)', () => {
+    it('a lone open finding, with zero active alerts, still reads as "1 issue."', () => {
+      const s = deriveHeroState(summary({ total: 5, online: 5 }), [], null, 1);
+      expect(s.copy).toBe('1 issue.');
+    });
+
+    it('findings add to the active-alert count rather than replacing it', () => {
+      const s = deriveHeroState(
+        summary({ total: 10, online: 10 }),
+        [alert({ id: 'a1', metadata: { orgId: 'org-1' } })],
+        null,
+        2,
+      );
+      expect(s.copy).toBe('3 issues.');
+    });
+
+    it('defaults to 0 findings when the argument is omitted (back-compat with existing callers)', () => {
+      const s = deriveHeroState(summary({ total: 5, online: 5 }), []);
+      expect(s.copy).toBe('5 devices, all healthy.');
+    });
+
+    it('zero findings and zero alerts still reads "all healthy"', () => {
+      const s = deriveHeroState(summary({ total: 5, online: 5 }), [], null, 0);
+      expect(s.copy).toBe('5 devices, all healthy.');
+    });
+
+    it('org-scoped hero folds in that org\'s own findings count', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 12, offline: 0, maintenance: 0 } },
+        1,
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 1 issue.');
+    });
+  });
 });

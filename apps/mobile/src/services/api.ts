@@ -1129,6 +1129,24 @@ export async function getDevice(id: string): Promise<Device> {
   return mapDevice(response);
 }
 
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Calls GET /api/v1/fleet/findings/counts — open fleet-hygiene finding
+ * counts per org, plus the fleet total (#5139 / #5117 decision 1). Folds
+ * fleet findings (VSS/Universal Print/Intel ME/SCEP failures, etc.) into the
+ * same "issue count" the AI's get_fleet_findings tool already reports, so
+ * the Systems tab shows the same picture. This route lives outside the
+ * `/mobile` surface, so it goes through the core `/api/v1` prefix like
+ * `getDevice` above, not the `/mobile`-prefixed `request()` helper.
+ */
+export async function getFleetFindingCounts(): Promise<FleetFindingCounts> {
+  return requestWithPrefix<FleetFindingCounts>('/fleet/findings/counts', API_CORE_PREFIX);
+}
+
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
   // GET /devices/:id/metrics (apps/api/src/routes/devices/metrics.ts) returns
   // buckets keyed `cpu`/`ram`/`disk` (aggregateMetricsByInterval), not

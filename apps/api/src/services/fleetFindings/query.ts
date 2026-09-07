@@ -313,6 +313,66 @@ export async function listFleetFindings(
   return { findings: page.map(serializeFinding), total };
 }
 
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Open-finding counts per org (+ fleet total), for the mobile Systems tab
+ * (#5139 / #5117 decision 1): folds fleet-hygiene findings into the same
+ * "issue count" the AI's `get_fleet_findings` tool already reports, so a
+ * technician opening Systems sees the same picture.
+ *
+ * Only `status = 'open'` counts — acknowledged/dismissed/resolved findings
+ * are already being worked or closed out and must not inflate the count a
+ * technician is triaging against.
+ *
+ * Scoping mirrors `listFleetFindings`: `auth.orgCondition` narrows the SQL
+ * fetch, and a site-restricted caller (`auth.allowedSiteIds` set) gets the
+ * result narrowed further to findings with at least one member device in an
+ * allowed site — same fail-closed semantics (a finding with zero in-scope
+ * members must not inflate a count the caller cannot otherwise see).
+ */
+export async function getFleetFindingCounts(auth: AuthContext): Promise<FleetFindingCounts> {
+  const conditions: SQL[] = [eq(fleetFindings.status, 'open')];
+  const orgCondition = auth.orgCondition(fleetFindings.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+
+  const rows = (await db
+    .select({ id: fleetFindings.id, orgId: fleetFindings.orgId })
+    .from(fleetFindings)
+    .where(and(...conditions))) as Array<{ id: string; orgId: string }>;
+
+  let scoped = rows;
+
+  if (auth.allowedSiteIds !== undefined) {
+    const allowedSiteIds = auth.allowedSiteIds;
+    if (allowedSiteIds.length === 0 || rows.length === 0) {
+      return { total: 0, byOrg: {} };
+    }
+
+    const candidateIds = rows.map((r) => r.id);
+    const memberRows = (await db
+      .select({ findingId: fleetFindingDevices.findingId })
+      .from(fleetFindingDevices)
+      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+      .where(
+        and(inArray(fleetFindingDevices.findingId, candidateIds), inArray(devices.siteId, allowedSiteIds))
+      )) as Array<{ findingId: string }>;
+
+    const visibleFindingIds = new Set(memberRows.map((m) => m.findingId));
+    scoped = rows.filter((r) => visibleFindingIds.has(r.id));
+  }
+
+  const byOrg: Record<string, number> = {};
+  for (const r of scoped) {
+    byOrg[r.orgId] = (byOrg[r.orgId] ?? 0) + 1;
+  }
+
+  return { total: scoped.length, byOrg };
+}
+
 /**
  * Fetch a single finding + live member devices + last 10 runs, scoped to
  * `auth`. Returns `null` when the finding doesn't exist, isn't in an
