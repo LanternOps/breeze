@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockListReliabilityDevices = vi.fn();
 const mockListUserRiskScores = vi.fn();
+const mockGetUserRiskDetail = vi.fn();
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -86,7 +87,7 @@ vi.mock('./reliabilityScoring', () => ({
 
 vi.mock('./userRiskScoring', () => ({
   assignSecurityTraining: vi.fn(),
-  getUserRiskDetail: vi.fn(),
+  getUserRiskDetail: (...args: unknown[]) => mockGetUserRiskDetail(...args),
   listUserRiskScores: (...args: unknown[]) => mockListUserRiskScores(...args),
 }));
 
@@ -235,5 +236,25 @@ describe('aiTools get_user_risk_scores site scoping', () => {
 
     expect(parsed).toEqual({ error: 'Access denied to this site' });
     expect(mockListUserRiskScores).not.toHaveBeenCalled();
+  });
+});
+
+describe('aiTools get_user_risk_detail site scoping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetUserRiskDetail.mockResolvedValue(null);
+  });
+
+  it('passes the authenticated site ceiling to the detail service', async () => {
+    const auth = {
+      user: { id: 'user-1' }, orgId: 'org-1', scope: 'organization',
+      accessibleOrgIds: ['org-1'], allowedSiteIds: ['site-1'],
+      canAccessOrg: (id: string) => id === 'org-1',
+      canAccessSite: (id: string) => id === 'site-1', orgCondition: () => undefined,
+    } as any;
+
+    await executeTool('get_user_risk_detail', { userId: 'target-1' }, auth);
+
+    expect(mockGetUserRiskDetail).toHaveBeenCalledWith('org-1', 'target-1', ['site-1']);
   });
 });

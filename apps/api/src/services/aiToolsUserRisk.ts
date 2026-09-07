@@ -247,7 +247,7 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
       }
 
-      const detail = await getUserRiskDetail(resolved.orgId, input.userId);
+      const detail = await getUserRiskDetail(resolved.orgId, input.userId, auth.allowedSiteIds);
       if (!detail) {
         return JSON.stringify({ message: 'No user risk data available for this user' });
       }

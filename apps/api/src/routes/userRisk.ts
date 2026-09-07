@@ -141,6 +141,13 @@ userRiskRoutes.get(
     if (query.orgId && !auth.canAccessOrg(query.orgId)) {
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
+    if (
+      query.siteId
+      && auth.allowedSiteIds !== undefined
+      && !auth.allowedSiteIds.includes(query.siteId)
+    ) {
+      return c.json({ error: 'Access denied to this site' }, 403);
+    }
 
     const orgIds = query.orgId
       ? [query.orgId]
@@ -156,6 +163,7 @@ userRiskRoutes.get(
     const result = await listUserRiskScores({
       orgIds,
       siteId: query.siteId,
+      siteIds: auth.allowedSiteIds,
       minScore: query.minScore,
       maxScore: query.maxScore,
       trendDirection: query.trendDirection,
@@ -202,7 +210,7 @@ userRiskRoutes.get(
       const memberships = await Promise.all(
         orgResolution.orgIds.map(async (orgId) => ({
           orgId,
-          member: await getUserRiskOrgMembership(userId, orgId)
+          member: await getUserRiskOrgMembership(userId, orgId, auth.allowedSiteIds)
         }))
       );
 
@@ -214,7 +222,7 @@ userRiskRoutes.get(
         return c.json({ error: 'orgId is required for users mapped to multiple organizations' }, 400);
       }
 
-      const detail = await getUserRiskDetail(matches[0]!, userId);
+      const detail = await getUserRiskDetail(matches[0]!, userId, auth.allowedSiteIds);
       if (!detail) return c.json({ error: 'No user risk data available for this user' }, 404);
       return c.json({ data: detail });
     }
@@ -227,7 +235,7 @@ userRiskRoutes.get(
       return c.json({ error: 'Organization context required' }, 400);
     }
 
-    const detail = await getUserRiskDetail(resolvedOrgId, userId);
+    const detail = await getUserRiskDetail(resolvedOrgId, userId, auth.allowedSiteIds);
     if (!detail) {
       return c.json({ error: 'No user risk data available for this user' }, 404);
     }
@@ -266,6 +274,7 @@ userRiskRoutes.get(
       severity: query.severity,
       from: query.from ? new Date(query.from) : undefined,
       to: query.to ? new Date(query.to) : undefined,
+      siteIds: auth.allowedSiteIds,
       limit: query.limit,
       offset
     });
@@ -306,6 +315,7 @@ userRiskRoutes.get(
 
     const evaluation = await getUserRiskEvaluation({
       orgIds,
+      siteIds: auth.allowedSiteIds,
       days: query.days
     });
 

@@ -31,12 +31,25 @@ import {
   classifyUserRiskSeverity,
   computeUserRiskScoreFromFactors,
   deriveUserRiskTrendDirection,
+  getUserRiskDetail,
   normalizeUserRiskInterventions,
   normalizeUserRiskThresholds,
   normalizeUserRiskWeights,
   publishUserRiskScoreEvents,
   userRiskScoringInternals
 } from './userRiskScoring';
+
+function mockHiddenRiskMembership(): void {
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          for: vi.fn().mockResolvedValue([])
+        })
+      })
+    })
+  });
+}
 
 function mockRecentTrainingAssignments(rows: Array<{ id: string }>) {
   dbMocks.selectMock.mockReturnValueOnce({
@@ -109,6 +122,21 @@ describe('userRiskScoring helpers', () => {
     expect(deriveUserRiskTrendDirection(50, 55)).toBe('up');
     expect(deriveUserRiskTrendDirection(50, 45)).toBe('down');
     expect(deriveUserRiskTrendDirection(50, 52)).toBe('stable');
+  });
+});
+
+describe('getUserRiskDetail visibility short-circuit', () => {
+  it('performs no score, event, or policy subsidiary read for a hidden membership', async () => {
+    mockHiddenRiskMembership();
+
+    await expect(getUserRiskDetail(
+      '00000000-0000-4000-8000-000000000001',
+      '00000000-0000-4000-8000-000000000010',
+      ['00000000-0000-4000-8000-000000000050'],
+    )).resolves.toBeNull();
+
+    expect(dbMocks.selectMock).toHaveBeenCalledTimes(1);
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
   });
 });
 

@@ -56,6 +56,8 @@ function buildApp(authOverrides?: Partial<{
   orgId: string | null;
   accessibleOrgIds: string[] | null;
   canAccessOrg: (orgId: string) => boolean;
+  allowedSiteIds: string[] | undefined;
+  canAccessSite: (siteId: string | null | undefined) => boolean;
 }>): Hono {
   const authSetter = async (c: any, next: any) => {
     c.set('auth', {
@@ -63,7 +65,11 @@ function buildApp(authOverrides?: Partial<{
       scope: authOverrides?.scope ?? 'organization',
       orgId: authOverrides?.orgId ?? ORG_ID,
       accessibleOrgIds: authOverrides?.accessibleOrgIds ?? [ORG_ID],
-      canAccessOrg: authOverrides?.canAccessOrg ?? ((id: string) => id === ORG_ID)
+      canAccessOrg: authOverrides?.canAccessOrg ?? ((id: string) => id === ORG_ID),
+      allowedSiteIds: authOverrides && 'allowedSiteIds' in authOverrides
+        ? authOverrides.allowedSiteIds
+        : ['00000000-0000-4000-8000-000000000050'],
+      canAccessSite: authOverrides?.canAccessSite ?? ((id: string | null | undefined) => id === '00000000-0000-4000-8000-000000000050')
     });
     await next();
   };
@@ -127,6 +133,16 @@ describe('userRiskRoutes', () => {
     expect(body.data).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
     expect(body.summary.highRiskUsers).toBe(1);
+    expect(listUserRiskScores).toHaveBeenCalledWith(expect.objectContaining({
+      siteIds: ['00000000-0000-4000-8000-000000000050']
+    }));
+  });
+
+  it('GET /scores rejects an explicit site outside the authenticated ceiling before querying', async () => {
+    const app = buildApp();
+    const res = await app.request('/user-risk/scores?siteId=00000000-0000-4000-8000-000000000051');
+    expect(res.status).toBe(403);
+    expect(listUserRiskScores).not.toHaveBeenCalled();
   });
 
   it('GET /scores returns 403 for inaccessible org filter', async () => {
@@ -170,6 +186,39 @@ describe('userRiskRoutes', () => {
     const body = await res.json();
     expect(body.data.user.id).toBe(USER_ID);
     expect(body.data.latestScore.score).toBe(55);
+    expect(getUserRiskDetail).toHaveBeenCalledWith(
+      ORG_ID,
+      USER_ID,
+      ['00000000-0000-4000-8000-000000000050']
+    );
+  });
+
+  it('GET /users/:userId applies the site ceiling while resolving multiple organizations', async () => {
+    vi.mocked(resolveOrgAccess).mockResolvedValue({ type: 'multiple', orgIds: [ORG_ID, ORG_ID_2] });
+    vi.mocked(getUserRiskOrgMembership)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    vi.mocked(getUserRiskDetail).mockResolvedValue({
+      user: { id: USER_ID, name: 'Alice', email: 'alice@example.com', mfaEnabled: true, lastLoginAt: null },
+      latestScore: {
+        score: 55, factors: {}, trendDirection: 'stable', calculatedAt: '2026-02-26T00:00:00.000Z',
+        deltaFromPrevious: 0, severity: 'medium'
+      },
+      recentEvents: [], history: [],
+      policy: { orgId: ORG_ID_2, weights: {}, thresholds: {}, interventions: {}, updatedAt: '2026-02-26T00:00:00.000Z', updatedBy: null }
+    });
+    const siteIds = ['00000000-0000-4000-8000-000000000050'];
+    const app = buildApp({
+      scope: 'partner', orgId: null, accessibleOrgIds: [ORG_ID, ORG_ID_2],
+      canAccessOrg: () => true, allowedSiteIds: siteIds
+    });
+
+    const res = await app.request(`/user-risk/users/${USER_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(getUserRiskOrgMembership).toHaveBeenNthCalledWith(1, USER_ID, ORG_ID, siteIds);
+    expect(getUserRiskOrgMembership).toHaveBeenNthCalledWith(2, USER_ID, ORG_ID_2, siteIds);
+    expect(getUserRiskDetail).toHaveBeenCalledWith(ORG_ID_2, USER_ID, siteIds);
   });
 
   it('GET /events returns event history', async () => {
@@ -198,6 +247,9 @@ describe('userRiskRoutes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.pagination.total).toBe(1);
+    expect(listUserRiskEvents).toHaveBeenCalledWith(expect.objectContaining({
+      siteIds: ['00000000-0000-4000-8000-000000000050']
+    }));
   });
 
   it('GET /evaluation returns label quality metrics', async () => {
@@ -224,6 +276,7 @@ describe('userRiskRoutes', () => {
     expect(body.data.precision).toBe(0.75);
     expect(getUserRiskEvaluation).toHaveBeenCalledWith({
       orgIds: [ORG_ID],
+      siteIds: ['00000000-0000-4000-8000-000000000050'],
       days: 14
     });
   });
