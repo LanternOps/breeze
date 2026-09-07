@@ -31,4 +31,13 @@ describe('orgRowSubtitle', () => {
   it('prioritizes offline over issues when both are present', () => {
     expect(orgRowSubtitle({ deviceCount: 10, offlineCount: 3, issueCount: 4 })).toBe('10 devices · 3 offline');
   });
+
+  // #5139: `issueCount` already folds open fleet findings alongside active
+  // alerts upstream (see useSystemsData's `orgRollups` / `foldFindingsIntoOrgRollups`)
+  // — this function has no opinion on the split, it only formats whatever
+  // total it's handed.
+  it('does not distinguish alert-sourced issues from finding-sourced ones — it formats the total', () => {
+    // 1 alert + 2 findings folded upstream into issueCount = 3.
+    expect(orgRowSubtitle({ deviceCount: 5, offlineCount: 0, issueCount: 3 })).toBe('5 devices · 3 issues');
+  });
 });

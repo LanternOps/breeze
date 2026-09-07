@@ -1,8 +1,8 @@
-import type { Alert, Device } from '../../services/api';
+import type { Alert, Device, FleetFindingCounts } from '../../services/api';
 import type { MobileSummary, OrganizationSummary } from '../../services/systems';
 
 /**
- * The five independent fetches behind the Systems screen, in the order
+ * The six independent fetches behind the Systems screen, in the order
  * `fetchAll` issues them.
  */
 export interface SystemsSlices {
@@ -21,6 +21,13 @@ export interface SystemsSlices {
   activeAlerts: Alert[];
   devices: Device[];
   orgs: OrganizationSummary[];
+  /**
+   * Open fleet-hygiene finding counts (#5139 / #5117 decision 1), folded into
+   * the same issue count active alerts drive. `null` until the first
+   * successful fetch — every consumer treats that the same as "0 findings"
+   * (alerts-only), never a crash, matching the degrade-gracefully contract.
+   */
+  findings: FleetFindingCounts | null;
 }
 
 export interface MergeOutcome {
@@ -39,12 +46,13 @@ function take<T>(result: PromiseSettledResult<T>, previous: T): T {
 }
 
 /**
- * Merge the settled results of the five Systems fetches over the previously
+ * Merge the settled results of the six Systems fetches over the previously
  * rendered data.
  *
- * The screen used to issue these through `Promise.all`, so a single rejection
- * discarded ALL FIVE results — a transient failure on, say, the summary call
- * blanked a fleet of devices that had loaded perfectly well, and the user saw an
+ * The screen used to issue these through `Promise.all` (back when there were
+ * five), so a single rejection discarded ALL of them — a transient failure
+ * on, say, the summary call blanked a fleet of devices that had loaded
+ * perfectly well, and the user saw an
  * empty screen with a generic error. Each slice now stands on its own: whatever
  * arrived is rendered, whatever failed keeps its last-known value, and the error
  * line distinguishes "nothing loaded" from "some of this is stale".
@@ -57,10 +65,11 @@ export function mergeSystemsResults(
     activeAlerts: PromiseSettledResult<Alert[]>;
     devices: PromiseSettledResult<Device[]>;
     orgs: PromiseSettledResult<OrganizationSummary[]>;
+    findings: PromiseSettledResult<FleetFindingCounts | null>;
   }
 ): MergeOutcome {
   const failed: Array<keyof SystemsSlices> = [];
-  for (const key of ['summary', 'alerts', 'activeAlerts', 'devices', 'orgs'] as const) {
+  for (const key of ['summary', 'alerts', 'activeAlerts', 'devices', 'orgs', 'findings'] as const) {
     if (results[key].status === 'rejected') failed.push(key);
   }
 
@@ -70,9 +79,10 @@ export function mergeSystemsResults(
     activeAlerts: take(results.activeAlerts, previous.activeAlerts),
     devices: take(results.devices, previous.devices),
     orgs: take(results.orgs, previous.orgs),
+    findings: take(results.findings, previous.findings),
   };
 
-  const total = 5;
+  const total = 6;
   let error: string | null = null;
   if (failed.length === total) {
     error = ALL_FAILED_MESSAGE;
@@ -87,7 +97,7 @@ export function mergeSystemsResults(
 export function rejectionReasons(results: {
   [K in keyof SystemsSlices]: PromiseSettledResult<unknown>;
 }): unknown[] {
-  return (['summary', 'alerts', 'activeAlerts', 'devices', 'orgs'] as const)
+  return (['summary', 'alerts', 'activeAlerts', 'devices', 'orgs', 'findings'] as const)
     .map((k) => results[k])
     .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     .map((r) => r.reason);
