@@ -111,8 +111,16 @@ async function linkTelemetryDeviceToAsset(
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
   const inserted = await db.insert(discoveredAssets)
-    .values({ orgId, siteId, ipAddress: ip, ...enrich })
-    .onConflictDoUpdate({ target: [discoveredAssets.orgId, discoveredAssets.ipAddress], set: enrich })
+    // #5213 — `source` is insert-side only: the conflict branch must never
+    // relabel an existing (possibly manual) row.
+    .values({ orgId, siteId, ipAddress: ip, source: 'unifi', ...enrich })
+    .onConflictDoUpdate({
+      target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
+      // The index is PARTIAL as of #5213; Postgres only infers a partial unique
+      // index when the statement repeats its predicate (else 42P10 at runtime).
+      targetWhere: sql`${discoveredAssets.ipAddress} is not null`,
+      set: enrich,
+    })
     .returning({ id: discoveredAssets.id });
   return inserted[0]?.id ?? null;
 }

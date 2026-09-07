@@ -42,7 +42,7 @@ function fakeClient(devices: any[]): UnifiClient {
 // `.then()` so each awaited chain records exactly once).
 // ---------------------------------------------------------------------------
 
-type WriteRecord = { table: any; values: any; conflictSet?: any; conflictTarget?: any };
+type WriteRecord = { table: any; values: any; conflictSet?: any; conflictTarget?: any; conflictTargetWhere?: any; conflictOptKeys?: string[] };
 
 function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAsset?: any }) {
   const writes: { inserts: WriteRecord[]; updates: WriteRecord[] } = {
@@ -58,6 +58,8 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
     conflictSet?: any;
     conflictTarget?: any;
     hasReturning?: boolean;
+    conflictTargetWhere?: any;
+    conflictOptKeys?: string[];
   }) {
     const chain: any = {
       // select chain
@@ -79,6 +81,8 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
       onConflictDoUpdate(opts: any) {
         ctx.conflictSet = opts?.set;
         ctx.conflictTarget = opts?.target;
+        ctx.conflictTargetWhere = opts?.targetWhere;
+        ctx.conflictOptKeys = Object.keys(opts ?? {});
         return chain;
       },
       returning(_cols?: any) {
@@ -103,6 +107,8 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
               values: ctx.insertValues,
               conflictSet: ctx.conflictSet,
               conflictTarget: ctx.conflictTarget,
+              conflictTargetWhere: ctx.conflictTargetWhere,
+              conflictOptKeys: ctx.conflictOptKeys,
             });
           } else if (ctx.op === 'update' && ctx.setValues !== undefined) {
             writes.updates.push({ table: ctx.table, values: ctx.setValues });
@@ -503,6 +509,35 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     // The arbiter must be the (org_id, ip_address) unique index the racing
     // agent-discovery insert also targets.
     expect(conflictTarget).toEqual([discoveredAssets.orgId, discoveredAssets.ipAddress]);
+  });
+
+  it('stamps source=unifi on the insert side only (#5213)', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(insert.values.source).toBe('unifi');
+    // The conflict branch must never reset an existing row's source: a
+    // scan-discovered row that UniFi later enriches is still a scan row, and a
+    // MANUAL row must never be relabelled 'unifi' by an enrichment pass.
+    expect(insert.conflictSet).not.toHaveProperty('source');
+  });
+
+  it('never rewrites source on the plain UPDATE path either (#5213)', async () => {
+    const set = await syncAgainstAsset({ id: 'asset-1' });
+    expect(set).not.toHaveProperty('source');
+  });
+
+  it('carries the partial-index predicate on the conflict target (#5213)', async () => {
+    const { writes, db } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await syncIntegration({ db, client: fakeClient([NET_NEW_DEVICE]) }, BASE_INTEGRATION, 'manual');
+
+    const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    // discovered_assets_org_ip_unique is PARTIAL (WHERE ip_address IS NOT NULL)
+    // as of #5213. Without targetWhere, Postgres cannot INFER the index and the
+    // statement fails at runtime with 42P10 — which no compiled-SQL mock catches.
+    expect(insert.conflictOptKeys).toContain('targetWhere');
+    expect(renderSql(insert.conflictTargetWhere)).toContain('is not null');
   });
 
   it('omits the type columns entirely from an unclassified insert conflict', async () => {

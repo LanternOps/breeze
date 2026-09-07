@@ -691,6 +691,78 @@ export const __testables = {
 };
 
 /**
+ * The scan's UPDATE set for an already-known asset (#5213).
+ *
+ * A scan re-finding a manual row updates it IN PLACE — one identity, no
+ * duplicate, which is the whole point of keeping the (org_id, ip_address)
+ * index — but it must not overwrite what the operator typed. `asset_type` is
+ * already covered by `type_source = 'manual'`
+ * (services/discoveredAssetClassification.ts). `hostname` / `manufacturer` /
+ * `model` were NOT, and they are exactly the fields an operator fills in on a
+ * printer that DNS does not resolve, so each is written as a guarded CASE
+ * evaluated by Postgres against the STORED row (never against the SELECT above,
+ * which can go stale mid-scan — the same race #3011 was about).
+ *
+ * `label` needs no guard: the scan never writes it (assetData has no `label`
+ * key). Do not add one.
+ */
+export function buildScanUpdateSet(
+  assetData: Record<string, unknown>,
+  classification: { type: DiscoveredAssetType; source: DiscoveredAssetDetectionSource } | null,
+): PgUpdateSetSource<typeof discoveredAssets> {
+  const updateSet: PgUpdateSetSource<typeof discoveredAssets> = {
+    ...(assetData as PgUpdateSetSource<typeof discoveredAssets>),
+  };
+  for (const col of ['hostname', 'manufacturer', 'model'] as const) {
+    const proposed = assetData[col] ?? null;
+    updateSet[col] = sql`case when ${discoveredAssets.source} = 'manual'
+                              then ${discoveredAssets[col]}
+                              else ${proposed} end`;
+  }
+  if (classification) {
+    const write = buildClassificationWrite(classification.source, {
+      assetType: sql`${classification.type}`,
+      detectedAssetType: sql`${classification.type}`,
+    });
+    updateSet.assetType = write.assetType;
+    updateSet.detectedAssetType = write.detectedAssetType;
+    updateSet.detectedTypeSource = write.detectedTypeSource;
+  }
+  return updateSet;
+}
+
+/**
+ * Conditions selecting the assets the "went offline" sweep may consider (#5213).
+ *
+ * The `is_online = true` condition ALREADY excludes a never-scanned manual row
+ * (born `is_online = false`), so the `last_seen_at IS NOT NULL` condition is
+ * belt and braces — but it is the condition that states the intent, and it
+ * survives someone "helpfully" defaulting `is_online` to true later. The create
+ * route must never set `is_online`; the route test (W02) asserts that.
+ */
+export function buildMonitoredAssetConditions(
+  orgId: string,
+  siteId: string,
+  profileSubnets: string[],
+): SQL<unknown>[] {
+  const conditions: SQL<unknown>[] = [
+    eq(discoveredAssets.orgId, orgId),
+    eq(discoveredAssets.siteId, siteId),
+    eq(discoveredAssets.approvalStatus, 'approved'),
+    eq(discoveredAssets.isOnline, true),
+    sql`${discoveredAssets.lastSeenAt} is not null`,
+  ];
+  const subnetPredicates = profileSubnets
+    .map((subnet) => subnet.trim())
+    .filter(Boolean)
+    .map((subnet) => sql`${discoveredAssets.ipAddress} <<= ${subnet}::inet`);
+  if (subnetPredicates.length > 0) {
+    conditions.push(or(...subnetPredicates)!);
+  }
+  return conditions;
+}
+
+/**
  * Process discovery results — upsert discovered assets
  */
 export async function processResults(data: ProcessResultsJobData): Promise<{
@@ -777,19 +849,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     : [];
   const existingByIp = new Map(scannedExistingAssets.map(a => [a.ipAddress, a]));
 
-  const monitoredAssetConditions: SQL<unknown>[] = [
-    eq(discoveredAssets.orgId, data.orgId),
-    eq(discoveredAssets.siteId, data.siteId),
-    eq(discoveredAssets.approvalStatus, 'approved'),
-    eq(discoveredAssets.isOnline, true)
-  ];
-  const subnetPredicates = profileSubnets
-    .map((subnet) => subnet.trim())
-    .filter(Boolean)
-    .map((subnet) => sql`${discoveredAssets.ipAddress} <<= ${subnet}::inet`);
-  if (subnetPredicates.length > 0) {
-    monitoredAssetConditions.push(or(...subnetPredicates)!);
-  }
+  const monitoredAssetConditions = buildMonitoredAssetConditions(
+    data.orgId,
+    data.siteId,
+    profileSubnets,
+  );
   const monitoredExistingAssets = await db
     .select({
       id: discoveredAssets.id,
@@ -936,16 +1000,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // assigned one at a time: drizzle silently DROPS set keys that name no
       // column, and `Object.assign` would defeat the check (its signature does
       // not constrain the source's keys to the target's).
-      const updateSet: PgUpdateSetSource<typeof discoveredAssets> = { ...assetData };
-      if (classification) {
-        const write = buildClassificationWrite(classification.source, {
-          assetType: sql`${classification.type}`,
-          detectedAssetType: sql`${classification.type}`,
-        });
-        updateSet.assetType = write.assetType;
-        updateSet.detectedAssetType = write.detectedAssetType;
-        updateSet.detectedTypeSource = write.detectedTypeSource;
-      }
+      // #5213: hostname/manufacturer/model are additionally guarded against
+      // clobbering an operator's manual row. See buildScanUpdateSet.
+      const updateSet = buildScanUpdateSet(assetData, classification);
       await db
         .update(discoveredAssets)
         .set(updateSet)
@@ -991,7 +1048,10 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               detectedTypeSource: classification.source,
             }
           : {}),
-        typeSource: 'auto'
+        typeSource: 'auto',
+        // #5213 — insert side only. A scan that later re-finds a manual row
+        // must not relabel it (see buildScanUpdateSet, which omits `source`).
+        source: 'scan'
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
       newCount++;
@@ -1196,6 +1256,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
   if (scannedIps.length > 0) {
     const seenIps = new Set(data.hosts.map(h => h.ip));
     for (const asset of monitoredExistingAssets) {
+      // #5213: ip_address is nullable now, while network_change_events.ip_address
+      // is inet NOT NULL. An IP-less asset can never legitimately reach here (it
+      // cannot have been "seen" by an IP scan), so this narrows the type AND
+      // states the guard.
+      if (!asset.ipAddress) continue;
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
           .set({ isOnline: false })

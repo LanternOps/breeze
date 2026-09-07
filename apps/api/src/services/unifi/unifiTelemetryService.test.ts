@@ -325,6 +325,31 @@ describe('reconcileTelemetry', () => {
     expect(assetInsert?.values.macAddress).toBeUndefined();
   });
 
+  // #5213 — discovered_assets.source and the now-PARTIAL (org_id, ip_address)
+  // unique index.
+  it('stamps source=unifi on the insert side and repeats the partial-index predicate', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-3' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'ab:cd', name: 'sw1', raw: { ipAddress: '10.0.0.8' } }],
+      clients: [],
+    });
+
+    const assetInsert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(assetInsert.values.source).toBe('unifi');
+    // Insert side only — the conflict branch must never relabel an existing
+    // (possibly manual) row.
+    expect(assetInsert.conflict?.set).not.toHaveProperty('source');
+    // Without targetWhere, Postgres cannot infer the partial unique index and
+    // the upsert fails at runtime with 42P10.
+    expect(Object.keys(assetInsert.conflict ?? {})).toContain('targetWhere');
+  });
+
   // Metrics the agent could not collect arrive absent from the body. They must
   // persist as NULL, not undefined — the UPDATE path especially, where drizzle
   // drops undefined keys from SET and would otherwise preserve a stale 0 written

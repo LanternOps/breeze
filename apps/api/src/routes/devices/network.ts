@@ -186,7 +186,14 @@ networkRoutes.get(
       // order undefined between two LIMIT/OFFSET queries, so the page walk in
       // `apps/web/src/lib/devicesFetch.ts` (`fetchAllNetworkDevices`) would
       // silently drop an asset and duplicate another.
-      .orderBy(desc(discoveredAssets.lastSeenAt), desc(discoveredAssets.id))
+      // COALESCE, not a bare column (#5213): Postgres sorts NULLs FIRST on
+      // DESC, so a never-scanned manual row (last_seen_at NULL) would otherwise
+      // pin to the top of page 1 of the offset walk in
+      // apps/web/src/lib/devicesFetch.ts.
+      .orderBy(
+        desc(sql`coalesce(${discoveredAssets.lastSeenAt}, ${discoveredAssets.firstSeenAt})`),
+        desc(discoveredAssets.id),
+      )
       .limit(limit)
       .offset(offset);
 
