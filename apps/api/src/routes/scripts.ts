@@ -35,6 +35,12 @@ import {
   type ScriptCreateScope,
 } from '../services/scriptWrite';
 import {
+  MAX_ACKNOWLEDGED_SECURITY_PATTERNS,
+  resolveScriptSecurityAcknowledgement,
+  scriptSecurityAcknowledgementColumns,
+  unknownSecurityPatternDescriptions,
+} from '../services/scriptSecurityAcknowledgement';
+import {
   describeParameterSecretMismatch,
   describeSecretVariableRejection,
   findParameterSecretMismatches,
@@ -269,6 +275,15 @@ const createScriptSchema = z.object({
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
   isSystem: z.boolean().optional(),
   exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
+  // #5129 — the agent STRICT-pattern descriptions the author acknowledges for
+  // this script. Membership in the closed vocabulary is enforced in the
+  // handler (a typo must be a 400, not a silently-dropped approval the admin
+  // believes they granted); whether each one actually matches the content is
+  // decided by resolveScriptSecurityAcknowledgement, which drops the rest.
+  acknowledgedSecurityPatterns: z
+    .array(z.string())
+    .max(MAX_ACKNOWLEDGED_SECURITY_PATTERNS)
+    .optional(),
   availability: z.enum(['org', 'partner']).optional()
 });
 
@@ -298,6 +313,14 @@ const updateScriptSchema = z.object({
   // `isSystem` is intentionally NOT accepted here — promotion to a global
   // system row stays system-scope-seed-only (the Discussion #633 write hole).
   availability: z.enum(['org', 'partner']).optional(),
+  // #5129. ABSENT means "leave the acknowledgement alone" — a rename or a
+  // timeout change must not silently revoke an approval. An explicit `[]` or
+  // `null` revokes everything.
+  acknowledgedSecurityPatterns: z
+    .array(z.string())
+    .max(MAX_ACKNOWLEDGED_SECURITY_PATTERNS)
+    .nullable()
+    .optional(),
   orgId: z.string().guid().nullable().optional()
 });
 
@@ -636,6 +659,26 @@ scriptRoutes.post(
       return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
 
+    // #5129 — a description outside the agent's closed Strict vocabulary is a
+    // typo or a probe, never a real approval. 400 rather than dropping it, so
+    // an admin is never told a risk was acknowledged when it was not.
+    const unknownPatterns = unknownSecurityPatternDescriptions(
+      data.acknowledgedSecurityPatterns ?? []
+    );
+    if (unknownPatterns.length > 0) {
+      return c.json(
+        {
+          error: `Unknown security pattern acknowledgement: ${unknownPatterns.join(', ')}`,
+          unknownPatterns
+        },
+        400
+      );
+    }
+    const acknowledgement = resolveScriptSecurityAcknowledgement({
+      content: data.content,
+      submitted: data.acknowledgedSecurityPatterns
+    });
+
     const script = await insertScriptRow(auth, scope, data, {
       requestedIsSystem: data.isSystem
     });
@@ -652,6 +695,25 @@ scriptRoutes.post(
         isSystem: script?.isSystem
       }
     });
+
+    // #5129 — a separate audit entry, not a field on script.create: an
+    // acknowledgement is the record of a human accepting a named risk, and it
+    // has to be findable as its own action rather than buried in a create.
+    if (acknowledgement.acknowledged.length > 0) {
+      writeRouteAudit(c, {
+        orgId: resolveScriptAuditOrgId(auth, script?.orgId ?? null),
+        action: 'script.security_acknowledgement',
+        resourceType: 'script',
+        resourceId: script?.id,
+        resourceName: script?.name,
+        details: {
+          acknowledged: acknowledgement.acknowledged,
+          added: acknowledgement.added,
+          removed: acknowledgement.removed,
+          stillBlocked: acknowledgement.unacknowledged
+        }
+      });
+    }
 
     return c.json(script, 201);
   }
@@ -845,6 +907,39 @@ scriptRoutes.put(
       updates.version = script.version + 1;
     }
 
+    // #5129 — resolve the acknowledgement against the content this save
+    // LEAVES BEHIND, not the content that arrived. `data.content` is absent on
+    // a metadata-only edit, and the stored set must then be judged against the
+    // body that is still there.
+    const unknownPatterns = unknownSecurityPatternDescriptions(
+      data.acknowledgedSecurityPatterns ?? []
+    );
+    if (unknownPatterns.length > 0) {
+      return c.json(
+        {
+          error: `Unknown security pattern acknowledgement: ${unknownPatterns.join(', ')}`,
+          unknownPatterns
+        },
+        400
+      );
+    }
+    const acknowledgement = resolveScriptSecurityAcknowledgement({
+      content: data.content ?? script.content,
+      // `acknowledgedSecurityPatterns` absent => carry the stored set forward;
+      // an explicit [] or null revokes. Passing `data.` straight through
+      // preserves that three-way distinction, which is why the field is not
+      // defaulted anywhere on the way in.
+      submitted: data.acknowledgedSecurityPatterns,
+      existing: script.acknowledgedSecurityPatterns
+    });
+    const acknowledgementColumns = scriptSecurityAcknowledgementColumns(
+      acknowledgement,
+      auth.user.id
+    );
+    if (acknowledgementColumns) {
+      Object.assign(updates, acknowledgementColumns);
+    }
+
     const [updated] = await db
       .update(scripts)
       .set(updates)
@@ -881,6 +976,25 @@ scriptRoutes.put(
           : {})
       }
     });
+
+    // #5129 — audited as its own action whenever the set actually moves, so
+    // "who accepted this risk, and when" is answerable without diffing
+    // script.update payloads. A no-op save writes nothing here.
+    if (acknowledgement.changed) {
+      writeRouteAudit(c, {
+        orgId: resolveScriptAuditOrgId(auth, updated.orgId ?? script.orgId),
+        action: 'script.security_acknowledgement',
+        resourceType: 'script',
+        resourceId: updated.id,
+        resourceName: updated.name,
+        details: {
+          acknowledged: acknowledgement.acknowledged,
+          added: acknowledgement.added,
+          removed: acknowledgement.removed,
+          stillBlocked: acknowledgement.unacknowledged
+        }
+      });
+    }
 
     return c.json(updated);
   }
