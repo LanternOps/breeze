@@ -111,11 +111,19 @@ preflight before it is safe on main.
 Then, in order:
 
 ```bash
-gh pr merge <N> --repo LanternOps/breeze --squash --admin
+gh pr merge <N> --repo LanternOps/breeze --squash        # enqueues; NEVER --admin
 ```
-`mcp__feature-lifecycle__complete_wave` → wait for the post-merge `main` run to finish
-before the next merge in a train → dispatch the next unblocked wave → when every
-wave is merged, `mcp__feature-lifecycle__close_feature` with the not-verified list.
+`main` is behind GitHub's **merge queue** (since 2026-09-07). `--squash` without
+`--admin` enqueues the PR; the queue rebuilds it on top of whatever is ahead, runs the
+full `CI Success` gate under `merge_group` (no path filters, smoke jobs blocking), and
+lands it serially. `--admin` bypasses the queue and is what caused the 09-06/09-07
+pile-ups (59 of 80 main runs cancelled, siblings CONFLICTING mid-sweep) — emergency
+only, and say so on the PR. If the queue run fails the PR is dequeued with a comment:
+fix and re-enqueue. Watch for the merge (`gh pr view <N> --json state`), then
+`mcp__feature-lifecycle__complete_wave` → dispatch the next unblocked wave (no need to
+wait for the post-merge `main` run yourself any more; the queue already evaluated
+that ref) → when every wave is merged, `mcp__feature-lifecycle__close_feature` with
+the not-verified list.
 Closing a `p`-labelled feature is what moves it to "Recently shipped" — confirm the
 label is still on the parent (not only on the roadmap item it came from) before
 closing.

@@ -2,6 +2,10 @@ name: CI
 
 on:
   workflow_dispatch:
+  # Merge queue: the queue builds a temporary merge ref and needs the same
+  # `CI Success` check as a PR. No path filters here on purpose — the queue is
+  # the last gate before main and always runs the full suite.
+  merge_group:
   push:
     branches: [main]
     paths-ignore:
