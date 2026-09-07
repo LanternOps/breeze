@@ -66,6 +66,10 @@ vi.mock('./authenticatorTranscript', async (importOriginal) => {
       actual.registrationTranscriptB64(input, async (utf8) =>
         createHash('sha256').update(utf8, 'utf8').digest('base64'),
       ),
+    androidKeyGenChallengeB64: (input: Parameters<typeof actual.androidKeyGenChallengeB64>[0]) =>
+      actual.androidKeyGenChallengeB64(input, async (utf8) =>
+        createHash('sha256').update(utf8, 'utf8').digest('base64'),
+      ),
   };
 });
 
@@ -389,6 +393,22 @@ const expectedTranscriptB64 = createHash('sha256')
   )
   .digest('base64');
 
+/**
+ * The KEYGEN challenge the server would derive for the same fixtures. Distinct
+ * domain tag, and no SPKI field — the key does not exist when this is computed.
+ */
+const expectedKeyGenChallengeB64 = createHash('sha256')
+  .update(
+    [
+      'breeze.authenticator.mobile-register.keygen.v1',
+      'attempt-1',
+      'server-challenge',
+      'ES256',
+    ].join('\n'),
+    'utf8',
+  )
+  .digest('base64');
+
 function noCredentialYet() {
   secureStore.getItemAsync.mockImplementation(async (k: string) =>
     k === 'breeze_approver_credential_id' ? null : 'test-token',
@@ -473,15 +493,34 @@ describe('ensureApproverDevice — attested path', () => {
     expect(attesting.attestApp.mock.calls[0][0]).toBe(attesting.signPayload.mock.calls[0][0]);
   });
 
-  it('passes the server challenge to key generation so Android can bind it at key-gen time', async () => {
+  it('passes the DERIVED keygen digest to key generation, not the raw server challenge', async () => {
+    // `setAttestationChallenge` is a KeyGenParameterSpec property, so its value
+    // is fixed before the key — and therefore before the transcript, which
+    // embeds the SPKI — exists. The server checks the leaf certificate against
+    // `androidKeyGenChallenge(...)`, NOT against the raw challenge: passing the
+    // challenge through verbatim (the first cut) would have failed every
+    // Android registration in the field.
     challengeIssued();
     fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
     expect(attesting.createAttestedKey).toHaveBeenCalledWith({
-      attestationChallengeB64: 'server-challenge',
+      attestationChallengeB64: expectedKeyGenChallengeB64,
     });
+    expect(expectedKeyGenChallengeB64).not.toBe('server-challenge');
+  });
+
+  it('binds the keygen challenge to a DIFFERENT digest than the transcript', async () => {
+    // Domain separation is the property that stops one digest standing in for
+    // the other; assert it end-to-end rather than only in the pre-image unit.
+    challengeIssued();
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+
+    await ensureApproverDevice(fakeSigner(), 'grant-1');
+
+    expect(expectedKeyGenChallengeB64).not.toBe(expectedTranscriptB64);
+    expect(attesting.attestApp).toHaveBeenCalledWith(expectedTranscriptB64);
   });
 
   it('sends the platform the RUNTIME reports, so the server can refuse a cross-platform attestation', async () => {
