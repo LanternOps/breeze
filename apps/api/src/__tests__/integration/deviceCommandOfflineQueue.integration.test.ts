@@ -14,7 +14,9 @@ import {
   scriptExecutionBatches,
   scriptExecutions,
   scripts,
+  softwareCatalog,
   softwareDeployments,
+  softwareVersions,
   users,
 } from '../../db/schema';
 import {
@@ -701,11 +703,24 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
     // and the Software page shows an install that is neither running nor done.
     const device = await makeDevice(env.organization.id, env.site.id, 'offline');
 
+    // `software_deployments_one_target_chk` requires EXACTLY one of
+    // software_version_id / install_method_id, so the fixture needs a real
+    // catalog + version behind it.
+    const [catalog] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: env.organization.id, name: `Claim Cancel App ${randomUUID().slice(0, 8)}` })
+      .returning();
+    const [version] = await getTestDb()
+      .insert(softwareVersions)
+      .values({ catalogId: catalog!.id, version: '1.0.0', s3Key: 'installers/app.exe' })
+      .returning();
+
     const [deployment] = await getTestDb()
       .insert(softwareDeployments)
       .values({
         orgId: env.organization.id,
         name: 'Claim Cancel Deployment',
+        softwareVersionId: version!.id,
         deploymentType: 'install',
         targetType: 'device',
         targetIds: [device.id],
