@@ -69,8 +69,9 @@ import {
  * actually matters is that closure. A nullable `org_id` breaks it: under the
  * partner-wide config shape (epic #2135) `WHERE org_id = $1` leaves the
  * partner-owned rows behind, and a surviving row pointing at a deleted one
- * raises 23503 regardless of the action. `script_categories` is in exactly
- * that state today.
+ * raises 23503 regardless of the action. `script_categories.parent_id` was in
+ * exactly that state until #4873, which fixed it forward with `ON DELETE SET
+ * NULL` -- so it is now safe under (b), not (e).
  *
  * WHAT THIS DOES NOT PROVE
  *

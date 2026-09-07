@@ -57,20 +57,29 @@
  * The test induces the failure the same way production hit it in #4100: an FK
  * child with no ON DELETE action pointing into a cascade-list table.
  *
+ * ## Partner-wide self-reference (`script_categories`, #4873)
+ *
+ * The third `describe` covers the shape PR #4863 (issue #4519) proved was a
+ * live erasure failure: a partner-wide category (`org_id` NULL) whose
+ * `parent_id` points at an org-owned one SURVIVES `DELETE ... WHERE org_id =
+ * $1` and used to raise 23503. It is fixed in two layers, and both are pinned
+ * here — the constraint trigger that makes the row unconstructible, and the
+ * `ON DELETE SET NULL` that makes erasure survive it anyway (proven by forging
+ * the row with the trigger disabled, so the FK action is the only thing left
+ * doing the work).
+ *
  * ## Deliberately NOT seeded
  *
- * PR #4863 (issue #4519) proved live erasure failures; these two remain
- * open bugs. Seeding them here would make this suite red for a defect it is
- * not fixing, so they are skipped on purpose and named instead:
- *   - `restore_jobs.command_id` (#4871)
- *   - `script_categories.parent_id` with a NULL `org_id` (#4873)
+ * `restore_jobs.command_id` (#4871) remains an open bug. Seeding it here would
+ * make this suite red for a defect it is not fixing, so it is skipped on
+ * purpose and named instead.
  */
 import './setup';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getTestDb, getAppDb } from './setup';
 import { cascadeDeleteOrg, getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
@@ -87,6 +96,12 @@ interface SeedHandles {
   quoteChainErased: [string, string, string];
   partnerWideWindowId: string;
   orgWindowErasedId: string;
+  /** Org-owned parent category belonging to `orgErased`. */
+  orgCategoryErasedId: string;
+  /** Partner-wide category, child of `partnerWideCategoryParentId`. */
+  partnerWideCategoryChildId: string;
+  /** Partner-wide category, parent of the row above. */
+  partnerWideCategoryParentId: string;
 }
 
 /**
@@ -241,6 +256,27 @@ async function seed(): Promise<SeedHandles> {
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
 
+  // script_categories: the dual-axis self-reference from #4873. An org-owned
+  // parent for the erased org (org rows carry BOTH org_id and their org's
+  // partner_id — see the 2026-06-13 partner-axis backfill), plus a LEGAL
+  // partner-wide family (partner-wide child under a partner-wide parent) that
+  // must survive the erasure untouched.
+  const [orgCategory] = (await testDb.execute(sql`
+    INSERT INTO script_categories (org_id, partner_id, name)
+    VALUES (${orgErased}, ${partnerId}, ${`Org category ${suffix}`})
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const [partnerWideCategoryParent] = (await testDb.execute(sql`
+    INSERT INTO script_categories (partner_id, name)
+    VALUES (${partnerId}, ${`Partner-wide parent ${suffix}`})
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const [partnerWideCategoryChild] = (await testDb.execute(sql`
+    INSERT INTO script_categories (partner_id, name, parent_id)
+    VALUES (${partnerId}, ${`Partner-wide child ${suffix}`}, ${partnerWideCategoryParent!.id})
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+
   // Self-referencing chain: q1 <- q2 <- q3 via the composite
   // (revision_of_quote_id, org_id) -> quotes(id, org_id) NO ACTION FK.
   // `quotes_revision_number_chk` ties revision_number to the lineage column:
@@ -274,6 +310,9 @@ async function seed(): Promise<SeedHandles> {
     quoteChainErased: chain as [string, string, string],
     partnerWideWindowId: partnerWindow!.id,
     orgWindowErasedId: orgWindowErased!.id,
+    orgCategoryErasedId: orgCategory!.id,
+    partnerWideCategoryChildId: partnerWideCategoryChild!.id,
+    partnerWideCategoryParentId: partnerWideCategoryParent!.id,
   };
 }
 
@@ -297,6 +336,7 @@ describe('cascadeDeleteOrg — erasure breadth', () => {
       ml_feedback_events: 1,
       organizations: 1,
       quotes: 3,
+      script_categories: 1,
       sites: 1,
       tickets: 1,
     });
@@ -420,6 +460,118 @@ describe('cascadeDeleteOrg — erasure breadth', () => {
     expect(partnerWide.length).toBe(1);
     expect(partnerWide[0]!.org_id).toBeNull();
     expect(partnerWide[0]!.partner_id).toBe(handles.partnerId);
+  });
+});
+
+describe('cascadeDeleteOrg — partner-wide self-reference (script_categories, #4873)', () => {
+  let handles: SeedHandles;
+
+  beforeEach(async () => {
+    handles = await seed();
+  });
+
+  /**
+   * Layer 1 of the fix: the offending row cannot be built. Asserted from the
+   * TEST connection, which is the most privileged one available here — if the
+   * guard held only for `breeze_app` it would be trivially bypassable by every
+   * background/system path, which is where an org merge or a seed script runs.
+   */
+  it('refuses a partner-wide child under an org-owned parent', async () => {
+    const testDb = getTestDb();
+    let code: string | undefined;
+    let constraint: string | undefined;
+    try {
+      await testDb.execute(sql`
+        INSERT INTO script_categories (partner_id, name, parent_id)
+        VALUES (${handles.partnerId}, 'forged partner-wide child', ${handles.orgCategoryErasedId})
+      `);
+    } catch (err) {
+      code = pgErrorCode(err);
+      constraint = pgErrorConstraint(err);
+    }
+    expect(code).toBe('23514');
+    expect(constraint).toBe('script_categories_parent_guard');
+  });
+
+  it("refuses a child of ANOTHER org's parent", async () => {
+    const testDb = getTestDb();
+    let code: string | undefined;
+    let constraint: string | undefined;
+    try {
+      await testDb.execute(sql`
+        INSERT INTO script_categories (org_id, partner_id, name, parent_id)
+        VALUES (${handles.orgControl}, ${handles.partnerId}, 'forged cross-org child', ${handles.orgCategoryErasedId})
+      `);
+    } catch (err) {
+      code = pgErrorCode(err);
+      constraint = pgErrorConstraint(err);
+    }
+    expect(code).toBe('23514');
+    expect(constraint).toBe('script_categories_parent_guard');
+  });
+
+  it('allows an org-owned child under a partner-wide parent of its own partner', async () => {
+    const testDb = getTestDb();
+    const [row] = (await testDb.execute(sql`
+      INSERT INTO script_categories (org_id, partner_id, name, parent_id)
+      VALUES (${handles.orgErased}, ${handles.partnerId}, 'legal org child', ${handles.partnerWideCategoryParentId})
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    expect(row?.id).toMatch(UUID_RE);
+  });
+
+  /**
+   * Layer 2, and the actual erasure regression. The guard above is DISABLED
+   * for the duration so the illegal edge — the one #4863 reproduced against
+   * Postgres 16 — really exists in the table. That leaves `ON DELETE SET NULL`
+   * as the ONLY thing standing between the cascade and 23503, so a green here
+   * is evidence about the FK action and nothing else.
+   */
+  it('erases the org even when a partner-wide child already points at an org-owned parent', async () => {
+    const testDb = getTestDb();
+
+    let forgedChildId: string;
+    await testDb.execute(
+      sql.raw('ALTER TABLE script_categories DISABLE TRIGGER script_categories_parent_guard'),
+    );
+    try {
+      const [forged] = (await testDb.execute(sql`
+        INSERT INTO script_categories (partner_id, name, parent_id)
+        VALUES (${handles.partnerId}, 'forged partner-wide child', ${handles.orgCategoryErasedId})
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      forgedChildId = forged!.id;
+    } finally {
+      await testDb.execute(
+        sql.raw('ALTER TABLE script_categories ENABLE TRIGGER script_categories_parent_guard'),
+      );
+    }
+
+    // Control: the forged edge is really in place, so the erasure below is
+    // exercising it rather than passing vacuously.
+    const forgedBefore = (await testDb.execute(sql`
+      SELECT org_id, parent_id FROM script_categories WHERE id = ${forgedChildId}
+    `)) as unknown as Array<{ org_id: string | null; parent_id: string | null }>;
+    expect(forgedBefore[0]!.org_id).toBeNull();
+    expect(forgedBefore[0]!.parent_id).toBe(handles.orgCategoryErasedId);
+
+    const stats = await cascadeDeleteOrg(handles.orgErased, handles.actorUserId);
+    expect(stats.tablesDeleted.script_categories).toBe(1);
+    expect(await residualRowCounts(handles.orgErased)).toEqual({});
+
+    // The partner-wide row is not the erased org's data: it survives, detached.
+    const forgedAfter = (await testDb.execute(sql`
+      SELECT parent_id FROM script_categories WHERE id = ${forgedChildId}
+    `)) as unknown as Array<{ parent_id: string | null }>;
+    expect(forgedAfter.length).toBe(1);
+    expect(forgedAfter[0]!.parent_id).toBeNull();
+
+    // ...and the legal partner-wide family is untouched.
+    const family = (await testDb.execute(sql`
+      SELECT id, parent_id FROM script_categories WHERE id = ${handles.partnerWideCategoryChildId}
+    `)) as unknown as Array<{ id: string; parent_id: string | null }>;
+    expect(family.length).toBe(1);
+    expect(family[0]!.parent_id).toBe(handles.partnerWideCategoryParentId);
   });
 });
 
