@@ -170,6 +170,17 @@ describe('unknownSecurityPatternDescriptions', () => {
     ]);
   });
 
+  it('rejects a description that differs only in case', () => {
+    // Matching is exact on both sides: the agent compares the dispatched
+    // string against ITS description byte-for-byte, so a case-folded entry
+    // would store an acknowledgement that silently never fires on the device.
+    // Rejecting at the boundary is the fail-safe direction — the admin is told
+    // rather than handed a dud approval.
+    expect(unknownSecurityPatternDescriptions(['POWERSHELL HKLM MODIFICATION'])).toEqual([
+      'POWERSHELL HKLM MODIFICATION',
+    ]);
+  });
+
   it('rejects a Basic-level description — those are not acknowledgeable', () => {
     expect(unknownSecurityPatternDescriptions(['fork bomb pattern'])).toEqual([
       'fork bomb pattern',

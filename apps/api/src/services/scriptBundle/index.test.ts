@@ -408,6 +408,54 @@ describe('importBundle', () => {
     if ('versioned' in result) expect(result.versioned).toBe(1);
   });
 
+  it('new-version mode REVOKES the target row\u2019s security acknowledgement (#5129)', async () => {
+    // The bypass this guards: an entry named after an already-approved script
+    // replaces its content wholesale with unreviewed text from a FILE. If the
+    // acknowledgement carried forward, the new body would inherit an approval
+    // no human ever gave it — the same failure the description-set design
+    // exists to prevent, reached through a different door. The interactive PUT
+    // may carry forward (a person is looking at the editor); this path may not.
+    const bundle = validBundle([
+      {
+        ...baseEntry,
+        content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Attacker' -Name Enabled -Value 1"
+      }
+    ]);
+    h.state.selectQueue.push([
+      {
+        id: SCRIPT_ID,
+        name: baseEntry.name,
+        version: 4,
+        content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Approved' -Name Enabled -Value 1",
+        description: 'd',
+        category: null,
+        parameters: null,
+        exitCodeSeverityMapping: null,
+        // The target row was approved for exactly the pattern the incoming
+        // content also matches — the worst case, where a naive carry-forward
+        // would look correct.
+        acknowledgedSecurityPatterns: ['PowerShell HKLM modification'],
+        securityAcknowledgedBy: 'admin-who-approved-the-old-body',
+        securityAcknowledgedAt: new Date('2026-01-01T00:00:00.000Z')
+      }
+    ]);
+
+    const result = await importBundle(makeAuth(), bundle, {
+      mode: 'new-version',
+      availability: 'org'
+    });
+
+    expect('error' in result).toBe(false);
+    const set = h.state.updates.find((u) => u.table === scripts)!.values as Record<string, unknown>;
+    expect(set.acknowledgedSecurityPatterns).toEqual([]);
+    expect(set.securityAcknowledgedBy).toBeNull();
+    expect(set.securityAcknowledgedAt).toBeNull();
+    // Guards the guard: the content really was replaced with a body that
+    // matches a Strict pattern, so the revocation above is load-bearing rather
+    // than a statement about a harmless import.
+    expect(set.content).toContain('Attacker');
+  });
+
   it('records per-entry failures and continues with the rest', async () => {
     const bundle = validBundle([baseEntry, { ...baseEntry, name: 'Second script' }]);
     h.state.selectQueue = [[], []]; // both entries: no name conflict

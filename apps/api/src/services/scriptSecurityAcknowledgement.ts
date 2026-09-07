@@ -91,7 +91,6 @@ export function resolveScriptSecurityAcknowledgement(input: {
   existing?: readonly string[] | null;
 }): ScriptSecurityAcknowledgementResolution {
   const matched = detectStrictScriptPatterns(input.content);
-  const matchedSet = new Set(matched);
 
   const previous = normalize(input.existing);
   const previousSet = new Set(previous);
@@ -162,5 +161,31 @@ export function scriptSecurityAcknowledgementColumns(
     acknowledgedSecurityPatterns: resolution.acknowledged,
     securityAcknowledgedBy: actorId,
     securityAcknowledgedAt: now,
+  };
+}
+
+/**
+ * The acknowledgement columns for a path that replaces a script's content
+ * WITHOUT a human reviewing the result: bundle import in `new-version` mode,
+ * and the system-script-library sync.
+ *
+ * These always clear the acknowledgement, and deliberately do NOT carry it
+ * forward the way an interactive save does. The carry-forward rule on
+ * `PUT /scripts/:id` is safe because a person is looking at the editor, sees
+ * the security-review section for the body they are saving, and re-submits the
+ * approval. A bundle is a FILE — its own module docblock calls it untrusted
+ * input regardless of who uploaded it — and nobody reads the incoming body.
+ *
+ * Without this, an entry named after an existing approved script replaces its
+ * content wholesale and inherits the approval: exactly the "a later edit
+ * inherits the acknowledgement silently" failure the description-set design
+ * exists to prevent, reached through a different door. Re-acknowledging is a
+ * trip back into the script editor, which is the point.
+ */
+export function clearedScriptSecurityAcknowledgementColumns(): Required<ScriptSecurityAcknowledgementColumns> {
+  return {
+    acknowledgedSecurityPatterns: [],
+    securityAcknowledgedBy: null,
+    securityAcknowledgedAt: null,
   };
 }

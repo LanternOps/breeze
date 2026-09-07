@@ -1116,7 +1116,7 @@
       "title": "Verifica di sicurezza",
       "blockedHint_one": "Questo script corrisponde a 1 pattern che l'agente rifiuta di eseguire senza una conferma.",
       "blockedHint_other": "Questo script corrisponde a {{count}} pattern che l'agente rifiuta di eseguire senza una conferma. Conferma ciascuno che intendi consentire.",
-      "clearedHint": "Tutti i pattern trovati sono stati confermati. Questo script può essere eseguito.",
+      "clearedHint": "Tutti i pattern rilevati sono stati confermati.",
       "willBlock": "Non confermato — l'agente rifiuterà di eseguire questo script.",
       "footnote": "Una conferma si applica solo a questo script e copre solo i pattern elencati qui. Se in seguito aggiungi un'altra operazione rischiosa, verrà bloccata finché non confermi anche quella."
     }

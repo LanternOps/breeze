@@ -1116,7 +1116,7 @@
       "title": "Revisión de seguridad",
       "blockedHint_one": "Este script coincide con 1 patrón que el agente se niega a ejecutar sin un reconocimiento.",
       "blockedHint_other": "Este script coincide con {{count}} patrones que el agente se niega a ejecutar sin un reconocimiento. Reconoce cada uno que quieras permitir.",
-      "clearedHint": "Se reconocieron todos los patrones coincidentes. Este script puede ejecutarse.",
+      "clearedHint": "Todos los patrones detectados han sido reconocidos.",
       "willBlock": "No reconocido: el agente se negará a ejecutar este script.",
       "footnote": "Un reconocimiento se aplica solo a este script y cubre únicamente los patrones indicados aquí. Si más adelante agregas una operación riesgosa distinta, se bloqueará hasta que también la reconozcas."
     }

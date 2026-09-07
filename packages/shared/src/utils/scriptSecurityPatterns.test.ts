@@ -94,7 +94,16 @@ describe('strict script pattern mirror matches the Go validator', () => {
     const source = readFileSync(GO_SECURITY_SOURCE, 'utf8');
     const basicStart = source.indexOf('basicPatterns := []struct {');
     const basicEnd = source.indexOf('\n\t}\n', basicStart);
+    // Guard the parse the same way parseGoStrictPatterns guards its own: a
+    // rename of `basicPatterns` would give basicStart === -1, and
+    // `slice(-1, basicEnd)` would yield a near-empty string that satisfies
+    // every `not.toContain` below vacuously.
+    expect(basicStart, 'basicPatterns literal not found in security.go').toBeGreaterThan(-1);
+    expect(basicEnd).toBeGreaterThan(basicStart);
     const basicBody = source.slice(basicStart, basicEnd);
+    expect(basicBody.length).toBeGreaterThan(500);
+    // The parsed body must really be the basic list, not some other block.
+    expect(basicBody).toContain('"fork bomb pattern"');
     for (const description of STRICT_SCRIPT_PATTERN_DESCRIPTIONS) {
       expect(basicBody).not.toContain(`"${description}"`);
     }
@@ -128,8 +137,30 @@ describe('detectStrictScriptPatterns', () => {
   });
 
   it('does not let `.` cross a newline, mirroring the absence of (?s) in Go', () => {
-    // The agent would not match this either — the variable form defeats the
-    // regex on BOTH sides, which is the honest behaviour to mirror.
+    // DISCRIMINATING fixture: `HKLM` appears AFTER `Set-ItemProperty`, so the
+    // only thing standing between this content and a match is the newline that
+    // `.` must not cross. Compiled with the `s` flag this input DOES match
+    // (asserted below), so a mirror that accidentally enabled dotAll would
+    // fail here — which is the whole point of the test.
+    const content = 'Set-ItemProperty -Path $p -Name Enabled\nWrite-Output HKLM';
+
+    expect(detectStrictScriptPatterns(content)).toEqual([]);
+
+    // Guards the guard: prove the fixture is blocked by the newline rule
+    // specifically, and not by some unrelated reason that would make the
+    // assertion above vacuous.
+    const hklmPattern = STRICT_SCRIPT_PATTERNS.find(
+      pattern => pattern.description === 'PowerShell HKLM modification',
+    )!;
+    expect(new RegExp(hklmPattern.source, 'i').test(content)).toBe(false);
+    expect(new RegExp(hklmPattern.source, 'is').test(content)).toBe(true);
+  });
+
+  it('does not match an HKLM path held in a variable — the agent does not either', () => {
+    // The evasion called out in #5129: putting the path on the preceding line
+    // defeats `Set-ItemProperty\s+.*HKLM` on BOTH sides. Mirrored honestly
+    // rather than "fixed" here, because widening the mirror beyond the agent
+    // would offer an acknowledgement the device never asks for.
     expect(
       detectStrictScriptPatterns("$p = 'HKLM:\\SOFTWARE\\Contoso'\nSet-ItemProperty -Path $p -Name Enabled -Value 1"),
     ).toEqual([]);

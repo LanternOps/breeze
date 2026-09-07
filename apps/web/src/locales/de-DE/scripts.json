@@ -1116,7 +1116,7 @@
       "title": "Sicherheitsprüfung",
       "blockedHint_one": "Dieses Skript entspricht 1 Muster, das der Agent ohne Bestätigung nicht ausführen wird.",
       "blockedHint_other": "Dieses Skript entspricht {{count}} Mustern, die der Agent ohne Bestätigung nicht ausführen wird. Bestätigen Sie jedes Muster, das Sie zulassen möchten.",
-      "clearedHint": "Jedes gefundene Muster wurde bestätigt. Dieses Skript darf ausgeführt werden.",
+      "clearedHint": "Alle erkannten Muster wurden bestätigt.",
       "willBlock": "Nicht bestätigt — der Agent wird die Ausführung dieses Skripts verweigern.",
       "footnote": "Eine Bestätigung gilt nur für dieses Skript und deckt nur die hier aufgeführten Muster ab. Wenn Sie später einen anderen riskanten Vorgang hinzufügen, wird dieser blockiert, bis Sie auch ihn bestätigen."
     }

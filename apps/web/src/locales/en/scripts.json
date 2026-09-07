@@ -1116,7 +1116,7 @@
       "title": "Security review",
       "blockedHint_one": "This script matches 1 pattern the agent refuses to run without an acknowledgement.",
       "blockedHint_other": "This script matches {{count}} patterns the agent refuses to run without an acknowledgement. Acknowledge each one you intend.",
-      "clearedHint": "Every matched pattern has been acknowledged. This script is allowed to run.",
+      "clearedHint": "Every matched pattern has been acknowledged.",
       "willBlock": "Not acknowledged — the agent will refuse to run this script.",
       "footnote": "An acknowledgement applies to this script only, and covers just the patterns listed here. If you later add a different risky operation, it will be blocked until you acknowledge that one too."
     }

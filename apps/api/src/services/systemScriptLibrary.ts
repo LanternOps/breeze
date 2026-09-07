@@ -23,6 +23,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../db';
 import { scripts } from '../db/schema';
+import { clearedScriptSecurityAcknowledgementColumns } from './scriptSecurityAcknowledgement';
 
 export type SystemLibraryScriptDefinition = {
   name: string;
@@ -352,6 +353,14 @@ export async function ensureSystemLibraryScripts(): Promise<{
         parameters,
         timeoutSeconds: def.timeoutSeconds,
         runAs: def.runAs,
+        // #5129 — the library sync replaces `content` from a shipped
+        // definition with no human in the loop, so any acknowledgement the row
+        // carried is revoked rather than inherited by the new body. Only a
+        // system-scope PUT can put one on a system script in the first place,
+        // so this is rarely non-empty — but the invariant "a wholesale
+        // content replacement never inherits an approval" has to hold on every
+        // path, not just the ones that are easy to reach.
+        ...clearedScriptSecurityAcknowledgementColumns(),
         version: existing.version + 1,
         updatedAt: new Date(),
       })
