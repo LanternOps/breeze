@@ -49,6 +49,7 @@ import DeviceOneDriveTab from "./DeviceOneDriveTab";
 import DeviceSecurityTab from "./DeviceSecurityTab";
 import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
+import DeviceQueuedActions from "./DeviceQueuedActions";
 import DeviceScriptHistory from "./DeviceScriptHistory";
 import DevicePerformanceGraphs from "./DevicePerformanceGraphs";
 import DeviceEventLogViewer from "./DeviceEventLogViewer";
@@ -752,6 +753,10 @@ export default function DeviceDetails({
             <DeviceWarrantyCard deviceId={device.id} compact />
 
             <DeviceBillingCard deviceId={device.id} />
+
+            {device.status !== "decommissioned" && (
+              <DeviceQueuedActions deviceId={device.id} />
+            )}
           </div>
 
           <div

@@ -1857,8 +1857,8 @@
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
       "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt.",
-      "bulkCommandPartialFailed": "Massenbefehl ist teilweise fehlgeschlagen",
-      "bulkCommandSent": "Massenbefehl gesendet",
+      "bulkCommandPartialFailed": "{{action}} an {{count}} Gerät(e) gesendet{{queuedTail}}{{skippedTail}}; {{failed}} fehlgeschlagen: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} an {{count}} Gerät(e) gesendet{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Entfernen für alle {{count}} Geräte fehlgeschlagen: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} Gerät(e) entfernt; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkDecommissioned": "{{count}} Gerät(e) entfernt",
@@ -1897,7 +1897,6 @@
       "networkSkipped_one": "1 Netzwerkgerät übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped_other": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
-      "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
       "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
@@ -1910,7 +1909,10 @@
       "unknownAction": "Unbekannte Aktion",
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken"
+      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
+      "queuedOfflineTail": ", {{count}} für Offline-Geräte in die Warteschlange gestellt",
+      "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist — läuft ab am {{date}}",
+      "runsWhenOnlineNoExpiry": "Wird ausgeführt, sobald das Gerät online ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -2657,5 +2659,15 @@
       "manufacturer": "Hersteller"
     },
     "identityConflictNote": "Die Kennungen dieser Zeile verweisen auf unterschiedliche Geräte und können so nicht importiert werden — korrigieren Sie die Datei und führen Sie die Vorschau erneut aus. Die unten aufgeführten Kandidaten dienen nur zur Information."
+  },
+  "queuedActions": {
+    "title": "Aktionen in der Warteschlange",
+    "system": "System",
+    "requestedBy": "Angefordert von {{who}}",
+    "expires": "Läuft ab am {{date}}",
+    "cancel": "Abbrechen",
+    "cancelled": "Aktion in der Warteschlange abgebrochen",
+    "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
+    "empty": "Keine ausstehenden Aktionen"
   }
 }

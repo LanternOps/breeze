@@ -690,7 +690,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     }
   },
   "executionHistory": {
@@ -718,7 +719,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -927,6 +929,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır"
     }
   },
   "secretParameters": {

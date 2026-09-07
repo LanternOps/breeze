@@ -476,7 +476,9 @@ const namespaceDuplicateBaselines = {
     // — both spelled identically in German.
     // +1 (2026-09-06): deviceList.tableColumns.type "Type" arrived with the
     // unified-device-list branch; re-measured after merging main.
-    'devices.json': 155,
+    // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
+    // in German.
+    'devices.json': 156,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an

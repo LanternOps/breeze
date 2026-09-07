@@ -1856,8 +1856,8 @@
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",
       "bulkAllDecommissioned": "Los {{total}} dispositivo(s) seleccionados ya están quitados.",
-      "bulkCommandPartialFailed": "Error parcial del comando masivo",
-      "bulkCommandSent": "Comando masivo enviado",
+      "bulkCommandPartialFailed": "{{action}} enviado a {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}; {{failed}} fallaron: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} enviado a {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "No se pudo quitar ninguno de los {{count}} dispositivos: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} dispositivo(s) quitado(s); {{failed}} con error: {{devices}}",
       "bulkDecommissioned": "{{count}} dispositivo(s) quitado(s)",
@@ -1896,7 +1896,6 @@
       "networkSkipped_one": "1 dispositivo de red omitido — esta acción solo aplica a dispositivos con agente.",
       "networkSkipped_other": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
       "networkSkipped": "{{count}} dispositivos de red omitidos — esta acción solo aplica a dispositivos con agente.",
-      "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "permanentDeleteCancelled": "Eliminación permanente cancelada",
       "permanentDeleting": "Eliminando permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} eliminado permanentemente",
@@ -1909,7 +1908,10 @@
       "unknownAction": "Acción desconocida",
       "unknownBulkAction": "Acción masiva desconocida",
       "wakeSentWatching": "Comando de encendido enviado; supervisando",
-      "wakeTimeout": "Tiempo de espera para despertar"
+      "wakeTimeout": "Tiempo de espera para despertar",
+      "queuedOfflineTail": ", {{count}} en cola para dispositivos sin conexión",
+      "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea — vence el {{date}}",
+      "runsWhenOnlineNoExpiry": "Se ejecutará cuando el dispositivo esté en línea"
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
@@ -2657,5 +2659,15 @@
       "manufacturer": "Fabricante"
     },
     "identityConflictNote": "Los identificadores de esta fila apuntan a dispositivos diferentes y no se puede importar tal cual — corrija el archivo y vuelva a ejecutar la vista previa. Los candidatos a continuación se muestran solo como referencia."
+  },
+  "queuedActions": {
+    "title": "Acciones en cola",
+    "system": "Sistema",
+    "requestedBy": "Solicitado por {{who}}",
+    "expires": "Vence el {{date}}",
+    "cancel": "Cancelar",
+    "cancelled": "Acción en cola cancelada",
+    "cancelFailed": "No se pudo cancelar la acción en cola",
+    "empty": "No hay acciones en cola"
   }
 }

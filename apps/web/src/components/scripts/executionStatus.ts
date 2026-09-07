@@ -16,7 +16,11 @@ type DetailEntry = { label: string; color: string; bgColor: string; icon: typeof
 
 export const executionRowStatusConfig: Record<ExecutionStatus, RowEntry> = {
   pending: { label: 'status.pending', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
-  queued: { label: 'status.queued', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
+  // #5128 W2 — a queued execution's command hasn't reached the device yet;
+  // "Queued — device offline" replaces the ambiguous bare "Queued" now that
+  // the offline work queue makes this the common, expected case rather than
+  // a transient in-flight state.
+  queued: { label: 'status.queuedOffline', color: 'bg-muted text-muted-foreground border-border', icon: Clock },
   running: { label: 'status.running', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Loader2 },
   cancelling: { label: 'status.cancelling', color: 'bg-warning/15 text-warning border-warning/30', icon: Loader2 },
   completed: { label: 'status.completed', color: 'bg-success/15 text-success border-success/30', icon: CheckCircle },
@@ -27,7 +31,7 @@ export const executionRowStatusConfig: Record<ExecutionStatus, RowEntry> = {
 
 export const executionDetailStatusConfig: Record<ExecutionStatus, DetailEntry> = {
   pending: { label: 'status.pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
-  queued: { label: 'status.queued', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
+  queued: { label: 'status.queuedOffline', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
   running: { label: 'status.running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
   cancelling: { label: 'status.cancelling', color: 'text-warning', bgColor: 'bg-warning/10', icon: Loader2 },
   completed: { label: 'status.completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },

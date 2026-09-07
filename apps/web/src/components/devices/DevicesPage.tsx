@@ -4,6 +4,7 @@ import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
 import { List, Grid, Plus, AlertCircle } from 'lucide-react';
 import { showToast } from '../shared/Toast';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { FilterConditionGroup } from '@breeze/shared';
 import DeviceList, { type Device, type DeviceClass, type DeviceStatus, type OSType } from './DeviceList';
 import type { DeviceRole } from '@/lib/deviceRoles';
@@ -923,7 +924,7 @@ export default function DevicesPage() {
         case 'reboot_safe_mode':
         case 'shutdown':
         case 'lock': {
-          await sendDeviceCommand(device.id, action);
+          const result = await sendDeviceCommand(device.id, action);
           const label = action === 'reboot_safe_mode'
             ? t('devicesPage.actions.rebootSafeMode')
             : t(/* i18n-dynamic */ `devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
@@ -933,11 +934,18 @@ export default function DevicesPage() {
           // claims it on its next poll (or staleCommandReaper fails it later).
           // Saying "sent" for that is a false success — the user walks away
           // believing it happened. Name the queue explicitly instead.
+          //
+          // #5128 W2 — `result.delivery` is the dispatch core's own outcome,
+          // not the pre-request device.status snapshot: a device that came
+          // online between page load and click is reported correctly either
+          // way, where the old status heuristic could be stale.
           showToast({
             type: 'success',
-            message: device.status === 'online'
+            message: result.delivery === 'delivered'
               ? t('devicesPage.toasts.commandSent', { action: label, hostname: device.hostname })
-              : t('devicesPage.toasts.commandQueued', { action: label, hostname: device.hostname }),
+              : result.deliverBy
+                ? t('devicesPage.toasts.runsWhenOnline', { date: formatDateTime(result.deliverBy) })
+                : t('devicesPage.toasts.runsWhenOnlineNoExpiry'),
           });
           break;
         }
@@ -1332,15 +1340,19 @@ export default function DevicesPage() {
           const successCount = result.commands?.length ?? 0;
           const failedCount = result.failed?.length ?? 0;
           const skippedCount = result.skipped?.length ?? 0;
+          // #5128 W2 — queuedOffline is a subset of `commands`: those devices
+          // were offline, so the command was persisted but not delivered yet.
+          const queuedCount = result.queuedOffline?.length ?? 0;
           const bulkLabel = action === 'reboot_safe_mode'
             ? t('devicesPage.actions.rebootSafeMode')
             : t(/* i18n-dynamic */ `devicesPage.actions.${action}`, { defaultValue: action.charAt(0).toUpperCase() + action.slice(1) });
           const skippedTail = skippedCount > 0 ? t('devicesPage.toasts.alreadyPendingTail', { count: skippedCount }) : '';
+          const queuedTail = queuedCount > 0 ? t('devicesPage.toasts.queuedOfflineTail', { count: queuedCount }) : '';
 
           if (failedCount === 0) {
             showToast({
               type: 'success',
-              message: t('devicesPage.toasts.bulkCommandSent', { action: bulkLabel, count: successCount, skippedTail }),
+              message: t('devicesPage.toasts.bulkCommandSent', { action: bulkLabel, count: successCount, queuedTail, skippedTail }),
             });
           } else {
             const failureSummary = summarizeBulkCommandFailures(result.failed ?? []);
@@ -1349,6 +1361,7 @@ export default function DevicesPage() {
               message: t('devicesPage.toasts.bulkCommandPartialFailed', {
                 action: bulkLabel,
                 count: successCount,
+                queuedTail,
                 skippedTail,
                 failed: failedCount,
                 failureSummary,
