@@ -11,6 +11,27 @@ vi.mock('../services/commandQueue', () => ({
   queueCommand: (...args: unknown[]) => mockQueueCommand(...args)
 }));
 
+// #5128 — POST /devices/bulk/commands now goes through the one enqueue seam
+// (services/dispatchDeviceCommand.ts) instead of a raw db.insert. That real
+// implementation pulls in a long transitive chain (agentWs, commandQueue,
+// commandOfflinePolicy, partnerTrust.commands) this suite's simple db mock
+// can't reasonably emulate — see routes/devices/commands.test.ts for the same
+// seam-level mock and rationale. Default: delivered to an online device;
+// decommissioned/offline outcomes are driven by the device row this suite
+// already mocks BEFORE the route ever reaches dispatch.
+const mockDispatchDeviceCommand = vi.fn(
+  async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+    ok: true,
+    command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
+    delivery: 'delivered',
+    deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+  }),
+);
+
+vi.mock('../services/dispatchDeviceCommand', () => ({
+  dispatchDeviceCommand: (...args: unknown[]) => (mockDispatchDeviceCommand as any)(...args),
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn(),
@@ -196,6 +217,16 @@ describe('device endpoints (authenticated)', () => {
       }))
     }) as any);
     mockQueueCommand.mockReset();
+    // vi.resetAllMocks() above wipes the default implementation too —
+    // restore it explicitly, same as the db.select/insert/update mocks.
+    mockDispatchDeviceCommand.mockReset().mockImplementation(
+      async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+        ok: true,
+        command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
+        delivery: 'delivered',
+        deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      }),
+    );
     app = new Hono();
     app.route('/devices', deviceRoutes);
   });
@@ -211,31 +242,10 @@ describe('device endpoints (authenticated)', () => {
       mockDeviceLookup(deviceTwo);
       mockDeviceLookup(deviceThree);
 
-      // The bulk command handler uses db.insert().values().returning() for each device
-      vi.mocked(db.insert)
-        .mockReturnValueOnce({
-          values: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              id: 'cmd-1',
-              deviceId: deviceOne.id,
-              type: 'reboot',
-              status: 'pending',
-              createdAt: new Date()
-            }])
-          })
-        } as any)
-        .mockReturnValueOnce({
-          values: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              id: 'cmd-2',
-              deviceId: deviceTwo.id,
-              type: 'reboot',
-              status: 'pending',
-              createdAt: new Date()
-            }])
-          })
-        } as any);
-
+      // #5128: the bulk command handler now goes through the one enqueue
+      // seam (services/dispatchDeviceCommand.ts, mocked above) instead of a
+      // raw db.insert. The decommissioned device is rejected by the route
+      // BEFORE it ever reaches the seam, so only two calls land here.
       const client = await createAuthenticatedClient(app, { mfa: true });
       const res = await client.post('/devices/bulk/commands', {
         deviceIds: [deviceOne.id, deviceTwo.id, deviceThree.id],
@@ -256,6 +266,12 @@ describe('device endpoints (authenticated)', () => {
         deviceOne.id,
         deviceTwo.id
       ]);
+      // The decommissioned device never reached the dispatch seam at all —
+      // it was rejected before it, not by it.
+      expect(mockDispatchDeviceCommand).toHaveBeenCalledTimes(2);
+      expect(mockDispatchDeviceCommand).not.toHaveBeenCalledWith(
+        expect.objectContaining({ deviceId: deviceThree.id }),
+      );
     });
   });
 

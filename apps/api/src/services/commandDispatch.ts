@@ -1,6 +1,7 @@
-import { and, eq, inArray, notInArray } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { deviceCommands, peripheralPolicyDeviceStates } from '../db/schema';
+import { deviceCommands, devices, peripheralPolicyDeviceStates } from '../db/schema';
+import { partitionClaimable } from './commandClaimEligibility';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
@@ -20,12 +21,42 @@ export async function claimPendingCommandForDelivery(
         and(
           eq(deviceCommands.id, commandId),
           eq(deviceCommands.status, 'pending'),
+          // #5128: never deliver a row the reaper is about to expire. A row
+          // whose deadline has passed stays `pending` for the reaper to
+          // terminalise with `reason: not_delivered_before_deadline`.
+          or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, executedAt)),
         ),
       )
       .returning({ id: deviceCommands.id }),
   );
 
   return rows.length > 0 ? { id: commandId, executedAt } : null;
+}
+
+/**
+ * How many commands this device already has in flight (`sent`, awaiting a
+ * result). Same predicate the heartbeat claim uses for the power-state barrier,
+ * so the enqueue-time push and the heartbeat claim agree on when a reboot may
+ * go out (#5128 §E.4).
+ */
+export async function countInFlightCommandsForDevice(
+  deviceId: string,
+  targetRole: string = 'agent',
+): Promise<number> {
+  const rows = await withSystemDbAccessContext(() =>
+    db
+      .select({ inFlight: sql<number>`count(*)::int` })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'sent'),
+          eq(deviceCommands.targetRole, targetRole),
+        ),
+      )
+      .limit(1),
+  );
+  return rows[0]?.inFlight ?? 0;
 }
 
 /**
@@ -123,6 +154,7 @@ export async function claimPendingCommandsForDevice(
       unsupportedProtocolTypes.push('pam_apply_v2', 'pam_cleanup_v2');
     }
 
+    const now = new Date();
     const pendingCommands = await tx
       .select()
       .from(deviceCommands)
@@ -131,6 +163,8 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.deviceId, deviceId),
           eq(deviceCommands.status, 'pending'),
           eq(deviceCommands.targetRole, targetRole),
+          // #5128: a row past its delivery deadline is the reaper's, not ours.
+          or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, now)),
           ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
           ...(unsupportedProtocolTypes.length > 0
             ? [notInArray(deviceCommands.type, unsupportedProtocolTypes)]
@@ -141,8 +175,46 @@ export async function claimPendingCommandsForDevice(
       .limit(limit)
       .for('update', { skipLocked: true });
 
+    // #5128 §G: re-check eligibility at the moment of delivery. A queued
+    // command may have been requested days ago, so the device's org, lifecycle,
+    // partner trust and the requester's account are all re-evaluated here, and
+    // the power-state barrier is applied. Cancels are written on `tx`, so a row
+    // this rejects cannot be delivered by a concurrent claim.
+    let deliverable = pendingCommands;
+    if (pendingCommands.length > 0) {
+      const [dev] = await tx
+        .select({
+          id: devices.id,
+          orgId: devices.orgId,
+          status: devices.status,
+        })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (!dev) return [];
+
+      const [inFlightRow] = await tx
+        .select({ inFlight: sql<number>`count(*)::int` })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'sent'),
+            eq(deviceCommands.targetRole, targetRole),
+          ),
+        )
+        .limit(1);
+
+      const { claimable } = await partitionClaimable(tx, dev, pendingCommands, {
+        inFlight: inFlightRow?.inFlight ?? 0,
+      });
+      const claimableIds = new Set(claimable.map((c) => c.id));
+      deliverable = pendingCommands.filter((c) => claimableIds.has(c.id));
+      if (deliverable.length === 0) return [];
+    }
+
     const claimed: DeviceCommandRow[] = [];
-    for (const command of pendingCommands) {
+    for (const command of deliverable) {
       const executedAt = new Date();
       const rows = await tx
         .update(deviceCommands)
