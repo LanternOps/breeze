@@ -14,6 +14,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/launchdplist"
+	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
 )
@@ -273,44 +274,11 @@ var serviceUninstallCmd = &cobra.Command{
 		if os.Geteuid() != 0 {
 			return fmt.Errorf("must run as root (sudo breeze-agent service uninstall)")
 		}
-
-		// Stop and unload the daemon
-		if isLaunchdLoaded(darwinLabel) {
-			out, err := exec.Command("launchctl", "bootout", "system/"+darwinLabel).CombinedOutput()
-			if err != nil {
-				// Fallback to legacy unload
-				out2, err2 := exec.Command("launchctl", "unload", darwinPlistDst).CombinedOutput()
-				if err2 != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to stop service: %s / %s\n",
-						strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-				}
-			} else {
-				_ = out
-			}
-			fmt.Println("Service stopped.")
+		if err := uninstallDarwinService(func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput()
+		}); err != nil {
+			return err
 		}
-
-		uninstallDarwinWatchdog()
-
-		// Remove plists
-		if err := os.Remove(darwinPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinPlistDst, err)
-		}
-		if err := os.Remove(darwinDesktopUserPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopUserPlistDst, err)
-		}
-		if err := os.Remove(darwinDesktopLoginWindowPlistDst); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopLoginWindowPlistDst, err)
-		}
-
-		// Remove binary
-		if err := os.Remove(darwinBinaryPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinBinaryPath, err)
-		}
-		if err := os.Remove(darwinDesktopHelperBinaryPath); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopHelperBinaryPath, err)
-		}
-
 		fmt.Println("Breeze Agent service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", darwinConfigDir)
 		fmt.Printf("To remove config: sudo rm -rf '%s'\n", darwinConfigDir)
@@ -318,25 +286,12 @@ var serviceUninstallCmd = &cobra.Command{
 	},
 }
 
-func uninstallDarwinWatchdog() {
-	if isLaunchdLoaded(darwinWatchdogLabel) {
-		out, err := exec.Command("launchctl", "bootout", "system/"+darwinWatchdogLabel).CombinedOutput()
-		if err != nil {
-			out2, err2 := exec.Command("launchctl", "unload", darwinWatchdogPlistDst).CombinedOutput()
-			if err2 != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to stop watchdog service: %s / %s\n",
-					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
-			}
-		} else {
-			_ = out
-		}
+func uninstallDarwinService(run func(string, ...string) ([]byte, error)) error {
+	out, err := run("/bin/sh", "-c", macosuninstall.Script())
+	if err != nil {
+		return fmt.Errorf("uninstall package artifacts: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := os.Remove(darwinWatchdogPlistDst); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogPlistDst, err)
-	}
-	if err := os.Remove(darwinWatchdogBinaryPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinWatchdogBinaryPath, err)
-	}
+	return nil
 }
 
 var serviceStartCmd = &cobra.Command{
