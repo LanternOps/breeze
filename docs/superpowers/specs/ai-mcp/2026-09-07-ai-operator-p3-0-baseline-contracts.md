@@ -1,5 +1,5 @@
 ---
-title: AI Operator P3-0a — adapter contracts, recipe cards, terminal-writer inventory, legacy-trigger sunset list
+title: AI Operator P3-0a, adapter contracts, recipe cards, terminal-writer inventory, legacy-trigger sunset list
 date: 2026-09-07
 status: P3-0a deliverable for LanternOps/breeze#5205 (wave #5206)
 spec: ./2026-09-07-ai-operator-completion-design.md
@@ -16,9 +16,9 @@ description of code. Fixtures and the EXPLAIN harness are wave W02 and are not i
 **Evidence labels.** Every claim about code carries a `file:line` citation at
 `89b059f12ff82a13aa930a13ddee25bb14c03c69` and one of three labels:
 
-- **VERIFIED** — the cited lines were read.
-- **INFERRED** — reasoned from adjacent code that was read; the conclusion itself was not observed.
-- **NOT CHECKED** — named so the next wave knows the gap exists.
+- **VERIFIED**, the cited lines were read.
+- **INFERRED**, reasoned from adjacent code that was read; the conclusion itself was not observed.
+- **NOT CHECKED**, named so the next wave knows the gap exists.
 
 Line numbers drift. Cite by symbol name as well as line where the symbol is stable.
 
@@ -35,7 +35,7 @@ change. Section 11 lists eighteen corrections to the spec and plan.
 The adapter is the seam between a task step and a domain executor. It exists because four facts
 are distinct (spec §6.5) and today's code collapses them: for the thin slice's service restart,
 `action_intents.status = 'completed'` means *the tool call returned*, which for a device command
-means *dispatch was accepted and a result was polled for up to 30 seconds* — not that the domain
+means *dispatch was accepted and a result was polled for up to 30 seconds*, not that the domain
 operation finished, and certainly not that the task criterion is verified.
 
 ### 1.1 Interface sketch
@@ -109,10 +109,10 @@ export interface ExecutionAdapter {
 
 | Method | Grounded in | Satisfies today (§6.5 / §7.3) | Cannot satisfy yet |
 |---|---|---|---|
-| `admit` | `createActionIntent` (`apps/api/src/services/actionIntents/intentService.ts:847`), whose input type `CreateActionIntentInput` (`:123-181`) is the full admission surface. Guardrails run before any write via `checkGuardrails` / `checkAgentGuardrails` (`apps/api/src/services/aiGuardrails.ts:1739`). VERIFIED. | Tier and guardrail gating, agent-principal pairing (`agent_source_mismatch`, `:858-868`), explicit device/ticket scope (`:170`), org resolution. | `CreateActionIntentInput` has **no** `taskId`, `taskStepKey` or `operationKey` field (VERIFIED — read the whole interface at `:123-181`). §6.5's "reserved durably before either an act dispatch or an intent is created" has no representation. Adding it is a change to this input type and to the creation transaction, exactly as §6.5 says. |
-| `dispatch` | The `approved -> executing` CAS at `apps/api/src/jobs/intentReleaseWorker.ts:676`, `transitionIntent(intentId, 'approved', 'executing', { executedAt: null, executionStartedAt: new Date() }, { requireNotExpired: 'release' })`. VERIFIED. `transitionIntent`'s signature is `(intentId, from, to, patch?, opts?) => Promise<boolean>` (`intentService.ts:2134-2140`, VERIFIED). | A single durable claim already exists and already folds the release deadline into the CAS predicate (`:2158-2164`). This is the linearization point §7.3 asks for. | The CAS predicate has no task columns, so it cannot check task state, revision, deadline or `lease_epoch`. §7.3 is explicit that these are added to the *same* conditional UPDATE, not a second claim. `transitionIntent` returns `boolean` — it does not return the row, so a task-aware claim needs either a widened return or a separate read (INFERRED from the signature). |
+| `admit` | `createActionIntent` (`apps/api/src/services/actionIntents/intentService.ts:847`), whose input type `CreateActionIntentInput` (`:123-181`) is the full admission surface. Guardrails run before any write via `checkGuardrails` / `checkAgentGuardrails` (`apps/api/src/services/aiGuardrails.ts:1739`). VERIFIED. | Tier and guardrail gating, agent-principal pairing (`agent_source_mismatch`, `:858-868`), explicit device/ticket scope (`:170`), org resolution. | `CreateActionIntentInput` has **no** `taskId`, `taskStepKey` or `operationKey` field (VERIFIED, read the whole interface at `:123-181`). §6.5's "reserved durably before either an act dispatch or an intent is created" has no representation. Adding it is a change to this input type and to the creation transaction, exactly as §6.5 says. |
+| `dispatch` | The `approved -> executing` CAS at `apps/api/src/jobs/intentReleaseWorker.ts:676`, `transitionIntent(intentId, 'approved', 'executing', { executedAt: null, executionStartedAt: new Date() }, { requireNotExpired: 'release' })`. VERIFIED. `transitionIntent`'s signature is `(intentId, from, to, patch?, opts?) => Promise<boolean>` (`intentService.ts:2134-2140`, VERIFIED). | A single durable claim already exists and already folds the release deadline into the CAS predicate (`:2158-2164`). This is the linearization point §7.3 asks for. | The CAS predicate has no task columns, so it cannot check task state, revision, deadline or `lease_epoch`. §7.3 is explicit that these are added to the *same* conditional UPDATE, not a second claim. `transitionIntent` returns `boolean`, it does not return the row, so a task-aware claim needs either a widened return or a separate read (INFERRED from the signature). |
 | `dispatch` → `ExecutionRef` | `executeCommand` (`apps/api/src/services/commandQueue.ts:1194`) as used by `manage_services` (`apps/api/src/services/aiToolsScripts.ts:660`). Returns `CommandResult` (`commandQueue.ts:67-84`). VERIFIED. | `CommandResult.commandId` is the `device_commands` row id, attached "once a command row exists (success or failure)" (`commandQueue.ts:76-83`). That is a real, resolvable execution reference. | `commandId` is **optional** (`commandId?: string`, `:83`) and is "absent only on failures that occur before the row is created (device missing/offline, insert failure)". So `dispatch` must model a refusal with no reference. VERIFIED. |
-| `observe` | `GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:960-994`). VERIFIED. | Reads the persisted `device_commands.result` by id under `requireScope`, `requirePermission(DEVICES_READ)`, `getDeviceWithOrgCheck` and `canAccessDeviceSite`. | `device_commands` is deliberately **not** RLS-protected — it is listed in `INTENTIONAL_UNSCOPED` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (VERIFIED via the migration comment in `apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:11-17`). The app-layer device/org/site check **is** the whole authorization boundary. §11.3's "authorized adapter read on every access" is therefore load-bearing, not defence in depth. |
+| `observe` | `GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:960-994`). VERIFIED. | Reads the persisted `device_commands.result` by id under `requireScope`, `requirePermission(DEVICES_READ)`, `getDeviceWithOrgCheck` and `canAccessDeviceSite`. | `device_commands` is deliberately **not** RLS-protected, it is listed in `INTENTIONAL_UNSCOPED` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (VERIFIED via the migration comment in `apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:11-17`). The app-layer device/org/site check **is** the whole authorization boundary. §11.3's "authorized adapter read on every access" is therefore load-bearing, not defence in depth. |
 | `verify` | `actVerify.ts` `verifyServiceRunning` and `verifyActExecution`; `fixWatch.ts` phase 1/2. VERIFIED. | Typed verdicts already exist: `ActVerificationVerdict = 'passed' \| 'failed' \| 'inconclusive' \| 'skipped'` (`packages/shared/src/types/aiAgents.ts:719`) and `ActExecutionVerdict = 'succeeded' \| 'failed' \| 'timeout' \| 'unknown'` (`:710`). The two-axis split §6.5 wants is already the repo's vocabulary. | The two halves of the service criterion run on different clocks and cannot be combined into one call today. See §2.7. |
 | `cancelIfSupported` | `POST /devices/:id/commands/:commandId/cancel` (`apps/api/src/routes/devices/commands.ts:1000-1090`). VERIFIED. | Cancels a command still in `status='pending'` via a CAS; returns 409 `Command is not pending` once claimed. | There is **no** in-flight cancel for a claimed `restart_service`. The adapter must answer `{ cancelled: false }` and the task must record in-flight, which is what §7.3 already requires. |
 | `reconcileUnknown` | `commandAcceptsAgentResultCondition` (`apps/api/src/services/commandResultAcceptance.ts:58-66`). VERIFIED. | The device-command layer **already** treats a server-side timeout as provisional: a row that is `failed` with `result->>'status' = 'timeout'` still accepts a genuine agent result later (`:4-41`). Reconciliation of an unknown device effect is therefore possible from the reference alone. | Nothing propagates that late result back to the intent, which is terminal and immutable by then. The operation row is the only place it can land. This is precisely why §6.3/§6.5 put the result on the operation, not the intent. |
@@ -123,7 +123,7 @@ orgs on device move (§9). A stored `(kind, id)` pair is a pointer, never an aut
 
 ---
 
-## 2. Recipe card — Recover a supported service incident
+## 2. Recipe card: Recover a supported service incident
 
 The P3-1 slice. Supervised mode only, one device, intent path, no direct act.
 
@@ -136,7 +136,7 @@ which calls `tools.RestartService` (`agent/internal/remote/tools/services.go:154
 |---|---|---|
 | Windows | `restartServiceOS` (`agent/internal/remote/tools/services_windows.go:160-168`) stops then starts through `golang.org/x/sys/windows/svc/mgr`; `startServiceOS` (`:114-133`) ends with `waitForServiceState(s, svc.Running, 30*time.Second)`. | **Yes.** Waits for `Running`, up to 30 s. VERIFIED. |
 | Linux | `restartServiceOS` (`services_linux.go:127-133`) runs `systemctl restart <name>.service` and fails on a non-zero exit. | **Partly.** `systemctl restart` blocks and reports failure, but the agent performs no state read of its own. VERIFIED. |
-| macOS | `restartServiceOS` (`services_darwin.go:127-132`) calls `stopServiceOS` and **discards its error** (`:128-130` — an empty `if` body), then `startServiceOS` (`:102-113`) tries `launchctl kickstart -k`, falling back to `launchctl load -w`. | **No.** No state is read; a successful `kickstart` exit is the only evidence. VERIFIED. |
+| macOS | `restartServiceOS` (`services_darwin.go:127-132`) calls `stopServiceOS` and **discards its error** (`:128-130`, an empty `if` body), then `startServiceOS` (`:102-113`) tries `launchctl kickstart -k`, falling back to `launchctl load -w`. | **No.** No state is read; a successful `kickstart` exit is the only evidence. VERIFIED. |
 
 No other OS is supported: only `services_{windows,linux,darwin}.go` exist, so the build-tagged
 `restartServiceOS` has no fallback (VERIFIED by directory listing).
@@ -145,7 +145,7 @@ Special case, all three OSes: `if isAgentService(name) { return RestartAgentServ
 (`services.go:172-174`). Restarting Breeze's own agent returns success immediately and schedules a
 delayed restart, so the response can outrun the process death. A task must never treat that as a
 verified service recovery. Also note `StopService` refuses to stop the agent service outright
-(`services.go:131-136`), but `RestartService` does not — it reroutes. VERIFIED.
+(`services.go:131-136`), but `RestartService` does not, it reroutes. VERIFIED.
 
 **Consequence for the recipe.** The agent's `success: true` means "the restart command did not
 error", and on macOS not even that much about the stop half. Recipe verification must be an
@@ -289,7 +289,7 @@ exists, and otherwise record in flight and reconcile. This is exactly §7.3, and
 | Case | Detection | Task outcome |
 |---|---|---|
 | Guardrail or protected-service denial | `checkAgentGuardrails` returns `deny`; `createActionIntent` throws `agent_policy_denied` (`intentService.ts:1172-1177`) | Admission refusal. No operation row. |
-| Device offline at dispatch | `precheckCommandExecution` (`commandQueue.ts:852`); `CommandResult` has no `commandId` (`:1156` returns `DEVICE_UNREACHABLE_ERROR` **with** `commandId`; the pre-row failures do not) | `refused`. Retryable under the recipe's bounded policy — confirmed non-execution. |
+| Device offline at dispatch | `precheckCommandExecution` (`commandQueue.ts:852`); `CommandResult` has no `commandId` (`:1156` returns `DEVICE_UNREACHABLE_ERROR` **with** `commandId`; the pre-row failures do not) | `refused`. Retryable under the recipe's bounded policy, confirmed non-execution. |
 | Agent reports failure | `NewErrorResult` → `result.status = 'failed'` | `observe` → `finished/failed`. Not retried blindly. |
 | Tool wait elapsed, command live | `result.status = 'timeout'` written by `waitForCommandResult` (`commandQueue.ts:647-670`) | `unknown`. **Do not retry.** Reconcile via the command id. |
 | Never delivered | `deliver_by` passed; reaper reason `not_delivered_before_deadline` (`apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:3-9`, `apps/api/src/jobs/staleCommandReaper.ts`) | Confirmed non-execution. Retryable once (§7.2). |
@@ -297,7 +297,7 @@ exists, and otherwise record in flight and reconcile. This is exactly §7.3, and
 | Device moved org mid-flight | `submitted_org_id` records the enqueue-time org so claim-time eligibility can cancel (migration `:11-17`) | Target detach; fence. |
 | Verification inconclusive | `actVerify` read did not complete, or `fixWatch` hit `RECOVERY_TIMEOUT_HOURS` | Never `resolved`. Hand off. |
 
-### 2.10 Unavailable until — Investigate a device or alert
+### 2.10 Unavailable until: Investigate a device or alert
 
 Spec §4 requires "investigation complete, with uncertainty and an actionable recommendation; never
 labeled fixed". Missing against §4:
@@ -310,16 +310,16 @@ labeled fixed". Missing against §4:
 - **No verification adapter.** The workflow's "required result" is an evidence-quality judgement,
   not a device state. Nothing in `actVerify.ts` expresses it, and §4 offers no criterion type.
   VERIFIED (by absence in `verifyActExecution`'s cases).
-- **No cancellation semantics needed but none defined either** — an investigation has no external
+- **No cancellation semantics needed but none defined either**, an investigation has no external
   effect, so `cancelIfSupported` is trivially `{cancelled:true}`; that is a design statement P3-4
   must still make.
 - **Raw-trace exposure is gated on #4181** (§8). An investigation's value is its evidence, and the
   safe projection for evidence is not yet defined beyond the run DTO's field allowlist.
 
-Blocked on: a proposal object contract (P3-4), a criterion type for "evidence sufficient", and
-#4181.
+Blocked on: a proposal object contract (P3-4), a criterion type for "evidence sufficient",
+and the #4181 redaction contract.
 
-### 2.11 Unavailable until — Recover disk capacity
+### 2.11 Unavailable until: Recover disk capacity
 
 Spec §4 requires "the affected volume meets the task's approved free-space/usage criterion".
 Missing against §4:
@@ -373,7 +373,7 @@ anything; publication is always the caller's job, always after the write. VERIFI
 **The two tables differ in a way that matters to W05.** Run terminalization has an *enforced*
 chokepoint: `runService.terminalization.contract.test.ts` is a regex source scan asserting no other
 file in `src/` writes a terminal literal directly onto `aiAgentRuns`. VERIFIED. Intents have no such
-test — `transitionIntent` is the shared primitive, but several call sites deliberately bypass it to
+test, `transitionIntent` is the shared primitive, but several call sites deliberately bypass it to
 get an outbox row or a sibling-table write into the *same* transaction. **W05 should add the intent
 equivalent of that contract test**; it is the mechanism that keeps this inventory from rotting.
 
@@ -384,7 +384,7 @@ equivalent of that contract test**; it is the mechanism that keeps this inventor
 | `services/aiAgents/runLoop.ts:1898` (in `finishRun`, `:1892`) | `finishRun` | `completed` / `failed` / `awaiting_approval` (the three `TERMINAL_EVENT` keys, `:1787-1791`) | the CAS runs in `inSystemDbContext` inside `transitionRunStatus` | `safePublish(TERMINAL_EVENT[status], ...)` at `:1915`, **after** the write returns, with `runId`, `agentId`, `deviceId`, `intentIds`, `costCents`, `errorCode`; then best-effort notifications, fix watch and op evidence | Writes `summary`, `outcome` (jsonb), `intentIds`, `turnCount`, `costCents`, `finishedAt` in the same `set()` |
 | `services/aiAgents/runLoop.ts:1621` | `executeAgentRun` stop gate | `skipped`, `errorCode: 'policy_revoked_before_start'` | same chokepoint | `safePublish('ai.agent.run.skipped', ...)` | none |
 | `services/aiAgents/runLoop.ts:1768` | `executeAgentRun` catch block | `failed`, error code from the thrown `AgentRunError` / `AgentRunOwnershipError`, else `run_failed` | same chokepoint | `safePublish('ai.agent.run.failed', ...)`, only if the CAS won | none |
-| `services/aiAgents/runService.ts:593` (in `reapStalledAgentRuns`) | stalled reaper | `failed`, `errorCode: 'stalled'`, `finishedAt` | CAS with an extra `stale` guard re-checking the cutoff atomically (`:585-596`) | nothing — returns `reapedIds` to its caller | none; the run's own outcome is left as it was |
+| `services/aiAgents/runService.ts:593` (in `reapStalledAgentRuns`) | stalled reaper | `failed`, `errorCode: 'stalled'`, `finishedAt` | CAS with an extra `stale` guard re-checking the cutoff atomically (`:585-596`) | nothing, returns `reapedIds` to its caller | none; the run's own outcome is left as it was |
 | `services/aiAgents/runService.ts:1184` | enqueue-failure path | `failed`, `errorCode: 'enqueue_failed'`, `finishedAt` | CAS, then a separate `inSystemDbContext` read for the full row (`:1189-1192`) | nothing | none |
 | `services/aiAgents/runService.ts:1099` (the reclaim after `:1074-1078`) | `createAndEnqueueAgentRun` dedupe reclaim | **un-terminalizes**: CASes a `failed`/`enqueue_failed` row back to `queued` and re-stamps `queuedAt` | inside the same transaction and advisory lock as the counters | nothing | clears the prior failure |
 
@@ -406,29 +406,29 @@ rather than implying a run cancel exists.
 
 | file:line | function | status written | in a transaction? | publishes afterwards | result payload |
 |---|---|---|---|---|---|
-| `jobs/intentReleaseWorker.ts:541` (in `terminalizeIntent`, `:529`) | `terminalizeIntent` | `completed` or `failed` | **Yes** — `withSystemDbAccessContext` wrapping the CAS, the `recordIntentTerminalEvidence` insert and the `onWon` callback (`:540-558`) | **No outbox row.** The fix-watch job is enqueued strictly after the transaction closes (`:1078-1082`), swallowing failures because `recoverStrandedFixWatches` re-adds it | `patch` carries `executedAt` and the sealed `result`; sealing and the size cap run before the CAS (`:1029-1042`) |
-| `jobs/intentReleaseWorker.ts:139` | kill-switch reversal | `executing -> approved` (**not terminal** — listed because §7.3 extends it) | bare CAS | nothing | none |
+| `jobs/intentReleaseWorker.ts:541` (in `terminalizeIntent`, `:529`) | `terminalizeIntent` | `completed` or `failed` | **Yes**, `withSystemDbAccessContext` wrapping the CAS, the `recordIntentTerminalEvidence` insert and the `onWon` callback (`:540-558`) | **No outbox row.** The fix-watch job is enqueued strictly after the transaction closes (`:1078-1082`), swallowing failures because `recoverStrandedFixWatches` re-adds it | `patch` carries `executedAt` and the sealed `result`; sealing and the size cap run before the CAS (`:1029-1042`) |
+| `jobs/intentReleaseWorker.ts:139` | kill-switch reversal | `executing -> approved` (**not terminal**, listed because §7.3 extends it) | bare CAS | nothing | none |
 | `jobs/intentReleaseWorker.ts:676` | `releaseApprovedIntent` claim | `approved -> executing` (not terminal) | bare CAS with `requireNotExpired: 'release'` | nothing | sets `executionStartedAt`, clears `executedAt` |
 | `jobs/intentReleaseWorker.ts:601` (`failIntent`, wrapping `terminalizeIntent`) | revalidation stop (`:748`), digest recompute failure (`:831`), content changed (`:840`), `session_required` (`:858`), `connection_unavailable` (`:962`), `execution_error` (`:968`), plaintext-secret guard via `failOnPlaintextSecretGuard` (`:650`) | `failed` | same transaction as `terminalizeIntent` | no outbox row | no `result`; deliberately omitted on the secret-guard path |
 | `jobs/intentExpiryReaper.ts:132-230` (`reapExpiredIntents`) | deadline sweep | `expired`, from `pending_approval` and `approved` | one transaction, CTE `UPDATE` | `intent_outbox` row `intent_expired` in the **same** transaction, unconditional, and the file's header records that errors here **propagate by design** after a past bug | n/a |
-| `jobs/intentExpiryReaper.ts:274-276` | `reapStaleExecutingIntents` | `failed`, `error_code = 'execution_lost'` | one `UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED)` statement (`:262-288`) | writes an audit event and a metric per row, both best-effort; **no outbox row** | **none — the result column is not written at all** |
-| `services/actionIntents/intentService.ts:725-726` (`runHumanFanout`) | fail-closed when no approver is eligible | `cancelled`, `errorCode: 'no_eligible_approvers'` | **Yes** — joins the caller's transaction (`createActionIntent` at `:1334`, `runDeferredHumanFanout` at `:1884`) | the unconditional `intent_created` row still fires at `:1600` | n/a; never executed |
-| `services/approvals/decideApprovalRequest.ts:985-993` | human denial | `rejected` | **Yes** — `withSystemDbAccessContext(() => db.transaction(...))` at `:775`, bundled with the elevation mirror and the `ai_tool_executions` mirror | `intent_outbox` row, same transaction, `:1027-1032` | n/a |
-| `services/actionIntents/policyDecide.ts:349-364` (`runAuthorizeTransaction`) | policy auto-authorize | `approved` (**never terminal**) | **Yes** — one transaction | `intent_outbox` row `intent_approved`, same transaction, `:379` | n/a |
-| `routes/approvals.ts:992-994` | "report suspicious" | `rejected` | **Yes** — `runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(...)))` at `:958-960` | **nothing.** No `intentOutbox` insert exists anywhere in that file | n/a |
-| `services/actionIntents/intentService.ts:2043-2056` | `cancelActionIntent` | `cancelled`, from `['pending_approval','approved']` only | **Yes** — `withSystemDbAccessContext`; the outbox insert shares the transaction so a throw rolls the status back (`:2058-2072`) | `intent_outbox` row `intent_cancelled`, ids only (`:2051-2056`) | none |
-| `services/approvals/decideApprovalRequest.ts:1027-1032` | approval decision | intent CAS to `approved` (not terminal) or the denial path to `rejected` | **Yes** — inside `tx`, alongside expiring sibling `approval_requests` rows (`:1010-1019`) | `intent_outbox` row `intent_approved` / `intent_rejected`, ids only | none |
+| `jobs/intentExpiryReaper.ts:274-276` | `reapStaleExecutingIntents` | `failed`, `error_code = 'execution_lost'` | one `UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED)` statement (`:262-288`) | writes an audit event and a metric per row, both best-effort; **no outbox row** | **none, the result column is not written at all** |
+| `services/actionIntents/intentService.ts:725-726` (`runHumanFanout`) | fail-closed when no approver is eligible | `cancelled`, `errorCode: 'no_eligible_approvers'` | **Yes**, joins the caller's transaction (`createActionIntent` at `:1334`, `runDeferredHumanFanout` at `:1884`) | the unconditional `intent_created` row still fires at `:1600` | n/a; never executed |
+| `services/approvals/decideApprovalRequest.ts:985-993` | human denial | `rejected` | **Yes**, `withSystemDbAccessContext(() => db.transaction(...))` at `:775`, bundled with the elevation mirror and the `ai_tool_executions` mirror | `intent_outbox` row, same transaction, `:1027-1032` | n/a |
+| `services/actionIntents/policyDecide.ts:349-364` (`runAuthorizeTransaction`) | policy auto-authorize | `approved` (**never terminal**) | **Yes**, one transaction | `intent_outbox` row `intent_approved`, same transaction, `:379` | n/a |
+| `routes/approvals.ts:992-994` | "report suspicious" | `rejected` | **Yes**, `runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(...)))` at `:958-960` | **nothing.** No `intentOutbox` insert exists anywhere in that file | n/a |
+| `services/actionIntents/intentService.ts:2043-2056` | `cancelActionIntent` | `cancelled`, from `['pending_approval','approved']` only | **Yes**, `withSystemDbAccessContext`; the outbox insert shares the transaction so a throw rolls the status back (`:2058-2072`) | `intent_outbox` row `intent_cancelled`, ids only (`:2051-2056`) | none |
+| `services/approvals/decideApprovalRequest.ts:1027-1032` | approval decision | intent CAS to `approved` (not terminal) or the denial path to `rejected` | **Yes**, inside `tx`, alongside expiring sibling `approval_requests` rows (`:1010-1019`) | `intent_outbox` row `intent_approved` / `intent_rejected`, ids only | none |
 | `services/aiAgentSdk.ts:1210` | inline session release claim | `approved -> executing` (not terminal) | bare CAS with `requireNotExpired: 'release'` | nothing | sets `executionStartedAt` |
 | `services/aiAgentSdk.ts:1279` | revalidation refusal | `failed`, `errorCode: revalidation.errorCode` | bare CAS | nothing | none |
 | `services/aiAgentSdk.ts:1324` | inline pre-execution failure | `failed` | bare CAS | nothing | none |
 | `services/aiAgentSdk.ts:1387` | inline execution error | `failed`, `errorCode: 'execution_error'` | bare CAS | nothing | none |
-| `services/aiAgentSdk.ts:1903` | plaintext-secret guard trip | `failed`, `errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE` | bare CAS inside a `try` | nothing | **deliberately none — refuses to persist** |
+| `services/aiAgentSdk.ts:1903` | plaintext-secret guard trip | `failed`, `errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE` | bare CAS inside a `try` | nothing | **deliberately none, refuses to persist** |
 | `services/aiAgentSdk.ts:1918` | inline post-tool terminal | `completed` or `failed` | bare CAS | **nothing** | writes `executedAt` and `result: sizedResult` |
 
 **Two writers stand out as gaps.** `routes/approvals.ts:992-994` terminalizes an intent to
 `rejected` and publishes nothing at all, so a requester whose turn has ended is never told. And
-`reapStaleExecutingIntents` — the writer that handles precisely the lost-execution case a task cares
-about — also publishes nothing. Both are in scope for P3-1's "terminal publication" PR if a
+`reapStaleExecutingIntents`, the writer that handles precisely the lost-execution case a task cares
+about, also publishes nothing. Both are in scope for P3-1's "terminal publication" PR if a
 task-linked intent can reach them, and a task-linked intent can reach both.
 
 `policyDecide.ts` never writes a terminal status; it only auto-authorizes to `approved`. The
@@ -446,11 +446,11 @@ intentOutboxEventEnum = ['intent_created', 'intent_approved', 'intent_rejected',
                          'intent_expired', 'intent_cancelled', 'pam.desired_state_changed']
 ```
 `apps/api/src/db/schema/actionIntents.ts:92-99`, matching the CHECK constraint in
-`apps/api/migrations/2026-10-08-100300-intent-cancelled-outbox-event.sql:8-13` — the latest of four
+`apps/api/migrations/2026-10-08-100300-intent-cancelled-outbox-event.sql:8-13`, the latest of four
 successive widenings (`2026-07-18` → `2026-09-04` → `2026-09-16` → `2026-10-08`). VERIFIED.
 
 **There is no `intent_completed` and no `intent_failed`.** Both terminal writers that matter for the
-slice — `terminalizeIntent` and the stale-executing reaper — publish nothing. This confirms spec §2
+slice, `terminalizeIntent` and the stale-executing reaper, publish nothing. This confirms spec §2
 and is the concrete gap P3-1's PR (3) fills. Adding two values means a fifth widening migration.
 
 Complete list of outbox writers, all read: `intentService.ts:1600` (`intent_created`), `:1621`
@@ -459,7 +459,7 @@ Complete list of outbox writers, all read: `intentService.ts:1600` (`intent_crea
 `intentExpiryReaper.ts:217-224` (`intent_expired`); `pamActuationLifecycle.ts:62`
 (`pam.desired_state_changed`, unrelated to intent status). VERIFIED.
 
-Payloads are ids only everywhere — `{ intentId, orgId }`. The publisher
+Payloads are ids only everywhere, `{ intentId, orgId }`. The publisher
 (`apps/api/src/jobs/intentOutboxPublisher.ts`, `publishOutboxRows`) drains rows into an internal
 BullMQ queue; the consumer re-reads the authoritative row rather than trusting the payload. VERIFIED.
 
@@ -469,7 +469,7 @@ BullMQ queue; the consumer re-reads the authoritative row rather than trusting t
 calls `notifyRequesterOfOutcome(intentId, 'intent_approved')` (`:1578`), which **re-reads the live
 status** (`:1285-1287`) and switches on it (`agentOutcomeCopy`, `:1251-1274`; requester switch
 `:1393-1420`). So the outcome is surfaced as a side effect of the *approved* event's post-release
-re-read. Nothing fires if the status changes again after that job returns — which is exactly what the
+re-read. Nothing fires if the status changes again after that job returns, which is exactly what the
 stale-executing reaper does 20 minutes later. The code comments at `:1394-1401` already record this
 as a known limitation. A durable task cannot continue on this mechanism; it needs the real events.
 VERIFIED.
@@ -480,7 +480,7 @@ VERIFIED.
 
 Both of spec §2's claims are **confirmed**, and there is a third loss the spec does not mention.
 
-**Claim 1 — the reaper writes `failed:execution_lost`.** Confirmed.
+**Claim 1, the reaper writes `failed:execution_lost`.** Confirmed.
 `apps/api/src/jobs/intentExpiryReaper.ts:261-288`:
 
 ```sql
@@ -499,7 +499,7 @@ FROM due WHERE a.id = due.id AND a.status = 'executing' AND a.executed_at IS NUL
 `STALE_EXECUTING_TIMEOUT_MINUTES = 20` (`:81`). Note what the SET clause does **not** contain: no
 `result`, no `executed_at`. The execution's result has nowhere to go. VERIFIED.
 
-**Claim 2 — the losing worker discards the result.** Confirmed, and the code says so itself.
+**Claim 2, the losing worker discards the result.** Confirmed, and the code says so itself.
 `apps/api/src/jobs/intentReleaseWorker.ts:1053-1068`:
 
 ```ts
@@ -529,7 +529,7 @@ value**. `transitionIntent`'s own contract (`intentService.ts:2110-2112`) is tha
 "returns `false`, never throws". The `try/catch` at `:1926-1928` therefore only fires on a thrown
 error; the actual race returns `false` and falls straight through. So the inline chat-session path
 can execute a real tool, lose the CAS to the durable worker or the reaper, and discard `sizedResult`
-with **no log line, no Sentry event, no audit row — no signal at all.** That is a strictly more
+with **no log line, no Sentry event, no audit row, no signal at all.** That is a strictly more
 silent version of the gap `intentReleaseWorker.ts:1053-1068` explicitly instruments. VERIFIED by
 reading all five call sites.
 
@@ -546,7 +546,7 @@ path that has already executed a customer-visible side effect.
 | `intentExpiryReaper.ts:274` | the worker is mid-tool | Reaper wins; worker's result then hits the `terminalizeIntent` loss above |
 | `finishRun` (`runLoop.ts:1898`) | run cancelled or a second executor finished it | `moved === false`, logged, the loop stops writing (`:1907-1913`). Outcome discarded |
 
-**The device layer does not lose the result — only the intent layer does.** A device command
+**The device layer does not lose the result, only the intent layer does.** A device command
 whose server-side timeout wrote `result.status = 'timeout'` still accepts the genuine agent result
 later (`apps/api/src/services/commandResultAcceptance.ts:58-66`), and double delivery stays safe
 because the acceptance predicate is re-evaluated inside the terminal CAS (`:37-41`). VERIFIED.
@@ -568,7 +568,7 @@ execution reference exists.
 (`apps/api/src/services/actionIntents/intentService.ts:435-445`) hashes
 `` `${actorId}:${actionName}:${digest}` `` plus an optional scope id, and the call site
 (`:1186-1198`) passes `agentRun ? agentRun.id : requesterId`. The comment at `:1182-1185` states the
-intent: "two runs of the same agent proposing identical arguments must yield DISTINCT intents — an
+intent: "two runs of the same agent proposing identical arguments must yield DISTINCT intents, an
 intent is immutably attributed to one run, whose policy snapshot the release path evaluates."
 VERIFIED. Spec §6.5's characterisation is exact.
 
@@ -600,7 +600,7 @@ if (
 }
 ```
 
-VERIFIED. It is a four-field match, and run identity is one of the four — not the whole key.
+VERIFIED. It is a four-field match, and run identity is one of the four, not the whole key.
 
 **Creation is one system-scoped transaction.** `withSystemDbAccessContext` at `:1334` wraps the
 effect-digest computation, the insert and the outbox row, and the header at `:1320-1331` explains
@@ -619,7 +619,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS action_intents_task_operation_uniq
 ```
 
 The `task_id IS NOT NULL` conjunct is **required**, not decorative. Without it the index is still
-technically correct — Postgres treats NULLs as distinct, so legacy rows never collide — but the
+technically correct. Postgres treats NULLs as distinct, so legacy rows never collide, but the
 index would carry every legacy row for no benefit, and the predicate would no longer state the
 invariant it enforces. State the predicate as literals, never interpolated values (spec §11.1).
 
@@ -650,11 +650,11 @@ if (
 
 The run check is relaxed **only** when both task id and operation key match. Action name, source and
 argument digest still all have to match, so a continuation run cannot attach to an intent for
-different arguments — which is what makes the relaxation safe at all.
+different arguments, which is what makes the relaxation safe at all.
 
 ### 5.3 Five hazards, one of them blocking
 
-**H1 — two arbiter indexes, one ON CONFLICT clause. This is the blocking one.** Postgres's
+**H1, two arbiter indexes, one ON CONFLICT clause. This is the blocking one.** Postgres's
 `ON CONFLICT` with an explicit inference target suppresses conflicts on **that arbiter only**. The
 existing insert names `(org_id, idempotency_key)` (`intentService.ts:1483-1486`). A task-scoped
 insert that collides on the *new* index raises a bare 23505 that the current code path does not
@@ -678,9 +678,9 @@ existing `onConflictDoNothing` already converges a continuation run onto it, and
 `(org_id, task_id, operation_key)` index becomes a redundant assertion rather than a second arbiter.
 Keep it as a `CONSTRAINT … NOT VALID`-style belt if desired, or drop it. Either way, **one arbiter.**
 This is a change to what §6.5 says ("a partial unique index on `(org_id, task_id, operation_key)`
-over live statuses") — see contradiction C6.
+over live statuses"), see contradiction C6.
 
-**H2 — a completed intent frees the key while the effect is in flight.** `completed` and `failed`
+**H2, a completed intent frees the key while the effect is in flight.** `completed` and `failed`
 leave `LIVE_INTENT_STATUSES`, so the moment `terminalizeIntent` fires, the operation key is
 reusable. For the thin slice this is not hypothetical: §2.6 shows the intent completes when the
 30-second tool wait returns, which may be minutes before the device finishes. So **the live-only
@@ -690,7 +690,7 @@ predicate), which §6.5 already specifies as "a permanent copy on the operation 
 explicitly: the intent index guards *concurrent* duplication; the operation row guards *sequential*
 replay. VERIFIED (the status sets and the timing chain were both read).
 
-**H3 — the relaxation crosses a documented policy-snapshot invariant.** `:1182-1185` ties run
+**H3, the relaxation crosses a documented policy-snapshot invariant.** `:1182-1185` ties run
 scoping to the fact that the release path evaluates the originating run's immutable policy snapshot.
 If run B attaches to run A's intent, release evaluates **A's** snapshot. A later run under a
 *tightened* policy would then execute under the earlier, looser snapshot. Spec §7.1 already forbids
@@ -699,14 +699,14 @@ live-authority recheck at the dispatch claim, not only at creation. `revalidateA
 already exists on the release path (`intentReleaseWorker.ts:700-710` region, VERIFIED by reference)
 and is the natural place. Do not ship the relaxation without it.
 
-**H4 — NULL semantics are load-bearing in the right direction.** Legacy rows have
+**H4. NULL semantics are load-bearing in the right direction.** Legacy rows have
 `task_id IS NULL` and are mutually non-colliding, so no existing behaviour changes. This is correct,
 but it means the index enforces nothing unless the application always populates all three columns
 for task-linked intents. The CHECK enforces all-or-none, not all-or-task. INFERRED: the real
 guarantee has to come from the single task-aware creation path, and a contract test should assert
 that a task-linked admission never produces a null `operation_key`.
 
-**H5 — export policy, not RLS.** Adding columns needs no new RLS policy: `action_intents` is
+**H5, export policy, not RLS.** Adding columns needs no new RLS policy: `action_intents` is
 shape 1 with `breeze_has_org_access(org_id)` (`apps/api/migrations/2026-07-18-action-intents.sql:130-146`).
 But `action_intents` is already in `CORE_TENANT_EXPORT_POLICY`
 (`apps/api/src/services/tenantExportPolicyRegistry.ts:44`), so **three new columns must be classified
@@ -737,20 +737,20 @@ caller's input and `:1072` inserts it unchanged, guarded by
 `.onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })` (`:1078`). Each
 admission owner mints its own string. The constraint is
 `ai_agent_runs_org_dedupe_key_uq UNIQUE (org_id, dedupe_key)`
-(`apps/api/migrations/2026-09-02-ai-agents.sql:119-121`), tenant-scoped on purpose — the comment at
+(`apps/api/migrations/2026-09-02-ai-agents.sql:119-121`), tenant-scoped on purpose, the comment at
 `:114-118` notes a global unique index below RLS would leak cross-tenant existence via 23505.
 VERIFIED.
 
 | file:line | trigger | admitting event | occurrence identity (`dedupeKey`) | can coexist with task admission for the same occurrence? |
 |---|---|---|---|---|
-| `services/automationRuntime.ts:1833` (`executeAiTriageAction`) | automation `ai_triage` action | any automation trigger whose action list includes `ai_triage`, managed-agent only | `:1847-1849` — `trigger?.alertId ? \`alert:${trigger.alertId}\` : \`event:${trigger?.eventId ?? context.runId}\`` | **No.** Shares the `alert:<id>` namespace with the anomaly path deliberately. A parallel task admission for the same alert would be a third writer on a key designed for exactly two. Needs the §6.4 routing switch. |
-| `services/aiAgents/metricAnomalySubscriber.ts:188` | anomaly incident | `anomaly.incident_opened` | `:184` — `linkedAlertId ? \`alert:${linkedAlertId}\` : \`anomaly:${incident.id}\`` | **No** once promoted to an alert (deliberate collision, `:35-42`); **yes** while unpromoted, where `anomaly:<id>` is unique to this path. Two different identities for one occurrence is itself a sunset hazard. |
-| `services/aiAgents/alertVerdictSubscriber.ts:194` (`enqueueVerdictRunForAlert`) | alert verdict | `alert.resolved` (system/auto only) or the delayed `alert.triggered` job (`jobs/alertVerdictScheduler.ts:136, 221`) | `:203` — `` `alert-verdict:${alertId}` `` | **Yes.** Distinct namespace and a distinct `profile` (`verdict`), with its own concurrency caps. A `full` task run and a `verdict` run for one alert are not duplicates. |
-| `services/aiAgents/alertVerdictSubscriber.ts:250` (`enqueueVerdictRunForGroup`) | correlation group | `alert.correlation_group.created` | `:260` — `` `group-verdict:${payload.groupId}` `` | **Yes**, same reasoning. |
-| `services/aiAgents/ticketHelpdeskSubscriber.ts:303` (`admitTriageRun`) | ticket shadow | `ticket.created`, `ticket.commented` (verified-human only), `ticket.status_changed → resolved` | `:23-38` — `ticket-created:<ticketId>` shared by created and commented (first admitter wins, one triage run per ticket by design); `ticket-resolved:<ticketId>` for the resolved lane | **No** for the ticket-triage recipe: `ticket-created:` is already a "one owner per ticket" key, so a task admission would need to adopt that exact key, not add a second. |
-| `jobs/aiAgentSweepScheduler.ts:610` | schedule, narrative profile | fixed-tick `tick` → `occurrence` jobs on the `ai-agent-sweep` queue | `:618` — `` `narrative-${baseline.id}-${orgId}-${occurrenceKey}` `` | **Yes** against other profiles; **no** against a task admission for the same `(schedule, org, occurrence)`. Note the prefix is profile-namespaced on purpose (`:605-609`): a shared `sweep-` prefix would silently drop one of the two. |
-| `jobs/aiAgentSweepScheduler.ts:620` | schedule, sweep profile | same | `:628` — `` `sweep-${baseline.id}-${orgId}-${occurrenceKey}` `` | Same as above. |
-| *(excluded)* `routes/aiAgents.ts:1737` `POST /:id/runs` | human "run now" | manual, `requireMfa()` | `:1741` — `` `manual:${randomUUID()}` `` | Never dedupes, by design. Not a sunset target. |
+| `services/automationRuntime.ts:1833` (`executeAiTriageAction`) | automation `ai_triage` action | any automation trigger whose action list includes `ai_triage`, managed-agent only | `:1847-1849`, `trigger?.alertId ? \`alert:${trigger.alertId}\` : \`event:${trigger?.eventId ?? context.runId}\`` | **No.** Shares the `alert:<id>` namespace with the anomaly path deliberately. A parallel task admission for the same alert would be a third writer on a key designed for exactly two. Needs the §6.4 routing switch. |
+| `services/aiAgents/metricAnomalySubscriber.ts:188` | anomaly incident | `anomaly.incident_opened` | `:184`, `linkedAlertId ? \`alert:${linkedAlertId}\` : \`anomaly:${incident.id}\`` | **No** once promoted to an alert (deliberate collision, `:35-42`); **yes** while unpromoted, where `anomaly:<id>` is unique to this path. Two different identities for one occurrence is itself a sunset hazard. |
+| `services/aiAgents/alertVerdictSubscriber.ts:194` (`enqueueVerdictRunForAlert`) | alert verdict | `alert.resolved` (system/auto only) or the delayed `alert.triggered` job (`jobs/alertVerdictScheduler.ts:136, 221`) | `:203`, `` `alert-verdict:${alertId}` `` | **Yes.** Distinct namespace and a distinct `profile` (`verdict`), with its own concurrency caps. A `full` task run and a `verdict` run for one alert are not duplicates. |
+| `services/aiAgents/alertVerdictSubscriber.ts:250` (`enqueueVerdictRunForGroup`) | correlation group | `alert.correlation_group.created` | `:260`, `` `group-verdict:${payload.groupId}` `` | **Yes**, same reasoning. |
+| `services/aiAgents/ticketHelpdeskSubscriber.ts:303` (`admitTriageRun`) | ticket shadow | `ticket.created`, `ticket.commented` (verified-human only), `ticket.status_changed → resolved` | `:23-38`, `ticket-created:<ticketId>` shared by created and commented (first admitter wins, one triage run per ticket by design); `ticket-resolved:<ticketId>` for the resolved lane | **No** for the ticket-triage recipe: `ticket-created:` is already a "one owner per ticket" key, so a task admission would need to adopt that exact key, not add a second. |
+| `jobs/aiAgentSweepScheduler.ts:610` | schedule, narrative profile | fixed-tick `tick` → `occurrence` jobs on the `ai-agent-sweep` queue | `:618`, `` `narrative-${baseline.id}-${orgId}-${occurrenceKey}` `` | **Yes** against other profiles; **no** against a task admission for the same `(schedule, org, occurrence)`. Note the prefix is profile-namespaced on purpose (`:605-609`): a shared `sweep-` prefix would silently drop one of the two. |
+| `jobs/aiAgentSweepScheduler.ts:620` | schedule, sweep profile | same | `:628`, `` `sweep-${baseline.id}-${orgId}-${occurrenceKey}` `` | Same as above. |
+| *(excluded)* `routes/aiAgents.ts:1737` `POST /:id/runs` | human "run now" | manual, `requireMfa()` | `:1741`, `` `manual:${randomUUID()}` `` | Never dedupes, by design. Not a sunset target. |
 
 **Two candidates named in the plan do not exist.**
 
@@ -790,7 +790,7 @@ than a routing switch alone, and it is already enforced by the database.
 
 Recorded, not acted on. Neither issue is commented on or closed by this wave.
 
-### 7.1 #4178 — anomaly-source trigger
+### 7.1 #4178, anomaly-source trigger
 
 **Issue text** (VERIFIED via `gh issue view 4178`): "Originally the 'anomaly sources' item in #3821
 wave 6 (#3828). Folded into phase 2's alert-verdict lane (P2-1), which runs judgement on the
@@ -816,12 +816,12 @@ cannot express a needed signal." Labels `roadmap`, `status:idea`, `priority:p3`.
 2. The issue is labelled `status:idea` / `priority:p3`; the feature is in shipped code.
 3. The issue's spirit is partly right: the anomaly path *does* cross-dedupe onto the alert key space
    once an incident is promoted (`metricAnomalySubscriber.ts:184`), so there is a real coupling to
-   the alert path — just not "no separate trigger kind".
+   the alert path, just not "no separate trigger kind".
 4. **NOT CHECKED:** whether anomaly-triggered runs are forced to `shadow` mode in all cases, and
    whether that gating is what the issue would consider "complete coverage". The orchestrator should
    confirm before closing.
 
-### 7.2 #4206 — intent-anchored fix watches
+### 7.2 #4206, intent-anchored fix watches
 
 **Issue text** (VERIFIED): "Follow-up to #3828 (PR #4168). Policy-decided (wave 5) intents are
 excluded from fix-held watches because they carry no post-execution verification. Add release-side
@@ -830,10 +830,10 @@ excluded from fix-held watches because they carry no post-execution verification
 
 **What exists in code.** Built, and the code annotates itself as closing the issue. VERIFIED:
 
-- `apps/api/src/jobs/intentReleaseWorker.ts:425-447` — `watchReleasedIntent`'s header reads "P2-5
-  Task 5, #4192 — closes #4206", and it opens a verification episode in its own savepoint nested
+- `apps/api/src/jobs/intentReleaseWorker.ts:425-447`, `watchReleasedIntent`'s header reads "P2-5
+  Task 5, #4192, closes #4206", and it opens a verification episode in its own savepoint nested
   inside the terminal CAS's transaction. Called at `:1050`.
-- `apps/api/src/services/aiAgents/fixWatch.ts:318` — `createIntentFixWatchRow`.
+- `apps/api/src/services/aiAgents/fixWatch.ts:318`, `createIntentFixWatchRow`.
 - `apps/api/src/db/schema/aiAgentFixWatches.ts:19-27` defines
   `AI_AGENT_FIX_WATCH_SOURCE_KINDS = ['act_run','intent']`; the comment at `:47-56` says the
   `intentId` + `sourceKind` + `opKeys` combination "closes #4206". `intent_id` carries a composite
@@ -855,15 +855,15 @@ Watches are anchored **both** ways: `run_id` stays `NOT NULL` (`aiAgentFixWatche
    construction (`policyDecide.ts:502` treats a missing run id as "structurally impossible").
    So the named category is covered. VERIFIED.
 3. **A residual gap the fix does not close.** A watch only opens `if (anchor.alertId)`
-   (`intentReleaseWorker.ts:452`). When the originating run has no triggering alert — a
-   schedule, sweep, ticket or manual run releasing a policy-decided intent — the code instead
+   (`intentReleaseWorker.ts:452`). When the originating run has no triggering alert, a
+   schedule, sweep, ticket or manual run releasing a policy-decided intent, the code instead
    credits the operation `verified` immediately with no watch at all, on the stated reasoning that
    "an operation no watch will ever look at must not sit un-gradeable forever" (`:436-441`). For
    non-alert-triggered intents, "verification" is therefore a same-instant credit, not a
    post-execution check. That is narrower than the issue's blanket phrasing. **NOT CHECKED** whether
    this was discussed and accepted in the P2-5 plan.
 4. This gap matters directly to P3-1: a task-linked service recovery whose run has no `alertId`
-   would be credited `verified` on dispatch. The task criterion must not inherit that credit —
+   would be credited `verified` on dispatch. The task criterion must not inherit that credit,
    see contradiction C11.
 
 ---
@@ -920,7 +920,7 @@ pattern as precedent.
 | Surface | May contain | Must never contain |
 |---|---|---|
 | Public task/operation DTO | ids, `workflow_key`/`version`, state, phase, wait reason, `deadline`, `next_wake_at`, bounded `objective` text, target display label, verification verdict, execution reference **ids** | `checkpoint`, `criteria`, any raw model or tool text, `toolInput`/`toolOutput`, `args`, the raw device-command `result` |
-| Outbox payload | `{ taskId, orgId, transition }` — ids only, matching every existing writer (`intentService.ts:1604, 1624, 2055`; `decideApprovalRequest.ts:1031`) | anything the consumer could act on without re-reading the row |
+| Outbox payload | `{ taskId, orgId, transition }`, ids only, matching every existing writer (`intentService.ts:1604, 1624, 2055`; `decideApprovalRequest.ts:1031`) | anything the consumer could act on without re-reading the row |
 | Notification | template-composed title and message, each string passed through a control-character stripper and length bound, as `flattenNotificationLine` does (`apps/api/src/services/aiAgents/runFinishedNotify.ts:250-252`) | model-authored prose, tool output, customer content |
 
 VERIFIED for all three existing precedents.
@@ -937,7 +937,7 @@ entry: `OPEN_CONTAINER_TYPES = new Set(['json','jsonb','bytea'])` plus name matc
 `openContainerReviewed === true` (`:223-228`). So a new jsonb column on a registered table fails the
 build. VERIFIED. `SUSPICIOUS_NAME_PARTS` is at `tenantExportPolicy.ts:35-55`.
 
-Precedent to copy verbatim in style — `action_intents` puts `arguments` and `result` in
+Precedent to copy verbatim in style, `action_intents` puts `arguments` and `result` in
 `excludedOpen` (`tenantExportPolicyRegistry.ts:44`); `ai_agents` puts `tool_allowlist`,
 `protected_resources`, `limits`, `triggers`, `recipients`, `act_assets` there (`:78`). VERIFIED.
 
@@ -968,12 +968,12 @@ Precedent to copy verbatim in style — `action_intents` puts `arguments` and `r
 | Column | Bucket |
 |---|---|
 | `id`, `org_id`, `task_id`, `source_kind`, `source_id`, `transition`, `due_at`, `published_at`, `attempts`, `created_at` | `included` |
-| any `payload` jsonb | `excludedOpen` — and `payload` is additionally a name-based open container (`tenantExportPolicy.ts:57-69`) |
+| any `payload` jsonb | `excludedOpen`, and `payload` is additionally a name-based open container (`tenantExportPolicy.ts:57-69`) |
 
-**`action_intents` new columns** — `task_id`, `task_step_key`, `operation_key` are all `included`.
+**`action_intents` new columns**, `task_id`, `task_step_key`, `operation_key` are all `included`.
 None matches `SUSPICIOUS_NAME_PARTS`. This entry is mandatory in the P3-1 schema PR (hazard H5).
 
-**`ai_agent_runs` new columns** — `task_id`, `task_step_id`, `task_attempt_ordinal`,
+**`ai_agent_runs` new columns**, `task_id`, `task_step_id`, `task_attempt_ordinal`,
 `prompt_version`, `resolved_model` are all `included`.
 
 `ai_operator_task_events` is append-only, so it also goes in `AUDIT_ADMIN_REQUIRED_TABLES`
@@ -1009,18 +1009,18 @@ VERIFIED.
 1. `ai_operator_task_targets` needs a **detach**, not a restamp: set `detached_at` and a reason,
    fence pending execution, keep the frozen label (§11.3). That is not what the loop above does, so
    it belongs alongside the loop as an explicit step, exactly as the existing `ai_agent_runs`
-   handling does — `ai_agent_runs` is deliberately **excluded** from
+   handling does, `ai_agent_runs` is deliberately **excluded** from
    `CORE_DEVICE_ORG_DENORMALIZED_TABLES` and its `org_id` is trigger-immutable.
 2. The DB trigger `breeze_cascade_device_org_id()` severs lineage on a **direct** `devices.org_id`
    update that bypasses the route (asserted at
    `apps/api/src/__tests__/integration/agentRunMoveSemantics.integration.test.ts:656`). Any new
    lineage column needs equivalent trigger coverage or a direct update leaves it stranded.
-3. `ai_operator_tasks` and `ai_operator_operations` must be in neither denormalized list — task
+3. `ai_operator_tasks` and `ai_operator_operations` must be in neither denormalized list, task
    `org_id` is immutable.
 
 ### 9.2 Ticket move
 
-`POST /tickets/:id/move-org` — route `apps/api/src/routes/tickets/moveOrg.ts:18-60`, service
+`POST /tickets/:id/move-org`, route `apps/api/src/routes/tickets/moveOrg.ts:18-60`, service
 `moveTicketOrg` in `apps/api/src/services/ticketService.ts`. Requires `partner`/`system` scope,
 `tickets:write` + `organizations:write`, and MFA. VERIFIED. Ticket-bound task targets detach here on
 the same contract as device targets.
@@ -1052,7 +1052,7 @@ ai_agent_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable
 
 **W03 must add** `ai_operator_tasks`, `ai_operator_operations`, `ai_operator_task_outbox` (and later
 targets, steps, events) as `leave-for-erasure`, plus a custom executor that **fences live loser-org
-tasks first** — stop new admissions, record in flight — before the merge proceeds, per §11.3. The
+tasks first**, stop new admissions, record in flight, before the merge proceeds, per §11.3. The
 `ai_agents` repoint means the task's `agent_id` will point at a survivor-org agent while the task
 keeps its immutable org, which is exactly why §11.3 specifies a plain FK with the same-org check at
 admission rather than a composite FK.
@@ -1124,12 +1124,12 @@ the minute field of every cron expression: `0 3 7 8 12 13 15 17 18 22 23 27 28 3
 47 48 52 53 57 58`, plus `30` and `45` from `partner-trust-promote`'s `*/15`.
 
 **Claim for the hourly reconciler: minute `:02`, i.e. `'2 * * * *'`.** It is the only free minute in
-the =2 (mod 5) sub-daily lane — 7, 12, 17, 22, 27, 32, 37, 42, 47, 52 and 57 are all taken. VERIFIED
+the =2 (mod 5) sub-daily lane, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52 and 57 are all taken. VERIFIED
 by intersecting the lane with the occupancy list. The =0 (mod 5) minutes are reserved by the header
 for unmanaged ticks even where they read as free; the =3 (mod 5) lane is the daily heavy-delete
 tier. Re-run `scheduleRegistry.contract.test.ts` when the entry is added, since the registry moves.
 
-The coordinator (proposed 15 s) and outbox publisher (proposed 5 s) stay **outside** the registry —
+The coordinator (proposed 15 s) and outbox publisher (proposed 5 s) stay **outside** the registry,
 both are below `COARSE_REPEAT_INTERVAL_MS`, which is what §11.2 and the header already require.
 No bare `every: 24h`.
 
@@ -1137,7 +1137,7 @@ No bare `every: 24h`.
 
 `apps/api/src/services/metricsRegistry.ts` is a 37-line leaf module holding one singleton,
 `export const metricsRegistry = new Registry();` (`:37`), deliberately import-isolated from routes,
-db and services so the worker role can serve `/metrics` without loading the route graph — enforced
+db and services so the worker role can serve `/metrics` without loading the route graph, enforced
 by `apps/api/src/services/workerEntrypointClosure.contract.test.ts`. VERIFIED.
 
 There is no registration wrapper. The convention is a module-scope `new Counter/Gauge/Histogram`
@@ -1173,7 +1173,7 @@ Spec §11.2's eight metrics, typed:
 | `ai_operator_lease_reclaims_total` | **Counter** | `_total` suffix already correct |
 | `ai_operator_unknown_effect_handoffs_total` | **Counter** | |
 | `ai_operator_dispatch_claim_conflicts_total` | **Counter** | |
-| `ai_operator_reconciler_scan_rows` | **Histogram**, `_rows` | a per-pass distribution; if a running total is wanted instead, rename to `_total` and make it a Counter — do not leave the name and the type disagreeing |
+| `ai_operator_reconciler_scan_rows` | **Histogram**, `_rows` | a per-pass distribution; if a running total is wanted instead, rename to `_total` and make it a Counter, do not leave the name and the type disagreeing |
 
 Note none of the eight carries the `breeze_` prefix the product series otherwise uses. Either add it
 consistently (`breeze_ai_operator_*`) or record the exception deliberately; do not do half of each.
@@ -1184,34 +1184,34 @@ consistently (`breeze_ai_operator_*`) or record the exception deliberately; do n
 
 Input to the next revision of the spec and plan. Neither document is edited by this wave.
 
-**C1 — the patch scheduler admits no agent runs.** The plan's P3-0 bullet names "patch scheduler
+**C1, the patch scheduler admits no agent runs.** The plan's P3-0 bullet names "patch scheduler
 occurrences (`apps/api/src/jobs/patchSchedulerWorker.ts`)" as a legacy admission owner. That file
 contains no `createAndEnqueueAgentRun`, no `ai_agent_runs` reference and no `ai_agent` symbol.
 VERIFIED negative. Spec §6.4's paragraph about patch scheduler occurrences producing or adopting a
 task/job lineage describes future work, not a current second owner.
 
-**C2 — fleet findings admit no agent runs.** Same as C1 for
+**C2, fleet findings admit no agent runs.** Same as C1 for
 `apps/api/src/jobs/fleetRemediationDispatch.ts` and `apps/api/src/services/fleetFindings/`.
 VERIFIED negative. The sunset list is seven entries, not nine (§6).
 
-**C3 — `dedupeKey` is not computed at `runService.ts:1074`.** The plan asks to "cite how
+**C3, `dedupeKey` is not computed at `runService.ts:1074`.** The plan asks to "cite how
 `runService.ts` around 1074 computes it". It does not compute it: `:705` destructures it from the
 caller's input and `:1072` inserts it verbatim. Each admission owner mints its own string (§6). The
 correct citations are the seven call sites plus the constraint
 `ai_agent_runs_org_dedupe_key_uq` (`apps/api/migrations/2026-09-02-ai-agents.sql:119-121`).
 
-**C4 — `manage_services`'s `executeCommand` call is at `aiToolsScripts.ts:660`, not `:649`.** Spec
+**C4, `manage_services`'s `executeCommand` call is at `aiToolsScripts.ts:660`, not `:649`.** Spec
 §2 and §6.5 both cite `:649`; that line is inside the tool *definition* block (`:623-641`). The
 handler's `executeCommand` call is `:660-664`. VERIFIED.
 
-**C5 — the outbox event values are at `actionIntents.ts:92-99`, not `:449`.** Spec §2 cites `:449`
+**C5, the outbox event values are at `actionIntents.ts:92-99`, not `:449`.** Spec §2 cites `:449`
 for "`event_type`, values …"; `:449` is the column declaration
 (`eventType: text('event_type').notNull().$type<IntentOutboxEvent>()`) and the values live in
 `intentOutboxEventEnum` at `:92-99`. The spec also omits `intent_created` and
-`pam.desired_state_changed` from its list. The substantive claim — no completed or failed event —
+`pam.desired_state_changed` from its list. The substantive claim, no completed or failed event,
 is **correct**. VERIFIED.
 
-**C6 — the proposed second partial unique index is unsafe as written.** §6.5 specifies "a partial
+**C6, the proposed second partial unique index is unsafe as written.** §6.5 specifies "a partial
 unique index on `(org_id, task_id, operation_key)` over live statuses" *in addition to* the existing
 `(org_id, idempotency_key)` index. A single `ON CONFLICT` clause arbitrates one index; a collision
 on the unnamed one raises a bare 23505 through a code path that expects an idempotent replay
@@ -1219,32 +1219,32 @@ on the unnamed one raises a bare 23505 through a code path that expects an idemp
 so the existing index is the single arbiter (§5.3, H1). This changes §6.5's mechanism, not its
 intent.
 
-**C7 — a live-only predicate cannot guard sequential replay.** §6.5 relies on the partial unique to
+**C7, a live-only predicate cannot guard sequential replay.** §6.5 relies on the partial unique to
 stop "a continuation run re-proposing the same operation" minting a second intent. `completed` and
 `failed` leave `LIVE_INTENT_STATUSES` (`intentService.ts:55`), and for the thin slice the intent
 completes when the 30-second tool wait returns, which can be minutes before the device finishes
 (§2.6). The permanent `ai_operator_operations` uniqueness is the sequential guard; the intent index
 is only the concurrent one. The spec should say which does which.
 
-**C8 — the same-task relaxation crosses a documented invariant and needs a paired recheck.**
+**C8, the same-task relaxation crosses a documented invariant and needs a paired recheck.**
 `intentService.ts:1182-1185` ties run scoping to the release path evaluating the originating run's
 immutable policy snapshot. Relaxing `:1527` for same-task runs means a later run can release under
 an earlier run's snapshot, which §7.1's "tightening takes effect immediately" forbids. The
 relaxation must ship with a live-authority recheck at the dispatch claim (§5.3, H3).
 
-**C9 — there is no "fresh within N minutes" parameter today.** The plan's recipe-card bullet asks
+**C9, there is no "fresh within N minutes" parameter today.** The plan's recipe-card bullet asks
 for "service state plus the triggering alert or health condition, fresh within N minutes; cite where
 each comes from". `VERIFY_READ_TIMEOUT_MS = 8_000` (`actVerify.ts:75`) is a read deadline and
 `FIX_HOLD_MINUTES = 60` (`fixWatch.ts:66`) is a recurrence hold. Neither is a freshness bound. P3-1
 must introduce one or state the hold as the contract (§2.7).
 
-**C10 — the agent's restart success is not proof the service runs, and macOS is weakest.** Only the
+**C10, the agent's restart success is not proof the service runs, and macOS is weakest.** Only the
 Windows path waits for `svc.Running` (`services_windows.go:132`); Linux relies on `systemctl`'s exit
 code; macOS discards the stop error entirely (`services_darwin.go:128-130`). §4's "service state and
 the triggering health condition recover with fresh evidence" is achievable only through the
 independent `list_services` read, never the dispatch result (§2.1).
 
-**C11 — the existing fix-watch eligibility gate does not fire for a supervised task run.**
+**C11, the existing fix-watch eligibility gate does not fire for a supervised task run.**
 `isFixWatchEligible` requires `run.modeAtStart === 'act'` (`fixWatch.ts:133-139`), and P3-1 is
 supervised-only by design (plan P3-1, "supervised mode only"). Separately, `watchReleasedIntent`
 credits `verified` immediately when the run has no `alertId` (`intentReleaseWorker.ts:436-441,
@@ -1252,29 +1252,29 @@ credits `verified` immediately when the run has no `alertId` (`intentReleaseWork
 auto-credit. §6.5's "reuse `actVerify`/`fixWatch` evidence" needs an explicit statement of which
 gate the task path uses.
 
-**C12 — #4178 is shipped, not deferred.** The Phase 2 spec §11 lists the anomaly-source trigger as
+**C12, #4178 is shipped, not deferred.** The Phase 2 spec §11 lists the anomaly-source trigger as
 deferred and "subsumed by verdicts on correlator output", and #4178 is labelled `status:idea`. A
 separate `triggerKind: 'anomaly'` subscriber, trigger-kind CHECK and `anomaly_incident_id` column
 are all in shipped code (§7.1). The new plan's "Spec/code indicate the trigger already exists" is
 right; the Phase 2 spec is the document that is wrong.
 
-**C13 — #4206 is implemented with a residual gap the plan does not name.** Two code sites annotate
+**C13, #4206 is implemented with a residual gap the plan does not name.** Two code sites annotate
 themselves "closes #4206" (`intentReleaseWorker.ts:425-427`, `aiAgentFixWatches.ts:47-56`), yet the
 issue is open. The gap is not the policy-decided category, which is covered, but the non-alert
 anchored case, which is credited `verified` on release with no watch (§7.2). The plan's "verify
 intent-anchored watches end to end and close or re-scope" should name that case explicitly.
 
-**C14 — `/admin/tool-executions` is not admin-gated.** #4181 and the Phase 2 spec both describe it
+**C14, `/admin/tool-executions` is not admin-gated.** #4181 and the Phase 2 spec both describe it
 as exposing raw `toolInput` "to platform admins". Its actual gate is `requireAiRead` =
 `requirePermission(ORGS_READ)` (`ai.ts:129, 1238-1239`). The exposure is wider than the issue
 records (§8.2).
 
-**C15 — AI agent runs are not site-filtered, so §11's site restriction is new work.** No
+**C15. AI agent runs are not site-filtered, so §11's site restriction is new work.** No
 `allowedSiteIds` / `canAccessSite` reference exists in `routes/aiAgents.ts` (VERIFIED by grep),
 while `routes/devices/core.ts` does gate on them. §11 reads as though task site restriction extends
 an existing behaviour; it does not (§9.5).
 
-**C16 — the newest committed migration is `2026-10-13-110000`, not `2026-10-13-…` generically.**
+**C16, the newest committed migration is `2026-10-13-110000`, not `2026-10-13-…` generically.**
 Spec §11 says "the newest shipped migration is named `2026-10-13-…`". The exact newest by
 `localeCompare` is `2026-10-13-110000-scripts-security-acknowledgement.sql`, and three files share
 the `2026-10-13` date (`-100000-device-commands-deliver-by`, `-100100-action-intents-ticket-delete-tombstone`,
@@ -1282,18 +1282,18 @@ the `2026-10-13` date (`-100000-device-commands-deliver-by`, `-100100-action-int
 `2026-10-13-110000`, and the pre-push hook re-checks against `origin/main`, so re-verify at push
 time.
 
-**C17 — there is no run-level cancel, so a task cancel cannot stop a running run.** `cancelled` and
+**C17, there is no run-level cancel, so a task cancel cannot stop a running run.** `cancelled` and
 `expired` are valid `ai_agent_runs` statuses with **zero** production writers, and no cancel-run
 route exists (§3.1, VERIFIED by enumerating every `transitionRunStatus` call site). §7.3's
 cancellation contract composes with intent cancel and the dispatch claim, but it has no run-level
 counterpart to compose with. The spec should state that a cancelled task's in-flight run is fenced
 and left to finish, not cancelled.
 
-**C18 — two intent terminal writers publish nothing and are reachable by a task-linked intent.**
+**C18, two intent terminal writers publish nothing and are reachable by a task-linked intent.**
 `routes/approvals.ts:992-994` writes `rejected` with no outbox row of any kind, and
 `reapStaleExecutingIntents` writes `failed:execution_lost` with no outbox row (§3.2). P3-1's
 "terminal publication" bullet names "the release worker and expiry reaper (the two writers this
-recipe needs)" — the report-suspicious path is a third, and a rejected task operation that publishes
+recipe needs)", the report-suspicious path is a third, and a rejected task operation that publishes
 nothing would strand the task in `waiting` until its deadline. Add it to the PR (3) scope.
 
 **Non-contradictions, confirmed as written.** Spec §2's claims about `finishRun` publishing after
@@ -1306,11 +1306,11 @@ at `:1527` are all **VERIFIED correct**.
 
 ---
 
-## Appendix — what W02 and P3-1 inherit
+## Appendix: what W02 and P3-1 inherit
 
 - **W02 fixtures**: extend `insertLineage` and `seedTicketRunLineage` in
   `agentRunMoveSemantics.integration.test.ts` (§9.4). Reuse
-  `deviceEventsFeedIndexes.integration.test.ts` as the EXPLAIN-as-`breeze_app` harness — **NOT
+  `deviceEventsFeedIndexes.integration.test.ts` as the EXPLAIN-as-`breeze_app` harness, **NOT
   CHECKED** for reusability in this wave; W02 must confirm before extracting.
 - **P3-1 schema PR must include**, in the same PR: the three `action_intents` export-policy entries
   (H5), the five `ai_agent_runs` entries, `CORE_ORG_CASCADE_DELETE_ORDER` registration for all three
