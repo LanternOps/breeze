@@ -3326,6 +3326,7 @@
     "passkeyRenamed": "Passkey rinominata",
     "currentPasswordIsRequiredToDeleteAPasskey": "La password attuale è obbligatoria per eliminare una passkey",
     "passkeyDeleted": "Passkey eliminata",
+    "signInAgainToContinue": "Accedi di nuovo per continuare.",
     "failedToLoadPasskeys": "Caricamento passkey non riuscito",
     "failedToUpdateProfile": "Aggiornamento profilo non riuscito",
     "failedToUploadAvatar": "Caricamento avatar non riuscito",

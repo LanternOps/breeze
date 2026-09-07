@@ -3331,6 +3331,7 @@
     "passkeyRenamed": "Passkey renommé",
     "currentPasswordIsRequiredToDeleteAPasskey": "Un mot de passe actuel est nécessaire pour supprimer une clé d’accès",
     "passkeyDeleted": "Clé d’accès supprimée",
+    "signInAgainToContinue": "Reconnectez-vous pour continuer.",
     "failedToLoadPasskeys": "Impossible de charger les clés d’accès",
     "failedToUpdateProfile": "Impossible de mettre à jour le profil",
     "failedToUploadAvatar": "Impossible de télécharger l’avatar",
