@@ -1,0 +1,32 @@
+name: CI (docs-only)
+
+# `ci.yml` path-ignores docs and Markdown, so a docs-only PR never gets a
+# `CI Success` check and could not enter the merge queue (the queue requires the
+# PR itself to satisfy every required check before it is enqueued). This
+# workflow triggers on the inverse path set and reports a passing `CI Success`
+# for those PRs. It is NOT a substitute for the real suite: the merge queue
+# runs `ci.yml` on every queue entry with no path filter, so a mixed docs+code
+# PR still gets the full suite before it reaches main.
+#
+# Recommended by GitHub for required checks on path-filtered workflows:
+# https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/defining-the-mergeability-of-pull-requests/troubleshooting-required-status-checks#handling-skipped-but-required-checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'apps/docs/**'
+      - '**/*.md'
+      - '**/*.mdx'
+
+permissions:
+  contents: read
+
+jobs:
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    steps:
+      - name: Docs-only change — no code suite to run on the PR
+        run: echo "Docs-only PR; the merge queue will run the full CI suite before merge."
