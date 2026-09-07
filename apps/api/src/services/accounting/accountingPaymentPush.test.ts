@@ -166,6 +166,7 @@ interface MapRow {
   breezeOrigin: boolean; pendingOp: string | null; claimedAt: Date | null; lastSyncedAt: Date | null;
   linkStatus: string; syncStatus: string; lastError: string | null; syncAttempts: number;
   pushGeneration: number;
+  recordFailedCount: number;
   pendingSince: Date | null;
   createdAt: Date; updatedAt: Date;
 }
@@ -256,6 +257,7 @@ function mapRowBase(o: Partial<MapRow>): MapRow {
     breezeOrigin: false, pendingOp: null, claimedAt: null, lastSyncedAt: null,
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, syncAttempts: 0,
     pushGeneration: 0,
+    recordFailedCount: 0,
     pendingSince: null,
     createdAt: ago(30 * MINUTE), updatedAt: ago(5 * MINUTE), ...o,
   };
@@ -769,6 +771,30 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     expect(stmtsOf('delete', 'accounting_entity_mappings')).toHaveLength(0);
   });
 
+  it('KEEPS a retired possibly-orphaned mapping instead of dropping it as stranded', async () => {
+    // A retired `record_failed` row is shape-identical to a stranded one —
+    // Breeze-origin, no remote id, nothing owed — but it means QuickBooks HOLDS
+    // a Payment nobody can name. Dropping it on a void erases the only record
+    // that the orphan exists, silently and with no audit (review wave 3,
+    // finding D7).
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null, pendingSince: null, remoteEntityId: null,
+      syncStatus: 'error', lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+    })];
+
+    await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBeNull();
+
+    expect(mapping()).toMatchObject({
+      pendingOp: null, // nothing is owed and nothing is started
+      remoteEntityId: null,
+      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+    });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.orphan_retained',
+      details: expect.objectContaining({ invoicePaymentId: PAYMENT, mappingId: MAPPING }),
+    }));
+  });
+
   it('DELETES a QuickBooks-origin mapping without asking QuickBooks to delete anything', async () => {
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
       breezeOrigin: false, remoteEntityId: '181/145', pendingOp: null, syncStatus: 'synced',
@@ -1129,6 +1155,22 @@ describe('pushPaymentToAccounting', () => {
     });
   });
 
+  it('STAMPS pending_since when phase 2 converts to a delete — the debt starts there', async () => {
+    // Without it the new delete debt inherits the push's `pending_since`, which
+    // for a re-owned or long-lived mapping is already past
+    // PAYMENT_DELETE_UNRESOLVED_GRACE_MS: the delete worker would drop the row
+    // on its first attempt instead of parking it (review wave 3, finding D5).
+    const stale = new Date(Date.now() - 9 * PAYMENT_DELETE_UNRESOLVED_GRACE_MS);
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ pendingSince: stale })];
+    createPaymentMock.mockImplementationOnce(async () => {
+      currentPayments = [];
+      return { id: '181', syncToken: '0' };
+    });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('converted_to_delete');
+    expect(mapping()!.pendingSince!.getTime()).toBeGreaterThan(stale.getTime());
+  });
+
   it('converts to a delete when a void flipped the row WHILE the create was in flight', async () => {
     // The payment row is still present here on purpose: it is the flipped
     // `pending_op`, not a missing payment, that must drive the conversion —
@@ -1327,7 +1369,7 @@ describe('pushPaymentToAccounting', () => {
         .rejects.toMatchObject({ code: 'record_failed' });
       currentInvoices = [invRow()];
       // Still owed, so the CDC echo can still adopt the orphan by its marker.
-      expect(mapping()).toMatchObject({ pendingOp: 'push', syncAttempts: sweep });
+      expect(mapping()).toMatchObject({ pendingOp: 'push', recordFailedCount: sweep });
     }
 
     failPhase2();
@@ -1351,6 +1393,40 @@ describe('pushPaymentToAccounting', () => {
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
     expect(mapping()).toMatchObject({ pushGeneration: 0, pendingOp: null });
     expect(createPaymentMock).not.toHaveBeenCalled();
+  });
+
+  it('counts record_failed on its OWN durable column, so another stamp cannot reset the bound', async () => {
+    // The counter used to be inferred from a `last_error` prefix, so ANY other
+    // stamp while `pending_op` is still 'push' — a quickbooks_error, an
+    // invoice_not_synced, a not-connected skip — rewrote `last_error` and made
+    // the next record_failed look like the first. The bound then never tripped
+    // and the create was re-sent past Intuit's 24-hour replay window, minting a
+    // second real Payment. `record_failed_count` is incremented IN the UPDATE
+    // and is the only thing the retirement reads.
+    const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
+      currentInvoices = [];
+      return { id: '181', syncToken: '0' };
+    });
+
+    for (let sweep = 1; sweep < PAYMENT_RECORD_FAILED_MAX_SWEEPS; sweep++) {
+      failPhase2();
+      await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+        .rejects.toMatchObject({ code: 'record_failed' });
+      currentInvoices = [invRow()];
+      // ...and between every one of them, an unrelated stamp rewrites last_error.
+      await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+      expect(mapping()).toMatchObject({ lastError: PAYMENT_NOT_CONNECTED_MESSAGE, recordFailedCount: sweep });
+    }
+
+    failPhase2();
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'record_failed' });
+
+    expect(mapping()).toMatchObject({
+      pendingOp: null,
+      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+      recordFailedCount: PAYMENT_RECORD_FAILED_MAX_SWEEPS,
+    });
   });
 
   it('never re-owns a row already marked as a possibly-orphaned record_failed', async () => {

@@ -170,3 +170,22 @@ BEGIN
     RAISE WARNING 'stamped push_payments_since=now() on % accounting connections (payments recorded before this are never pushed)', stamped;
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Review wave 3, finding D1: the record_failed bound needs its OWN counter.
+--
+-- `record_failed` means QuickBooks accepted a create Breeze could not record.
+-- The row keeps `pending_op = 'push'` so the CDC echo can adopt the orphan and
+-- so each retry resends the SAME requestid (Intuit replays the original
+-- response for 24 hours) — but it MUST stop before that window closes, or the
+-- next retry mints a second real Payment.
+--
+-- Inferring the count from a `last_error` prefix did not hold: any other stamp
+-- on the same row while it still owes a push — a QuickBooks rejection, an
+-- invoice_not_synced refusal, a not-connected skip — rewrites `last_error`, so
+-- the next record_failed reads as the first and the bound never trips. This
+-- column is written only by that one path, incremented inside the UPDATE (never
+-- read-modify-write, so a concurrent stamp cannot lose a count), and it is the
+-- ONLY thing the retirement decision reads.
+ALTER TABLE accounting_entity_mappings
+  ADD COLUMN IF NOT EXISTS record_failed_count integer NOT NULL DEFAULT 0;

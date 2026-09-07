@@ -125,6 +125,14 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // not of the debt — a re-owned or long-synced row is already past the window
   // on the day its payment is voided. NULL falls back to `created_at`.
   pendingSince: timestamp('pending_since', { withTimezone: true }),
+  // How many times phase 2 has failed to record a QuickBooks create for this
+  // row (`record_failed`). Its own column because it cannot be inferred from
+  // `last_error`: every other failure path on a still-owed push rewrites that
+  // field, which reset the count and let the create be re-sent past Intuit's
+  // 24-hour requestid replay window. Written only by `noteRecordFailed`,
+  // incremented inside the UPDATE, and reset by a fan-out re-own (a fresh
+  // ownership carries a fresh requestid, so it deserves a fresh budget).
+  recordFailedCount: integer('record_failed_count').notNull().default(0),
   // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
   // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
   claimedAt: timestamp('claimed_at', { withTimezone: true }),

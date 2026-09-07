@@ -186,13 +186,10 @@ export const PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE =
   'QuickBooks accepted the payment but Breeze could not record it; '
   + 'the QuickBooks Payment may be orphaned — contact support';
 
-/** Stable prefix of the WHILE-RETRYING message, so the coordinator can tell a
- *  repeat `record_failed` from the first one without a second counter column.
- *  Deliberately not a prefix of the orphan sentinel above. */
-const PAYMENT_RECORD_FAILED_RETRY_PREFIX = 'QuickBooks accepted the payment (remote id ';
-
+/** How the WHILE-RETRYING state reads on the mapping card. The count that
+ *  bounds it lives on `record_failed_count`, never in this text. */
 function paymentRecordFailedRetryMessage(remoteId: string): string {
-  return `${PAYMENT_RECORD_FAILED_RETRY_PREFIX}${remoteId}) but Breeze could not record it yet; `
+  return `QuickBooks accepted the payment (remote id ${remoteId}) but Breeze could not record it yet; `
     + 'Breeze is retrying briefly and will stop rather than create a second payment';
 }
 
@@ -638,10 +635,21 @@ export async function requestPaymentPush(
  *    `PAYMENT_PUSH_MAX_ATTEMPTS`;
  *
  * `record_failed` — QuickBooks accepted a create whose result Breeze could not
- * record — deliberately does NOT reach that shape any more (review finding 1):
- * it keeps `pending_op = 'push'`, so this helper flips it to `delete` like any
- * other in-flight create and the orphaned Payment stays adoptable by its
+ * record — does NOT reach that shape while it is still retrying (review finding
+ * 1): it keeps `pending_op = 'push'`, so this helper flips it to `delete` like
+ * any other in-flight create and the orphaned Payment stays adoptable by its
  * `PrivateNote` marker until the delete worker or the CDC pull resolves it.
+ *
+ * A RETIRED one does reach it, and is the fifth state — the one exception to
+ * the paragraph above (review wave 3, finding D7). Once
+ * `PAYMENT_RECORD_FAILED_MAX_SWEEPS` is spent the row carries
+ * `PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE` with nothing owed and no remote id,
+ * which is byte-identical to "stranded" but means the OPPOSITE: QuickBooks
+ * holds a Payment nobody can name. Deleting it would erase the only record that
+ * the orphan exists — silently, on an ordinary void. The row is KEPT exactly as
+ * it is (nothing owed, nothing started: there is no remote id to delete with)
+ * and the retention is audited, so the mapping card and the audit trail both
+ * still lead a human to it.
  *
  * Returns the mapping id to enqueue a `delete-payment` job for, or `null`.
  * Zero rows is LEGITIMATE and deliberately not a throw: a manual or Stripe
@@ -661,6 +669,26 @@ export async function requestPaymentDelete(
   }
 
   if (mapping.remoteEntityId === null && mapping.pendingOp === null) {
+    if (mapping.lastError === PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE) {
+      // Not stranded — RETIRED as possibly orphaned (finding D7). Keep the row
+      // and say so; there is nothing to ask QuickBooks for, because Breeze never
+      // learned the remote id.
+      console.warn(
+        '[accountingPaymentPush] kept a possibly-orphaned payment mapping through a void — '
+        + 'a QuickBooks Payment may exist that Breeze cannot name',
+        `mappingId=${mapping.id}`, `invoicePaymentId=${invoicePaymentId}`, `partnerId=${mapping.partnerId}`,
+      );
+      fireAudit({
+        provider: 'quickbooks',
+        action: 'accounting.payment.orphan_retained',
+        orgId: null,
+        resourceType: 'accounting_entity_mapping',
+        resourceId: mapping.id,
+        result: 'failure',
+        details: { invoicePaymentId, mappingId: mapping.id },
+      });
+      return null;
+    }
     // Nothing addressable remotely and nothing owed: drop the row rather than
     // strand it (finding C2). Partner-scoped, and a zero-row result throws for
     // the same reason the flip below does — this runs inside the destroyer's
@@ -952,12 +980,17 @@ async function markPaymentMappingErrorInOwnContext(
 /**
  * Stamp a `record_failed` and enforce ITS bound (review wave 2, finding 1).
  *
- * Read-modify-write on purpose, and safe: only the worker holding this row's
- * lease reaches phase 2, so nothing else is counting the same failure. The
- * count rides `sync_attempts`, reset to 1 on the FIRST `record_failed` so the
- * bound measures this failure mode rather than inheriting a long history of
- * QuickBooks rejections — the two have completely different horizons, and
- * conflating them is what let this path run past the replay window.
+ * The count lives on its OWN column, `record_failed_count`, and is incremented
+ * INSIDE the UPDATE (review wave 3, finding D1). It cannot ride `sync_attempts`
+ * — the two failure modes have completely different horizons — and it cannot be
+ * inferred from `last_error` either, which is what the first attempt did: every
+ * other failure path on a row that still owes a push rewrites that field (a
+ * QuickBooks rejection, an `invoice_not_synced` refusal, a not-connected skip),
+ * so the next `record_failed` read as the first, the bound never tripped, and
+ * the create could be re-sent past Intuit's 24-hour replay window.
+ *
+ * The retirement decision reads the value the increment RETURNED, so no
+ * concurrent stamp can be lost between the read and the write.
  *
  * Best-effort like its siblings: a failure to write the marker must not replace
  * the caller's typed error, and Sentry already carries the original.
@@ -971,20 +1004,32 @@ async function noteRecordFailed(
 ): Promise<void> {
   try {
     const retired = await runInDbContext(async () => {
-      const row = await loadMappingById(mappingId, partnerId);
-      if (!row) return false;
-      const repeat = row.lastError?.startsWith(PAYMENT_RECORD_FAILED_RETRY_PREFIX) ?? false;
-      const attempts = repeat ? row.syncAttempts + 1 : 1;
-      const giveUp = attempts >= PAYMENT_RECORD_FAILED_MAX_SWEEPS;
-      await db
+      const rows = await db
         .update(accountingEntityMappings)
         .set({
           syncStatus: 'error',
           claimedAt: null,
-          syncAttempts: attempts,
-          ...(giveUp
-            ? { pendingOp: null, lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE }
-            : { lastError: message }),
+          lastError: message,
+          recordFailedCount: sql`${accountingEntityMappings.recordFailedCount} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingId),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ recordFailedCount: accountingEntityMappings.recordFailedCount });
+      const count = (rows as Array<{ recordFailedCount: number }>)[0]?.recordFailedCount;
+      if (count === undefined || count < PAYMENT_RECORD_FAILED_MAX_SWEEPS) return false;
+
+      // Retire: nothing may re-send this create, and nothing may re-own the row.
+      // Keyed on the count the increment above returned, so an interleaved stamp
+      // from any other path cannot move the bound.
+      await db
+        .update(accountingEntityMappings)
+        .set({
+          pendingOp: null,
+          claimedAt: null,
+          lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
           updatedAt: new Date(),
         })
         .where(and(
@@ -992,7 +1037,7 @@ async function noteRecordFailed(
           eq(accountingEntityMappings.partnerId, partnerId),
         ))
         .returning({ id: accountingEntityMappings.id });
-      return giveUp;
+      return true;
     });
     if (retired) {
       // The TRANSITION, not each attempt: from here nothing in Breeze will ever
@@ -1056,6 +1101,8 @@ async function stampRemoteRef(
     pendingOp: 'delete' | null;
     lastError: string | null;
     stampSyncedAt?: boolean;
+    /** The row starts owing a DELETE here, so its grace window starts here. */
+    stampPendingSince?: boolean;
   },
 ): Promise<void> {
   const rows = await db
@@ -1069,6 +1116,7 @@ async function stampRemoteRef(
       claimedAt: null,
       lastError: state.lastError,
       ...(state.stampSyncedAt ? { lastSyncedAt: new Date() } : {}),
+      ...(state.stampPendingSince ? { pendingSince: new Date() } : {}),
       updatedAt: new Date(),
     })
     .where(and(
@@ -1091,7 +1139,8 @@ async function stampRemoteRef(
  *  nullable). */
 function fireAudit(params: {
   provider: string;
-  action: 'accounting.payment.pushed' | 'accounting.payment.deleted' | 'accounting.payment.delete_unresolved';
+  action: 'accounting.payment.pushed' | 'accounting.payment.deleted' | 'accounting.payment.delete_unresolved'
+    | 'accounting.payment.orphan_retained';
   orgId: string | null;
   resourceType: 'invoice' | 'accounting_entity_mapping';
   resourceId: string | null;
@@ -1291,8 +1340,11 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       claimedAt: null,
       // A fresh push deserves a fresh budget: a re-own is a deliberate operator
       // action (or a re-push after QuickBooks lost the Payment), and inheriting
-      // an exhausted counter would make it give up on its first failure.
+      // an exhausted counter would make it give up on its first failure. Both
+      // counters reset — the re-own bumps `push_generation`, so the new create
+      // carries a NEW requestid and none of the old attempts constrain it.
       syncAttempts: 0,
+      recordFailedCount: 0,
       // A fresh push also needs a fresh QuickBooks idempotency key. QBO replays
       // a requestid's original create response for 24 hours, so re-sending the
       // bare payment id here would hand the worker the id of the very Payment
@@ -1554,6 +1606,12 @@ export async function pushPaymentToAccounting(
       if (mapping.pendingOp === 'delete' || !payment) {
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
           syncStatus: 'pending', linkStatus: 'confirmed', pendingOp: 'delete', lastError: null,
+          // A delete debt begins HERE when the payment vanished mid-flight, so
+          // its grace window starts here too — the same rule `convertToDelete`
+          // and `requestPaymentDelete` follow (review wave 3, finding D5).
+          // When `requestPaymentDelete` already flipped the row it re-stamps to
+          // ~now, which only lengthens the window: safe, never a premature drop.
+          stampPendingSince: true,
         });
         return { outcome: 'converted_to_delete' as const, audit: null };
       }
