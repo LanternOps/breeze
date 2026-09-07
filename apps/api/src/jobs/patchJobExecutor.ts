@@ -680,7 +680,8 @@ async function markDeviceDispatchFailed(
   await db.insert(patchJobResults).values({
     jobId: patchJobId,
     deviceId,
-    patchId: '00000000-0000-0000-0000-000000000000',
+    // NULL = a whole-device summary row; this device never reached a patch.
+    patchId: null,
     status: 'failed',
     startedAt: new Date(),
     completedAt: new Date(),
@@ -1390,12 +1391,13 @@ async function markDeviceSkipped(
   deviceId: string,
   reason: string
 ): Promise<void> {
-  // Insert a single summary result for the skipped device
-  // Use a nil UUID for patchId since no specific patch was targeted
+  // Insert a single summary result for the skipped device. `patch_id` is NULL
+  // because no specific patch was targeted — the nil UUID this used to write
+  // has no `patches` row and raised 23503 on a real database (#5128 W3).
   await db.insert(patchJobResults).values({
     jobId: patchJobId,
     deviceId,
-    patchId: '00000000-0000-0000-0000-000000000000',
+    patchId: null,
     status: 'skipped',
     startedAt: new Date(),
     completedAt: new Date(),

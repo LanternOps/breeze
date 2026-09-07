@@ -2145,12 +2145,13 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
       kind: 'reject',
     });
     expect(result.error).toContain('cannot execute command');
-    // markDeviceSkipped's summary row, unchanged from pre-#5128.
+    // markDeviceSkipped's whole-device summary row. `patchId` is NULL, not the
+    // old nil UUID, which had no `patches` row and raised 23503 on a real DB.
     expect(insertedRows).toHaveLength(1);
     expect(insertedRows[0]).toMatchObject({
       status: 'skipped',
       errorMessage: 'device_offline',
-      patchId: '00000000-0000-0000-0000-000000000000',
+      patchId: null,
     });
   });
 

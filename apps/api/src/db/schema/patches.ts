@@ -256,7 +256,12 @@ export const patchJobResults = pgTable('patch_job_results', {
   id: uuid('id').primaryKey().defaultRandom(),
   jobId: uuid('job_id').notNull().references(() => patchJobs.id),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
-  patchId: uuid('patch_id').notNull().references(() => patches.id),
+  // NULL = a WHOLE-DEVICE summary row (the device was skipped, never
+  // dispatched, or closed with no approved set), which is about the device's
+  // outcome for the job rather than about any one patch. Nullable since
+  // 2026-10-13-100200: the previous nil-UUID sentinel had no `patches` row and
+  // raised 23503 on every real database.
+  patchId: uuid('patch_id').references(() => patches.id),
   status: patchJobResultStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),

@@ -59,8 +59,12 @@ function isNonTerminal(status: string): status is NonTerminalResultStatus {
   return (NON_TERMINAL_RESULT_STATUSES as readonly string[]).includes(status);
 }
 
-/** The nil UUID `markDeviceSkipped` uses for a whole-device summary row. */
-export const PATCH_SUMMARY_PATCH_ID = '00000000-0000-0000-0000-000000000000';
+/**
+ * A whole-device summary row carries `patch_id = NULL` — it records the
+ * device's outcome for the job, not a patch's. It used to carry the nil UUID,
+ * which no `patches` row has, so every such insert raised 23503 against a real
+ * database; `2026-10-13-100200` made the column nullable (#5128 W3).
+ */
 
 /**
  * The agent's install summary, normalised across both result transports.
@@ -203,13 +207,15 @@ export function isPatchResultSuccessful(
 
 type ExistingResultRow = {
   id: string;
-  patchId: string;
+  /** NULL for a whole-device summary row. */
+  patchId: string | null;
   status: string;
   rebootRequired: boolean;
 };
 
 type RowWrite = {
-  patchId: string;
+  /** NULL writes a whole-device summary row. */
+  patchId: string | null;
   status: 'completed' | 'failed' | 'skipped';
   exitCode: number | null;
   output: string | null;
@@ -393,7 +399,9 @@ async function loadDeviceContext(
     (job.targets as { deployment?: { rebootPolicy?: string } } | null)?.deployment?.rebootPolicy ??
     'if_required';
 
-  const patchIds = active.map((row) => row.patchId).filter((id) => id !== PATCH_SUMMARY_PATCH_ID);
+  const patchIds = active
+    .map((row) => row.patchId)
+    .filter((id): id is string => id !== null);
 
   // externalId is only needed to match the agent's per-patch entries, so the
   // join is skipped entirely for the terminals that carry no agent payload.
@@ -410,7 +418,7 @@ async function loadDeviceContext(
     orgId: job.orgId,
     rebootPolicy,
     approvedPatches: active
-      .filter((row) => row.patchId !== PATCH_SUMMARY_PATCH_ID)
+      .filter((row): row is ExistingResultRow & { patchId: string } => row.patchId !== null)
       .map((row) => ({
         patchId: row.patchId,
         externalId: externalIds.get(row.patchId) ?? null,
@@ -456,7 +464,7 @@ function buildRowWrites(
               patchId: p.patchId,
               rebootRequired: p.requiresReboot,
             }))
-          : [{ patchId: PATCH_SUMMARY_PATCH_ID, rebootRequired: false }];
+          : [{ patchId: null, rebootRequired: false }];
 
     return {
       rows: targets.map((t) => ({

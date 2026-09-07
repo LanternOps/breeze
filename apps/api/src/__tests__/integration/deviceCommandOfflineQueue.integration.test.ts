@@ -959,9 +959,12 @@ describe('patch installs for offline devices — real PostgreSQL (#5128 W3)', ()
         deviceId: device.id,
         orgId: env.organization.id,
       }),
-    )) as { queued?: boolean; commandId?: string };
+    )) as { kind?: string; commandId?: string };
 
-    expect(outcome.queued).toBe(true);
+    // processExecuteDevice returns the discriminated union from
+    // prepareDeviceExecution — the queued arm is `kind: 'queued'`.
+    expect(outcome.kind).toBe('queued');
+    expect(outcome.commandId).toBeTruthy();
 
     // The install is a real, persisted, deliverable row — not a skip.
     const [command] = await getTestDb()
@@ -1034,7 +1037,7 @@ describe('patch installs for offline devices — real PostgreSQL (#5128 W3)', ()
         deviceId: device.id,
         orgId: env.organization.id,
       }),
-    )) as { queued?: boolean; commandId?: string };
+    )) as { kind?: string; commandId?: string };
     const commandId = outcome.commandId!;
 
     // The device reconnects days later and reports through the shared registry —
