@@ -3,7 +3,7 @@ title: AI Operator completion — delivery plan
 date: 2026-09-07
 status: draft; implementation not started
 spec: ../../specs/ai-mcp/2026-09-07-ai-operator-completion-design.md
-tracking_issue: not yet registered — run `register_feature` on approval (§1)
+tracking_issue: LanternOps/breeze#5205
 ---
 
 # AI Operator completion: delivery plan
@@ -14,7 +14,7 @@ Implement the [continuation spec](../../specs/ai-mcp/2026-09-07-ai-operator-comp
 
 This plan is a reviewable implementation breakdown, not a record of approved product decisions or completed work. No new GitHub issues, external messages, deployments, production flags, or migrations were created when writing it. Existing issue references below were read on 2026-09-07.
 
-**Wave size.** Every wave below is 2 to 5 pull requests. Each wave lists its PR split. On approval, `register_feature` creates the parent issue and one `wave` sub-issue per PR-sized unit (not per wave heading), and the `tracking_issue` line above is filled in. Branch names follow `feature/<parent#>-ai-operator/wave-<subissue#>`.
+**Wave size and registration.** Every wave below is 2 to 5 pull requests. Each wave lists its PR split, and each PR-sized unit is one `wave` sub-issue (not one per wave heading), because a `Closes #` line closes its sub-issue on the first merge. Registration is staged: the parent (LanternOps/breeze#5205) and the P3-0/P3-1 units (#5206–#5212, keys W01–W07) were registered on 2026-09-07; each later wave's units are added with `add_wave` once its predecessor's exit is recorded, so the slice's lessons shape P3-2 before it is committed to issues. Branch names follow `feature/5205-ai-operator/wave-<subissue#>`. Wave state lives on GitHub (`get_feature_status`), never in this document.
 
 The spec's authority, idempotency, result-verification, tenancy, and cancellation contracts apply to every wave. A later wave cannot weaken them to make an existing executor easier to call.
 
@@ -347,8 +347,8 @@ This optimization does not block core Operator completion. It must not silently 
 
 No elapsed-time estimate is assigned before P3-0 validates adapter readiness. The dependency order and measurable exits define scope; discovering an incomplete domain executor creates explicit prerequisite work, not an excuse to mark a task complete on dispatch.
 
-## 9. Decisions needed before registration
+## 9. Decisions
 
-- **D1 — Patch maintenance ordering.** Recommended: P4-3 after T1 and T3 as a product sequencing preference, because it carries the highest blast radius (reboots on customer machines) and the smallest delta over existing patch policies. This is not a technical dependency (quorum disagreement, accepted): P4-3's hard prerequisites are P4-0, P4-1, T3's instrumentation subset (task, effect, verification, and intervention timestamps), and its own pilot evidence. Alternative: keep it directly after P4-1 as the roadmap implies. Product call.
-- **D2 — Thin slice exposure.** Recommended: P3-1 ships behind flags to internal/test orgs only and is not a marketed release; the first customer-facing claim waits for P3-5. Alternative: enroll one friendly partner at P3-1 for earlier feedback.
+- **D1 — Patch maintenance ordering.** Adopted as recommended on 2026-09-07. Recommended: P4-3 after T1 and T3 as a product sequencing preference, because it carries the highest blast radius (reboots on customer machines) and the smallest delta over existing patch policies. This is not a technical dependency (quorum disagreement, accepted): P4-3's hard prerequisites are P4-0, P4-1, T3's instrumentation subset (task, effect, verification, and intervention timestamps), and its own pilot evidence. Alternative: keep it directly after P4-1 as the roadmap implies. Product call.
+- **D2 — Thin slice exposure.** Adopted as recommended on 2026-09-07. Recommended: P3-1 ships behind flags to internal/test orgs only and is not a marketed release; the first customer-facing claim waits for P3-5. Alternative: enroll one friendly partner at P3-1 for earlier feedback.
 - **D3 — Operation identity in the thin slice.** Settled by the 2026-09-07 quorum: intent ids alone are not a safe reference because intent idempotency is run-scoped and live-only (intentService.ts:1182, :1476, :1527). P3-1 reserves task-scoped identity on `action_intents` and writes a minimal `ai_operator_operations` row (spec §6.5). Listed here so P3-0 confirms the exact predicate before P3-1 is registered.
