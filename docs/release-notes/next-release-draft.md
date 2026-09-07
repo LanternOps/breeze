@@ -146,6 +146,25 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   "Sync now"), 30 blocked (no Stripe on the stack). Four defects were found and
   fixed on the branch during the walk (the bullets above).
 
+---
+
+## Network device page + unified device list on by default (#5090)
+
+**Operator-facing (Added / Improved).**
+- The Devices list now shows **network devices** (approved, unlinked discovery assets: switches, firewalls, printers, NAS, phones…) alongside agent endpoints, with an **All / Agent / Network** segment, a Class column, and columns that adapt to what is on screen (a Network-only view drops OS/CPU/RAM/Role; an Agent-only view drops Class/Type).
+- Quick chips, advanced filters and saved views evaluate network rows client-side for the fields a discovered asset has (status, hostname, tags, site, IP, MAC, last seen, asset type for the Servers chip). A filter on an agent-only field hides network rows **and says so** — "N network devices hidden — Needs Patches applies to agent devices only." Segment badges count the rows the list actually renders.
+- Bulk bar states the class composition ("6 selected · 2 agent, 4 network"); agent-only actions (reboot, scripts, software, maintenance, wake, remove) are disabled with a reason on an all-network selection and annotated "2 of 6" on a mixed one. A selection is dropped when its rows leave the visible set.
+- New **network device page** at `/devices/network/:id`: identity (hostname, display name, manufacturer, model, OS fingerprint, first seen, editable type with reset), SNMP data, open ports read as capabilities (service names, an "Unencrypted" flag on telnet/ftp-class ports, per-port **Open Web UI** through an online agent as proxy bridge, HTTPS with a self-signed override), monitoring status, and link/unlink to a managed device (unlink pauses auto-linking until re-linked).
+- Discovery asset list: the "Agent installed" badge is now "Agent". Search in the Devices list matches LAN/WAN IPs. Sortable headers are keyboard-reachable; the table uses the same status word as cards (Online/Offline).
+
+**Self-Hosting / Upgrade Notes.**
+- **Behaviour change (web):** `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` now defaults to **`true`** (was `false`). It is a build-time `PUBLIC_` variable baked into the web image, so the published GHCR `web` image ships with the unified list on; self-hosters who build the web image themselves can pass `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST=false` to keep the agent-only list. Nothing to change in `.env` or compose for the published image.
+- No migrations. No new required environment variables.
+- API additions, additive: `GET /discovery/assets/:id` now returns `siteName` and `suggestedBridgeDeviceId` (the agent that last discovered the asset, used as the default proxy bridge).
+- Not in this release: charts for SNMP metrics / network monitor results on the device page (the Monitoring tab shows enabled/not-configured and links to the discovery view), bulk selection in grid view.
+
+---
+
 ## AI agent builder (#5048 W01–W03, #5064, #5063, #5065)
 
 **Operator-facing (Added / Improved).**
