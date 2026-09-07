@@ -172,6 +172,9 @@ interface MappingRow {
   // truth for the row, and `pendingOp`/`claimedAt` are what an adoption must
   // close out so the push sweep stops re-enqueuing the same create.
   breezeOrigin: boolean; pendingOp: 'push' | 'delete' | null; claimedAt: Date | null;
+  // The TYPED terminal state (review wave 4, finding A). Modelled here because
+  // the adoption guard now accepts an `orphaned` row and clears it.
+  terminalReason: 'orphaned' | 'gave_up' | 'removed_remotely' | null;
 }
 
 type StmtKind = 'select' | 'insert' | 'update' | 'delete' | 'recompute';
@@ -227,7 +230,7 @@ function invoiceMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
     remoteEntityType: 'Invoice', remoteEntityId: QBO_INVOICE_ID, remoteSyncToken: '3',
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
     // Invoice mappings are Breeze-origin by the Task-1 backfill.
-    breezeOrigin: true, pendingOp: null, claimedAt: null, ...overrides,
+    breezeOrigin: true, pendingOp: null, claimedAt: null, terminalReason: null, ...overrides,
   };
 }
 
@@ -239,7 +242,7 @@ function paymentMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
     // A pulled QuickBooks payment by default — the Breeze-origin suites below
     // flip this explicitly so the two directions can never be confused.
-    breezeOrigin: false, pendingOp: null, claimedAt: null, ...overrides,
+    breezeOrigin: false, pendingOp: null, claimedAt: null, terminalReason: null, ...overrides,
   };
 }
 
@@ -1538,6 +1541,41 @@ describe('pull disabled (spec decision 6, #4543)', () => {
 });
 
 describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () => {
+  it('types the terminal state as removed_remotely, which is what makes it re-ownable', async () => {
+    // Shape-identical to an `orphaned` row (Breeze-origin, no remote id, nothing
+    // owed) and the exact opposite in meaning. `last_error` is display text and
+    // every other failure path rewrites it, so the fan-out reads the typed
+    // column instead (review wave 4, finding A).
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(currentMappings[1]).toMatchObject({
+      terminalReason: 'removed_remotely', remoteEntityId: null, pendingOp: null,
+    });
+  });
+
+  it('ADOPTS an orphaned row by its marker and clears the terminal state', async () => {
+    // The orphan retirement is not a dead end: the CDC echo can still arrive
+    // carrying Breeze's PrivateNote marker, and adopting it is what finally
+    // names the Payment. Guarded like any other adoption on the money row
+    // matching, so a QuickBooks "Copy" cannot claim an unrelated payment.
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping({
+      pendingOp: null, terminalReason: 'orphaned', syncStatus: 'error',
+    })];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('adopted');
+    expect(currentMappings[1]).toMatchObject({
+      terminalReason: null, // live again — the CHECK's other half is pendingOp null
+      remoteEntityId: REMOTE_MAPPING_ID,
+      syncStatus: 'synced',
+    });
+  });
+
   it('KEEPS the Breeze payment row, clears the remote id and marks the mapping', async () => {
     // The money moved (a Stripe charge, a cheque). Deleting the Breeze row
     // because somebody removed the QuickBooks mirror would destroy the record

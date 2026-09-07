@@ -133,6 +133,28 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // incremented inside the UPDATE, and reset by a fan-out re-own (a fresh
   // ownership carries a fresh requestid, so it deserves a fresh budget).
   recordFailedCount: integer('record_failed_count').notNull().default(0),
+  // WHY this mapping stopped, when it stopped. NULL = still live.
+  //
+  // Three terminal states leave the same row SHAPE — Breeze-origin, no remote
+  // id, nothing owed — and mean completely different things, so the difference
+  // cannot live in `last_error`: that is DISPLAY TEXT, rewritten by every
+  // failure path, and matching against it let one unrelated stamp turn an
+  // orphan back into a re-ownable row.
+  //
+  //   'orphaned'         QuickBooks holds a Payment Breeze could not record and
+  //                      will never create again. NEVER re-ownable — a re-own
+  //                      duplicates real money. Carries the remote id Breeze did
+  //                      learn, so a human can still find the Payment.
+  //   'gave_up'          the push spent PAYMENT_PUSH_MAX_ATTEMPTS. Nothing
+  //                      exists remotely; re-pushing the invoice is the fix, so
+  //                      this row IS re-ownable.
+  //   'removed_remotely' a Breeze-created Payment was deleted in QuickBooks.
+  //                      Re-ownable — that is how the re-push happens.
+  //
+  // `accounting_entity_mappings_terminal_idle_chk` enforces the pairing with
+  // `pending_op`: a row that has ended owes nothing, so every writer that starts
+  // new work clears this in the same UPDATE.
+  terminalReason: text('terminal_reason').$type<'orphaned' | 'gave_up' | 'removed_remotely'>(),
   // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
   // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
@@ -186,6 +208,15 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   pendingOpCheck: check(
     'accounting_entity_mappings_pending_op_chk',
     sql`${table.pendingOp} IS NULL OR ${table.pendingOp} IN ('push', 'delete')`,
+  ),
+  terminalReasonCheck: check(
+    'accounting_entity_mappings_terminal_reason_chk',
+    sql`${table.terminalReason} IS NULL OR ${table.terminalReason} IN ('orphaned', 'gave_up', 'removed_remotely')`,
+  ),
+  // A row that has ENDED owes nothing.
+  terminalIdleCheck: check(
+    'accounting_entity_mappings_terminal_idle_chk',
+    sql`${table.terminalReason} IS NULL OR ${table.pendingOp} IS NULL`,
   ),
   pendingOpIdx: index('accounting_entity_mappings_pending_op_idx')
     .on(table.partnerId, table.pendingOp)

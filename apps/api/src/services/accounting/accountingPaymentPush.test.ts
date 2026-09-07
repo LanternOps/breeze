@@ -167,6 +167,7 @@ interface MapRow {
   linkStatus: string; syncStatus: string; lastError: string | null; syncAttempts: number;
   pushGeneration: number;
   recordFailedCount: number;
+  terminalReason: string | null;
   pendingSince: Date | null;
   createdAt: Date; updatedAt: Date;
 }
@@ -258,6 +259,7 @@ function mapRowBase(o: Partial<MapRow>): MapRow {
     linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, syncAttempts: 0,
     pushGeneration: 0,
     recordFailedCount: 0,
+    terminalReason: null,
     pendingSince: null,
     createdAt: ago(30 * MINUTE), updatedAt: ago(5 * MINUTE), ...o,
   };
@@ -332,6 +334,14 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
   if (!eqOn('breeze_entity_id', row.breezeEntityId)) return false;
   if (!eqOn('remote_entity_id', row.remoteEntityId)) return false;
   if (!eqOn('pending_op', row.pendingOp)) return false;
+  if (refs('terminal_reason')) {
+    // `IS DISTINCT FROM '<v>'` — the re-own CAS's orphan exclusion. Read off the
+    // compiled SQL because it is not an equality and `eqOn` cannot see it.
+    const distinct = /"terminal_reason" is distinct from '([a-z_]+)'/i.exec(text);
+    if (distinct) {
+      if (row.terminalReason === distinct[1]) return false;
+    } else if (!eqOn('terminal_reason', row.terminalReason)) return false;
+  }
   if (!eqOn('breeze_origin', row.breezeOrigin)) return false;
   if (refs('claimed_at')) {
     const cutoff = cutoffFor(text, params, 'claimed_at');
@@ -742,7 +752,9 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     await runCtx(() => requestPaymentDelete(db, PAYMENT));
 
     const patch = lastUpdate().set!;
-    expect(Object.keys(patch).sort()).toEqual(['lastError', 'pendingOp', 'pendingSince', 'syncStatus', 'updatedAt']);
+    expect(Object.keys(patch).sort()).toEqual([
+      'lastError', 'pendingOp', 'pendingSince', 'syncStatus', 'terminalReason', 'updatedAt',
+    ]);
   });
 
   it('DELETES a STRANDED Breeze-origin mapping — no remote id and nothing owed (finding C2)', async () => {
@@ -785,7 +797,8 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     // finding D7).
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
       pendingOp: null, pendingSince: null, remoteEntityId: null,
-      syncStatus: 'error', lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+      syncStatus: 'error', terminalReason: 'orphaned',
+      lastError: 'something else entirely rewrote this',
     })];
 
     await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBeNull();
@@ -793,7 +806,7 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     expect(mapping()).toMatchObject({
       pendingOp: null, // nothing is owed and nothing is started
       remoteEntityId: null,
-      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+      terminalReason: 'orphaned',
     });
     expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'accounting.payment.orphan_retained',
@@ -1435,6 +1448,45 @@ describe('pushPaymentToAccounting', () => {
     });
   });
 
+  it('retires an orphan with a TYPED terminal_reason and the remote id it learned', async () => {
+    // `last_error` is display text: it is rewritten by every other failure path
+    // and is not a state machine. The terminal state gets its own typed column,
+    // and the remote id Breeze DID learn is persisted so the orphan is nameable
+    // — without it, nothing in Breeze can ever point a human at that Payment.
+    const failPhase2 = () => createPaymentMock.mockImplementationOnce(async () => {
+      currentInvoices = [];
+      return { id: '181', syncToken: '0' };
+    });
+    for (let i = 0; i < PAYMENT_RECORD_FAILED_MAX_SWEEPS; i++) {
+      failPhase2();
+      await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+        .rejects.toMatchObject({ code: 'record_failed' });
+      currentInvoices = [invRow()];
+    }
+
+    expect(mapping()).toMatchObject({
+      terminalReason: 'orphaned',
+      pendingOp: null, // the CHECK constraint's other half
+      remoteEntityId: '181/145',
+      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+    });
+  });
+
+  it('marks a spent push budget gave_up, which stays re-ownable', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+    })];
+    createPaymentMock.mockRejectedValueOnce(Object.assign(new Error('nope'), { status: 400 }));
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
+
+    expect(mapping()).toMatchObject({ terminalReason: 'gave_up', pendingOp: null });
+
+    // gave_up is the operator's documented recovery path, so it re-owns...
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
+    expect(mapping()).toMatchObject({ terminalReason: null, pendingOp: 'push' });
+  });
+
   it('never re-owns a row already marked as a possibly-orphaned record_failed', async () => {
     // Shape-identical to `breeze_origin_removed_remotely` — Breeze-origin, no
     // remote id, nothing owed — and only the sentinel tells them apart. Re-owing
@@ -1444,7 +1496,9 @@ describe('pushPaymentToAccounting', () => {
       pendingSince: null,
       remoteEntityId: null,
       syncStatus: 'error',
-      lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
+      terminalReason: 'orphaned',
+      // Display text only — deliberately NOT what the predicate reads.
+      lastError: 'something else entirely rewrote this',
     })];
 
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
@@ -1457,11 +1511,16 @@ describe('pushPaymentToAccounting', () => {
       pendingSince: null,
       remoteEntityId: null,
       syncStatus: 'error',
+      terminalReason: 'removed_remotely',
       lastError: 'The QuickBooks payment was deleted in QuickBooks',
     })];
 
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
-    expect(mapping()).toMatchObject({ pendingOp: 'push', pushGeneration: 1 });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', pushGeneration: 1,
+      // Re-armed: the terminal state is cleared with the ownership.
+      terminalReason: null,
+    });
   });
 
   it('leaves a record_failed row DISTINGUISHABLE from removed-remotely, so no fan-out re-own can duplicate the Payment', async () => {

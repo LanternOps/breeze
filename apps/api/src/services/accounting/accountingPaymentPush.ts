@@ -677,7 +677,7 @@ export async function requestPaymentDelete(
   }
 
   if (mapping.remoteEntityId === null && mapping.pendingOp === null) {
-    if (mapping.lastError === PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE) {
+    if (mapping.terminalReason === 'orphaned') {
       // Not stranded — RETIRED as possibly orphaned (finding D7). Keep the row
       // and say so; there is nothing to ask QuickBooks for, because Breeze never
       // learned the remote id.
@@ -723,7 +723,10 @@ export async function requestPaymentDelete(
     .set({
       pendingOp: 'delete',
       // A NEW debt starts here, so the grace window restarts with it — see the
-      // `pending_since` note on the schema column.
+      // `pending_since` note on the schema column. An `orphaned` row reaches
+      // this branch once it carries a remote id, and it is the good outcome:
+      // Breeze can finally name the Payment, so it deletes it.
+      terminalReason: null,
       pendingSince: new Date(),
       syncStatus: 'pending',
       lastError: null,
@@ -873,6 +876,9 @@ async function markPaymentMappingError(
       .set({
         pendingOp: null,
         claimedAt: null,
+        // Re-ownable, unlike `orphaned`: nothing exists in QuickBooks, and the
+        // invoice's own "Push to QuickBooks" is the documented recovery.
+        terminalReason: 'gave_up',
         lastError: paymentPushGaveUpMessage(message),
         updatedAt: new Date(),
       })
@@ -1008,6 +1014,7 @@ async function noteRecordFailed(
   mappingId: string,
   partnerId: string,
   message: string,
+  /** The COMPOSITE `<PaymentId>/<InvoiceId>`, as `stampRemoteRef` stores it. */
   remoteId: string,
 ): Promise<void> {
   try {
@@ -1032,11 +1039,19 @@ async function noteRecordFailed(
       // Retire: nothing may re-send this create, and nothing may re-own the row.
       // Keyed on the count the increment above returned, so an interleaved stamp
       // from any other path cannot move the bound.
+      //
+      // `terminal_reason` is the STATE; `last_error` beside it is only what the
+      // card shows. And the remote id IS in hand here — phase 2 failed after
+      // QuickBooks answered — so persist it: without it nothing in Breeze can
+      // ever name the Payment a human has to reconcile, which is the whole
+      // reason this state exists.
       await db
         .update(accountingEntityMappings)
         .set({
           pendingOp: null,
           claimedAt: null,
+          terminalReason: 'orphaned',
+          remoteEntityId: remoteId,
           lastError: PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE,
           updatedAt: new Date(),
         })
@@ -1085,7 +1100,7 @@ async function convertToDelete(mappingId: string, partnerId: string): Promise<vo
   const rows = await db
     .update(accountingEntityMappings)
     .set({
-      pendingOp: 'delete', pendingSince: new Date(),
+      pendingOp: 'delete', pendingSince: new Date(), terminalReason: null,
       syncStatus: 'pending', claimedAt: null, updatedAt: new Date(),
     })
     .where(and(
@@ -1121,6 +1136,8 @@ async function stampRemoteRef(
       linkStatus: state.linkStatus,
       syncStatus: state.syncStatus,
       pendingOp: state.pendingOp,
+      // A stamp means QuickBooks answered, so the row is live whatever it was.
+      terminalReason: null,
       claimedAt: null,
       lastError: state.lastError,
       ...(state.stampSyncedAt ? { lastSyncedAt: new Date() } : {}),
@@ -1291,7 +1308,7 @@ export async function fanOutOwedPayments(
         breezeOrigin: accountingEntityMappings.breezeOrigin,
         remoteEntityId: accountingEntityMappings.remoteEntityId,
         pendingOp: accountingEntityMappings.pendingOp,
-        lastError: accountingEntityMappings.lastError,
+        terminalReason: accountingEntityMappings.terminalReason,
       })
       .from(accountingEntityMappings)
       .where(and(
@@ -1314,15 +1331,17 @@ export async function fanOutOwedPayments(
       // already in QuickBooks (re-owing it would CREATE a duplicate Payment,
       // since the push is create-only); a row with a `pending_op` is already
       // owed to a worker; a QuickBooks-origin row is not ours to push.
-      // ...and a row RETIRED as a possibly-orphaned `record_failed` is
-      // shape-identical to a removed-remotely one but means the OPPOSITE:
-      // QuickBooks holds a Payment nobody can name. The sentinel is the only
-      // thing that tells them apart (review wave 2, finding 1).
-      const removedRemotely = existing.breezeOrigin
+      // ...and a row RETIRED as `orphaned` is shape-identical to a
+      // removed-remotely one but means the OPPOSITE: QuickBooks holds a Payment
+      // Breeze must never create again. `terminal_reason` is what tells them
+      // apart — never `last_error`, which every other failure path rewrites
+      // (review wave 4, finding A). `gave_up` and `removed_remotely` stay
+      // re-ownable; those ARE the recovery.
+      const reArmable = existing.breezeOrigin
         && existing.remoteEntityId === null
         && existing.pendingOp === null
-        && existing.lastError !== PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE;
-      if (!removedRemotely) continue;
+        && existing.terminalReason !== 'orphaned';
+      if (!reArmable) continue;
       // A lost CAS is NOT fatal here. This whole fan-out is ONE transaction, so
       // throwing would roll back the sibling payments' inserts too — punishing
       // every other payment on the invoice for one row another writer claimed.
@@ -1371,6 +1390,9 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       // carries a NEW requestid and none of the old attempts constrain it.
       syncAttempts: 0,
       recordFailedCount: 0,
+      // Re-armed: the row is live again, which the terminal/pending CHECK
+      // requires be stated in the same UPDATE that sets `pending_op`.
+      terminalReason: null,
       // A fresh push also needs a fresh QuickBooks idempotency key. QBO replays
       // a requestid's original create response for 24 hours, so re-sending the
       // bare payment id here would hand the worker the id of the very Payment
@@ -1387,10 +1409,10 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       eq(accountingEntityMappings.breezeOrigin, true),
       isNull(accountingEntityMappings.remoteEntityId),
       isNull(accountingEntityMappings.pendingOp),
-      // `IS DISTINCT FROM`, never `<>`: `last_error` is nullable and a plain
-      // inequality against NULL is NULL, which would exclude every row that
-      // carries no error at all — i.e. silently disable the whole re-own.
-      sql`${accountingEntityMappings.lastError} IS DISTINCT FROM ${PAYMENT_RECORD_FAILED_ORPHAN_MESSAGE}`,
+      // `IS DISTINCT FROM`, never `<>`: `terminal_reason` is nullable and a
+      // plain inequality against NULL is NULL, which would exclude every LIVE
+      // row — i.e. silently disable the whole re-own.
+      sql`${accountingEntityMappings.terminalReason} IS DISTINCT FROM 'orphaned'`,
     ))
     .returning({ id: accountingEntityMappings.id });
   return rows.length === 1;
@@ -1721,7 +1743,13 @@ export async function pushPaymentToAccounting(
     // `record_failed` as terminal), which is PAST Intuit's 24-hour replay
     // window; past it a retry would create a second Payment. After eight sweeps
     // the row is retired to a state nothing re-sends and nothing re-owns.
-    await noteRecordFailed(runInDbContext, mappingId, partnerId, message, ref.id);
+    // The COMPOSITE id, the same thing `stampRemoteRef` would have written —
+    // the delete path splits it back apart, so a retired orphan that later
+    // becomes deletable names the right Payment AND the right invoice.
+    await noteRecordFailed(
+      runInDbContext, mappingId, partnerId, message,
+      paymentMappingRemoteId(ref.id, prep.remoteInvoiceId),
+    );
     throw new AccountingPaymentPushError('record_failed', 502, message);
   }
 

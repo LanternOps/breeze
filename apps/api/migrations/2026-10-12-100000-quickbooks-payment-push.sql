@@ -189,3 +189,80 @@ END $$;
 -- ONLY thing the retirement decision reads.
 ALTER TABLE accounting_entity_mappings
   ADD COLUMN IF NOT EXISTS record_failed_count integer NOT NULL DEFAULT 0;
+
+-- ---------------------------------------------------------------------------
+-- Review wave 4, finding A: the TERMINAL state gets a typed column.
+--
+-- Three states end a mapping's life, and they are not interchangeable:
+--   'orphaned'          QuickBooks accepted a create Breeze could not record and
+--                       the retry budget is spent. A Payment exists that Breeze
+--                       must never create again — re-owning this row DUPLICATES
+--                       real money.
+--   'gave_up'           the push burned PAYMENT_PUSH_MAX_ATTEMPTS. Nothing exists
+--                       remotely; re-pushing the invoice is the documented fix,
+--                       so this row IS re-ownable.
+--   'removed_remotely'  somebody deleted a Breeze-created Payment in QuickBooks.
+--                       Also re-ownable — that is how the re-push happens.
+--
+-- All three leave the same row SHAPE (breeze_origin, no remote id, nothing
+-- owed), so the code was telling them apart by matching `last_error` against a
+-- message constant. That is not a state machine: `last_error` is display text
+-- rewritten by every other failure path (a QuickBooks rejection, a
+-- not-connected skip), so one unrelated stamp turned an orphan back into a
+-- re-ownable row and the next invoice push duplicated the Payment.
+--
+-- The second CHECK is the invariant that makes the pair readable: a row that has
+-- ENDED owes nothing. Every writer that starts new work clears the reason in the
+-- same UPDATE that sets `pending_op`.
+ALTER TABLE accounting_entity_mappings
+  ADD COLUMN IF NOT EXISTS terminal_reason text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'accounting_entity_mappings_terminal_reason_chk'
+      AND conrelid = 'accounting_entity_mappings'::regclass
+  ) THEN
+    ALTER TABLE accounting_entity_mappings
+      ADD CONSTRAINT accounting_entity_mappings_terminal_reason_chk
+      CHECK (terminal_reason IS NULL OR terminal_reason IN ('orphaned', 'gave_up', 'removed_remotely'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'accounting_entity_mappings_terminal_idle_chk'
+      AND conrelid = 'accounting_entity_mappings'::regclass
+  ) THEN
+    ALTER TABLE accounting_entity_mappings
+      ADD CONSTRAINT accounting_entity_mappings_terminal_idle_chk
+      CHECK (terminal_reason IS NULL OR pending_op IS NULL);
+  END IF;
+END $$;
+
+-- Backfill from the messages the pre-column code wrote. No such rows exist in
+-- production (nothing on this branch has shipped), but a re-run must be a no-op
+-- and a branch database that DID reach one of these states must not be stranded
+-- in an untyped terminal state.
+DO $$
+DECLARE
+  typed integer;
+BEGIN
+  UPDATE accounting_entity_mappings
+     SET terminal_reason = CASE
+           WHEN last_error LIKE 'QuickBooks accepted the payment but Breeze could not record it;%' THEN 'orphaned'
+           WHEN last_error LIKE 'QuickBooks payment push gave up after %' THEN 'gave_up'
+           WHEN last_error = 'Deleted in QuickBooks' THEN 'removed_remotely'
+         END
+   WHERE breeze_entity_type = 'payment'
+     AND terminal_reason IS NULL
+     AND pending_op IS NULL
+     AND (
+       last_error LIKE 'QuickBooks accepted the payment but Breeze could not record it;%'
+       OR last_error LIKE 'QuickBooks payment push gave up after %'
+       OR last_error = 'Deleted in QuickBooks'
+     );
+  GET DIAGNOSTICS typed = ROW_COUNT;
+  IF typed > 0 THEN
+    RAISE WARNING 'typed terminal_reason on % payment mappings from their last_error text', typed;
+  END IF;
+END $$;

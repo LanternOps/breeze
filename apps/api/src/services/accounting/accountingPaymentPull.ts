@@ -868,8 +868,13 @@ async function adoptBreezeOriginPayment(
   const paymentMatches = pay === null
     ? owned.pendingOp === 'delete'
     : pay.invoiceId === inv.id && toMinorUnits(pay.amount, normalized.currencyCode) === line.amountMinor;
+  // A retired `orphaned` row is adoptable too (review wave 4, finding A). The
+  // retirement stops Breeze RE-CREATING the Payment; it never meant the row
+  // could not be reconciled, and this echo — carrying Breeze's own PrivateNote
+  // marker — is exactly the evidence that names it. Guarded by `paymentMatches`
+  // like every other adoption, so a QuickBooks "Copy" cannot claim it.
   const adoptable = owned.remoteEntityId === null
-    && (owned.pendingOp === 'push' || owned.pendingOp === 'delete')
+    && (owned.pendingOp === 'push' || owned.pendingOp === 'delete' || owned.terminalReason === 'orphaned')
     && paymentMatches;
   if (!adoptable) return skipped(owned.breezeEntityId);
 
@@ -891,6 +896,9 @@ async function adoptBreezeOriginPayment(
       linkStatus: 'confirmed',
       syncStatus: adoptingDelete ? 'pending' : 'synced',
       pendingOp: adoptingDelete ? 'delete' : null,
+      // Adopted, so the row is live again whatever it was — and the
+      // terminal/pending CHECK requires the pair be written together.
+      terminalReason: null,
       claimedAt: null,
       lastError: null,
       ...(adoptingDelete ? {} : { lastSyncedAt: now }),
@@ -1394,6 +1402,12 @@ async function breezeOriginRemoval(
     .update(accountingEntityMappings)
     .set({
       syncStatus: 'error',
+      // The TYPED state, not the message beside it: this row is shape-identical
+      // to an `orphaned` one and means the opposite, and `last_error` is display
+      // text that every other failure path rewrites (review wave 4, finding A).
+      // `removed_remotely` is what keeps it RE-OWNABLE, which is the whole point
+      // of clearing the ids below.
+      terminalReason: 'removed_remotely',
       lastError: BREEZE_ORIGIN_REMOVED_MESSAGE,
       remoteEntityId: null,
       remoteSyncToken: null,
