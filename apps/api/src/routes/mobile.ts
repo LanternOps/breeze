@@ -11,10 +11,12 @@ import {
   alertRules,
   alertTemplates,
   deviceCommands,
+  deviceNetwork,
   devices,
   mobileDevices,
   organizations,
-  sites
+  sites,
+  tickets
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
@@ -56,6 +58,116 @@ const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNO
 const requireMobileAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
 const requireMobileDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireMobileDeviceExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
+
+// Device Details v1 fields (#5140, decision #5117-2): "open" for the
+// mobile device row's alert/ticket counts means "still needs attention" —
+// mirrors the /summary endpoint's active+acknowledged bucket, not the full
+// history (excludes resolved/dismissed/suppressed).
+const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
+// Same status set as services/portal/ticketReadModel.ts's OPEN_TICKET_STATUSES
+// and services/ticketService.ts's ADDIN_OPEN_STATUSES — both module-private,
+// so kept local here rather than importing either.
+const OPEN_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
+
+/** One device_network row as read for LAN-IP ranking below. */
+interface LanIpCandidate {
+  deviceId: string;
+  ipAddress: string | null;
+  ipType: string;
+  isPrimary: boolean;
+  interfaceName: string;
+}
+
+// APIPA/link-local/loopback — worse than useless in a scan column. Mirrors
+// the ILIKE/LIKE set in devices/core.ts's LAN-IP lateral (#2503).
+function isUnroutableIp(ip: string): boolean {
+  return ip.startsWith('169.254.') || ip.startsWith('127.') || ip.toLowerCase().startsWith('fe80:') || ip === '::1';
+}
+
+/**
+ * Best-first comparator for a device's candidate LAN addresses: is_primary
+ * first, IPv4 before IPv6, routable before APIPA/link-local/loopback,
+ * interface name as a stable tiebreak. Same ranking as devices/core.ts's
+ * per-page LATERAL join (#2503), done here in application code (over a plain
+ * batched SELECT) rather than a second SQL LATERAL, since device_network rows
+ * per page are few enough that ranking in JS avoids a raw sql`` query in this
+ * route.
+ */
+function compareLanCandidates(a: LanIpCandidate, b: LanIpCandidate): number {
+  if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+  const aV4 = a.ipType === 'ipv4';
+  const bV4 = b.ipType === 'ipv4';
+  if (aV4 !== bV4) return aV4 ? -1 : 1;
+  const aUnroutable = isUnroutableIp(a.ipAddress!);
+  const bUnroutable = isUnroutableIp(b.ipAddress!);
+  if (aUnroutable !== bUnroutable) return aUnroutable ? 1 : -1;
+  return a.interfaceName.localeCompare(b.interfaceName);
+}
+
+/**
+ * Batched lookups for the Device Details v1 fields (#5140) — one LAN-IP pick
+ * plus two GROUP BY counts per page, keyed by device id. Each is a SEPARATE
+ * query from the main device-row select (never a LEFT JOIN on it), so a
+ * device with many network interfaces, alerts, or tickets can never fan the
+ * page's row count out — verified by
+ * "...without fanning out the row" in mobile.test.ts.
+ */
+async function loadDeviceDetailsV1Fields(deviceIds: string[]): Promise<{
+  lanIpByDevice: Map<string, string>;
+  openAlertCountByDevice: Map<string, number>;
+  openTicketCountByDevice: Map<string, number>;
+}> {
+  const lanIpByDevice = new Map<string, string>();
+  const openAlertCountByDevice = new Map<string, number>();
+  const openTicketCountByDevice = new Map<string, number>();
+
+  if (deviceIds.length === 0) {
+    return { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice };
+  }
+
+  const networkRows = await db
+    .select({
+      deviceId: deviceNetwork.deviceId,
+      ipAddress: deviceNetwork.ipAddress,
+      ipType: deviceNetwork.ipType,
+      isPrimary: deviceNetwork.isPrimary,
+      interfaceName: deviceNetwork.interfaceName
+    })
+    .from(deviceNetwork)
+    .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
+
+  const candidatesByDevice = new Map<string, LanIpCandidate[]>();
+  for (const row of networkRows) {
+    if (!row.ipAddress) continue;
+    const list = candidatesByDevice.get(row.deviceId) ?? [];
+    list.push(row as LanIpCandidate);
+    candidatesByDevice.set(row.deviceId, list);
+  }
+  for (const [deviceId, candidates] of candidatesByDevice) {
+    const best = candidates.slice().sort(compareLanCandidates)[0];
+    if (best?.ipAddress) lanIpByDevice.set(deviceId, best.ipAddress);
+  }
+
+  const alertCountRows = await db
+    .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
+    .from(alerts)
+    .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES)))
+    .groupBy(alerts.deviceId);
+  for (const row of alertCountRows) {
+    openAlertCountByDevice.set(row.deviceId, Number(row.count));
+  }
+
+  const ticketCountRows = await db
+    .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
+    .from(tickets)
+    .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
+    .groupBy(tickets.deviceId);
+  for (const row of ticketCountRows) {
+    if (row.deviceId) openTicketCountByDevice.set(row.deviceId, Number(row.count));
+  }
+
+  return { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice };
+}
 
 async function requireScriptExecuteForRunScript(c: import('hono').Context, next: import('hono').Next) {
   const data = (c.req as unknown as { valid: (target: 'json') => { action?: string } }).valid('json');
@@ -1258,6 +1370,14 @@ mobileRoutes.get(
         hostname: devices.hostname,
         displayName: devices.displayName,
         osType: devices.osType,
+        // Device Details v1 fields (#5140): plain columns, no extra query.
+        osVersion: devices.osVersion,
+        lastUser: devices.lastUser,
+        // Public/WAN address the agent last authenticated from — device_network's
+        // own public_ip column is never written by any code path (see its
+        // schema comment), so this is the only real source. Renamed to
+        // publicIp in the response below.
+        lastSeenIp: devices.lastSeenIp,
         status: devices.status,
         lastSeenAt: devices.lastSeenAt,
         // #5104: the mobile row meta line needs the org name on a
@@ -1286,8 +1406,24 @@ mobileRoutes.get(
       }
     }
 
+    // Device Details v1 fields (#5140): batched once for this page, not
+    // per-row — see loadDeviceDetailsV1Fields for why this can't fan out.
+    const { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice } =
+      await loadDeviceDetailsV1Fields(items.map((d) => d.id));
+
+    const data = items.map((d) => {
+      const { lastSeenIp, ...rest } = d;
+      return {
+        ...rest,
+        publicIp: lastSeenIp ?? null,
+        lanIp: lanIpByDevice.get(d.id) ?? null,
+        openAlertCount: openAlertCountByDevice.get(d.id) ?? 0,
+        openTicketCount: openTicketCountByDevice.get(d.id) ?? 0
+      };
+    });
+
     return c.json({
-      data: items,
+      data,
       pagination: { page, limit, total, nextCursor }
     });
   }

@@ -109,6 +109,15 @@ export interface Device {
   };
   createdAt: string;
   updatedAt: string;
+  /** Device Details v1 fields (#5140, decision #5117-2). */
+  osVersion?: string;
+  lastUser?: string;
+  /** Best current LAN address (ranked, see mobile.ts's #2503-style pick). */
+  lanIp?: string;
+  /** WAN address the agent last authenticated from. */
+  publicIp?: string;
+  openAlertCount?: number;
+  openTicketCount?: number;
 }
 
 export interface User {
@@ -322,6 +331,16 @@ type MobileDeviceRecord = {
   // same value under `orgName`. Both are read in mapDevice() below (#5104).
   organizationName?: string | null;
   orgName?: string | null;
+  // Device Details v1 fields (#5140, decision #5117-2). Sent by the list
+  // endpoint (`GET /mobile/devices`, routes/mobile.ts) today — see that
+  // route's loadDeviceDetailsV1Fields for how each is computed. Absent
+  // (rather than null) on any response shape that doesn't send them yet.
+  osVersion?: string | null;
+  lastUser?: string | null;
+  lanIp?: string | null;
+  publicIp?: string | null;
+  openAlertCount?: number;
+  openTicketCount?: number;
 };
 
 // Token management
@@ -636,7 +655,16 @@ function mapDevice(device: MobileDeviceRecord): Device {
     siteName: device.siteName || undefined,
     metrics: device.metrics,
     createdAt,
-    updatedAt
+    updatedAt,
+    // Device Details v1 fields (#5140). `?? undefined` rather than `||`:
+    // openAlertCount/openTicketCount are legitimately 0, which `||` would
+    // discard the same as a missing field.
+    osVersion: device.osVersion ?? undefined,
+    lastUser: device.lastUser ?? undefined,
+    lanIp: device.lanIp ?? undefined,
+    publicIp: device.publicIp ?? undefined,
+    openAlertCount: device.openAlertCount ?? undefined,
+    openTicketCount: device.openTicketCount ?? undefined
   };
 }
 

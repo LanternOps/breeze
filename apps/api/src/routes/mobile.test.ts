@@ -147,6 +147,19 @@ const mockSelectWhereChain = (result: unknown) => ({
   })
 });
 
+// GET /mobile/devices' batched open-alert / open-ticket counts (#5140): a
+// plain SELECT ... WHERE ... GROUP BY, one row per device that has at least
+// one matching row (never per-alert/per-ticket) — this is what keeps the
+// device-list page from fanning out even though a device can have many
+// alerts/tickets.
+const mockSelectGroupByChain = (result: unknown) => ({
+  from: vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({
+      groupBy: vi.fn().mockResolvedValue(result)
+    })
+  })
+});
+
 const mockSelectOrderChain = (result: unknown) => ({
   from: vi.fn().mockReturnValue({
     where: vi.fn().mockReturnValue({
@@ -1379,7 +1392,11 @@ describe('mobile routes', () => {
               organizationName: 'Acme Corp'
             }
           ]) as any
-        );
+        )
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices?status=online&search=host', {
         method: 'GET'
@@ -1392,6 +1409,115 @@ describe('mobile routes', () => {
       // #5104: the mobile app's row meta line ("org · site") and Device
       // Details org row both depend on this field actually being returned.
       expect(body.data[0].organizationName).toBe('Acme Corp');
+    });
+
+    // #5140: Device Details v1 fields (decision #5117-2) — osVersion,
+    // lastUser, lanIp, publicIp, openAlertCount, openTicketCount.
+    describe('Device Details v1 fields (#5140)', () => {
+      const DEVICE_ID = '11111111-2222-4333-8444-555555555555';
+
+      it('a device with none of the new fields still serialises with null/0 defaults', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              {
+                id: DEVICE_ID,
+                orgId: 'org-123',
+                siteId: 'site-1',
+                hostname: 'host-1',
+                displayName: 'Host 1',
+                osType: 'linux',
+                osVersion: null,
+                lastUser: null,
+                lastSeenIp: null,
+                status: 'online',
+                lastSeenAt: new Date(),
+                organizationName: 'Acme Corp'
+              }
+            ]) as any
+          )
+          // device_network lateral-equivalent (LAN IP)
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          // open alert count (GROUP BY)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          // open ticket count (GROUP BY)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toHaveLength(1);
+        const row = body.data[0];
+        expect(row.osVersion).toBeNull();
+        expect(row.lastUser).toBeNull();
+        expect(row.lanIp).toBeNull();
+        expect(row.publicIp).toBeNull();
+        expect(row.openAlertCount).toBe(0);
+        expect(row.openTicketCount).toBe(0);
+      });
+
+      it('surfaces osVersion, lastUser, publicIp, ranked lanIp, and open alert/ticket counts without fanning out the row', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
+          .mockReturnValueOnce(
+            mockSelectLeftJoinChain([
+              {
+                id: DEVICE_ID,
+                orgId: 'org-123',
+                siteId: 'site-1',
+                hostname: 'host-1',
+                displayName: 'Host 1',
+                osType: 'linux',
+                osVersion: '22.04',
+                lastUser: 'jdoe',
+                lastSeenIp: '203.0.113.9',
+                status: 'online',
+                lastSeenAt: new Date(),
+                organizationName: 'Acme Corp'
+              }
+            ]) as any
+          )
+          // Two network interfaces for the SAME device — a non-primary IPv6
+          // link-local row and a primary routable IPv4 row. The primary IPv4
+          // row must win the ranking (mirrors devices/core.ts's #2503 lateral).
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              {
+                deviceId: DEVICE_ID,
+                ipAddress: 'fe80::1',
+                ipType: 'ipv6',
+                isPrimary: false,
+                interfaceName: 'eth1'
+              },
+              {
+                deviceId: DEVICE_ID,
+                ipAddress: '10.0.0.5',
+                ipType: 'ipv4',
+                isPrimary: true,
+                interfaceName: 'eth0'
+              }
+            ]) as any
+          )
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 3 }]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([{ deviceId: DEVICE_ID, count: 2 }]) as any);
+
+        const res = await app.request('/mobile/devices', { method: 'GET' });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Multiple network/alert/ticket rows for the one device must NOT fan
+        // the page out — still exactly one row.
+        expect(body.data).toHaveLength(1);
+        const row = body.data[0];
+        expect(row.osVersion).toBe('22.04');
+        expect(row.lastUser).toBe('jdoe');
+        expect(row.publicIp).toBe('203.0.113.9');
+        expect(row.lanIp).toBe('10.0.0.5');
+        expect(row.openAlertCount).toBe(3);
+        expect(row.openTicketCount).toBe(2);
+      });
     });
 
     it('should return empty list when partner has no orgs', async () => {
@@ -1460,7 +1586,11 @@ describe('mobile routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices', { method: 'GET' });
 
@@ -1521,7 +1651,11 @@ describe('mobile routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+        .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+        .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
       const res = await app.request('/mobile/devices', { method: 'GET' });
 
@@ -1557,7 +1691,11 @@ describe('mobile routes', () => {
         const rows = [row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')];
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
-          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing(rows, captured) as any); // 3 rows for limit=2 => hasMore
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing(rows, captured) as any) // 3 rows for limit=2 => hasMore
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
         const res = await app.request('/mobile/devices?limit=2', { method: 'GET' });
 
@@ -1580,7 +1718,11 @@ describe('mobile routes', () => {
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
           .mockReturnValueOnce(
             mockSelectLeftJoinChain([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')]) as any
-          );
+          )
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
         const page1 = await app.request('/mobile/devices?limit=2', { method: 'GET' });
         const page1Body = await page1.json();
@@ -1590,7 +1732,11 @@ describe('mobile routes', () => {
         const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
-          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any);
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any)
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
         const page2 = await app.request(`/mobile/devices?limit=2&cursor=${encodeURIComponent(cursor)}`, {
           method: 'GET'
@@ -1613,7 +1759,11 @@ describe('mobile routes', () => {
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
           .mockReturnValueOnce(
             mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host')], captured) as any
-          );
+          )
+          // Device Details v1 fields (#5140): LAN IP + open alert/ticket counts.
+          .mockReturnValueOnce(mockSelectWhereChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any)
+          .mockReturnValueOnce(mockSelectGroupByChain([]) as any);
 
         const res = await app.request('/mobile/devices?page=1&limit=1', { method: 'GET' });
 
