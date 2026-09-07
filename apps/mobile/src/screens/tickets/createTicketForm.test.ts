@@ -148,6 +148,26 @@ describe('assigneeOptions', () => {
     expect(options.filter((o) => o.id === 'me-1')).toHaveLength(1);
   });
 
+  it('dedupes a repeated id WITHIN the fetched staff list itself (e.g. paginated overlap)', () => {
+    const withInternalDuplicate = [...staff, { id: 'u2', name: 'Bailey Ops', email: 'bailey@example.com' }];
+    const options = assigneeOptions(withInternalDuplicate, me);
+    expect(options.filter((o) => o.id === 'u2')).toHaveLength(1);
+  });
+
+  it('drops a staff row with an empty id', () => {
+    const withBlankId = [...staff, { id: '', name: 'Ghost Row', email: 'ghost@example.com' }];
+    const options = assigneeOptions(withBlankId, me);
+    expect(options.some((o) => o.label === 'Ghost Row')).toBe(false);
+  });
+
+  it('labels the signed-in user by email, not "(you)" alone, when their name is blank', () => {
+    const meWithNoName = { id: 'me-1', name: '', email: 'casey@example.com' };
+    expect(assigneeOptions([], meWithNoName)).toEqual([
+      { id: null, label: 'Unassigned' },
+      { id: 'me-1', label: 'casey@example.com (you)' },
+    ]);
+  });
+
   it('degrades to Unassigned + you when the staff fetch failed (empty list)', () => {
     expect(assigneeOptions([], me)).toEqual([
       { id: null, label: 'Unassigned' },
@@ -155,7 +175,7 @@ describe('assigneeOptions', () => {
     ]);
   });
 
-  it('offers only Unassigned when signed out', () => {
+  it('omits the "(you)" row when signed out, but still lists fetched staff', () => {
     expect(assigneeOptions(staff, null)).toEqual([
       { id: null, label: 'Unassigned' },
       { id: 'u3', label: 'alex@example.com' },
