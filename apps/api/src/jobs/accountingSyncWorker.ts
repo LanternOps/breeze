@@ -22,8 +22,10 @@
  *     code in `TERMINAL_CODES` — `invoice_not_pushable`, `customer_not_mapped`,
  *     `home_currency_unknown`, `currency_mismatch`,
  *     `customer_currency_mismatch`, `dependency_not_ready`, `not_connected`,
- *     `reauth_required` (each a 404 or 409 — see the codes' own status in
- *     `accountingInvoicePush.ts`) PLUS `record_failed` (502 — the remote
+ *     `reauth_required`, `void_blocked_by_payments` (each a 404 or 409 — see
+ *     the codes' own status in `accountingInvoicePush.ts`; the last one is
+ *     QuickBooks refusing to void an invoice a Payment settles there, a rule
+ *     that answers the same on every attempt — #5180) PLUS `record_failed` (502 — the remote
  *     QuickBooks write already landed; only the local persist failed, so
  *     retrying would create a duplicate invoice in QuickBooks, not fix
  *     anything). Retrying any of these can never succeed: the mapping row
@@ -113,6 +115,7 @@ const TERMINAL_CODES: ReadonlySet<AccountingInvoicePushErrorCode> = new Set([
   'not_connected',
   'reauth_required',
   'record_failed',
+  'void_blocked_by_payments',
 ]);
 
 /**

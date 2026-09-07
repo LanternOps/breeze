@@ -1906,6 +1906,41 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+
+    // 1b. APPLIED PAYMENTS BLOCK THE VOID (#5180).
+    //
+    // Voiding a settled invoice used to succeed locally and then fail forever
+    // downstream: QuickBooks will not void an invoice a Payment settles, so the
+    // accounting job burned its whole five-attempt ladder on a deterministic
+    // refusal, and the next payment pull flagged the mapping in error because
+    // Breeze said void while QuickBooks said paid. It is wrong locally too — the
+    // void releases the source time entries and parts for re-invoicing while
+    // money that was collected against them stays recorded, so a reissue
+    // double-counts the revenue.
+    //
+    // REFUSE rather than auto-unapply (the spec's two options, #5180). Deleting
+    // a payment row is money movement: it needs its own audit event, its own
+    // permission and its own QuickBooks delete, all of which `voidPayment`
+    // already owns. Silently performing it inside a void would make an
+    // irreversible ledger change the operator never asked for; refusing costs
+    // them one extra explicit step and leaves the invoice exactly as it was.
+    // The billing spec is silent on this case (it says only "any issued status
+    // → void"), so this is the first decision on it rather than a reversal.
+    //
+    // Authoritative under the FOR UPDATE lock taken above: every payment writer
+    // locks the invoice row before inserting, so no payment can land between
+    // this sum and the status flip below.
+    const appliedRows = await db.select({ amount: invoicePayments.amount })
+      .from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
+    const appliedCents = appliedRows.reduce((sum, r) => sum + toCents(r.amount), 0);
+    if (appliedCents > 0) {
+      throw new InvoiceServiceError(
+        `This invoice has ${fromCents(appliedCents)} ${inv.currencyCode} of payments applied to it. `
+        + 'Remove those payments first (and in QuickBooks, if it is synced there), then void the invoice',
+        409, 'INVOICE_HAS_PAYMENTS'
+      );
+    }
+
     voidedOrgId = inv.orgId;
     voidedPartnerId = inv.partnerId;
 

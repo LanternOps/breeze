@@ -31,6 +31,12 @@ export type InvoiceServiceErrorCode =
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
   | 'INVOICE_LINE_NOT_FOUND'
+  // #5180: voidInvoice refused because invoice_payments rows still settle the
+  // invoice. QuickBooks will not void an invoice a Payment settles, and the
+  // void also releases the source rows for re-invoicing while the collected
+  // money stays recorded — so the payments come off first, through the
+  // audited voidPayment path, and the void is retried after.
+  | 'INVOICE_HAS_PAYMENTS'
   | 'INVALID_CURSOR'
   | 'CURRENCY_MISMATCH'
   // Draft currency immutability (#3774): the change-currency op refused because
