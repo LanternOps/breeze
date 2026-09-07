@@ -126,6 +126,7 @@
   },
   "aiToolCallCard": {
     "running": "Koşuyor...",
+    "approvedRunning": "Onaylandı · çalışıyor",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"

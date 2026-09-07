@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -61,6 +63,7 @@ import {
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
 import { AttachmentChip } from '../../components/AttachmentChip';
 import { Toast } from '../../components/Toast';
+import { toastClearanceOffset } from '../../components/timerBarLogic';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
@@ -130,6 +133,17 @@ const ATTACH_ACTIONS: readonly {
   { key: 'file', label: 'File', pick: () => pickDocument() },
 ];
 
+/**
+ * What a permission-denied alert should call the capability — distinct from
+ * the button `label` above ("Library" reads fine as a tap target but is vague
+ * as "Library access is off for Breeze"; #5103 also flagged the generic
+ * "that" this used to say instead of naming anything at all).
+ */
+const PERMISSION_CAPABILITY_NAME: Record<string, string> = {
+  camera: 'Camera',
+  library: 'Photo Library',
+};
+
 export function TicketDetailScreen() {
   const route = useRoute<DetailRoute>();
   const navigation = useNavigation<NavigationProp<TicketsStackParamList>>();
@@ -154,6 +168,13 @@ export function TicketDetailScreen() {
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  /**
+   * Measured height of the comment composer, so the toast (below) can clear
+   * it entirely rather than overlapping its mode tabs — see the Toast usage
+   * at the bottom of this component and #5105 ("Timer started" covering the
+   * Reply / Internal note tabs).
+   */
+  const [composerHeight, setComposerHeight] = useState(0);
   const [timerNotice, setTimerNotice] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState(false);
   const [chips, setChips] = useState<Chip[]>([]);
@@ -264,7 +285,7 @@ export function TicketDetailScreen() {
   );
 
   const handlePick = useCallback(
-    async (pick: () => Promise<PickOutcome>) => {
+    async (pick: () => Promise<PickOutcome>, capability: string) => {
       // Total by contract — `runPicker` converts a native throw into a
       // `failed` outcome, so this never rejects into the `void` at the tap site.
       const outcome = await pick();
@@ -273,10 +294,33 @@ export function TicketDetailScreen() {
         // A cancel is the user's own choice and gets no toast; the other two
         // are failures they cannot otherwise see.
         if (outcome.reason === 'permission-denied') {
-          setToast({
-            kind: 'error',
-            text: 'Breeze needs permission to use that. Enable it in Settings.',
-          });
+          // A toast auto-hides in under 2s with no way back — useless for a
+          // denial the technician can only fix in Settings. An alert names
+          // the capability (not "that", #5103) and offers a real next step
+          // instead of leaving them to find Settings on their own.
+          Alert.alert(
+            `${capability} access is off for Breeze`,
+            'Turn it on in Settings to continue.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Open Settings',
+                onPress: () => {
+                  // openSettings() rejects on a device with no reachable
+                  // Settings intent (locked-down MDM, an odd OS build) — the
+                  // one actionable button in this dialog going silently dead
+                  // is exactly the "nothing happens" failure this alert
+                  // exists to fix, one level down.
+                  Linking.openSettings().catch((err: unknown) => {
+                    reportInternalError(err, 'ticket-attachment-open-settings');
+                    if (mounted.current) {
+                      setToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
+                    }
+                  });
+                },
+              },
+            ]
+          );
         } else if (outcome.reason === 'failed') {
           setToast({ kind: 'error', text: outcome.message });
         }
@@ -629,26 +673,38 @@ export function TicketDetailScreen() {
         ) : null}
 
         <Text style={styles.sectionHeader}>STATUS</Text>
-        {quickStatuses.length === 0 ? (
-          <Text style={styles.metaDim}>No status changes available from here.</Text>
-        ) : (
-          <View style={styles.statusRow}>
-            {quickStatuses.map((status) => (
-              <Pressable
-                key={status}
-                onPress={() => void submitStatus(status)}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: busy }}
-                style={styles.statusChip}
-              >
-                <Text style={styles.statusChipText}>
-                  {statusLabel({ status, statusName: null })}
-                </Text>
-              </Pressable>
-            ))}
+        <View style={styles.statusRow}>
+          {/* Always shown, selected — previously only the possible TRANSITIONS
+              rendered, so the ticket's own current status (including "New",
+              which is never a legal transition target) never appeared as a
+              chip at all (#5105). */}
+          <View
+            accessibilityRole="text"
+            accessibilityLabel={`Current status: ${statusLabel(ticket)}`}
+            style={[styles.statusChip, styles.statusChipActive]}
+          >
+            <Text style={[styles.statusChipText, styles.statusChipTextActive]}>
+              {statusLabel(ticket)}
+            </Text>
           </View>
-        )}
+          {quickStatuses.map((status) => (
+            <Pressable
+              key={status}
+              onPress={() => void submitStatus(status)}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: busy }}
+              style={styles.statusChip}
+            >
+              <Text style={styles.statusChipText}>
+                {statusLabel({ status, statusName: null })}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {quickStatuses.length === 0 ? (
+          <Text style={styles.metaDim}>No other status changes available from here.</Text>
+        ) : null}
 
         {showResolutionInput ? (
           <TextInput
@@ -774,7 +830,10 @@ export function TicketDetailScreen() {
             control that belongs to the pending comment — a tint on the text
             field alone reads as a styling quirk, a tinted panel reads as a
             mode. */}
-        <View style={[styles.composer, isInternal && styles.composerInternal]}>
+        <View
+          style={[styles.composer, isInternal && styles.composerInternal]}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}
+        >
           <View style={styles.modeTabs} accessibilityRole="tablist">
             {COMMENT_MODES.map((mode) => {
               const active = commentMode === mode;
@@ -823,7 +882,12 @@ export function TicketDetailScreen() {
             {ATTACH_ACTIONS.map(({ key, label, pick }) => (
               <Pressable
                 key={key}
-                onPress={() => void handlePick(() => pick(remainingSlots(chips)))}
+                onPress={() =>
+                  void handlePick(
+                    () => pick(remainingSlots(chips)),
+                    PERMISSION_CAPABILITY_NAME[key] ?? label
+                  )
+                }
                 disabled={attachBlocked !== null}
                 accessibilityRole="button"
                 accessibilityLabel={label}
@@ -869,6 +933,11 @@ export function TicketDetailScreen() {
         text={toast?.text ?? ''}
         kind={toast?.kind ?? 'success'}
         onHidden={() => setToast(null)}
+        // Clears the composer's full measured height so "Timer started" /
+        // "Timer stopped" never overlaps its mode tabs (#5105) — the
+        // component's own default offset assumes a short, fixed-height
+        // screen, not one ending in a composer that can run to 200+px.
+        bottomOffset={toastClearanceOffset(composerHeight, spacing['4'])}
       />
     </KeyboardAvoidingView>
   );

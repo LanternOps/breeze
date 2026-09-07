@@ -21,6 +21,11 @@ import {
 } from './agentEditionCompat';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { recordCommandDispatch } from './anomalyMetrics';
+// #5128. `dispatchDeviceCommand` imports back from this module; both uses are
+// function-level (neither evaluates the other's exports at module load), so the
+// ESM cycle resolves.
+import { dispatchDeviceCommand } from './dispatchDeviceCommand';
+import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   terminalPayloadErasureSet,
@@ -47,177 +52,13 @@ export const WATCHDOG_STALE_MS = 10 * 60 * 1000;
 export const SEND_RETRY_ATTEMPTS = 3;
 export const SEND_RETRY_DELAY_MS = 500;
 
-// Command types for system tools
-export const CommandTypes = {
-  // Process management
-  LIST_PROCESSES: 'list_processes',
-  GET_PROCESS: 'get_process',
-  KILL_PROCESS: 'kill_process',
-
-  // Service management
-  LIST_SERVICES: 'list_services',
-  GET_SERVICE: 'get_service',
-  START_SERVICE: 'start_service',
-  STOP_SERVICE: 'stop_service',
-  RESTART_SERVICE: 'restart_service',
-
-  // Event logs (Windows)
-  EVENT_LOGS_LIST: 'event_logs_list',
-  EVENT_LOGS_QUERY: 'event_logs_query',
-  EVENT_LOG_GET: 'event_log_get',
-
-  // Scheduled tasks (Windows)
-  TASKS_LIST: 'tasks_list',
-  TASK_GET: 'task_get',
-  TASK_RUN: 'task_run',
-  TASK_ENABLE: 'task_enable',
-  TASK_DISABLE: 'task_disable',
-  TASK_HISTORY: 'task_history',
-
-  // Registry (Windows)
-  REGISTRY_KEYS: 'registry_keys',
-  REGISTRY_VALUES: 'registry_values',
-  REGISTRY_GET: 'registry_get',
-  REGISTRY_SET: 'registry_set',
-  REGISTRY_DELETE: 'registry_delete',
-  REGISTRY_KEY_CREATE: 'registry_key_create',
-  REGISTRY_KEY_DELETE: 'registry_key_delete',
-
-  // File operations
-  FILE_LIST: 'file_list',
-  FILE_READ: 'file_read',
-  FILE_WRITE: 'file_write',
-  FILE_DELETE: 'file_delete',
-  FILE_MKDIR: 'file_mkdir',
-  FILE_RENAME: 'file_rename',
-  FILESYSTEM_ANALYSIS: 'filesystem_analysis',
-  FILE_COPY: 'file_copy',
-  FILE_TRASH_LIST: 'file_trash_list',
-  FILE_TRASH_RESTORE: 'file_trash_restore',
-  FILE_TRASH_PURGE: 'file_trash_purge',
-  FILE_LIST_DRIVES: 'file_list_drives',
-
-  // Terminal
-  TERMINAL_START: 'terminal_start',
-  TERMINAL_DATA: 'terminal_data',
-  TERMINAL_RESIZE: 'terminal_resize',
-  TERMINAL_STOP: 'terminal_stop',
-
-  // Script execution
-  SCRIPT: 'script',
-  // #3525. WIRE CONTRACT: payload.executionId carries the ORIGINAL script
-  // command's `device_commands.id` — the agent keys its running-process map on
-  // cmd.ID (agent/internal/heartbeat/handlers_script.go), NOT on
-  // script_executions.id. The execution row's own id travels as the additive
-  // `scriptExecutionId` field, which deployed agents ignore. Getting this
-  // backwards makes cancellation a fleet-wide silent no-op.
-  SCRIPT_CANCEL: 'script_cancel',
-
-  // Software management
-  SOFTWARE_INSTALL: 'software_install',
-  SOFTWARE_UNINSTALL: 'software_uninstall',
-  SOFTWARE_UPDATE: 'software_update',
-  // Opt-in macOS package-manager bootstrap (installs Homebrew itself).
-  HOMEBREW_BOOTSTRAP: 'homebrew_bootstrap',
-  CIS_BENCHMARK: 'cis_benchmark',
-  APPLY_CIS_REMEDIATION: 'apply_cis_remediation',
-
-  // Patch management
-  PATCH_SCAN: 'patch_scan',
-  INSTALL_PATCHES: 'install_patches',
-  ROLLBACK_PATCHES: 'rollback_patches',
-  COLLECT_RELIABILITY_METRICS: 'collect_reliability_metrics',
-
-  // Security
-  SECURITY_COLLECT_STATUS: 'security_collect_status',
-  SECURITY_SCAN: 'security_scan',
-  SECURITY_THREAT_QUARANTINE: 'security_threat_quarantine',
-  SECURITY_THREAT_REMOVE: 'security_threat_remove',
-  SECURITY_THREAT_RESTORE: 'security_threat_restore',
-  SENSITIVE_DATA_SCAN: 'sensitive_data_scan',
-  ENCRYPT_FILE: 'encrypt_file',
-  SECURE_DELETE_FILE: 'secure_delete_file',
-  QUARANTINE_FILE: 'quarantine_file',
-
-  // Disk encryption (BitLocker / FileVault)
-  ENCRYPTION_COLLECT_KEYS: 'encryption_collect_keys',
-  ENCRYPTION_ROTATE_KEY: 'encryption_rotate_key',
-
-  // Peripheral control — pushes full active policy set to agent
-  PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
-  PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
-  AGENT_ROLLBACK_V1: 'agent_rollback_v1',
-
-  // Log shipping
-  SET_LOG_LEVEL: 'set_log_level',
-
-  // Runtime diagnostics — on-demand pprof capture from the agent (#2389).
-  // Profiles are captured in-process and returned base64 in the command
-  // result; the agent never opens a listening socket for this.
-  CAPTURE_PPROF: 'capture_pprof',
-
-  // Screenshot (AI Vision)
-  TAKE_SCREENSHOT: 'take_screenshot',
-
-  // Computer control (AI Computer Use)
-  COMPUTER_ACTION: 'computer_action',
-
-  // Boot performance
-  COLLECT_BOOT_PERFORMANCE: 'collect_boot_performance',
-  MANAGE_STARTUP_ITEM: 'manage_startup_item',
-
-  // Audit policy compliance
-  COLLECT_AUDIT_POLICY: 'collect_audit_policy',
-  APPLY_AUDIT_POLICY_BASELINE: 'apply_audit_policy_baseline',
-
-  // Safe mode reboot (Windows only)
-  REBOOT_SAFE_MODE: 'reboot_safe_mode',
-  // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
-  WAKE_ON_LAN: 'wake_on_lan',
-  // On-demand inventory refresh — agent re-runs every send*Inventory collector,
-  // so the API sees fresh hardware/software/network/etc. without waiting for
-  // the next periodic cycle.
-  REFRESH_INVENTORY: 'refresh_inventory',
-  // Self-uninstall (remote wipe)
-  SELF_UNINSTALL: 'self_uninstall',
-  // Backup
-  BACKUP_RUN: 'backup_run',
-  BACKUP_STOP: 'backup_stop',
-  BACKUP_RESTORE: 'backup_restore',
-  BACKUP_VERIFY: 'backup_verify',
-  BACKUP_TEST_RESTORE: 'backup_test_restore',
-  BACKUP_CLEANUP: 'backup_cleanup',
-  // VSS
-  VSS_STATUS: 'vss_status',
-  VSS_WRITER_LIST: 'vss_writer_list',
-  // MSSQL
-  MSSQL_DISCOVER: 'mssql_discover',
-  MSSQL_BACKUP: 'mssql_backup',
-  MSSQL_RESTORE: 'mssql_restore',
-  MSSQL_VERIFY: 'mssql_verify',
-  // Hyper-V
-  HYPERV_DISCOVER: 'hyperv_discover',
-  HYPERV_BACKUP: 'hyperv_backup',
-  HYPERV_RESTORE: 'hyperv_restore',
-  HYPERV_CHECKPOINT: 'hyperv_checkpoint',
-  HYPERV_VM_STATE: 'hyperv_vm_state',
-  // System state & BMR
-  SYSTEM_STATE_COLLECT: 'system_state_collect',
-  HARDWARE_PROFILE: 'hardware_profile',
-  VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
-  VM_RESTORE_ESTIMATE: 'vm_restore_estimate',
-  VM_INSTANT_BOOT: 'vm_instant_boot',
-  BMR_RECOVER: 'bmr_recover',
-  // Vault
-  VAULT_SYNC: 'vault_sync',
-  VAULT_STATUS: 'vault_status',
-  VAULT_CONFIGURE: 'vault_configure',
-  // Incident response
-  COLLECT_EVIDENCE: 'collect_evidence',
-  EXECUTE_CONTAINMENT: 'execute_containment',
-} as const;
-
-export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
+// Command types for system tools.
+// #5128: the table itself now lives in the leaf module ./commandTypes so the
+// fail-closed offline-policy registry can build from it at module load without
+// forming an initialisation cycle through this file. Re-exported here so every
+// existing `import { CommandTypes } from './commandQueue'` keeps working.
+export { CommandTypes, type CommandType } from './commandTypes';
+import { CommandTypes, type CommandType } from './commandTypes';
 
 export interface CommandPayload {
   [key: string]: unknown;
@@ -297,6 +138,17 @@ export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
   trust?: { capability: 'device_execute'; reason: string };
+  /**
+   * #5128. `delivered` = pushed over the live socket. `queued_live` = device
+   * online, waiting for the next heartbeat. `queued_offline` = the device was
+   * not online and the command is waiting for it to come back.
+   */
+  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  /**
+   * #5128. The instant after which the row expires undelivered. NULL for a
+   * `reject` policy — those rows stay on the legacy execution clock.
+   */
+  deliverBy?: Date | null;
 }
 
 export type RearmIdempotentCommandResult =
@@ -634,7 +486,12 @@ export async function queueCommand(
   // id has to exist BEFORE the payload is encrypted. Callers that seal a
   // payload reserve a UUID and pass it here; everyone else keeps the column
   // default. Never accept a client-supplied value.
-  options: { commandId?: string } = {}
+  // #5128: `deliverBy` is the DELIVERY deadline (the instant by which an agent
+  // must have CLAIMED the row) and `submittedOrgId` is the device's org at
+  // enqueue, compared at claim time to cancel rows whose device has since moved
+  // org. Both are optional so legacy callers keep today's semantics
+  // (deliver_by NULL = the reaper's created_at + execution-timeout rule).
+  options: { commandId?: string; deliverBy?: Date | null; submittedOrgId?: string } = {}
 ): Promise<QueuedCommand> {
   // #4093 — agent-binary updates must not be created here. This insert site
   // cannot set target_role (the row would default to 'agent', which has no
@@ -673,6 +530,8 @@ export async function queueCommand(
         payload,
         status: 'pending',
         createdBy: safeUserId,
+        ...(options.deliverBy ? { deliverBy: options.deliverBy } : {}),
+        ...(options.submittedOrgId ? { submittedOrgId: options.submittedOrgId } : {}),
       })
       .returning(),
   );
@@ -837,6 +696,14 @@ export async function waitForCommandResult(
 
 /**
  * Queue a command and attempt immediate dispatch to the agent websocket.
+ *
+ * #5128: this is now a thin adapter over `dispatchDeviceCommand`, the single
+ * enqueue seam. Every caller of this function hard-rejected offline devices
+ * before #5128, so it passes `previouslyRejected: true` — the
+ * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default off) is what decides
+ * whether their offline devices reject as today or queue with a deadline.
+ * The error strings are unchanged, so callers that surface `error` verbatim
+ * behave identically while the flag is off.
  */
 export async function queueCommandForExecution(
   deviceId: string,
@@ -846,67 +713,28 @@ export async function queueCommandForExecution(
     userId?: string;
     preferHeartbeat?: boolean;
     expectedOrgId?: string;
+    /** Explicit override; wins over the registry default and the flag. */
+    offlinePolicy?: OfflinePolicy;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
-  const { userId, preferHeartbeat = false, expectedOrgId } = options;
+  const res = await dispatchDeviceCommand({
+    deviceId,
+    type,
+    payload,
+    ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
+    ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
+    ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
+    previouslyRejected: true,
+  });
 
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device) {
-    return { error: 'Device not found' };
+  if (!res.ok) {
+    return res.code === 'trust_denied' && res.trust
+      ? { error: res.error, trust: res.trust }
+      : { error: res.error };
   }
 
-  // Defense-in-depth: this lookup can run under withSystemDbAccessContext (RLS off),
-  // so callers that know the expected owning org (e.g. DR dispatch) pass expectedOrgId
-  // to prevent a cross-tenant device id from receiving a destructive command.
-  if (expectedOrgId !== undefined && device.orgId !== expectedOrgId) {
-    return { error: 'Device not found' };
-  }
-
-  if (device.status !== 'online') {
-    return { error: `Device is ${device.status}, cannot execute command` };
-  }
-
-  try {
-    await assertDeviceExecuteAllowed(deviceId, type, userId);
-  } catch (e) {
-    if (e instanceof TrustDeniedError) {
-      return {
-        error: e.code,
-        trust: { capability: e.capability, reason: e.reason },
-      };
-    }
-    throw e;
-  }
-
-  const command = await queueCommand(deviceId, type, payload, userId);
-
-  if (device.agentId && !preferHeartbeat) {
-    const claimed = await claimPendingCommandForDelivery(command.id);
-    if (claimed) {
-      // Decrypt sensitive fields just-in-time; a decrypt failure returns null
-      // (logged) and skips the send so the command is released for retry rather
-      // than throwing out of the enqueue path.
-      const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
-      const sent = delivered ? sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered)) : false;
-      if (sent) {
-        return {
-          command: {
-            ...command,
-            status: 'sent',
-            executedAt: claimed.executedAt
-          } as QueuedCommand
-        };
-      }
-      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-    }
-  }
-
-  return { command };
+  return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
 
 export async function queueBackupStopCommand(
@@ -1211,6 +1039,20 @@ async function dispatchPreparedCommand(
           status: 'pending',
           createdBy: safeUserId,
           targetRole,
+          // #5128. executeCommand is synchronous by contract (the caller waits
+          // via waitForCommandResult), so it stays `reject` — and a `reject`
+          // row gets NO `deliver_by`. Review round 2 (J): stamping the
+          // 5-minute race grace here cut every executeCommand row's pending
+          // window from the legacy 30-minute execution clock to 5 minutes,
+          // including watchdog-targeted binary/restart work and other
+          // `preferHeartbeat` callers, and it expired a barrier-held reboot
+          // while the power-state barrier was deliberately holding it. NULL
+          // keeps the legacy clock, so nothing changes for reject callers.
+          // (Deliberately no literal command-type names here: the #4093 scan in
+          // agentEditionCompat.test.ts greps raw file text, and this hub file
+          // must stay off its allowlist so a real raw insert still trips it.)
+          deliverBy: deliverByFor({ kind: 'reject' }),
+          submittedOrgId: device.orgId,
         })
         .returning(),
     );

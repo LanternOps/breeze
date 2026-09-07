@@ -99,6 +99,23 @@ const mutationCalls = () =>
 // Reset the grant set before every test (some opt into tickets:manage).
 beforeEach(() => { authState.permissions = []; });
 
+describe('TicketWorkbench — organization record link', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('links the ticket\'s org name to its organization record (#5075 W03)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9', orgName: 'Globex Inc' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    const link = screen.getByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/organizations/org-9');
+    expect(link).toHaveTextContent('Globex Inc');
+  });
+});
+
 describe('TicketWorkbench resolve-flow gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();

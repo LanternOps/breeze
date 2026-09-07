@@ -550,7 +550,16 @@ export const deviceCommands = pgTable('device_commands', {
   // it -- NULL means "no exemption, no widened auth", fail-closed by
   // construction. See 2026-09-10-device-command-uninstall-provenance.sql.
   uninstallReasons: text('uninstall_reasons').array(),
-  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true })
+  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true }),
+  // #5128 -- deadline by which an agent must CLAIM this row (the DELIVERY
+  // clock). NULL = legacy rule (execution timeout measured from created_at).
+  // See services/commandOfflinePolicy.ts and jobs/staleCommandReaper.ts.
+  deliverBy: timestamp('deliver_by', { withTimezone: true }),
+  // #5128 -- the device's org at enqueue. PROVENANCE, not tenancy: compared at
+  // claim time to cancel rows whose device has since moved org. Deliberately
+  // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands
+  // system-scoped (agent WS path, no RLS -- see CLAUDE.md).
+  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' })
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

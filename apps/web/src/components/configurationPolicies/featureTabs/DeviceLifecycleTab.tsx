@@ -77,7 +77,7 @@ export default function DeviceLifecycleTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "device_lifecycle",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings(),
     });
     if (result) onLinkChanged(result, "device_lifecycle");
@@ -94,7 +94,7 @@ export default function DeviceLifecycleTab({
     clearError();
     const result = await save(null, {
       featureType: "device_lifecycle",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: settings(),
     });
     if (result) onLinkChanged(result, "device_lifecycle");

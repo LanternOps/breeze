@@ -6,7 +6,7 @@ import {
   remoteSessions,
   devices,
   auditLogs,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyRemoteAccessSettings,
   users,
   organizations,
@@ -450,13 +450,13 @@ export async function resolveRemoteSessionPromptConfig(
           })
           .from(configPolicyRemoteAccessSettings)
           .innerJoin(
-            configPolicyFeatureLinks,
-            eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyFeatureLinks.id)
+            configPolicyEffectiveFeatureLinks,
+            eq(configPolicyRemoteAccessSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
           )
           .where(
             and(
-              eq(configPolicyFeatureLinks.configPolicyId, feature.sourcePolicyId),
-              eq(configPolicyFeatureLinks.featureType, 'remote_access')
+              eq(configPolicyEffectiveFeatureLinks.configPolicyId, feature.sourcePolicyId),
+              eq(configPolicyEffectiveFeatureLinks.featureType, 'remote_access')
             )
           )
           .limit(1);
