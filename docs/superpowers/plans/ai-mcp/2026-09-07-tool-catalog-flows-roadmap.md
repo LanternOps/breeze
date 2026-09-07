@@ -33,6 +33,7 @@ Sub-issues: W01 #5216, W02 #5217, W03 #5218, W04 #5219, W05 #5220, W06 #5221 (pa
 
 - Rigor: high (tenancy, credentials, approvals). Red test first; RLS forge suite per new table; contract suites (RLS coverage, cascade, export, erasure, org-merge) run against a real DB before the PR opens.
 - Every new `org_id` table: `DUAL_AXIS_TENANT_TABLES` or shape-1 auto-discovery, `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY` (all jsonb → `excludedOpen`, secrets → `excludedSensitive`), `orgMergeRegistry`.
-- Migrations sort after the newest committed file (the ratchet is ~3 weeks ahead of real time; check, never assume).
+- Migrations sort after the newest committed file on **origin/main** (`2026-10-13-110000-…` as of 2026-09-07 — the ratchet is ~5 weeks ahead of real time; a worktree forked from a stale local main shows an older ceiling; check `git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -1`).
+- Every org-XOR-partner table gets the additive `FOR SELECT`-only `<table>_partner_wide_select` policy on `breeze_current_partner_id()` (Partner-Wide First step 3) and is registered in `XOR_OWNERSHIP_DUAL_AXIS_TABLES`; never escalate to a system context to read partner-wide config.
 - Non-goals (spec §3) hold in every wave: no connector library, no canvas, no branching beyond `when`/for-each, no sync engine, no LLM-per-run.
 - Stacked PRs get no CI: `gh workflow run CI --ref <branch>` before merge; merge with bare `gh pr merge --squash`.
