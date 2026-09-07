@@ -178,3 +178,39 @@ describe('processCheckSchedules — backup profile fan-out', () => {
     expect(result).toEqual({ enqueued: 2 });
   });
 });
+
+// #5080 W02: the schedule scan enumerates through the EFFECTIVE view, so an org
+// whose only backup configuration is inherited from a partner-wide baseline is
+// still discovered. Asserted by object identity against the real schema exports
+// (this suite does not stub '../db/schema'), so a lookalike cannot satisfy it.
+describe('processCheckSchedules — reads effective feature links', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('joins config_policy_effective_feature_links, not the authored table', async () => {
+    const joined: unknown[] = [];
+    const recordingChain = (result: unknown) => {
+      const chain: Record<string, any> = {};
+      for (const method of ['from', 'leftJoin', 'where', 'orderBy', 'groupBy', 'limit']) {
+        chain[method] = vi.fn(() => chain);
+      }
+      chain.innerJoin = vi.fn((table: unknown) => {
+        joined.push(table);
+        return chain;
+      });
+      chain.then = (onFulfilled: (value: unknown) => unknown) =>
+        Promise.resolve(result).then(onFulfilled);
+      return chain;
+    };
+    // Both distinct scans (org-owned, then partner-wide) run before anything else.
+    selectDistinctMock.mockImplementation(() => recordingChain([]));
+    selectMock.mockImplementation(() => recordingChain([]));
+
+    await __testOnly.processCheckSchedules();
+
+    const { configPolicyEffectiveFeatureLinks, configPolicyFeatureLinks } = await import('../db/schema');
+    expect(joined).toContain(configPolicyEffectiveFeatureLinks);
+    expect(joined).not.toContain(configPolicyFeatureLinks);
+  });
+});

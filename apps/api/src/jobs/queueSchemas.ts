@@ -272,12 +272,22 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     assignmentTargetId: z.string().min(1).optional(),
     policyId: z.string().min(1),
     policyName: z.string().min(1),
+    // The ASSIGNED policy this dispatch runs for (#5080). Through the effective
+    // view one feature-link id belongs to the authoring parent AND every child,
+    // so the run-time ownership clamp cannot reverse-map the link — it clamps on
+    // this id. Optional purely so jobs enqueued before the deploy still parse;
+    // handlers fall back to `policyId`, which has always carried the same value.
+    configPolicyId: z.string().min(1).optional(),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
   }).strict(),
   z.object({
     type: z.literal('execute-config-policy-run'),
     configPolicyAutomationId: z.string().min(1),
+    // Same rule one queue stage later. Optional for pre-deploy jobs only; a run
+    // that arrives without it is SKIPPED rather than executed under a guessed
+    // owner (the next scheduler tick re-enqueues it with the id).
+    configPolicyId: z.string().min(1).optional(),
     targetDeviceIds: z.array(z.string().min(1)),
     triggeredBy: z.string().min(1),
   }).strict(),

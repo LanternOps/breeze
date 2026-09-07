@@ -24,7 +24,7 @@ import {
   deviceGroupMemberships,
   configPolicyAssignments,
   configurationPolicies,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyEventLogSettings,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -1829,11 +1829,11 @@ async function resolveDeviceEventLogSettings(deviceId: string): Promise<EventLog
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'event_log'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'event_log'),
     ))
-    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
@@ -1981,11 +1981,11 @@ export async function getOrgEventLogRetentionDays(orgId: string): Promise<number
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'event_log'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'event_log'),
     ))
-    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .innerJoin(configPolicyEventLogSettings, eq(configPolicyEventLogSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId, partnerId: org?.partnerId ?? null }),
@@ -2089,11 +2089,11 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'monitoring'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'monitoring'),
     ))
-    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
@@ -2616,13 +2616,13 @@ export async function resolveDeviceHelperSettings(deviceId: string): Promise<Hel
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'helper'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'helper'),
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
@@ -2774,13 +2774,13 @@ async function resolveDevicePamSettings(deviceId: string): Promise<PamSettings> 
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'pam'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'pam'),
     ))
     .where(and(
       eq(configurationPolicies.status, 'active'),
@@ -2958,11 +2958,11 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
-    .innerJoin(configPolicyFeatureLinks, and(
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-      eq(configPolicyFeatureLinks.featureType, 'onedrive_helper'),
+    .innerJoin(configPolicyEffectiveFeatureLinks, and(
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.featureType, 'onedrive_helper'),
     ))
-    .innerJoin(configPolicyOnedriveSettings, eq(configPolicyOnedriveSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .innerJoin(configPolicyOnedriveSettings, eq(configPolicyOnedriveSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id))
     .where(and(
       eq(configurationPolicies.status, 'active'),
       eq(configurationPolicies.orgId, device.orgId),
