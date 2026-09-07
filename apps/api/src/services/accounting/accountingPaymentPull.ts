@@ -759,6 +759,21 @@ async function applyBreezeOriginEcho(
     ));
   }
 
+  // NO MONEY ROW TO COMPARE (review wave 2, finding 7). The void or full refund
+  // that flipped `pending_op` to 'delete' destroyed the `invoice_payments` row
+  // in the SAME transaction, so `pay === null` says nothing about the QuickBooks
+  // amount — yet it fell through to the divergence arm and stamped the mapping
+  // `error` with "Edited in QuickBooks" plus an `amount_changed` audit for an
+  // edit nobody made, on a row that is merely waiting for its delete to land.
+  // `adoptBreezeOriginPayment` and `breezeOriginRemoval` already short-circuit
+  // on this exact shape; this is the third path. The token is stored above
+  // either way, which is what the corrective delete needs.
+  if (pay === null) {
+    return noAudit(result(
+      'skipped_breeze_origin', line.remotePaymentId, line.remoteInvoiceId, inv.id, existing.breezeEntityId,
+    ));
+  }
+
   // A Stripe PARTIAL REFUND already made these two amounts disagree ON PURPOSE
   // (review finding 3): `stripeReconcile` lowers `invoice_payments.amount` and
   // stamps the row with the instruction to record the refund in QuickBooks,

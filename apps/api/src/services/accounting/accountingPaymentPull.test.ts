@@ -1389,10 +1389,15 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
     expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
-  it('leaves a pending DELETE owed while recording the divergence', async () => {
-    // The divergence marker is an annotation for a human. Clearing `pending_op`
-    // here would abandon a delete the row still owes QuickBooks and strand the
-    // Payment in the books forever.
+  it('does NOT diverge a delete-pending row whose money row is already gone', async () => {
+    // The void or full refund that flipped `pending_op` to 'delete' destroyed
+    // the `invoice_payments` row in the SAME transaction, so there is nothing
+    // left to compare the QuickBooks amount against. Treating "no money row" as
+    // "the amount changed" stamped the mapping `error` with "Edited in
+    // QuickBooks" and wrote an `amount_changed` audit for an edit nobody made —
+    // on a row that is merely waiting for its delete to land. The sibling paths
+    // (`adoptBreezeOriginPayment`, `breezeOriginRemoval`) already short-circuit
+    // on exactly this shape.
     currentPayments = [];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping({
       pendingOp: 'delete', syncStatus: 'pending', claimedAt: new Date('2026-09-02T19:00:00.000Z'),
@@ -1400,13 +1405,29 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
 
     const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
 
-    expect(r.outcome).toBe('breeze_origin_diverged');
+    expect(r.outcome).toBe('skipped_breeze_origin');
     expect(currentMappings[1]).toMatchObject({
-      pendingOp: 'delete',
-      claimedAt: new Date('2026-09-02T19:00:00.000Z'),
+      pendingOp: 'delete', // still owed
+      claimedAt: new Date('2026-09-02T19:00:00.000Z'), // a live lease is untouched
+      // The token IS stored: the corrective delete needs the CURRENT SyncToken
+      // or it fails with a stale-object fault forever.
       remoteSyncToken: '3',
-      syncStatus: 'error',
+      syncStatus: 'pending', // NOT flipped to error
     });
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('does not diverge a Breeze-origin row whose money row vanished with nothing owed either', async () => {
+    // Same reasoning, without a pending delete: a missing money row is never
+    // evidence of a QuickBooks edit.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+    expect(currentMappings[1]).toMatchObject({ remoteSyncToken: '3', syncStatus: 'synced' });
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
   it('never routes a Breeze-origin echo through the QuickBooks-origin update path', async () => {
