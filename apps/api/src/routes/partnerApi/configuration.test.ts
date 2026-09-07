@@ -20,6 +20,8 @@ const NORMALIZED_PATCH_FACTS = {
   scheduleTime: '02:00',
   scheduleDayOfWeek: 'sun',
   scheduleDayOfMonth: 1,
+  // #5128 W3.
+  offlineBehavior: 'queue',
   rebootPolicy: 'if_required',
   rebootDelayMinutes: 15,
   // #3207. PATCH_NORMALIZED_MATERIAL_KEYS fails closed on an exact count

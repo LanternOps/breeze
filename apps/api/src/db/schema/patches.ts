@@ -78,6 +78,11 @@ export const patchJobStatusEnum = pgEnum('patch_job_status', [
 export const patchJobResultStatusEnum = pgEnum('patch_job_result_status', [
   'pending',
   'running',
+  // #5128 W3: the install_patches command is persisted with a deliver_by and is
+  // waiting for the device's next heartbeat. Non-terminal, like pending/running,
+  // but owned by the DELIVERY clock (the device_commands reaper), not by
+  // reapStalePatchJobResults' execution clock.
+  'queued',
   'completed',
   'failed',
   'skipped'
@@ -238,6 +243,11 @@ export const patchJobs = pgTable('patch_jobs', {
   devicesCompleted: integer('devices_completed').notNull().default(0),
   devicesFailed: integer('devices_failed').notNull().default(0),
   devicesPending: integer('devices_pending').notNull().default(0),
+  // #5128 W3: devices whose install_patches command is queued for an offline
+  // device. The job stays non-terminal while this is > 0 (OD-9) — the
+  // completion checker only terminalises when devicesPending AND devicesQueued
+  // are both zero, so unfinished patching is never reported as completed.
+  devicesQueued: integer('devices_queued').notNull().default(0),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });

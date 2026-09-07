@@ -28,8 +28,17 @@ import {
   type PolicyAutoApproveConfig,
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
-import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
-import { queueCommandForExecution } from '../services/commandQueue';
+import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
+import {
+  deliveryTtlMs,
+  isOfflineQueueEnabled,
+  type OfflinePolicy,
+} from '../services/commandOfflinePolicy';
+import {
+  checkAndFinalizeJob,
+  finalizePatchJobDevice,
+  type ApprovedPatchRef,
+} from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -702,7 +711,19 @@ async function processCheckCompletion(data: CheckCompletionData): Promise<unknow
     return { skipped: true };
   }
 
+  // #5128 W3 — a device whose install is QUEUED for an offline machine is not
+  // late, it is waiting, and its deadline is the command's own `deliver_by`
+  // (days out), not this checker's timeout. Terminalising the job here would
+  // report unfinished patching as finished (OD-9) and orphan the queued rows.
+  const devicesQueued = patchJob.devicesQueued ?? 0;
+
   if (patchJob.devicesPending === 0) {
+    if (devicesQueued > 0) {
+      console.log(
+        `[PatchJobExecutor] job ${patchJobId} stays running — waiting for ${devicesQueued} queued device(s) to reconnect`
+      );
+      return { waitingForQueuedDevices: devicesQueued };
+    }
     const finalStatus = patchJob.devicesFailed > 0 ? 'failed' : 'completed';
     await db
       .update(patchJobs)
@@ -711,18 +732,23 @@ async function processCheckCompletion(data: CheckCompletionData): Promise<unknow
     return { finalStatus };
   }
 
-  // Still has pending devices after timeout — mark remaining as failed
+  // Still has pending devices after timeout — force-fail exactly those. Queued
+  // devices are untouched, and the job only terminalises once they resolve too,
+  // so the status flip is skipped while any remain.
   await db
     .update(patchJobs)
     .set({
-      status: 'failed',
-      completedAt: new Date(),
+      ...(devicesQueued > 0 ? {} : { status: 'failed' as const, completedAt: new Date() }),
       devicesFailed: sql`${patchJobs.devicesFailed} + ${patchJobs.devicesPending}`,
       devicesPending: 0,
     })
     .where(eq(patchJobs.id, patchJobId));
 
-  return { timedOut: true, pendingAtTimeout: patchJob.devicesPending };
+  return {
+    timedOut: true,
+    pendingAtTimeout: patchJob.devicesPending,
+    ...(devicesQueued > 0 ? { waitingForQueuedDevices: devicesQueued } : {}),
+  };
 }
 
 // ============================================
@@ -755,19 +781,83 @@ type PreparedDeviceExecution = {
   targets: { deployment?: { rebootPolicy?: string } };
 };
 
+/**
+ * #5128 W3 — the device was offline and the install was persisted with a
+ * `deliver_by` instead. There is nothing to poll for: the device's next
+ * heartbeat claims the row, and whichever door closes it (agent result,
+ * delivery expiry, cancel, supersession) runs the shared finalizer. The BullMQ
+ * task ENDS here rather than sitting on a multi-day poll.
+ */
+type QueuedDeviceExecution = {
+  queued: true;
+  commandId: string;
+  deliverBy: string | null;
+  patchCount: number;
+};
+
 async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<unknown> {
   // Phased so the up-to-30-min completion poll never holds a pooled connection
   // in an open transaction (#1105 conn-hold). Setup and record each run in their
   // own SHORT system context; the poll runs OUTSIDE any context.
   const prep = await runWithSystemDbAccess(() => prepareDeviceExecution(data));
+  if ('queued' in prep) return prep; // offline: handed to the delivery clock
   if (!('commandId' in prep)) return prep; // early skip/error result — return as-is
   const finalCommand = await pollForPatchCommandResult(prep.commandId);
   return runWithSystemDbAccess(() => recordDeviceExecution(data, prep, finalCommand));
 }
 
+/**
+ * The delivery policy for one scheduled install (#5128 §F.4).
+ *
+ * `skip` reproduces the pre-#5128 behaviour exactly: `reject` makes the seam
+ * return `device_offline` and the device is recorded skipped. `queue` bounds the
+ * deadline by the NEXT scheduled occurrence so a device that reconnects after
+ * it installs once, from the fresh approved set, rather than twice.
+ *
+ * Returning `undefined` (rather than an explicit `queue`) while the flag is off
+ * is deliberate: `resolveOfflinePolicy` lets an EXPLICIT policy win over the
+ * `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` gate, so passing one here would ship
+ * the behaviour change ahead of the flag.
+ */
+function resolvePatchOfflinePolicy(
+  offlineBehavior: string | undefined,
+  nextOccurrenceAt: Date | null,
+  now: Date,
+): OfflinePolicy | undefined {
+  if (offlineBehavior === 'skip') return { kind: 'reject' };
+  if (!isOfflineQueueEnabled()) return undefined;
+
+  const ttlMs = deliveryTtlMs('standard');
+  const untilNextOccurrence = nextOccurrenceAt
+    ? nextOccurrenceAt.getTime() - now.getTime()
+    : Number.POSITIVE_INFINITY;
+  const deliverWithinMs = Math.min(ttlMs, untilNextOccurrence);
+
+  // A next occurrence already in the past means the stamp is stale (a policy
+  // edited under a running job). Queueing for a deadline that has passed would
+  // create a row the reaper expires on its very next pass, which is worse than
+  // today's honest skip.
+  if (!Number.isFinite(deliverWithinMs) || deliverWithinMs <= 0) return { kind: 'reject' };
+  return { kind: 'queue', deliverWithinMs };
+}
+
+/** `targets.scheduleNextOccurrenceAt`, stamped by the scheduler, or null. */
+function nextOccurrenceFromTargets(targets: unknown): Date | null {
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) return null;
+  const raw = (targets as { scheduleNextOccurrenceAt?: unknown }).scheduleNextOccurrenceAt;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 async function prepareDeviceExecution(
   data: ExecutePatchJobDeviceData,
-): Promise<PreparedDeviceExecution | { skipped: true; reason: string } | { error: string }> {
+): Promise<
+  | PreparedDeviceExecution
+  | QueuedDeviceExecution
+  | { skipped: true; reason: string }
+  | { error: string }
+> {
   const { patchJobId, deviceId, orgId } = data;
 
   // Load job to get ring config
@@ -823,7 +913,7 @@ async function prepareDeviceExecution(
     apps?: unknown;
   };
   const targets = patchJob.targets as {
-    deployment?: { rebootPolicy?: string };
+    deployment?: { rebootPolicy?: string; offlineBehavior?: string };
   };
 
   // Distinguish absent sources (legacy job → no filtering) from
@@ -1048,24 +1138,91 @@ async function prepareDeviceExecution(
     .from(patches)
     .where(inArray(patches.id, patchIds));
 
-  const cmdResult = await queueCommandForExecution(deviceId, 'install_patches', {
-    patchIds,
-    patches: patchRecords,
+  // #5128 W3: through the single enqueue seam so an offline device can be
+  // QUEUED instead of skipped. `previouslyRejected: true` keeps the flag gate in
+  // charge — this caller hard-rejected offline devices before #5128, so with
+  // DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED unset it still does.
+  //
+  // `patchJobId` is now in the payload: it is what lets a result arriving days
+  // later (or the reaper, or a cancel) find the job this command belongs to.
+  const now = new Date();
+  const res = await dispatchDeviceCommand({
+    deviceId,
+    type: 'install_patches',
+    payload: { patchJobId, patchIds, patches: patchRecords },
+    previouslyRejected: true,
+    expectedOrgId: patchJob.orgId,
+    offlinePolicy: resolvePatchOfflinePolicy(
+      targets?.deployment?.offlineBehavior,
+      nextOccurrenceFromTargets(patchJob.targets),
+      now,
+    ),
   });
 
-  if (cmdResult.error) {
-    // Device likely offline
-    await markDeviceSkipped(patchJobId, deviceId, 'device_offline');
-    return { error: cmdResult.error };
+  if (!res.ok) {
+    // Unchanged shape: an offline device with `offlineBehavior: 'skip'` (or the
+    // flag off) is still recorded skipped, now with the seam's own code as the
+    // reason instead of a blanket 'device_offline'.
+    await markDeviceSkipped(patchJobId, deviceId, res.code);
+    return { error: res.error };
   }
 
-  const commandId = cmdResult.command?.id;
+  const commandId = res.command?.id;
   if (!commandId) {
     await markDeviceSkipped(patchJobId, deviceId, 'command_creation_failed');
     return { error: 'Failed to create command' };
   }
 
+  if (res.delivery === 'queued_offline') {
+    await recordDeviceQueued(patchJobId, deviceId, approvedPatches);
+    return {
+      queued: true,
+      commandId,
+      deliverBy: res.deliverBy ? res.deliverBy.toISOString() : null,
+      patchCount: approvedPatches.length,
+    };
+  }
+
   return { commandId, approvedPatches, targets };
+}
+
+/**
+ * Moves a device out of `devices_pending` and into `devices_queued`, writing one
+ * `queued` `patch_job_results` row per approved patch.
+ *
+ * The rows are what makes the deferred finalizer possible: approvals are
+ * re-evaluated continuously, so re-resolving them when the result lands days
+ * later could produce a different set than the one the device was actually
+ * handed. They are also the finalizer's idempotency key.
+ *
+ * Deliberately does NOT call `checkAndFinalizeJob`: a queued device leaves the
+ * job non-terminal by construction, and the counters below cannot bring
+ * `devicesPending + devicesQueued` to zero.
+ */
+async function recordDeviceQueued(
+  patchJobId: string,
+  deviceId: string,
+  approvedPatches: Awaited<ReturnType<typeof resolveApprovedPatchesForDevice>>,
+): Promise<void> {
+  for (const patch of approvedPatches) {
+    await db.insert(patchJobResults).values({
+      jobId: patchJobId,
+      deviceId,
+      patchId: patch.patchId,
+      status: 'queued',
+      startedAt: null,
+      completedAt: null,
+      rebootRequired: patch.requiresReboot,
+    });
+  }
+
+  await db
+    .update(patchJobs)
+    .set({
+      devicesPending: sql`${patchJobs.devicesPending} - 1`,
+      devicesQueued: sql`${patchJobs.devicesQueued} + 1`,
+    })
+    .where(eq(patchJobs.id, patchJobId));
 }
 
 async function pollForPatchCommandResult(commandId: string) {
@@ -1097,31 +1254,14 @@ async function pollForPatchCommandResult(commandId: string) {
 }
 
 /**
- * Shared per-patch success predicate (#4267, factoring the #4228 gate and the
- * `patch_job_results` row status onto one rule).
- *
- * The Windows agent's `results[]` entries (`patchCommandResultFields` in
- * `agent/internal/heartbeat/heartbeat.go`) carry a
- * `status: 'installed' | 'failed' | 'rolled_back'` field and never emit a
- * boolean `success` — so keying off `entry.success` alone (as the per-patch
- * `patch_job_results` write used to) leaves it permanently `undefined` and the
- * caller's `fallback` (the *batch's* overall status) wins for every patch. One
- * failed patch in a 13-patch batch then reads as 13 failures.
- *
- * `success` is still checked first, defensively, in case a future/alternate
- * agent build reports it directly. `fallback` covers only a payload with no
- * matching per-patch entry at all (unparsable stdout, or the lookup missed).
+ * Thin wrapper over the shared finalizer (#5128 W3). Everything that used to
+ * live here — result parsing, the per-patch `patch_job_results` writes, the
+ * #4228 reboot evaluation and the `patch_jobs` counters — moved to
+ * `services/patchJobFinalizer.ts` so the deferred doors (late agent result,
+ * delivery expiry, cancel, supersession) write exactly the same rows this
+ * synchronous path does. The context is passed in because this path already
+ * holds it and must not re-read the job.
  */
-function isPatchResultSuccessful(
-  entry: { success?: boolean; status?: string } | undefined,
-  fallback: boolean,
-): boolean {
-  if (entry === undefined) return fallback;
-  if (typeof entry.success === 'boolean') return entry.success;
-  if (entry.status) return entry.status === 'installed' || entry.status === 'rolled_back';
-  return fallback;
-}
-
 async function recordDeviceExecution(
   data: ExecutePatchJobDeviceData,
   prep: PreparedDeviceExecution,
@@ -1129,11 +1269,10 @@ async function recordDeviceExecution(
 ): Promise<unknown> {
   // orgId comes off the job payload and processExecuteDevice has already
   // asserted it matches the patch job's org before we get here, so it is safe to
-  // use as the cross-tenant guard for the reboot dispatch below.
+  // use as the cross-tenant guard for the reboot dispatch inside the finalizer.
   const { patchJobId, deviceId, orgId } = data;
   const { approvedPatches, targets } = prep;
 
-  // 5. Parse result and record outcomes
   const commandResult = finalCommand?.result as {
     stdout?: string;
     stderr?: string;
@@ -1141,208 +1280,43 @@ async function recordDeviceExecution(
     exitCode?: number;
   } | null;
 
-  let parsedResult: {
-    success?: boolean;
-    results?: Array<{
-      /** The agent's own patch reference (`patchCommandResultFields`), keyed
-       *  off `patches.id` server-side — NOT `patchId`, which the agent never
-       *  sends. Kept as a fallback in case a differently-shaped payload does. */
-      id?: string;
-      patchId?: string;
-      externalId?: string;
-      success?: boolean;
-      /** Agent's per-patch outcome: 'installed' | 'failed' | 'rolled_back'. */
-      status?: string;
-      error?: string;
-      rebootRequired?: boolean;
-    }>;
-    rebootRequired?: boolean;
-    installedCount?: number;
-    failedCount?: number;
-  } | null = null;
-
-  // A well-formed agent ALWAYS emits the install summary as JSON
-  // (`executePatchInstallCommand` marshals it on both the success and the
-  // failure return), so unparsable stdout is an anomaly, not a shrug. It also
-  // became load-bearing with #4228: the reboot decision is now read out of this
-  // payload, so a parse failure is the one way a genuine partial success can
-  // still look like "nothing installed". It must leave a trail.
-  let resultUnparsable = false;
-  if (commandResult?.stdout) {
-    try {
-      parsedResult = JSON.parse(commandResult.stdout);
-    } catch (err) {
-      resultUnparsable = true;
-      console.warn(
-        `[PatchJobExecutor] unparsable patch result stdout for job ${patchJobId} device ${deviceId}: ${String(err)}`
-      );
-      captureException(
-        new Error(
-          `[PatchJobExecutor] unparsable patch install result for job ${patchJobId} device ${deviceId}`
-        )
-      );
-    }
-  }
-
-  const overallSuccess = finalCommand?.status === 'completed' &&
-    (parsedResult?.success ?? true) &&
-    (typeof commandResult?.exitCode !== 'number' || commandResult.exitCode === 0);
-
-  // Did the run actually change anything on the device? Deliberately NOT
-  // `overallSuccess`: the agent returns Status "failed" / exit 1 the moment ONE
-  // patch in the batch fails, while the other twelve are installed and pending a
-  // reboot (#4228). `installedCount` is the agent's own count of successful
-  // installs/rollbacks; the per-patch array is the fallback for a payload that
-  // omits it. A total failure, or a command that never came back, leaves both
-  // empty.
-  const installedCount = parsedResult?.installedCount;
-  const anyPatchInstalled =
-    (typeof installedCount === 'number' && installedCount > 0) ||
-    (parsedResult?.results?.some((r) => isPatchResultSuccessful(r, false)) ?? false);
-
-  // The agent ORs `rebootRequired` across every SUCCESSFUL install, so a partial
-  // failure still carries an accurate value — use it verbatim, including a
-  // reported `false`.
-  //
-  // The fallback only covers a result we could not parse at all (non-JSON
-  // stdout, or no stdout). Reading the static `requiresReboot` flags off the
-  // approved set assumes every one of them installed, which is only sound for a
-  // success-shaped run: on a failed or timed-out command we have no idea which
-  // patches landed, so those flags must not manufacture a reboot.
-  const anyRebootRequired = parsedResult?.rebootRequired ??
-    (overallSuccess ? approvedPatches.some((p) => p.requiresReboot) : false);
-
-  // 6. Insert patchJobResults per patch
-  for (const patch of approvedPatches) {
-    // The agent echoes the id back as `id` (mirroring the `patches.id` this
-    // job sent it), not `patchId` — `r.patchId` matched here would always be
-    // undefined and this lookup would silently degrade to the `externalId`
-    // branch alone (#4267).
-    const perPatchResult = parsedResult?.results?.find(
-      (r) => r.id === patch.patchId || r.patchId === patch.patchId || r.externalId === patch.externalId
-    );
-
-    // Per-patch status, not the batch's aggregate status (#4267): a batch with
-    // one failure among twelve successes must record twelve `completed` rows
-    // and one `failed` row, not thirteen `failed` rows. `overallSuccess` is
-    // only the fallback for a patch with no matching per-patch entry at all.
-    const patchSuccess = isPatchResultSuccessful(perPatchResult, overallSuccess);
-
-    await db.insert(patchJobResults).values({
-      jobId: patchJobId,
-      deviceId,
-      patchId: patch.patchId,
-      status: !finalCommand ? 'failed' : patchSuccess ? 'completed' : 'failed',
-      startedAt: new Date(),
-      completedAt: finalCommand ? new Date() : null,
-      exitCode: commandResult?.exitCode ?? null,
-      output: perPatchResult?.error ?? commandResult?.stdout?.substring(0, 2000) ?? null,
-      errorMessage: !finalCommand
-        ? 'Command timed out'
-        : !patchSuccess
-          ? (perPatchResult?.error ?? commandResult?.error ?? commandResult?.stderr ?? null)
-          : null,
-      rebootRequired: perPatchResult?.rebootRequired ?? patch.requiresReboot,
-    });
-  }
-
-  // 7. Evaluate reboot policy
-  //
-  // This used to sit inside `if (overallSuccess)`. A 13-patch job with a single
-  // failed patch reports `success: false` / exit 1 from the agent, so the policy
-  // was never consulted at all and the reboot the other twelve installs needed
-  // was dropped — silently, with not one log line to explain the
-  // `Reboot Required: Yes` the UI kept showing (#4228). Whether a reboot is
-  // needed is a property of what actually installed, not of the job's aggregate
-  // status, so the policy is now evaluated whenever at least one patch landed.
-  //
-  // A run that installed NOTHING still skips: there is nothing to finalize, and
-  // an `always` policy would otherwise reboot a device the job never changed.
-  //
-  // Every branch below logs. The pre-#4228 silence is what made this bug
-  // invisible in production, so "no reboot" must be as traceable as a dispatch.
-  const rebootPolicy = targets?.deployment?.rebootPolicy ?? 'if_required';
-  const rebootLog = `[PatchJobExecutor] job ${patchJobId} device ${deviceId} reboot policy "${rebootPolicy}"`;
-
-  if (!overallSuccess && !anyPatchInstalled) {
-    // Say which of the two it is. "No patch installed" is a fact when the agent
-    // told us so; when its output was unparsable it is an assumption, and an
-    // operator chasing a device that did not reboot needs to tell them apart.
-    console.log(
-      `${rebootLog}: not evaluated — ${resultUnparsable
-        ? 'result unparsable, cannot confirm any install (see prior warning)'
-        : 'no patch installed successfully'} (rebootRequired=${anyRebootRequired})`
-    );
-  } else {
-    const rebootEval = await evaluateRebootPolicy(deviceId, rebootPolicy, anyRebootRequired);
-    if (!rebootEval.shouldReboot) {
-      console.log(
-        `${rebootLog}: no reboot — ${rebootEval.reason}${rebootEval.deferred ? ' (deferred)' : ''}`
-      );
-    } else {
-      // No delay passed: executeReboot resolves it from the device's effective
-      // patch policy (#3197). It used to default to 5 minutes, which reached
-      // none of the agent's warning thresholds, so the user got no notice.
-      const rebootResult = await executeReboot(deviceId, rebootEval.reason, {
-        expectedOrgId: orgId,
-        // #3207: a reboot fired inside a maintenance window may not be
-        // postponed past the close of that window. Null for every other policy.
-        windowEndsAt: rebootEval.windowEndsAt,
-      });
-      // A partially failed job that still reboots is the #4228 path — name it in
-      // the log so an operator reading "the job failed but the box rebooted" can
-      // tell intent from accident.
-      const partialSuffix = overallSuccess
-        ? ''
-        : ' (job partially failed; successfully installed patches still require a reboot)';
-      if (!rebootResult.success) {
-        // captureException, not just a console line: this is the post-patch
-        // reboot — the path #3197 is about — and a failure here leaves the device
-        // patched but never restarted while the job still records success. The
-        // maintenance-window path reports the structurally identical failure to
-        // Sentry, so this one must too.
-        console.warn(
-          `[PatchJobExecutor] reboot dispatch failed for device ${deviceId}: ${rebootResult.error}`
-        );
-        captureException(
-          new Error(
-            `[PatchJobExecutor] reboot dispatch failed for device ${deviceId}: ${rebootResult.error}`
-          )
-        );
-      } else {
-        console.log(
-          `${rebootLog}: scheduled reboot in ${rebootResult.delayMinutes}m — ${rebootEval.reason}${partialSuffix}`
-        );
-      }
-    }
-  }
-
-  // 8. Update job counters
-  if (overallSuccess) {
-    await db
-      .update(patchJobs)
-      .set({
-        devicesCompleted: sql`${patchJobs.devicesCompleted} + 1`,
-        devicesPending: sql`${patchJobs.devicesPending} - 1`,
-      })
-      .where(eq(patchJobs.id, patchJobId));
-  } else {
-    await db
-      .update(patchJobs)
-      .set({
-        devicesFailed: sql`${patchJobs.devicesFailed} + 1`,
-        devicesPending: sql`${patchJobs.devicesPending} - 1`,
-      })
-      .where(eq(patchJobs.id, patchJobId));
-  }
-
-  // 9. Check if this was the last device
-  await checkAndFinalizeJob(patchJobId);
+  const { applied } = await finalizePatchJobDevice({
+    patchJobId,
+    deviceId,
+    commandId: prep.commandId,
+    completedAt: new Date(),
+    terminal: {
+      kind: 'result',
+      commandResult: finalCommand
+        ? {
+            status: finalCommand.status,
+            exitCode: commandResult?.exitCode ?? null,
+            stdout: commandResult?.stdout ?? null,
+            stderr: commandResult?.stderr ?? null,
+            error: commandResult?.error ?? null,
+          }
+        : null,
+    },
+    context: {
+      orgId,
+      rebootPolicy: targets?.deployment?.rebootPolicy ?? 'if_required',
+      approvedPatches: approvedPatches.map(
+        (p): ApprovedPatchRef => ({
+          patchId: p.patchId,
+          externalId: p.externalId,
+          requiresReboot: p.requiresReboot,
+        }),
+      ),
+    },
+  });
 
   return {
     deviceId,
     patchCount: approvedPatches.length,
-    success: overallSuccess,
+    // A device already closed by another door (a cancel, or an expiry that
+    // raced the poll) is reported as not-applied rather than as a success.
+    success: applied && finalCommand?.status === 'completed',
+    applied,
   };
 }
 
@@ -1378,33 +1352,6 @@ async function markDeviceSkipped(
     .where(eq(patchJobs.id, patchJobId));
 
   await checkAndFinalizeJob(patchJobId);
-}
-
-async function checkAndFinalizeJob(patchJobId: string): Promise<void> {
-  const [job] = await db
-    .select({
-      status: patchJobs.status,
-      devicesPending: patchJobs.devicesPending,
-      devicesFailed: patchJobs.devicesFailed,
-    })
-    .from(patchJobs)
-    .where(eq(patchJobs.id, patchJobId))
-    .limit(1);
-
-  if (!job || job.status !== 'running') return;
-
-  if (job.devicesPending <= 0) {
-    const finalStatus = job.devicesFailed > 0 ? 'failed' : 'completed';
-    await db
-      .update(patchJobs)
-      .set({ status: finalStatus, completedAt: new Date() })
-      .where(
-        and(
-          eq(patchJobs.id, patchJobId),
-          eq(patchJobs.status, 'running')
-        )
-      );
-  }
 }
 
 // ============================================
@@ -1443,4 +1390,10 @@ export const __testOnly = {
   resetWedgedJobReporting(): void {
     reportedWedgedJobIds.clear();
   },
+  /**
+   * The per-device processor, without its BullMQ wrapper — so an integration
+   * test can drive the real prepare → dispatch → record path against real
+   * Postgres without a Redis connection.
+   */
+  processExecuteDevice,
 };

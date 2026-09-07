@@ -789,6 +789,12 @@ export const patchInlineSettingsSchema = z.object({
   scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
   scheduleDayOfMonth: z.number().int().min(1).max(28).default(1),
+  // #5128 W3: what a scheduled install does when the device is offline at
+  // dispatch. 'queue' (the default) persists the install_patches command with a
+  // delivery deadline of min(patch TTL, next occurrence) so it runs on the
+  // device's next check-in; 'skip' is the pre-#5128 behaviour of recording the
+  // device as skipped and moving on.
+  offlineBehavior: z.enum(['skip', 'queue']).default('queue'),
   rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window']).default('if_required'),
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
