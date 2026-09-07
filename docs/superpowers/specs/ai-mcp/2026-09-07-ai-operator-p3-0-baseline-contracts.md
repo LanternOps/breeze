@@ -810,9 +810,9 @@ cannot express a needed signal." Labels `roadmap`, `status:idea`, `priority:p3`.
 - `AI_AGENT_TRIGGER_KINDS = ['alert','manual','schedule','ticket','anomaly']`
   (`packages/shared/src/types/aiAgents.ts:19`). The DB CHECK was originally the four-value list
   (`apps/api/migrations/2026-09-02-ai-agents.sql:106`) and was dropped and re-added to admit
-  `'anomaly'` (`apps/api/migrations/2026-09-20-ai-agents-anomaly-pilot.sql:138-140`).
+  `'anomaly'` (`apps/api/migrations/2026-09-20-ai-agents-anomaly-pilot.sql:122-124`).
 - `ai_agent_runs.anomaly_incident_id` exists with its own index and immutable-guard coverage
-  (same migration, `:122-124`).
+  (same migration, `:138-140`).
 
 **Scope differences.**
 
