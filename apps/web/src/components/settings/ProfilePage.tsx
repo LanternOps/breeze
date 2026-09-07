@@ -808,6 +808,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // (the server calls resolveEnrollmentStepUp there with
       // `passwordAlreadyProven`), so re-sending the plaintext password would be
       // a second exposure buying nothing.
+      // Captured before the requests so a logout that races them is detectable
+      // when the replacement session comes back (#5038).
+      const generation = useAuthStore.getState().sessionGeneration;
       const optionsProof = isPasswordless
         ? { ssoReauthGrantId }
         : { currentPassword: passkeyPassword };
@@ -842,6 +845,18 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         );
       }
 
+      // #5038: registering a passkey rotates the SESSION too — the API advances
+      // mfa_epoch and revokes every refresh family so no OTHER session survives
+      // the account's factor set changing, and hands this caller a replacement
+      // in the same response. Adopt it (the refresh/CSRF cookies came with it);
+      // keeping the pre-registration token means the next request 401s on the
+      // stale `mep`, its refresh fails against a revoked family, and the user is
+      // bounced to /login?reason=session-expired by the very action they just
+      // took. A refused commit (a logout raced the request) is not an error —
+      // the passkey is already registered, so success still has to be shown.
+      if (verifyData.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
+      }
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
@@ -902,6 +917,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
       return;
     }
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMutatingPasskeyId(passkeyId);
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
@@ -911,6 +928,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error ?? data.message ?? t('profilePage.failedToDeletePasskeyHttp', { status: response.status }));
+      }
+      // #5038: same contract as registration above — deleting a factor rotates
+      // the caller's session rather than evicting it.
+      if (data.tokens?.accessToken) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
       }
       setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
