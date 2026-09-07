@@ -2,8 +2,9 @@
 title: AI Operator P3-0a, adapter contracts, recipe cards, terminal-writer inventory, legacy-trigger sunset list
 date: 2026-09-07
 status: P3-0a deliverable for LanternOps/breeze#5205 (wave #5206)
-spec: ./2026-09-07-ai-operator-completion-design.md
-plan: ../../plans/ai-mcp/2026-09-07-ai-operator-completion.md
+spec: docs/superpowers/specs/ai-mcp/2026-09-07-ai-operator-completion-design.md
+plan: docs/superpowers/plans/ai-mcp/2026-09-07-ai-operator-completion.md
+spec_plan_note: Both land with PR #5204, which was still unmerged when this wave ran. The paths resolve once #5204 reaches main.
 baseline_commit: 89b059f12ff82a13aa930a13ddee25bb14c03c69
 ---
 
@@ -32,11 +33,11 @@ change. Section 11 lists nineteen corrections to the spec and plan.
 
 ## 1. Typed execution adapter contract
 
-The adapter is the seam between a task step and a domain executor. It exists because four facts
-are distinct (spec §6.5) and today's code collapses them: for the thin slice's service restart,
-`action_intents.status = 'completed'` means *the tool call returned*, which for a device command
-means *dispatch was accepted and a result was polled for up to 30 seconds*, not that the domain
-operation finished, and certainly not that the task criterion is verified.
+The adapter is the seam between a task step and a domain executor. It exists because spec §6.5's
+four facts are distinct and today's code collapses them. Take the thin slice's service restart.
+`action_intents.status = 'completed'` means only that the tool call returned. For a device command
+that means dispatch was accepted and a result was polled for up to 30 seconds. It does not mean the
+domain operation finished, and it certainly does not mean the task criterion is verified.
 
 ### 1.1 Interface sketch
 
@@ -55,7 +56,7 @@ export interface OperationIdentity {
   workflowKey: string;
   workflowVersion: number;
   planRevision: number;
-  /** computeArgumentDigest(canonicalizeArguments(args)) — intentService.ts:1180-1181. */
+  /** computeArgumentDigest(canonicalizeArguments(args)); intentService.ts:1180-1181. */
   argumentDigest: string;
 }
 
@@ -162,7 +163,7 @@ const ServiceRecoveryInput = z.object({
   serviceName: z.string().min(1).max(255),
   /** Frozen at admission. The alert whose recovery is half the success criterion. */
   triggeringAlertId: z.string().uuid().nullable(),
-  /** Recipe-bounded; §7.2 caps mutation attempts per target at 3 across all runs. */
+  /** Recipe-bounded; spec §7.2 caps mutation attempts per target at 3 across all runs. */
   maxRestartAttempts: z.number().int().min(1).max(2).default(1),
 });
 ```
@@ -710,7 +711,7 @@ that a task-linked admission never produces a null `operation_key`.
 shape 1 with `breeze_has_org_access(org_id)` (`apps/api/migrations/2026-07-18-action-intents.sql:130-146`).
 But `action_intents` is already in `CORE_TENANT_EXPORT_POLICY`
 (`apps/api/src/services/tenantExportPolicyRegistry.ts:44`), so **three new columns must be classified
-in the same PR** or Integration Tests goes red. All three are `included` (§8.3). This is the
+in the same PR** or Integration Tests goes red. All three are `included` (§8.4). This is the
 column-not-table trap CLAUDE.md calls out. VERIFIED.
 
 ### 5.4 Blocking question, answered
@@ -1230,7 +1231,7 @@ is only the concurrent one. The spec should say which does which.
 **C8, the same-task relaxation crosses a documented invariant and needs a paired recheck.**
 `intentService.ts:1182-1185` ties run scoping to the release path evaluating the originating run's
 immutable policy snapshot. Relaxing `:1527` for same-task runs means a later run can release under
-an earlier run's snapshot, which §7.1's "tightening takes effect immediately" forbids. The
+an earlier run's snapshot, which spec §7.1's "tightening takes effect immediately" forbids. The
 relaxation must ship with a live-authority recheck at the dispatch claim (§5.3, H3).
 
 **C9, there is no "fresh within N minutes" parameter today.** The plan's recipe-card bullet asks
