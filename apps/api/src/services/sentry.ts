@@ -376,6 +376,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // PAYMENT_PUSH_MAX_ATTEMPTS, and a delete row's counter only ever reaches the
   // low thousands before an operator has to intervene.
   'sync_attempts',
+  // Intuit's numeric fault code off a failed QuickBooks call (`'5010'`,
+  // `'6000'`, `'610'`, or the literal `none`). `scrubEvent` deletes
+  // `message`/`extra`, so without it every QuickBooks rejection arrives as an
+  // indistinguishable "the sync failed" — and the code is exactly what separates
+  // a stale token (retry) from a business-validation refusal (an operator has to
+  // fix something). A closed set by construction: Intuit's published fault
+  // codes, parsed as `\d{1,6}` and never free text. The fault's `Message` and
+  // `Detail` are deliberately NOT tagged — `Detail` names the offending
+  // customer and amount, and it never leaves the server log.
+  'qbo_fault_code',
   // #3860: which translation key `tApi` could not resolve. By convention keys
   // are hardcoded `ns:dotted.path` literals at the call site, which keeps the
   // set bounded — `tApi` types `key` as `string`, so this is a convention, not

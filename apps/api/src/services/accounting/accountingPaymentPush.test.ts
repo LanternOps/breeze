@@ -1354,6 +1354,36 @@ describe('pushPaymentToAccounting', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
+  it('names the QuickBooks FAULT CLASS on the card, and logs status+body server-side only', async () => {
+    // Status alone told an operator only that something was rejected. The fault
+    // class is what separates "the token is stale" (retry) from "business
+    // validation refused it" (someone has to fix something). `Detail` — where
+    // Intuit puts the offending customer and amount — must never reach the card
+    // or Sentry, only the server log.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      createPaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), {
+        status: 400,
+        body: '{"Fault":{"Error":[{"code":"6000","Message":"Business Validation Error","Detail":"Customer Acme owes 4200.00"}]}}',
+        qboFaultCode: '6000',
+        qboFaultMessage: 'Business Validation Error',
+      }));
+
+      await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
+
+      expect(mapping()!.lastError)
+        .toBe('QuickBooks rejected the payment sync (HTTP 400: Business Validation Error)');
+      expect(mapping()!.lastError).not.toContain('Acme');
+      // Tagged for Sentry with the CODE only.
+      expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({ qbo_fault_code: '6000' });
+      expect(JSON.stringify(captureExceptionMock.mock.calls[0]![2])).not.toContain('Acme');
+      // ...and the raw body reaches the server log, which is the only place it does.
+      expect(errorSpy.mock.calls.flat().join(' ')).toContain('Acme');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('is record_failed (terminal for THIS attempt) when phase 2 cannot record the result', async () => {
     createPaymentMock.mockImplementationOnce(async () => {
       // The mapping row disappears between the create and phase 2. Since
@@ -1520,6 +1550,32 @@ describe('pushPaymentToAccounting', () => {
       pendingOp: 'push', pushGeneration: 1,
       // Re-armed: the terminal state is cleared with the ownership.
       terminalReason: null,
+    });
+  });
+
+  it.each([
+    ['40P01', 'deadlock detected'],
+    ['40001', 'could not serialize access due to concurrent update'],
+  ])('treats a %s phase-2 failure as RETRYABLE, not record_failed', async (code, text) => {
+    // A deadlock or serialization failure means "try again", not "QuickBooks has
+    // an orphan". Classifying it `record_failed` burned a slot of the orphan
+    // budget and, at the bound, retired a perfectly recoverable row — declaring
+    // an orphan that does not exist and blocking the re-own that would have
+    // fixed it. Postgres raises both under concurrency the lock ordering is
+    // designed to survive.
+    createPaymentMock.mockImplementationOnce(async () => {
+      updateMock.mockImplementationOnce(() => {
+        throw Object.assign(new Error(text), { code });
+      });
+      return { id: '181', syncToken: '0' };
+    });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', // still owed, so the sweep retries it
+      terminalReason: null,
+      recordFailedCount: 0, // and the orphan budget is untouched
     });
   });
 

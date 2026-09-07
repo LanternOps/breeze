@@ -1199,6 +1199,32 @@ describe('deletePayment', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['an empty body', {}],
+    ['a Payment with neither an Id nor a Deleted status', { Payment: {} }],
+    // The two the AND let through: each carries ONE of the two signals.
+    ['a Payment with an Id but no Deleted status', { Payment: { Id: '181' } }],
+    ['a Payment with an Id and a non-Deleted status', { Payment: { Id: '181', status: 'Pending' } }],
+    ['a Deleted status with no Id', { Payment: { status: 'Deleted' } }],
+  ])('refuses to report success on a 2xx with %s', async (_label, body) => {
+    // The guard read `!Id && status !== 'Deleted'` — an AND, so a body carrying
+    // an Id but no `Deleted` status (or vice versa) passed. Its own comment says
+    // a 2xx that does not actually confirm the delete must not be success, and
+    // that is an OR: BOTH signals have to be absent before Breeze believes it.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(body));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .rejects.toThrow(/did not confirm deletion/);
+  });
+
+  it('accepts a 2xx that confirms with an Id AND a Deleted status', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('deleted');
+  });
+
   it('treats an Object Not Found fault as success — the desired end state already holds', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }),
@@ -1206,6 +1232,55 @@ describe('deletePayment', () => {
     ));
     await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
       .resolves.toBe('already_absent');
+  });
+
+  it('still re-reads the SyncToken when the fault code sits PAST the 500-char body cap', async () => {
+    // `qboRequest` truncates `body` to 500 chars for storage, and the
+    // classifiers used to regex that truncated text — so a fault whose code sat
+    // behind a long `Detail` read as "not a stale object", the re-read never
+    // fired, and the delete failed permanently on a fault designed to be
+    // retried. The classification is taken from the FULL text.
+    const padded = JSON.stringify({
+      Fault: { Error: [{ Detail: 'D'.repeat(900), code: '5010', Message: 'Stale Object Error' }] },
+    });
+    expect(padded.indexOf('5010')).toBeGreaterThan(500); // the fixture is the point
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(padded, { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('deleted');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('classifies a CODE-only fault (no Message) as already_absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '610' }] } }), { status: 400 },
+    ));
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('already_absent');
+  });
+
+  it('classifies a MESSAGE-only fault (no code) as already_absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ Message: 'Object Not Found' }] } }), { status: 400 },
+    ));
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('already_absent');
+  });
+
+  it('classifies a MESSAGE-only stale fault (no code) and re-reads the token', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ Message: 'Stale Object Error' }] } }), { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', status: 'Deleted' } }));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('deleted');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it('re-reads the SyncToken ONCE on a stale-object fault and retries the delete', async () => {

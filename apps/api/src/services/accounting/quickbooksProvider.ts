@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
+import { parseQboFault, qboFaultOf } from './quickbooksFault';
 import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -260,10 +261,11 @@ function isDeletedOrVoidedInvoice(raw: QboRawCdcInvoice): boolean {
 }
 
 /**
- * `qboRequest` attaches `{ status, body }` (body truncated to 500 chars) to a
- * non-2xx error. Intuit's fault CODES are the stable signal — the Message text
- * is localized and has changed between minor versions — so match the code first
- * and keep the text as a belt-and-braces fallback.
+ * `qboRequest` attaches `{ status, body, qboFaultCode, qboFaultMessage }` to a
+ * non-2xx error, the last two parsed from the FULL response text before `body`
+ * is truncated for storage. Intuit's fault CODES are the stable signal — the
+ * Message text is localized and has changed between minor versions — so match
+ * the code first and keep the text as a belt-and-braces fallback.
  */
 function qboFaultBody(err: unknown): string {
   return err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
@@ -273,14 +275,22 @@ function qboFaultBody(err: unknown): string {
 
 /** QBO fault 610 — the object does not exist (already deleted, or never was). */
 function isQboObjectNotFound(err: unknown): boolean {
+  const fault = qboFaultOf(err);
+  if (fault.code === '610') return true;
+  if (fault.message && /Object Not Found/i.test(fault.message)) return true;
+  // Fallback for an error that did not come through `qboRequest` (a hand-built
+  // fixture, a future caller). The truncated body is all there is then.
   const body = qboFaultBody(err);
-  return /"code"\s*:\s*"610"/.test(body) || /Object Not Found/i.test(body);
+  return /"code"\s*:\s*"?610"?/.test(body) || /Object Not Found/i.test(body);
 }
 
 /** QBO fault 5010 — the object exists but our SyncToken is behind. */
 function isQboStaleObject(err: unknown): boolean {
+  const fault = qboFaultOf(err);
+  if (fault.code === '5010') return true;
+  if (fault.message && /Stale Object/i.test(fault.message)) return true;
   const body = qboFaultBody(err);
-  return /"code"\s*:\s*"5010"/.test(body) || /Stale Object/i.test(body);
+  return /"code"\s*:\s*"?5010"?/.test(body) || /Stale Object/i.test(body);
 }
 
 /** The two entities Phase D reconciles. */
@@ -969,8 +979,12 @@ export class QuickbooksProvider implements AccountingProvider {
       { method: 'POST', body: JSON.stringify({ Id: remotePaymentId, SyncToken: syncToken }) },
     );
     // Same discipline as createPayment: a 2xx with a body that does not
-    // actually confirm the delete must not be reported as success.
-    if (!parsed.Payment?.Id && parsed.Payment?.status !== 'Deleted') {
+    // actually confirm the delete must not be reported as success. BOTH signals
+    // are required, so this is an OR — the AND it used to be accepted a body
+    // carrying only one of them (an Id with no `Deleted` status is what QBO
+    // returns for an ordinary READ, which is exactly the response a mis-routed
+    // request would produce) and reported a delete that never happened.
+    if (!parsed.Payment?.Id || parsed.Payment?.status !== 'Deleted') {
       throw new Error('QuickBooks payment delete response did not confirm deletion');
     }
   }
@@ -1188,7 +1202,27 @@ export class QuickbooksProvider implements AccountingProvider {
     const text = await response.text();
     if (!response.ok) {
       const error = new Error(`${operation} failed with ${response.status}`);
-      Object.assign(error, { status: response.status, body: text.slice(0, 500) });
+      // The fault is read off the FULL text and carried as its own fields;
+      // `body` stays truncated for storage. Classifying on the truncated body
+      // was the bug: a fault whose `code` sat behind a long `Detail` read as
+      // "not a stale object", so the SyncToken re-read never fired and the write
+      // failed permanently on a fault designed to be retried.
+      const fault = parseQboFault(text);
+      Object.assign(error, {
+        status: response.status,
+        body: text.slice(0, 500),
+        qboFaultCode: fault.code ?? undefined,
+        qboFaultMessage: fault.message ?? undefined,
+      });
+      // Server log only — `body` can carry Intuit's `Detail`, which names the
+      // offending customer/amount. It never reaches Sentry (scrubbed) or a
+      // mapping card (only the fault CLASS does).
+      console.error(
+        `[quickbooksProvider] ${operation} failed`,
+        `status=${response.status}`,
+        `faultCode=${fault.code ?? 'none'}`,
+        `body=${text.slice(0, 500)}`,
+      );
       throw error;
     }
     try {

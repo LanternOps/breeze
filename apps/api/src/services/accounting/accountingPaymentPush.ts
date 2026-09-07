@@ -84,6 +84,7 @@ import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // 2-decimal exponent misstates a JPY or KWD total (multi-currency §11).
 // `@breeze/shared` is a leaf package, so this closes no cycle.
 import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
+import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
 import { getAccountingProvider } from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -273,11 +274,62 @@ type PaymentRow = typeof invoicePayments.$inferSelect;
 
 const SYNCED_INVOICE_STATUSES = new Set(['synced', 'synced_with_tax_variance']);
 
-function sanitizePaymentSyncErrorMessage(err: unknown): string {
-  const status = err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
+function providerStatusOf(err: unknown): number | undefined {
+  return err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
     ? (err as { status: number }).status
     : undefined;
-  return status ? `QuickBooks rejected the payment sync (HTTP ${status})` : 'QuickBooks rejected the payment sync';
+}
+
+/**
+ * What the operator sees on the mapping card.
+ *
+ * Carries Intuit's fault CLASS ("Business Validation Error", "Stale Object
+ * Error") beside the status: the status alone said only that something was
+ * rejected, which is not enough to act on. It never carries `Detail` — that is
+ * where Intuit puts the offending customer names and amounts, and this string is
+ * persisted and rendered.
+ */
+function sanitizePaymentSyncErrorMessage(err: unknown): string {
+  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
+  return `QuickBooks rejected the payment sync${suffix}`;
+}
+
+/**
+ * The provider's own status and body, to the SERVER LOG only.
+ *
+ * `scrubEvent` deletes `message`/`extra` from every Sentry event and the body
+ * can carry `Detail`, so this is the one place the raw fault survives — which is
+ * what turns "QuickBooks rejected it" into something an engineer can diagnose.
+ */
+function logProviderFault(operation: string, mappingId: string, err: unknown): void {
+  const body = err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
+    ? (err as { body: string }).body
+    : '';
+  console.error(
+    `[accountingPaymentPush] ${operation} failed`,
+    `mappingId=${mappingId}`,
+    `status=${providerStatusOf(err) ?? 'none'}`,
+    `faultCode=${qboFaultOf(err).code ?? 'none'}`,
+    `body=${body}`,
+  );
+}
+
+/**
+ * Postgres SQLSTATEs that mean "try again", not "this failed".
+ *
+ * `40P01` deadlock and `40001` serialization failure are the two the engine
+ * raises under exactly the concurrency this coordinator's lock ordering is
+ * designed to survive — an invoice locked in the other order, a concurrent
+ * `recordPayment`. Phase 2 classified them `record_failed`, which is the most
+ * expensive misreading available: it burns a slot of the orphan budget and, at
+ * the bound, declares an orphan that does not exist and blocks the re-own that
+ * would have fixed it. Retryable instead, so the sweep simply comes back.
+ */
+const RETRYABLE_PG_CODES: ReadonlySet<string> = new Set(['40P01', '40001']);
+
+function isRetryablePgError(err: unknown): boolean {
+  const code = err && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && RETRYABLE_PG_CODES.has(code);
 }
 
 /** `resolveConnection`/`resolveLiveConnection` throw the mapping-service error
@@ -1588,10 +1640,12 @@ export async function pushPaymentToAccounting(
     ref = await runOutsideDbContext(() => provider.createPayment(liveConn, prep.payload));
   } catch (err) {
     const message = sanitizePaymentSyncErrorMessage(err);
+    logProviderFault('createPayment', mappingId, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingPaymentPush',
       accounting_mapping_id: mappingId,
       invoice_payment_id: prep.payload.invoicePaymentId,
+      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Own short context so the marker COMMITS before the throw. `pending_op` is
     // KEPT: the work is still owed and the sweep must retry it.
@@ -1715,6 +1769,17 @@ export async function pushPaymentToAccounting(
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingPaymentPush', accounting_mapping_id: mappingId, remote_entity_id: ref.id,
     });
+    if (isRetryablePgError(dbErr)) {
+      // A deadlock or serialization failure: the write did not land, but nothing
+      // about it says QuickBooks holds an orphan. Keep `pending_op`, leave the
+      // orphan budget alone, and let the sweep retry — the same requestid
+      // replays QuickBooks' original response, so the retry is free.
+      const retryMessage = 'A database conflict interrupted recording the QuickBooks payment; it will be retried';
+      await markPaymentMappingErrorInOwnContext(
+        runInDbContext, mappingId, partnerId, retryMessage, { clearPendingOp: false },
+      );
+      throw new AccountingPaymentPushError('quickbooks_error', 502, retryMessage);
+    }
     const message = paymentRecordFailedRetryMessage(ref.id);
     // `pending_op` is KEPT AT 'push', deliberately, even though QuickBooks already
     // holds the Payment (review finding 1). Clearing it produced a row that was
@@ -1923,6 +1988,7 @@ export async function deletePaymentInAccounting(
     }));
   } catch (err) {
     const message = sanitizePaymentSyncErrorMessage(err);
+    logProviderFault('deletePayment', mappingId, err);
     // `pending_op` KEPT and NEVER capped: the mapping is never cleared until
     // QuickBooks confirms, which is what makes a delete survive Redis failure
     // and exhausted retries. The stamp runs FIRST so its attempt count can
@@ -1938,6 +2004,7 @@ export async function deletePaymentInAccounting(
         service: 'accountingPaymentPush',
         accounting_mapping_id: mappingId,
         remote_entity_id: prep.remotePaymentId,
+        qbo_fault_code: qboFaultOf(err).code ?? 'none',
         // Sentry tags are strings; `unknown` means the stamp itself could not be
         // written, so the event is raised rather than suppressed.
         sync_attempts: attempts === null ? 'unknown' : String(attempts),

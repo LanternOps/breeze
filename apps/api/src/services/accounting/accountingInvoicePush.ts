@@ -62,6 +62,7 @@ import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, n
 import { getAccountingProvider } from './providerRegistry';
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
+import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   INVOICE_REMOTE_DELETED_ERROR,
@@ -356,11 +357,32 @@ function translateNestedSyncError(err: unknown): never {
 // persistRemoteRef / upsertMappingRow unique-violation handling).
 // ---------------------------------------------------------------------------
 
-function sanitizeInvoiceSyncErrorMessage(err: unknown): string {
-  const status = err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
+function providerStatusOf(err: unknown): number | undefined {
+  return err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
     ? (err as { status: number }).status
     : undefined;
-  return status ? `QuickBooks rejected the invoice sync (HTTP ${status})` : 'QuickBooks rejected the invoice sync';
+}
+
+/** Carries Intuit's fault CLASS beside the status, never `Detail` — see
+ *  `sanitizePaymentSyncErrorMessage` for the full reasoning. */
+function sanitizeInvoiceSyncErrorMessage(err: unknown): string {
+  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
+  return `QuickBooks rejected the invoice sync${suffix}`;
+}
+
+/** The provider's status and body to the SERVER LOG only — the one place the
+ *  raw fault survives `scrubEvent`. */
+function logProviderFault(operation: string, mappingId: string, err: unknown): void {
+  const body = err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
+    ? (err as { body: string }).body
+    : '';
+  console.error(
+    `[accountingInvoicePush] ${operation} failed`,
+    `mappingId=${mappingId}`,
+    `status=${providerStatusOf(err) ?? 'none'}`,
+    `faultCode=${qboFaultOf(err).code ?? 'none'}`,
+    `body=${body}`,
+  );
 }
 
 async function markInvoiceMappingError(mappingId: string, partnerId: string, message: string): Promise<void> {
@@ -781,8 +803,12 @@ export async function pushInvoiceToAccounting(
     result = await runOutsideDbContext(() => providerImpl.pushInvoice(liveConn, payload, lineMappings));
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
+    logProviderFault('pushInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: inv.id,
+      service: 'accountingInvoicePush',
+      accounting_mapping_id: mappingRow.id,
+      invoice_id: inv.id,
+      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Phase 2 (failure) — own short context so the marker COMMITS before the throw.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
@@ -961,8 +987,12 @@ export async function voidInvoiceInAccounting(
     voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
+    logProviderFault('voidInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
+      service: 'accountingInvoicePush',
+      accounting_mapping_id: mappingRow.id,
+      invoice_id: invoiceId,
+      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Own short context so the marker COMMITS before the throw below.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
