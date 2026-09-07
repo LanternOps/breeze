@@ -1349,7 +1349,7 @@
     "providers": {
       "umbrella": {
         "label": "Cisco Umbrella",
-        "helpText": "API key + secret from the Umbrella Reporting API; organizationId from your Umbrella dashboard URL.",
+        "helpText": "API key + secret from an Umbrella API Keys credential. Organization ID is optional — the token itself scopes the org.",
         "apiKeyPlaceholder": "reporting-api-key",
         "apiSecretPlaceholder": "reporting-api-secret",
         "organizationIdPlaceholder": "1234567"
