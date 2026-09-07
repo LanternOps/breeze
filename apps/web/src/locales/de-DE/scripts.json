@@ -690,7 +690,8 @@
       "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
-      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     }
   },
   "executionHistory": {
@@ -718,7 +719,8 @@
       "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
       "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
       "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
-      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen",
+      "queuedOffline": "In Warteschlange — Gerät offline"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -927,6 +929,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist"
     }
   },
   "secretParameters": {

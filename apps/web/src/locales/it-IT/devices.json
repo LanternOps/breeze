@@ -1860,8 +1860,8 @@
       "alreadyPendingTail": "Già in sospeso",
       "bulkActionFailed": "Azione in blocco non riuscita",
       "bulkAllDecommissioned": "Tutti i {{total}} dispositivi selezionati sono già rimossi.",
-      "bulkCommandPartialFailed": "Comando in blocco parzialmente non riuscito",
-      "bulkCommandSent": "Comando in blocco inviato",
+      "bulkCommandPartialFailed": "{{action}} inviato a {{count}} dispositivo/i{{queuedTail}}{{skippedTail}}; {{failed}} non riusciti: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} inviato a {{count}} dispositivo/i{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Rimozione non riuscita per tutti i {{count}} dispositivi: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} dispositivo(i) rimosso(i); {{failed}} non riusciti: {{devices}}",
       "bulkDecommissioned": "{{count}} dispositivo(i) rimosso(i)",
@@ -1912,7 +1912,10 @@
       "unknownAction": "Azione sconosciuta",
       "unknownBulkAction": "Azione in blocco sconosciuta",
       "wakeSentWatching": "Richiesta di riattivazione inviata, monitoraggio in corso",
-      "wakeTimeout": "Timeout della riattivazione"
+      "wakeTimeout": "Timeout della riattivazione",
+      "queuedOfflineTail": ", {{count}} in coda per dispositivi offline",
+      "runsWhenOnline": "Viene eseguito quando il dispositivo è online — scade il {{date}}",
+      "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online"
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",
@@ -2656,5 +2659,17 @@
       "manufacturer": "Produttore"
     },
     "identityConflictNote": "Gli identificatori di questa riga puntano a dispositivi diversi e non possono essere importati così come sono — correggi il file e riesegui l'anteprima. I candidati qui sotto sono mostrati solo come riferimento."
+  },
+  "queuedActions": {
+    "title": "Azioni in coda",
+    "system": "Sistema",
+    "aUser": "un utente",
+    "requestedBy": "Richiesto da {{who}}",
+    "expires": "Scade il {{date}}",
+    "cancel": "Annulla",
+    "cancelled": "Azione in coda annullata",
+    "cancelFailed": "Impossibile annullare l'azione in coda",
+    "loadFailed": "Impossibile caricare le azioni in coda.",
+    "empty": "Nessuna azione in coda"
   }
 }

@@ -1860,8 +1860,8 @@
       "alreadyPendingTail": "Já estava pendente",
       "bulkActionFailed": "Falha na ação em massa",
       "bulkAllDecommissioned": "Todos os {{total}} dispositivos selecionados já estão removidos.",
-      "bulkCommandPartialFailed": "Falha parcial no comando em massa",
-      "bulkCommandSent": "Comando em massa enviado",
+      "bulkCommandPartialFailed": "{{action}} enviado para {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}; {{failed}} falharam: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} enviado para {{count}} dispositivo(s){{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Falha ao remover todos os {{count}} dispositivos: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} dispositivo(s) removido(s); {{failed}} com falha: {{devices}}",
       "bulkDecommissioned": "{{count}} dispositivo(s) removido(s)",
@@ -1900,7 +1900,6 @@
       "networkSkipped_one": "1 dispositivo de rede ignorado — esta ação se aplica apenas a dispositivos com agente.",
       "networkSkipped_other": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
       "networkSkipped": "{{count}} dispositivos de rede ignorados — esta ação se aplica apenas a dispositivos com agente.",
-      "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "permanentDeleteCancelled": "Exclusão permanente cancelada",
       "permanentDeleting": "Excluindo permanentemente {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} excluído permanentemente",
@@ -1913,7 +1912,10 @@
       "unknownAction": "Ação desconhecida",
       "unknownBulkAction": "Ação em massa desconhecida",
       "wakeSentWatching": "Comando de despertar enviado; aguardando",
-      "wakeTimeout": "Tempo limite do despertar excedido"
+      "wakeTimeout": "Tempo limite do despertar excedido",
+      "queuedOfflineTail": ", {{count}} na fila para dispositivos offline",
+      "runsWhenOnline": "Executa quando o dispositivo estiver online — expira em {{date}}",
+      "runsWhenOnlineNoExpiry": "Executa quando o dispositivo estiver online"
     },
     "tryAgain": "Tentar novamente",
     "unknownDevice": "Desconhecido",
@@ -2657,5 +2659,17 @@
       "manufacturer": "Fabricante"
     },
     "identityConflictNote": "Os identificadores desta linha apontam para dispositivos diferentes e não podem ser importados como estão — corrija o arquivo e execute a pré-visualização novamente. Os candidatos abaixo são mostrados apenas como referência."
+  },
+  "queuedActions": {
+    "title": "Ações na fila",
+    "system": "Sistema",
+    "aUser": "um usuário",
+    "requestedBy": "Solicitado por {{who}}",
+    "expires": "Expira em {{date}}",
+    "cancel": "Cancelar",
+    "cancelled": "Ação na fila cancelada",
+    "cancelFailed": "Falha ao cancelar a ação na fila",
+    "loadFailed": "Não foi possível carregar as ações na fila.",
+    "empty": "Nenhuma ação na fila"
   }
 }

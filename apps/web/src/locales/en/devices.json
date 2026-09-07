@@ -1861,8 +1861,8 @@
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",
       "bulkAllDecommissioned": "All {{total}} selected device(s) are already removed.",
-      "bulkCommandPartialFailed": "Bulk Command Partial Failed",
-      "bulkCommandSent": "Bulk Command Sent",
+      "bulkCommandPartialFailed": "{{action}} sent to {{count}} device(s){{queuedTail}}{{skippedTail}}; {{failed}} failed: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} sent to {{count}} device(s){{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Failed to remove all {{count}} device(s): {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} device(s) removed; {{failed}} failed: {{devices}}",
       "bulkDecommissioned": "{{count}} device(s) removed",
@@ -1905,7 +1905,10 @@
       "permanentDeleteCancelled": "Permanent Delete Cancelled",
       "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} permanently deleted",
+      "queuedOfflineTail": ", {{count}} queued for offline devices",
       "restored": "Restored",
+      "runsWhenOnline": "Runs when the device is online — expires {{date}}",
+      "runsWhenOnlineNoExpiry": "Runs when the device is online",
       "scriptQueueFailed": "Script Queue Failed",
       "scriptQueuedMany": "Script Queued Many",
       "scriptQueuedOne": "Script Queued One",
@@ -2381,6 +2384,18 @@
       "untagged": "Untagged"
     },
     "label": "Quick filters"
+  },
+  "queuedActions": {
+    "title": "Queued actions",
+    "system": "System",
+    "aUser": "a user",
+    "requestedBy": "Requested by {{who}}",
+    "expires": "Expires {{date}}",
+    "cancel": "Cancel",
+    "cancelled": "Queued action cancelled",
+    "cancelFailed": "Failed to cancel queued action",
+    "loadFailed": "Couldn't load queued actions.",
+    "empty": "No queued actions"
   },
   "savedViewsMenu": {
     "applyTitle": "Apply \"{{name}}\"",

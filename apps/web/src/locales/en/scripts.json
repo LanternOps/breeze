@@ -685,6 +685,7 @@
       "failed": "Failed",
       "timeout": "Timeout",
       "queued": "Queued",
+      "queuedOffline": "Queued — device offline",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -713,6 +714,7 @@
       "failed": "Failed",
       "timeout": "Timeout",
       "queued": "Queued",
+      "queuedOffline": "Queued — device offline",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -856,6 +858,9 @@
     "errors": {
       "selectDevice": "Please select at least one device",
       "executionFailed": "Execution failed"
+    },
+    "toasts": {
+      "runsWhenOnline": "Runs when the device is online"
     },
     "title": "Execute Script",
     "fields": {

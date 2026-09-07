@@ -690,7 +690,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     }
   },
   "executionHistory": {
@@ -718,7 +719,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -927,6 +929,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "S'exécute quand l'appareil est en ligne"
     }
   },
   "secretParameters": {

@@ -1860,8 +1860,8 @@
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
       "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",
-      "bulkCommandPartialFailed": "Toplu Komut Kısmi Başarısız",
-      "bulkCommandSent": "Toplu Komut Gönderildi",
+      "bulkCommandPartialFailed": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
+      "bulkCommandSent": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
       "bulkDecommissioned": "{{count}} cihaz çıkarıldı",
@@ -1900,7 +1900,6 @@
       "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
-      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
@@ -1913,7 +1912,10 @@
       "unknownAction": "Bilinmeyen Eylem",
       "unknownBulkAction": "Bilinmeyen Toplu İşlem",
       "wakeSentWatching": "Uyandırma İzlemeye Gönderildi",
-      "wakeTimeout": "Uyanma Zaman Aşımı"
+      "wakeTimeout": "Uyanma Zaman Aşımı",
+      "queuedOfflineTail": ", {{count}} çevrimdışı cihaz için sıraya alındı",
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır — son geçerlilik: {{date}}",
+      "runsWhenOnlineNoExpiry": "Cihaz çevrimiçi olduğunda çalışır"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
@@ -2657,5 +2659,17 @@
       "manufacturer": "Üretici"
     },
     "identityConflictNote": "Bu satırın tanımlayıcıları farklı cihazları işaret ediyor ve olduğu gibi içe aktarılamaz — dosyayı düzeltin ve önizlemeyi yeniden çalıştırın. Aşağıdaki adaylar yalnızca referans için gösterilmektedir."
+  },
+  "queuedActions": {
+    "title": "Sıradaki eylemler",
+    "system": "Sistem",
+    "aUser": "bir kullanıcı",
+    "requestedBy": "{{who}} tarafından istendi",
+    "expires": "Son geçerlilik: {{date}}",
+    "cancel": "İptal",
+    "cancelled": "Sıradaki eylem iptal edildi",
+    "cancelFailed": "Sıradaki eylem iptal edilemedi",
+    "loadFailed": "Sıradaki eylemler yüklenemedi.",
+    "empty": "Sıraya alınmış eylem yok"
   }
 }

@@ -690,7 +690,8 @@
       "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
       "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
       "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
-      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso",
+      "queuedOffline": "En cola — dispositivo sin conexión"
     }
   },
   "executionHistory": {
@@ -718,7 +719,8 @@
       "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
       "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
       "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
-      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso",
+      "queuedOffline": "En cola — dispositivo sin conexión"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -927,6 +929,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea"
     }
   },
   "secretParameters": {

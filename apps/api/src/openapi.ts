@@ -656,7 +656,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           reasonCode: { type: 'string' },
           executionId: { type: 'string', format: 'uuid' },
           commandId: { type: 'string', format: 'uuid' },
-          batchId: { type: 'string', format: 'uuid' }
+          batchId: { type: 'string', format: 'uuid' },
+          delivery: { type: 'string', enum: ['delivered', 'queued_offline'] }
         }
       },
       ScriptAdmissionResult: {
