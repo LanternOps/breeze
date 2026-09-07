@@ -3320,6 +3320,7 @@
     "passkeyRenamed": "Clave de acceso renombrada",
     "currentPasswordIsRequiredToDeleteAPasskey": "Se requiere la contraseña actual para eliminar una clave de acceso",
     "passkeyDeleted": "Clave de acceso eliminada",
+    "signInAgainToContinue": "Inicia sesión de nuevo para continuar.",
     "failedToLoadPasskeys": "No se pudieron cargar las claves de acceso",
     "failedToUpdateProfile": "No se pudo actualizar el perfil",
     "failedToUploadAvatar": "No se pudo cargar el avatar",

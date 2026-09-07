@@ -410,6 +410,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import {
+  AuthBindingRotationRequiredError,
   AuthIssuanceCapabilityError,
   AuthIssuanceConflictError,
   beginAuthIssuance,
@@ -2014,6 +2015,48 @@ describe('passkey MFA auth routes', () => {
       expect(body.success).toBe(true);
       expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
       expect(body.tokens).toBeUndefined();
+    });
+
+    // Every other beginAuthIssuance caller in this repo asserts the 428 the
+    // shared admission helper answers when the client's auth binding must be
+    // rotated before a session can be issued (login.test.ts, invite.test.ts,
+    // cfAccessRedirectLogin.test.ts). These two call sites are new, so they get
+    // the same guard: a regression in the wiring — a dropped
+    // `if (!response) throw error` fallback, or a branch that forgets to cancel
+    // the capability — would otherwise go unnoticed.
+    it('answers 428 and writes nothing when the binding must be rotated before registration', async () => {
+      queueProtectedRegisterReads();
+      vi.mocked(beginAuthIssuance).mockRejectedValueOnce(
+        // The real constructor takes (replacement, reason); this suite's mock
+        // class only stores the first, so the reason is a placeholder.
+        new AuthBindingRotationRequiredError({ id: 'binding-2' } as never, 'rotation-required' as never),
+      );
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(428);
+      expect(await res.json()).toMatchObject({ reason: 'auth_binding_rotation_required' });
+      expect(completeAdditionalMfaFactorEnrollment).not.toHaveBeenCalled();
+      // Nothing was admitted, so there is no capability to cancel.
+      expect(cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(dbState.updateSets).toHaveLength(0);
+    });
+
+    it('answers 428 and deletes nothing when the binding must be rotated before deletion', async () => {
+      queueDeleteReads();
+      vi.mocked(beginAuthIssuance).mockRejectedValueOnce(
+        // The real constructor takes (replacement, reason); this suite's mock
+        // class only stores the first, so the reason is a placeholder.
+        new AuthBindingRotationRequiredError({ id: 'binding-2' } as never, 'rotation-required' as never),
+      );
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(428);
+      expect(await res.json()).toMatchObject({ reason: 'auth_binding_rotation_required' });
+      expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+      expect(cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(dbState.updateSets).toHaveLength(0);
     });
 
     it('surfaces a lost issuance race on deletion as 409 without deleting the passkey', async () => {

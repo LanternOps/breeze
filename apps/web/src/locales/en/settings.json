@@ -3320,6 +3320,7 @@
     "passkeyRenamed": "Passkey renamed",
     "currentPasswordIsRequiredToDeleteAPasskey": "Current password is required to delete a passkey",
     "passkeyDeleted": "Passkey deleted",
+    "signInAgainToContinue": "Sign in again to continue.",
     "failedToLoadPasskeys": "Failed to load passkeys",
     "failedToUpdateProfile": "Failed to update profile",
     "failedToUploadAvatar": "Failed to upload avatar",

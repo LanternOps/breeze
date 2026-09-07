@@ -666,7 +666,7 @@ describe('completeAdditionalMfaFactorEnrollment — secondary factor with no rec
   });
 
   it('surfaces a lost precondition race as an issuance conflict', async () => {
-    advanceUserEpochsMock.mockRejectedValueOnce(new EpochAdvancePreconditionError('stale'));
+    advanceUserEpochsMock.mockRejectedValueOnce(new EpochAdvancePreconditionError());
 
     await expect(completeAdditionalMfaFactorEnrollment({
       userId: identity.userId,

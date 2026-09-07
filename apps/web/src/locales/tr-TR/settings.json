@@ -3320,6 +3320,7 @@
     "passkeyRenamed": "Geçiş anahtarı yeniden adlandırıldı",
     "currentPasswordIsRequiredToDeleteAPasskey": "Bir şifreyi silmek için mevcut şifre gerekli",
     "passkeyDeleted": "Şifre silindi",
+    "signInAgainToContinue": "Devam etmek için yeniden oturum açın.",
     "failedToLoadPasskeys": "Şifre anahtarları yüklenemedi",
     "failedToUpdateProfile": "Profil güncellenemedi",
     "failedToUploadAvatar": "Avatar yüklenemedi",

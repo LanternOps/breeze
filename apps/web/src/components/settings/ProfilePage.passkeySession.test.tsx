@@ -128,7 +128,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     render(<ProfilePage initialUser={USER} />);
     await addPasskey();
 
-    expect(await screen.findByText('Passkey added')).toBeTruthy();
+    // The API withholds `tokens` only when its own post-commit install failed —
+    // the refresh families are already revoked, so this tab's session is dead.
+    // Say so with the success message instead of letting the user discover it as
+    // a disconnected /login?reason=session-expired on some later screen.
+    expect(await screen.findByText('Passkey added. Sign in again to continue.')).toBeTruthy();
     expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
   });
 
@@ -170,6 +174,9 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
+    // A refused commit is not the install-failure case: the store refuses only on
+    // a stale generation, which means a logout already moved the session on. No
+    // re-auth notice — the plain success message stands.
     expect(await screen.findByText('Passkey deleted')).toBeTruthy();
   });
 
@@ -187,7 +194,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
-    expect(await screen.findByText('Passkey deleted')).toBeTruthy();
+    expect(await screen.findByText('Passkey deleted. Sign in again to continue.')).toBeTruthy();
     expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
   });
 });
