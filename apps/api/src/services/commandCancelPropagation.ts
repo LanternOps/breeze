@@ -13,7 +13,7 @@ import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExe
  * by the time this runs; this only stops the owning record from waiting forever
  * on a delivery that will never happen.
  *
- * W3 adds the `patch_job_results` branch. Anything without a branch is a no-op
+ * W3 added the `patch_job_results` branch. Anything without a branch is a no-op
  * by design — a generic command has no higher-level record (#5128 §F).
  *
  * Deliberately a LEAF module: `services/commandClaimEligibility.ts` has to call
@@ -28,7 +28,7 @@ import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExe
  * Anything that can run the propagation UPDATEs: the ambient `db`, or a caller's
  * open transaction handle.
  */
-type DbExecutor = Pick<typeof db, 'update' | 'select'>;
+type DbExecutor = Pick<typeof db, 'update' | 'select' | 'insert'>;
 
 export type DeviceCommandCancelSubject = {
   id: string;
@@ -96,6 +96,33 @@ export async function propagateCancelledDeviceCommand(params: {
         executor,
       });
     }
+  }
+
+  // #5128 W3 — patch installs. A cancelled install must release the device from
+  // the job's counters, or `devices_pending` / `devices_queued` never reach zero
+  // and the job stays `running` forever.
+  //
+  // The import is DYNAMIC on purpose: `commandClaimEligibility` calls this module
+  // from inside the heartbeat claim transaction, and `patchJobFinalizer`
+  // registers its claim-time hold WITH `commandClaimEligibility` — a static edge
+  // here would close that into an import cycle whose `typeHolds` const is still
+  // in its temporal dead zone when the hold registers.
+  if (type === 'install_patches') {
+    const { finalizePatchDeviceForCommand } = await import('./patchJobFinalizer');
+    // NOT wrapped in a try/catch, exactly like the `script` branch above.
+    // `executor` is frequently the CALLER'S OPEN TRANSACTION (the heartbeat
+    // claim, the org-move and decommission sweeps): swallowing a failure here
+    // would let that transaction commit a cancelled command alongside a
+    // half-written patch result and unmoved counters, stranding the job
+    // `running` forever with one Sentry event as the only trace. Letting it
+    // propagate rolls the whole cancel back so it can be retried.
+    await finalizePatchDeviceForCommand({
+      commandId,
+      payload,
+      terminal: { kind: 'cancelled', reason: 'cancelled' },
+      completedAt,
+      executor,
+    });
   }
 
   await executor

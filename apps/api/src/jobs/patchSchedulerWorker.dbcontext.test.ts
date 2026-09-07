@@ -103,6 +103,10 @@ vi.mock('./patchJobExecutor', () => ({
 }));
 
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/patchJobFinalizer', () => ({ finalizePatchJobDevice: vi.fn() }));
+vi.mock('../services/sensitiveCommandPayload', () => ({
+  terminalPayloadErasureSet: vi.fn(() => ({ payload: null })),
+}));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/patchJobSnapshot', () => ({ buildPatchesSnapshot: vi.fn(() => ({})) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));

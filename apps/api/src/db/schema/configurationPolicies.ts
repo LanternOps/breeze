@@ -261,6 +261,12 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   // automatic-install channel (NoAutoUpdate=1) so patches flow only through
   // Breeze. Breeze's own WUA-driven installs are unaffected.
   exclusiveWindowsUpdate: boolean('exclusive_windows_update').notNull().default(false),
+  // #5128 W3: what a scheduled install does when the device is offline at
+  // dispatch. 'queue' (default) persists the install_patches command with a
+  // deliver_by of min(patch TTL, next occurrence) and lets the next heartbeat
+  // claim it; 'skip' keeps the pre-#5128 behaviour of recording the device as
+  // skipped. CHECK-constrained to those two values in the migration.
+  offlineBehavior: varchar('offline_behavior', { length: 20 }).notNull().default('queue'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

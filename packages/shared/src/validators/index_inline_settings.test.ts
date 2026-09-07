@@ -187,6 +187,26 @@ describe('patchInlineSettingsSchema', () => {
   });
 });
 
+describe('patchInlineSettingsSchema offlineBehavior (#5128 W3)', () => {
+  it("defaults to 'queue' so an offline device waits instead of being skipped", () => {
+    const result = patchInlineSettingsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.offlineBehavior).toBe('queue');
+  });
+
+  it("accepts an explicit 'skip' (the pre-#5128 behaviour)", () => {
+    const result = patchInlineSettingsSchema.safeParse({ offlineBehavior: 'skip' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.offlineBehavior).toBe('skip');
+  });
+
+  it('rejects any other value — the column carries a matching CHECK constraint', () => {
+    expect(patchInlineSettingsSchema.safeParse({ offlineBehavior: 'defer' }).success).toBe(false);
+    expect(patchInlineSettingsSchema.safeParse({ offlineBehavior: '' }).success).toBe(false);
+    expect(patchInlineSettingsSchema.safeParse({ offlineBehavior: null }).success).toBe(false);
+  });
+});
+
 describe('patchInlineSettingsSchema app rules + deferral', () => {
   it('defaults autoApproveDeferralDays to 0 and apps to []', () => {
     const result = patchInlineSettingsSchema.safeParse({});
