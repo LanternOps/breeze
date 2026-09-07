@@ -112,6 +112,25 @@ describe('toastClearanceOffset', () => {
     expect(toastClearanceOffset(0, 16)).toBe(16);
     expect(toastClearanceOffset(-5, 16)).toBe(16);
   });
+
+  // #5171: the composer's measured height clears it as a static card, but the
+  // keyboard LIFTS the composer off the bottom of the screen while the toast
+  // (rendered as a sibling of the KeyboardAvoidingView's scroll content, not
+  // inside it) is not lifted with it — so a toast sized only for the
+  // composer's height still paints mid-composer once the keyboard is up.
+  describe('with a keyboard height', () => {
+    it('adds the keyboard height on top of the measured element and margin', () => {
+      expect(toastClearanceOffset(120, 16, 300)).toBe(436);
+    });
+
+    it('defaults the keyboard height to 0 when omitted — unchanged behavior for existing callers', () => {
+      expect(toastClearanceOffset(120, 16)).toBe(toastClearanceOffset(120, 16, 0));
+    });
+
+    it('treats a negative keyboard height (should not happen, but guard it) as 0', () => {
+      expect(toastClearanceOffset(120, 16, -50)).toBe(136);
+    });
+  });
 });
 
 describe('isQueueWedged', () => {
