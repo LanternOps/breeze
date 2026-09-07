@@ -1137,6 +1137,34 @@ describe('scripts routes', () => {
       expect(getInserted().version).toBe(1);
     });
 
+    it('does NOT copy the source script\u2019s security acknowledgements (#5129)', async () => {
+      // An acknowledgement records a named human accepting a specific risk on
+      // a specific script. The person cloning may not be that person, and a
+      // clone is usually the starting point for edits \u2014 so the copy starts
+      // unacknowledged and its first Strict match is refused until someone
+      // signs off on it. Asserted here because the clone insert is a
+      // hand-maintained column list: "completing" it would silently transfer
+      // the approval.
+      mockCloneSource(
+        orgSource({
+          content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+          acknowledgedSecurityPatterns: ['PowerShell HKLM modification'],
+          securityAcknowledgedBy: 'user-999',
+        })
+      );
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      expect((await clone()).status).toBe(201);
+      expect(getInserted()).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(getInserted()).not.toHaveProperty('securityAcknowledgedBy');
+      expect(getInserted()).not.toHaveProperty('securityAcknowledgedAt');
+      // Guards the guard: the source really did carry an acknowledgement, so
+      // the assertions above are about a copy that was declined rather than a
+      // field that never existed.
+      expect(getInserted().content).toContain('HKLM');
+    });
+
     it.each([248, 249, 255])('bounds the default clone name for a %i-character source', async (length) => {
       mockCloneSource(orgSource({ name: 'a'.repeat(length) }));
       mockTagLookup();
