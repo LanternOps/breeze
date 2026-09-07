@@ -361,7 +361,7 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
       if (!response) throw error;
       return response;
     }
-    sessionInstalled = await installReplacementSession(c, replacement.issued, auth.user.id, 'phone_replacement');
+    sessionInstalled = await installReplacementSession(c, replacement.issued, auth.user.id, 'phone-replacement');
   } else {
     // Initial phone verification (no ACTIVE SMS factor yet): nothing about the
     // account's factor set changed, so no epoch bump and no session

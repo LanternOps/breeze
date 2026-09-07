@@ -627,6 +627,21 @@ describe('phone routes', () => {
       );
     });
 
+    // A refusal at the ADMISSION gate happens before any capability exists —
+    // cancelling one we never obtained would be a bug of its own.
+    it('answers 409 without cancelling a capability it never obtained', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+      const services = await import('../../services');
+      vi.mocked(services.beginAuthIssuance).mockRejectedValueOnce(new (services as any).AuthIssuanceConflictError());
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(409);
+      expect(services.cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(completeMfaFactorReplacement).not.toHaveBeenCalled();
+    });
+
     it.each([
       ['AuthIssuanceConflictError', 409],
       ['AuthBindingRotationRequiredError', 428],
@@ -670,6 +685,28 @@ describe('phone routes', () => {
           action: 'auth.phone.verify.confirmed',
           details: expect.not.objectContaining({ smsFactorReplacement: true }),
         })
+      );
+    });
+
+    // The initial-verification branch has its own epoch guard: the conditional
+    // UPDATE matches nothing once the session's epochs move underneath it, and
+    // that must surface as 409, not a silent success.
+    it('answers 409 on the initial-verification branch when the epoch guard matches no row', async () => {
+      mockCurrentFactorRow({ mfaEnabled: false, mfaMethod: null });
+      mockValidCode();
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })),
+      } as any);
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('Authentication state changed. Please sign in again.');
+      expect(completeMfaFactorReplacement).not.toHaveBeenCalled();
+      expect(writeAuthAudit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'auth.phone.verify.confirmed' }),
       );
     });
 
