@@ -276,10 +276,12 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
     // last_seen_at would pin every never-scanned manual row (last_seen_at NULL)
     // to the top of page 1 of the offset page-walk in
     // apps/web/src/lib/devicesFetch.ts.
+    // ARGUMENT ORDER is asserted, not just presence: first_seen_at is NOT NULL,
+    // so `coalesce(first_seen_at, last_seen_at)` would always return
+    // first_seen_at and silently sort the WHOLE list by enrolment date instead
+    // of recency — and a presence-only regex would still pass.
     const firstSql = dialect.sqlToQuery(first).sql;
-    expect(firstSql).toMatch(/coalesce/i);
-    expect(firstSql).toMatch(/"last_seen_at"/);
-    expect(firstSql).toMatch(/"first_seen_at"/);
+    expect(firstSql).toMatch(/coalesce\s*\([^)]*"last_seen_at"[^)]*,[^)]*"first_seen_at"[^)]*\)/i);
     expect(firstSql).toMatch(/desc/);
     expect(dialect.sqlToQuery(second).sql).toMatch(/"id" desc/);
   });
