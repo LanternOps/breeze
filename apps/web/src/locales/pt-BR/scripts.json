@@ -154,8 +154,18 @@
       "severity": "Gravidade",
       "message": "Mensagem",
       "command": "Comando",
+      "whenOffline": "Se o dispositivo estiver offline",
       "software": "Software",
       "failureNotificationChannel": "Canal de notificação de falha"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Enfileirar (padrão)",
+        "skip": "Ignorar"
+      }
+    },
+    "hints": {
+      "whenOffline": "O trabalho na fila aguarda o dispositivo e é executado na próxima conexão, ou expira após 7 dias. Ignorar faz a etapa falhar imediatamente."
     },
     "placeholders": {
       "name": "Verificação diária de manutenção",

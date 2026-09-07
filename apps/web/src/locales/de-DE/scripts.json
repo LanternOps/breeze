@@ -154,8 +154,18 @@
       "severity": "Schweregrad",
       "message": "Nachricht",
       "command": "Befehl",
+      "whenOffline": "Wenn das Gerät offline ist",
       "software": "Software",
       "failureNotificationChannel": "Fehlerbenachrichtigungskanal"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "In die Warteschlange (Standard)",
+        "skip": "Überspringen"
+      }
+    },
+    "hints": {
+      "whenOffline": "Eingereihte Aufgaben warten auf das Gerät und werden bei der nächsten Verbindung ausgeführt oder verfallen nach 7 Tagen. Überspringen lässt den Schritt sofort fehlschlagen."
     },
     "placeholders": {
       "name": "Tägliche Wartungskontrolle",

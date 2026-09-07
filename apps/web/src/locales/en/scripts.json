@@ -154,8 +154,18 @@
       "severity": "Severity",
       "message": "Message",
       "command": "Command",
+      "whenOffline": "If the device is offline",
       "software": "Software",
       "failureNotificationChannel": "Failure Notification Channel"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Queue (default)",
+        "skip": "Skip"
+      }
+    },
+    "hints": {
+      "whenOffline": "Queued work waits for the device and runs on its next check-in, or expires after 7 days. Skip fails the step immediately."
     },
     "placeholders": {
       "name": "Daily maintenance check",
