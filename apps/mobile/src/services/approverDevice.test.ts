@@ -672,6 +672,38 @@ describe('ensureApproverDevice — attested path', () => {
     expect(JSON.parse(fetchMock.mock.calls[3][1].body).attemptId).toBe('attempt-2');
   });
 
+  it('falls back to LEGACY registration when /challenge 404s — the server has no attestation protocol', async () => {
+    // The one sanctioned fallback: a self-hosted server older than v0.110 does
+    // not have the route. Nothing was refused, so failing closed here would
+    // strand every iOS client on that server at L1 forever. The outcome names
+    // the reason so telemetry can tell it from a genuine attested enrolment.
+    fetchMock.mockResolvedValueOnce(json({ error: 'not found' }, 404));
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-legacy' } }));
+
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'registered',
+      attested: false,
+      reason: 'attestation_protocol_absent',
+    });
+    expect(attesting.createAttestedKey).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://api.test/api/v1/authenticator/devices');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).registerGrantId).toBe('grant-1');
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledWith('breeze_approver_attested');
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_credential_id', 'dev-legacy');
+  });
+
+  it('a 404 fallback whose legacy POST then fails reports THAT failure, not a phantom registration', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'not found' }, 404));
+    fetchMock.mockResolvedValueOnce(json({ error: 'bad grant' }, 403));
+
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'failed',
+      reason: 'http_403',
+    });
+    expect(secureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
   it('reports the challenge call failing without ever minting a key', async () => {
     fetchMock.mockResolvedValueOnce(json({ error: 'rate limited' }, 429));
 

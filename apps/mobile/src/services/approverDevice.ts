@@ -101,7 +101,19 @@ export type ApproverRegistrationOutcome =
    * than swallowed so the wrong `appattest-environment` or a stale server is
    * found on the phone, not weeks later at a refused critical approval.
    */
-  | { status: 'registered'; attested: false; reason?: 'attestation_rejected_by_server' }
+  | {
+      status: 'registered';
+      attested: false;
+      /**
+       * `attestation_protocol_absent`: `/devices/mobile/challenge` 404'd, i.e. the
+       * server predates the attestation protocol (self-hosted, older than
+       * v0.110). That is "attestation unavailable", not "attestation refused",
+       * so the phone registered through the legacy path at L2/L3 — the same
+       * outcome it had before this app version — rather than failing closed on
+       * every sign-in against a server that can never accept an attestation.
+       */
+      reason?: 'attestation_rejected_by_server' | 'attestation_protocol_absent';
+    }
   | { status: 'already_registered' }
   | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
@@ -140,6 +152,19 @@ const POP_PROMPT = 'Register this phone for approvals';
 const ATTESTED_KEY_ALG = 'ES256' as const;
 
 /** Thrown inside the attested branch so it can never resolve as a legacy retry. */
+/**
+ * Thrown by the attested branch when the server has no attestation protocol at
+ * all (challenge endpoint 404). The ONE case where falling back to the legacy
+ * path is honest: nothing was refused, the capability simply does not exist on
+ * that server. Raised before any key is minted or grant consumed.
+ */
+class AttestationProtocolAbsent extends Error {
+  constructor() {
+    super('attestation_protocol_absent');
+    this.name = 'AttestationProtocolAbsent';
+  }
+}
+
 class AttestationFailed extends Error {
   constructor(cause: unknown) {
     super(`attestation_failed: ${(cause as Error)?.message ?? 'unknown'}`);
@@ -244,6 +269,11 @@ async function registerAttested(
     // failed attestation does not burn it.
     body: JSON.stringify({ platform, registerGrantId: registerGrant }),
   });
+  if (challengeRes.status === 404) {
+    // The route does not exist on this server: legacy is the only protocol it
+    // speaks. Handled in `runAttempt`, which still holds the legacy signer.
+    throw new AttestationProtocolAbsent();
+  }
   if (!challengeRes.ok) {
     // No key minted yet — nothing to clean up, and nothing was consumed.
     return { status: 'failed', reason: `http_${challengeRes.status}` };
@@ -361,6 +391,12 @@ function runAttempt(
         ? await registerAttested(attesting, registerGrant)
         : await registerUnattested(signer, registerGrant);
     } catch (e) {
+      if (e instanceof AttestationProtocolAbsent) {
+        const legacy = await registerUnattested(signer, registerGrant!);
+        return legacy.status === 'registered'
+          ? { status: 'registered', attested: false, reason: 'attestation_protocol_absent' }
+          : legacy;
+      }
       if (e instanceof AttestationFailed) {
         // Fail CLOSED. Falling through to the legacy path here would register
         // an unattested key on a device the user reasonably believes is
