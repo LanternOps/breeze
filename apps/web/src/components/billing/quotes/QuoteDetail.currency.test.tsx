@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteDetail from './QuoteDetail';
 import * as quotesApi from '../../../lib/api/quotes';
-import type { QuoteDetail as QuoteDetailData, QuoteStatus } from './quoteTypes';
+import type { QuoteDetail as QuoteDetailData, QuoteLine, QuoteStatus } from './quoteTypes';
 
 // #4416 — the draft-only atomic change-currency op (#3774,
 // changeQuoteCurrency in quoteService.ts) has been reachable server-side
@@ -37,7 +37,7 @@ vi.mock('../../../lib/api/quotes', async (importOriginal) => {
 const resp = (payload: unknown, status = 200): Response =>
   ({ ok: status < 400, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-function detail(status: QuoteStatus, currencyCode = 'USD'): QuoteDetailData {
+function detail(status: QuoteStatus, currencyCode = 'USD', lines: QuoteLine[] = []): QuoteDetailData {
   return {
     quote: {
       id: 'q-1', quoteNumber: null, partnerId: 'p-1', orgId: 'org-1', siteId: null, status,
@@ -49,7 +49,22 @@ function detail(status: QuoteStatus, currencyCode = 'USD'): QuoteDetailData {
       createdBy: null, createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
     },
     blocks: [],
-    lines: [],
+    lines,
+  };
+}
+
+// A standalone catalog line is the only shape `reprice` can re-resolve from the
+// price book (repriceQuoteCatalogLines, quoteService.ts).
+function quoteLine(over: Partial<QuoteLine> = {}): QuoteLine {
+  return {
+    id: 'l-1', quoteId: 'q-1', blockId: null, orgId: 'org-1', sourceType: 'catalog',
+    catalogItemId: 'cat-1', parentLineId: null, unitCost: null, sku: null, partNumber: null,
+    name: 'Managed workstation', description: null, quantity: '2.00', unitPrice: '49.00',
+    taxable: false, customerVisible: true, lineTotal: '98.00', recurrence: 'monthly',
+    termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '',
+    contractLineType: null, deviceRoles: null, deviceGroupId: null, deviceGroupName: null,
+    siteId: null, siteName: null, includedQuantity: null, overageMode: null,
+    overageUnitPrice: null, descriptorUnresolved: false, ...over,
   };
 }
 
@@ -210,5 +225,57 @@ describe('QuoteDetail — draft currency change (#4416)', () => {
     await waitFor(() => expect(screen.getByTestId('quote-currency-submit')).toBeDisabled());
     releaseRequest(resp({ data: { id: 'q-1' } }));
     await waitFor(() => expect(screen.queryByTestId('quote-currency-dialog')).not.toBeInTheDocument());
+  });
+
+  // #4937 — the dialog offered a mode the data forbids. `reprice` re-resolves
+  // every line from the price book, so the server refuses the whole op with 409
+  // CURRENCY_LOCKED unless EVERY line is a standalone catalog line
+  // (repriceQuoteCatalogLines). The dialog already stated the rule in its own
+  // hint; now it enforces it, so an illegal choice costs no round-trip.
+  describe('reprice availability (#4937)', () => {
+    const reprice = () => screen.getByTestId('quote-currency-mode-reprice') as HTMLInputElement;
+    const clear = () => screen.getByTestId('quote-currency-mode-clear') as HTMLInputElement;
+
+    it('disables reprice and names the reason when a manual line exists', async () => {
+      render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine({ sourceType: 'manual', catalogItemId: null })])} onChanged={vi.fn()} />);
+      await openDialog();
+      expect(reprice().disabled).toBe(true);
+      expect(screen.getByTestId('quote-currency-mode-reprice-unavailable')).toBeInTheDocument();
+      // The legal mode stays available, so the operator is not dead-ended.
+      expect(clear().disabled).toBe(false);
+    });
+
+    it('disables reprice for a bundle line and for a bundle child', async () => {
+      const { unmount } = render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine({ sourceType: 'bundle' })])} onChanged={vi.fn()} />);
+      await openDialog();
+      expect(reprice().disabled).toBe(true);
+      unmount();
+
+      render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine({ id: 'l-2', parentLineId: 'l-1' })])} onChanged={vi.fn()} />);
+      await openDialog();
+      expect(reprice().disabled).toBe(true);
+    });
+
+    it('disables reprice when a catalog line lost its catalog item', async () => {
+      render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine({ catalogItemId: null })])} onChanged={vi.fn()} />);
+      await openDialog();
+      expect(reprice().disabled).toBe(true);
+    });
+
+    it('keeps reprice enabled when every line is a standalone catalog line', async () => {
+      render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine(), quoteLine({ id: 'l-2' })])} onChanged={vi.fn()} />);
+      await openDialog();
+      expect(reprice().disabled).toBe(false);
+      expect(screen.queryByTestId('quote-currency-mode-reprice-unavailable')).not.toBeInTheDocument();
+    });
+
+    it('still submits reprice for an all-catalog quote', async () => {
+      render(<QuoteDetail detail={detail('draft', 'USD', [quoteLine()])} onChanged={vi.fn()} />);
+      await openDialog();
+      await confirmWith('reprice', 'EUR');
+      await waitFor(() => expect(quotesApi.changeQuoteCurrency).toHaveBeenCalledWith('q-1', {
+        currencyCode: 'EUR', reprice: true,
+      }));
+    });
   });
 });

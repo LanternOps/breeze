@@ -136,6 +136,55 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'compare',
 ]);
 
+/**
+ * Bulk actions that ONLY a removed (decommissioned) device accepts — the exact
+ * inverse gate to `DECOMMISSION_BLOCKED_BULK_ACTIONS`.
+ *
+ * Why a third set rather than a boolean flip of the first one: the two gates
+ * answer different questions. `DECOMMISSION_BLOCKED_*` is "the API refuses this
+ * for a removed device, so skip those and proceed with the rest" — a per-device
+ * FILTER. This one is "these buttons must not be OFFERED at all unless the whole
+ * selection is removed" — a per-SELECTION visibility rule, because
+ * `POST /devices/bulk/restore` and `POST /devices/bulk/permanent-delete` both
+ * require `status = 'decommissioned'` and would reject every active device in a
+ * mixed batch.
+ *
+ * The contract test in DeviceList.test.tsx forces every action the bulk bar
+ * emits into exactly one of the three sets, in both selection states. Without
+ * that, adding a bulk button for removed devices and forgetting to classify it
+ * is silent — a gate's only failure mode is doing nothing.
+ */
+export const REMOVED_ONLY_BULK_ACTIONS: ReadonlySet<string> = new Set([
+  'restore',
+  'permanent-delete',
+]);
+
+/** What the current selection is made of, from the bulk bar's point of view. */
+export type BulkSelectionKind = 'active' | 'removed' | 'mixed';
+
+/**
+ * Classify a selection so the bulk bar can offer the right menu.
+ *
+ * `'mixed'` deliberately gets the ACTIVE menu (see DeviceList): the removed-only
+ * actions would reject every active device in the batch, whereas the active
+ * actions already skip removed devices through
+ * `DECOMMISSION_BLOCKED_BULK_ACTIONS`. So the mixed case degrades to "skips the
+ * removed ones" rather than "fails on most of them".
+ *
+ * An EMPTY selection is `'active'`, not `'removed'`: `every()` on an empty array
+ * is vacuously true, which would have made an empty selection offer "Delete
+ * permanently". The bar is hidden at size 0 today, so this only decides the
+ * instant between the last deselect and the unmount — but a vacuous truth
+ * pointing at the destructive branch is not a default worth inheriting.
+ */
+export function classifyBulkSelection(statuses: readonly string[]): BulkSelectionKind {
+  if (statuses.length === 0) return 'active';
+  const removed = statuses.filter((s) => s === 'decommissioned').length;
+  if (removed === 0) return 'active';
+  if (removed === statuses.length) return 'removed';
+  return 'mixed';
+}
+
 type DeviceTranslation = ReturnType<typeof useTranslation<'devices'>>['t'];
 
 /**

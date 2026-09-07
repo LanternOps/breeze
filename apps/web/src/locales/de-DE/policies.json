@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Diese Richtlinie hat keine Organisation, daher können Zuweisungsziele nicht aufgelistet werden.",
       "failedToAddAssignment": "Aufgabe konnte nicht hinzugefügt werden",
       "failedToRemoveAssignment": "Die Zuweisung konnte nicht entfernt werden",
+      "assignmentAdded": "Aufgabe hinzugefügt",
+      "assignmentRemoved": "Zuweisung entfernt",
       "roleFilter": "Rollenfilter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "Keine Einschränkung – gilt für alle Geräterollen",
@@ -131,7 +133,10 @@
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
       "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben"
+      "assignments2": "Aufgaben",
+      "managedByYourMsp": "Verwaltet von Ihrem MSP",
+      "inheritedByPolicies_one": "Von {{count}} Richtlinie geerbt",
+      "inheritedByPolicies_other": "Von {{count}} Richtlinien geerbt"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -150,7 +155,8 @@
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
       "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
-      "summary": "{{filtered}} von {{total}} Richtlinien"
+      "summary": "{{filtered}} von {{total}} Richtlinien",
+      "inheritsBadge": "Erbt"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Sind Sie sicher, dass Sie löschen möchten?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Dadurch werden auch alle Funktionsverknüpfungen und Zuweisungen entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
       "delete": "löschen",
-      "deleting": "Löschen..."
+      "deleting": "Löschen...",
+      "deleteBlockedByChildren": "Löschen Sie zuerst die Richtlinien, die von dieser erben:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Zuweisungen konnten nicht geladen werden",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "keine"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Entfernte Geräte endgültig löschen",
+        "offKeepRemovedDevicesUntilDeletedManually": "Aus — entfernte Geräte bleiben erhalten, bis sie manuell gelöscht werden.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Entfernte Geräte werden {{days}} Tage nach dem Entfernen endgültig gelöscht.",
+        "permanentlyDeleteRemovedDevicesAfter": "Entfernte Geräte endgültig löschen nach",
+        "days": "Tagen",
+        "enterAWholeNumberOfDaysBetween": "Geben Sie eine ganze Anzahl von Tagen zwischen 1 und 3650 ein.",
+        "purgeIsIrreversibleAndDestroysHistory": "Das Löschen ist unwiderruflich und vernichtet den Verlauf",
+        "aDailyJobPermanentlyDeletesTheDevice": "Ein täglicher Job löscht den Gerätedatensatz und alles, was daran hängt, endgültig — Alarme, Skripte, Patches, Protokolle und Inventar. Geräte, für die noch eine Agent-Deinstallation ansteht, werden übersprungen, bis diese abgeschlossen ist. Die nächstgelegene Richtlinie gewinnt, sodass eine Organisation dies deaktivieren kann, um sich von einem organisationsweiten Zeitfenster abzumelden."
+      },
       "eventLogTab": {
         "security": "Sicherheit",
         "hardware": "Hardware",
@@ -926,7 +943,8 @@
         "loadingPolicies": "Richtlinien werden geladen...",
         "noExistingPoliciesFound": "Keine vorhandenen Richtlinien gefunden.",
         "selectAPolicy": "Wählen Sie eine Richtlinie aus...",
-        "clearSelection": "Auswahl aufheben"
+        "clearSelection": "Auswahl aufheben",
+        "allOrgs": "Alle Orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

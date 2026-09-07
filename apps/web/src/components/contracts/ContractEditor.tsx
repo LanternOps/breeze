@@ -874,7 +874,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                       data-testid="contract-form-org-readonly"
                       className="inline-flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm text-foreground"
                     >
-                      {orgName}
+                      {/* orgId can originate in the URL hash (ContractWorkspace's
+                          presetOrgId), so it is DOM text flowing into an href —
+                          encode the path segment. CodeQL js/xss-through-dom. */}
+                      <a href={`/organizations/${encodeURIComponent(orgId)}`} data-testid="org-record-link" className="hover:underline">
+                        {orgName}
+                      </a>
                     </span>
                   </div>
                 )}

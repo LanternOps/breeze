@@ -882,14 +882,7 @@ describe('alert routes', () => {
             })
           })
         } as any)
-        // validateAlertRuleNotificationBindings: org → partnerId lookup (dual-axis #2130)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ partnerId: '99999999-9999-9999-9999-999999999999' }])
-            })
-          })
-        } as any)
+        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([])
@@ -927,14 +920,7 @@ describe('alert routes', () => {
             })
           })
         } as any)
-        // validateAlertRuleNotificationBindings: org → partnerId lookup (dual-axis #2130)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ partnerId: '99999999-9999-9999-9999-999999999999' }])
-            })
-          })
-        } as any)
+        // validateAlertRuleNotificationBindings: org-scope caller → no partner lookup (#4956)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([])

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, type ComponentRef } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -79,6 +80,10 @@ export function LoginScreen({ navigation }: Props) {
   async function handleLogin() {
     if (!email.trim() || !password.trim()) return;
     haptic.tap();
+    // #5104: without this, the keyboard survives the navigator swap into the
+    // app (MFA challenge or Home) and sits over the next screen until the
+    // user manually dismisses it.
+    Keyboard.dismiss();
     dispatch(clearError());
     dispatch(loginAsync({ email: email.trim(), password }));
   }

@@ -8,219 +8,159 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.109.0** (2026-09-01).
+Last release: **v0.110.0** (2026-09-05).
 
 ---
 
-## QuickBooks payment pull-back (#4531, sandbox-verified in #4537)
+## QuickBooks payment push (#4624)
+
+Payments recorded in Breeze against an invoice that is already in QuickBooks are
+now created in QuickBooks automatically, and deleted there when the Breeze
+payment is voided or fully refunded. Breeze stays the system of record for its
+own payments: a payment edited in QuickBooks is flagged as diverged rather than
+silently overwritten in Breeze, and a partial Stripe refund is flagged for the
+bookkeeper instead of rewriting a QuickBooks receipt.
 
 **Self-Hosting / Upgrade Notes**
 
-- New optional env var `QBO_WEBHOOK_VERIFIER_TOKEN` (Intuit app → Webhooks →
-  verifier token). Map it in the `api` service's compose `environment:` block
-  as well as `.env`. Without it, `POST /api/v1/webhooks/quickbooks` answers
-  `503` on every delivery so Intuit keeps retrying; nothing else breaks.
-- New route `POST /api/v1/webhooks/quickbooks` (Intuit-signed, rate-limited);
-  register it as the app's webhook endpoint with the Invoice and Payment
-  event groups. Intuit allows one endpoint per app.
-- New BullMQ worker `accounting-reconcile` with a 15-minute repeatable sweep;
-  it is the guaranteed path (webhook is only a latency optimisation). Worker
-  count goes up by one.
-- New per-connection setting `pull_payments` (default **on**) and a
-  "Payment sync / Sync now" control on the QuickBooks integration card;
-  requires `invoices:write`.
-- Migration `2026-10-01-quickbooks-payment-pullback.sql` (adds
-  `realm_id_fingerprint`, `cdc_cursor`, `pull_payments` to
-  `accounting_connections`; boot-time fingerprint backfill).
+- **This turns ON outbound writes to QuickBooks for every connected realm at
+  deploy time.** The new `accounting_connections.push_payments` column defaults
+  to `true`, so a realm that is connected and in `push_mode = auto` starts
+  creating QuickBooks Payments as soon as the API restarts — no operator action
+  required to switch it on, and no per-realm opt-in. Set it to `false` first
+  (Integrations → QuickBooks → "Push payments to QuickBooks") on any realm whose
+  books you are not ready to have Breeze write into.
+- **Only payments recorded AFTER the switch became active are pushed — history
+  is never back-filled.** The migration stamps every existing connection's new
+  `push_payments_since` with the deploy time, and turning the switch off and
+  back on re-stamps it, so a pause never later flushes a backlog. Without this,
+  re-pushing an old invoice would have created a QuickBooks Payment for every
+  receipt on it — including the ones a bookkeeper had already entered in
+  QuickBooks by hand — as duplicate cash against the same invoice. There is no
+  supported way to push a payment recorded before the horizon.
+- Deleting a payment propagates regardless of BOTH `push_mode` and
+  `push_payments`: once Breeze created a Payment in QuickBooks it owns its
+  removal, so switching the feature off cannot strand money in the books.
+- Migration `2026-10-12-100000-quickbooks-payment-push.sql` adds two columns on
+  `accounting_connections` (`push_payments`, `push_payments_since`) and seven on
+  `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `pending_since`,
+  `claimed_at`, `sync_attempts`, `record_failed_count`, `push_generation`,
+  `terminal_reason`), three CHECK constraints and one partial index. It backfills
+  `breeze_origin = true` for existing invoice mappings, stamps
+  `push_payments_since = now()` on every existing connection, and types
+  `terminal_reason` from the legacy message texts — all under
+  `set_config('breeze.scope','system', true)`, each logging its row count as a
+  `WARNING`. No new tables, no RLS changes.
+- New per-connection setting `push_payments` (default **on**) beside the
+  existing `pull_payments` toggle on the QuickBooks integration card, and an
+  "In QuickBooks" / "QuickBooks sync failed" / "Syncing…" badge on each payment
+  row of an invoice.
+- **No new worker and no new queue.** Two job types (`push-payment`,
+  `delete-payment`) ride the existing `accounting-sync` queue, so the worker
+  count is unchanged. The mapping row itself is the outbox: `pending_op` is
+  written in the SAME transaction as the payment insert/delete, and the existing
+  15-minute `accounting-reconcile` sweep gained a second pass that re-enqueues
+  any mapping still owing QuickBooks work. A Redis outage therefore delays a
+  push by at most one sweep — it never loses one.
+- A payment push that keeps failing now GIVES UP after 100 attempts instead of
+  retrying forever: the mapping reads `QuickBooks payment push gave up after 100
+  attempts: <reason>. Fix the cause and push the invoice again.`, and the
+  invoice's "Push to QuickBooks" button clears the counter and tries again. An
+  attempt is one job try, not one sweep — the queue retries a failure five times
+  per enqueue and the reconcile sweep re-enqueues every 15 minutes — so the
+  practical horizon is about 20 sweeps, roughly five hours. A pending DELETE is
+  never capped: once Breeze created a Payment in QuickBooks it owns the removal.
+- Re-pushing a payment after somebody **deleted the QuickBooks Payment by hand**
+  now actually creates a new one. QuickBooks replays a create's original
+  response for a repeated `requestid` for 24 hours, so the retry key can no
+  longer be the payment id alone: each time the invoice fan-out re-owns a
+  mapping for a fresh create it bumps `push_generation` and the key becomes
+  `<payment id>:g<n>`. It still never changes across retries of the same push,
+  so a lost response cannot double-book the customer. Previously the re-push
+  reported success and re-linked the mapping to the deleted Payment, leaving the
+  invoice balance wrong in QuickBooks with no error shown.
+- **Voiding a PAID invoice no longer fails against QuickBooks.** QuickBooks
+  bumps an invoice's revision every time a payment is applied to it, so the
+  void was sent with a stale token and failed with `QuickBooks rejected the
+  invoice sync (HTTP 400)` five times before leaving the mapping in error —
+  even though QuickBooks does allow voiding an invoice that has a payment
+  applied. The void now re-reads the live revision and retries once (the same
+  handling the invoice push already had), reads the revision up front when the
+  mapping has none stored instead of refusing outright, and stores the revision
+  the void returns so the next write does not start stale. **This also fixes
+  v0.110.0**, where the bug is live.
+- The reconcile sweep's gate widened from `pull_payments` to
+  `pull_payments OR push_payments`, so a realm with pull off and push on now
+  runs the CDC pass. With pull off that pass touches Breeze's OWN payments only
+  — adopting a create whose response was lost, flagging a divergence, noticing a
+  Breeze-created Payment deleted in QuickBooks. Every QuickBooks-origin line is
+  suppressed and counted as `skipped_pull_disabled` on the run line: a new
+  import, an edit of one already imported (which would otherwise have rewritten
+  a Breeze payment amount) and a deletion (which would otherwise have deleted
+  the Breeze payment row). The CDC cursor is HELD while pull is off, so turning
+  `pull_payments` back on still imports everything from the window it was
+  switched off in — nothing is permanently skipped. The integration card's
+  "Last reconciled" still advances on those runs, so a pull-off connection does
+  not read as permanently stalled.
+- A **QuickBooks-origin payment can now be voided in Breeze when pull is off**
+  (or the realm is disconnected). Breeze refuses that void while payment
+  pull-back is running, because the next CDC sweep would re-import the row — but
+  with pull off no such sweep runs, so the refusal made the payment permanently
+  unremovable. The void now deletes the Breeze row and its mapping only; the
+  QuickBooks record is left exactly as it is, and it is audited as such — both
+  on the void entry (`quickbooksRecordUntouched`) and as its own
+  `invoice.payment.voided_quickbooks_untouched` entry, so the fact is recorded
+  however the void was initiated.
+- A QuickBooks **reauth outage no longer retires pending payment pushes.** A
+  payment job skipped because the realm is not connected records the reason on
+  the mapping but no longer counts as an attempt, so an outage longer than about
+  a day can no longer exhaust the 100-attempt budget and clear the outbox before
+  the operator reconnects. A pending DELETE whose QuickBooks id was never
+  recorded also now reaches its 24-hour give-up window while the realm is
+  disconnected, instead of waiting for a reconnect that may never come.
+- **Org erasure and org merge no longer discard a QuickBooks payment deletion
+  Breeze still owes.** A payment mapping with `pending_op = 'delete'` means
+  Breeze created a Payment in the partner's QuickBooks and has not yet removed
+  it; both sweeps deleted those rows unconditionally, which silently dropped the
+  removal and left the payment standing in the customer's books (the merge sweep
+  hit every in-flight owed delete for the whole partner, not just the merged
+  org). Both now keep those rows and log the count retained; the delete worker
+  removes them once QuickBooks confirms, or gives up loudly after 24 hours.
+- Re-pushing an invoice after payment activity no longer fails with a stale
+  SyncToken. QuickBooks bumps an Invoice's `SyncToken` every time a payment is
+  applied to it or removed, so the token Breeze stored at push time went stale
+  without Breeze ever writing the invoice again — "Push to QuickBooks" then
+  failed with `QuickBooks rejected the invoice sync (HTTP 400)` and parked the
+  mapping in `error`, which in turn blocked the payment fan-out with
+  `invoice_not_synced`. Breeze now re-reads the live revision on a QuickBooks
+  `Stale Object` fault and retries the update once. Pre-existing since Phase C,
+  so this also fixes it on v0.110.0.
+- Fixes #4542: `invoices.paid_at` is now cleared whenever an invoice falls out
+  of `paid` (a voided payment, a QuickBooks reversal, a refund) and on void.
+  Existing rows are NOT retro-corrected; the next recompute of an affected
+  invoice fixes it.
+- **Rollout note:** the sandbox walkthrough for this feature WAS run on
+  2026-09-06 (`docs/integrations/quickbooks-sandbox-verification.md`, Phase D2
+  checklist items 27-42): 28, 29, 31-42 PASS, 27 not run (the Intuit
+  Development webhook URL was not re-registered, #4545; echoes were driven by
+  "Sync now"), 30 blocked (no Stripe on the stack). Four defects were found and
+  fixed on the branch during the walk (the bullets above).
 
-**Hosted rollout TODO (Step 6, after `up -d api` in each region)** — one-off,
-delete once done:
+## AI agent builder (#5048 W01–W03, #5064, #5063)
 
-- [ ] US: the production verifier token, production `QBO_*` keys and
-      `QBO_ENVIRONMENT=production` were pre-staged in `.env` + compose on
-      2026-09-02 and take effect on this deploy. Verify the token mapped
-      through: `curl -s -o /dev/null -w '%{http_code}' -X POST
-      https://us.2breeze.app/api/v1/webhooks/quickbooks -H
-      'intuit-signature: bogus' -d '{}'` must print **401** (503 = token not
-      mapped, 404 = old image still running).
-- [ ] EU: production `QBO_*` keys pre-staged the same day; no webhook token
-      by design (one endpoint per app, EU relies on the sweep). Expect
-      **503** from the same curl against `eu.2breeze.app`.
-- [ ] Both regions: confirm `[AccountingReconcileWorker] Accounting reconcile
-      worker initialized` and the realm fingerprint backfill line in the API
-      log after boot.
-- [ ] The first partner to connect QuickBooks in prod is the first OAuth
-      against the production keys and the Production redirect URIs
-      (registered 2026-09-02) — watch that callback.
+**Operator-facing (Added / Improved).**
+- Settings → AI agents → **New agent** is now a four-step guided flow: Purpose and posture (mode first, kind cards, owner scope) → What it does (triggers + capability picker) → Safety and oversight → Review and create. The review card is evaluated **server-side** (`POST /ai/agents/preview`) with the same guardrail and catalog helpers the run loop uses, so what it says is what enforcement does.
+- The tool allowlist textarea is replaced by a **capability picker**: 15 capabilities, per-operation outcome badges (Approval request / Logged proposal / Executes unattended), a "Recommended for <kind>" preset, search across labels and literal names, and an "Always on: read-only tools" disclosure. Organization agents see operations outside the partner baseline as **Not in partner baseline**.
+- Truthful act-mode outcomes: **Run a script** stays an approval request until a script is authorized for the agent (`actAssets.scriptIds`); the picker and the review card say so instead of promising an unattended run.
+- Recipient roles with no active members are marked in the form, and the act-mode "recipient" error now says the selected roles have no active members instead of "add a recipient".
+- The edit drawer now lays out an agent the way the create flow does: "When it runs" and Permissions first, then a **Safety and oversight** block with protected services / paths / registry keys, unattended authorization, limits and notification roles. Protected resources moved out of the Permissions section into that block.
 
-## Contract lines billed by device role (#3205)
+**Self-Hosting / Upgrade Notes.**
+- No new env vars, no migrations. The whole feature is still behind `BREEZE_AI_AGENTS_ENABLED` (default `false`); `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` unchanged.
+- API additions, all additive: `GET /ai/agents/tool-catalog`, `GET /ai/agents/ceiling?kind=` (now also carries the baseline's `scriptIds`), `POST /ai/agents/preview`; `GET /roles` gains `activeUserCount` beside `userCount`; catalog operations gain `actRequiresAuthorizedScripts`.
+- Behaviour change (API): a PATCH/POST on an **organization-owned** agent that adds a `supervisedActionKeys` entry the row does not already hold is now refused with `422 supervised_keys_grant_only` — keys reach org rows only through the four-eyes graduation grant. Partner rows are unaffected.
+- Behaviour change (API): the partner ∩ org policy merge is now wildcard-aware for `toolAllowlist` / `supervisedActionKeys` (a bare `manage_services` on the baseline no longer erases an org's `manage_services:restart`).
+- Known gap: there is no UI yet to authorize scripts for unattended act mode (#5065); until it ships, `actAssets.scriptIds` is set through the API.
 
-**Self-Hosting / Upgrade Notes**
+---
 
-- Migration `2026-10-05-100100-contract-lines-device-roles.sql` replaces the
-  `contract_lines.site_id` foreign key with a composite one to `sites(id, org_id)`.
-  Before adding it, it **clears `site_id` on any contract line whose site belongs
-  to a different organization** (such lines silently counted zero devices before).
-  The count is logged as a Postgres `WARNING` (`cleaned N contract_lines rows whose
-  site belonged to another org`); if N > 0, re-scope those lines in the contract
-  editor before the next billing run.
-- Adding a contract line with a site from another organization now returns
-  `400 SITE_NOT_IN_ORG` instead of being accepted.
-- New billing-worker log line
-  `[contract-billing] uncovered devices: contract <id> has N billable device(s) no line bills — {...}`
-  fires on every sweep for role-billed contracts that have unclassified (`unknown`)
-  devices or roles no line covers. Informational: classify the devices or add a line.
-
-**Behaviour**
-
-- New contract line type **Per device role** bills a set of device roles (e.g.
-  switch + router + firewall). `unknown` is never billable. Contract estimates and
-  generated invoices now report how many devices no line bills, by role.
-- New contract line type **Per device group** bills the members of a device group. Dynamic groups are evaluated live at estimate and invoice time; a group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
-
-### Contract line editing (W03)
-
-**Behaviour**
-
-- Contract lines are now **editable in place** on draft and active contracts
-  (`PATCH /api/v1/contracts/:id/lines/:lineId`, and the AI `manage_contracts`
-  action `update_line`). The line keeps its id, so an already-generated draft
-  invoice stays linked to it — deleting and re-adding a line used to wedge that
-  invoice with `SOURCE_NOT_FOUND` on issue. The **line type** cannot be changed;
-  remove the line and add a new one.
-- All three line mutations now write audit events: `contract.line.added`,
-  `contract.line.updated`, `contract.line.removed` (resource type `contract`,
-  resource id the contract). The payload carries the line id, the line type, the
-  names of the changed columns and, for a price change, the old and new unit
-  price — no descriptions, site names or group names.
-
-**Self-Hosting / Upgrade Notes** — four deliberate behaviour changes, no migration:
-
-- Generated invoice lines now use deterministic `(sortOrder, createdAt, id)` ordering; lines tied on `sortOrder` may appear in a different order.
-- `DELETE /api/v1/contracts/:id/lines/:lineId` now returns **404
-  `LINE_NOT_FOUND`** for a line that does not exist (previously a silent 200),
-  and its success body is `{"data":{"ok":true}}` (previously `{}`).
-- `unitPrice`, `manualQuantity` (max 10 digits before the decimal point) and
-  `sortOrder` (max 2147483647) bounds now apply on line **create** as well as
-  update. Input that previously reached Postgres and returned a 500 is now a 400.
-- A stale or foreign `catalogItemId` when **adding** a line is now
-  `400 CATALOG_ITEM_NOT_FOUND` instead of a 500.
-
-## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
-
-Only fold this in once the whole chain above is merged. It is one feature in
-seven stacked PRs; a partial merge ships columns and a flag with nothing
-reading them, which is safe but not worth announcing.
-
-**Summary (operator-facing)**
-
-New hosted self-serve partners start in **probation**: they can enrol up to 5
-devices and see inventory, patching and alerts, but remote control, script and
-command execution, and installer distribution (links, short-links, onboarding
-tokens, Quick Support codes, third-party remote launch) are refused until a
-settled 3DS card payment has aged 24 hours or a platform admin approves them
-from an evidence-card email or the new **Admin → Trust queue** page. Existing
-partners are grandfathered (`trust_state` defaults to `trusted`). Suspicious
-signups (Tor, card fingerprint or fraudulent-refund identity match, shared
-network **plus** a corroborating axis) are auto-restricted, never
-auto-suspended.
-
-**Self-Hosting / Upgrade Notes**
-
-- **No action needed for self-hosters.** `PARTNER_TRUST_MODE` resolves to
-  `off` unless `IS_HOSTED=true`, regardless of its value; with it off no new
-  code path performs a database read, Redis call or network call, and every
-  gate is a no-op. The guided-setup smoke job asserts a fresh self-hosted
-  stack can still open a remote session.
-- Migration `2026-10-03-partner-trust-probation.sql`: adds enums
-  `partner_trust_state`, `ip_class`; `partners.trust_state` (default
-  `trusted`), `trust_changed_at/by`, `trust_reason`,
-  `trust_review_requested_at`, `probation_enrollments`,
-  `signup_ip_class/asn/classified_at`; `devices.enrollment_ip_class/asn/
-  classified_at`; one partial index. Idempotent, no backfill, no table
-  rewrite.
-- New **optional** env vars (missing = feature off / fallback; never fail
-  boot; map in the `api` compose `environment:` block when set):
-  `PARTNER_TRUST_MODE` (`off | shadow | enforce`; hosted default `shadow`),
-  `IP_CLASSIFY_PROVIDER` (`ipinfo | ipdata | none`), `IP_CLASSIFY_API_KEY`,
-  `TRUST_ACTION_TOKEN_SECRET` (falls back to `JWT_SECRET`),
-  `PARTNER_MEETING_URL` (shown on the probation banner).
-- New BullMQ jobs on the existing `abuse-signals` queue: `ip-classify`
-  (event-driven) and `partner-trust-promote` (every 15 min). The
-  `abuse-signals-sweep` cadence changes from hourly to every 15 minutes
-  (`22,37,52,7 * * * *`).
-- New audit actions: `partner.trust.probation`, `partner.trust.promoted`,
-  `partner.trust.restricted`, `partner.trust.review_requested`,
-  `partner.trust.capability_denied` (details carry `mode`, `capability`,
-  `reason`, `route`).
-- New routes: `GET /partner/trust`, `POST /partner/trust/request-review`
-  (partner scope); `POST /admin/partners/:id/trust/promote|restrict`,
-  `GET /admin/trust/queue`, `GET /admin/trust/act/preview`,
-  `POST /admin/trust/act` (platform admin + MFA). Web: `/admin/trust-queue`,
-  `/admin/trust/act`.
-- Gated 403 bodies use a stable contract
-  `{ error: 'TRUST_PROBATION' | 'TRUST_RESTRICTED', capability, reason,
-  reviewRequested, meetingUrl }`; the web app turns them into the
-  "Verification pending" banner instead of a generic error toast.
-- breeze-billing (rebuild the `billing` container on each droplet): signup
-  Checkout is now **card-only with 3DS requested** (Link disabled — every
-  fraudulent capture to date arrived via Link); two new internal endpoints
-  `GET /internal/partners/:id/settled-card-charge` and
-  `…/fraudulent-refund-match`; one new idempotent index on `billing_events`.
-
-## Device billing coverage and coverage-notice deep links (#3205 W06)
-
-**Self-Hosting / Upgrade Notes**
-
-- No migration, no schema change, no new env var, no feature flag.
-- New route `GET /api/v1/devices/:id/billing`, gated on **partner or system**
-  scope plus **both** `devices:read` and `contracts:read`. API keys cannot reach
-  it: there is no `contracts:read` API-key scope.
-
-**Behaviour worth naming so it is not read as a bug**
-
-- The device Overview **Billing** card needs Contracts read access and a
-  partner-scoped login; organization-scoped users do not see it, matching every
-  other contracts screen.
-- The card counts **active** contracts only, so a device covered by a *draft*
-  contract still reads "no active contract line bills this device" until the
-  contract is activated.
-- A deep link from a contract's coverage warning carries its organization, so a
-  pasted link switches the recipient's org scope to the contract's org.
-
-**Hosted rollout TODO (one-off, delete once done)**
-
-- [ ] Deploy billing first (both regions), then the API/web images.
-- [ ] Grant `is_platform_admin = true` to the operator account — production
-      has none, and the trust queue page and the email action links require
-      it.
-- [ ] Leave `PARTNER_TRUST_MODE` at its `shadow` default for 7 days; new
-      signups enter probation but nothing is denied. Run
-      `apps/api/scripts/partner-trust-shadow-report.sql` (as `doadmin`, with
-      `SET breeze.scope = 'system'`) and check the acceptance rule in the
-      header.
-- [ ] Set `PARTNER_TRUST_MODE=enforce` + compose mapping, `up -d api`; then
-      run `apps/api/scripts/partner-trust-backfill.sql` (dry-run first) and
-      the `partner-trust:backfill-cards` hand-off documented in its header.
-- [ ] Optional: set `IP_CLASSIFY_PROVIDER`/`IP_CLASSIFY_API_KEY` so
-      auto-promotion can run; without them signups classify as `unknown` and
-      promotion is manual only.
-
-## Contract line included quantity and overage (#3205 W04)
-
-**Contracts: included quantity and overage.** A per-device, per-device-role, per-device-group or per-seat contract line can now include a fixed quantity (for example "up to 25 devices included") and either bill the extras at a second rate or flag them for review. A billed overage becomes its own line on the invoice, directly under the line it belongs to, so the customer sees the count and the rate. A flagged overage is never invoiced silently: it shows on the contract estimate, on the result of Generate now, and in the nightly billing log.
-
-## Device-set quote lines (#3205 W05, #4693)
-
-**Billing by a device set on quotes.** A recurring quote line can now price every device, selected device roles, one device group, or active users. Breeze supplies the quantity, including zero for a new customer with nothing enrolled. The customer document labels the number as an estimate and explains that billing uses the actual count each period. Accepting the quote creates the matching auto-quantity contract line and freezes the unit price the customer accepted.
-
-Counts update when a line is added or its device-set or allowance settings are edited, or when an operator refreshes a draft. The estimate endpoint is read-only. Sending reports count drift but does not change the approved quote, and acceptance does not refresh the estimate. A device group priced by a draft, sent, or viewed quote cannot be deleted until the quote line is removed.
-
-**Site deletion now fails loudly (#4693).** From this release, deleting a site used by a site-scoped contract line makes invoice generation refuse with 409 `SITE_DELETED` instead of silently billing every device in the organization. This is intentionally louder than the old behavior. An operator who deletes a site under an active contract now gets a failed generation and a Sentry report where an inflated invoice could previously go unnoticed. Re-scope or remove the affected line before generating again.
-
-There is one accepted residual. A line whose site was deleted before this release has no recoverable site name, so it remains ambiguous and continues billing organization-wide until a technician re-scopes it. Operators who suspect an affected contract can look for a `per_device` line with no site on a contract that used to have one. The migration's `RAISE WARNING` row count records how many existing lines were protected by the site-name backfill.
-
-**Direct API and AI clients.** `PATCH /quotes/:id/lines/:lineId` now returns 400 for an unrecognized key instead of accepting the request while changing nothing.
-
-There is no feature flag and no acceptance-hash backfill. `quote_acceptances.hash_version` defaults to `1`, so every signature already on file continues to verify with the exact algorithm that produced it. New acceptances use hash version 2.
-- **Billing evidence per invoice.** Contract-generated invoices now record the exact devices behind every auto-counted line, at generation time, and each billed period records what it did *not* bill (uncovered devices by role, flagged and billed overage totals). Expand any counted line on the invoice detail to see the devices; a device deleted or moved later still appears by hostname. An optional "Billed devices" appendix can be printed on the invoice PDF -- off by default, set per partner or per draft invoice, and frozen once the invoice is issued. Invoices generated before this release have no device detail and say so; there is no backfill, because the device set was never stored to backfill from.

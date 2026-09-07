@@ -105,7 +105,12 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
   useEffect(() => () => onUnsavedChange?.(null), [onUnsavedChange]);
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2" data-testid="quote-header-meta">
+    // min-w-52, not min-w-0: this slot is a flex child of DocumentWorkspace's
+    // title cluster, and a zero floor let the header row shrink it below its own
+    // content — the input measured 102px against 208px of text at a 1280px
+    // viewport (#4937). The floor is what makes the cluster wrap the status pill
+    // onto the next line instead of taking the title's last pixels.
+    <div className="flex min-w-52 flex-1 items-center gap-2" data-testid="quote-header-meta">
       {/* NOT an <h1> wrapper: "heading level 1, edit text" is a confusing AT
           announcement. DocumentWorkspace renders an sr-only h1 with the
           document identity whenever a titleSlot replaces the visual heading. */}

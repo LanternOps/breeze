@@ -139,7 +139,7 @@ describe('AddDnsIntegrationModal', () => {
 
   it('renders inline error and keeps modal open when API rejects (does NOT close on failure)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ error: 'organizationId is required for Cisco Umbrella' }, false, 400),
+      makeJsonResponse({ error: 'Cisco Umbrella rejected the supplied credentials' }, false, 400),
     );
     const onClose = vi.fn();
     const onCreated = vi.fn();
@@ -149,11 +149,12 @@ describe('AddDnsIntegrationModal', () => {
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Umbrella Prod' } });
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'k' } });
     fireEvent.change(screen.getByLabelText('API secret'), { target: { value: 's' } });
-    // Intentionally leave Organization ID blank to trigger server-side validation
+    // Organization ID stays blank on purpose: it is optional since #4597, so
+    // the rejection here is the server's, not a client-side validation gate.
     fireEvent.click(screen.getByRole('button', { name: /Add integration/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/organizationId is required/);
+      expect(screen.getByRole('alert')).toHaveTextContent(/rejected the supplied credentials/);
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(onCreated).not.toHaveBeenCalled();

@@ -251,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} pasó",
       "failed": "{{count}} falló",
-      "skipped": "{{count}} omitido"
+      "skipped": "{{count}} omitido",
+      "cancelled": "{{count}} cancelado"
     },
     "duration": "Duración: {{duration}}",
     "progress": {
@@ -265,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Ocultar registros",
-      "viewLogs": "Ver registros"
+      "viewLogs": "Ver registros",
+      "cancelRun": "Cancelar ejecución",
+      "partnerScopeTooltip": "Esta ejecución se aplica a todas las organizaciones de su cuenta de socio. Pídale a un administrador de socio completo que la cancele, o detenga ejecuciones individuales en sus propios dispositivos.",
+      "confirmCancelRunTitle": "¿Cancelar esta ejecución?",
+      "confirmCancelRunMessage": "Breeze detendrá cada ejecución de script que esta ejecución aún esté esperando. Las acciones ya en curso pueden finalizar antes de poder detenerse.",
+      "uncancellableActions_one": "{{count}} acción no se pudo detener y puede seguir ejecutándose por su cuenta.",
+      "uncancellableActions_other": "{{count}} acciones no se pudieron detener y pueden seguir ejecutándose por su cuenta.",
+      "cancelRunSuccess_one": "Cancelado: {{count}} ejecución detenida.",
+      "cancelRunSuccess_other": "Cancelado: {{count}} ejecuciones detenidas."
     },
     "timestamps": {
       "started": "Iniciado: {{date}}",
@@ -304,6 +313,9 @@
       "untitled": "Script",
       "awaiting": "Esperando la respuesta del agente…",
       "truncated": "Salida truncada: consulta el historial de scripts del dispositivo para ver el texto completo."
+    },
+    "errors": {
+      "cancelRun": "No se pudo cancelar la ejecución."
     }
   },
   "automationsPage": {
@@ -717,11 +729,19 @@
     },
     "empty": "No se encontraron ejecuciones. Intente ajustar sus filtros.",
     "actions": {
-      "viewDetails": "Ver detalles"
+      "viewDetails": "Ver detalles",
+      "stop": "Detener",
+      "forceStop": "Detener inmediatamente",
+      "confirmStopTitle": "¿Detener esta ejecución?",
+      "confirmStopMessage": "Breeze le pedirá al dispositivo que detenga {{script}}. Esto puede tardar unos segundos. \"Detener inmediatamente\" omite el período de gracia y finaliza el proceso de inmediato."
     },
     "pagination": {
       "showing": "Mostrando {{start}} a {{end}} de {{total}}",
       "page": "Página {{page}} de {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Esta ejecución ya terminó y ya no se puede detener.",
+      "cancelFailed": "No se pudo detener la ejecución."
     }
   },
   "scriptAiInput": {

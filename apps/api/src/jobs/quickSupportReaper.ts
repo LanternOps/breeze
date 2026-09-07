@@ -5,6 +5,7 @@ import { devices, supportSessions } from '../db/schema';
 import { deleteDeviceCascade, type DeviceDeletionTx } from '../services/deviceDeletion';
 import { endSupportSession } from '../services/quickSupportEnd';
 import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Quick Support reaper — the safety net for ad-hoc support sessions.
@@ -226,6 +227,7 @@ async function scheduleQuickSupportReaperJobs(): Promise<void> {
 export async function initializeQuickSupportReaper(): Promise<void> {
   try {
     reaperWorker = createQuickSupportReaperWorker();
+  attachWorkerObservability(reaperWorker, 'quickSupportReaper');
     reaperWorker.on('error', (error) => console.error('[QuickSupportReaper] Worker error:', error));
     reaperWorker.on('failed', (job, error) => console.error(`[QuickSupportReaper] Job ${job?.id} failed:`, error));
     await scheduleQuickSupportReaperJobs();

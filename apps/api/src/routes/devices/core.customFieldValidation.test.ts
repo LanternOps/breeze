@@ -92,13 +92,19 @@ vi.mock('../agents/enrollment', () => ({
 // validateCustomFieldMap, which calls loadVisibleCustomFieldDefinitions under
 // a SYSTEM db context. Mocked at the module boundary (see
 // customFieldValues.test.ts for the same pattern).
+//
+// #3257 W05: the actual value write is `persistDeviceCustomFieldValues`
+// (upsert into `device_custom_field_values`), called BEFORE the `devices`
+// UPDATE below and no longer folded into that UPDATE's `updates` set — mocked
+// the same way.
 vi.mock('../../services/customFields/queries', () => ({
   loadVisibleCustomFieldDefinitions: vi.fn(),
+  persistDeviceCustomFieldValues: vi.fn(),
 }));
 
 import { coreRoutes } from './core';
 import { db } from '../../db';
-import { loadVisibleCustomFieldDefinitions } from '../../services/customFields/queries';
+import { loadVisibleCustomFieldDefinitions, persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 import type { VisibleCustomFieldDefinition } from '../../services/customFields/queries';
 
 const ORG_ID = 'org-123';
@@ -152,6 +158,10 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     vi.clearAllMocks();
     app = new Hono();
     app.route('/devices', coreRoutes);
+    // Return value is never read by the handler (the devices UPDATE's own
+    // RETURNING carries the trigger-rebuilt projection instead), but must
+    // resolve rather than throw.
+    vi.mocked(persistDeviceCustomFieldValues).mockResolvedValue([]);
   });
 
   it('rejects an invalid custom field on PATCH /devices/:id and writes nothing', async () => {
@@ -170,6 +180,7 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     expect(body.code).toBe('invalid-custom-field-value');
     expect(body.fields).toEqual([{ fieldKey: 'purchase_date', reason: 'invalid_date' }]);
     expect(updateSpy.set).not.toHaveBeenCalled();
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 
   it('rejects the WHOLE PATCH — including a valid displayName — when customFields fails', async () => {
@@ -187,6 +198,7 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
 
     expect(res.status).toBe(400);
     expect(updateSpy.set).not.toHaveBeenCalled();
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 
   it('is all-or-nothing on a MIXED valid+invalid customFields map', async () => {
@@ -206,6 +218,7 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     expect(res.status).toBe(400);
     expect((await res.json()).fields).toEqual([{ fieldKey: 'rack_units', reason: 'invalid_type' }]);
     expect(updateSpy.set).not.toHaveBeenCalled();
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 
   it('rejects a value for a definition scoped to a device type the device is not', async () => {
@@ -222,6 +235,7 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     expect(res.status).toBe(400);
     expect((await res.json()).fields).toEqual([{ fieldKey: 'rustdesk_id', reason: 'not_applicable_to_device' }]);
     expect(updateSpy.set).not.toHaveBeenCalled();
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown custom field key on PATCH /devices/:id', async () => {
@@ -237,9 +251,16 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
 
     expect(res.status).toBe(400);
     expect((await res.json()).fields).toEqual([{ fieldKey: 'nope', reason: 'unknown_field' }]);
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 
-  it('accepts a valid custom field value and stores the coerced value on PATCH /devices/:id', async () => {
+  it('accepts a valid custom field value, writes it via persistDeviceCustomFieldValues (not the devices UPDATE set), and does not put customFields in that set', async () => {
+    // #3257 W05: `devices.custom_fields` is a trigger-maintained projection —
+    // the PATCH handler must NOT put `customFields` in its own `updates`
+    // object anymore. The coerced value is asserted on the
+    // `persistDeviceCustomFieldValues` call instead of on the devices UPDATE's
+    // `set()` argument (see queries.test.ts / customFieldValues.test.ts for
+    // the same shift).
     mockVisibleDefinitions([{ fieldKey: 'rack_units', type: 'number' }]);
     rigDeviceLookup(ACCESSIBLE_DEVICE);
     let written: Record<string, unknown> | undefined;
@@ -257,10 +278,16 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
     });
 
     expect(res.status).toBe(200);
-    expect((written?.customFields as Record<string, unknown> | undefined)?.rack_units).toBe(4);
+    expect(written).not.toHaveProperty('customFields');
+    expect(vi.mocked(persistDeviceCustomFieldValues)).toHaveBeenCalledWith(
+      DEVICE_ID,
+      ORG_ID,
+      [{ definitionId: 'def-rack_units', fieldKey: 'rack_units', type: 'number', value: 4 }],
+      'manual',
+    );
   });
 
-  it('does not touch definitions or validation when the PATCH has no customFields key', async () => {
+  it('does not touch definitions, validation, or the value writer when the PATCH has no customFields key', async () => {
     rigDeviceLookup(ACCESSIBLE_DEVICE);
     rigPlainUpdate({ ...ACCESSIBLE_DEVICE, displayName: 'renamed' });
 
@@ -272,5 +299,6 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
 
     expect(res.status).toBe(200);
     expect(loadVisibleCustomFieldDefinitions).not.toHaveBeenCalled();
+    expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();
   });
 });

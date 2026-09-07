@@ -19,9 +19,23 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
+import type { Worker } from 'bullmq';
 import { Gauge } from 'prom-client';
 
 const SCRAPE_TOKEN = 'worker-scrape-token';
+
+/** The subset of `declareExpectedConsumers`'s input these tests drive. */
+type DeclareExpectedConsumersInput = {
+  role: string;
+  redisAvailable: boolean;
+  abuseSignalsEnabled: boolean;
+  partnerTrustEnabled: boolean;
+  auditChainVerifyEnabled: boolean;
+  eventDispatchEnabled: boolean;
+  aiAgentsEnabled: boolean;
+  registry: { expect(name: string, required: boolean): void };
+};
 
 const mocks = vi.hoisted(() => {
   return {
@@ -51,6 +65,12 @@ const mocks = vi.hoisted(() => {
     registerAiAgentEnqueuer: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
+    partnerTrustMode: vi.fn(() => 'off'),
+    auditChainVerifyEnabled: vi.fn(() => true),
+    abuseSignalsEnabled: vi.fn(() => false),
+    eventDispatchMode: vi.fn(() => 'off' as const),
+    declareExpectedConsumers: vi.fn<(input: DeclareExpectedConsumersInput) => void>(),
+    consumersForInitializer: vi.fn((_name: string): readonly string[] => []),
     startRegisteredWorkers: vi.fn(
       async (_role: string, hooks: { onResult: (n: string, ok: boolean, e?: unknown) => void }) => {
         hooks.onResult('fakeGlobalWorker', true);
@@ -73,7 +93,15 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('./config/env', () => ({ breezeRole: mocks.breezeRole }));
+vi.mock('./config/partnerTrustMode', () => ({ partnerTrustMode: mocks.partnerTrustMode }));
+vi.mock('./config/auditChainVerify', () => ({ auditChainVerifyEnabled: mocks.auditChainVerifyEnabled }));
+
+vi.mock('./config/env', () => ({
+  breezeRole: mocks.breezeRole,
+  abuseSignalsEnabled: mocks.abuseSignalsEnabled,
+  eventDispatchMode: mocks.eventDispatchMode,
+  AI_AGENTS_ENABLED: false,
+}));
 vi.mock('./config/validate', () => ({ validateConfig: mocks.validateConfig }));
 vi.mock('./services/sentry', () => ({
   initSentry: mocks.initSentry,
@@ -129,6 +157,16 @@ vi.mock('./services/webhookFanoutDeps', () => ({ buildWebhookFanoutDeps: mocks.b
 vi.mock('./services/workerRegistry', () => ({
   startRegisteredWorkers: mocks.startRegisteredWorkers,
   buildWorkerShutdownTasks: mocks.buildWorkerShutdownTasks,
+}));
+// Track C: the manifest is mocked WHOLESALE so each test controls the declared
+// consumer set directly (the real one declares the whole worker-role registry).
+// `./services/workerReadinessRegistry` is deliberately NOT mocked — it is a
+// leaf with no side effects, and the real registry is what makes the
+// fail-closed ("declared but never attached") assertions real rather than a
+// test of our own mock.
+vi.mock('./jobs/workerReadinessManifest', () => ({
+  declareExpectedConsumers: mocks.declareExpectedConsumers,
+  consumersForInitializer: mocks.consumersForInitializer,
 }));
 vi.mock('./jobs/eventDispatchWorker', () => ({
   initializeEventDispatchWorker: mocks.initializeEventDispatchWorker,
@@ -190,6 +228,30 @@ function getJson(port: number, path: string): Promise<{ status: number; body: un
   });
 }
 
+/** Minimal Worker-shaped double the registry accepts: events + isRunning() + a ready client. */
+function fakeBullmqWorker() {
+  return Object.assign(new EventEmitter(), {
+    isRunning: () => true,
+    client: Promise.resolve({ status: 'ready' }),
+  });
+}
+
+/** The registry instance worker.ts is using in THIS test's module generation (after vi.resetModules). */
+async function liveRegistry() {
+  return (await import('./services/workerReadinessRegistry')).workerReadinessRegistry;
+}
+
+/** Raw GET returning the body as TEXT — for asserting on what is (not) serialized. */
+function getText(port: number, path: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: data }));
+    }).on('error', reject);
+  });
+}
+
 /**
  * Raw GET returning the body as TEXT plus headers — `/metrics` renders
  * Prometheus exposition format, not JSON, so `getJson` cannot read it.
@@ -243,8 +305,17 @@ beforeEach(() => {
   mocks.loadBuiltinExtensions.mockResolvedValue(undefined);
   mocks.createExtensionStateStore.mockReturnValue({});
   mocks.buildWebhookFanoutDeps.mockReturnValue({});
+  mocks.abuseSignalsEnabled.mockReturnValue(false);
+  mocks.partnerTrustMode.mockReturnValue('off');
+  mocks.auditChainVerifyEnabled.mockReturnValue(true);
+  mocks.eventDispatchMode.mockReturnValue('off');
+  mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+    registry.expect('fakeGlobalWorker', true);
+  });
+  mocks.consumersForInitializer.mockImplementation((name: string) => (name === 'fakeGlobalWorker' ? ['fakeGlobalWorker'] : []));
   mocks.startRegisteredWorkers.mockImplementation(
     async (_role: string, hooks: { onResult: (n: string, ok: boolean, e?: unknown) => void }) => {
+      (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
       hooks.onResult('fakeGlobalWorker', true);
     },
   );
@@ -291,9 +362,14 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     mocks.initializeDatabaseForStartup.mockImplementation(async () => { order.push('roleVerification'); });
     mocks.registerAiAgentEnqueuer.mockImplementation(() => { order.push('registerAiAgentEnqueuer'); });
     mocks.registerAllEventSubscribers.mockImplementation(() => { order.push('registerAllEventSubscribers'); });
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      order.push('declareExpectedConsumers');
+      registry.expect('fakeGlobalWorker', true);
+    });
     mocks.startRegisteredWorkers.mockImplementation(
       async (_role: string, hooks: { onResult: (n: string, ok: boolean, e?: unknown) => void }) => {
         order.push('startRegisteredWorkers');
+        (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
         hooks.onResult('fakeGlobalWorker', true);
       },
     );
@@ -307,6 +383,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'roleVerification',
       'registerAiAgentEnqueuer',
       'registerAllEventSubscribers',
+      'declareExpectedConsumers',
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
@@ -331,6 +408,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     mocks.startRegisteredWorkers.mockImplementation(
       async (_role: string, hooks: { onResult: (n: string, ok: boolean, e?: unknown) => void }) => {
         await startGate;
+        (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
         hooks.onResult('fakeGlobalWorker', true);
       },
     );
@@ -351,6 +429,141 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     const finalSnapshot = await worker._getReadinessForTest().get();
     expect(finalSnapshot.ready).toBe(true);
     expect(finalSnapshot.workers).toBe(true);
+    // Redis is mandatory in this entrypoint, so the worker-role consumer set is
+    // declared with redisAvailable: true and the flag inputs resolved at
+    // declare time (spec D3a).
+    expect(mocks.declareExpectedConsumers).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'worker',
+      redisAvailable: true,
+      abuseSignalsEnabled: false,
+      partnerTrustEnabled: false,
+      auditChainVerifyEnabled: true,
+      eventDispatchEnabled: false,
+      aiAgentsEnabled: false,
+    }));
+  });
+
+  it('passes live trust and audit kill-switch values into readiness declaration', async () => {
+    mocks.partnerTrustMode.mockReturnValue('shadow');
+    mocks.auditChainVerifyEnabled.mockReturnValue(false);
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+    expect(mocks.declareExpectedConsumers).toHaveBeenCalledWith(expect.objectContaining({
+      abuseSignalsEnabled: false,
+      partnerTrustEnabled: true,
+      auditChainVerifyEnabled: false,
+    }));
+  });
+
+  it('stays not-ready in the pre-declaration window — an empty registry is never vacuously ready', async () => {
+    // Between migration parity and declareExpectedConsumers the registry is
+    // EMPTY, so requiredConsumersRunnable() is vacuously true; only the
+    // workersInitialized gate (workerInitPhase === 'started') keeps that
+    // window not-ready. Sample readiness inside it.
+    let releaseDeclare!: () => void;
+    const declareGate = new Promise<void>((resolve) => { releaseDeclare = resolve; });
+    let declareReached!: () => void;
+    const reachedDeclare = new Promise<void>((resolve) => { declareReached = resolve; });
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      declareReached();
+      void declareGate.then(() => registry.expect('fakeGlobalWorker', true));
+    });
+    // startRegisteredWorkers must not attach before the (deferred) declaration.
+    mocks.startRegisteredWorkers.mockImplementation(async (_role, hooks) => {
+      await declareGate;
+      (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
+      hooks.onResult('fakeGlobalWorker', true);
+    });
+
+    const worker = await importFreshWorker();
+    await reachedDeclare;
+
+    const preDeclare = await worker._getReadinessForTest().get();
+    expect(preDeclare).toMatchObject({ ready: false, db: true, redis: true, workers: false });
+    expect(Object.keys(preDeclare.consumers)).toEqual([]);
+
+    releaseDeclare();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+    expect((await worker._getReadinessForTest().get()).ready).toBe(true);
+  });
+
+  it('stays not-ready when a declared consumer never attaches (fail-closed half of D4)', async () => {
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      registry.expect('fakeGlobalWorker', true);
+      registry.expect('neverAttached', true);
+    });
+    const worker = await importFreshWorker();
+    const port = await waitForListening(worker);
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    const snapshot = await worker._getReadinessForTest().get();
+    expect(snapshot).toMatchObject({ ready: false, db: true, redis: true, workers: false });
+    const response = await getJson(port, '/health/ready');
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({ ready: false, reason: 'workers-pending', role: 'worker' });
+  });
+
+  it('records initialization failure for every consumer of a failed registry entry AND of a failed eventDispatch', async () => {
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      for (const n of ['fakeGlobalWorker', 'brokenA', 'brokenB', 'eventDispatch', 'eventDispatchMaintenance']) {
+        registry.expect(n, n !== 'eventDispatchMaintenance');
+      }
+    });
+    mocks.consumersForInitializer.mockImplementation((name: string) =>
+      name === 'brokenEntry' ? ['brokenA', 'brokenB']
+        : name === 'eventDispatch' ? ['eventDispatch', 'eventDispatchMaintenance']
+          : name === 'fakeGlobalWorker' ? ['fakeGlobalWorker'] : []);
+    mocks.startRegisteredWorkers.mockImplementation(async (_role, hooks) => {
+      (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
+      hooks.onResult('fakeGlobalWorker', true);
+      hooks.onResult('brokenEntry', false, new TypeError('boom'));
+    });
+    mocks.initializeEventDispatchWorker.mockRejectedValue(new RangeError('dispatch boom'));
+    const worker = await importFreshWorker();
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    const consumers = (await liveRegistry()).snapshot();
+    expect(consumers.brokenA).toMatchObject({ state: 'failed', lastErrorCode: 'TypeError' });
+    expect(consumers.brokenB).toMatchObject({ state: 'failed', lastErrorCode: 'TypeError' });
+    expect(consumers.eventDispatch).toMatchObject({ state: 'failed', lastErrorCode: 'RangeError' });
+    expect((await worker._getReadinessForTest().get()).ready).toBe(false);
+    expect(mocks.captureException).toHaveBeenCalledTimes(2);
+  });
+
+  it('never serializes consumer names, timestamps, or error codes on /health/ready (mirror of routes/readiness.test.ts)', async () => {
+    const leaky = fakeBullmqWorker();
+    mocks.declareExpectedConsumers.mockImplementation(({ registry }) => {
+      registry.expect('leaky-postgres-primary.internal', true);
+    });
+    mocks.startRegisteredWorkers.mockImplementation(async (_role, hooks) => {
+      (await liveRegistry()).attach('leaky-postgres-primary.internal', leaky as unknown as Worker);
+      hooks.onResult('leaky-postgres-primary.internal', true);
+    });
+    const worker = await importFreshWorker();
+    const port = await waitForListening(worker);
+    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
+
+    const ok = await getJson(port, '/health/ready');
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({
+      role: 'worker', ready: true, db: true, redis: true, workers: true, checkedAt: expect.any(String),
+      consumerSummary: { required: 1, runnable: 1, unavailable: 0, optionalRunning: 0, optionalDisabled: 0 },
+    });
+
+    (await leaky.client).status = 'reconnecting';
+    leaky.emit('error', Object.assign(new Error('redis://secret.internal:6379'), { name: 'RedisSecretError' }));
+    const degraded = await getText(port, '/health/ready');
+    expect(degraded.status).toBe(503);
+    expect(JSON.parse(degraded.text)).toEqual({
+      reason: 'workers-pending', role: 'worker', ready: false, db: true, redis: true, workers: false, checkedAt: expect.any(String),
+      consumerSummary: { required: 1, runnable: 0, unavailable: 1, optionalRunning: 0, optionalDisabled: 0 },
+    });
+    // The three redaction assertions the API-side test carries: name, timestamp, error code.
+    expect(degraded.text).not.toContain('leaky-postgres-primary');   // registry name
+    expect(degraded.text).not.toContain('"transitionedAt"');         // per-consumer timestamp field
+    expect(degraded.text).not.toContain('RedisSecretError');         // error code
+    expect(degraded.text).not.toContain('secret.internal');          // error message / endpoint
+    expect(degraded.text).not.toContain('"consumers"');              // the snapshot map itself
   });
 
   it('reports migrations-pending over HTTP while parity is pending, then exits non-zero on failure', async () => {

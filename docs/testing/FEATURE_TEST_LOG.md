@@ -4,6 +4,78 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Network device detail page + discovered asset list (branch `network-assets-list`) — 2026-09-06
+
+**Branch:** `network-assets-list`
+**Commit:** `8478c85c0` (fixes) on top of `ec3430dd7`
+**Tested by:** Claude (Playwright MCP against a `pnpm wt-stack` per-worktree stack)
+**Result:** PASS after one inline fix
+
+### What was tested
+- [x] UI: `/discovery#assets` list renders 10 seeded assets across pending/approved/dismissed, all type facets, profile and subnet facets, online/offline dots, "Agent" badge (renamed from "Agent installed") linking to the managed device.
+- [x] UI: `/devices/network/:id` for a SNMP-rich switch, a 14-port NAS, an offline no-hostname camera, a phone with auto-link suppressed, and a bogus id (404 state with breadcrumbs, Try again, Go back).
+- [x] UI: header shows site name, IP, MAC, manufacturer; stat strip Status/Ping/Open ports (jumps to section)/Linked device; Overview and Monitoring tabs with hash sync and ArrowRight roving focus.
+- [x] UI: type editor stages a value with Save/Cancel, PATCHes on Save, header badge updates, live region announces, "Reset to auto-detected" + "Manually set" provenance.
+- [x] UI: SNMP "Show more/Show less" on a long sysDescr; open ports list capped at 12 with "Show all (14)"/"Show fewer"; Telnet flagged "Unencrypted" with visible hint.
+- [x] UI: proxy popover (header and per-port variants): port input, bridge agent preselected to the discovering agent, HTTP/HTTPS, self-signed checkbox on 443, Escape closes, Connect POSTs `/tunnels/proxy-connect`, failure toasts "Agent is not connected".
+- [x] UI: Link manually… picker → Save → "Same device as … — set manually" + stat strip; Unlink → confirm dialog → "Auto-linking is off … because someone unlinked it".
+- [x] API: `GET /discovery/assets/:id` returns `siteName`, `suggestedBridgeDeviceId` resolved via `discovery_jobs.agent_id` → `devices.agent_id`; `PATCH` type save/reset; link/unlink.
+- [x] Unified device list with `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST=true`: 4 approved+unlinked assets appear as Class "Network" rows with All/Agent/Network facets. Impeccable critique scored it 17/40; all findings fixed in `45edd116f` and re-verified live: the Online chip keeps all 6 rows, Needs Patches shows "4 network devices hidden — Needs Patches applies to agent devices only." with badges All 2 / Agent 2 / Network 0, a network-only select-all reads "4 selected · 0 agent, 4 network" with all seven agent-only bulk actions disabled and titled, switching the segment prunes the selection, Network view drops OS/Role/CPU/RAM columns and Agent view drops Class, headers are keyboard buttons with `scope="col"`, rows show a focus ring. The flag now defaults to ON.
+
+### Evidence
+- Seed: 10 `discovered_assets` + 1 `discovery_profiles` + 1 `discovery_jobs` under Default Org/Site (SQL in session scratchpad; `discovery_jobs.agent_id` must be the device's varchar `agent_id`, not its uuid, for the bridge suggestion to resolve).
+- Unit: `NetworkDeviceDetailPage.test.tsx` + `DiscoveredAssetList.test.tsx` 89/89 after fix; `translationCoverage.test.ts` 15/15.
+
+### Issues Found
+- **FIXED inline (8478c85c0):** pressing Connect closed the popover mid-request. The disabled Connect button fires `focusout` with a null `relatedTarget` in Chrome and the non-modal focus-leave handler treated that as the user leaving. Same mechanism left focus on `<body>` after Escape instead of restoring it to the trigger. Fix: ignore focus-loss with no related target; refocus Connect after a failed connect.
+- Open, minor: SNMP section mixes translated labels ("System name", "Description") with raw OIDs (`sysUpTime`, `sysContact`, `sysLocation`, `ifNumber`); discovery methods render raw enum values (`port_scan`); a port with no service name shows the number twice ("6690 / 6690"); when the asset has no hostname or label the subtitle repeats the IP shown as the h1; "Reset to auto-detected" on an asset with `detected_asset_type = NULL` keeps the manual type and only flips `type_source` to `auto`; after Unlink's confirm dialog closes, focus lands on `<body>`; "Device linked" is not announced to the live region (unlink is).
+- Product gap, not a bug: the Monitoring tab only shows enabled/not-configured for SNMP and network monitoring and links to the discovery asset view. No page in the web UI charts `snmp_metrics` or `network_monitor_results`; `/monitoring` modals show the last 20 rows as tables, and `GET /snmp/dashboard` `topInterfaces` is computed but never rendered.
+
+### Notes
+- Seeded agents flip to offline once `devices.last_seen_at` ages past the online threshold; the popover then shows "No online agent can reach …" and hides Connect (correct behavior, but bump `last_seen_at` before re-testing the proxy flow).
+- `docker-compose.override.yml.dev` now maps `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` (empty → the web default, which is on); set `false` in the worktree `.env` and `--force-recreate web` to see the agent-only list.
+## AI agent builder — capability picker + four-step create flow (#5048 W01–W03) — 2026-09-06
+
+**Branch:** `ai-agent-refinement` (== `main`)
+**Commit:** `c52846222`
+**Tested by:** Claude (Playwright MCP against a `pnpm wt-stack` stack, `BREEZE_AI_AGENTS_ENABLED=true`, `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED=true`)
+**Result:** PASS with findings (1 truthfulness defect, 3 UX, several copy/a11y nits)
+
+### What was tested
+- [x] UI: Settings → AI agents empty state → "Create your first agent" opens the full-width four-step flow; empty-name validation (summary list + inline + aria-invalid); mode/kind/owner-scope/name/instructions on step 1.
+- [x] UI: Step 2 picker — "Use recommended" preset (6 ops / 4 capabilities), tri-state parent checkbox (indeterminate → all → none), search, "Show tool names" switch, "60 read-only tools" disclosure, "More capabilities (10)", live summary line.
+- [x] UI: Act mode acknowledgement gates Next; outcomes re-evaluate per mode (Approval request / Logged proposal / Executes unattended) with selections preserved.
+- [x] UI: Step 3 protected resources, ceiling keys (partner draft), limits, notify roles; state survives Edit round-trips.
+- [x] UI: Step 4 review card from `POST /ai/agents/preview` (one debounced call), seven rows, Edit links land on the right step and carry the server error onto it; "Start enabled" flips the pill Created disabled → Enabled.
+- [x] UI: Create partner-wide act agent (disabled) and org-only shadow agent (enabled); success toast + highlighted row; "Running"/"Not running" states.
+- [x] UI: Edit drawer round-trips the saved allowlist (6 checked, ceiling key kept); injected `totally_unknown_tool`, bare `manage_startup_items`, `get_device` render under "Unrecognised or unreachable entries" with Remove; bare entry shows as wildcard (both startup ops checked) and is retained on save, not widened or dropped.
+- [x] UI: Org draft — `GET /ai/agents/ceiling?kind=triage` disables 31 ops "Not in partner baseline"; preset only selects ops inside the ceiling; no unattended-keys section for org rows.
+- [x] UI: 390px viewport — no horizontal overflow, stepper stacks vertically.
+- [x] API: saved rows verified — partner row `mode=act enabled=false toolAllowlist=[disk_cleanup:execute, manage_alerts:acknowledge, manage_alerts:resolve, manage_services:restart, manage_startup_items:disable, run_script] supervisedActionKeys=[manage_services:restart]`; org row `mode=shadow enabled=true orgId set partnerId null keys=[]`; list returns `partnerBaselineKinds=["triage"]`.
+- [x] API: `GET /ai/agents/tool-catalog` → 103 tools (60 read-only), 87 unreachable pinned; `run_script` `actEligible=true`.
+- [ ] Agent: n/a (no agent-side change).
+
+### Evidence
+- Network: `tool-catalog` fetched once per flow open, `ceiling?kind=` once per kind, `preview` once per step-4 entry (debounced), `POST /ai/agents` 422 then 201.
+- Console: only the pre-existing sidebar-tour hydration mismatch and the two expected 422s; no feature JS errors.
+- DB: `partner_users` — only Partner Admin has an active member in the seed.
+
+### Issues Found
+1. **Truthfulness (P1):** in act mode the picker and the review card say "Run a script — Executes unattended", but `remediationActResolver.ts:173` refuses unattended `run_script` unless the script is in `actAssets.scriptIds`, and `hasActEligibleSurface` (agentService.ts) only counts `run_script` when `scriptIds` is non-empty. The builder never sets `scriptIds` (agentDraft.ts deliberately omits it), so every agent built here shows an outcome that cannot happen. Preview/picker should report `run_script` as "Approval request until a script is authorized" (or the catalog should expose `actEligible` conditional on assets).
+2. **Misleading 422 (P2):** with Partner Technician selected as recipient, create in act mode returned `act_prerequisites_not_met: recipient` and the flow showed "Add at least one notification recipient before enabling act mode." The server (`recipients.ts` `hasResolvableAgentRecipient`) requires the role to have at least one *active member*; the role was empty in this stack. Copy should say the chosen roles have no active members, and step 3 could show member counts / disable empty roles.
+3. **Stepper (P2):** after any Edit link from Review, steps 2–4 are disabled again; returning to Review takes three Next clicks. Visited steps should stay reachable (validation gates already protect each step).
+4. **Search (P2):** filters at capability level only — "isolate" shows the whole 12-op Security response group, not the one matching op.
+5. **Copy (P3):** "Up to 1 devices per run", "1 roles are asked", "1 approval requests"; in act mode "May propose: 6 operations … 1 raise an approval request … 2 are logged" omits the 3 unattended ones; approvers row does not name the role(s).
+6. **A11y (P3):** completed stepper step buttons (check icon) lose their accessible name; the mode-change `role=status` region stays empty.
+7. **Default owner scope (P3):** with no partner baseline, step 1 defaults to "This organization only" and then warns the agent has no effect until a baseline exists; default to "All organizations" when no baseline exists.
+8. Retracted: `get_device — This tool no longer exists` is correct (not a registered tool).
+
+**Fixed in PR #5064** (items 1–7; a11y item 6 covers the stepper name only — the empty `role=status` region is by design, it announces the act-keys-cleared notice). Re-checked on the same stack after the fix: partner-wide default with the `patch` kind and no hint; "isolate" narrows to `s1_isolate_device` alone; `run_script` in act mode reads "Approval request — Stays an approval request until a script is authorized for this agent." and the summary says "1 approval request, 0 logged proposals, 0 unattended"; Safety marks every empty role "(no active members)"; Review reads "Up to 1 device per run … 15 minutes between runs", "Partner Technician is asked", "1 operation across 1 capability: 1 raises an approval request…", plus the script-gate sentence under Executes unattended; the title Edit leaves step 4 clickable (aria-label "1. Purpose and posture") and returns straight to Review; Create with an empty role shows "The selected notification roles have no active members…" alongside the act-eligible-tool issue.
+
+### Notes
+- #5059 (stale "no partner-wide baseline" notice) did not reproduce on the list after the partner triage agent was created.
+- Stack: `pnpm wt-stack up` on the worktree; `.env` copied from `fix-3750` + AI flags appended.
+
 ## Auth browser/native transition Phase 1 foundation (#3852) — 2026-08-23
 
 **Branch:** `feat/3852-auth-browser-transition`

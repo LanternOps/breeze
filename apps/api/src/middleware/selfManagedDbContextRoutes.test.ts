@@ -68,6 +68,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/catalog/distributors/pax8/import'], // method is case-insensitive
     // PR3 — the three SSO provider routes that run OIDC discovery against a
     // tenant-controlled issuer (10s timeout) inside the handler.
+    // #2787 bulk restore — runBulkIsolated opens one short transaction per
+    // device; the ambient request tx would otherwise pin one pooled connection
+    // (and every devices/device_commands lock it takes) across up to 500 items.
+    ['POST', '/api/v1/devices/bulk/restore'],
+    ['POST', '/api/v1/devices/bulk/restore/'],
+    ['post', '/api/v1/devices/bulk/restore'], // method is case-insensitive
     ['POST', '/api/v1/sso/providers'],
     ['POST', '/api/v1/sso/providers/'],
     ['PATCH', '/api/v1/sso/providers/abc-123'],
@@ -259,6 +265,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
     ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
+
+    // #2787 — the SINGLE restore does one device in one transaction and must
+    // keep the ambient tx; losing it would put its writes on the bare pool with
+    // no RLS GUC, silently affecting 0 rows (#1375).
+    ['POST', '/api/v1/devices/11111111-1111-4111-8111-111111111111/restore', 'single restore keeps ambient tx'],
+    ['POST', '/api/v1/devices/bulk/restore/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/devices/bulk/restore', 'bulk restore is POST-only'],
+    // Bulk permanent delete only validates and ENQUEUES — no slow work in the
+    // handler, so it keeps the ambient transaction (same call as quotes/bulk-send).
+    ['POST', '/api/v1/devices/bulk/permanent-delete', 'bulk purge only enqueues; the worker does the work'],
 
     // The other catalog mutations are DB-only and MUST keep the ambient tx.
     ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],

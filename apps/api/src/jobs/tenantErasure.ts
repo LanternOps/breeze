@@ -29,6 +29,7 @@ import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { cascadeDeleteOrg } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
+import { attachWorkerObservability } from './workerObservability';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, users } from '../db/schema';
@@ -223,6 +224,7 @@ export function createTenantErasureWorker(): Worker {
 export async function initializeTenantErasureWorker(): Promise<void> {
   try {
     erasureWorker = createTenantErasureWorker();
+  attachWorkerObservability(erasureWorker, 'tenantErasure');
     erasureWorker.on('error', (error) => {
       console.error('[TenantErasure] Worker error:', error);
       captureException(error);

@@ -62,13 +62,19 @@ Breeze supports the following DNS filter providers:
 
 | Provider | Enum Value | Required Config |
 |----------|------------|-----------------|
-| Cisco Umbrella | `umbrella` | `apiKey`, `apiSecret`, `config.organizationId` |
+| Cisco Umbrella | `umbrella` | `apiKey`, `apiSecret` |
 | Cloudflare Gateway | `cloudflare` | `apiKey`, `config.accountId` |
 | DNSFilter | `dnsfilter` | `apiKey` |
 | Pi-hole | `pihole` | `apiKey`, `config.apiEndpoint`, optional `config.piholeVersion` |
 | AdGuard Home | `adguard_home` | `apiKey`, `apiSecret`, `config.apiEndpoint` |
 
 For AdGuard Home, `apiKey` is the admin username and `apiSecret` is the admin password (the provider uses HTTP Basic Auth). `config.apiEndpoint` is the base URL of your AdGuard Home instance (e.g., `https://adguard.example.com`).
+
+For Cisco Umbrella, `apiKey` and `apiSecret` come from an **Umbrella API Keys** credential with the Reports scope. Breeze exchanges them for an OAuth2 bearer token and reads DNS activity from `https://api.umbrella.com/reports/v2/activity`. **No organization ID is needed** — the token's own subject claim scopes every call to your org. `config.organizationId` is still accepted on existing integrations, but it is no longer required and is not sent anywhere.
+
+<Aside>
+  Cisco's Reporting API accepts a maximum 30-day query window. If an Umbrella integration has not synced for longer than that, Breeze requests the most recent 30 days; activity older than that window cannot be backfilled through the API.
+</Aside>
 
 Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. Set `config.piholeVersion` to `v5` or `v6` to match your Pi-hole installation's major version.
 
@@ -97,7 +103,6 @@ Authorization: Bearer <token>
   "apiKey": "your-api-key",
   "apiSecret": "your-api-secret",
   "config": {
-    "organizationId": "umbrella-org-id",
     "syncInterval": 60,
     "retentionDays": 90,
     "categories": ["malware", "phishing", "botnet"]
@@ -120,7 +125,7 @@ Authorization: Bearer <token>
 | `description` | string | Optional description (max 2,000 chars) |
 | `apiKey` | string | Provider API key (required, max 5,000 chars). For Pi-hole, the expected value depends on `config.piholeVersion` — see below |
 | `apiSecret` | string | Provider API secret (required for Cisco Umbrella) |
-| `config.organizationId` | string | Provider's organization ID (required for Cisco Umbrella) |
+| `config.organizationId` | string | Provider's organization ID. Optional for Cisco Umbrella — accepted for backward compatibility but not used |
 | `config.accountId` | string | Provider's account ID (required for Cloudflare Gateway) |
 | `config.apiEndpoint` | string | Custom API endpoint URL (required for Pi-hole) |
 | `config.piholeVersion` | string | Pi-hole API version: `v5` or `v6`. **Defaults to `v5` if unset.** Determines whether `apiKey` is treated as the legacy admin token (v5) or the app password (v6) |

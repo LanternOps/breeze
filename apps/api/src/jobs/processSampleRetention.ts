@@ -14,6 +14,7 @@ import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -77,6 +78,7 @@ export function createProcessSampleRetentionWorker(): Worker<RetentionJobData> {
 export async function initializeProcessSampleRetention(): Promise<void> {
   try {
     retentionWorker = createProcessSampleRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'processSampleRetention');
     retentionWorker.on('error', (error) => {
       console.error('[ProcessSampleRetention] Worker error:', error);
       captureException(error);

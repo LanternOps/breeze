@@ -40,6 +40,7 @@ import {
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
 import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
+import { attachWorkerObservability } from '../jobs/workerObservability';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -1448,6 +1449,7 @@ export async function initializeNotificationDispatcher(): Promise<void> {
   try {
     // Create worker
     notificationWorker = createNotificationWorker();
+  attachWorkerObservability(notificationWorker, 'notificationDispatcher');
 
     // Set up error handlers
     notificationWorker.on('error', (error) => {

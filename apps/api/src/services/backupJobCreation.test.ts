@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../db', () => ({
   db: {
     transaction: vi.fn(),
+    select: vi.fn(),
   },
 
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -24,6 +25,10 @@ vi.mock('../db/schema', () => ({
     createdAt: 'backupJobs.createdAt',
     updatedAt: 'backupJobs.updatedAt',
   },
+  devices: {
+    id: 'devices.id',
+    backupVersion: 'devices.backupVersion',
+  },
 }));
 
 import { db } from '../db';
@@ -31,6 +36,24 @@ import {
   createManualBackupJobIfIdle,
   createScheduledBackupJobIfAbsent,
 } from './backupJobCreation';
+
+/** devices.backup_version lookup that precedes the manual advisory lock. */
+function mockHelperVersion(version: string | null) {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(version === undefined ? [] : [{ backupVersion: version }]),
+      }),
+    }),
+  } as any);
+}
+
+// Every resetAllMocks() below also wipes the devices lookup; re-arm it so the
+// existing tests keep exercising the queue-capable (relaxed) dedupe path.
+function resetMocksWithQueueCapableHelper() {
+  vi.resetAllMocks();
+  mockHelperVersion('0.110.0');
+}
 
 function buildTx(options?: {
   existingRows?: Array<Record<string, unknown>>;
@@ -66,7 +89,7 @@ function buildTx(options?: {
 
 describe('backup job creation helpers', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetMocksWithQueueCapableHelper();
   });
 
   describe('createManualBackupJobIfIdle', () => {
@@ -234,7 +257,7 @@ describe('backup job creation helpers', () => {
 
       expect(tx.execute).toHaveBeenCalledTimes(1);
 
-      vi.resetAllMocks();
+      resetMocksWithQueueCapableHelper();
       const tx2 = buildTx();
       vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx2));
 
@@ -286,10 +309,10 @@ describe('backup job creation helpers', () => {
       expect(whereTextOf(tx)).toContain('backupmode');
     });
 
-    it('uses a distinct lock key per mode, so one device fans out concurrently', async () => {
+    it('uses a distinct lock key per mode, so every selection is retained for the device queue', async () => {
       const keys: string[] = [];
       for (const mode of ['file', 'system_image', 'mssql'] as const) {
-        vi.resetAllMocks();
+        resetMocksWithQueueCapableHelper();
         const tx = buildTx();
         vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
@@ -306,6 +329,97 @@ describe('backup job creation helpers', () => {
       }
 
       expect(new Set(keys).size).toBe(3);
+    });
+
+    it('retains same-mode selections from different profiles on the same device', async () => {
+      const keys: string[] = [];
+      for (const featureLinkId of ['profile-a', 'profile-b']) {
+        const tx = buildTx();
+        vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+        const result = await createManualBackupJobIfIdle({
+          orgId: 'org-1', configId: 'cfg-1', deviceId: 'dev-1',
+          featureLinkId, backupMode: 'file', modeTargets: { paths: [featureLinkId] },
+        });
+        expect(result?.created).toBe(true);
+        expect(whereTextOf(tx)).toContain(featureLinkId);
+        expect(whereTextOf(tx)).toContain('configid');
+        keys.push(lockKeyOf(tx));
+      }
+      expect(new Set(keys).size).toBe(2);
+    });
+
+    // A helper that predates the execution queue runs every dispatched job
+    // concurrently. Relaxing the server-side guard for it would recreate the
+    // exact overlap #4923 reports, so those devices keep the pre-queue
+    // one-active-job-per-device+mode dedupe.
+    it.each([
+      ['older helper', '0.109.0'],
+      ['unknown helper version', null],
+    ])('keeps device+mode dedupe for a %s (no queue on the device)', async (_label, version) => {
+      vi.resetAllMocks();
+      mockHelperVersion(version);
+      const tx = buildTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+      await createManualBackupJobIfIdle({
+        orgId: 'org-1', configId: 'cfg-1', deviceId: 'dev-1',
+        featureLinkId: 'profile-a', backupMode: 'file', modeTargets: { paths: ['/a'] },
+      });
+
+      const key = lockKeyOf(tx);
+      expect(key).toContain('dev-1');
+      expect(key).toContain('file');
+      expect(key).not.toContain('cfg-1');
+      expect(key).not.toContain('profile-a');
+      const where = whereTextOf(tx);
+      expect(where).toContain('backupmode');
+      expect(where).not.toContain('configid');
+      expect(where).not.toContain('featurelinkid');
+    });
+
+    it('reports the existing device+mode job as busy for an older helper instead of creating a second one', async () => {
+      vi.resetAllMocks();
+      mockHelperVersion('0.108.0');
+      const existing = { id: 'job-running', status: 'running', backupMode: 'file', featureLinkId: 'profile-b' };
+      const tx = buildTx({ existingRows: [existing] });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+      const result = await createManualBackupJobIfIdle({
+        orgId: 'org-1', configId: 'cfg-1', deviceId: 'dev-1',
+        featureLinkId: 'profile-a', backupMode: 'file',
+      });
+
+      expect(result?.created).toBe(false);
+      expect(result?.job).toEqual(existing);
+      expect(tx.insert).not.toHaveBeenCalled();
+    });
+
+    it('scheduled dedupe on an older helper ignores the profile (pre-queue behaviour)', async () => {
+      vi.resetAllMocks();
+      mockHelperVersion('0.109.0');
+      const tx = buildTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+      await createScheduledBackupJobIfAbsent({
+        orgId: 'org-1', configId: 'shared-storage', deviceId: 'dev-1',
+        featureLinkId: 'profile-a', backupMode: 'file', occurrenceKey: '2026-09-04T12:00',
+      });
+      expect(whereTextOf(tx)).not.toContain('featurelinkid');
+      expect(whereTextOf(tx)).toContain('backupmode');
+    });
+
+    it('retains scheduled same-mode selections from different profiles sharing storage', async () => {
+      for (const featureLinkId of ['profile-a', 'profile-b']) {
+        const tx = buildTx();
+        vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+        const result = await createScheduledBackupJobIfAbsent({
+          orgId: 'org-1', configId: 'shared-storage', deviceId: 'dev-1',
+          featureLinkId, backupMode: 'file', occurrenceKey: '2026-09-04T12:00',
+        });
+        expect(result?.created).toBe(true);
+        expect(whereTextOf(tx)).toContain(featureLinkId);
+        expect(whereTextOf(tx)).toContain('shared-storage');
+        expect(lockKeyOf(tx)).toContain(featureLinkId);
+      }
     });
 
     it('keeps legacy (mode-less) jobs on their own lock key and NULL-mode predicate', async () => {
@@ -355,7 +469,7 @@ describe('backup job creation helpers', () => {
     it('scopes the scheduled lock key by mode within one occurrence', async () => {
       const keys: string[] = [];
       for (const mode of ['file', 'mssql'] as const) {
-        vi.resetAllMocks();
+        resetMocksWithQueueCapableHelper();
         const tx = buildTx();
         vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 

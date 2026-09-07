@@ -308,8 +308,68 @@ function firstSentence(text: string): string {
   return (match ? match[0] : text).trim();
 }
 
-/** impact = first sentence of the tool description (or the guardrail description) — resolved decision. */
-function buildImpactSummary(toolName: string, guardrail: GuardrailCheck): string {
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * #5106: the approval "High impact" box used to always show the tool's
+ * catalog description ("List, start, stop, or restart system services on a
+ * device.") — true of every call to the tool, not what THIS call does. These
+ * builders produce a call-specific sentence from the actual arguments for the
+ * common mutating action tools; every other tool (and any call whose
+ * arguments don't give enough to say something specific) keeps the catalog
+ * fallback below.
+ */
+const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) => string | null> = {
+  manage_services: (input) => {
+    const action = nonEmptyString(input.action);
+    const serviceName = nonEmptyString(input.serviceName);
+    if (!serviceName) return null;
+    switch (action) {
+      case 'restart':
+        return `Restarting "${serviceName}" will briefly interrupt it and anything that depends on it.`;
+      case 'stop':
+        return `Stopping "${serviceName}" will make it — and anything that depends on it — unavailable until it is started again.`;
+      case 'start':
+        return `Starting "${serviceName}".`;
+      default:
+        return null;
+    }
+  },
+  run_script: (input) => {
+    const deviceIds = Array.isArray(input.deviceIds) ? input.deviceIds : null;
+    if (!deviceIds || deviceIds.length === 0) return null;
+    const count = deviceIds.length;
+    return `Running a script on ${count} device${count === 1 ? '' : 's'}.`;
+  },
+  manage_processes: (input) => {
+    if (nonEmptyString(input.action) !== 'kill') return null;
+    const processName = nonEmptyString(input.processName);
+    const processId = nonEmptyString(input.processId);
+    if (processName && processId) return `Terminating process "${processName}" (PID ${processId}).`;
+    if (processName) return `Terminating process "${processName}".`;
+    if (processId) return `Terminating process PID ${processId}.`;
+    return null;
+  },
+  // Neither tool exists in the aiTools registry yet — kept here so the impact
+  // map is complete per #5106's spec the moment either ships, rather than
+  // needing a second follow-up PR.
+  reboot: () =>
+    'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
+  shutdown: () =>
+    'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+};
+
+/**
+ * Impact = a call-specific sentence from the actual arguments when the
+ * tool+action allow one (see IMPACT_SUMMARY_BUILDERS above), otherwise the
+ * first sentence of the tool description (or the guardrail description) —
+ * resolved decision.
+ */
+export function buildImpactSummary(toolName: string, input: Record<string, unknown>, guardrail: GuardrailCheck): string {
+  const specific = IMPACT_SUMMARY_BUILDERS[toolName]?.(input);
+  if (specific) return specific;
   const definitionDescription = aiTools.get(toolName)?.definition.description;
   const description = definitionDescription || guardrail.description || `Execute ${toolName}`;
   return firstSentence(description);
@@ -868,6 +928,12 @@ export async function createActionIntent(
   // human-originated intent (agentRun stays null, which already forces
   // human_required on its own).
   let agentRunMode: string | undefined;
+  // #5106: the scoped device's human-readable name, threaded through to
+  // buildActionLabel below so the approval headline reads "on <hostname>"
+  // instead of the raw "on device <id>..." stub. Stays null for every
+  // non-agent (or unscoped) intent — the scopedDevice read only happens in
+  // the ai_agent branch below.
+  let scopedDeviceHostname: string | null = null;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
     // scopeDeviceId/scopeTicketId are the top-level consts above — captured
@@ -911,10 +977,22 @@ export async function createActionIntent(
         // pin it to the intent's org — a scoped device from another tenant
         // must be indistinguishable from a nonexistent one (same rule
         // resolveIntentTargetScope applies to device args).
-        let scopedDevice: { id: string; orgId: string; siteId: string | null } | null = null;
+        let scopedDevice: {
+          id: string;
+          orgId: string;
+          siteId: string | null;
+          hostname: string | null;
+          displayName: string | null;
+        } | null = null;
         if (scopeDeviceId) {
           const [device] = await db
-            .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+            .select({
+              id: devices.id,
+              orgId: devices.orgId,
+              siteId: devices.siteId,
+              hostname: devices.hostname,
+              displayName: devices.displayName
+            })
             .from(devices)
             .where(eq(devices.id, scopeDeviceId))
             .limit(1);
@@ -945,6 +1023,9 @@ export async function createActionIntent(
     }
     agentRun = loaded.run;
     agentRow = loaded.agent;
+    scopedDeviceHostname = loaded.scopedDevice
+      ? (loaded.scopedDevice.displayName ?? loaded.scopedDevice.hostname)
+      : null;
 
     // P2-2 (#4189): an explicit scope must name a device that EXISTS in this
     // intent's org. A missing device and a cross-tenant one hit the same
@@ -1069,12 +1150,16 @@ export async function createActionIntent(
       scopeDeviceId ?? scopeTicketId ?? null,
     );
   const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, guardrail);
+  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const actionLabel = buildActionLabel({
     toolName: input.toolName,
     input: input.input,
     reason: input.actionLabel ?? guardrail.description ?? null,
+    // #5106: turns "on device 6eae0f70..." into "on <hostname>" for the
+    // approval headline. Only populated for a scoped (sweep) agent intent —
+    // the one place this function loads a device row before this call.
+    deviceHostname: scopedDeviceHostname,
   });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
@@ -1696,11 +1781,25 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
         .where(eq(aiAgentRuns.id, intent.requestingAgentRunId))
         .limit(1);
       if (!run || run.orgId !== intent.orgId) return null;
-      return { intent, run };
+      // #5106: resolve the intent's target device's hostname (if any) here,
+      // under the same system-scoped read as run/agent above, so the two
+      // buildActionLabel calls below can turn "on device <id>..." into
+      // "on <hostname>" the same way createActionIntent's own call site does.
+      const targetDeviceId = effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run));
+      let deviceHostname: string | null = null;
+      if (targetDeviceId) {
+        const [device] = await db
+          .select({ hostname: devices.hostname, displayName: devices.displayName })
+          .from(devices)
+          .where(eq(devices.id, targetDeviceId))
+          .limit(1);
+        deviceHostname = device ? (device.displayName ?? device.hostname) : null;
+      }
+      return { intent, run, deviceHostname };
     }),
   );
   if (!loaded) return;
-  const { intent, run } = loaded;
+  const { intent, run, deviceHostname } = loaded;
 
   let targetScope: IntentTargetScope;
   try {
@@ -1760,6 +1859,7 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       actionLabel: buildActionLabel({
         toolName: updated.actionName,
         input: updated.arguments as Record<string, unknown>,
+        deviceHostname,
       }),
       riskTier: riskTierLabel(updated.riskTier),
       impactSummary: updated.impactSummary,
@@ -1816,6 +1916,7 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     actionLabel: buildActionLabel({
       toolName: intent.actionName,
       input: intent.arguments as Record<string, unknown>,
+      deviceHostname,
     }),
     dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
   });

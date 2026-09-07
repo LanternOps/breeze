@@ -5,6 +5,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { deleteObjectKeys } from '../services/ticketAttachmentStorage';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reaps abandoned PENDING ticket attachments (W08 #3902, spec D2).
@@ -184,6 +185,7 @@ async function scheduleRepeatableJob(): Promise<void> {
 export async function initializeTicketAttachmentReaper(): Promise<void> {
   if (reaperWorker) return;
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'ticketAttachmentReaper');
   reaperWorker.on('error', (error) => {
     console.error('[TicketAttachmentReaper] Worker error:', error);
     captureException(error);

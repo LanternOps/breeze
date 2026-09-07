@@ -11,7 +11,7 @@ const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const jsonResponse = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-const activity = (id: string) => ({
+const activity = (id: string, overrides: Partial<{ result: string }> = {}) => ({
   id,
   timestamp: new Date().toISOString(),
   action: 'device.update',
@@ -24,6 +24,7 @@ const activity = (id: string) => ({
   details: null,
   errorMessage: null,
   ipAddress: null,
+  ...overrides,
 });
 
 function pageFromUrl(url: string): number {
@@ -133,5 +134,40 @@ describe('DeviceEventLogViewer — capped total (#4834)', () => {
     await waitFor(() => expect(status).toHaveTextContent('No more activity'));
     expect(status).not.toHaveTextContent('–');
     await waitFor(() => expect(screen.getByTestId('event-log-next-page')).toBeDisabled());
+  });
+});
+
+// #4405 follow-through: the API writes audit_logs.result = 'dispatched' for a
+// just-dispatched patch/command. resultConfig had no 'dispatched' entry, so
+// the unrecognized-result fallback (`resultConfig[activity.result] ??
+// resultConfig.success`) badged a dispatched command "Success" — the exact
+// symptom of #4223. Any other unrecognized result hit the same fallback.
+describe('DeviceEventLogViewer — result badge (#4405 follow-through)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('labels a dispatched command "Dispatched", not "Success"', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      jsonResponse({
+        data: [activity('e1', { result: 'dispatched' })],
+        pagination: { page: 1, limit: 50, total: 1, totalIsLowerBound: false },
+      }),
+    );
+    render(<DeviceEventLogViewer deviceId="dev-1" />);
+    const badge = await screen.findByTestId('event-log-result-badge-e1');
+    expect(badge).toHaveTextContent('Dispatched');
+    expect(badge).not.toHaveTextContent('Success');
+  });
+
+  it('renders the raw result text for an unrecognized result instead of defaulting to "Success"', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      jsonResponse({
+        data: [activity('e1', { result: 'quarantined' })],
+        pagination: { page: 1, limit: 50, total: 1, totalIsLowerBound: false },
+      }),
+    );
+    render(<DeviceEventLogViewer deviceId="dev-1" />);
+    const badge = await screen.findByTestId('event-log-result-badge-e1');
+    expect(badge).toHaveTextContent('quarantined');
+    expect(badge).not.toHaveTextContent('Success');
   });
 });

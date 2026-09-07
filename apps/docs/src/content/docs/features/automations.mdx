@@ -307,6 +307,8 @@ Executes a script from the Breeze script library on each target device.
 | `parameters` | No | Key-value pairs passed to the script at runtime |
 | `runAs` | No | Execution context: `system`, `user`, or `elevated`. Defaults to `system` |
 
+In the automation editor this appears as the **Run as** selector, with a **Script default** option that leaves the choice to the script itself. There is no target-session picker here, unlike a run started from a single device: an automation fans out across many machines, so naming one signed-in session would mean nothing.
+
 ### send_notification
 
 Sends a message to a configured notification channel. The channel must be configured in **Settings → Notifications**.

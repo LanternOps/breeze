@@ -292,6 +292,7 @@ export default function ScriptPickerModal({
                   value={runAs}
                   onChange={e => setRunAs(e.target.value as ScriptRunAsSelection)}
                   data-testid="script-run-as"
+                  aria-label={t('common:runContext.label')}
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="system">{t('scriptPickerModal.runAs.system')}</option>
@@ -303,6 +304,7 @@ export default function ScriptPickerModal({
                   value={targetSessionId ?? ''}
                   onChange={e => setTargetSessionId(e.target.value === '' ? undefined : Number(e.target.value))}
                   data-testid="script-session-target"
+                  aria-label={t('common:runContext.sessionLabel')}
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   <option value="">{t('scriptPickerModal.sessionAny')}</option>

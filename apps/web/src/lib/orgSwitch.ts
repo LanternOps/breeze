@@ -45,6 +45,12 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
       return '/devices';
     }
   }
+  // /organizations/:id (the org RECORD) -> the organizations list. The record's
+  // subject is the org in the URL, so reloading it after a switch would leave
+  // the user on the customer they just switched away from (#5075).
+  if (/^\/organizations\/[^/]+\/?$/.test(pathname)) {
+    return '/settings/organizations';
+  }
   return null;
 }
 
@@ -55,13 +61,26 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  * /auth/refresh (#950 login-bounce race, fixed in #953/#956/#958), then
  * redirect detail routes up to their list — or reload in place — so the new
  * scope propagates everywhere at once.
+ *
+ * `destination` overrides both: for a switch that is itself a navigation ("Work
+ * in this org" on the organization record hands the user their new workspace's
+ * dashboard), the caller knows where the user is going and the redirect table
+ * has nothing to add.
  */
-export async function applyOrgSwitch(orgId: string | null, toastMessage: string): Promise<void> {
+export async function applyOrgSwitch(
+  orgId: string | null,
+  toastMessage: string,
+  destination?: string,
+): Promise<void> {
   const store = useOrgStore.getState();
   if (orgId) store.selectOrganization(orgId);
   else store.selectAllOrgs();
   stashSwitchToast(toastMessage);
   await waitForPendingRefresh();
+  if (destination) {
+    window.location.href = destination;
+    return;
+  }
   const redirect = getOrgSwitchRedirect(window.location.pathname);
   if (redirect) {
     window.location.href = redirect;

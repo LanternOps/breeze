@@ -316,6 +316,8 @@ When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE
 
 When billing is not configured, AI usage is unlimited — cost tracking still records usage for visibility, but no spending limits are enforced.
 
+**Credits remaining.** A partner-scoped login sees a **Breeze AI credits remaining** tile at the top of the AI Usage page, and the same figure follows the AI cost indicator elsewhere in the app — so you find out you are running low while you can still do something about it, not when a session refuses to start. The tile breaks the balance into what came with your plan and what you have bought on top. It is absent when you are signed in to a single organization rather than the partner, when the organization bills for its own AI usage, when no billing service is configured, or when the balance could not be fetched. An absent tile never means zero credits.
+
 <Aside type="tip">
   Cost tracking is automatic — no configuration required. It works for both the main AI assistant and the Helper AI chat. Billing credit enforcement is optional and requires the billing service environment variables. See [Environment Variables](/deploy/environment/) for details.
 </Aside>

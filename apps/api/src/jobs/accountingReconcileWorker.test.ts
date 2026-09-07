@@ -36,6 +36,7 @@ const {
   getConnectionMock,
   listReconcilableConnectionsMock,
   advanceReconcileCursorMock,
+  stampReconcileRunAtMock,
   stampReconcileRunErrorMock,
   backfillRealmFingerprintsMock,
   resolveConnectionAndTokenMock,
@@ -45,6 +46,9 @@ const {
   reverseMock,
   reverseStaleMock,
   markInvoiceDeletedMock,
+  listOwedPaymentMappingsMock,
+  enqueuePaymentPushMock,
+  enqueuePaymentDeleteMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
   const record = (name: string) => {
@@ -75,6 +79,7 @@ const {
     getConnectionMock: vi.fn(),
     listReconcilableConnectionsMock: vi.fn(),
     advanceReconcileCursorMock: vi.fn(),
+    stampReconcileRunAtMock: vi.fn(),
     stampReconcileRunErrorMock: vi.fn(),
     backfillRealmFingerprintsMock: vi.fn(),
     resolveConnectionAndTokenMock: vi.fn(),
@@ -84,6 +89,9 @@ const {
     reverseMock: vi.fn(),
     reverseStaleMock: vi.fn(),
     markInvoiceDeletedMock: vi.fn(),
+    listOwedPaymentMappingsMock: vi.fn(),
+    enqueuePaymentPushMock: vi.fn(),
+    enqueuePaymentDeleteMock: vi.fn(),
   };
 });
 
@@ -119,6 +127,7 @@ vi.mock('../services/accounting/accountingConnectionService', () => ({
   getConnection: getConnectionMock,
   listReconcilableConnections: listReconcilableConnectionsMock,
   advanceReconcileCursor: advanceReconcileCursorMock,
+  stampReconcileRunAt: stampReconcileRunAtMock,
   stampReconcileRunError: stampReconcileRunErrorMock,
   backfillRealmFingerprints: backfillRealmFingerprintsMock,
 }));
@@ -136,6 +145,15 @@ vi.mock('../services/accounting/accountingPaymentPull', () => ({
   reverseAccountingPayment: reverseMock,
   reverseStaleAllocations: reverseStaleMock,
   markInvoiceDeletedRemotely: markInvoiceDeletedMock,
+}));
+
+vi.mock('../services/accounting/accountingPaymentPush', () => ({
+  listOwedPaymentMappings: listOwedPaymentMappingsMock,
+}));
+
+vi.mock('./accountingSyncWorker', () => ({
+  enqueueAccountingPaymentPush: enqueuePaymentPushMock,
+  enqueueAccountingPaymentDelete: enqueuePaymentDeleteMock,
 }));
 
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
@@ -160,6 +178,7 @@ const EMPTY_CHANGESET: ChangeSet = {
   cursor: new Date('2026-09-02T20:10:00.000Z'),
   payments: [],
   deletedPayments: [],
+  unappliedPayments: [],
   deletedInvoices: [],
   overflowed: false,
 };
@@ -174,6 +193,7 @@ function line(overrides: Partial<ChangeSetPaymentLine> = {}): ChangeSetPaymentLi
     remotePaymentSyncToken: '0',
     paymentMethodName: 'Check',
     paymentRefNum: '4471',
+    breezePaymentId: null,
     ...overrides,
   };
 }
@@ -185,6 +205,7 @@ function connectionRow(overrides: Partial<AccountingConnection> = {}): Accountin
     provider: 'quickbooks',
     status: 'connected',
     pullPayments: true,
+    pushPayments: true,
     cdcCursor: CURSOR_BEFORE,
     lastReconcileAt: null,
     realmIdFingerprint: 'fp1:legacy:abc',
@@ -287,6 +308,10 @@ beforeEach(() => {
   });
   reverseReturns();
   applyReturns('applied');
+
+  listOwedPaymentMappingsMock.mockResolvedValue([]);
+  enqueuePaymentPushMock.mockResolvedValue(true);
+  enqueuePaymentDeleteMock.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -344,8 +369,11 @@ describe('processReconcileConnectionJob: gating', () => {
     expect(stampReconcileRunErrorMock).not.toHaveBeenCalled();
   });
 
-  it('returns null, logs reason=pull_disabled, stamps the connection, and never resolves a token when pull_payments is off', async () => {
-    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false }));
+  // Phase D2 (spec decision 6): `pull_payments` off ALONE is not a skip any
+  // more — see the "gate: pull OR push" describe below. Only both switches
+  // off short-circuits.
+  it('returns null, logs reason=both_switches_off, stamps the connection, and never resolves a token when BOTH switches are off', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: false }));
 
     await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
 
@@ -356,7 +384,7 @@ describe('processReconcileConnectionJob: gating', () => {
     expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining('run skipped'),
-      'reason=pull_disabled',
+      'reason=both_switches_off',
       `connectionId=${CONN_ID}`,
       `partnerId=${PARTNER_ID}`,
       'trigger=sweep',
@@ -511,9 +539,62 @@ describe('processReconcileConnectionJob: cursor', () => {
       realmChanged: 0,
       failed: 0,
       invoicesMarkedDeleted: 0,
+      adopted: 0,
+      breezeOriginDiverged: 0,
+      skippedBreezeOrigin: 0,
+      skippedPullDisabled: 0,
+      breezeOriginRemovedRemotely: 0,
+      invoicesSelfVoided: 0,
       cursorBefore: CURSOR_BEFORE,
       cursorAfter: changes.cursor,
     });
+  });
+
+  it('FREEZES the cursor when pull is off, so re-enabling pull can still backfill the window', async () => {
+    // The gate widened to pull-OR-push, so a pull-off/push-on realm now runs the
+    // CDC pass and skips every QuickBooks-origin change as
+    // `skipped_pull_disabled`. Advancing the cursor past those windows made the
+    // suppression PERMANENT: turning pull back on would resume from a watermark
+    // that already stepped over everything it never imported.
+    const conn = connectionRow({ pullPayments: false, pushPayments: true });
+    getConnectionMock.mockResolvedValue(conn);
+    resolveConnectionAndTokenMock.mockImplementation(async () => ({
+      conn, liveConn: { ...conn, accessToken: 'tok' },
+    }));
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180' })],
+    });
+    applyReturns('skipped_pull_disabled');
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      skippedPullDisabled: 1,
+      cursorBefore: CURSOR_BEFORE,
+      cursorAfter: CURSOR_BEFORE, // unchanged — the window stays replayable
+    });
+    // ...but the run DID happen. advanceReconcileCursor is the only writer of
+    // last_reconcile_at, so skipping it froze the integration card's "Last
+    // reconciled" at the moment pull was switched off — a healthy connection
+    // looking permanently stalled.
+    expect(stampReconcileRunAtMock).toHaveBeenCalledWith(
+      {}, CONN_ID, PARTNER_ID, expect.any(Date),
+    );
+  });
+
+  it('ADVANCES the cursor on a pull-ON run, as before', async () => {
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180' })],
+    });
+    applyReturns('applied');
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ cursorAfter: (await reconcileChangesMock.mock.results[0]!.value).cursor });
   });
 
   it('counts an invoice marked deleted and a reversal in the summary', async () => {
@@ -534,6 +615,60 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
   });
 
+  it('tallies every Phase D2 outcome and still advances the cursor — all five are CLEAN', async () => {
+    applyReturns('adopted', 'breeze_origin_diverged', 'skipped_breeze_origin', 'skipped_pull_disabled');
+    reverseReturns('breeze_origin_removed_remotely');
+    markInvoiceDeletedMock.mockImplementation(async () => {
+      record('markInvoiceDeletedRemotely');
+      return 'invoice_void';
+    });
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      deletedInvoices: ['145'],
+      deletedPayments: ['181'],
+      payments: [line(), line(), line(), line()],
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(summary).toMatchObject({
+      adopted: 1,
+      breezeOriginDiverged: 1,
+      skippedBreezeOrigin: 1,
+      skippedPullDisabled: 1,
+      breezeOriginRemovedRemotely: 1,
+      // Breeze's OWN void echoing back is never "deleted in QuickBooks".
+      invoicesSelfVoided: 1,
+      invoicesMarkedDeleted: 0,
+      failed: 0,
+    });
+    expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
+    expect(stampReconcileRunErrorMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID, null);
+  });
+
+  it('reports the pull-disabled skips ONCE on the run line, not once per suppressed payment', async () => {
+    // A CDC window against a pull-off connection is ALL skips. Logging each one
+    // would bury the run in noise it repeats every 15 minutes (#4543 asks for a
+    // visible reason, not a per-item trace).
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      applyReturns('skipped_pull_disabled');
+      reconcileChangesMock.mockResolvedValue({
+        ...EMPTY_CHANGESET,
+        payments: [line(), line(), line()],
+      });
+
+      const summary = await processReconcileConnectionJob(JOB);
+
+      expect(summary?.skippedPullDisabled).toBe(3);
+      const runLines = logSpy.mock.calls.filter((c) => String(c[0]).includes('run complete'));
+      expect(runLines).toHaveLength(1);
+      expect(runLines[0]).toContain('skippedPullDisabled=3');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('does NOT advance the cursor and rethrows when an applier throws', async () => {
     reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
     applyMock.mockRejectedValue(new Error('boom'));
@@ -544,7 +679,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { service: 'accountingPaymentPull', connectionId: CONN_ID, remotePaymentId: '180' },
+      { service: 'accountingPaymentPull', accounting_connection_id: CONN_ID, remote_entity_id: '180' },
     );
   });
 
@@ -568,7 +703,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      { service: 'accountingReconcileWorker', connectionId: CONN_ID, trigger: JOB.trigger },
+      { service: 'accountingReconcileWorker', accounting_connection_id: CONN_ID, accounting_trigger: JOB.trigger },
     );
   });
 
@@ -602,6 +737,56 @@ describe('processReconcileConnectionJob: cursor', () => {
       'applyAccountingPayment', 'applyAccountingPayment', 'reverseStaleAllocations',
     ]);
     expect(depthsOf('reverseStaleAllocations')).toEqual([0, 0]);
+  });
+
+  it('routes an UNAPPLIED payment through the stale sweep with an EMPTY keep-set, never through the deleter', async () => {
+    // Finding C1. A voided/unapplied QuickBooks Payment still EXISTS, so it must
+    // NOT reach `reverseAccountingPayment` — that path clears a Breeze-origin
+    // row's remote id, and the invoice fan-out then pushes a duplicate Payment.
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      unappliedPayments: ['183'],
+    });
+    reverseStaleMock.mockImplementation(async () => {
+      record('reverseStaleAllocations');
+      return [result('reversed', '183')];
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(reverseMock).not.toHaveBeenCalled();
+    expect(reverseStaleMock).toHaveBeenCalledTimes(1);
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '183', [], expect.any(Function), 'fp1:legacy:abc');
+    expect(depthsOf('reverseStaleAllocations')).toEqual([0]);
+    expect(summary?.reversed).toBe(1);
+  });
+
+  it('runs unapplied payments AFTER the lined payments and after the deletions', async () => {
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180', remoteInvoiceId: '145' })],
+      deletedPayments: ['181'],
+      deletedInvoices: ['145'],
+      unappliedPayments: ['183'],
+    });
+    reverseReturns('reversed');
+    reverseStaleMock.mockImplementation(async () => {
+      record('reverseStaleAllocations');
+      return [];
+    });
+
+    await processReconcileConnectionJob(JOB);
+
+    expect(applierOrder()).toEqual([
+      'markInvoiceDeletedRemotely',
+      'reverseAccountingPayment',
+      'applyAccountingPayment',
+      'reverseStaleAllocations',
+      // ...and the unapplied sweep last.
+      'reverseStaleAllocations',
+    ]);
+    expect(reverseStaleMock.mock.calls.map((c) => [c[1], c[2]]))
+      .toEqual([['180', ['145']], ['183', []]]);
   });
 
   it('turns the run dirty when a stale-allocation reversal reports failed', async () => {
@@ -697,7 +882,7 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(captureExceptionMock).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
-      expect.objectContaining({ service: 'accountingReconcileWorker', connectionId: CONN_ID }),
+      expect.objectContaining({ service: 'accountingReconcileWorker', accounting_connection_id: CONN_ID }),
     );
   });
 
@@ -735,14 +920,16 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
     }
     // The list read happens INSIDE one short system context...
     expect(depthsOf('listReconcilableConnections')).toEqual([1]);
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    // ...and the pass-2 owed-mappings read opens its own SEPARATE short context
+    // (never held across pass 1's Redis enqueues, and never the same context).
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
     // ...and every Redis enqueue happens with that context already closed.
     expect(depthsOf('queue.add')).toEqual([0, 0, 0]);
   });
@@ -754,7 +941,115 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+  });
+
+  it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
+    listReconcilableConnectionsMock.mockRejectedValue(new Error('connections read boom'));
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm1', partnerId: 'p1', pendingOp: 'push' }]);
+
+    await expect(processReconcileSweep()).rejects.toThrow();
+
+    expect(queueAddMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('a failed owed-mappings read does not suppress the connection fan-out — it still enqueues, and the job rethrows so BullMQ retries', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([{ id: 'c1', partnerId: 'p1' }]);
+    listOwedPaymentMappingsMock.mockRejectedValue(new Error('owed read boom'));
+
+    await expect(processReconcileSweep()).rejects.toThrow();
+
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D2: pull-or-push gate + the stale pending_op sweep
+// ---------------------------------------------------------------------------
+
+describe('gate: pull OR push (spec decision 6)', () => {
+  it('still runs the CDC pass when pull is off but push is on — proceeds past the gate to resolveConnectionAndToken', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pullPayments: false, pushPayments: true, realmIdFingerprint: 'fp', cdcCursor: null });
+    reconcileChangesMock.mockResolvedValue(EMPTY_CHANGESET);
+    await expect(processReconcileConnectionJob({ type: 'reconcile-connection', connectionId: 'c1', partnerId: 'p1', trigger: 'sweep' }))
+      .resolves.not.toBeNull();
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalled();
+    expect(reconcileChangesMock).toHaveBeenCalled();
+  });
+
+  it('returns null and touches nothing when BOTH switches are off', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pullPayments: false, pushPayments: false });
+    await expect(processReconcileConnectionJob({ type: 'reconcile-connection', connectionId: 'c1', partnerId: 'p1', trigger: 'sweep' }))
+      .resolves.toBeNull();
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('pins the four short-circuit reason strings in the info log', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    getConnectionMock.mockResolvedValue(null);
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ id: 'some-other-connection' }));
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ status: 'reauth_required' }));
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: false }));
+    await processReconcileConnectionJob(JOB);
+
+    const reasons = logSpy.mock.calls
+      .filter((call) => call[0] === '[AccountingReconcileWorker] run skipped')
+      .map((call) => call.find((arg) => typeof arg === 'string' && arg.startsWith('reason=')));
+    expect(reasons).toEqual([
+      'reason=missing',
+      'reason=connection_mismatch',
+      'reason=not_connected',
+      'reason=both_switches_off',
+    ]);
+
+    logSpy.mockRestore();
+  });
+});
+
+describe('stale pending_op sweep', () => {
+  it('re-enqueues every owed mapping by its own operation, with nothing held', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([
+      { id: 'm1', partnerId: 'p1', pendingOp: 'push' },
+      { id: 'm2', partnerId: 'p2', pendingOp: 'delete' },
+    ]);
+    let depthAtEnqueue = -1;
+    enqueuePaymentPushMock.mockImplementation(async () => { depthAtEnqueue = ctx.depth; return true; });
+
+    const summary = await processReconcileSweep();
+
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m2', 'p2');
+    expect(summary.pendingOpsEnqueued).toBe(2);
+    // Redis work never happens inside a DB context.
+    expect(depthAtEnqueue).toBe(0);
+  });
+
+  it('counts a refused enqueue as failed rather than reporting it as queued', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm1', partnerId: 'p1', pendingOp: 'push' }]);
+    enqueuePaymentPushMock.mockResolvedValue(false);
+    await expect(processReconcileSweep()).resolves.toMatchObject({ pendingOpsEnqueued: 0, pendingOpsFailed: 1 });
+  });
+
+  it('sweeps owed mappings even when NO connection is reconcilable (deletes must still propagate)', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm2', partnerId: 'p2', pendingOp: 'delete' }]);
+    await processReconcileSweep();
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m2', 'p2');
   });
 });
 

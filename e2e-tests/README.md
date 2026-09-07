@@ -143,6 +143,18 @@ Set in the parent `.env` file. Playwright reads via `process.env`:
 | `E2E_LINUX_DEVICE_ID` | Enrolled Linux device UUID |
 | `REDIS_PASSWORD` | Used by globalSetup to clear login rate-limit |
 
+### Seeded admin and forced MFA (RMM-QA-164)
+
+A fresh stack seeds the system Partner Admin role with `force_mfa = true`, so the
+seeded `admin@breeze.local` (or your `BREEZE_BOOTSTRAP_ADMIN_EMAIL`) is minted
+`mfa: false` and receives `428 mfa_enrollment_required` on the first protected
+request — `globalSetup`'s login lands on `/auth/mfa/setup?forced=1` instead of the
+dashboard. Pick one before running the suite:
+
+- enrol TOTP for that admin once (Settings → Security → Two-factor), or
+- set `MFA_FORCE_FOR_PARTNER_ADMIN=false` in the stack's `.env` (the documented
+  relief valve; it suppresses only the role-force component) and restart `api`.
+
 ## Troubleshooting
 
 ### `globalSetup` fails on docker exec

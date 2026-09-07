@@ -864,6 +864,7 @@ describe('discovery routes', () => {
         profileName: null,
         profileSubnets: null,
         suggestedBridgeDeviceId: null as string | null,
+        siteName: 'Main Office' as string | null,
       };
     };
     const mockSingleAsset = (rows: unknown[]) => {
@@ -873,7 +874,9 @@ describe('discovery routes', () => {
             leftJoin: () => ({
               leftJoin: () => ({
                 leftJoin: () => ({
-                  where: () => ({ limit: () => Promise.resolve(rows) }),
+                  leftJoin: () => ({
+                    where: () => ({ limit: () => Promise.resolve(rows) }),
+                  }),
                 }),
               }),
             }),
@@ -894,6 +897,33 @@ describe('discovery routes', () => {
       expect(body.data.id).toBe(ASSET_ID);
       expect(body.data.ipAddress).toBe('10.0.20.10');
       expect(body.data.snmpData).toEqual({ sysName: 'srv-files' });
+    });
+
+    it('returns siteName alongside siteId', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.siteId).toBe('00000000-0000-0000-0000-000000000001');
+      expect(body.data.siteName).toBe('Main Office');
+    });
+
+    it('returns null siteName when the asset has no site', async () => {
+      const row = buildRow();
+      row.siteName = null;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.siteName).toBeNull();
     });
 
     it('GET /assets/:id includes linkSource', async () => {
@@ -2364,45 +2394,48 @@ describe('discovery routes', () => {
             leftJoin: () => ({
               leftJoin: () => ({
                 leftJoin: () => ({
-                  where: () => ({ limit: () => Promise.resolve([{
-                    asset: {
-                      id: ASSET_ID,
-                      orgId: ORG,
-                      siteId: '00000000-0000-0000-0000-000000000001',
-                      assetType: 'router',
-                      approvalStatus: 'approved',
-                      isOnline: true,
-                      hostname: null,
-                      label: null,
-                      ipAddress: '10.0.0.1',
-                      macAddress: null,
-                      manufacturer: null,
-                      model: null,
-                      openPorts: [],
-                      osFingerprint: null,
-                      snmpData: null,
-                      responseTimeMs: null,
-                      linkedDeviceId: null,
-                      linkSource: null,
-                      typeSource: 'manual',
-                      detectedAssetType: 'workstation',
-                      discoveryMethods: [],
-                      notes: null,
-                      tags: [],
-                      firstSeenAt: now,
-                      lastSeenAt: now,
-                      createdAt: now,
-                      updatedAt: now,
-                    },
-                    snmpMonitoringEnabled: false,
-                    networkMonitoringEnabled: false,
-                    linkedDeviceHostname: null,
-                    linkedDeviceDisplayName: null,
-                    profileId: null,
-                    profileName: null,
-                    profileSubnets: null,
-                    suggestedBridgeDeviceId: null,
-                  }]) }),
+                  leftJoin: () => ({
+                    where: () => ({ limit: () => Promise.resolve([{
+                      asset: {
+                        id: ASSET_ID,
+                        orgId: ORG,
+                        siteId: '00000000-0000-0000-0000-000000000001',
+                        assetType: 'router',
+                        approvalStatus: 'approved',
+                        isOnline: true,
+                        hostname: null,
+                        label: null,
+                        ipAddress: '10.0.0.1',
+                        macAddress: null,
+                        manufacturer: null,
+                        model: null,
+                        openPorts: [],
+                        osFingerprint: null,
+                        snmpData: null,
+                        responseTimeMs: null,
+                        linkedDeviceId: null,
+                        linkSource: null,
+                        typeSource: 'manual',
+                        detectedAssetType: 'workstation',
+                        discoveryMethods: [],
+                        notes: null,
+                        tags: [],
+                        firstSeenAt: now,
+                        lastSeenAt: now,
+                        createdAt: now,
+                        updatedAt: now,
+                      },
+                      snmpMonitoringEnabled: false,
+                      networkMonitoringEnabled: false,
+                      linkedDeviceHostname: null,
+                      linkedDeviceDisplayName: null,
+                      profileId: null,
+                      profileName: null,
+                      profileSubnets: null,
+                      suggestedBridgeDeviceId: null,
+                      siteName: null,
+                    }]) }),
+                  }),
                 }),
               }),
             }),

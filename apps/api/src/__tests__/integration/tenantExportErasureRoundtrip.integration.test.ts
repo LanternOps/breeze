@@ -40,6 +40,8 @@ interface SeededOrgs {
   siteId: string;
   siteName: string;
   prohibitedSentinels: string[];
+  /** #3257 W05 — the custom-field value that must REACH the archive, readable. */
+  customFieldValueSentinel: string;
 }
 
 // Seed the real backup dependency chain, including the command FK that used
@@ -152,6 +154,8 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
   // and a sanitized revoke error — proves the export excludes them and
   // cascadeDeleteOrg removes the row.
   const deviceId = crypto.randomUUID();
+  const customFieldDefinitionId = crypto.randomUUID();
+  const customFieldValueSentinel = `ASSET-TAG-${suffix}`;
   await db.execute(sql`
     INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
     VALUES (${deviceId}, ${orgA}, ${siteA1}, ${'roundtrip-agent-' + suffix}, 'roundtrip-host', 'windows', '11', 'amd64', '1.0.0')
@@ -166,6 +170,24 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       ${mtlsFingerprintSentinel}, ${'MTLS-SPKI-' + suffix}, 'active', now(), now() + interval '1 year',
       now(), 2, ${'MTLS-REVOKE-ERROR-' + suffix}
     )
+  `);
+
+  // device_custom_field_values (#3257 W05): one value on that device. Before
+  // W05, custom-field values lived in `devices.custom_fields`, a jsonb column —
+  // and every json/jsonb column is `excludedOpen` in the tenant-export policy,
+  // so every custom-field value a tenant ever stored was SILENTLY DROPPED from
+  // their GDPR export. The registry completeness check catches a deleted policy
+  // entry, but only THIS assertion proves the data itself reaches the archive,
+  // readable — which is why `field_key` is denormalized onto the row at all
+  // (readOrgRows is a bare column projection with no joins, so a
+  // definition_id-only row would export as an opaque uuid).
+  await db.execute(sql`
+    INSERT INTO custom_field_definitions (id, org_id, name, field_key, type)
+    VALUES (${customFieldDefinitionId}, ${orgA}, 'Asset Tag', 'asset_tag', 'text')
+  `);
+  await db.execute(sql`
+    INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text, source)
+    VALUES (${deviceId}, ${orgA}, ${customFieldDefinitionId}, 'asset_tag', ${customFieldValueSentinel}, 'manual')
   `);
 
   await db.execute(sql`
@@ -301,6 +323,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     siteId: siteA1,
     siteName: siteA1Name,
     prohibitedSentinels,
+    customFieldValueSentinel,
   };
 }
 
@@ -323,7 +346,10 @@ describe('tenant export + erasure round-trip (live DB)', () => {
   });
 
   it('export manifest reflects only the target org rows', async () => {
-    const { orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels } = await seedTwoOrgs();
+    const {
+      orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
+      customFieldValueSentinel,
+    } = await seedTwoOrgs();
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -343,6 +369,11 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
     // device_mtls_certificates.json carries the one certificate history row.
     expect(byName.get('device_mtls_certificates.json')?.rowCount).toBe(1);
+    // device_custom_field_values.json carries the one custom-field value
+    // (#3257 W05). Before W05 these lived in the `devices.custom_fields` jsonb,
+    // which is `excludedOpen` like every json column — so a tenant's whole
+    // custom-field dataset was silently absent from their GDPR export.
+    expect(byName.get('device_custom_field_values.json')?.rowCount).toBe(1);
     // portal_branding.json carries the one portal-visibility-flags row.
     expect(byName.get('portal_branding.json')?.rowCount).toBe(1);
     // Every manifest entry carries a sha256.
@@ -352,6 +383,22 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(manifest.orgId).toBe(orgA);
 
     const archive = await JSZip.loadAsync(zipBuffer);
+    // The value must be READABLE in the archive, not just counted: `field_key`
+    // is denormalized onto the row precisely because `readOrgRows` is a bare
+    // column projection with no joins, so a definition_id-only row would export
+    // as an opaque uuid the data subject cannot interpret. Assert both the human
+    // -readable key and the value itself.
+    const customFieldValueRows = JSON.parse(
+      await archive.file('device_custom_field_values.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    expect(customFieldValueRows).toEqual([
+      expect.objectContaining({
+        org_id: orgA,
+        field_key: 'asset_tag',
+        value_text: customFieldValueSentinel,
+      }),
+    ]);
+
     const portalBrandingRows = JSON.parse(
       await archive.file('portal_branding.json')!.async('string'),
     ) as Array<Record<string, unknown>>;

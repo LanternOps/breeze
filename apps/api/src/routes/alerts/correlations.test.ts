@@ -357,6 +357,49 @@ describe('/alerts correlation routes', () => {
     expect(body.groups[0].rootCause.device).toBe('server-1');
   });
 
+  // #4448 — the ephemeral (non-persisted) clustering path fills the same
+  // `orgId` field the persisted path does, and `GET /correlations` serialises
+  // it verbatim. It must be the group's OWN tenant: an empty string in a
+  // tenancy-bearing field reads as "org unknown" to every consumer, and the
+  // ack/resolve fallbacks below match groups off this same builder. The
+  // unreachable-in-practice placeholder arm is pinned by
+  // correlations.ephemeralOrg.contract.test.ts.
+  it("carries the group's real orgId on the ephemeral clustering path, never an empty placeholder", async () => {
+    const res = await makeApp().request('/alerts/correlations');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups.length).toBeGreaterThan(0);
+    for (const group of body.groups) {
+      expect(group.orgId, 'ephemeral group published with a placeholder orgId').not.toBe('');
+      expect(group.orgId).toBe(ORG_1);
+    }
+  });
+
+  it('carries an accessible orgId on the ephemeral path for a partner-scoped caller', async () => {
+    // A partner caller's alert page can span orgs, so the group's org is read
+    // off the cluster rather than off the token — which makes "is it one of
+    // MINE?" the assertion that matters, not "is it this specific org?".
+    const accessibleOrgIds = [ORG_1, ORG_2];
+    authRef.current = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds,
+      user: { id: '99999999-9999-4999-8999-999999999999' },
+      canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId),
+    };
+
+    const res = await makeApp().request('/alerts/correlations');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups.length).toBeGreaterThan(0);
+    for (const group of body.groups) {
+      expect(group.orgId, 'ephemeral group published with a placeholder orgId').not.toBe('');
+      expect(accessibleOrgIds).toContain(group.orgId);
+    }
+  });
+
   it('returns persisted correlation groups before falling back to derived groups', async () => {
     seedPersistedGroup();
 

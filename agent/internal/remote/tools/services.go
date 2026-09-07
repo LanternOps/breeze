@@ -17,7 +17,7 @@ func validateServiceName(name string) (string, error) {
 	if _, truncated := truncateStringBytes(trimmed, maxServiceFieldBytes); truncated {
 		return "", fmt.Errorf("service name exceeds maximum length of %d bytes", maxServiceFieldBytes)
 	}
-	if strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "/\\\x00\r\n\t ") {
+	if strings.Contains(trimmed, "..") || strings.ContainsAny(trimmed, "/\\\x00\r\n\t") {
 		return "", fmt.Errorf("service name contains invalid characters")
 	}
 	return trimmed, nil

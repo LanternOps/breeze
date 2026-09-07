@@ -20,6 +20,7 @@ import {
   validatePagerDutyConfig,
   validatePushoverConfig,
 } from '../../services/notificationSenders';
+import { canReadPartnerWideRows } from '../../services/partnerWideAccess';
 
 export type AlertRuleRow = typeof alertRules.$inferSelect;
 export type AlertTemplateRow = typeof alertTemplates.$inferSelect;
@@ -113,11 +114,21 @@ export async function getAlertRuleWithOrgCheck(
   }
 
   // Dual-axis access (#2128): org-owned rules via org access; partner-wide
-  // rules (orgId NULL) via the caller's own partner (or system scope). Writes
-  // are additionally gated on canManagePartnerWidePolicies at the routes.
+  // rules (orgId NULL) only for system scope or the owning partner's own
+  // PARTNER-scoped token.
+  //
+  // Org tokens carry a partnerId too (`middleware/auth.ts` feeds it into
+  // DbAccessContext.currentPartnerId), so matching on partnerId alone handed
+  // every partner-wide rule to every org user under that partner. RLS is not a
+  // backstop here: alert_rules' partner-wide SELECT branch deliberately makes
+  // those rows readable from an org context, so this gate is the whole control
+  // (#4952). It also makes the by-id paths agree with the list route, which
+  // already restricts the partner-wide arm to `auth.scope === 'partner'`
+  // (`rules.ts` GET /alerts/rules). Writes are additionally gated on
+  // canManagePartnerWidePolicies at the routes.
   const hasAccess = rule.orgId !== null
     ? ensureOrgAccess(rule.orgId, auth)
-    : auth.scope === 'system' || (!!auth.partnerId && rule.partnerId === auth.partnerId);
+    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, rule.partnerId);
   if (!hasAccess) {
     return null;
   }
@@ -394,18 +405,22 @@ export async function validatePushoverChannelInheritance(
 
 export async function validateAlertRuleNotificationBindings(
   orgId: string,
-  overrides: AlertRuleOverrides
+  overrides: AlertRuleOverrides,
+  callerScope: 'organization' | 'partner' | 'system'
 ): Promise<string | null> {
   const requestedChannelIds = [...new Set(getNotificationChannelIds(overrides).filter(Boolean))];
   const needsPartnerAxis = requestedChannelIds.length > 0
     || (typeof overrides.escalationPolicyId === 'string' && overrides.escalationPolicyId.length > 0);
 
   // Dual-axis (#2130): a rule may bind the org's own rails OR partner-wide
-  // rails (org_id NULL) owned by the org's partner. Partner-wide rows are
-  // RLS-invisible to org-scope callers, so for them this still resolves to
-  // "same organization" — which is also what their UI offers.
+  // rails (org_id NULL) owned by the org's partner. The partner arm is gated on
+  // the CALLER's scope, not the org's partner (CLAUDE.md "Partner-Wide First"
+  // step 3): since #4956 the partner-wide SELECT branch makes those rows
+  // visible to org tokens too, so RLS no longer keeps an org admin from binding
+  // their MSP's shared Slack/PagerDuty rail to a rule they control. For org
+  // callers this resolves to "same organization" — which is what their UI offers.
   let orgPartnerId: string | null = null;
-  if (needsPartnerAxis) {
+  if (needsPartnerAxis && callerScope !== 'organization') {
     const [orgRow] = await db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)

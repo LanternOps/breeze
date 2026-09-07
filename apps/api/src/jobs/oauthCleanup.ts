@@ -44,6 +44,7 @@ import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { cleanupExpiredOauthLifecycleRows, cleanupStaleOauthClients } from '../oauth/provider';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'oauth-stale-clients-cleanup';
 const JOB_NAME = 'oauth-stale-clients-cleanup';
@@ -145,6 +146,7 @@ export async function scheduleOauthCleanup(queue: Queue = getOauthCleanupQueue()
 export async function initializeOauthCleanupWorker(): Promise<void> {
   try {
     cleanupWorker = createOauthCleanupWorker();
+  attachWorkerObservability(cleanupWorker, 'oauthCleanup');
 
     cleanupWorker.on('error', (error) => {
       console.error('[OauthCleanup] Worker error:', error);

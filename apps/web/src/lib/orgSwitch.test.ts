@@ -31,3 +31,18 @@ describe('getOrgSwitchRedirect', () => {
     expect(getOrgSwitchRedirect('/settings/organizations/abc123')).toBeNull();
   });
 });
+
+describe('getOrgSwitchRedirect — organization record (#5075)', () => {
+  it('redirects the record up to the organizations list (the record pins ITS org, not the switcher)', () => {
+    // Reloading /organizations/<other-org> after a switch would leave the user
+    // staring at the customer they just navigated away from: the record's org
+    // comes from the URL, so a context switch has to leave the record entirely.
+    expect(getOrgSwitchRedirect('/organizations/abc123')).toBe('/settings/organizations');
+    expect(getOrgSwitchRedirect('/organizations/abc123/')).toBe('/settings/organizations');
+  });
+
+  it('leaves deeper record sub-routes and the bare prefix alone', () => {
+    expect(getOrgSwitchRedirect('/organizations/abc123/anything')).toBeNull();
+    expect(getOrgSwitchRedirect('/organizations')).toBeNull();
+  });
+});

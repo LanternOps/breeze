@@ -15,7 +15,8 @@ Breeze exposes health check endpoints that let you verify whether the API and it
 | Endpoint | Purpose | Auth Required |
 |---|---|---|
 | `GET /health` | Basic liveness -- is the API process running? | No |
-| `GET /health/ready` | Full readiness -- are the database and Redis reachable? | No |
+| `GET /health/ready` | Full readiness -- database, Redis, and every required queue consumer runnable (alias: `GET /ready`) | No |
+| `GET /ready` | Alias of `/health/ready` (same evaluator, same body) | No |
 | `GET /health/live` | Kubernetes liveness probe (alias for `/health`) | No |
 | `GET /metrics/scrape` | Prometheus-formatted metrics | Bearer token |
 
@@ -39,18 +40,29 @@ Returns `200 OK` if the API process is alive. This endpoint does not check backe
 | `version` | Current Breeze API version |
 | `uptime` | Seconds since the process started |
 
-### GET /health/ready
+### GET /health/ready (alias: GET /ready)
 
-Returns `200 OK` only when all backend dependencies are healthy. Returns `503 Service Unavailable` if any check fails.
+Returns `200 OK` only when the database and Redis are reachable **and every
+queue consumer this process is required to run is attached and connected**.
+Returns `503 Service Unavailable` otherwise. Both paths are served by the same
+cached evaluator (default 5 s cache, 3 s per-probe timeout; the two are clamped
+so a failure or recovery is visible within 10 s).
 
 **Healthy response (200):**
 
 ```json
 {
-  "status": "ready",
-  "checks": {
-    "database": "ok",
-    "redis": "ok"
+  "ready": true,
+  "db": true,
+  "redis": true,
+  "workers": true,
+  "checkedAt": "2026-09-01T12:00:00.000Z",
+  "consumerSummary": {
+    "required": 113,
+    "runnable": 113,
+    "unavailable": 0,
+    "optionalRunning": 1,
+    "optionalDisabled": 3
   }
 }
 ```
@@ -59,22 +71,53 @@ Returns `200 OK` only when all backend dependencies are healthy. Returns `503 Se
 
 ```json
 {
-  "status": "not_ready",
-  "checks": {
-    "database": "ok",
-    "redis": "error: connection refused"
+  "ready": false,
+  "db": true,
+  "redis": true,
+  "workers": false,
+  "checkedAt": "2026-09-01T12:00:05.000Z",
+  "consumerSummary": {
+    "required": 113,
+    "runnable": 112,
+    "unavailable": 1,
+    "optionalRunning": 1,
+    "optionalDisabled": 3
   }
 }
 ```
 
+If the evaluator itself fails, the body is `{ "ready": false, "db": null, "redis": null, "workers": null, "checkedAt": "...", "consumerSummary": null, "error": "readiness evaluation failed" }` with status 503 — `null`, not `false`, because the backends may be healthy.
+
 | Field | Description |
 |---|---|
-| `status` | `"ready"` or `"not_ready"` |
-| `checks.database` | `"ok"` or an error message from the PostgreSQL connection test |
-| `checks.redis` | `"ok"` or an error message from the Redis `PING` command |
+| `ready` | Overall admission verdict; the status code follows it |
+| `db` / `redis` | Live dependency probes (bounded by the probe timeout) |
+| `workers` | `true` when worker initialization has completed and every required queue consumer is running with a connected Redis client |
+| `checkedAt` | When this verdict was computed (it may be cached for up to the cache TTL) |
+| `consumerSummary` | Aggregate counts only: `required`, `runnable`, `unavailable` (= required − runnable), `optionalRunning`, `optionalDisabled` |
+
+Only aggregate counts are ever exposed. Consumer names, queue names, Redis
+endpoints, transition timestamps, and error messages are internal and never
+appear in this body. The counts depend on the process role (`BREEZE_ROLE`)
+and on feature flags: an `api`-role process counts only the socket-owner
+consumers it starts, a `worker`-role process only the global ones, and
+consumers behind an off feature flag (`EVENT_DISPATCH_MODE`,
+`BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are counted as
+`optionalDisabled` rather than blocking readiness. The shared abuse-signals
+consumer is required when either abuse signals or partner trust is enabled;
+it is optional only when both are off. The numbers above are illustrative.
+
+The optional `worker` container (Compose profile `worker-split`) serves its
+own `/health/ready` on its `API_PORT`. When its readiness evaluator runs, the
+body has the same fields plus `"role": "worker"`, and a 503 adds a single
+`reason` of `db`, `redis`, or `workers-pending`. Three 503s bypass the
+evaluator and carry only `{ "ready": false, "reason": ... }` with none of the
+other fields: `shutting-down` (the process received SIGTERM),
+`migrations-pending` (schema parity not yet confirmed), and `db` when the
+evaluator itself throws.
 
 <Aside>
-  Use `/health` for liveness probes (restart the container if the process is dead) and `/health/ready` for readiness probes (stop sending traffic until dependencies recover).
+  Use `/health` for liveness probes (restart the container if the process is dead) and `/health/ready` for readiness probes (stop sending traffic until dependencies recover). Do not put `/health/ready` in a Docker Compose `healthcheck:` for a service other containers `depends_on` — Compose turns it into a startup gate. The `worker` container is the one exception, because nothing depends on it. See `docs/operations/health-probes.md` in the repository.
 </Aside>
 
 ### GET /metrics/scrape
@@ -141,6 +184,7 @@ Every container in the Breeze production stack has a built-in health check. Dock
 | Container | Check Command | Interval | Start Period |
 |---|---|---|---|
 | API | `wget http://localhost:3001/health` | 30s | 10s |
+| Worker (profile `worker-split`) | `wget http://localhost:3001/health/ready` | 30s | 60s |
 | Web | `wget http://localhost:4321/` | 30s | 10s |
 | PostgreSQL | `pg_isready` | 10s | 30s |
 | Redis | `redis-cli ping` | 10s | 10s |
@@ -224,8 +268,8 @@ One or more backend dependencies are down.
 
 <Steps>
 
-1. Check which dependency failed by reading the `checks` object in the response body.
-2. If `database` is failing:
+1. Read the `db`, `redis`, and `workers` booleans in the response body. If only `workers` is `false`, `consumerSummary.unavailable` tells you how many required queue consumers are not running; check the API container logs for `[CRITICAL] Failed to initialize <worker>` lines and for Redis disconnects.
+2. If `db` is failing:
    - Verify PostgreSQL is running: `docker compose ps postgres`
    - Test the connection manually: `docker compose exec postgres pg_isready`
    - Check for connection pool exhaustion: look at `pg_stat_activity_count` in Grafana
@@ -233,6 +277,7 @@ One or more backend dependencies are down.
    - Verify Redis is running: `docker compose ps redis`
    - Test the connection: `docker compose exec redis redis-cli ping`
    - Check memory usage: `docker compose exec redis redis-cli info memory`
+4. If `workers` is failing: verify Redis is healthy (a consumer that lost its Redis client reports not-ready until it reconnects), then restart the container if a `[CRITICAL] Failed to initialize` line names a worker — initialization failures are permanent for the process lifetime.
 
 </Steps>
 
@@ -247,5 +292,5 @@ One or more backend dependencies are down.
 </Steps>
 
 <Aside type="caution">
-  If Redis becomes unreachable, the API will still serve most requests (health check returns 503, but endpoints that do not require Redis will work). However, features that depend on Redis -- rate limiting, BullMQ job queues, and real-time pub/sub -- will be degraded until Redis recovers.
+  If Redis becomes unreachable, `/health` stays 200 (the process is alive) but `/health/ready` and `/ready` return 503 for as long as Redis is down — no queue consumer can run without it, so the process is deliberately withheld from admission rather than admitted with degraded background work. Features that depend on Redis -- rate limiting, BullMQ job queues, and real-time pub/sub -- recover automatically when Redis returns.
 </Aside>

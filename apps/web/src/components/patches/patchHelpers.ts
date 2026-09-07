@@ -98,6 +98,7 @@ type RingSeverity = (typeof RING_SEVERITIES)[number];
 
 const DISABLED_RING_AUTO_APPROVE: NonNullable<UpdateRingItem['autoApprove']> = {
   enabled: false, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null,
+  autoApproveUnrated: false,
 };
 
 /**
@@ -128,7 +129,7 @@ const DISABLED_RING_AUTO_APPROVE: NonNullable<UpdateRingItem['autoApprove']> = {
  */
 function normalizeRingAutoApprove(raw: unknown): UpdateRingItem['autoApprove'] {
   if (raw === true) {
-    return { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null };
+    return { enabled: true, severities: [], deferralDays: 0, thirdPartyApps: false, thirdPartyDeferralDays: null, autoApproveUnrated: false };
   }
   if (!raw || typeof raw !== 'object') {
     return { ...DISABLED_RING_AUTO_APPROVE };
@@ -160,7 +161,9 @@ function normalizeRingAutoApprove(raw: unknown): UpdateRingItem['autoApprove'] {
     }
     thirdPartyDeferralDays = rawThirdPartyHold;
   }
-  return { enabled: obj.enabled === true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays };
+  const autoApproveUnrated = obj.autoApproveUnrated === true;
+
+  return { enabled: obj.enabled === true, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays, autoApproveUnrated };
 }
 
 export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {

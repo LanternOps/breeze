@@ -9,17 +9,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// setProcessGroup is a no-op on Windows. Job Objects could be used for full
-// process tree management but are deferred to a future enhancement.
+// setProcessGroup is a no-op on Windows: process-tree containment is a Job
+// Object, established at launch time by startContained/launchContained
+// (job.go, job_windows.go) rather than by a SysProcAttr flag. #3525 replaced
+// the previous "deferred to a future enhancement" no-op — a PowerShell script
+// that started msiexec used to leave it running on both the cancel AND the
+// timeout path.
 func setProcessGroup(cmd *exec.Cmd) {}
-
-// killProcessGroup kills the process directly on Windows.
-func killProcessGroup(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Kill()
-}
 
 // hideWindow prevents the spawned shell (powershell.exe, cmd.exe, etc.) from
 // allocating a visible console window when the user-helper (linked

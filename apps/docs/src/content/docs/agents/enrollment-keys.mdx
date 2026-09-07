@@ -18,7 +18,7 @@ Enrollment keys are short-lived, usage-limited tokens that authorize new agents 
 |---------|-------------|
 | **Enrollment key** | A 64-character hex string (32 random bytes) presented by the agent during the `POST /api/v1/agents/enroll` call. |
 | **SHA-256 + pepper** | The raw key is never stored. It is hashed with a server-side pepper before being written to the database. |
-| **TTL (`expiresAt`)** | Time-to-live. After this timestamp the key is rejected. Default: 60 minutes from creation. |
+| **TTL (`expiresAt`)** | Time-to-live. After this timestamp the key is rejected. Default: 30 days from creation (see `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`). |
 | **Max usage (`maxUsage`)** | Maximum number of successful enrollments allowed. Default: 1. Range: 1 -- 100,000. |
 | **Usage count (`usageCount`)** | Incremented atomically on each successful enrollment. Once it reaches `maxUsage`, the key is exhausted. |
 | **Site pinning (`siteId`)** | When set, every agent that enrolls with this key is placed into the specified site. The enrollment endpoint requires a `siteId` to be present on the key. |
@@ -148,7 +148,7 @@ POST and PATCH on `/enrollment-keys` reject any field that isn't in the table ab
 <Aside>
   The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 30 days after creation.
 
-  Two paths do **not** yet pick up that 30-day fallback when the variable is unset: keys minted through the partner-provisioning API expire after 60 minutes, and installer child keys after 24 hours. If you rely on either, set `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (and `CHILD_ENROLLMENT_KEY_TTL_MINUTES`) explicitly rather than depending on the default.
+  Every path now shares that fallback, including keys minted through the partner-provisioning API and installer child keys. `CHILD_ENROLLMENT_KEY_TTL_MINUTES` remains available to give installer child keys a shorter life than the shared default; leave it unset and they inherit the same 30 days.
 </Aside>
 
 <Aside type="tip">
@@ -457,7 +457,7 @@ The agent enrollment endpoint is separate:
 The SHA-256 hash of the provided key did not match any active record, or the key has expired or reached its usage limit. Possible causes:
 
 - The key was rotated and the old value is being used in the installer.
-- The `expiresAt` timestamp has passed. The default TTL is 60 minutes.
+- The `expiresAt` timestamp has passed. The default TTL is 30 days.
 - `usageCount` has reached `maxUsage`. Check the key details via `GET /enrollment-keys/:id`.
 - The server pepper changed since the key was created. Rotate or recreate the key.
 

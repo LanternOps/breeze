@@ -37,6 +37,12 @@ export default function ContextScopeLine() {
   // isSingleDocumentRoute.
   if (isSingleDocumentRoute(pathname)) return null;
   const kind = getRouteScope(pathname);
+  // The organization record names its own org in its header (and chips a
+  // switcher pointing elsewhere), so a scope line here adds nothing — and
+  // "Showing all organizations" would flatly contradict a page about one named
+  // customer. Explicit rather than relying on the fall-through below, so a
+  // future reclassification of the route cannot resurrect the line.
+  if (kind === 'org-record') return null;
   // Explicit fleet view only — the hook's discriminated union keeps the
   // transient/loading and error states from reading as fleet.
   const isFleet = scope.scope === 'all';

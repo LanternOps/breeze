@@ -55,6 +55,7 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { auditChainVerifyEnabled as isEnabled } from '../config/auditChainVerify';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema/incidentResponse';
@@ -62,6 +63,7 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'audit-chain-verify';
 const JOB_NAME = 'audit-chain-verify';
@@ -75,13 +77,6 @@ const INTER_ORG_DELAY_MS = 50;
 const INCIDENT_CLASSIFICATION = 'audit_integrity';
 const INCIDENT_SEVERITY = 'p1' as const;
 const EVENT_SOURCE = 'audit-chain-verify';
-
-function isEnabled(): boolean {
-  const raw = process.env.AUDIT_CHAIN_VERIFY_ENABLED;
-  if (raw === undefined || raw === '') return true; // default ON
-  const v = raw.trim().toLowerCase();
-  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
-}
 
 export type ChainVerifyMode = 'incremental' | 'full';
 
@@ -368,6 +363,7 @@ export function createAuditChainVerifyWorker(): Worker {
       concurrency: 1,
     },
   );
+  attachWorkerObservability(verifyWorker, 'auditChainVerify');
   return verifyWorker;
 }
 

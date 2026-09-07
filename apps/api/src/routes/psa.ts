@@ -393,7 +393,17 @@ function mapTicketRow(row: {
 // psaTicketMappingOrgCondition (ticket data), so the helper is deleted rather
 // than left around for the next endpoint to copy.
 
-async function getConnectionById(id: string) {
+// Anchored on the caller's access axis, not id alone: since the partner-wide
+// SELECT branch landed in RLS (#4959), an org caller CAN fetch its MSP's
+// partner-wide row by id, and ensureConnectionAccess became the only thing
+// standing between it and the row. Filtering here keeps "not found" as the
+// answer for anything outside the caller's axis, so a future call site that
+// forgets the gate degrades to a 404 instead of a leak.
+async function getConnectionById(
+  id: string,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgCondition'>
+) {
+  const accessCondition = psaConnectionAccessCondition(auth);
   const [connection] = await db
     .select({
       id: psaConnectionsTable.id,
@@ -409,7 +419,7 @@ async function getConnectionById(id: string) {
       lastSyncAt: psaConnectionsTable.lastSyncAt
     })
     .from(psaConnectionsTable)
-    .where(eq(psaConnectionsTable.id, id))
+    .where(accessCondition ? and(eq(psaConnectionsTable.id, id), accessCondition) : eq(psaConnectionsTable.id, id))
     .limit(1);
 
   return connection ?? null;
@@ -625,7 +635,7 @@ psaRoutes.get(
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
 
-    const connection = await getConnectionById(connectionId);
+    const connection = await getConnectionById(connectionId, auth);
     if (!connection) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -672,7 +682,7 @@ psaRoutes.patch(
       return c.json({ error: 'No updates provided' }, 400);
     }
 
-    const existing = await getConnectionById(connectionId);
+    const existing = await getConnectionById(connectionId, auth);
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -784,7 +794,7 @@ psaRoutes.delete(
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
 
-    const existing = await getConnectionById(connectionId);
+    const existing = await getConnectionById(connectionId, auth);
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -832,7 +842,7 @@ psaRoutes.post(
     const connectionId = c.req.param('id')!;
 
     // Short, explicit DB context — no ambient request transaction here (#1448).
-    const existing = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId));
+    const existing = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId, auth));
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -944,7 +954,7 @@ psaRoutes.post(
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
 
-    const existing = await getConnectionById(connectionId);
+    const existing = await getConnectionById(connectionId, auth);
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -1062,7 +1072,7 @@ psaRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const connection = await getConnectionById(connectionId);
+    const connection = await getConnectionById(connectionId, auth);
     if (!connection) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -1200,7 +1210,7 @@ async function resolveImportConnection(
   connectionId: string
 ): Promise<ImportResolution> {
   // Short, explicit DB context — no ambient request transaction here (#1448).
-  const connection = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId));
+  const connection = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId, auth));
   if (!connection) {
     return { ok: false, error: 'PSA connection not found', status: 404 };
   }

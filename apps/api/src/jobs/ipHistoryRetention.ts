@@ -16,6 +16,7 @@ import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 import {
   parsePositiveIntEnv,
   pruneInCtidBatches,
@@ -89,6 +90,7 @@ let retentionWorker: Worker<RetentionJobData> | null = null;
 export async function initializeIPHistoryRetention(): Promise<void> {
   try {
     retentionWorker = createIPHistoryRetentionWorker();
+  attachWorkerObservability(retentionWorker, 'ipHistoryRetention');
 
     retentionWorker.on('error', (error) => {
       console.error('[IPHistoryRetention] Worker error:', error);

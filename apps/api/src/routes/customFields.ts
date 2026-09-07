@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
+import { customFieldWriteConflict } from '../services/customFields/writeErrors';
 
 // Custom field schemas (defined locally to avoid rootDir issues)
 // Must match the database enum: 'text', 'number', 'boolean', 'dropdown', 'date'
@@ -343,21 +344,36 @@ customFieldRoutes.post(
       return c.json({ error: 'orgId or partnerId is required' }, 400);
     }
 
-    const [field] = await db
-      .insert(customFieldDefinitions)
-      .values({
-        orgId,
-        partnerId,
-        name: payload.name,
-        fieldKey: payload.fieldKey,
-        type: payload.type,
-        options: payload.options,
-        required: payload.required,
-        defaultValue: payload.defaultValue,
-        deviceTypes: payload.deviceTypes,
-        scriptWrite: payload.scriptWrite
-      })
-      .returning();
+    let field;
+    try {
+      [field] = await db
+        .insert(customFieldDefinitions)
+        .values({
+          orgId,
+          partnerId,
+          name: payload.name,
+          fieldKey: payload.fieldKey,
+          type: payload.type,
+          options: payload.options,
+          required: payload.required,
+          defaultValue: payload.defaultValue,
+          deviceTypes: payload.deviceTypes,
+          scriptWrite: payload.scriptWrite
+        })
+        .returning();
+    } catch (err) {
+      // Both mapped conditions are the caller's own to fix and neither is a
+      // server fault, so neither may surface as a 500. The mapping itself lives
+      // in services/customFields/writeErrors.ts because the definitions
+      // importer (#3257 W07) needs the identical one per row — see that
+      // module's header for what each SQLSTATE means and why only one of the
+      // two messages may be passed through verbatim.
+      const conflict = customFieldWriteConflict(err, payload.fieldKey);
+      if (conflict) {
+        return c.json(conflict, 409);
+      }
+      throw err;
+    }
 
     if (!field) {
       return c.json({ error: 'Failed to create custom field' }, 500);

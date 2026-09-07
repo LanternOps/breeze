@@ -15,19 +15,19 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   patchJobs: { id: 'id', orgId: 'orgId', policyId: 'policyId', configPolicyId: 'configPolicyId' },
   configPolicyPatchSettings: { featureLinkId: 'featureLinkId' },
-  configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
+  configPolicyEffectiveFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
   configPolicyAssignments: { configPolicyId: 'configPolicyId' },
   configurationPolicies: { id: 'id', status: 'status' },
 }));
 
 vi.mock('./featureConfigResolver', () => ({
-  resolvePatchConfigForDevice: vi.fn(),
+  resolvePatchConfigDetailsForDevice: vi.fn(),
   checkDeviceMaintenanceWindow: vi.fn(),
 }));
 
 import { db } from '../db';
 import { createPatchJobFromConfigPolicy, createPatchJobForDeviceFromPolicy } from './patchJobService';
-import { resolvePatchConfigForDevice, checkDeviceMaintenanceWindow } from './featureConfigResolver';
+import { resolvePatchConfigDetailsForDevice, checkDeviceMaintenanceWindow } from './featureConfigResolver';
 
 function makePatchSettings(overrides: Record<string, unknown> = {}): any {
   return {
@@ -43,6 +43,25 @@ function makePatchSettings(overrides: Record<string, unknown> = {}): any {
     scheduleDayOfMonth: null,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+// The resolver hands back the ASSIGNED policy id alongside the settings, which
+// is what the job must carry (#5080). `configPolicyId` here is deliberately a
+// DIFFERENT value from the feature link id: a reverse map from the link would
+// no longer identify one policy.
+function makeResolvedDetails(overrides: Record<string, unknown> = {}): any {
+  return {
+    settings: makePatchSettings(),
+    featureLinkId: 'fl-parent',
+    configPolicyId: 'cp-1',
+    configPolicyName: 'Child Policy',
+    featurePolicyId: null,
+    assignmentLevel: 'organization',
+    assignmentTargetId: 'org-1',
+    assignmentPriority: 0,
+    resolvedTimezone: 'UTC',
     ...overrides,
   };
 }
@@ -187,7 +206,7 @@ describe('patchJobService', () => {
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
       expect(result).toBeNull();
-      expect(resolvePatchConfigForDevice).not.toHaveBeenCalled();
+      expect(resolvePatchConfigDetailsForDevice).not.toHaveBeenCalled();
     });
 
     it('returns null when no patch config resolves for the device', async () => {
@@ -200,13 +219,17 @@ describe('patchJobService', () => {
         rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(null);
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(null);
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
       expect(result).toBeNull();
     });
 
-    it('returns null when feature link is not found', async () => {
+    it("stamps the RESOLVER's policy id on the job, with no feature-link lookup", async () => {
+      // The seam this test exists for (#5080). A link id now belongs to the
+      // authoring parent AND every child, so reverse-mapping it would stamp an
+      // arbitrary policy — and with it an arbitrary org — onto the patch job.
+      // The resolver already knows which assignment won; that id is the answer.
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false,
         suppressAlerts: false,
@@ -216,16 +239,18 @@ describe('patchJobService', () => {
         rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
-
-      // Feature link select returns empty
-      mockDbSelectChain([]);
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(
+        makeResolvedDetails({ configPolicyId: 'cp-child', featureLinkId: 'fl-parent' }),
+      );
+      mockDbInsertReturning([{ id: 'job-1', policyId: null, configPolicyId: 'cp-child' }]);
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
-      expect(result).toBeNull();
+
+      expect(result!.job.configPolicyId).toBe('cp-child');
+      expect(db.select).not.toHaveBeenCalled();
     });
 
-    it('creates a job when patch config and feature link resolve successfully', async () => {
+    it('creates a job when the resolver returns patch settings', async () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false,
         suppressAlerts: false,
@@ -235,10 +260,7 @@ describe('patchJobService', () => {
         rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
-
-      // Mock feature link select
-      mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(makeResolvedDetails());
 
       // Mock insert for job creation
       const job = { id: 'job-1', policyId: null, configPolicyId: 'cp-1' };
@@ -259,9 +281,8 @@ describe('patchJobService', () => {
         rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(makeResolvedDetails());
 
-      mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
       const job = { id: 'job-1', policyId: null, configPolicyId: 'cp-1' };
       mockDbInsertReturning([job]);
 
@@ -279,9 +300,8 @@ describe('patchJobService', () => {
         rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(makeResolvedDetails());
 
-      mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
       mockDbInsertReturning([{ id: 'job-1', policyId: null, configPolicyId: 'cp-1' }]);
 
       const result = await createPatchJobForDeviceFromPolicy('dev-1', 'org-1');
@@ -294,8 +314,7 @@ describe('patchJobService', () => {
         suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockResolvedValue(makePatchSettings());
-      mockDbSelectChain([{ configPolicyId: 'cp-1' }]);
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(makeResolvedDetails());
       mockDbInsertReturning([]); // Empty -> triggers throw
 
       await expect(
@@ -311,13 +330,13 @@ describe('patchJobService', () => {
       ).rejects.toThrow('DB timeout');
     });
 
-    it('propagates error when resolvePatchConfigForDevice rejects', async () => {
+    it('propagates error when resolvePatchConfigDetailsForDevice rejects', async () => {
       vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
         active: false, suppressAlerts: false, suppressPatching: false,
         suppressAutomations: false, suppressScripts: false, rebootIfPending: false,
         windowEndsAt: null,
       });
-      vi.mocked(resolvePatchConfigForDevice).mockRejectedValue(new Error('DB connection lost'));
+      vi.mocked(resolvePatchConfigDetailsForDevice).mockRejectedValue(new Error('DB connection lost'));
 
       await expect(
         createPatchJobForDeviceFromPolicy('dev-1', 'org-1')

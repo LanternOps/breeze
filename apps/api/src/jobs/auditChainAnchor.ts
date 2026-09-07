@@ -67,6 +67,7 @@ import {
   isAnchorSigningEnabled,
 } from '../services/auditAnchorSigning';
 import { jobSchedule } from './scheduleRegistry';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'audit-chain-anchor';
 const JOB_NAME = 'audit-chain-anchor';
@@ -486,6 +487,7 @@ export function createAuditChainAnchorWorker(): Worker {
       concurrency: 1,
     },
   );
+  attachWorkerObservability(anchorWorker, 'auditChainAnchor');
   return anchorWorker;
 }
 

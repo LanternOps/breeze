@@ -23,6 +23,7 @@ import {
   AuthIssuanceCapabilityError,
   issueUserSession,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   replaceSessionOnMfaFactorWrite,
   issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
@@ -37,11 +38,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, rollbackStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
+import { maintenanceResourceDigest, mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -243,7 +243,9 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
   await redis.setex(
     `mfa:setup:${auth.user.id}`,
     600, // 10 min expiry
-    JSON.stringify({ secret })
+    // Bind the password proof to its authenticated epochs. Cleanup is best-effort;
+    // a delayed writer or failed DEL must not revive setup after an admin reset.
+    JSON.stringify({ secret, authEpoch: auth.token?.aep, mfaEpoch: auth.token?.mep })
   );
 
   return c.json({
@@ -659,6 +661,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     const parsed = JSON.parse(setupData);
     secret = parsed.secret;
     if (typeof secret !== 'string') throw new Error('Invalid setup data');
+    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
+      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
+      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
+    }
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
@@ -903,20 +909,100 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     }
   }
 
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-disable', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaSecret: null,
-        mfaEnabled: false,
-        mfaMethod: null,
-        mfaRecoveryCodes: null,
-        phoneNumber: null,
-        phoneVerified: false,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+  // SR2-07 keeps its teeth: removing the factor advances mfa_epoch and revokes
+  // every refresh family, so no OTHER live session survives the account losing
+  // its second factor. What it must not do is evict the ACTOR — the caller's
+  // access token goes stale on that bump and the refresh cookie it would retry
+  // with belongs to a family revoked in the same transaction, so fetchWithAuth's
+  // refresh fails and the web client hard-redirects to
+  // /login?reason=session-expired the moment the user turns MFA off (#4934).
+  // Same road /mfa/enable and /mfa/recovery-codes already take: one transaction
+  // bumps the epoch, revokes every family, mints a REPLACEMENT session bound to
+  // the post-bump epochs, and clears the factor.
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeMfaFactorRemoval({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        // Carry the caller's OWN assurance forward, never elevate it: removing a
+        // factor must not upgrade a session that was not MFA-assured. (An
+        // already-assured caller — every session on a protected account — keeps
+        // full access, which is also what a fresh post-disable login would mint:
+        // `mfaSatisfied` in routes/auth/login.ts is vacuously true once
+        // mfa_enabled is false and policy does not mandate a factor.)
+        mfa: auth.token?.mfa === true,
+        // SR-001: this is a RE-MINT of an existing session, so the device binding
+        // comes from the previously-signed `mdid` claim, never from the forgeable
+        // request header — the same rule /auth/refresh follows. A bound mobile
+        // session must not be silently un-bound by a disable call.
+        mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      // The `mfaEnabled` read above is advisory (it answers with a friendly
+      // 400); this is the real check, folded into the epoch bump's WHERE so a
+      // concurrent second /mfa/disable loses with a 409 instead of bumping the
+      // epoch again and evicting the session the first one just issued.
+      revokeReason: 'mfa-disable',
+      // A removal supplies no code pair: the account must be left holding no
+      // recovery codes at all.
+      persistFactor: async (tx) => {
+        const rows = await tx
+          .update(users)
+          .set({
+            mfaSecret: null,
+            mfaEnabled: false,
+            mfaMethod: null,
+            mfaRecoveryCodes: null,
+            phoneNumber: null,
+            phoneVerified: false,
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('MFA disable user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+
+  // POST-COMMIT from here: the factor is already gone and every other session is
+  // already dead, so a failure installing the replacement must not turn a
+  // completed disable into an error the user retries against an account that no
+  // longer has MFA (the retry answers 400 'MFA is not enabled'). Report it and
+  // step over, exactly like /mfa/recovery-codes.
+  let sessionInstalled = true;
+  try {
+    await bindIssuedUserSession(result.issued);
+    installAuthorizedUserSessionCookies(c, result.issued);
+  } catch (error) {
+    sessionInstalled = false;
+    captureException(error, c, { factorChange: 'mfa_disable' });
+    console.error('[auth] MFA disabled but the replacement session could not be installed', {
+      userId: auth.user.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -924,10 +1010,22 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: currentMethod, mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: {
+      method: currentMethod,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
+      sessionInstalled,
+    }
   });
 
-  return c.json({ success: true, message: 'MFA disabled successfully' });
+  return c.json({
+    success: true,
+    message: 'MFA disabled successfully',
+    // Withheld when the install above failed: the refresh JTI was never bound, so
+    // the access token would die at its first refresh. Better the client
+    // re-authenticates knowingly than holds a token with minutes left.
+    ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
+  });
 });
 
 // MFA enable compatibility endpoint for frontend settings flow
@@ -979,11 +1077,15 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 
   let secret: string;
   try {
-    const parsed = JSON.parse(setupData) as { secret?: unknown };
+    const parsed = JSON.parse(setupData) as { secret?: unknown; authEpoch?: number; mfaEpoch?: number };
     if (typeof parsed.secret !== 'string') {
       throw new Error('Invalid setup data');
     }
     secret = parsed.secret;
+    if (!Number.isSafeInteger(parsed.authEpoch) || !Number.isSafeInteger(parsed.mfaEpoch)
+      || parsed.authEpoch !== auth.token?.aep || parsed.mfaEpoch !== auth.token?.mep) {
+      return c.json({ error: 'MFA setup expired. Please start setup again.' }, 400);
+    }
   } catch {
     const message = 'Invalid MFA setup data';
     return c.json({ error: message, message }, 500);
@@ -1121,6 +1223,19 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 // on an already-protected account. The passkey branch expects the client to
 // have already called `POST /auth/mfa/step-up/options` (passkeys.ts) to get
 // a fresh WebAuthn challenge.
+/**
+ * Operations whose grant MUST carry a resource binding, and the schema that
+ * binding must satisfy. An operation in this map with a missing or wrongly
+ * shaped resource is a 400 BEFORE any factor is verified; an operation NOT in
+ * this map must carry no resource at all. Replaces the pair of agent_rollback
+ * `if`s so adding a bound operation is a map entry, not a third branch that
+ * can be forgotten (RMM-QA-176 D11).
+ */
+const RESOURCE_BOUND_OPERATIONS = {
+  agent_rollback: rollbackStepUpResource,
+  device_maintenance: maintenanceStepUpResource,
+} as const;
+
 mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
@@ -1128,11 +1243,16 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
 
   const auth = c.get('auth');
   const body = c.req.valid('json');
-  if (body.operation === 'agent_rollback' && !body.resource) {
-    return c.json({ error: 'Rollback resource binding is required' }, 400);
-  }
-  if (body.operation !== 'agent_rollback' && body.resource) {
-    return c.json({ error: 'Resource binding is only valid for agent rollback' }, 400);
+  const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | undefined;
+  if (resourceSchema) {
+    const parsedResource = resourceSchema.safeParse(body.resource);
+    if (!parsedResource.success) {
+      return c.json({ error: `A valid ${body.operation} resource binding is required` }, 400);
+    }
+    boundResource = parsedResource.data;
+  } else if (body.resource) {
+    return c.json({ error: 'Resource binding is only valid for resource-bound operations' }, 400);
   }
 
   // Rate-limit per user (I2). Every other MFA-verification endpoint throttles
@@ -1210,9 +1330,12 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid: auth.token.sid,
-    resourceDigest: body.operation === 'agent_rollback'
-      ? rollbackResourceDigest(body.resource!)
-      : '',
+    resourceDigest:
+      body.operation === 'agent_rollback'
+        ? rollbackResourceDigest(boundResource as z.infer<typeof rollbackStepUpResource>)
+        : body.operation === 'device_maintenance'
+          ? maintenanceResourceDigest(boundResource as z.infer<typeof maintenanceStepUpResource>)
+          : '',
   });
   if (!grantId) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);

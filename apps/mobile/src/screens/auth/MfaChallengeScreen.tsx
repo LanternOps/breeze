@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -22,6 +23,7 @@ import {
   getSupportedNativeMfaMethods,
   normalizeNativeMfaInput,
   normalizeNativeMfaSubmission,
+  shouldAutoSubmitMfa,
   type NativeMfaMethod,
 } from './mfaChallengePresentation';
 
@@ -45,6 +47,7 @@ export function MfaChallengeScreen() {
     : 'totp';
   const [selectedMethod, setSelectedMethod] = useState<NativeMfaMethod>(initialMethod);
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const autoSubmittedRef = useRef(false);
 
   const isSms = selectedMethod === 'sms';
   const isRecovery = selectedMethod === 'recovery';
@@ -77,6 +80,30 @@ export function MfaChallengeScreen() {
     return () => clearTimeout(t);
   }, []);
 
+  // #5115: submit automatically once a full authenticator code is present,
+  // instead of requiring a manual Verify tap after the sixth digit.
+  // `autoSubmittedRef` is the debounce — it stops paste/autofill (which can
+  // deliver all 6 digits in a single onChangeText call) from firing twice,
+  // and resets once the code is no longer complete so a retry after a
+  // failed verify can still auto-submit.
+  useEffect(() => {
+    if (code.length !== 6) {
+      autoSubmittedRef.current = false;
+      return;
+    }
+    if (
+      !shouldAutoSubmitMfa({
+        method: selectedMethod,
+        codeLength: code.length,
+        alreadyAutoSubmitted: autoSubmittedRef.current,
+      })
+    ) {
+      return;
+    }
+    autoSubmittedRef.current = true;
+    void handleVerify();
+  }, [code, selectedMethod]);
+
   if (!mfaChallenge) {
     return null;
   }
@@ -105,6 +132,10 @@ export function MfaChallengeScreen() {
     const submittedCode = normalizeNativeMfaSubmission(selectedMethod, code);
     if (!mfaChallenge || (isRecovery ? submittedCode.length === 0 : submittedCode.length !== 6)) return;
     haptic.tap();
+    // #5104: without this, the number pad survives the navigator swap to the
+    // Home screen and sits over it until the user manually dismisses it —
+    // same pattern as ApprovalGate.tsx's takeover dismiss.
+    Keyboard.dismiss();
     dispatch(verifyMfaAsync({ code: submittedCode, tempToken: mfaChallenge.tempToken, method: selectedMethod }));
   }
 

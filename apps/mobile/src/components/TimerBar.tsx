@@ -46,9 +46,17 @@ import { weekStartFor } from '../screens/time/timesheetWeek';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../services/timeEntryAccess';
 import { stopRunningTimer } from '../screens/tickets/timerActions';
 import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
-import { isQueueWedged, isTimerBarVisible, shouldReplayNow } from './timerBarLogic';
+import {
+  isQueueWedged,
+  isRunningTimerLong,
+  isTimerBarVisible,
+  shouldReplayNow,
+  shouldShowWaitingToSync,
+  toastClearanceOffset,
+  WAITING_TO_SYNC_GRACE_MS,
+} from './timerBarLogic';
 import { useNetworkConnected } from '../lib/useNetworkConnected';
-import { formatElapsed } from '../lib/timeFormat';
+import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
 import { Toast } from './Toast';
 
@@ -86,6 +94,15 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
   const [wedged, setWedged] = useState(false);
   /** A local timer whose start request may also have landed on the server. */
   const [startUnconfirmed, setStartUnconfirmed] = useState(false);
+  /**
+   * "Time entries waiting to sync" only after `pendingCount` has stayed
+   * positive for WAITING_TO_SYNC_GRACE_MS — see timerBarLogic.ts. The
+   * ordinary stop-then-replay round trip clears well inside the grace
+   * window, so without it the label flashed after every Stop and read like
+   * an error for work that was about to sync fine.
+   */
+  const [waitingToSyncVisible, setWaitingToSyncVisible] = useState(false);
+  const pendingSinceRef = useRef<number | null>(null);
 
   const mounted = useRef(true);
   const stopInFlight = useRef(false);
@@ -127,6 +144,27 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
   }, [running]);
+
+  // Arms the "waiting to sync" label after the grace period, and disarms it
+  // immediately once the queue empties — a queue that drains inside the
+  // window never shows it at all.
+  useEffect(() => {
+    if (pendingCount <= 0) {
+      pendingSinceRef.current = null;
+      setWaitingToSyncVisible(false);
+      return;
+    }
+    if (pendingSinceRef.current === null) pendingSinceRef.current = Date.now();
+    const elapsed = Date.now() - pendingSinceRef.current;
+    if (shouldShowWaitingToSync({ pendingCount, elapsedMs: elapsed })) {
+      setWaitingToSyncVisible(true);
+      return;
+    }
+    const timeout = setTimeout(() => {
+      setWaitingToSyncVisible(true);
+    }, WAITING_TO_SYNC_GRACE_MS - elapsed);
+    return () => clearTimeout(timeout);
+  }, [pendingCount]);
 
   const refreshNeedsAttention = useCallback(async (): Promise<void> => {
     const rows = await readNeedsAttention().catch(() => null);
@@ -386,6 +424,12 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
   });
   if (!visible) return null;
 
+  // Runaway-timer guard (#5115): a timer nobody stopped showed up as a
+  // 12h31m entry on the timesheet. Warns only — never auto-stops, since only
+  // the technician knows when the work actually ended.
+  const runningElapsedSeconds = running !== null ? elapsedSeconds(running, now) : 0;
+  const showsLongRunningWarning = running !== null && isRunningTimerLong(runningElapsedSeconds);
+
   const ticket = running?.ticketId
     ? tickets.find((candidate) => candidate.id === running.ticketId)
     : undefined;
@@ -413,9 +457,9 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
               </Text>
             ) : null}
           </>
-        ) : (
+        ) : waitingToSyncVisible ? (
           <Text style={styles.ticket}>Time entries waiting to sync</Text>
-        )}
+        ) : null}
       </View>
 
       {pendingCount > 0 ? (
@@ -437,18 +481,32 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
         </Pressable>
       ) : null}
 
+      {/*
+        The Toast's absolute-positioned parent is this small row, not the
+        whole screen: a bottomOffset sized for a full-screen toast (the
+        component's own default, and the spacing['16'] this used before)
+        rises well above the row's own height and overlaps whatever screen
+        content sits directly above the bar — reported as "Timer stopped"
+        covering the Ask Breeze composer on Home (#5105). A small clearance
+        keeps the toast within/just above the bar's own footprint instead.
+      */}
       <Toast
         visible={toast !== null}
         text={toast?.text ?? ''}
         kind={toast?.kind ?? 'success'}
         onHidden={() => setToast(null)}
-        bottomOffset={spacing['16']}
+        bottomOffset={toastClearanceOffset(0, spacing['1'])}
       />
     </View>
   );
 
   const notices = (
     <>
+      {showsLongRunningWarning ? (
+        <Text style={styles.noticeAlarm} accessibilityLabel={`Still running — ${formatMinutes(runningElapsedSeconds / 60)}`}>
+          Still running — {formatMinutes(runningElapsedSeconds / 60)}
+        </Text>
+      ) : null}
       {startUnconfirmed ? (
         <Text style={styles.notice}>
           Start not confirmed — a timer may also be running on the server.
