@@ -29,6 +29,8 @@ export interface OrgRollup {
   name: string;
   deviceCount: number;
   issueCount: number;
+  /** #5115: devices currently reporting `status: 'offline'` for this org. */
+  offlineCount: number;
   /**
    * True when the name could not be resolved BECAUSE the `orgs` fetch failed,
    * as opposed to the org genuinely not being in the list. Without the
@@ -374,6 +376,7 @@ export function useSystemsData() {
           name: resolved.name,
           deviceCount: 0,
           issueCount: 0,
+          offlineCount: 0,
           nameUnavailable: resolved.unavailable,
         };
         byId.set(id, row);
@@ -382,7 +385,10 @@ export function useSystemsData() {
     };
 
     for (const d of data.devices) {
-      if (d.organizationId) ensure(d.organizationId).deviceCount++;
+      if (!d.organizationId) continue;
+      const row = ensure(d.organizationId);
+      row.deviceCount++;
+      if (d.status === 'offline') row.offlineCount++;
     }
     // Issue counts come from the active page for the same reason the section
     // does: the unfiltered page is recency-ordered and can contain no

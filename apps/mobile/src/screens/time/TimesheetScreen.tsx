@@ -25,6 +25,7 @@ import {
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../../services/timeEntryAccess';
 import { Toast } from '../../components/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
+import { isLongEntry } from './timesheetLongEntry';
 import { reportInternalError } from '../../lib/errorReporting';
 import { ticketRef } from '../tickets/ticketCopy';
 
@@ -276,6 +277,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
       ? tickets.find((candidate) => candidate.id === entry.ticketId)
       : undefined;
     const isEditing = editingId === entry.id;
+    const long = isLongEntry(entry.durationMinutes);
 
     return (
       <View key={entry.id} style={styles.entry}>
@@ -288,7 +290,12 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
                 'Ticket')
               : 'No ticket'}
           </Text>
-          <Text style={styles.entryDuration}>{formatMinutes(entry.durationMinutes)}</Text>
+          <Text
+            style={[styles.entryDuration, long && styles.entryDurationLong]}
+            accessibilityLabel={long ? `${formatMinutes(entry.durationMinutes)}, long entry` : undefined}
+          >
+            {formatMinutes(entry.durationMinutes)}
+          </Text>
         </View>
         <Text style={styles.entryMeta}>
           {startTimeLabel(entry.startedAt)}
@@ -531,6 +538,7 @@ const styles = StyleSheet.create({
   entryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   entryRef: { ...type.monoMd, color: palette.dark.textMd },
   entryDuration: { ...type.bodyMd, color: palette.dark.textHi },
+  entryDurationLong: { color: palette.warning.base },
   entryMeta: { ...type.meta, color: palette.dark.textLo, marginTop: spacing['1'] },
   entryBody: { ...type.body, color: palette.dark.textHi, marginTop: spacing['2'] },
   lockNote: { ...type.meta, color: palette.warning.base, marginTop: spacing['2'] },

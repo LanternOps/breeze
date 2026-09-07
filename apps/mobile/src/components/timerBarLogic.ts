@@ -100,3 +100,20 @@ export const WEDGED_ATTEMPTS = 3;
 export function isQueueWedged(input: { remaining: number; headAttempts: number }): boolean {
   return input.remaining > 0 && input.headAttempts >= WEDGED_ATTEMPTS;
 }
+
+/**
+ * Elapsed seconds past which a running timer is flagged as runaway.
+ *
+ * Issue #5115: a timesheet showed a 12h31m entry from a timer nobody
+ * stopped. 4h is deliberately conservative — long enough that an ordinary
+ * uninterrupted work session never trips it, short enough to catch a
+ * forgotten timer well before it becomes a full-day billing error. This
+ * warns; it never auto-stops, since only the technician knows when the
+ * work actually ended.
+ */
+export const LONG_RUNNING_TIMER_WARNING_SECONDS = 4 * 60 * 60;
+
+/** Whether a running timer has been going long enough to warn about. */
+export function isRunningTimerLong(elapsedSeconds: number): boolean {
+  return elapsedSeconds >= LONG_RUNNING_TIMER_WARNING_SECONDS;
+}
