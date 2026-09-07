@@ -143,10 +143,10 @@ No other OS is supported: only `services_{windows,linux,darwin}.go` exist, so th
 `restartServiceOS` has no fallback (VERIFIED by directory listing).
 
 Special case, all three OSes: `if isAgentService(name) { return RestartAgentService(startTime) }`
-(`services.go:172-174`). Restarting Breeze's own agent returns success immediately and schedules a
+(`services.go:164-166`). Restarting Breeze's own agent returns success immediately and schedules a
 delayed restart, so the response can outrun the process death. A task must never treat that as a
 verified service recovery. Also note `StopService` refuses to stop the agent service outright
-(`services.go:131-136`), but `RestartService` does not, it reroutes. VERIFIED.
+(`services.go:132-137`), but `RestartService` does not, it reroutes. VERIFIED.
 
 **Consequence for the recipe.** The agent's `success: true` means "the restart command did not
 error", and on macOS not even that much about the stop half. Recipe verification must be an
