@@ -18,7 +18,7 @@ import {
   networkChangeEvents,
   sites,
 } from '../db/schema';
-import { eq, and, desc, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import {
@@ -64,6 +64,16 @@ async function verifyDeviceAccess(
       error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
     };
   return { device };
+}
+
+/**
+ * Site is an application-layer authorization axis; organization RLS does not
+ * enforce it. `allowedSiteIds === undefined` is the explicit unrestricted
+ * sentinel. Any restricted context that cannot prove access fails closed.
+ */
+function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined): boolean {
+  if (auth.allowedSiteIds === undefined) return false;
+  return !auth.canAccessSite || !auth.canAccessSite(siteId);
 }
 
 let _commandQueue: typeof import('./commandQueue') | null = null;
@@ -117,9 +127,19 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
 
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ events: [], count: 0 });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
+
       if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
 
       const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
+      if (siteId && siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
+      }
       if (siteId) conditions.push(eq(networkChangeEvents.siteId, siteId));
 
       const baselineId = typeof input.baseline_id === 'string' ? input.baseline_id : undefined;
@@ -180,6 +200,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const conditions: SQL[] = [eq(networkChangeEvents.id, eventId)];
       const orgCondition = auth.orgCondition(networkChangeEvents.orgId);
       if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Event not found or access denied' });
+        }
+        conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
+      }
 
       const [event] = await db
         .select()
@@ -188,6 +214,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
 
       if (!event) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+
+      // Defense in depth for malformed/stale fixtures and future query edits.
+      if (siteAccessDenied(auth, event.siteId)) {
         return JSON.stringify({ error: 'Event not found or access denied' });
       }
 
@@ -247,9 +278,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       };
 
       if (baselineId) {
+        if (auth.allowedSiteIds !== undefined && auth.allowedSiteIds.length === 0) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
         const conditions: SQL[] = [eq(networkBaselines.id, baselineId)];
         const orgCondition = auth.orgCondition(networkBaselines.orgId);
         if (orgCondition) conditions.push(orgCondition);
+        if (auth.allowedSiteIds !== undefined) {
+          conditions.push(inArray(networkBaselines.siteId, auth.allowedSiteIds));
+        }
 
         const [baseline] = await db
           .select()
@@ -258,6 +295,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
 
         if (!baseline) {
+          return JSON.stringify({ error: 'Baseline not found or access denied' });
+        }
+
+        // Defense in depth: never mutate a row outside the current site ceiling.
+        if (siteAccessDenied(auth, baseline.siteId)) {
           return JSON.stringify({ error: 'Baseline not found or access denied' });
         }
 
@@ -300,6 +342,10 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       if (!auth.canAccessOrg(orgId)) {
         return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+
+      if (siteAccessDenied(auth, siteId)) {
+        return JSON.stringify({ error: 'Site not found or access denied' });
       }
 
       const [site] = await db
@@ -462,6 +508,19 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           gte(deviceIpHistory.lastSeen, targetTime),
         ];
 
+        if (auth.allowedSiteIds !== undefined) {
+          if (auth.allowedSiteIds.length === 0) {
+            return JSON.stringify({
+              mode: 'reverse_lookup',
+              ip_address: ipAddress,
+              at_time: atTime,
+              results: [],
+              count: 0,
+            });
+          }
+          conditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+        }
+
         const orgCondition = auth.orgCondition(deviceIpHistory.orgId);
         if (orgCondition) {
           conditions.push(orgCondition);
@@ -486,11 +545,13 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deviceIpHistory.firstSeen))
           .limit(limit);
 
+        const visibleResults = results.filter((row) => !siteAccessDenied(auth, row.device.siteId));
+
         return JSON.stringify({
           mode: 'reverse_lookup',
           ip_address: ipAddress,
           at_time: atTime,
-          results: results.map((row) => ({
+          results: visibleResults.map((row) => ({
             device: {
               id: row.device.id,
               hostname: row.device.hostname,
@@ -504,7 +565,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
               isActive: row.ipHistory.isActive,
             },
           })),
-          count: results.length,
+          count: visibleResults.length,
         });
       }
 
