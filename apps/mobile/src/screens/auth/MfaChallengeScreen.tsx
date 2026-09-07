@@ -23,6 +23,7 @@ import {
   getSupportedNativeMfaMethods,
   normalizeNativeMfaInput,
   normalizeNativeMfaSubmission,
+  shouldAutoSubmitMfa,
   type NativeMfaMethod,
 } from './mfaChallengePresentation';
 
@@ -46,6 +47,7 @@ export function MfaChallengeScreen() {
     : 'totp';
   const [selectedMethod, setSelectedMethod] = useState<NativeMfaMethod>(initialMethod);
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
+  const autoSubmittedRef = useRef(false);
 
   const isSms = selectedMethod === 'sms';
   const isRecovery = selectedMethod === 'recovery';
@@ -77,6 +79,30 @@ export function MfaChallengeScreen() {
     const t = setTimeout(() => inputRef.current?.focus(), 250);
     return () => clearTimeout(t);
   }, []);
+
+  // #5115: submit automatically once a full authenticator code is present,
+  // instead of requiring a manual Verify tap after the sixth digit.
+  // `autoSubmittedRef` is the debounce — it stops paste/autofill (which can
+  // deliver all 6 digits in a single onChangeText call) from firing twice,
+  // and resets once the code is no longer complete so a retry after a
+  // failed verify can still auto-submit.
+  useEffect(() => {
+    if (code.length !== 6) {
+      autoSubmittedRef.current = false;
+      return;
+    }
+    if (
+      !shouldAutoSubmitMfa({
+        method: selectedMethod,
+        codeLength: code.length,
+        alreadyAutoSubmitted: autoSubmittedRef.current,
+      })
+    ) {
+      return;
+    }
+    autoSubmittedRef.current = true;
+    void handleVerify();
+  }, [code, selectedMethod]);
 
   if (!mfaChallenge) {
     return null;

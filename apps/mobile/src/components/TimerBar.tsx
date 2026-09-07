@@ -48,6 +48,7 @@ import { stopRunningTimer } from '../screens/tickets/timerActions';
 import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
 import {
   isQueueWedged,
+  isRunningTimerLong,
   isTimerBarVisible,
   shouldReplayNow,
   shouldShowWaitingToSync,
@@ -55,7 +56,7 @@ import {
   WAITING_TO_SYNC_GRACE_MS,
 } from './timerBarLogic';
 import { useNetworkConnected } from '../lib/useNetworkConnected';
-import { formatElapsed } from '../lib/timeFormat';
+import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
 import { Toast } from './Toast';
 
@@ -423,6 +424,12 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
   });
   if (!visible) return null;
 
+  // Runaway-timer guard (#5115): a timer nobody stopped showed up as a
+  // 12h31m entry on the timesheet. Warns only — never auto-stops, since only
+  // the technician knows when the work actually ended.
+  const runningElapsedSeconds = running !== null ? elapsedSeconds(running, now) : 0;
+  const showsLongRunningWarning = running !== null && isRunningTimerLong(runningElapsedSeconds);
+
   const ticket = running?.ticketId
     ? tickets.find((candidate) => candidate.id === running.ticketId)
     : undefined;
@@ -495,6 +502,11 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
 
   const notices = (
     <>
+      {showsLongRunningWarning ? (
+        <Text style={styles.noticeAlarm} accessibilityLabel={`Still running — ${formatMinutes(runningElapsedSeconds / 60)}`}>
+          Still running — {formatMinutes(runningElapsedSeconds / 60)}
+        </Text>
+      ) : null}
       {startUnconfirmed ? (
         <Text style={styles.notice}>
           Start not confirmed — a timer may also be running on the server.

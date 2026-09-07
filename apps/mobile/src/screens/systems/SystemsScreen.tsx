@@ -641,7 +641,7 @@ export function SystemsScreen() {
               orgName: filterOrgName,
             })
           }
-          accessibilityRole="button"
+          accessibilityRole="link"
           accessibilityLabel="View all devices"
           style={{
             marginHorizontal: spacing[6],
@@ -660,7 +660,13 @@ export function SystemsScreen() {
           <Text style={{ ...type.bodyMd, color: theme.textHi }}>
             {filterOrgName ? `${filterOrgName} devices` : 'All devices'}
           </Text>
-          <Text style={{ ...type.meta, color: theme.textLo }}>View</Text>
+          {/* #5115: this row navigates like a link, but "View" in low-emphasis
+              textLo read as inert label text rather than a tappable
+              affordance — brand color + a chevron make the link legible. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing[1] }}>
+            <Text style={{ ...type.meta, color: theme.brand }}>View</Text>
+            <Text style={{ ...type.meta, color: theme.brand }}>›</Text>
+          </View>
         </Pressable>
 
         {filterOrgId && filterOrgName ? (

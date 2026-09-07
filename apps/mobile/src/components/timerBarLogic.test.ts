@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 
 import {
   isQueueWedged,
+  isRunningTimerLong,
   isTimerBarVisible,
+  LONG_RUNNING_TIMER_WARNING_SECONDS,
   shouldReplayNow,
   shouldShowWaitingToSync,
   toastClearanceOffset,
@@ -128,5 +130,23 @@ describe('isQueueWedged', () => {
 
   it('is false once the queue has drained, however many attempts it took', () => {
     expect(isQueueWedged({ remaining: 0, headAttempts: 99 })).toBe(false);
+  });
+});
+
+describe('isRunningTimerLong', () => {
+  it('is false for a fresh start', () => {
+    expect(isRunningTimerLong(0)).toBe(false);
+  });
+
+  it('is false one second before the 4h threshold', () => {
+    expect(isRunningTimerLong(LONG_RUNNING_TIMER_WARNING_SECONDS - 1)).toBe(false);
+  });
+
+  it('is true exactly at the 4h threshold', () => {
+    expect(isRunningTimerLong(LONG_RUNNING_TIMER_WARNING_SECONDS)).toBe(true);
+  });
+
+  it('stays true well past the threshold — issue #5115 saw a 12h31m entry', () => {
+    expect(isRunningTimerLong(12 * 3600 + 31 * 60)).toBe(true);
   });
 });
