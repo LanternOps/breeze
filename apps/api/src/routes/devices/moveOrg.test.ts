@@ -1253,7 +1253,19 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[4]!)).toContain(
         'breeze_rehome_device_custom_field_values',
       );
-      expect(statements[5]).toBe('UPDATE devices');
+      // #4622 — the manual-asset detach sits between the custom-field re-home
+      // and the device UPDATE, and that position is load-bearing:
+      // manual_assets_linked_device_org_fk ((linked_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE, so its check
+      // fires at the end of the `UPDATE devices SET org_id` statement below. A
+      // detach placed after the flip — or left to
+      // breeze_cascade_device_org_id(), which shares the after-row queue with
+      // that check and is ordered against it only by trigger name — arrives too
+      // late and the move aborts with 23503.
+      expect(collapseStmt(statements[5]!)).toContain(
+        'UPDATE manual_assets SET linked_device_id = NULL',
+      );
+      expect(statements[6]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

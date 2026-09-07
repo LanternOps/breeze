@@ -91,30 +91,30 @@ ALTER TABLE manual_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE manual_assets FORCE ROW LEVEL SECURITY;
 
 DO $$
-DECLARE cmd text;
+DECLARE policy_cmd text;
 BEGIN
-  FOREACH cmd IN ARRAY ARRAY['select','insert','update','delete'] LOOP
+  FOREACH policy_cmd IN ARRAY ARRAY['select','insert','update','delete'] LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_policies
       WHERE schemaname = 'public' AND tablename = 'manual_assets'
-        AND policyname = 'manual_assets_' || cmd
+        AND policyname = 'manual_assets_' || policy_cmd
     ) THEN
-      IF cmd = 'insert' THEN
+      IF policy_cmd = 'insert' THEN
         EXECUTE format(
           'CREATE POLICY manual_assets_%s ON manual_assets FOR %s '
           || 'WITH CHECK (breeze_current_scope() = ''system'' OR breeze_has_org_access(org_id))',
-          cmd, cmd);
-      ELSIF cmd = 'update' THEN
+          policy_cmd, policy_cmd);
+      ELSIF policy_cmd = 'update' THEN
         EXECUTE format(
           'CREATE POLICY manual_assets_%s ON manual_assets FOR %s '
           || 'USING (breeze_current_scope() = ''system'' OR breeze_has_org_access(org_id)) '
           || 'WITH CHECK (breeze_current_scope() = ''system'' OR breeze_has_org_access(org_id))',
-          cmd, cmd);
+          policy_cmd, policy_cmd);
       ELSE
         EXECUTE format(
           'CREATE POLICY manual_assets_%s ON manual_assets FOR %s '
           || 'USING (breeze_current_scope() = ''system'' OR breeze_has_org_access(org_id))',
-          cmd, cmd);
+          policy_cmd, policy_cmd);
       END IF;
     END IF;
   END LOOP;
