@@ -399,6 +399,7 @@ partnerProvisioningRoutes.post(
         // route deliberately declined to call a slug conflict. Warn-level, not
         // error: onError owns the error-level report.
         const pgNode = pgErrorNode(error);
+        // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
         if (pgNode?.code === '23505') {
           const constraint = pgNode.constraint_name ?? pgNode.constraint;
           console.warn(
