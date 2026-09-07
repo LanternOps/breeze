@@ -282,9 +282,15 @@ function paymentMapRow(o: Partial<MapRow> = {}): MapRow {
 
 /** The bound Date on `"<table>"."<col>" >= $n`, read out of the compiled params. */
 function lowerBoundFor(text: string, params: unknown[], table: string, col: string): Date | null {
-  const match = new RegExp(`"${table}"\\."${col}" >= \\$(\\d+)`).exec(text);
+  // Matches the `AT TIME ZONE 'UTC'` cast the horizon filter carries (finding
+  // D6) as well as a bare comparison, so the fake keeps EVALUATING the
+  // predicate rather than silently ignoring it after a shape change.
+  const match = new RegExp(
+    `"${table}"\\."${col}"(?: at time zone '[A-Za-z/_]+')?\\) ?>= \\$(\\d+)|"${table}"\\."${col}" >= \\$(\\d+)`,
+    'i',
+  ).exec(text);
   if (!match) return null;
-  const raw = params[Number(match[1]) - 1];
+  const raw = params[Number(match[1] ?? match[2]) - 1];
   if (raw instanceof Date) return raw;
   return typeof raw === 'string' ? new Date(raw) : null;
 }
@@ -2036,6 +2042,23 @@ describe('fanOutOwedPayments', () => {
     const created = currentMappings.filter((m) => m.breezeEntityType === 'payment');
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ breezeEntityId: 'pay-new' });
+  });
+
+  it('compares the horizon in UTC, not the session time zone', async () => {
+    // `invoice_payments.created_at` is `timestamp` (NO time zone) while
+    // `push_payments_since` is `timestamptz`. Comparing them directly makes
+    // Postgres cast the naive column using the SESSION TimeZone, so on a
+    // non-UTC session the horizon silently shifts by the offset and payments
+    // either side of it are pushed or skipped wrongly. The rows are stored as
+    // UTC wall time, so say so explicitly (review wave 3, finding D6).
+    currentConns = [connRow({ pushPaymentsSince: ago(30 * MINUTE) })];
+    currentMappings = [invoiceMapRow(), orgMapRow()];
+
+    await fanOutOwedPayments(INVOICE, PARTNER, runCtx);
+
+    const paymentsRead = stmtsOf('select', 'invoice_payments').at(-1)!;
+    expect(compiledSql(paymentsRead.where).toLowerCase())
+      .toContain(`"invoice_payments"."created_at" at time zone 'utc'`);
   });
 
   it('returns nothing when the invoice itself is not synced', async () => {

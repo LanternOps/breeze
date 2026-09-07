@@ -43,6 +43,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       upsertConnection: vi.fn(),
       deleteConnection: vi.fn(async () => ({
         removed: true,
+        connectionId: null as string | null,
         owedPaymentDeletes: { count: 0, remoteEntityIds: [] as string[] },
       })),
       exchangeCode: vi.fn(),
@@ -987,6 +988,7 @@ describe('accounting routes', () => {
       // thing that lets a human find those Payments in QuickBooks afterwards.
       mocks.deleteConnection.mockResolvedValueOnce({
         removed: true,
+        connectionId: CONNECTION_ID,
         owedPaymentDeletes: { count: 2, remoteEntityIds: ['181/145', '182/146'] as string[] },
       });
 
@@ -998,6 +1000,10 @@ describe('accounting routes', () => {
         .map((call) => call[1] as Record<string, unknown>)
         .find((e) => e.action === 'accounting.connection.owed_deletes_discarded');
       expect(event).toMatchObject({
+        // The CONNECTION id, matching the realm-change twin — the audit trail
+        // must not identify the same subject two different ways.
+        resourceType: 'accounting_connection',
+        resourceId: CONNECTION_ID,
         result: 'failure',
         details: expect.objectContaining({
           reason: 'disconnect', count: 2, remoteEntityIds: ['181/145', '182/146'],
@@ -1008,6 +1014,7 @@ describe('accounting routes', () => {
     it('POST /:provider/disconnect writes no such audit when nothing is owed', async () => {
       mocks.deleteConnection.mockResolvedValueOnce({
         removed: true,
+        connectionId: CONNECTION_ID,
         owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
       });
 

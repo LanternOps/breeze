@@ -56,6 +56,7 @@ import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import {
   advanceReconcileCursor,
+  stampReconcileRunAt,
   backfillRealmFingerprints,
   getConnection,
   listReconcilableConnections,
@@ -493,6 +494,20 @@ export async function processReconcileConnectionJob(
       // is still `cursorBefore`, and null on the run line means "did not
       // advance for an unknown reason" (the realm-changed branch above).
       summary.cursorAfter = summary.cursorBefore;
+      // The run still HAPPENED. `advanceReconcileCursor` is the only other
+      // writer of `last_reconcile_at`, so returning here froze the integration
+      // card's "Last reconciled" at the moment pull was switched off and made a
+      // healthy connection read as permanently stalled (review wave 3, finding
+      // D4). Stamped without the watermark, and best-effort: a freshness stamp
+      // must never fail a run that did its work.
+      try {
+        await runInDbContext(() => stampReconcileRunAt(db, fresh.id, data.partnerId, new Date()));
+      } catch (err) {
+        console.warn(
+          '[AccountingReconcileWorker] could not stamp last_reconcile_at on a cursor-held run',
+          `connectionId=${fresh.id}`, err instanceof Error ? err.message : err,
+        );
+      }
       finish();
       return summary;
     }

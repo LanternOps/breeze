@@ -396,6 +396,36 @@ export async function listReconcilableConnections(
  * rather than as a job that retries forever against a connection that no longer
  * matches.
  */
+/**
+ * Record that a reconcile run HAPPENED without moving the CDC watermark.
+ *
+ * `advanceReconcileCursor` is the only other writer of `last_reconcile_at`, and
+ * the pull-off freeze branch deliberately does not call it — so the integration
+ * card's "Last reconciled" froze at the moment `pull_payments` was switched off
+ * and a perfectly healthy connection read as permanently stalled (review wave 3,
+ * finding D4).
+ *
+ * No realm-fingerprint CAS, unlike the cursor write: this claims nothing and
+ * carries no watermark, so a realm that changed mid-run cannot be given a stale
+ * one. Zero rows is tolerated (the connection may have been deleted) — this is
+ * a freshness stamp, never a correctness signal.
+ */
+export async function stampReconcileRunAt(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  reconciledAt: Date,
+): Promise<void> {
+  await dbc
+    .update(accountingConnections)
+    .set({ lastReconcileAt: reconciledAt, updatedAt: new Date() })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+}
+
 export async function advanceReconcileCursor(
   dbc: DbExecutor,
   connectionId: string,
@@ -936,6 +966,8 @@ export async function refreshRealmSettings(
 /**
  * Drop the connection. `removed` is false when no row matched.
  *
+ * `connectionId` is the id of the row it removed (null when none matched).
+ *
  * Also reports the QuickBooks payment deletions the cascade is about to discard
  * — see `OwedPaymentDeletes`. Counted BEFORE the delete (afterwards there is
  * nothing left to count) and never blocking: a disconnect the operator asked
@@ -945,7 +977,7 @@ export async function deleteConnection(
   db: DbExecutor,
   partnerId: string,
   provider: AccountingProviderId
-): Promise<{ removed: boolean; owedPaymentDeletes: OwedPaymentDeletes }> {
+): Promise<{ removed: boolean; connectionId: string | null; owedPaymentDeletes: OwedPaymentDeletes }> {
   const owedPaymentDeletes = await collectOwedPaymentDeletes(db, and(
     eq(accountingEntityMappings.partnerId, partnerId),
     eq(accountingEntityMappings.breezeEntityType, 'payment'),
@@ -959,5 +991,12 @@ export async function deleteConnection(
       eq(accountingConnections.provider, provider)
     ))
     .returning({ id: accountingConnections.id });
-  return { removed: deleted.length > 0, owedPaymentDeletes };
+  // The id is returned so the caller can identify the connection in an audit
+  // entry AFTER the row is gone — the disconnect's owed-delete record has to
+  // name the same subject as its realm-change twin (review wave 3, finding D3).
+  return {
+    removed: deleted.length > 0,
+    connectionId: (deleted as Array<{ id: string }>)[0]?.id ?? null,
+    owedPaymentDeletes,
+  };
 }

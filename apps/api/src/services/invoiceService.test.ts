@@ -53,6 +53,15 @@ vi.mock('./contacts/compat', () => ({
   mergeBillingContact: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The system audit writer voidPayment uses to persist the
+// "QuickBooks record untouched" fact for EVERY caller (the AI/MCP path writes
+// no route audit of its own).
+const { writeAuditEventMock } = vi.hoisted(() => ({ writeAuditEventMock: vi.fn() }));
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: writeAuditEventMock,
+  requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
+}));
+
 // Multi-currency wave 3 (#3775): the resolver + bundle economics are mocked;
 // CatalogServiceError stays real so the NO_PRICE_FOR_CURRENCY mapping path is
 // exercised with the genuine class (an `instanceof undefined` would throw).
@@ -1963,6 +1972,37 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     expect(requestPaymentDeleteMock).toHaveBeenCalled();
     // No QuickBooks write: Breeze never created that Payment.
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('PERSISTS the untouched-QuickBooks fact itself, so every caller records it', async () => {
+    // The flag rode home on the return value only, and the AI/MCP path writes no
+    // audit at all — so on that path the fact that a QuickBooks-origin payment
+    // was voided while its QuickBooks record was left standing reached no
+    // durable store anywhere (review wave 3, finding D2). The service writes it,
+    // which covers every caller including future ones.
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: false }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      orgId: 'org1',
+      resourceType: 'invoice_payment',
+      resourceId: 'pay1',
+      details: expect.objectContaining({ invoiceId: 'i1', reason: 'pull_disabled' }),
+    }));
+  });
+
+  it('writes no such audit for an ordinary Breeze payment void', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock.mock.calls.some(
+      (call) => (call[1] as { action?: string }).action === 'invoice.payment.voided_quickbooks_untouched',
+    )).toBe(false);
   });
 
   it('ALLOWS voiding a QuickBooks-origin payment when the connection is not connected', async () => {

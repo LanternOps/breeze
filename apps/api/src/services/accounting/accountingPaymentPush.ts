@@ -53,7 +53,7 @@
  * the runner returns.
  */
 
-import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
@@ -394,6 +394,14 @@ async function paymentIsWithinPushHorizon(
     .limit(1);
   const createdAt = (rows as Array<{ createdAt: Date }>)[0]?.createdAt;
   if (!createdAt) return true;
+  // Both sides are absolute instants here, so this needs no cast — but only
+  // because `invoice_payments.created_at` is a `timestamp` WITHOUT time zone
+  // that drizzle parses as UTC (`PgTimestamp.mapFromDriver` appends `+0000` for
+  // a non-timezone column). That is the same assumption the SQL reader in
+  // `fanOutOwedPayments` states explicitly with `AT TIME ZONE 'UTC'`; if the
+  // column ever became `timestamptz`, both readers stay correct, and if it ever
+  // stopped being written in UTC, both would be wrong together (review wave 3,
+  // finding D6).
   return createdAt.getTime() >= pushPaymentsSince.getTime();
 }
 
@@ -1249,12 +1257,24 @@ export async function fanOutOwedPayments(
     // `created_at >= push_payments_since` is the WHOLE point of this filter: a
     // re-push of a historical invoice must not mint QuickBooks Payments for
     // receipts that were entered there by hand long before Breeze could push.
+    //
+    // `AT TIME ZONE 'UTC'` is load-bearing, not decoration (review wave 3,
+    // finding D6). `invoice_payments.created_at` is `timestamp` (NO time zone)
+    // while `push_payments_since` is `timestamptz`; comparing them directly
+    // makes Postgres cast the naive column using the SESSION `TimeZone`, so on a
+    // non-UTC session the horizon silently shifts by the offset and payments
+    // either side of it are pushed or skipped wrongly. The column stores UTC
+    // wall time (drizzle writes and reads it as UTC — see
+    // `paymentIsWithinPushHorizon`), so the cast states that rather than
+    // inheriting whatever the session happens to be set to.
     const payments = await db
       .select({ id: invoicePayments.id })
       .from(invoicePayments)
       .where(and(
         eq(invoicePayments.invoiceId, invoiceId),
-        ...(conn.pushPaymentsSince ? [gte(invoicePayments.createdAt, conn.pushPaymentsSince)] : []),
+        ...(conn.pushPaymentsSince
+          ? [sql`(${invoicePayments.createdAt} AT TIME ZONE 'UTC') >= ${conn.pushPaymentsSince}`]
+          : []),
       ));
     if (payments.length === 0) return [];
 

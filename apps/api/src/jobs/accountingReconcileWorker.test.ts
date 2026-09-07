@@ -36,6 +36,7 @@ const {
   getConnectionMock,
   listReconcilableConnectionsMock,
   advanceReconcileCursorMock,
+  stampReconcileRunAtMock,
   stampReconcileRunErrorMock,
   backfillRealmFingerprintsMock,
   resolveConnectionAndTokenMock,
@@ -78,6 +79,7 @@ const {
     getConnectionMock: vi.fn(),
     listReconcilableConnectionsMock: vi.fn(),
     advanceReconcileCursorMock: vi.fn(),
+    stampReconcileRunAtMock: vi.fn(),
     stampReconcileRunErrorMock: vi.fn(),
     backfillRealmFingerprintsMock: vi.fn(),
     resolveConnectionAndTokenMock: vi.fn(),
@@ -125,6 +127,7 @@ vi.mock('../services/accounting/accountingConnectionService', () => ({
   getConnection: getConnectionMock,
   listReconcilableConnections: listReconcilableConnectionsMock,
   advanceReconcileCursor: advanceReconcileCursorMock,
+  stampReconcileRunAt: stampReconcileRunAtMock,
   stampReconcileRunError: stampReconcileRunErrorMock,
   backfillRealmFingerprints: backfillRealmFingerprintsMock,
 }));
@@ -572,6 +575,13 @@ describe('processReconcileConnectionJob: cursor', () => {
       cursorBefore: CURSOR_BEFORE,
       cursorAfter: CURSOR_BEFORE, // unchanged — the window stays replayable
     });
+    // ...but the run DID happen. advanceReconcileCursor is the only writer of
+    // last_reconcile_at, so skipping it froze the integration card's "Last
+    // reconciled" at the moment pull was switched off — a healthy connection
+    // looking permanently stalled.
+    expect(stampReconcileRunAtMock).toHaveBeenCalledWith(
+      {}, CONN_ID, PARTNER_ID, expect.any(Date),
+    );
   });
 
   it('ADVANCES the cursor on a pull-ON run, as before', async () => {

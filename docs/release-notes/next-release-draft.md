@@ -95,14 +95,18 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   a Breeze payment amount) and a deletion (which would otherwise have deleted
   the Breeze payment row). The CDC cursor is HELD while pull is off, so turning
   `pull_payments` back on still imports everything from the window it was
-  switched off in — nothing is permanently skipped.
+  switched off in — nothing is permanently skipped. The integration card's
+  "Last reconciled" still advances on those runs, so a pull-off connection does
+  not read as permanently stalled.
 - A **QuickBooks-origin payment can now be voided in Breeze when pull is off**
   (or the realm is disconnected). Breeze refuses that void while payment
   pull-back is running, because the next CDC sweep would re-import the row — but
   with pull off no such sweep runs, so the refusal made the payment permanently
   unremovable. The void now deletes the Breeze row and its mapping only; the
-  QuickBooks record is left exactly as it is, and the audit entry says so
-  (`quickbooksRecordUntouched`).
+  QuickBooks record is left exactly as it is, and it is audited as such — both
+  on the void entry (`quickbooksRecordUntouched`) and as its own
+  `invoice.payment.voided_quickbooks_untouched` entry, so the fact is recorded
+  however the void was initiated.
 - A QuickBooks **reauth outage no longer retires pending payment pushes.** A
   payment job skipped because the realm is not connected records the reason on
   the mapping but no longer counts as an attempt, so an outage longer than about

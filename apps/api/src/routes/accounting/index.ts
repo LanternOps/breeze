@@ -609,7 +609,7 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const { removed, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
+  const { removed, connectionId, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
   // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
@@ -620,7 +620,10 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
       orgId: null,
       action: 'accounting.connection.owed_deletes_discarded',
       resourceType: 'accounting_connection',
-      resourceId: partner.partnerId,
+      // The CONNECTION id, matching the realm-change twin above: an audit trail
+      // that identifies the same subject two different ways cannot be joined.
+      // Non-null whenever `removed` is true, which the 404 above has established.
+      resourceId: connectionId ?? partner.partnerId,
       result: 'failure',
       details: {
         provider,

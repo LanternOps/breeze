@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
@@ -1603,6 +1604,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // create. The audit says so explicitly, because the QuickBooks record
     // surviving is the part a reader must not have to infer.
     let quickbooksRecordUntouched = false;
+    let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
     if (existingMapping && !existingMapping.breezeOrigin) {
       const [conn] = await tx
         .select({
@@ -1622,6 +1624,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         );
       }
       quickbooksRecordUntouched = true;
+      untouchedReason = !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
     }
 
     // Capture the destroyed row's financial details BEFORE the delete so the voided
@@ -1636,7 +1639,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       recordedBy: pay.recordedBy,
       // Present ONLY on the QuickBooks-origin branch above, so an ordinary void
       // does not carry a field that reads as meaningful when it is not.
-      ...(quickbooksRecordUntouched ? { quickbooksRecordUntouched: true } : {}),
+      ...(quickbooksRecordUntouched ? { quickbooksRecordUntouched: true, untouchedReason } : {}),
     };
     // Settle the 'payment' accounting_entity_mappings row FIRST, inside this
     // same transaction. breeze_entity_id is polymorphic (no FK, so nothing
@@ -1655,6 +1658,31 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
     return { inv, audit, deleteMappingId };
   });
+  // PERSISTED HERE, not left to the caller (review wave 3, finding D2). The
+  // route's own `invoice.payment.voided` entry carries the flag too, but the
+  // AI/MCP `manage_invoices` path writes no route audit at all — so the fact
+  // that a QuickBooks-origin payment was voided while its QuickBooks record was
+  // left standing reached no durable store on that path. Writing it in the
+  // service covers every caller, present and future. Fire-and-forget, exactly
+  // like the enqueue below: the void has already committed and an audit failure
+  // must not undo it.
+  if (audit.quickbooksRecordUntouched) {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: audit.orgId,
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      resourceType: 'invoice_payment',
+      resourceId: audit.paymentId,
+      actorType: actor.userId ? 'user' : 'system',
+      actorId: actor.userId ?? null,
+      result: 'success',
+      details: {
+        invoiceId: audit.invoiceId,
+        amount: audit.amount,
+        reason: audit.untouchedReason,
+        provider: 'quickbooks',
+      },
+    });
+  }
   // Emitted after db.transaction returns — NOT after the lock is released: on
   // the request path this is a savepoint of the request-wide tx, so the invoice
   // row lock is held until the request commits. Post-commit emission: #3803.
