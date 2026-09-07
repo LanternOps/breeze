@@ -47,6 +47,38 @@ export function shouldReplayNow(input: {
 }
 
 /**
+ * Grace period before the bar reports a queued write as "waiting to sync".
+ *
+ * The ordinary case — Stop enqueues one write, replay drains it — completes
+ * in well under a second. Reporting the queue depth the instant it goes
+ * positive made "Time entries waiting to sync" flash after every stop, which
+ * reads like an error for work that is about to sync fine.
+ */
+export const WAITING_TO_SYNC_GRACE_MS = 3000;
+
+/**
+ * Whether the bar should show "Time entries waiting to sync" for a queue that
+ * has had `elapsedMs` to drain. False for an empty queue regardless of how
+ * long it has been empty, and false for a non-empty queue still inside the
+ * grace period — only a queue that is BOTH non-empty AND past the grace
+ * period has earned the label.
+ */
+export function shouldShowWaitingToSync(input: { pendingCount: number; elapsedMs: number }): boolean {
+  return input.pendingCount > 0 && input.elapsedMs >= WAITING_TO_SYNC_GRACE_MS;
+}
+
+/**
+ * Bottom offset for a Toast so it renders entirely above a measured sibling
+ * element (a composer, the timer bar itself) instead of overlapping it. A
+ * measurement of 0 or less (not yet laid out, or a bogus reading) falls back
+ * to `margin` alone rather than going negative, which would push the toast
+ * below the screen edge instead of merely losing its clearance.
+ */
+export function toastClearanceOffset(measuredHeight: number, margin: number): number {
+  return Math.max(measuredHeight, 0) + margin;
+}
+
+/**
  * Attempts on the head write beyond which the queue is wedged, not merely
  * behind a bad connection. Low deliberately: the retained statuses (401, 403,
  * 408, 429) are exactly the ones that do not clear themselves, and three failed

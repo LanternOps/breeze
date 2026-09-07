@@ -438,6 +438,10 @@ export function HomeScreen() {
           disabled={status === 'creating-session'}
           draft={draft}
           onDraftConsumed={() => setDraft(undefined)}
+          // Overrides Composer's own default ("Ask Breeze.") — a placeholder
+          // ending in a period reads as a completed sentence rather than an
+          // invitation to type (#5105).
+          placeholder="Ask Breeze"
         />
       </KeyboardAvoidingView>
 

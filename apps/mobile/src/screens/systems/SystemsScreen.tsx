@@ -158,6 +158,7 @@ export function SystemsScreen() {
     orgRollups,
     filterOrgId,
     filterOrgName,
+    filterOrgDeviceCounts,
     setFilterOrgId,
     loading,
     refreshing,
@@ -192,10 +193,19 @@ export function SystemsScreen() {
     [setFilterOrgId],
   );
 
-  // Hero stays whole-fleet even when filtered, so the user keeps the
-  // global context. Filter affects issues + recent + the orgs section
-  // visibility only.
-  const hero = deriveHeroState(summary, activeIssues);
+  // With an org filter active, the hero describes that org's own devices and
+  // issues rather than the fleet (#5105) — otherwise it read "77 devices"
+  // while only "Morning Fresh Dairy" was filtered below it.
+  const hero = deriveHeroState(
+    summary,
+    activeIssues,
+    filterOrgId && filterOrgName
+      ? {
+          name: filterOrgName,
+          devices: filterOrgDeviceCounts ?? { total: 0, online: 0, offline: 0, maintenance: 0 },
+        }
+      : null,
+  );
 
   useFocusEffect(
     useCallback(() => {

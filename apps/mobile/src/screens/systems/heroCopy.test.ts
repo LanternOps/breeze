@@ -144,4 +144,88 @@ describe('deriveHeroState', () => {
     ]);
     expect(s.copy).toBe('2 issues.');
   });
+
+  describe('with an org filter active', () => {
+    // Regression for #5105: with "Morning Fresh Dairy" filtered, the hero kept
+    // reading fleet-wide totals ("77 devices · 23 offline") instead of
+    // describing the filtered org. The third argument scopes the hero to one
+    // org's own device counts; `activeIssues` is already filtered by the
+    // caller (useSystemsData), so no separate issue-filtering is needed here.
+
+    it('describes the org, not the fleet, when all its devices are healthy', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 12, offline: 0, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 12 devices, all healthy.');
+      expect(s.segments).toEqual({ healthy: 12, warning: 0, critical: 0 });
+    });
+
+    it('describes the org offline count, not the fleet-wide one', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 400, offline: 100 }),
+        [],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 9, offline: 3, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 12 devices · 3 offline.');
+    });
+
+    it('describes the org maintenance count when nothing is offline', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 11, offline: 0, maintenance: 1 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 12 devices · 1 in maintenance.');
+    });
+
+    it('describes a single org issue as "1 issue.", still prefixed', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [alert({ id: 'a1', metadata: { orgId: 'org-1' } })],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 12, offline: 0, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 1 issue.');
+    });
+
+    it('describes the org issue count, never "across N organizations" (it is scoped to one)', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [
+          alert({ id: 'a1', metadata: { orgId: 'org-1' } }),
+          alert({ id: 'a2', metadata: { orgId: 'org-1' } }),
+        ],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 12, offline: 0, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 2 issues.');
+    });
+
+    it('never says "across N organizations" even if the caller failed to filter activeIssues by org', () => {
+      // orgScope forces orgCount to 1 regardless of what the alerts' own
+      // metadata says — the last line of defense against exactly the #5105
+      // defect if useSystemsData's own org filtering ever regresses.
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [
+          alert({ id: 'a1', metadata: { orgId: 'org-1' } }),
+          alert({ id: 'a2', metadata: { orgId: 'org-2' } }),
+        ],
+        { name: 'Morning Fresh Dairy', devices: { total: 12, online: 12, offline: 0, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: 2 issues.');
+    });
+
+    it('reports the org has no devices rather than the fleet-wide empty state, with no onboarding hint', () => {
+      const s = deriveHeroState(
+        summary({ total: 500, online: 500 }),
+        [],
+        { name: 'Morning Fresh Dairy', devices: { total: 0, online: 0, offline: 0, maintenance: 0 } },
+      );
+      expect(s.copy).toBe('Morning Fresh Dairy: No devices yet.');
+      // "Pair your first device..." is fleet-wide onboarding copy — it must
+      // not show for an org that simply has no devices of its own.
+      expect(s.legend).toBeNull();
+    });
+  });
 });

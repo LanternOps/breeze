@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 
-import { isQueueWedged, isTimerBarVisible, shouldReplayNow, WEDGED_ATTEMPTS } from './timerBarLogic';
+import {
+  isQueueWedged,
+  isTimerBarVisible,
+  shouldReplayNow,
+  shouldShowWaitingToSync,
+  toastClearanceOffset,
+  WAITING_TO_SYNC_GRACE_MS,
+  WEDGED_ATTEMPTS,
+} from './timerBarLogic';
 
 describe('isTimerBarVisible', () => {
   it('stays mounted while a toast is pending even with an empty queue and no timer', () => {
@@ -63,6 +71,44 @@ describe('shouldReplayNow', () => {
     expect(
       shouldReplayNow({ coldStart: false, previousConnected: true, connected: false, pendingCount: 3 })
     ).toBe(false);
+  });
+});
+
+describe('shouldShowWaitingToSync', () => {
+  it('does not show the label the instant something is queued', () => {
+    // A drain that completes within the grace window (the common case: Stop
+    // enqueues one write, replay drains it in well under a second) must never
+    // flash "Time entries waiting to sync" — it reads like an error for work
+    // that is about to sync fine.
+    expect(shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: 0 })).toBe(false);
+    expect(
+      shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: WAITING_TO_SYNC_GRACE_MS - 1 })
+    ).toBe(false);
+  });
+
+  it('shows the label once the grace period elapses with something still queued', () => {
+    expect(
+      shouldShowWaitingToSync({ pendingCount: 1, elapsedMs: WAITING_TO_SYNC_GRACE_MS })
+    ).toBe(true);
+    expect(shouldShowWaitingToSync({ pendingCount: 2, elapsedMs: 10_000 })).toBe(true);
+  });
+
+  it('never shows the label when nothing is pending, however long it has been', () => {
+    expect(shouldShowWaitingToSync({ pendingCount: 0, elapsedMs: 100_000 })).toBe(false);
+  });
+});
+
+describe('toastClearanceOffset', () => {
+  it('clears a measured sibling element plus a margin', () => {
+    expect(toastClearanceOffset(120, 16)).toBe(136);
+  });
+
+  it('falls back to the margin alone before the sibling has been measured', () => {
+    // `onLayout` has not fired yet (height 0) or reported something bogus
+    // (negative) — either way the toast must not collapse to a negative
+    // offset, which would push it below the screen edge.
+    expect(toastClearanceOffset(0, 16)).toBe(16);
+    expect(toastClearanceOffset(-5, 16)).toBe(16);
   });
 });
 

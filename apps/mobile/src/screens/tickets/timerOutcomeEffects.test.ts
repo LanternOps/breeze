@@ -95,10 +95,28 @@ describe('startOutcomeEffects', () => {
       id: 'e1',
       localId: null,
       ticketId: 'k1',
+      ticketNumber: null,
+      ticketSubject: null,
       startedAt: '2026-08-23T10:00:00Z',
       description: null,
     });
     expect(effects.toast).toEqual({ kind: 'success', text: 'Timer started' });
+  });
+
+  it('carries the joined ticket label fields so the bar never shows a placeholder first', () => {
+    // TimerBar's label falls back to the literal "Ticket" until `running`
+    // carries a resolved ticketNumber/ticketSubject. Dropping these here (as
+    // the entry the server returned already has them) meant the bar rendered
+    // "Ticket" for one tick, then flipped to "#T-2026-0006" once a later
+    // reconciliation pass filled them in.
+    const effects = startOutcomeEffects({
+      ok: true,
+      entry: { ...entry, ticketNumber: 'T-2026-0006', ticketSubject: 'Printer offline' },
+    });
+    expect(effects.startRunning).toMatchObject({
+      ticketNumber: 'T-2026-0006',
+      ticketSubject: 'Printer offline',
+    });
   });
 
   it('DOES adopt a local timer, so both surfaces offer Stop offline', () => {

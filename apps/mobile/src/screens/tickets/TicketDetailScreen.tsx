@@ -63,6 +63,7 @@ import {
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
 import { AttachmentChip } from '../../components/AttachmentChip';
 import { Toast } from '../../components/Toast';
+import { toastClearanceOffset } from '../../components/timerBarLogic';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
@@ -167,6 +168,13 @@ export function TicketDetailScreen() {
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  /**
+   * Measured height of the comment composer, so the toast (below) can clear
+   * it entirely rather than overlapping its mode tabs — see the Toast usage
+   * at the bottom of this component and #5105 ("Timer started" covering the
+   * Reply / Internal note tabs).
+   */
+  const [composerHeight, setComposerHeight] = useState(0);
   const [timerNotice, setTimerNotice] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState(false);
   const [chips, setChips] = useState<Chip[]>([]);
@@ -665,26 +673,38 @@ export function TicketDetailScreen() {
         ) : null}
 
         <Text style={styles.sectionHeader}>STATUS</Text>
-        {quickStatuses.length === 0 ? (
-          <Text style={styles.metaDim}>No status changes available from here.</Text>
-        ) : (
-          <View style={styles.statusRow}>
-            {quickStatuses.map((status) => (
-              <Pressable
-                key={status}
-                onPress={() => void submitStatus(status)}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: busy }}
-                style={styles.statusChip}
-              >
-                <Text style={styles.statusChipText}>
-                  {statusLabel({ status, statusName: null })}
-                </Text>
-              </Pressable>
-            ))}
+        <View style={styles.statusRow}>
+          {/* Always shown, selected — previously only the possible TRANSITIONS
+              rendered, so the ticket's own current status (including "New",
+              which is never a legal transition target) never appeared as a
+              chip at all (#5105). */}
+          <View
+            accessibilityRole="text"
+            accessibilityLabel={`Current status: ${statusLabel(ticket)}`}
+            style={[styles.statusChip, styles.statusChipActive]}
+          >
+            <Text style={[styles.statusChipText, styles.statusChipTextActive]}>
+              {statusLabel(ticket)}
+            </Text>
           </View>
-        )}
+          {quickStatuses.map((status) => (
+            <Pressable
+              key={status}
+              onPress={() => void submitStatus(status)}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: busy }}
+              style={styles.statusChip}
+            >
+              <Text style={styles.statusChipText}>
+                {statusLabel({ status, statusName: null })}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {quickStatuses.length === 0 ? (
+          <Text style={styles.metaDim}>No other status changes available from here.</Text>
+        ) : null}
 
         {showResolutionInput ? (
           <TextInput
@@ -810,7 +830,10 @@ export function TicketDetailScreen() {
             control that belongs to the pending comment — a tint on the text
             field alone reads as a styling quirk, a tinted panel reads as a
             mode. */}
-        <View style={[styles.composer, isInternal && styles.composerInternal]}>
+        <View
+          style={[styles.composer, isInternal && styles.composerInternal]}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}
+        >
           <View style={styles.modeTabs} accessibilityRole="tablist">
             {COMMENT_MODES.map((mode) => {
               const active = commentMode === mode;
@@ -910,6 +933,11 @@ export function TicketDetailScreen() {
         text={toast?.text ?? ''}
         kind={toast?.kind ?? 'success'}
         onHidden={() => setToast(null)}
+        // Clears the composer's full measured height so "Timer started" /
+        // "Timer stopped" never overlaps its mode tabs (#5105) — the
+        // component's own default offset assumes a short, fixed-height
+        // screen, not one ending in a composer that can run to 200+px.
+        bottomOffset={toastClearanceOffset(composerHeight, spacing['4'])}
       />
     </KeyboardAvoidingView>
   );

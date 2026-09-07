@@ -408,6 +408,26 @@ export function useSystemsData() {
     return resolveOrgName(data.orgs, filterOrgId, data.failed.includes('orgs')).name;
   }, [filterOrgId, data.orgs, data.failed]);
 
+  // Device counts scoped to the active org filter, for the hero (#5105: it
+  // used to stay fleet-wide — "77 devices" — while an org filter was active).
+  // Like `orgRollups.deviceCount`, this is a floor rather than a total when
+  // `devicesTruncated` is set: it is built from the same paged device list.
+  const filterOrgDeviceCounts = useMemo(() => {
+    if (!filterOrgId) return null;
+    let online = 0;
+    let offline = 0;
+    let maintenance = 0;
+    let total = 0;
+    for (const d of data.devices) {
+      if (d.organizationId !== filterOrgId) continue;
+      total++;
+      if (d.status === 'online') online++;
+      else if (d.status === 'offline') offline++;
+      else if (d.status === 'warning') maintenance++;
+    }
+    return { total, online, offline, maintenance };
+  }, [filterOrgId, data.devices]);
+
   return {
     ...data,
     activeIssues,
@@ -415,6 +435,7 @@ export function useSystemsData() {
     orgRollups,
     filterOrgId,
     filterOrgName,
+    filterOrgDeviceCounts,
     setFilterOrgId,
     refresh,
     refreshIfStale,

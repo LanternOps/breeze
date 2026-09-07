@@ -8,32 +8,54 @@ export interface HeroState {
   legend: string | null;
 }
 
+/**
+ * Scopes the hero to one organization's own device counts instead of the
+ * fleet-wide summary. `activeIssues` is expected to already be filtered to
+ * this org by the caller (useSystemsData) — this only changes which device
+ * totals the copy and segments describe.
+ */
+export interface OrgHeroScope {
+  name: string;
+  devices: MobileSummary['devices'];
+}
+
 // Hero copy ladder, in priority order: empty → all healthy → 1 issue →
 // {n} issues → {n} issues across {m} organizations. Segments and legend
 // are derived from device counts (online / maintenance / offline) and the
-// alert critical count.
+// alert critical count. Passing `orgScope` describes that org's own devices
+// instead of the fleet (#5105 — the hero used to stay fleet-wide even with
+// an org filter active, e.g. "77 devices" while only "Morning Fresh Dairy"
+// was filtered).
 export function deriveHeroState(
   summary: MobileSummary | null,
   activeIssues: Alert[],
+  orgScope: OrgHeroScope | null = null,
 ): HeroState {
-  if (!summary) {
+  const deviceCounts = orgScope ? orgScope.devices : summary?.devices ?? null;
+  if (!deviceCounts) {
     return { copy: '…', segments: null, legend: null };
   }
 
-  const total = summary.devices.total;
+  // Prefixes every branch below with "Org name: " when scoped, otherwise a
+  // no-op — every fleet-wide test in this file passes orgScope=null.
+  const prefix = orgScope ? `${orgScope.name}: ` : '';
+
+  const total = deviceCounts.total;
   if (total === 0) {
     return {
-      copy: 'No devices yet.',
+      copy: `${prefix}No devices yet.`,
       segments: null,
-      legend: 'Pair your first device from the Breeze web portal.',
+      legend: orgScope ? null : 'Pair your first device from the Breeze web portal.',
     };
   }
 
-  const online = summary.devices.online;
-  const offline = summary.devices.offline;
-  const maintenance = summary.devices.maintenance;
+  const online = deviceCounts.online;
+  const offline = deviceCounts.offline;
+  const maintenance = deviceCounts.maintenance;
   const issueCount = activeIssues.length;
-  const orgCount = uniqueOrgCount(activeIssues);
+  // Scoped to a single org by construction — "issues across N organizations"
+  // never applies once a filter is active.
+  const orgCount = orgScope ? 1 : uniqueOrgCount(activeIssues);
 
   // Bar segments must match the headline. We derive critical / warning
   // from the *unacked* activeIssues (same source the headline counts), not
@@ -63,7 +85,7 @@ export function deriveHeroState(
     if (online > 0) legendParts.push(`${online} online`);
     if (maintenance > 0) legendParts.push(`${maintenance} maintenance`);
     return {
-      copy: `${total} devices, all healthy.`,
+      copy: `${prefix}${total} devices, all healthy.`,
       segments,
       legend: legendParts.length ? legendParts.join(' · ') : null,
     };
@@ -77,8 +99,8 @@ export function deriveHeroState(
     if (maintenance > 0) legendParts.push(`${maintenance} maintenance`);
     return {
       copy: offline > 0
-        ? `${total} devices · ${offline} offline.`
-        : `${total} devices · ${maintenance} in maintenance.`,
+        ? `${prefix}${total} devices · ${offline} offline.`
+        : `${prefix}${total} devices · ${maintenance} in maintenance.`,
       segments,
       legend: legendParts.length ? legendParts.join(' · ') : null,
     };
@@ -86,11 +108,11 @@ export function deriveHeroState(
 
   let copy: string;
   if (issueCount === 1) {
-    copy = '1 issue.';
+    copy = `${prefix}1 issue.`;
   } else if (orgCount <= 1) {
-    copy = `${issueCount} issues.`;
+    copy = `${prefix}${issueCount} issues.`;
   } else {
-    copy = `${issueCount} issues across ${orgCount} organizations.`;
+    copy = `${prefix}${issueCount} issues across ${orgCount} organizations.`;
   }
 
   const legendParts: string[] = [];
