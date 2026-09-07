@@ -73,10 +73,15 @@ const {
  * logic.
  */
 const ctx = vi.hoisted(() => ({ depth: 0 }));
+let ambientScope: 'system' | 'partner' | 'organization' = 'system';
 
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock },
   hasDbAccessContext: () => ctx.depth > 0,
+  // The ambient scope the partner-axis reads fail closed on. `undefined` (no
+  // context) and 'system'/'partner' are all permitted; only 'organization' is
+  // the trap, because those tables are invisible to it under RLS.
+  getCurrentDbAccessContext: () => (ctx.depth > 0 ? { scope: ambientScope } : undefined),
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -510,6 +515,7 @@ function installDbMocks(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   ctx.depth = 0;
+  ambientScope = 'system';
   stmts = [];
   snapshots = [];
   generatedIds = 0;
@@ -622,6 +628,18 @@ describe('requestPaymentPush gating (spec decision 10)', () => {
     await expect(runCtx(() => requestPaymentPush(db, {
       invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
     }))).resolves.toBe('map-new-1');
+  });
+
+  it('FAILS CLOSED under an org-scoped DB context instead of silently not pushing', async () => {
+    // accounting_connections is PARTNER-axis under RLS, so an org-scoped
+    // principal reads ZERO rows here — indistinguishable from "no connection",
+    // which returns null and drops the push on the floor with no error anywhere.
+    // A caller that cannot SEE the connection must not be told there isn't one.
+    ambientScope = 'organization';
+
+    await expect(runCtx(() => requestPaymentPush(db, {
+      invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
+    }))).rejects.toThrow(/partner-scoped/i);
   });
 
   it('returns null when there is no connected QuickBooks connection at all', async () => {
@@ -758,6 +776,17 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
 
     await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBeNull();
     expect(mapping()).toBeNull();
+  });
+
+  it('FAILS CLOSED under an org-scoped DB context', async () => {
+    // Same trap on the destroyer side: zero visible mapping rows reads as "this
+    // payment has no accounting mapping", which is the COMMON case — so a void
+    // under an org-scoped principal would destroy the Breeze payment and leave
+    // its QuickBooks Payment standing, with the mapping row stranded.
+    ambientScope = 'organization';
+
+    await expect(runCtx(() => requestPaymentDelete(db, PAYMENT)))
+      .rejects.toThrow(/partner-scoped/i);
   });
 
   it('is a no-op for a payment with no mapping at all (the common manual/Stripe case)', async () => {

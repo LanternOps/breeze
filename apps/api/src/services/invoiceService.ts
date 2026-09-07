@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
@@ -1567,6 +1567,21 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // `requestPaymentDelete` uses so the two can never disagree about which row
     // they are looking at; unscoped by partner on purpose, so a row that somehow
     // belonged to another partner refuses the void instead of slipping past it.
+    // FAIL CLOSED when the caller cannot SEE that table (review wave 2, finding
+    // 5). `accounting_entity_mappings` is partner-axis under RLS, so an
+    // org-scoped principal — an AI/MCP session, a portal token — reads zero rows
+    // and the probe below reports "no accounting mapping": the COMMON case, and
+    // an ordinary no-op. A QuickBooks-owned payment would then be voided, and a
+    // Breeze-origin one would lose its mapping without QuickBooks ever being
+    // asked to remove the Payment. "I cannot see the answer" must never be
+    // reported as "the answer is no".
+    if (getCurrentDbAccessContext()?.scope === 'organization') {
+      throw new InvoiceServiceError(
+        'Voiding a payment requires a partner-scoped session: QuickBooks payment ownership is '
+        + 'partner-owned and is not visible to an organization-scoped caller',
+        409, 'PARTNER_SCOPE_REQUIRED',
+      );
+    }
     const [existingMapping] = await tx
       .select({ breezeOrigin: accountingEntityMappings.breezeOrigin })
       .from(accountingEntityMappings)

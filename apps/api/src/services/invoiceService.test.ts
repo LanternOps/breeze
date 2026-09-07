@@ -39,10 +39,13 @@ vi.mock('../db', () => {
   );
   return {
     db,
+    // The ambient DB scope the partner-axis accounting reads fail closed on.
+    getCurrentDbAccessContext: () => ({ scope: ambientScope }),
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn()
   };
 });
+let ambientScope: 'system' | 'partner' | 'organization' = 'partner';
 
 // The compat service owns the jsonb merge now; its own suite proves the SQL
 // shape. Here it is stubbed so these tests assert delegation, not re-assert it.
@@ -1863,6 +1866,8 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     reference: '10441', recordedBy: null, ...over,
   });
 
+  beforeEach(() => { ambientScope = 'partner'; });
+
   it('requests the delete with the SAME transaction handle, BEFORE the payment row is destroyed', async () => {
     requestPaymentDeleteMock.mockResolvedValue('map-1');
     queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
@@ -1912,6 +1917,22 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
 
     await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
+  });
+
+  it('FAILS CLOSED when the caller cannot see accounting_entity_mappings at all', async () => {
+    // The origin probe reads a PARTNER-axis table. Under an org-scoped principal
+    // RLS returns zero rows, which is byte-identical to "this payment has no
+    // accounting mapping" — the COMMON case — so a QuickBooks-owned payment
+    // would be voided, and a Breeze-origin one would lose its mapping without
+    // ever asking QuickBooks to remove the Payment (review wave 2, finding 5).
+    ambientScope = 'organization';
+    queueVoidPaymentReads(payment(), []);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      code: 'PARTNER_SCOPE_REQUIRED',
+    });
+    expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
   });
 
   it('REFUSES a QuickBooks-origin payment at the service layer, not just in the UI', async () => {

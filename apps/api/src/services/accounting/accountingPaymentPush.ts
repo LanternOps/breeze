@@ -54,7 +54,7 @@
  */
 
 import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
@@ -521,10 +521,44 @@ async function lockOwnedInvoice(invoiceId: string, partnerId: string): Promise<I
  * worker can start before it commits and see no mapping row at all. That is why
  * "mapping not found" is retryable in the coordinator, never terminal.
  */
+/**
+ * Refuse to read a PARTNER-axis accounting table from an org-scoped context.
+ *
+ * `accounting_connections` and `accounting_entity_mappings` are partner-axis
+ * under RLS, so an organization-scoped principal — an AI/MCP session, a portal
+ * token — sees ZERO rows in them. Every read below then returns "nothing",
+ * which is byte-identical to the legitimate answers "this partner has no
+ * QuickBooks connection" and "this payment has no accounting mapping", and both
+ * of those are ordinary no-ops. So the whole QuickBooks side FAILS OPEN: the
+ * push is silently never requested, and the QuickBooks-origin void guard passes
+ * a payment it should have refused — with no error anywhere (review wave 2,
+ * finding 5).
+ *
+ * Failing closed is the only safe reading: "I cannot see the answer" must never
+ * be reported as "the answer is no". The AI tool layer additionally refuses
+ * these actions up front, so this throw is the backstop, not the UX.
+ *
+ * A missing context is NOT a refusal: `withSystemDbAccessContext` and the
+ * unit-test harnesses both run without meta scope, and those paths are already
+ * covered by `assertNoAmbientDbContext` / the coordinator's own contract.
+ */
+function assertPartnerVisibleContext(operation: string): void {
+  const scope = getCurrentDbAccessContext()?.scope;
+  if (scope === 'organization') {
+    throw new AccountingMappingError(
+      'not_connected',
+      409,
+      `${operation} requires a partner-scoped session: QuickBooks connections and payment mappings are `
+      + 'partner-owned and are not visible to an organization-scoped caller',
+    );
+  }
+}
+
 export async function requestPaymentPush(
   tx: PaymentMappingExecutor,
   params: { invoicePaymentId: string; invoiceId: string; partnerId: string },
 ): Promise<string | null> {
+  assertPartnerVisibleContext('Requesting a QuickBooks payment push');
   const conn = await loadConnectedConnection(tx, params.partnerId);
   if (!conn || !conn.pushPayments || conn.pushMode !== 'auto') return null;
 
@@ -617,6 +651,7 @@ export async function requestPaymentDelete(
   tx: PaymentMappingExecutor,
   invoicePaymentId: string,
 ): Promise<string | null> {
+  assertPartnerVisibleContext('Settling a QuickBooks payment mapping');
   const mapping = await loadPaymentMappingByPaymentId(tx, invoicePaymentId);
   if (!mapping) return null;
 
