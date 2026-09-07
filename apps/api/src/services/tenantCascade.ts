@@ -530,6 +530,13 @@ export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
 const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   table: string;
   clearSql: (orgId: string) => ReturnType<typeof sql>;
+  /**
+   * Rows this entry's `clearSql` DELIBERATELY leaves behind, counted so the
+   * erasure log says how many and why. Only `accounting_entity_mappings` has
+   * one: a mapping that still owes QuickBooks a payment delete.
+   */
+  retainedSql?: (orgId: string) => ReturnType<typeof sql>;
+  retainedWarning?: (count: number, orgId: string) => string;
 }> = [
   {
     table: 'device_commands',
@@ -675,6 +682,18 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // ahead of the CORE_ORG_CASCADE_DELETE_ORDER walk that deletes
   // invoices/invoice_payments themselves) so the subqueries below still see
   // the rows they need to join through.
+  //
+  // ONE EXCEPTION, and it is not a gap: a 'payment' row with
+  // `pending_op = 'delete'` is the OUTBOX of a QuickBooks deletion Breeze still
+  // owes (Phase D2). Breeze created that Payment in the partner's books and
+  // deleting the mapping discards the debt silently, leaving real money
+  // recorded against an org that no longer exists — and nothing can recreate
+  // the row, because the `accounting_entity_mappings_entity_partner_guard`
+  // trigger refuses an INSERT whose `invoice_payments` row is gone. The row is
+  // retained instead, and the count is logged. It holds no org-scoped personal
+  // data (a remote id, a SyncToken, a status) and it is bounded in time:
+  // `deletePaymentInAccounting` deletes it once QuickBooks confirms, or drops
+  // it loudly after PAYMENT_DELETE_UNRESOLVED_GRACE_MS.
   {
     table: 'accounting_entity_mappings',
     clearSql: (orgId) => sql`
@@ -682,10 +701,22 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE (m.breeze_entity_type = 'org' AND m.breeze_entity_id = ${orgId}::uuid)
          OR (m.breeze_entity_type = 'invoice' AND m.breeze_entity_id IN (
                SELECT id FROM invoices WHERE org_id = ${orgId}::uuid))
-         OR (m.breeze_entity_type = 'payment' AND m.breeze_entity_id IN (
+         OR (m.breeze_entity_type = 'payment' AND m.pending_op IS DISTINCT FROM 'delete'
+             AND m.breeze_entity_id IN (
                SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
                 WHERE i.org_id = ${orgId}::uuid))
     `,
+    retainedSql: (orgId) => sql`
+      SELECT count(*)::int AS n FROM accounting_entity_mappings m
+       WHERE m.breeze_entity_type = 'payment'
+         AND m.pending_op = 'delete'
+         AND m.breeze_entity_id IN (
+               SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
+                WHERE i.org_id = ${orgId}::uuid)
+    `,
+    retainedWarning: (count, orgId) =>
+      `[tenantCascade] org=${orgId}: kept ${count} accounting_entity_mappings row(s) that still owe `
+      + 'QuickBooks a payment delete; the delete worker removes them once QuickBooks confirms',
   },
 ];
 
@@ -907,6 +938,16 @@ export async function cascadeDeleteOrg(
       });
       stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
       stats.totalRowsDeleted += count;
+      // Rows this entry deliberately left behind. Counted AFTER the delete (so
+      // the query cannot race it) and only ever logged: an erasure must not
+      // fail because a QuickBooks delete is still owed.
+      if (assoc.retainedSql && assoc.retainedWarning) {
+        const retained = await dbModule.withSystemDbAccessContext(async () => {
+          const rows = (await dbModule.db.execute(assoc.retainedSql!(orgId))) as unknown as Array<{ n: number | string }>;
+          return Number(rows[0]?.n ?? 0);
+        });
+        if (retained > 0) console.warn(assoc.retainedWarning(retained, orgId));
+      }
     } catch (err) {
       // Tolerate missing tables (e.g. a deployment that doesn't have
       // every optional table). Anything else aborts the erasure — record

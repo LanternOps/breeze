@@ -7,6 +7,7 @@ import { captureException } from './sentry';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyPatchSettings,
   patchPolicies,
 } from '../db/schema';
@@ -49,12 +50,20 @@ export interface PatchRingResolution {
 }
 
 export interface PolicyLocalPatchConfig {
+  /** The policy this config was loaded FOR — the assigned policy. */
   configPolicyId: string;
   configPolicyName: string;
   // null for partner-wide policies (#1724).
   orgId: string | null;
   featureLinkId: string;
   featurePolicyId: string | null;
+  /**
+   * The policy that AUTHORED the patch link (#5080). Equal to `configPolicyId`
+   * for an authored link; the parent's id when the link is inherited. The
+   * scheduler still acts as `configPolicyId` — this is provenance.
+   */
+  sourcePolicyId: string;
+  inherited: boolean;
   settings: PatchInlineSettings;
   ring: PatchRingResolution;
 }
@@ -282,28 +291,35 @@ export async function resolvePatchPolicyReference(
 export async function loadPolicyLocalPatchConfig(
   configPolicyId: string
 ): Promise<PolicyLocalPatchConfig | null> {
+  // EFFECTIVE (#5080). Once the patch scheduler enumerates through the view, a
+  // child that inherits its parent's patch link is discovered as a candidate;
+  // reading the authored table here would return null and silently skip it.
+  // The link id is the parent's when inherited, on purpose — the normalized
+  // `config_policy_patch_settings` join below keys on it unchanged.
   const [row] = await db
     .select({
       configPolicyId: configurationPolicies.id,
       configPolicyName: configurationPolicies.name,
       orgId: configurationPolicies.orgId,
       partnerId: configurationPolicies.partnerId,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      storedInlineSettings: configPolicyFeatureLinks.inlineSettings,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
+      storedInlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inherited: configPolicyEffectiveFeatureLinks.inherited,
       patchSettings: configPolicyPatchSettings,
     })
     .from(configurationPolicies)
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'patch')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'patch')
       )
     )
     .leftJoin(
       configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyPatchSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(eq(configurationPolicies.id, configPolicyId))
     .limit(1);
@@ -357,6 +373,8 @@ export async function loadPolicyLocalPatchConfig(
     orgId: row.orgId,
     featureLinkId: row.featureLinkId,
     featurePolicyId: row.featurePolicyId,
+    sourcePolicyId: row.sourcePolicyId,
+    inherited: row.inherited,
     settings,
     ring,
   };
@@ -367,6 +385,9 @@ export async function backfillMissingPatchSettings(): Promise<{
   repairedFromInline: number;
   repairedWithDefaults: number;
 }> {
+  // AUTHORED (#5080): repairs the normalized row behind each real link. Through
+  // the view one parent link would surface once per inheriting child, and this
+  // would try to insert the same feature_link_id several times.
   const rows = await db
     .select({
       featureLinkId: configPolicyFeatureLinks.id,
@@ -415,6 +436,9 @@ export async function backfillMissingPatchSettings(): Promise<{
 }
 
 async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow[]> {
+  // AUTHORED (#5080): the editor-facing "which policies have a broken patch
+  // reference" report. It names the policy that must be FIXED, so an inherited
+  // copy of a parent's link would report the same defect once per child.
   const rows = await db
     .select({
       configPolicyId: configurationPolicies.id,

@@ -672,6 +672,7 @@
     "refresh": "Refresh",
     "from": "From:",
     "linkedPolicy": "Linked policy:",
+    "inheritedFrom": "Inherited from {{name}}",
     "notEnforced": "Not enforced",
     "usingBreezeDefaults": "— using Breeze Defaults",
     "inheritanceChain": "Inheritance Chain",

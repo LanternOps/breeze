@@ -51,7 +51,7 @@ import {
   type ManifestTrustKey,
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
@@ -347,7 +347,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           // UNRESTRICTED. Fall back to the shared constant, never to undefined.
           agent.claimTypeAllowlist ?? DRAIN_CLAIM_TYPE_ALLOWLIST,
         );
-        return decryptClaimedCommandsForDelivery(claimed);
+        return prepareClaimedCommandsForDelivery(claimed);
       }),
     );
 
@@ -768,7 +768,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // the device update at all, so the stored value here is always from an
     // earlier beat.
     return c.json({
-      commands: await decryptClaimedCommandsForDelivery(watchdogCommands, {
+      commands: await prepareClaimedCommandsForDelivery(watchdogCommands, {
         reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
           data.securityCapabilities?.scriptSecretEnvVersion,
         ),
@@ -1651,7 +1651,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // the same value but is guarded on the device not being decommissioned/
   // quarantined, so it can be skipped entirely; trusting the stored value
   // could then deliver a sealed secret to an agent that just reported 0.
-  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands, {
+  const deliverableCommands = await prepareClaimedCommandsForDelivery(commands, {
     reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
       data.securityCapabilities?.scriptSecretEnvVersion,
     ),

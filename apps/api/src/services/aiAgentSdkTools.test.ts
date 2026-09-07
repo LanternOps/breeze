@@ -259,6 +259,8 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
           expect.stringContaining('timed out'),
           true,
           expect.any(Number),
+          // `sealed`, then `handoff` (#5107) — a timeout is neither.
+          undefined,
           undefined,
         );
       } finally {

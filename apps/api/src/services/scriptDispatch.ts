@@ -8,7 +8,8 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
-import { queueCommand } from './commandQueue';
+import { CommandTypes, queueCommand } from './commandQueue';
+import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   toAgentCommandFrame,
@@ -78,7 +79,17 @@ export type DispatchScriptInput = {
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
+  /**
+   * @deprecated #5128 — alias for `offlinePolicy: { kind: 'reject' }`. Removed
+   * in W4 once automations pass an explicit policy.
+   */
   requireOnline?: boolean;
+  /**
+   * #5128 — explicit offline policy. Omit to take the registry default for
+   * `script` (queue, standard TTL), which is what manual Run Script has always
+   * done in practice.
+   */
+  offlinePolicy?: OfflinePolicy;
   // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
   // see tenantVariableResolution.ts. Required only when `source.kind ===
   // 'saved'` and the script content actually contains a {{var.*}} token; the
@@ -92,6 +103,12 @@ export type DispatchScriptResult =
       commandId: string;
       executionId: string | null;
       delivered: boolean;
+      /**
+       * #5128 — the instant after which the command expires undelivered. For a
+       * queued (offline) dispatch this is the honest answer to "how long will
+       * this wait?"; the UI copy renders it as the expiry date.
+       */
+      deliverBy: Date | null;
       // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to
@@ -190,7 +207,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
-  if (input.requireOnline) {
+  const offlinePolicy: OfflinePolicy =
+    input.offlinePolicy ?? (input.requireOnline ? { kind: 'reject' } : defaultOfflinePolicy(CommandTypes.SCRIPT));
+  // A `reject` row is only created against a device we just observed online, so
+  // it gets the short race grace rather than a queue window.
+  const deliverBy = deliverByFor(offlinePolicy);
+
+  if (offlinePolicy.kind === 'reject') {
     // Re-read live status rather than trusting `device.status` (the caller's
     // snapshot). Automation fleet runs snapshot every target device ONCE at
     // run start (automationRuntime.ts:1712/2269) and can dispatch minutes
@@ -199,7 +222,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // (commandQueue.ts:650), which re-selected `devices.status` fresh on
     // every dispatch — a deleted test once pinned the opposite contract
     // ("must NOT pre-filter on it") for this codepath, which this restores.
-    // Only requireOnline gets the extra query: manual/route dispatch
+    // Only a `reject` policy gets the extra query: manual/route dispatch
     // deliberately queues offline devices, so no live read runs for it.
     const [liveDevice] = await db
       .select({ status: devices.status })
@@ -513,6 +536,12 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     stage = 'queueCommand';
     command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
       commandId: reservedCommandId,
+      // #5128: the DELIVERY deadline. Before this, a script queued for an
+      // offline laptop was reaped after ~10 min by its own 300 s EXECUTION
+      // timeout, even though the UI promised "the run will wait until it
+      // reconnects".
+      deliverBy,
+      submittedOrgId: device.orgId,
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -632,7 +661,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

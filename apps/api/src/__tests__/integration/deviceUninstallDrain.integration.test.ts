@@ -342,12 +342,22 @@ describe('#3986 delivery — a Removed device collects its uninstall and nothing
     const delivered = beatBody.commands as Array<{ id: string; type: string }>;
     expect(delivered.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
 
-    // ...and the script command was NOT delivered, and is still pending.
+    // ...and the script command was NOT delivered.
+    //
+    // #5128 changed WHY, not WHETHER: decommission now cancels the device's
+    // ordinary pending commands in the same transaction as the status flip, so
+    // this row is `cancelled` rather than sitting `pending` until some later
+    // sweep. The property this assertion exists to protect — the drain's type
+    // allowlist does not silently default to "unrestricted" — is unchanged and
+    // is asserted directly above (the heartbeat delivered ONLY self_uninstall).
+    // `executedAt IS NULL` is the durable form of "never delivered", so it is
+    // pinned here explicitly rather than inferred from the status string.
     const [scriptRow] = await getTestDb()
-      .select({ status: deviceCommands.status })
+      .select({ status: deviceCommands.status, executedAt: deviceCommands.executedAt })
       .from(deviceCommands)
       .where(eq(deviceCommands.id, scriptCommandId));
-    expect(scriptRow!.status).toBe('pending');
+    expect(scriptRow!.executedAt).toBeNull();
+    expect(scriptRow!.status).toBe('cancelled');
 
     // --- The rest of the authenticated agent surface stays closed ----------
     const recoveryKeys = await agentApp.request(

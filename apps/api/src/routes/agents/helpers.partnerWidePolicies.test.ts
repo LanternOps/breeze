@@ -123,11 +123,13 @@ vi.mock('../../db/schema', () => ({
     priority: 'cpa.priority',
   },
   configurationPolicies: { id: 'cp.id', status: 'cp.status', orgId: 'cp.orgId', partnerId: 'cp.partnerId' },
-  configPolicyFeatureLinks: {
-    id: 'cpfl.id',
-    configPolicyId: 'cpfl.configPolicyId',
-    featureType: 'cpfl.featureType',
-    inlineSettings: 'cpfl.inlineSettings',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'cpefl.id',
+    configPolicyId: 'cpefl.configPolicyId',
+    sourcePolicyId: 'cpefl.sourcePolicyId',
+    inherited: 'cpefl.inherited',
+    featureType: 'cpefl.featureType',
+    inlineSettings: 'cpefl.inlineSettings',
   },
   configPolicyEventLogSettings: {
     featureLinkId: 'cpels.featureLinkId',

@@ -42,7 +42,17 @@ invoicePaymentRoutes.delete('/:id/payments/:pid', scopes, sendPerm, zValidator('
       action: 'invoice.payment.voided',
       resourceType: 'invoice_payment',
       resourceId: audit.paymentId,
-      details: { amount: audit.amount, method: audit.method, reference: audit.reference, invoiceId: audit.invoiceId, recordedBy: audit.recordedBy }
+      details: {
+        amount: audit.amount, method: audit.method, reference: audit.reference,
+        invoiceId: audit.invoiceId, recordedBy: audit.recordedBy,
+        // Only on a QuickBooks-origin void that Breeze was allowed to take
+        // because no CDC sweep would re-import it. The QuickBooks Payment is
+        // still standing; the service also writes its own durable entry, but a
+        // reader of THIS event must not have to go find that one.
+        ...(audit.quickbooksRecordUntouched
+          ? { quickbooksRecordUntouched: true, untouchedReason: audit.untouchedReason }
+          : {}),
+      }
     });
     return c.json({ data: invoice });
   } catch (err) { return handleServiceError(c, err); }

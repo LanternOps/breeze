@@ -215,6 +215,58 @@ describe('dns security routes', () => {
     expect(res.status).not.toBe(400);
   });
 
+  // The next-gen Umbrella Reports API takes no organization id — the OAuth2
+  // token's own `sub` claim scopes the request — so demanding one at creation
+  // time rejects a perfectly usable credential (#4597).
+  it('accepts a Cisco Umbrella integration without config.organizationId (#4597)', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123',
+        apiSecret: 'api-secret-123'
+      })
+    });
+
+    // The DB layer isn't mocked, so anything other than 400 means validation
+    // let it through.
+    expect(res.status).not.toBe(400);
+  });
+
+  it('still accepts a Cisco Umbrella integration that supplies organizationId', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123',
+        apiSecret: 'api-secret-123',
+        config: { organizationId: 'umbrella-org-id' }
+      })
+    });
+
+    expect(res.status).not.toBe(400);
+  });
+
+  // Control: the umbrella branch of the validator is still live, so the test
+  // above is proving something.
+  it('still rejects a Cisco Umbrella integration with no apiSecret', async () => {
+    const res = await app.request('/dns-security/integrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'umbrella',
+        name: 'Contoso Umbrella',
+        apiKey: 'api-key-123'
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   // ──────────────── Site-scope enforcement (reads) ────────────────
   // A site-restricted org user (permissions.allowedSiteIds set) must not read
   // DNS query/block events or hostnames for devices in sites outside their

@@ -35,7 +35,7 @@ vi.mock('../db', () => {
 // only references them as opaque column handles passed to the mocked db chain.
 vi.mock('../db/schema', () => ({
   configurationPolicies: {},
-  configPolicyFeatureLinks: {},
+  configPolicyEffectiveFeatureLinks: {},
   configPolicyAssignments: {},
   patchJobs: {},
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },

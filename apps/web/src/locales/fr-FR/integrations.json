@@ -783,12 +783,17 @@
     "pullPaymentsEnabled": "Les paiements seront synchronisés depuis QuickBooks",
     "pullPaymentsDisabled": "Les paiements ne seront plus synchronisés depuis QuickBooks",
     "failedToUpdatePullPayments": "Impossible de mettre à jour le paramètre de synchronisation des paiements.",
+    "pushPayments": "Envoi des paiements",
+    "pushPaymentsDescription": "Envoyer vers QuickBooks les paiements enregistrés dans Breeze et les y supprimer en cas d'annulation.",
+    "pushPaymentsEnabled": "Les paiements seront envoyés vers QuickBooks",
+    "pushPaymentsDisabled": "Les paiements ne seront plus envoyés vers QuickBooks",
+    "failedToUpdatePushPayments": "Impossible de mettre à jour le paramètre d'envoi des paiements.",
     "lastPaymentSync": "Dernière synchronisation des paiements",
     "never": "Jamais",
     "syncNow": "Synchroniser maintenant",
     "syncNowQueued": "Synchronisation des paiements mise en file d'attente.",
     "syncNowNotQueued": "Impossible de mettre la synchronisation des paiements en file d'attente. Réessayez dans un instant.",
-    "syncNowPullDisabled": "La synchronisation des paiements est désactivée pour cette connexion. Activez la synchronisation des paiements pour synchroniser maintenant.",
+    "syncNowPullDisabled": "La synchronisation des paiements est désactivée pour cette connexion – activez Synchronisation des paiements ou Envoi des paiements pour synchroniser maintenant.",
     "failedToSyncNow": "Impossible de lancer la synchronisation des paiements."
   },
   "securityIntegration": {

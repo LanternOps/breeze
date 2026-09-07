@@ -109,6 +109,15 @@ export interface Device {
   };
   createdAt: string;
   updatedAt: string;
+  /** Device Details v1 fields (#5140, decision #5117-2). */
+  osVersion?: string;
+  lastUser?: string;
+  /** Best current LAN address (ranked, see mobile.ts's #2503-style pick). */
+  lanIp?: string;
+  /** WAN address the agent last authenticated from. */
+  publicIp?: string;
+  openAlertCount?: number;
+  openTicketCount?: number;
 }
 
 export interface User {
@@ -317,6 +326,23 @@ type MobileDeviceRecord = {
     diskUsage?: number;
   };
   siteName?: string;
+  // List endpoint (`GET /mobile/devices`) sends `organizationName`; the
+  // single-device endpoint (`GET /devices/:id`, devices/core.ts) sends the
+  // same value under `orgName`. Both are read in mapDevice() below (#5104).
+  organizationName?: string | null;
+  orgName?: string | null;
+  // Device Details v1 fields (#5140, decision #5117-2). Sent by the list
+  // endpoint (`GET /mobile/devices`, routes/mobile.ts) today — see that
+  // route's loadDeviceDetailsV1Fields for how each is computed. Absent
+  // (rather than null) on any response shape that doesn't send them yet.
+  // The counts are also explicitly `null` (never a false `0`) when the
+  // server-side count query itself failed — see loadDeviceDetailsV1Fields.
+  osVersion?: string | null;
+  lastUser?: string | null;
+  lanIp?: string | null;
+  publicIp?: string | null;
+  openAlertCount?: number | null;
+  openTicketCount?: number | null;
 };
 
 // Token management
@@ -626,11 +652,21 @@ function mapDevice(device: MobileDeviceRecord): Device {
     status: mapStatus(device.status),
     lastSeen: device.lastSeenAt || undefined,
     organizationId: device.orgId || undefined,
+    organizationName: device.organizationName || device.orgName || undefined,
     siteId: device.siteId || undefined,
     siteName: device.siteName || undefined,
     metrics: device.metrics,
     createdAt,
-    updatedAt
+    updatedAt,
+    // Device Details v1 fields (#5140). `?? undefined` rather than `||`:
+    // openAlertCount/openTicketCount are legitimately 0, which `||` would
+    // discard the same as a missing field.
+    osVersion: device.osVersion ?? undefined,
+    lastUser: device.lastUser ?? undefined,
+    lanIp: device.lanIp ?? undefined,
+    publicIp: device.publicIp ?? undefined,
+    openAlertCount: device.openAlertCount ?? undefined,
+    openTicketCount: device.openTicketCount ?? undefined
   };
 }
 
@@ -1123,20 +1159,45 @@ export async function getDevice(id: string): Promise<Device> {
   return mapDevice(response);
 }
 
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Calls GET /api/v1/fleet/findings/counts — open fleet-hygiene finding
+ * counts per org, plus the fleet total (#5139 / #5117 decision 1). Folds
+ * fleet findings (VSS/Universal Print/Intel ME/SCEP failures, etc.) into the
+ * same "issue count" the AI's get_fleet_findings tool already reports, so
+ * the Systems tab shows the same picture. This route lives outside the
+ * `/mobile` surface, so it goes through the core `/api/v1` prefix like
+ * `getDevice` above, not the `/mobile`-prefixed `request()` helper.
+ */
+export async function getFleetFindingCounts(): Promise<FleetFindingCounts> {
+  return requestWithPrefix<FleetFindingCounts>('/fleet/findings/counts', API_CORE_PREFIX);
+}
+
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
+  // GET /devices/:id/metrics (apps/api/src/routes/devices/metrics.ts) returns
+  // buckets keyed `cpu`/`ram`/`disk` (aggregateMetricsByInterval), not
+  // `avgCpuPercent`/`avgRamPercent`/`avgDiskPercent` — those are the internal
+  // DB-row field names used before aggregation, never sent over the wire
+  // (#5104). Buckets are ordered ascending (queryMetricRollups /
+  // queryRawMetricBuckets both `orderBy(asc(...))`), so the last element is
+  // genuinely the most recent sample.
   const response = await requestWithPrefix<{
     data?: {
-      avgCpuPercent?: number;
-      avgRamPercent?: number;
-      avgDiskPercent?: number;
+      cpu?: number;
+      ram?: number;
+      disk?: number;
     }[];
   }>(`/devices/${id}/metrics`, API_CORE_PREFIX);
   const latest = response.data?.[response.data.length - 1];
   if (!latest) return undefined;
   return {
-    cpuUsage: latest.avgCpuPercent,
-    memoryUsage: latest.avgRamPercent,
-    diskUsage: latest.avgDiskPercent
+    cpuUsage: latest.cpu,
+    memoryUsage: latest.ram,
+    diskUsage: latest.disk
   };
 }
 

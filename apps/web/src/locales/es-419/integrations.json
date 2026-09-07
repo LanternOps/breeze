@@ -783,12 +783,17 @@
     "pullPaymentsEnabled": "Los pagos se sincronizarán desde QuickBooks",
     "pullPaymentsDisabled": "Los pagos ya no se sincronizarán desde QuickBooks",
     "failedToUpdatePullPayments": "No se pudo actualizar la configuración de sincronización de pagos.",
+    "pushPayments": "Envío de pagos",
+    "pushPaymentsDescription": "Enviar a QuickBooks los pagos registrados en Breeze y eliminarlos allí cuando se anulen.",
+    "pushPaymentsEnabled": "Los pagos se enviarán a QuickBooks",
+    "pushPaymentsDisabled": "Los pagos ya no se enviarán a QuickBooks",
+    "failedToUpdatePushPayments": "No se pudo actualizar la configuración de envío de pagos.",
     "lastPaymentSync": "Última sincronización de pagos",
     "never": "Nunca",
     "syncNow": "Sincronizar ahora",
     "syncNowQueued": "Sincronización de pagos en cola.",
     "syncNowNotQueued": "No se pudo poner en cola la sincronización de pagos. Inténtalo de nuevo en unos momentos.",
-    "syncNowPullDisabled": "La sincronización de pagos está desactivada para esta conexión. Activa la sincronización de pagos para sincronizar ahora.",
+    "syncNowPullDisabled": "La sincronización de pagos está desactivada para esta conexión: activa Sincronización de pagos o Envío de pagos para sincronizar ahora.",
     "failedToSyncNow": "No se pudo iniciar la sincronización de pagos."
   },
   "securityIntegration": {

@@ -26,10 +26,12 @@ import { useHashState } from '@/lib/useHashState';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
 import ContactsCard from '@/components/settings/ContactsCard';
 import OrgActivityTab from './OrgActivityTab';
+import OrgBillingTab from './OrgBillingTab';
 import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
 import OrgSitesTab from './OrgSitesTab';
+import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
 import { tabFromHash, visibleTabs, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
 
@@ -298,17 +300,8 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
       {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}
-      {(effectiveTab === 'tickets' || effectiveTab === 'billing') && (
-        // W03 replaces these with the real tabs; the ids are already routable
-        // so a deep link saved today keeps working when they land.
-        <div
-          data-testid={`org-record-tab-placeholder-${effectiveTab}`}
-          className="rounded-lg border border-dashed px-5 py-12 text-center"
-        >
-          <h2 className="text-sm font-semibold">{t('orgRecord.comingSoon.title')}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t('orgRecord.comingSoon.description')}</p>
-        </div>
-      )}
+      {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}
 
       {modal === 'archive' && (
         <ArchiveOrgModal

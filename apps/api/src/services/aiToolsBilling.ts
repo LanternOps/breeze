@@ -268,6 +268,25 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       const missing = missingParamsJson(input, action, required);
       if (missing) return missing;
 
+      // PARTNER SCOPE FOR THE PAYMENT ACTIONS (review wave 2, finding 5).
+      // `recordPayment`/`voidPayment` reach `accounting_entity_mappings` and
+      // `accounting_connections`, both PARTNER-axis under RLS: an org-scoped
+      // principal sees ZERO rows there, so `requestPaymentPush` /
+      // `requestPaymentDelete` and the QuickBooks-origin void guard all read
+      // empty and FAIL OPEN — the payment silently never reaches QuickBooks, and
+      // a QuickBooks-owned payment is voidable. The HTTP routes gate this with
+      // `requireScope`; this tool is a second door onto the same services and
+      // there is no route scanner covering it (the known aiTools scope gap noted
+      // at the top of this file). Refused with a code the model can act on.
+      if ((action === 'record_payment' || action === 'void_payment')
+        && auth.scope !== 'partner' && auth.scope !== 'system') {
+        return JSON.stringify({
+          error: 'Recording or voiding a payment requires a partner-scoped session; QuickBooks sync state '
+            + 'is partner-owned and is not visible to an organization-scoped caller',
+          code: 'PARTNER_SCOPE_REQUIRED',
+        });
+      }
+
       try {
         switch (action) {
           case 'create_draft':

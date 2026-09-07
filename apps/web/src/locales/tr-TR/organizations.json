@@ -109,6 +109,24 @@
       "title": "Bu kuruluş yüklenemedi",
       "description": "Kaydı getirirken bir sorun oluştu. Bağlantınızı kontrol edip tekrar deneyin."
     },
-    "loading": "Kuruluş yükleniyor…"
+    "loading": "Kuruluş yükleniyor…",
+    "tickets": {
+      "tabs": {
+        "open": "Açık",
+        "all": "Hepsi",
+        "closed": "Kapalı"
+      },
+      "newTicket": "Yeni bilet",
+      "loadFailed": "Biletler yüklenemedi.",
+      "forbidden": "Biletleri görüntüleme izniniz yok.",
+      "truncated": "{{total}} biletten {{shown}} tanesi gösteriliyor."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Sözleşmeler",
+        "invoices": "Faturalar",
+        "quotes": "Alıntılar"
+      }
+    }
   }
 }

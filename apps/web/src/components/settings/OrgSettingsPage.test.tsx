@@ -357,6 +357,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('remote-access')).not.toBeNull();
   });
 
+  it('redirects an old #contracts deep link to the organization record\'s Contracts & Billing tab (#5075 W03)', async () => {
+    window.location.hash = '#contracts';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#billing', { replace: true }));
+    // ContractsList is no longer embedded here.
+    expect(screen.queryByTestId('org-tab-contracts')).not.toBeInTheDocument();
+  });
+
+  it('no longer lists Contracts in the sidebar nav — it moved to the organization record', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+    expect(screen.queryByRole('link', { name: /^contracts$/i })).not.toBeInTheDocument();
+  });
+
   it('mounts the Remote Access tab without an onDirty channel, so it can never strand the page as unsaved (#3432)', async () => {
     remoteAccessProps.length = 0;
     window.location.hash = '#remote-access';

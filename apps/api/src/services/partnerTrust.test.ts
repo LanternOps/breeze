@@ -71,6 +71,7 @@ function addMatches(source: string, pattern: RegExp, commandTypes: Set<string>):
 function dispatchedCommandTypeLiterals(): string[] {
   const srcDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const commandTypes = new Set<string>();
+  let sawCommandTypesTable = false;
 
   for (const file of sourceFilesUnder(srcDirectory)) {
     const source = readFileSync(file, 'utf8')
@@ -96,13 +97,24 @@ function dispatchedCommandTypeLiterals(): string[] {
       commandTypes,
     );
 
-    if (file.endsWith(`${join('services', 'commandQueue.ts')}`)) {
+    // #5128 moved the constants table out of commandQueue.ts into the leaf
+    // module services/commandTypes.ts (commandQueue re-exports it). The scan
+    // follows the DEFINITION; both filenames are accepted so folding it back
+    // would not silently empty this set. `sawCommandTypesTable` keeps the
+    // original guarantee — the object must remain discoverable SOMEWHERE.
+    if (
+      file.endsWith(`${join('services', 'commandTypes.ts')}`) ||
+      file.endsWith(`${join('services', 'commandQueue.ts')}`)
+    ) {
       const constants = source.match(/export const CommandTypes\s*=\s*\{([\s\S]*?)\}\s*as const/);
-      expect(constants, 'CommandTypes constants object must remain discoverable').not.toBeNull();
-      addMatches(constants?.[1] ?? '', /:\s*['"]([a-z][a-z0-9_]*)['"]/g, commandTypes);
+      if (constants) {
+        sawCommandTypesTable = true;
+        addMatches(constants[1] ?? '', /:\s*['"]([a-z][a-z0-9_]*)['"]/g, commandTypes);
+      }
     }
   }
 
+  expect(sawCommandTypesTable, 'CommandTypes constants object must remain discoverable').toBe(true);
   return [...commandTypes].sort();
 }
 

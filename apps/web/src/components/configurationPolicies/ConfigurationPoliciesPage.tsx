@@ -4,7 +4,7 @@ import ConfigPolicyList, { type ConfigPolicy } from "./ConfigPolicyList";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { navigateTo } from "@/lib/navigation";
-import { runAction, handleActionError } from "@/lib/runAction";
+import { runAction, handleActionError, ActionError } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type ModalMode = "closed" | "delete";
@@ -19,6 +19,12 @@ export default function ConfigurationPoliciesPage() {
     null,
   );
   const [submitting, setSubmitting] = useState(false);
+  // Set when a delete is refused with 409 POLICY_HAS_CHILDREN (#5080) — the
+  // named blockers render inside the modal instead of a generic failure, and
+  // the modal stays open so the operator can see exactly what to delete first.
+  const [deleteBlockedChildren, setDeleteBlockedChildren] = useState<
+    { id: string; name: string }[] | null
+  >(null);
   const fetchPolicies = useCallback(async () => {
     try {
       setLoading(true);
@@ -56,15 +62,18 @@ export default function ConfigurationPoliciesPage() {
   };
   const handleDelete = (policy: ConfigPolicy) => {
     setSelectedPolicy(policy);
+    setDeleteBlockedChildren(null);
     setModalMode("delete");
   };
   const handleCloseModal = () => {
     setModalMode("closed");
     setSelectedPolicy(null);
+    setDeleteBlockedChildren(null);
   };
   const handleConfirmDelete = async () => {
     if (!selectedPolicy) return;
     setSubmitting(true);
+    setDeleteBlockedChildren(null);
     const fallback = i18n.t(
       "policies:configurationPolicies.configurationPoliciesPage.failedToDeletePolicy",
     );
@@ -84,11 +93,35 @@ export default function ConfigurationPoliciesPage() {
             method: "DELETE",
           }),
         errorFallback: fallback,
+        // 409 POLICY_HAS_CHILDREN carries no `message`, just the bare code —
+        // give the toast the same readable text as the inline list below
+        // instead of the raw machine code.
+        friendly: (code) =>
+          code === "POLICY_HAS_CHILDREN"
+            ? i18n.t(
+                "policies:configurationPolicies.configurationPoliciesPage.deleteBlockedByChildren",
+              )
+            : undefined,
       });
       await fetchPolicies();
       handleCloseModal();
     } catch (err) {
-      handleActionError(err, fallback);
+      if (
+        err instanceof ActionError &&
+        err.status === 409 &&
+        err.body &&
+        typeof err.body === "object" &&
+        (err.body as { error?: unknown }).error === "POLICY_HAS_CHILDREN"
+      ) {
+        // Keep the modal open and name the blockers — a generic toast alone
+        // would tell the operator THAT it failed but not what to do about it.
+        const children = (err.body as { children?: unknown }).children;
+        setDeleteBlockedChildren(
+          Array.isArray(children) ? (children as { id: string; name: string }[]) : [],
+        );
+      } else {
+        handleActionError(err, fallback);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -231,6 +264,23 @@ export default function ConfigurationPoliciesPage() {
                   "policies:configurationPolicies.configurationPoliciesPage.thisWillAlsoRemoveAllFeatureLinks",
                 )}
               </p>
+              {deleteBlockedChildren && deleteBlockedChildren.length > 0 && (
+                <div
+                  className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm"
+                  data-testid="config-policy-delete-children"
+                >
+                  <p className="font-medium text-destructive">
+                    {i18n.t(
+                      "policies:configurationPolicies.configurationPoliciesPage.deleteBlockedByChildren",
+                    )}
+                  </p>
+                  <ul className="mt-2 list-disc space-y-0.5 pl-5 text-muted-foreground">
+                    {deleteBlockedChildren.map((child) => (
+                      <li key={child.id}>{child.name}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   type="button"

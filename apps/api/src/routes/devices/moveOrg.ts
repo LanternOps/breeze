@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, sites, organizations, tickets } from '../../db/schema';
+import { deviceCommands, devices, sites, organizations, tickets } from '../../db/schema';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   requireMfa,
@@ -315,6 +317,66 @@ moveOrgRoutes.post(
           .where(eq(devices.id, deviceId))
           .returning();
         updated = row;
+
+        // #5128 — cancel this device's queued work in the SAME transaction as
+        // the org flip. Claim-time eligibility already refuses to deliver a row
+        // whose `submitted_org_id` no longer matches, so this is cleanup rather
+        // than the safety property: it stops the rows sitting `pending` until
+        // their deadline and shows the operator the truth immediately. Rows are
+        // erased of payload like any other terminal transition.
+        // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
+        // keys on `payload.executionId`, and `terminalPayloadErasureSet()`
+        // strips it (`returning()` reflects post-update values).
+        // `self_uninstall` is EXCLUDED, matching the decommission path in
+        // core.ts: the uninstall drain must still deliver. A device moved out
+        // of an org while its removal is queued still has to lose its agent —
+        // cancelling that row leaves the customer's machine managed by an MSP
+        // that no longer owns it.
+        const cancelledForMove = await tx
+          .select({
+            id: deviceCommands.id,
+            type: deviceCommands.type,
+            payload: deviceCommands.payload,
+          })
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.status, 'pending'),
+              ne(deviceCommands.type, 'self_uninstall'),
+            ),
+          );
+
+        const moveCancelledAt = new Date();
+        await tx
+          .update(deviceCommands)
+          .set({
+            status: 'cancelled',
+            completedAt: moveCancelledAt,
+            result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'device_move_org' },
+            ...terminalPayloadErasureSet(),
+          })
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.status, 'pending'),
+              ne(deviceCommands.type, 'self_uninstall'),
+            ),
+          );
+
+        // Terminalise the OWNING records too, in this same transaction. Without
+        // this a cancelled command leaves its script_executions /
+        // deployment_results row `pending` forever: the command reaper only
+        // scans `pending`/`sent` commands, so nothing would ever revisit it.
+        await propagateCancelledDeviceCommands(
+          cancelledForMove.map((row) => ({
+            id: row.id,
+            type: row.type,
+            payload: row.payload as Record<string, unknown> | null,
+          })),
+          moveCancelledAt,
+          tx,
+        );
 
         // #2138 — if the moved device left a link group with a single lone
         // profile behind — or it was a vm_host group's HOST (#2308), leaving

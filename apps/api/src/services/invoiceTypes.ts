@@ -77,6 +77,18 @@ export type InvoiceServiceErrorCode =
   | 'INVALID_AMOUNT'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
+  // QuickBooks Phase D2 (spec decision 15): the payment came from QuickBooks,
+  // which is its system of record. A Breeze-side void would not touch the books
+  // and the next CDC sweep would pull the payment straight back in, so the void
+  // is refused at the service layer rather than only hidden in the UI. Raised
+  // ONLY while such a sweep would actually run — see voidPayment's connection
+  // probe (review wave 2, finding 8).
+  | 'QUICKBOOKS_OWNED_PAYMENT'
+  // The caller cannot SEE `accounting_entity_mappings`: it is partner-axis under
+  // RLS and this is an organization-scoped principal, so the QuickBooks-origin
+  // probe would read empty and pass a payment it should refuse. Fails closed
+  // rather than answering from a view it does not have (review wave 2, finding 5).
+  | 'PARTNER_SCOPE_REQUIRED'
   | 'NUMBER_ALLOCATION_FAILED'
   | 'NOT_PAYABLE'
   | 'NOTHING_TO_PAY'

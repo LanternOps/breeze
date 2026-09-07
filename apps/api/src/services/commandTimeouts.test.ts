@@ -10,10 +10,11 @@ describe('command timeouts', () => {
     expect(getCommandTimeoutMs(CommandTypes.BMR_RECOVER)).toBe(60 * 60 * 1000);
   });
 
-  it('gives queued software installs the 7-day offline window', () => {
-    // Must match SOFTWARE_QUEUED_EXPIRY_MS in jobs/staleCommandReaper.ts —
-    // a shorter value would let the generic reaper kill offline-queued
-    // installs before the device ever reconnects.
-    expect(getCommandTimeoutMs(CommandTypes.SOFTWARE_INSTALL)).toBe(7 * 24 * 60 * 60 * 1000);
+  it('gives a claimed software install a two-hour execution budget (#5128)', () => {
+    // #5128: `device_commands.deliver_by` now owns the delivery deadline for
+    // an offline-queued install (see reapStaleDeviceCommands). This timeout
+    // is purely the EXECUTION budget for an install the agent has already
+    // claimed — above its own 15 min download + 30 min install ceilings.
+    expect(getCommandTimeoutMs(CommandTypes.SOFTWARE_INSTALL)).toBe(2 * 60 * 60 * 1000);
   });
 });

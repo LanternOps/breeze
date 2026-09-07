@@ -133,7 +133,10 @@
       "removing": "Kaldırılıyor...",
       "removeConfiguration": "Yapılandırmayı kaldır",
       "complianceStatus2": "compliance_status",
-      "assignments2": "ödevler"
+      "assignments2": "ödevler",
+      "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
+      "inheritedByPolicies_one": "{{count}} politika bundan devralıyor",
+      "inheritedByPolicies_other": "{{count}} politika bundan devralıyor"
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -152,7 +155,8 @@
       "of2": "arasında",
       "itsOwningOrganization": "kendi sahibi kuruluş",
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
-      "summary": "{{filtered}} / {{total}} politikaları"
+      "summary": "{{filtered}} / {{total}} politikaları",
+      "inheritsBadge": "Devralıyor"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "Silmek istediğinizden emin misiniz?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Bu aynı zamanda tüm özellik bağlantılarını ve atamalarını da kaldıracaktır. Bu eylem geri alınamaz.",
       "delete": "sil",
-      "deleting": "Siliniyor..."
+      "deleting": "Siliniyor...",
+      "deleteBlockedByChildren": "Önce bundan devralan politikaları silin:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Ödevler yüklenemedi",
@@ -938,7 +943,8 @@
         "loadingPolicies": "Politikalar yükleniyor...",
         "noExistingPoliciesFound": "Mevcut politika bulunamadı.",
         "selectAPolicy": "Bir politika seçin...",
-        "clearSelection": "Seçimi temizle"
+        "clearSelection": "Seçimi temizle",
+        "allOrgs": "Tüm kuruluşlar"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

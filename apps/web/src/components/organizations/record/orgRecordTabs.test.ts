@@ -40,9 +40,10 @@ describe('visibleTabs — permissions', () => {
     expect(tabs).toContain('tickets');
   });
 
-  it('shows Contracts & Billing on EITHER contracts:read or invoices:read', () => {
+  it('shows Contracts & Billing on ANY of contracts:read, invoices:read or quotes:read', () => {
     expect(visibleTabs(grants(['contracts', 'read']), 'native')).toContain('billing');
     expect(visibleTabs(grants(['invoices', 'read']), 'native')).toContain('billing');
+    expect(visibleTabs(grants(['quotes', 'read']), 'native')).toContain('billing');
     expect(visibleTabs(grants(['organizations', 'read']), 'native')).not.toContain('billing');
   });
 

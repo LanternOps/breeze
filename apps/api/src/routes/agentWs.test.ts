@@ -275,6 +275,10 @@ vi.mock('../services/softwareDeploymentResult', async (importOriginal) => {
   return {
     ...actual,
     applySoftwareInstallResult: vi.fn(),
+    // #5128 — a software_install now carries a real device_commands UUID, so
+    // its result lands on the GENERIC owned-command path and is reconciled
+    // here instead of by the sw-install-<...> regex branch.
+    reconcileSoftwareInstallResult: vi.fn(),
   };
 });
 
@@ -336,12 +340,16 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
 // this must be a partial mock.
 vi.mock('../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentry')>();
-  return { ...actual, captureMessage: vi.fn() };
+  // captureException is also stubbed (#5128 review round 2): the generic
+  // software_install reconcile branch must REPORT a reconcile failure rather
+  // than rethrow it into the socket handler, and that is only assertable with
+  // a spy. The real implementation is a no-op without a Sentry DSN anyway.
+  return { ...actual, captureMessage: vi.fn(), captureException: vi.fn() };
 });
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbAccessContext } from '../db';
 import { devices, deviceCommands, scriptExecutions, supportSessions } from '../db/schema';
-import { captureMessage } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import {
   createAgentWsHandlers,
   createAgentWsRoutes,
@@ -356,7 +364,10 @@ import {
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
-import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
+import {
+  applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
+} from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
@@ -1060,6 +1071,74 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // ── #5128: software_install results on the GENERIC owned-command path ────
+  //
+  // Before #5128 a WS-pushed install carried the synthetic
+  // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
+  // regex branch. New dispatches persist a device_commands row FIRST and push
+  // with its UUID, so the result lands here — without this wiring the
+  // deployment_results row strands `pending` forever on the websocket
+  // transport.
+  it('reconciles a software_install result delivered under a real command UUID', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandId = '33333333-3333-4333-8333-333333333333';
+    const command = {
+      id: commandId,
+      type: 'software_install',
+      payload: { deploymentId: 'dep-1', attempt: 1 },
+      deviceId: 'device-123',
+    };
+
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([command]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: commandId }]) as any);
+
+    await handlers.onMessage({ data: JSON.stringify({
+      type: 'command_result', commandId, status: 'completed', exitCode: 0, stdout: 'installed',
+    }) } as any, ws as any);
+
+    expect(reconcileSoftwareInstallResult).toHaveBeenCalledTimes(1);
+    const [passedCommand, passedDeviceId, passedResult] =
+      vi.mocked(reconcileSoftwareInstallResult).mock.calls[0]!;
+    expect(passedCommand).toMatchObject({ id: commandId, type: 'software_install' });
+    expect(passedDeviceId).toBe('device-123');
+    expect(passedResult).toMatchObject({ status: 'completed' });
+    expect(captureException).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('a reconcile failure is reported, not rethrown into the socket handler', async () => {
+    // Rethrowing would abort the rest of the result pipeline (the per-type
+    // handler, the ack) for every install whose reconcile hits a transient
+    // fault — one bad row would look like an unresponsive agent.
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandId = '44444444-4444-4444-8444-444444444444';
+
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([{
+      id: commandId,
+      type: 'software_install',
+      payload: { deploymentId: 'dep-1' },
+      deviceId: 'device-123',
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: commandId }]) as any);
+    vi.mocked(reconcileSoftwareInstallResult).mockRejectedValueOnce(new Error('deployment_results write failed'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        handlers.onMessage({ data: JSON.stringify({
+          type: 'command_result', commandId, status: 'failed', exitCode: 1,
+        }) } as any, ws as any),
+      ).resolves.toBeUndefined();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(captureException).toHaveBeenCalledTimes(1);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

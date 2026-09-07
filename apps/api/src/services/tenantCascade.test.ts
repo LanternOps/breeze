@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock the DB so we can drive cascade behavior deterministically. The
 // integration test exercises the real Postgres flow.
@@ -250,7 +251,11 @@ describe('cascadeDeleteOrg', () => {
     // device_commands is cleared first then the cascade walk begins.
     mockState.executeResponses = [
       { rowCount: 5 }, // device_commands
-      ...Array(cascadeOrder.length).fill({ rowCount: 3 }),
+      // One extra: the accounting_entity_mappings entry also runs a
+      // retained-count SELECT (the payment mappings that still owe QuickBooks a
+      // delete), which consumes a queued response but is deliberately NOT summed
+      // into totalRowsDeleted — it deletes nothing.
+      ...Array(cascadeOrder.length + 1).fill({ rowCount: 3 }),
     ];
     const stats = await cascadeDeleteOrg(
       '00000000-0000-0000-0000-000000000001',
@@ -484,5 +489,32 @@ describe('cascadeDeleteOrg attachment object pre-clear (W08 #3902)', () => {
         details: expect.objectContaining({ failedTable: 'ticket_attachments_objects' }),
       }),
     );
+  });
+});
+
+describe('accounting_entity_mappings payment arm (QuickBooks Phase D2 outbox)', () => {
+  const paymentArm = (): string => {
+    const entry = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES
+      .find((e) => e.table === 'accounting_entity_mappings');
+    expect(entry).toBeDefined();
+    return new PgDialect().sqlToQuery(entry!.clearSql('11111111-2222-3333-4444-555555555555')).sql;
+  };
+
+  it('never deletes a payment mapping that still owes QuickBooks a DELETE', () => {
+    // Phase D2 turned the `payment` mapping row into an OUTBOX: `pending_op =
+    // 'delete'` with a `remote_entity_id` means Breeze created a Payment in
+    // QuickBooks and still owes its removal. Deleting the row here discards
+    // that owed delete silently and strands real money in someone's books.
+    // The row holds no org-scoped personal data — a remote id, a token and a
+    // status — and the delete worker removes it itself once QuickBooks
+    // confirms, so retaining it is safe for erasure.
+    expect(paymentArm()).toMatch(/pending_op is distinct from 'delete'/i);
+  });
+
+  it('still deletes org, invoice and settled payment mappings', () => {
+    const arm = paymentArm();
+    expect(arm).toContain("breeze_entity_type = 'org'");
+    expect(arm).toContain("breeze_entity_type = 'invoice'");
+    expect(arm).toContain("breeze_entity_type = 'payment'");
   });
 });

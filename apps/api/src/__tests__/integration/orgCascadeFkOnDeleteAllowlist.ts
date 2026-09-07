@@ -143,6 +143,35 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'dashboard_widgets', constraint: 'dashboard_widgets_dashboard_id_analytics_dashboards_id_fk', parentTable: 'analytics_dashboards', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_policy_id_automation_policies_id_f', parentTable: 'automation_policies', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'automation_runs', constraint: 'automation_runs_automation_id_automations_id_fk', parentTable: 'automations', reason: 'child-not-deleted', allColumnsNullable: true },
+  {
+    childTable: 'configuration_policies',
+    constraint: 'configuration_policies_parent_policy_id_fkey',
+    parentTable: 'configuration_policies',
+    reason: 'self-ref-open-row-set',
+    allColumnsNullable: true,
+    note:
+      'Reviewed, NOT a live failure -- the same shape as script_categories below, but closed where '
+      + 'that one is open. configuration_policies.org_id is nullable (partner-wide policies, epic '
+      + '#2135), so the classifier cannot tell that `DELETE ... WHERE org_id = $1` still removes a '
+      + 'row set closed under this self-reference. The DEFERRABLE constraint trigger '
+      + '`configuration_policies_parent_guard` (2026-10-12-100000-config-policy-inheritance.sql, '
+      + '#5080 W01) closes it: a child may only name a parent on its OWN owner axis -- an org-owned '
+      + 'child names a same-org parent or its partner\'s partner-wide baseline; a partner-wide child '
+      + 'names only a partner-wide parent of the same partner. So no SURVIVING row can point at a '
+      + 'deleted one: partner-wide rows never reference org-owned rows, and another org\'s rows never '
+      + 'reference this org\'s. Ownership itself moves only in system context, and the trigger '
+      + 'revalidates the whole family at COMMIT (org merge runs SET CONSTRAINTS ALL DEFERRED), so a '
+      + 'cross-owner edge cannot be committed in the first place. Pinned rather than fixed because '
+      + 'both cheap actions are ruled out by the inheritance design (spec '
+      + 'docs/superpowers/specs/config-policy/2026-09-06-config-policy-inheritance-design.md, '
+      + 'Deletion): SET NULL would silently un-configure every child when a baseline is deleted, and '
+      + 'deleting a parent alone must be REFUSED, which CASCADE would turn into a silent mass '
+      + 'delete. The closure argument is proven empirically, not asserted: see the describe block '
+      + '"config policy inheritance -- erasure row-set closure (live DB)" in '
+      + 'configPolicyInheritance.integration.test.ts, which forges BOTH surviving-row shapes in '
+      + 'SYSTEM scope and then runs the real cascadeDeleteOrg() and cascadeDeletePartner() over a '
+      + 'parent+child family. (#5123)',
+  },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_deployment_id_deployments_id_fk', parentTable: 'deployments', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
