@@ -12,9 +12,17 @@ export type OfflinePolicy = { kind: 'reject' } | { kind: 'queue'; deliverWithinM
 export type DeliveryTtlClass = 'live' | 'standard' | 'short' | 'power_state';
 
 /**
- * A `reject` command is only ever enqueued against a device we just observed
- * online, so its row still gets a (short) deadline: a row that raced a
- * disconnect must not linger as `pending` forever.
+ * The `live` TTL class's nominal window. It is NOT stamped on `reject` rows —
+ * see `deliverByFor` — and exists only so `deliveryTtlMs` is total over
+ * `DeliveryTtlClass`.
+ *
+ * #5128 review round 2 (J): a `reject` row used to get `now() + 5 min`. That
+ * silently shortened every `executeCommand` row (commandQueue.ts) — including
+ * watchdog-targeted and `preferHeartbeat` work like `update_agent`,
+ * `restart_agent` and `filesystem_analysis` — from the legacy 30-minute
+ * execution clock to a 5-minute delivery expiry, and, with the offline-queue
+ * flag off, turned a maintenance `reboot` into a 5-minute expiry while the
+ * power-state barrier was deliberately holding it.
  */
 export const REJECT_RACE_GRACE_MS = 5 * 60 * 1000;
 
@@ -305,7 +313,17 @@ export function resolveOfflinePolicy(
   return def;
 }
 
-export function deliverByFor(policy: OfflinePolicy, now: Date = new Date()): Date {
-  const ms = policy.kind === 'queue' ? policy.deliverWithinMs : REJECT_RACE_GRACE_MS;
-  return new Date(now.getTime() + ms);
+/**
+ * The delivery deadline for a policy, or NULL for `reject`.
+ *
+ * A `reject` row carries NO `deliver_by`: it is only ever created against a
+ * device just observed online, and a NULL deadline puts it back on the legacy
+ * execution clock (`created_at + getCommandTimeoutMs`) — byte-identical to
+ * pre-#5128 behaviour for every caller that rejects. Stamping a short deadline
+ * instead expired watchdog and barrier-held work early (see
+ * REJECT_RACE_GRACE_MS).
+ */
+export function deliverByFor(policy: OfflinePolicy, now: Date = new Date()): Date | null {
+  if (policy.kind !== 'queue') return null;
+  return new Date(now.getTime() + policy.deliverWithinMs);
 }

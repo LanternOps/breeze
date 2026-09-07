@@ -197,11 +197,21 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     ).toThrow(UnregisteredCommandTypeError);
   });
 
-  it('deliverByFor: queue adds deliverWithinMs; reject adds the race grace', () => {
+  it('deliverByFor: queue adds deliverWithinMs; reject gets NO deadline at all', () => {
     const now = new Date('2026-09-06T00:00:00Z');
-    expect(deliverByFor({ kind: 'queue', deliverWithinMs: 60_000 }, now).toISOString()).toBe(
+    expect(deliverByFor({ kind: 'queue', deliverWithinMs: 60_000 }, now)!.toISOString()).toBe(
       '2026-09-06T00:01:00.000Z'
     );
-    expect(deliverByFor({ kind: 'reject' }, now).getTime()).toBe(now.getTime() + REJECT_RACE_GRACE_MS);
+    // #5128 review round 2 (J): a `reject` row is only ever created against a
+    // device just observed online, and a NULL deadline puts it back on the
+    // legacy execution clock — byte-identical to pre-#5128. Stamping the
+    // 5-minute grace instead cut every executeCommand row's window from 30 min
+    // to 5, including watchdog-targeted work and barrier-held reboots.
+    expect(deliverByFor({ kind: 'reject' }, now)).toBeNull();
+  });
+
+  it('REJECT_RACE_GRACE_MS is only the `live` TTL class value, never stamped on a row', () => {
+    expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
+    expect(deliverByFor(defaultOfflinePolicy('list_processes'))).toBeNull();
   });
 });

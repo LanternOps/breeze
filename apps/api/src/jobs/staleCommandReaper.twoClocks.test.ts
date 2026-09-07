@@ -164,8 +164,13 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
       expect.objectContaining({
         status: 'failed',
         result: expect.objectContaining({
-          status: 'expired',
+          // `status` STAYS 'timeout' — it is the marker
+          // `commandAcceptsAgentResultCondition` keys on to let a genuinely
+          // late agent result overwrite a server-side timeout. The clock lives
+          // in `reason`/`clock`.
+          status: 'timeout',
           reason: 'not_delivered_before_deadline',
+          clock: 'delivery',
           timedOutBy: 'server',
         }),
       })
@@ -286,10 +291,13 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
 
     expect(await reapStaleDeviceCommands()).toBe(2);
     expect(update.set).toHaveBeenCalledTimes(2);
-    const statuses = update.set.mock.calls.map(
-      (c) => (c[0] as { result: { status: string } }).result.status
+    // Both carry the `timeout` acceptance marker; `clock` is what separates the
+    // delivery expiry from the execution timeout.
+    const results = update.set.mock.calls.map(
+      (c) => (c[0] as { result: { status: string; clock?: string } }).result
     );
-    expect(statuses).toEqual(['expired', 'timeout']);
+    expect(results.map((r) => r.status)).toEqual(['timeout', 'timeout']);
+    expect(results.map((r) => r.clock)).toEqual(['delivery', undefined]);
   });
 
   it('propagates the delivery expiry with kind="expired" so owning records can distinguish it', async () => {

@@ -108,7 +108,7 @@ export type DispatchScriptResult =
        * queued (offline) dispatch this is the honest answer to "how long will
        * this wait?"; the UI copy renders it as the expiry date.
        */
-      deliverBy: Date;
+      deliverBy: Date | null;
       // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to

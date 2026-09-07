@@ -34,6 +34,32 @@ export async function claimPendingCommandForDelivery(
 }
 
 /**
+ * How many commands this device already has in flight (`sent`, awaiting a
+ * result). Same predicate the heartbeat claim uses for the power-state barrier,
+ * so the enqueue-time push and the heartbeat claim agree on when a reboot may
+ * go out (#5128 §E.4).
+ */
+export async function countInFlightCommandsForDevice(
+  deviceId: string,
+  targetRole: string = 'agent',
+): Promise<number> {
+  const rows = await withSystemDbAccessContext(() =>
+    db
+      .select({ inFlight: sql<number>`count(*)::int` })
+      .from(deviceCommands)
+      .where(
+        and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'sent'),
+          eq(deviceCommands.targetRole, targetRole),
+        ),
+      )
+      .limit(1),
+  );
+  return rows[0]?.inFlight ?? 0;
+}
+
+/**
  * Put a claimed-but-undelivered command back to `pending`. Keyed on
  * `(id, status='sent', executedAt=<claim ts>)` so a stale release can never
  * clobber a newer claim or resurrect a terminal command (0-row no-op is the

@@ -11,6 +11,7 @@ import {
   deploymentResults,
   deviceCommands,
   devices,
+  scriptExecutionBatches,
   scriptExecutions,
   scripts,
   softwareDeployments,
@@ -162,7 +163,7 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
     expect((await commandRow(row!.id))?.status).toBe('pending');
   });
 
-  it('expires exactly at deliver_by with expired / not_delivered_before_deadline', async () => {
+  it('expires exactly at deliver_by, keeping the timeout acceptance marker', async () => {
     const device = await makeDevice(env.organization.id, env.site.id, 'offline');
 
     const [row] = await getTestDb()
@@ -182,9 +183,14 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
 
     const after = await commandRow(row!.id);
     expect(after?.status).toBe('failed');
+    // `status` STAYS 'timeout': that literal is the discriminator
+    // `commandAcceptsAgentResultCondition` uses to let a genuinely late agent
+    // result overwrite a server-side timeout. The delivery clock is recorded in
+    // `reason`/`clock` instead.
     expect(after?.result).toMatchObject({
-      status: 'expired',
+      status: 'timeout',
       reason: 'not_delivered_before_deadline',
+      clock: 'delivery',
       timedOutBy: 'server',
     });
   });
@@ -754,6 +760,84 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
       .limit(1);
     expect(resultAfter?.status).toBe('cancelled');
     expect(resultAfter?.errorMessage).toBe('Cancelled before the device received it');
+  });
+
+  it('a delivery expiry advances the owning script_execution_batches counters and terminalises the batch', async () => {
+    // #5128 review round 2 (I). Only `reapStaleScriptExecutions` used to keep
+    // these counters. Once a propagation path terminalised an execution, that
+    // reaper's selector (`pending|queued|running`) never revisited it, so
+    // `devicesCompleted + devicesFailed` could never reach `devicesTargeted`
+    // and the batch stayed non-terminal FOREVER — a bulk run stuck at "running"
+    // with nothing left able to finish it.
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const [script] = await getTestDb()
+      .insert(scripts)
+      .values({
+        orgId: env.organization.id,
+        name: 'Batch Expiry Script',
+        osTypes: ['linux'],
+        language: 'bash',
+        content: 'true',
+        timeoutSeconds: 300,
+      })
+      .returning();
+
+    // Two-device batch whose OTHER device already succeeded, so this expiry is
+    // the last outstanding one.
+    const [batch] = await getTestDb()
+      .insert(scriptExecutionBatches)
+      .values({
+        scriptId: script!.id,
+        orgId: env.organization.id,
+        devicesTargeted: 2,
+        devicesCompleted: 1,
+        devicesFailed: 0,
+        status: 'running',
+      })
+      .returning();
+
+    const [execution] = await getTestDb()
+      .insert(scriptExecutions)
+      .values({
+        scriptId: script!.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+        status: 'queued',
+      })
+      .returning();
+
+    await getTestDb().insert(deviceCommands).values({
+      deviceId: device.id,
+      type: 'script',
+      payload: { timeoutSeconds: 300, executionId: execution!.id, batchId: batch!.id },
+      status: 'pending',
+      createdAt: new Date(Date.now() - 2 * HOUR_MS),
+      deliverBy: new Date(Date.now() - 1000),
+      submittedOrgId: env.organization.id,
+    });
+
+    expect(await asSystem(() => reapStaleDeviceCommands())).toBeGreaterThanOrEqual(1);
+
+    const [batchAfter] = await getTestDb()
+      .select()
+      .from(scriptExecutionBatches)
+      .where(eq(scriptExecutionBatches.id, batch!.id))
+      .limit(1);
+    expect(batchAfter?.devicesFailed).toBe(1);
+    expect(batchAfter?.devicesCompleted).toBe(1);
+    // 1 + 1 >= devicesTargeted, and one failed, so the batch is terminal.
+    expect(batchAfter?.status).toBe('failed');
+    expect(batchAfter?.completedAt).toBeInstanceOf(Date);
+
+    // Running the reaper again must NOT double-count: the execution is already
+    // terminal, so the shared helper's CAS matches zero rows.
+    await asSystem(() => reapStaleScriptExecutions());
+    const [batchTwice] = await getTestDb()
+      .select()
+      .from(scriptExecutionBatches)
+      .where(eq(scriptExecutionBatches.id, batch!.id))
+      .limit(1);
+    expect(batchTwice?.devicesFailed).toBe(1);
   });
 
 });

@@ -315,7 +315,7 @@ describe('dispatchScriptToDevice — #5128 offline policy', () => {
 
     if (r.ok) {
       expect(r.deliverBy).toBeInstanceOf(Date);
-      expect(r.deliverBy.getTime()).toBe(deliverByMs);
+      expect(r.deliverBy!.getTime()).toBe(deliverByMs);
     }
   });
 

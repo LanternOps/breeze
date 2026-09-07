@@ -1179,6 +1179,66 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     );
   });
 
+  // #5128 review round 2 (O) — `deployment_results.device_command_id` has NO
+  // foreign key (device_commands is the agent hot path and stays
+  // unconstrained), so a deleted/purged command leaves the LEFT JOIN with a
+  // NULL status. That read as "not delivered" and skipped the row FOREVER:
+  // nothing else revisits a `pending` deployment_results row either, so the
+  // Software page showed an install stuck mid-flight with nothing able to
+  // resolve it.
+  it('fails an ORPHANED result whose command row no longer exists', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: 'res-orphan',
+        deviceCommandId: 'cmd-deleted',
+        dispatchedAt: daysAgo(2),
+        commandStatus: null,
+        commandExecutedAt: null,
+      },
+    ]));
+    const { resultSet } = setUpUpdates();
+
+    expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
+    expect(resultSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        // A distinct message: nobody can answer for this row, which is not the
+        // same claim as "the agent went silent".
+        errorMessage: 'Command row missing — install outcome unknown',
+      })
+    );
+  });
+
+  it('an orphaned result still waits out the install timeout from dispatchedAt', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: 'res-orphan-fresh',
+        deviceCommandId: 'cmd-deleted',
+        dispatchedAt: minutesAgo(30),
+        commandStatus: null,
+        commandExecutedAt: null,
+      },
+    ]));
+
+    expect(await reapStaleSoftwareDeploymentResults()).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('a row with NO linked command at all is still the pre-#5128 WS case, not an orphan', async () => {
+    // deviceCommandId NULL means the install was pushed straight over the
+    // socket before #5128 and never had a row — it keeps the ordinary
+    // agent-silence message.
+    selectMock.mockReturnValueOnce(selectChain([
+      { id: 'res-ws', deviceCommandId: null, dispatchedAt: daysAgo(2), commandStatus: null, commandExecutedAt: null },
+    ]));
+    const { resultSet } = setUpUpdates();
+
+    expect(await reapStaleSoftwareDeploymentResults()).toBe(1);
+    expect(resultSet).toHaveBeenCalledWith(
+      expect.objectContaining({ errorMessage: 'Server-side timeout: no response from agent' })
+    );
+  });
+
   it('never touches rows whose deployment dispatchedAt is NULL (scheduled, not yet dispatched)', async () => {
     // The SQL filter excludes these; pin the defensive JS guard too.
     selectMock.mockReturnValueOnce(selectChain([

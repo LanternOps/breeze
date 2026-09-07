@@ -1,6 +1,9 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { deploymentResults, scriptExecutions } from '../db/schema';
+import { deploymentResults } from '../db/schema';
+import { applyAutomationActionTerminal } from './automationActionResults';
+import { captureException } from './sentry';
+import { batchIdFromPayload, finalizeScriptExecutionTerminal } from './scriptExecutionTerminal';
 
 /**
  * Terminalise the higher-level records owned by a device command that was
@@ -25,7 +28,7 @@ import { deploymentResults, scriptExecutions } from '../db/schema';
  * Anything that can run the propagation UPDATEs: the ambient `db`, or a caller's
  * open transaction handle.
  */
-type DbExecutor = Pick<typeof db, 'update'>;
+type DbExecutor = Pick<typeof db, 'update' | 'select'>;
 
 export type DeviceCommandCancelSubject = {
   id: string;
@@ -79,15 +82,19 @@ export async function propagateCancelledDeviceCommand(params: {
         ? payload.executionId
         : null;
     if (executionId) {
-      await executor
-        .update(scriptExecutions)
-        .set({ status: 'cancelled', errorMessage, completedAt })
-        .where(
-          and(
-            eq(scriptExecutions.id, executionId),
-            inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-          ),
-        );
+      // Goes through the shared terminaliser, so the owning
+      // `script_execution_batches` counters advance too. Terminalising the
+      // execution without them left the batch non-terminal forever: the
+      // execution reaper's selector never revisits a terminal row, so
+      // `devicesCompleted + devicesFailed` could never reach `devicesTargeted`.
+      await finalizeScriptExecutionTerminal({
+        executionId,
+        batchId: batchIdFromPayload(payload),
+        outcome: 'cancelled',
+        errorMessage,
+        completedAt,
+        executor,
+      });
     }
   }
 
@@ -100,4 +107,25 @@ export async function propagateCancelledDeviceCommand(params: {
         eq(deploymentResults.status, 'pending'),
       ),
     );
+
+  // An automation action that dispatched this command is waiting on it too, and
+  // like the batch counters it is only ever advanced by a terminal event. Runs
+  // on its OWN connection (`inDeliberateSystemContext`), so it deliberately does
+  // not join the caller's transaction — and its failure must never abort a
+  // cancel that has already committed the important writes.
+  try {
+    await applyAutomationActionTerminal({
+      source: 'cancellation',
+      commandId,
+      terminalStatus: 'cancelled',
+      error: errorMessage,
+      completedAt,
+    });
+  } catch (err) {
+    console.error(
+      '[commandCancelPropagation] failed to terminalise the automation action for a cancelled command',
+      { commandId, type, error: err instanceof Error ? err.message : String(err) },
+    );
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }

@@ -4,7 +4,11 @@ import { devices } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { refreshPayloadForDelivery } from './commandDelivery';
 import { POWER_STATE_BARRIER_TYPES } from './commandClaimEligibility';
-import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
+import {
+  claimPendingCommandForDelivery,
+  countInFlightCommandsForDevice,
+  releaseClaimedCommandDelivery,
+} from './commandDispatch';
 import { deliverByFor, resolveOfflinePolicy, type OfflinePolicy } from './commandOfflinePolicy';
 import { queueCommand, type CommandPayload, type QueuedCommand } from './commandQueue';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
@@ -43,7 +47,8 @@ export type DispatchDeviceCommandResult =
        * device was not online at enqueue.
        */
       delivery: 'delivered' | 'queued_offline' | 'queued_live';
-      deliverBy: Date;
+      /** NULL for a `reject` policy: those rows stay on the legacy execution clock. */
+      deliverBy: Date | null;
     }
   | {
       ok: false;
@@ -56,8 +61,8 @@ export type DispatchDeviceCommandResult =
  * The single enqueue seam for device commands (#5128 §D).
  *
  * Order: resolve the offline policy (throws for an unregistered type, before
- * any DB access) → device lookup → expectedOrgId → lifecycle → partner trust →
- * reject-or-queue → PERSIST THE ROW (always, before any transport) →
+ * any DB access) → device lookup → expectedOrgId → lifecycle → reject-or-queue
+ * → partner trust → PERSIST THE ROW (always, before any transport) →
  * claim/refresh/push/release when the socket is live.
  *
  * Persisting before the transport is what makes a command recoverable: the
@@ -95,6 +100,18 @@ export async function dispatchDeviceCommand(
     };
   }
 
+  // OFFLINE-REJECT COMES BEFORE TRUST, deliberately (#5128 review round 2, M).
+  // Four backup routes classify a failure by the `Device is <status>, cannot
+  // execute command` prefix (routes/backup/vmrestore.ts, restore.ts,
+  // verificationService.ts, verificationScheduled.ts). With trust first, an
+  // offline AND trust-denied device answered with the raw trust code and those
+  // callers mis-classified it. Trust is not weakened: the command is refused
+  // either way, and nothing is persisted before both checks have run.
+  const online = device.status === 'online';
+  if (!online && policy.kind === 'reject') {
+    return { ok: false, code: 'device_offline', error: `Device is ${device.status}, cannot execute command` };
+  }
+
   try {
     await assertDeviceExecuteAllowed(input.deviceId, input.type, input.userId);
   } catch (e) {
@@ -102,11 +119,6 @@ export async function dispatchDeviceCommand(
       return { ok: false, code: 'trust_denied', error: e.code, trust: { capability: e.capability, reason: e.reason } };
     }
     throw e;
-  }
-
-  const online = device.status === 'online';
-  if (!online && policy.kind === 'reject') {
-    return { ok: false, code: 'device_offline', error: `Device is ${device.status}, cannot execute command` };
   }
 
   const deliverBy = deliverByFor(policy);
@@ -120,17 +132,22 @@ export async function dispatchDeviceCommand(
   if (!online) return { ok: true, command, delivery: 'queued_offline', deliverBy };
   if (!device.agentId || input.preferHeartbeat) return { ok: true, command, delivery: 'queued_live', deliverBy };
 
-  // #5128 §E.4 — power-state commands are NEVER pushed from here. The barrier
-  // that stops a reboot landing mid-script lives in `partitionClaimable`, which
-  // only runs on the heartbeat claim; pushing a reboot straight down the socket
-  // would walk right past it. OD-3 accepts a same-second race, not a
-  // deterministic bypass for every reboot issued to an online device.
+  // #5128 §E.4 — the power-state barrier, applied HERE rather than skipping the
+  // push entirely. `partitionClaimable` enforces it on the heartbeat claim, and
+  // pushing a reboot straight down the socket would walk right past it: a
+  // queued reboot could land in the middle of a running script.
   //
-  // This also preserves the pre-#5128 behaviour of the generic device-command
-  // routes exactly: they raw-inserted a pending row and let the next heartbeat
-  // collect it, so a reboot was never socket-pushed on that path either.
+  // Review round 2 (J): a blanket skip was too blunt. `maintenanceRebootWorker`
+  // and the fleet-findings dispatch map both issue reboots that ALWAYS pushed
+  // before #5128, and downgrading them to "wait for the next heartbeat" delays
+  // a maintenance-window reboot by a whole heartbeat interval. So apply the
+  // barrier's actual condition instead: push only when nothing is in flight on
+  // this device, which is exactly what the heartbeat claim checks.
   if (POWER_STATE_BARRIER_TYPES.has(input.type)) {
-    return { ok: true, command, delivery: 'queued_live', deliverBy };
+    const inFlight = await countInFlightCommandsForDevice(input.deviceId);
+    if (inFlight > 0) {
+      return { ok: true, command, delivery: 'queued_live', deliverBy };
+    }
   }
 
   const claimed = await claimPendingCommandForDelivery(command.id);

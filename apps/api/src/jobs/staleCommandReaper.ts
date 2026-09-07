@@ -33,6 +33,10 @@ import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import {
+  batchIdFromPayload,
+  finalizeScriptExecutionTerminal,
+} from '../services/scriptExecutionTerminal';
 import { attachWorkerObservability } from './workerObservability';
 import { applyAutomationActionTerminal } from '../services/automationActionResults';
 import { CANCEL_GRACE_MS } from '../services/scriptCancellation';
@@ -161,15 +165,17 @@ export async function propagateTimedOutDeviceCommand(params: {
       ? payload.executionId
       : null;
   if (executionId) {
-    await db
-      .update(scriptExecutions)
-      .set({ status: 'failed', errorMessage: errorMsg, completedAt })
-      .where(
-        and(
-          eq(scriptExecutions.id, executionId),
-          inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-        ),
-      );
+    // Through the shared terminaliser so the owning `script_execution_batches`
+    // counters advance. Terminalising here without them left the batch
+    // non-terminal forever — `reapStaleScriptExecutions` (the only other place
+    // that maintained them) never revisits an already-terminal execution.
+    await finalizeScriptExecutionTerminal({
+      executionId,
+      batchId: batchIdFromPayload(payload),
+      outcome: 'failed',
+      errorMessage: errorMsg,
+      completedAt,
+    });
   }
 
   // Software deployment results, keyed on the owning command row.
@@ -428,15 +434,25 @@ export async function reapStaleDeviceCommands(): Promise<number> {
     if (!due) continue;
 
     const completedAt = new Date();
+    // `status` STAYS 'timeout' on both clocks. It is not a description, it is
+    // the marker `commandAcceptsAgentResultCondition` keys on to let a LATE
+    // agent result overwrite a server-side timeout
+    // (services/commandResultAcceptance.ts — "a new one MUST keep writing
+    // result.status = 'timeout'"). A row can genuinely be both: the frame
+    // reached the agent, the send was reported failed, the row was released
+    // back to `pending`, and it then aged out on the delivery clock. Writing
+    // 'expired' there would drop the real result into the orphan path.
+    // The clock distinction lives in `reason`/`clock` instead.
     const result =
       kind === 'expired'
         ? {
-            status: 'expired',
+            status: SERVER_TIMEOUT_RESULT_STATUS,
             reason: 'not_delivered_before_deadline',
+            clock: 'delivery',
             error: errorMsg,
             timedOutBy: 'server',
           }
-        : { status: 'timeout', error: errorMsg, timedOutBy: 'server' };
+        : { status: SERVER_TIMEOUT_RESULT_STATUS, error: errorMsg, timedOutBy: 'server' };
 
     // #5128 — CAS on the OBSERVED state, not `status IN ('pending','sent')`.
     // A row observed `pending` here but claimed between the SELECT and this
@@ -605,19 +621,17 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // here, reporting "no response from agent" would be a false diagnosis about
     // an agent that was never asked. Mark it cancelled instead.
     if (cmd?.status === 'cancelled') {
-      await db
-        .update(scriptExecutions)
-        .set({
-          status: 'cancelled',
-          errorMessage: 'Cancelled before the device received it',
-          completedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(scriptExecutions.id, exec.id),
-            inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-          ),
-        );
+      // Batch bookkeeping runs here too. The CAS inside the helper is what
+      // stops a double count: if `propagateCancelledDeviceCommand` already
+      // terminalised this execution, the UPDATE matches zero rows and the
+      // counter is untouched.
+      await finalizeScriptExecutionTerminal({
+        executionId: exec.id,
+        batchId: batchIdFromPayload(cmd?.payload),
+        outcome: 'cancelled',
+        errorMessage: 'Cancelled before the device received it',
+        completedAt: new Date(),
+      });
       continue;
     }
 
@@ -635,27 +649,25 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       : 'Server-side timeout: no response from agent';
 
     const scriptCompletedAt = new Date();
-    const updated = await db
-      .update(scriptExecutions)
-      .set({
-        status: reapedStatus,
-        completedAt: scriptCompletedAt,
-        errorMessage: reapedError,
-      })
-      .where(
-        and(
-          eq(scriptExecutions.id, exec.id),
-          inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-        ),
-      )
-      .returning({ id: scriptExecutions.id });
+    // Terminalisation + batch attribution both live in the shared helper now
+    // (services/scriptExecutionTerminal.ts), so the propagation paths that also
+    // terminalise an execution keep the counters in step. The atomicity the
+    // old inline `db.transaction` provided moves with it: increment + check +
+    // terminalise run on one executor.
+    const { terminalised } = await finalizeScriptExecutionTerminal({
+      executionId: exec.id,
+      batchId: batchIdFromPayload(cmd?.payload),
+      outcome: reapedStatus,
+      errorMessage: reapedError,
+      completedAt: scriptCompletedAt,
+    });
 
-    if (updated.length === 0) continue;
+    if (!terminalised) continue;
     reaped++;
 
     await applyAutomationActionTerminal({
       source: 'reaper',
-      scriptExecutionId: updated[0]!.id,
+      scriptExecutionId: exec.id,
       terminalStatus: reapedStatus === 'completed'
         ? 'succeeded'
         : reapedStatus === 'failed'
@@ -664,43 +676,6 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       error: reapedError,
       completedAt: scriptCompletedAt,
     });
-
-    // Batch attribution reuses the row fetched above (same query, one round-trip).
-    const batchId = (cmd?.payload as Record<string, unknown>)?.batchId as string | undefined;
-    if (batchId) {
-      // Atomic: increment counter + check completion in a transaction
-      await db.transaction(async (tx) => {
-        // A recovered success must not be counted as a batch failure — that was
-        // the same false claim one level up.
-        await tx
-          .update(scriptExecutionBatches)
-          .set(
-            reapedStatus === 'completed'
-              ? { devicesCompleted: sql`${scriptExecutionBatches.devicesCompleted} + 1` }
-              : { devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` },
-          )
-          .where(eq(scriptExecutionBatches.id, batchId));
-
-        const [batch] = await tx
-          .select({
-            devicesTargeted: scriptExecutionBatches.devicesTargeted,
-            devicesCompleted: scriptExecutionBatches.devicesCompleted,
-            devicesFailed: scriptExecutionBatches.devicesFailed,
-          })
-          .from(scriptExecutionBatches)
-          .where(eq(scriptExecutionBatches.id, batchId));
-
-        if (batch && batch.devicesCompleted + batch.devicesFailed >= batch.devicesTargeted) {
-          await tx
-            .update(scriptExecutionBatches)
-            .set({
-              status: batch.devicesFailed > 0 ? 'failed' : 'completed',
-              completedAt: new Date(),
-            })
-            .where(eq(scriptExecutionBatches.id, batchId));
-        }
-      });
-    }
   }
 
   return reaped;
@@ -1155,12 +1130,21 @@ export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
     // The SQL filter already excludes these; keep the guard for defense.
     if (!row.dispatchedAt) continue;
 
+    // ORPHANED: the row names a command that no longer exists. There is no FK
+    // on `deployment_results.device_command_id` (device_commands is the agent
+    // hot path and stays unconstrained), so a deleted or purged command row
+    // leaves the LEFT JOIN with a NULL status — which read as "not delivered"
+    // and skipped the row FOREVER, since nothing else ever revisits it either
+    // (#5128 review round 2, O). Nobody can answer for it, so fail it on the
+    // install timeout measured from the deployment's dispatch.
+    const orphaned = row.deviceCommandId !== null && row.commandStatus === null;
+
     const delivered =
       row.deviceCommandId === null ||
       row.commandStatus === 'sent' ||
       row.commandStatus === 'completed';
 
-    if (!delivered) {
+    if (!delivered && !orphaned) {
       // #5128 — NOT this reaper's clock. The row is either still waiting for
       // the device (`pending`) or already terminal by another path; either way
       // `reapStaleDeviceCommands` owns the delivery deadline and propagates.
@@ -1169,10 +1153,13 @@ export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
 
     // Measure from the claim timestamp when we have one; fall back to the
     // deployment's dispatch time for rows with no linked command (pre-#5128
-    // WS dispatches created none) or a claim timestamp that was never written.
+    // WS dispatches created none), an orphaned link, or a claim timestamp that
+    // was never written.
     const deliveredRef = row.commandExecutedAt ?? row.dispatchedAt;
     if (now - deliveredRef.getTime() < SOFTWARE_INSTALL_TIMEOUT_MS) continue;
-    const errorMessage = 'Server-side timeout: no response from agent';
+    const errorMessage = orphaned
+      ? 'Command row missing — install outcome unknown'
+      : 'Server-side timeout: no response from agent';
 
     const completedAt = new Date();
 

@@ -144,8 +144,11 @@ export interface QueueCommandForExecutionResult {
    * not online and the command is waiting for it to come back.
    */
   delivery?: 'delivered' | 'queued_offline' | 'queued_live';
-  /** #5128. The instant after which the row expires undelivered. */
-  deliverBy?: Date;
+  /**
+   * #5128. The instant after which the row expires undelivered. NULL for a
+   * `reject` policy — those rows stay on the legacy execution clock.
+   */
+  deliverBy?: Date | null;
 }
 
 export type RearmIdempotentCommandResult =
@@ -488,7 +491,7 @@ export async function queueCommand(
   // enqueue, compared at claim time to cancel rows whose device has since moved
   // org. Both are optional so legacy callers keep today's semantics
   // (deliver_by NULL = the reaper's created_at + execution-timeout rule).
-  options: { commandId?: string; deliverBy?: Date; submittedOrgId?: string } = {}
+  options: { commandId?: string; deliverBy?: Date | null; submittedOrgId?: string } = {}
 ): Promise<QueuedCommand> {
   // #4093 — agent-binary updates must not be created here. This insert site
   // cannot set target_role (the row would default to 'agent', which has no
@@ -1037,9 +1040,13 @@ async function dispatchPreparedCommand(
           createdBy: safeUserId,
           targetRole,
           // #5128. executeCommand is synchronous by contract (the caller waits
-          // via waitForCommandResult), so it stays `reject` — but its row still
-          // carries a short delivery deadline so one that raced a disconnect
-          // cannot linger as `pending` indefinitely.
+          // via waitForCommandResult), so it stays `reject` — and a `reject`
+          // row gets NO `deliver_by`. Review round 2 (J): stamping the 5-minute
+          // race grace here cut every executeCommand row's pending window from
+          // the legacy 30-minute execution clock to 5 minutes, including
+          // watchdog-targeted and `preferHeartbeat` work (update_agent,
+          // restart_agent, filesystem_analysis) and barrier-held reboots. NULL
+          // keeps the legacy clock, so nothing changes for reject callers.
           deliverBy: deliverByFor({ kind: 'reject' }),
           submittedOrgId: device.orgId,
         })

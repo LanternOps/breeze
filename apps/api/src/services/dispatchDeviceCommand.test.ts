@@ -10,6 +10,7 @@ const {
   refreshMock,
   decryptMock,
   captureExceptionMock,
+  inFlightMock,
 } = vi.hoisted(() => ({
   queueCommandMock: vi.fn(),
   claimMock: vi.fn(),
@@ -20,6 +21,7 @@ const {
   refreshMock: vi.fn(),
   decryptMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  inFlightMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -34,6 +36,7 @@ vi.mock('./commandQueue', () => ({
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: (...a: unknown[]) => claimMock(...(a as [])),
   releaseClaimedCommandDelivery: (...a: unknown[]) => releaseMock(...(a as [])),
+  countInFlightCommandsForDevice: (...a: unknown[]) => inFlightMock(...(a as [])),
 }));
 vi.mock('./commandDelivery', () => ({
   refreshPayloadForDelivery: (...a: unknown[]) => refreshMock(...(a as [])),
@@ -63,7 +66,6 @@ vi.mock('./partnerTrust.commands', () => ({
 }));
 
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
-import { REJECT_RACE_GRACE_MS } from './commandOfflinePolicy';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -82,6 +84,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
     assertAllowedMock.mockResolvedValue(undefined);
     refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
+    inFlightMock.mockResolvedValue(0);
     decryptMock.mockImplementation((c: unknown) => c);
     queueCommandMock.mockImplementation(async (_d, type, _p, _u, opts) => ({
       id: 'cmd-1',
@@ -103,7 +106,7 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.delivery).toBe('queued_offline');
-    expect(res.deliverBy.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
+    expect(res.deliverBy!.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
     const opts = queueCommandMock.mock.calls[0]![4] as { deliverBy: Date; submittedOrgId: string };
     expect(opts.submittedOrgId).toBe(ORG);
     expect(opts.deliverBy).toBeInstanceOf(Date);
@@ -237,15 +240,19 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
-  it('a reject-policy command against an ONLINE device still gets the short race-grace deadline', async () => {
+  it('a reject-policy command against an ONLINE device gets NO delivery deadline', async () => {
+    // #5128 review round 2 (J): the 5-minute race grace used to be stamped
+    // here, which cut the pending window for every reject caller — including
+    // watchdog-targeted `update_agent`/`restart_agent` and barrier-held
+    // reboots — from the legacy 30-minute execution clock to 5 minutes. NULL
+    // restores the legacy clock exactly.
     selectReturning(deviceRow('online'));
     claimMock.mockResolvedValue(null);
-    const before = Date.now();
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'list_processes' });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.deliverBy.getTime()).toBeGreaterThanOrEqual(before + REJECT_RACE_GRACE_MS);
-    expect(res.deliverBy.getTime()).toBeLessThan(before + REJECT_RACE_GRACE_MS + 60_000);
+    expect(res.deliverBy).toBeNull();
+    expect((queueCommandMock.mock.calls[0]![4] as { deliverBy: Date | null }).deliverBy).toBeNull();
   });
 
   it('flag off keeps a previouslyRejected caller rejecting an offline device', async () => {
@@ -267,20 +274,83 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(res.ok && res.delivery).toBe('queued_offline');
   });
 
-  it('a reboot to an ONLINE device is never socket-pushed — the barrier only runs at claim', async () => {
+  it('a power-state command is HELD from the socket while anything is in flight', async () => {
     // Pushing straight down the socket would bypass partitionClaimable's
-    // power-state barrier entirely, which is the whole protection against a
-    // queued reboot landing in the middle of a running script.
-    selectReturning(deviceRow('online'));
+    // power-state barrier, which is the whole protection against a queued
+    // reboot landing in the middle of a running script.
     for (const type of ['reboot', 'shutdown', 'reboot_safe_mode']) {
       vi.clearAllMocks();
       selectReturning(deviceRow('online'));
+      inFlightMock.mockResolvedValue(1);
       queueCommandMock.mockResolvedValue({ id: 'cmd-1', type, status: 'pending' });
       const res = await dispatchDeviceCommand({ deviceId: DEVICE, type });
       expect(res.ok && res.delivery).toBe('queued_live');
       expect(claimMock).not.toHaveBeenCalled();
       expect(sendMock).not.toHaveBeenCalled();
     }
+  });
+
+  it('a power-state command IS pushed when nothing is in flight', async () => {
+    // #5128 review round 2 (J): a blanket skip regressed the callers that have
+    // always pushed a reboot immediately — maintenanceRebootWorker (Linux
+    // maintenance windows) and the fleet-findings dispatch map — delaying a
+    // scheduled reboot by a whole heartbeat interval. The barrier's real
+    // condition is "nothing else in flight", so apply that instead.
+    for (const type of ['reboot', 'shutdown', 'reboot_safe_mode']) {
+      vi.clearAllMocks();
+      selectReturning(deviceRow('online'));
+      inFlightMock.mockResolvedValue(0);
+      refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
+      decryptMock.mockImplementation((c: unknown) => c);
+      queueCommandMock.mockResolvedValue({ id: 'cmd-1', type, status: 'pending' });
+      claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+      sendMock.mockReturnValue(true);
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type });
+      expect(res.ok && res.delivery).toBe('delivered');
+      expect(inFlightMock).toHaveBeenCalledWith(DEVICE);
+      expect(sendMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('a non-power-state command never pays for the in-flight probe', async () => {
+    selectReturning(deviceRow('online'));
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+    expect(inFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('an offline AND trust-denied device answers device_offline, with the legacy string', async () => {
+    // #5128 review round 2 (M): four backup routes classify a failure by the
+    // `Device is <status>, cannot execute command` prefix
+    // (routes/backup/vmrestore.ts, restore.ts, verificationService.ts,
+    // verificationScheduled.ts). With the trust check first they would see the
+    // raw trust code the day partner trust leaves shadow mode.
+    selectReturning(deviceRow('offline'));
+    const { TrustDeniedError } = await import('./partnerTrust.commands');
+    assertAllowedMock.mockRejectedValue(
+      new TrustDeniedError('TRUST_RESTRICTED', 'partner_suspended', DEVICE, 'list_processes'),
+    );
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'list_processes' });
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    });
+    expect(queueCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('a QUEUE-policy command against an offline, trust-denied device still refuses on trust', async () => {
+    // The reorder must not weaken trust: a queue caller has no offline
+    // rejection to short-circuit on, so trust is still what stops it.
+    selectReturning(deviceRow('offline'));
+    const { TrustDeniedError } = await import('./partnerTrust.commands');
+    assertAllowedMock.mockRejectedValue(
+      new TrustDeniedError('TRUST_RESTRICTED', 'partner_suspended', DEVICE, 'script'),
+    );
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script' });
+    expect(res).toMatchObject({ ok: false, code: 'trust_denied' });
+    expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
   it('a non-power-state command to an online device is still pushed immediately', async () => {

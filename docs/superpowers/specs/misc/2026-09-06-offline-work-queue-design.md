@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_device_commands_deliver_by
   ON device_commands (deliver_by) WHERE status = 'pending' AND deliver_by IS NOT NULL;
 ```
 
-- `deliver_by` = the instant by which an agent must have *claimed* the row. NULL = legacy rule (§C), so the migration is a pure `ADD COLUMN`, existing pending rows behave exactly as before, and no backfill is needed. Every new enqueue sets it: `now() + deliverWithinMs` for `queue`; for `reject` (row created only when the device is online) `now() + 5 min` so a row that raced a disconnect cannot linger.
+- `deliver_by` = the instant by which an agent must have *claimed* the row. NULL = legacy rule (§C), so the migration is a pure `ADD COLUMN`, existing pending rows behave exactly as before, and no backfill is needed. A `queue` enqueue sets `now() + deliverWithinMs`. For `reject` the row is only created when the device is online and `deliver_by` stays NULL — the legacy execution clock applies, so nothing changes for callers that reject.
 - `submitted_org_id` = the device's org at enqueue, compared at claim to detect an org move (§G). It is an immutable provenance value, not a tenancy column: `device_commands` stays intentionally system-scoped (no RLS, agent path), and `ON DELETE SET NULL` keeps old-org erasure from tripping on rows for devices that moved away. Named deliberately not `org_id` so the RLS/cascade auto-discovery does not classify the table as tenant-scoped.
 - Deferred to Track B: an `authorization_subject` (the shape of `recoveryAuthorizationSubject.ts` on #3985) for full principal rehydration at claim — OD-4.
 
@@ -74,10 +74,11 @@ In `reapStaleDeviceCommands`:
 
 | Row state | Deadline | Terminal result |
 |---|---|---|
-| `pending`, `deliver_by IS NOT NULL` | `deliver_by` | `status='failed'`, `result: { status: 'expired', reason: 'not_delivered_before_deadline', timedOutBy: 'server' }` |
+| `pending`, `deliver_by IS NOT NULL` | `deliver_by` | `status='failed'`, `result: { status: 'timeout', reason: 'not_delivered_before_deadline', clock: 'delivery', timedOutBy: 'server' }` |
 | `pending`, `deliver_by IS NULL` (legacy rows) | `createdAt + getCommandTimeoutMs` (today's rule) | unchanged |
 | `sent` | `executedAt + getCommandTimeoutMs` (today's rule) | unchanged (`timeout`) |
 
+- `result.status` stays `'timeout'` on both clocks: it is the marker `commandAcceptsAgentResultCondition` keys on to let a genuinely late agent result overwrite a server-side timeout (`services/commandResultAcceptance.ts`), and a row released after a failed send can legitimately be both delivered and delivery-expired. The clock lives in `reason`/`clock`.
 - The reason is `not_delivered_before_deadline`, not "never reconnected": protocol-capability exclusions (`claimPendingCommandsForDevice` skips `peripheral_policy_sync_v2` etc. for agents that don't advertise them) can leave a row undelivered on a connected device.
 - **CAS on observed state.** The terminal UPDATE must key on the row's *observed* `(status, executedAt)`, not `status IN ('pending','sent')` as today (~311): a row observed `pending` and claimed between the SELECT and the UPDATE would otherwise be failed the instant it was delivered. Mirror the `(id, status='sent', executedAt=<claim ts>)` fence `releaseClaimedCommandDelivery` already uses.
 - The SQL pre-filter gains an OR arm on `deliver_by < now()` and keeps the `SHORTEST_TIMEOUT_MS` arm for legacy/`sent` rows, so genuinely due rows are selected before the per-run cap is applied and 7-day rows are not rescanned every 2 minutes.
