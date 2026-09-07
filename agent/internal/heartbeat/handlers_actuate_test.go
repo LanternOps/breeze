@@ -13,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -613,6 +614,7 @@ type fakeElevationManager struct {
 	cred        elevaccount.Credential
 	promoteErr  error
 	promoteSeen int
+	demoteErr   error
 	demoteSeen  int
 }
 
@@ -628,7 +630,7 @@ func (m *fakeElevationManager) Promote(context.Context) (elevaccount.Credential,
 
 func (m *fakeElevationManager) Demote(context.Context) error {
 	m.demoteSeen++
-	return nil
+	return m.demoteErr
 }
 
 type fakeActuator struct {
@@ -1019,4 +1021,201 @@ func swapElevationManagerForTest(t *testing.T, fn func() elevaccount.AccountMana
 	orig := newElevationAccountManager
 	newElevationAccountManager = fn
 	t.Cleanup(func() { newElevationAccountManager = orig })
+}
+
+// pamEventLogCall records one write made through the writePAM* indirection
+// vars (#4913), keyed by which lifecycle stage fired.
+type pamEventLogCall struct {
+	stage  string
+	fields eventlog.PAMFields
+}
+
+// swapPAMEventLogWritersForTest installs fakes for all four writePAM*
+// indirection vars and returns the slice they append to, so call-site tests
+// can assert exactly which stages fired, in what order, with what fields —
+// without depending on the real eventlog.Event, which is a no-op on the
+// non-Windows platform these tests run on.
+func swapPAMEventLogWritersForTest(t *testing.T) *[]pamEventLogCall {
+	t.Helper()
+	calls := &[]pamEventLogCall{}
+
+	origActuated := writePAMElevationActuated
+	origEnded := writePAMSessionEnded
+	origDemoted := writePAMAccountDemoted
+	origRefused := writePAMActuationRefused
+
+	writePAMElevationActuated = func(f eventlog.PAMFields) {
+		*calls = append(*calls, pamEventLogCall{"elevation_actuated", f})
+	}
+	writePAMSessionEnded = func(f eventlog.PAMFields) {
+		*calls = append(*calls, pamEventLogCall{"session_ended", f})
+	}
+	writePAMAccountDemoted = func(f eventlog.PAMFields) {
+		*calls = append(*calls, pamEventLogCall{"account_demoted", f})
+	}
+	writePAMActuationRefused = func(f eventlog.PAMFields) {
+		*calls = append(*calls, pamEventLogCall{"actuation_refused", f})
+	}
+	t.Cleanup(func() {
+		writePAMElevationActuated = origActuated
+		writePAMSessionEnded = origEnded
+		writePAMAccountDemoted = origDemoted
+		writePAMActuationRefused = origRefused
+	})
+	return calls
+}
+
+func stageNames(calls []pamEventLogCall) []string {
+	names := make([]string, len(calls))
+	for i, c := range calls {
+		names[i] = c.stage
+	}
+	return names
+}
+
+// identityTarget is a pamTarget carrying every display-only identity/context
+// field a server-resolved actuate_elevation payload can populate (#4913).
+func identityTarget() pamTarget {
+	return pamTarget{
+		Path:            `C:\Windows\System32\mmc.exe`,
+		SubjectUsername: `CORP\alice`,
+		RequestedByName: "Alice Requester",
+		ApprovedByName:  "Bob Approver",
+		ApprovedByEmail: "bob@example.com",
+		ApprovedAt:      "2026-09-05T10:00:00Z",
+		RiskTier:        "2",
+		MatchedRuleName: "Allow devmgmt.msc",
+		WindowEndsAt:    "2026-09-05T10:30:00Z",
+	}
+}
+
+func assertIdentityFieldsPropagated(t *testing.T, f eventlog.PAMFields) {
+	t.Helper()
+	want := eventlog.PAMFields{
+		ElevationRequestID: f.ElevationRequestID, // caller-supplied per stage; not asserted here
+		TargetPath:         `C:\Windows\System32\mmc.exe`,
+		SubjectUser:        `CORP\alice`,
+		RequestedByName:    "Alice Requester",
+		ApprovedByName:     "Bob Approver",
+		ApprovedByEmail:    "bob@example.com",
+		ApprovedAt:         "2026-09-05T10:00:00Z",
+		RiskTier:           "2",
+		MatchedRuleName:    "Allow devmgmt.msc",
+		WindowEndsAt:       "2026-09-05T10:30:00Z",
+		Detail:             f.Detail, // varies per stage; not asserted here
+	}
+	if f != want {
+		t.Fatalf("PAMFields identity fields = %+v, want %+v", f, want)
+	}
+}
+
+// TestActuateElevationEventLogRefusalWritesActuationRefusedOnly proves the
+// fail-closed refusal path (dismissal gate engaged) writes exactly one
+// Breeze-PAM event — actuation_refused — carrying the server-resolved
+// identity fields and the refusal reason as Detail. No elevation_actuated
+// or session_ended should fire since the actuator was never reached (#4913).
+func TestActuateElevationEventLogRefusalWritesActuationRefusedOnly(t *testing.T) {
+	calls := swapPAMEventLogWritersForTest(t)
+	h := &Heartbeat{}
+	h.pamDismissalUncertain = true
+
+	h.actuateElevation(context.Background(), "req-refused", 8000, identityTarget())
+
+	if got := stageNames(*calls); len(got) != 1 || got[0] != "actuation_refused" {
+		t.Fatalf("stages = %v, want [actuation_refused]", got)
+	}
+	f := (*calls)[0].fields
+	if f.ElevationRequestID != "req-refused" {
+		t.Fatalf("ElevationRequestID = %q, want req-refused", f.ElevationRequestID)
+	}
+	if f.Detail != "dismissal of a denied consent prompt was never proven" {
+		t.Fatalf("Detail = %q", f.Detail)
+	}
+	assertIdentityFieldsPropagated(t, f)
+}
+
+// TestActuateElevationEventLogPromoteFailureSkipsDemote proves a Promote
+// failure writes elevation_actuated then session_ended (Detail = the
+// promoteFailureReason code), and never account_demoted — the demote defer
+// is only registered after a successful Promote (#4913).
+func TestActuateElevationEventLogPromoteFailureSkipsDemote(t *testing.T) {
+	calls := swapPAMEventLogWritersForTest(t)
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager {
+		return &fakeElevationManager{promoteErr: errors.New("boom")}
+	})
+	h := &Heartbeat{}
+
+	result := h.actuateElevation(context.Background(), "req-promote-fail", 8000, identityTarget())
+
+	if result.Success {
+		t.Fatalf("expected failure result, got %+v", result)
+	}
+	if got := stageNames(*calls); len(got) != 2 || got[0] != "elevation_actuated" || got[1] != "session_ended" {
+		t.Fatalf("stages = %v, want [elevation_actuated session_ended]", got)
+	}
+	if detail := (*calls)[1].fields.Detail; detail != result.Reason {
+		t.Fatalf("session_ended Detail = %q, want %q (result.Reason)", detail, result.Reason)
+	}
+	assertIdentityFieldsPropagated(t, (*calls)[0].fields)
+	assertIdentityFieldsPropagated(t, (*calls)[1].fields)
+}
+
+// TestActuateElevationEventLogSuccessWritesFullLifecycle proves a successful
+// actuation writes all three reachable stages — elevation_actuated,
+// session_ended, then account_demoted (the demote defer runs after the
+// function body's session_ended write, per Go's LIFO defer order) — each
+// carrying the same server-resolved identity fields (#4913).
+func TestActuateElevationEventLogSuccessWritesFullLifecycle(t *testing.T) {
+	calls := swapPAMEventLogWritersForTest(t)
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager {
+		return &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
+	})
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+			return pamactuator.Result{Success: true, Reason: "ok"}
+		}}
+	})
+	h := &Heartbeat{}
+
+	h.actuateElevation(context.Background(), "req-success", 8000, identityTarget())
+
+	if got := stageNames(*calls); len(got) != 3 ||
+		got[0] != "elevation_actuated" || got[1] != "session_ended" || got[2] != "account_demoted" {
+		t.Fatalf("stages = %v, want [elevation_actuated session_ended account_demoted]", got)
+	}
+	if detail := (*calls)[1].fields.Detail; detail != "ok" {
+		t.Fatalf("session_ended Detail = %q, want ok", detail)
+	}
+	for _, c := range *calls {
+		if c.fields.ElevationRequestID != "req-success" {
+			t.Fatalf("stage %s ElevationRequestID = %q, want req-success", c.stage, c.fields.ElevationRequestID)
+		}
+		assertIdentityFieldsPropagated(t, c.fields)
+	}
+}
+
+// TestActuateElevationEventLogDemoteFailureSkipsAccountDemoted proves that
+// when Demote itself fails, no account_demoted event is written — the
+// endpoint's local log must not claim the account was demoted when it
+// wasn't (#4913). session_ended still fires (from the Trigger result).
+func TestActuateElevationEventLogDemoteFailureSkipsAccountDemoted(t *testing.T) {
+	calls := swapPAMEventLogWritersForTest(t)
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager {
+		return &fakeElevationManager{
+			cred:      elevaccount.Credential{Username: "~breeze_elev", Password: "x"},
+			demoteErr: errors.New("demote failed"),
+		}
+	})
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+			return pamactuator.Result{Success: true, Reason: "ok"}
+		}}
+	})
+	h := &Heartbeat{}
+
+	h.actuateElevation(context.Background(), "req-demote-fail", 8000, identityTarget())
+
+	if got := stageNames(*calls); len(got) != 2 || got[0] != "elevation_actuated" || got[1] != "session_ended" {
+		t.Fatalf("stages = %v, want [elevation_actuated session_ended] (no account_demoted on Demote failure)", got)
+	}
 }

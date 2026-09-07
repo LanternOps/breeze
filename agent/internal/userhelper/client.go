@@ -720,7 +720,13 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 			}
 		}
 
-		if err := c.executor.Cancel(executionID); err != nil {
+		// #3525: mirror the agent-side structured outcome. "no such execution"
+		// used to come back as a failed IPC result, indistinguishable from a
+		// failed kill — and the agent needs the difference to decide whether
+		// not_found is the whole fleet's answer.
+		outcome, err := c.executor.Cancel(executionID, cmd.CommandID,
+			getIntOrDefault(payload, "graceSeconds", defaultCancelGraceSeconds))
+		if err != nil {
 			return ipc.IPCCommandResult{
 				CommandID: cmd.CommandID,
 				Status:    "failed",
@@ -730,7 +736,8 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 
 		resultJSON, err := json.Marshal(map[string]any{
 			"executionId": executionID,
-			"cancelled":   true,
+			"outcome":     string(outcome),
+			"cancelled":   outcome == executor.CancelTerminated,
 		})
 		if err != nil {
 			return ipc.IPCCommandResult{
@@ -834,6 +841,13 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		"exitCode": result.ExitCode,
 		"stdout":   executor.SanitizeOutput(cleanedStdout),
 		"stderr":   executor.SanitizeOutput(result.Stderr),
+	}
+	// #3525: a runAs=user script is killed by the HELPER's executor, so its
+	// cancellation marker only reaches the server if it rides back over the IPC
+	// hop. Omitted when absent so an uncancelled run's payload is unchanged.
+	if result.Cancelled {
+		resultPayload["cancelled"] = true
+		resultPayload["cancelledByCommandId"] = result.CancelledByCommandID
 	}
 	if len(customFields) > 0 {
 		resultPayload["customFieldWrites"] = map[string]any{
@@ -1410,6 +1424,10 @@ func getStringOrDefault(m map[string]any, key, def string) string {
 	}
 	return def
 }
+
+// defaultCancelGraceSeconds mirrors the agent-side default when a script_cancel
+// payload omits graceSeconds. executor.Cancel clamps it to 0..MaxGraceSeconds.
+const defaultCancelGraceSeconds = 5
 
 func getIntOrDefault(m map[string]any, key string, def int) int {
 	if v, ok := m[key].(float64); ok {

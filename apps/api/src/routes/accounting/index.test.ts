@@ -41,13 +41,20 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
     mocks: {
       getConnection: vi.fn(),
       upsertConnection: vi.fn(),
-      deleteConnection: vi.fn(),
+      deleteConnection: vi.fn(async () => ({
+        removed: true,
+        connectionId: null as string | null,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] as string[] },
+      })),
       exchangeCode: vi.fn(),
       fetchRealmSettings: vi.fn(),
       updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
       updateMultiCurrencyEnabled: vi.fn(),
       refreshRealmSettings: vi.fn(),
-      resetConnectionForRealmChange: vi.fn(async () => ({ mappingsDeleted: 0 })),
+      resetConnectionForRealmChange: vi.fn(async () => ({
+        mappingsDeleted: 0,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] as string[] },
+      })),
       captureException: vi.fn(),
       captureMessage: vi.fn(),
       writeRouteAudit: vi.fn(),
@@ -62,6 +69,9 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // factory below) so individual tests can set what the "update" reports
       // back, same idiom as `updateHomeCurrency` above.
       dbUpdateReturning: vi.fn(async () => [] as Record<string, unknown>[]),
+      // Captures the UPDATE's `set` payload so a test can assert what the route
+      // actually writes, not just what it echoes back.
+      dbUpdateSet: vi.fn(),
     },
     AccountingConnectionErrorClass,
   };
@@ -70,11 +80,14 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
 vi.mock('../../db', () => ({
   db: {
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({
-          returning: mocks.dbUpdateReturning,
-        })),
-      })),
+      set: vi.fn((patch: Record<string, unknown>) => {
+        mocks.dbUpdateSet(patch);
+        return {
+          where: vi.fn(() => ({
+            returning: mocks.dbUpdateReturning,
+          })),
+        };
+      }),
     })),
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
@@ -154,6 +167,8 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
   })),
 }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { accountingRoutes } from './index';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -433,7 +448,10 @@ describe('accounting routes', () => {
     // old realm's change stream.
     mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
-    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({ mappingsDeleted: 7 });
+    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({
+      mappingsDeleted: 7,
+      owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+    });
 
     const res = await runCallback(app, 'realm-B');
 
@@ -699,6 +717,41 @@ describe('accounting routes', () => {
     });
   });
 
+  // Phase D2, Task 7 — same shape story as pullPayments above: GET answers
+  // pushPayments on BOTH branches, defaulting `true` when disconnected (the
+  // column's own `.default(true)`, accounting.ts schema).
+  it('returns pushPayments for a connected partner, and defaults it true when no connection exists', async () => {
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+      pushPayments: false,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({ pushPayments: false });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({ pushPayments: true });
+  });
+
   it('disconnect requires MFA', async () => {
     authState.mfa = false;
 
@@ -821,6 +874,95 @@ describe('accounting routes', () => {
       expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
     });
 
+    // Phase D2, Task 7 — pushPayments is the outbound half of the same
+    // authority story as pullPayments/pushMode: switching it off silently
+    // stops every Breeze payment from reaching the books, the same class of
+    // harm the manual/bulk push routes already gate on invoices:write.
+    it('persists and echoes pushPayments', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected',
+        environment: 'production',
+        pushMode: 'auto',
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        lastError: null,
+        pushPayments: false,
+      }]);
+
+      const res = await patchSettings({ pushPayments: false });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ pushPayments: false });
+      // Asserting the ECHO alone proved only that the route returns what the
+      // mocked UPDATE was told to return — it would pass with the column never
+      // written. Assert what the route actually SET.
+      expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).toMatchObject({ pushPayments: false });
+    });
+
+    it('persists pullPayments too, not just the echo', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: false,
+      }]);
+
+      await patchSettings({ pullPayments: false });
+
+      expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).toMatchObject({ pullPayments: false });
+    });
+
+    it('writes ONLY the keys the body carried, so a partial PATCH cannot reset a sibling switch', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: true,
+      }]);
+
+      await patchSettings({ pullPayments: true });
+
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      expect(patch).not.toHaveProperty('pushPayments');
+      expect(patch).not.toHaveProperty('pushMode');
+    });
+
+    it('RESTARTS the push horizon when pushPayments is switched back ON', async () => {
+      // Review wave 2, finding 2: a deliberate pause must not later flush a
+      // backlog. Decided in the UPDATE, so the SET list reads the row's OLD
+      // `push_payments` and the flip is detected without a read-modify-write.
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pushPayments: true,
+      }]);
+
+      const res = await patchSettings({ pushPayments: true });
+
+      expect(res.status).toBe(200);
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      const compiled = new PgDialect().sqlToQuery(patch.pushPaymentsSince as SQL).sql;
+      expect(compiled.toLowerCase()).toContain('"push_payments" = false then now()');
+      // ...and it must be a no-op when the switch was already on.
+      expect(compiled.toLowerCase()).toContain('else "accounting_connections"."push_payments_since"');
+    });
+
+    it('leaves the push horizon ALONE when pushPayments is switched OFF', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pushPayments: false,
+      }]);
+
+      await patchSettings({ pushPayments: false });
+
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      expect(patch).not.toHaveProperty('pushPaymentsSince');
+    });
+
+    it('rejects flipping pushPayments without invoices:write, like pushMode and pullPayments (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pushPayments: false });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
     it('rejects changing pushMode without invoices:write (403, finding D)', async () => {
       authState.invoicesWrite = false;
 
@@ -866,6 +1008,49 @@ describe('accounting routes', () => {
       mocks.dbUpdateReturning.mockResolvedValueOnce([]);
       const res = await patchSettings({ pullPayments: true });
       expect(res.status).toBe(404);
+    });
+  });
+  describe('owed QuickBooks payment deletes discarded (review wave 2, finding 3)', () => {
+    it('POST /:provider/disconnect audits the owed deletes it cascades away, and still disconnects', async () => {
+      // The disconnect must NOT be blocked — but the remote ids are the only
+      // thing that lets a human find those Payments in QuickBooks afterwards.
+      mocks.deleteConnection.mockResolvedValueOnce({
+        removed: true,
+        connectionId: CONNECTION_ID,
+        owedPaymentDeletes: { count: 2, remoteEntityIds: ['181/145', '182/146'] as string[] },
+      });
+
+      const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ disconnected: true });
+      const event = mocks.writeRouteAudit.mock.calls
+        .map((call) => call[1] as Record<string, unknown>)
+        .find((e) => e.action === 'accounting.connection.owed_deletes_discarded');
+      expect(event).toMatchObject({
+        // The CONNECTION id, matching the realm-change twin — the audit trail
+        // must not identify the same subject two different ways.
+        resourceType: 'accounting_connection',
+        resourceId: CONNECTION_ID,
+        result: 'failure',
+        details: expect.objectContaining({
+          reason: 'disconnect', count: 2, remoteEntityIds: ['181/145', '182/146'],
+        }),
+      });
+    });
+
+    it('POST /:provider/disconnect writes no such audit when nothing is owed', async () => {
+      mocks.deleteConnection.mockResolvedValueOnce({
+        removed: true,
+        connectionId: CONNECTION_ID,
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+      });
+
+      await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
+
+      expect(mocks.writeRouteAudit.mock.calls
+        .map((call) => call[1] as Record<string, unknown>)
+        .some((e) => e.action === 'accounting.connection.owed_deletes_discarded')).toBe(false);
     });
   });
 });

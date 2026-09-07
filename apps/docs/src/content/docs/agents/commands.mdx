@@ -522,7 +522,21 @@ When `runAs` is set to a username (or `"user"`), the agent forwards the script t
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `executionId` | string | Yes | Execution ID to cancel |
+| `executionId` | string | Yes | The **original `script` command's id** (`device_commands.id`), not the `script_executions` row id. The agent keys its in-memory running-script map on the command id, so sending the execution row id here is a silent no-op against the deployed fleet. |
+| `scriptExecutionId` | string | No | The `script_executions` row id, sent alongside `executionId` for server-side bookkeeping. Older agents (pre-#3525) ignore this field. |
+| `graceSeconds` | int | No | Grace period before escalating to a hard kill. `0`-`30`, default `5`. Ignored entirely on Windows — see below. |
+
+Result (always a SUCCESS result, even when the process was not stopped):
+
+```json
+{ "executionId": "<the original executionId echoed back>", "outcome": "terminated" | "not_found" | "kill_failed", "cancelled": true | false }
+```
+
+`cancelled` is `true` only for `outcome: "terminated"` — the server only ever marks `script_executions.status = 'cancelled'` on this proof. `not_found` most often means the script had already finished and its result is in flight, not that the stop succeeded; `kill_failed` means the device tried and could not kill the process.
+
+<Aside type="caution">
+**No graceful phase on Windows.** Unix sends `SIGTERM`, waits up to `graceSeconds`, then `SIGKILL`s the process group. Windows skips straight to `TerminateJobObject` regardless of `graceSeconds`, because `GenerateConsoleCtrlEvent` requires a console shared with the target process and script children are launched with `CREATE_NO_WINDOW` — there is no console to signal.
+</Aside>
 
 ### `script_list_running`
 

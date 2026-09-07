@@ -30,6 +30,7 @@ import {
   canManagePartnerWidePolicies,
   policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PolicyHasChildrenError,
 } from './configurationPolicy';
 import {
   getConfigPolicyComplianceRuleInfo,
@@ -159,6 +160,15 @@ function safeHandler(
     }
   };
 }
+
+/**
+ * RMM-QA-176 D9.3. Exported so the tests assert the SAME string the handler
+ * returns, rather than a copy that can drift.
+ */
+export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
+  'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
+export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
+  'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
 
 export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -612,7 +622,31 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'delete') {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required for delete' });
-        const deleted = await deleteConfigPolicy(input.policyId as string, auth);
+        let deleted;
+        try {
+          deleted = await deleteConfigPolicy(input.policyId as string, auth);
+        } catch (err) {
+          // Without this branch safeHandler would flatten an actionable refusal
+          // into "Operation failed. Check server logs for details.", leaving the
+          // model with no way to know WHY or what to do next (#5080).
+          if (err instanceof PolicyHasChildrenError) {
+            // The children list is EMPTY for the lost-race variant (a child was
+            // created between the pre-check and the DELETE, caught by the FK).
+            // Rendering the generic message there would read "0 policy/policies
+            // inherit from it" while still refusing — self-contradicting, and it
+            // hides the one fact that matters: a retry may now behave differently.
+            if (err.children.length === 0) {
+              return JSON.stringify({
+                error: 'Cannot delete this configuration policy: another policy started inheriting from it just now. Re-check its child policies and retry.',
+              });
+            }
+            const names = err.children.map((c) => `"${c.name}" (${c.id})`).join(', ');
+            return JSON.stringify({
+              error: `Cannot delete this configuration policy: ${err.children.length} policy/policies inherit from it — ${names}. Delete or re-create those first.`,
+            });
+          }
+          throw err;
+        }
         if (!deleted) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
         return JSON.stringify({ success: true, message: `Policy "${deleted.name}" deleted` });
       }
@@ -770,6 +804,7 @@ Inline settings shapes by feature type:
 - helper: { enabled: true, showTrayIcon: true, showOpenPortal: true, showDeviceInfo: true, showRequestSupport: true, portalUrl?: "" } — showTrayIcon:false hides the system-tray icon while the helper keeps serving chat, remote-access consent and PAM dialogs.
 - pam: inlineSettings {uacInterceptionEnabled: boolean} — Windows UAC elevation prompt capture (default false / opt-in: capture is OFF when no policy assigns this feature). PAM rules/approvals are managed separately in the /pam console, not via config policies.
 - vulnerability: inlineSettings {enabled: boolean} — per-device CVE correlation / vulnerability scanning (default false / opt-in: devices with no policy are NOT scanned). Findings appear in the /vulnerabilities console; correlation runs daily.
+- device_lifecycle: inlineSettings {purgeRemovedAfterDays: number|null} — permanently delete removed devices N days after removal (1..3650); null/absent = keep forever. Purge is IRREVERSIBLE: it destroys the device record and all of its history. A daily job applies it; devices whose agent uninstall is still queued are skipped until it completes. Closest level wins, so an org-level link with null opts that org out of a partner-wide window.
 - remote_access: { webrtcDesktop: true, vncRelay: false, remoteTools: true, clipboardHostToViewer: true, clipboardViewerToHost: true, enableProxy: false, defaultAllowedPorts: [80,443], autoEnableProxy: false, maxConcurrentTunnels: 5, idleTimeoutMinutes: 5, maxSessionDurationHours: 8, sessionPromptMode?: "off"|"notify"|"consent", consentUnavailableBehavior?: "proceed"|"block", notifyOnSessionEnd?: true, showActiveIndicator?: true, technicianIdentityLevel?: "name_email"|"name"|"generic" } — all fields optional; updates MERGE over the currently stored settings, so send only the fields to change. Unknown keys are stripped, never applied — use exactly these key names.
 - onedrive_helper: { silentAccountConfig?, filesOnDemand?, kfmSilentOptIn?, kfmFolders? (Desktop/Documents/Pictures), kfmBlockOptOut?, tenantAssociationId?, restartOnChange?, libraries?: [{ libraryId, displayName, targetingMode (everyone|graph_group|local_ad_group), groupId?, groupName?, siteUrl? }] }
 
@@ -791,6 +826,7 @@ For link-only types, set featurePolicyId instead of inlineSettings:
               'maintenance', 'compliance', 'automation', 'event_log',
               'software_policy', 'sensitive_data', 'peripheral_control',
               'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper', 'vulnerability',
+              'device_lifecycle',
             ],
             description: 'Feature type (required for add)',
           },
@@ -819,6 +855,50 @@ For link-only types, set featurePolicyId instead of inlineSettings:
       // handler is the enforcement point for the AI path.)
       if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
+      // RMM-QA-176 D9.3. Belt-and-braces to the input-aware tier escalation in
+      // aiGuardrails, and the ANTI-BYPASS for `update`: featureType is not a
+      // required input there, so a call that omits it presents nothing the
+      // guardrail hook can recognise as maintenance and would auto-execute at
+      // tier 2. Resolve the EXISTING link's type unconditionally (one indexed
+      // lookup, reused by the update branch below) and make the omission an
+      // actionable refusal, not a silent write.
+      let existingFeatureType: string | undefined;
+      if (action === 'update') {
+        const featureLinkIdForLookup = input.featureLinkId as string | undefined;
+        if (!featureLinkIdForLookup) return JSON.stringify({ error: 'featureLinkId is required for update' });
+        const [existingLink] = await db
+          .select({ featureType: configPolicyFeatureLinks.featureType })
+          .from(configPolicyFeatureLinks)
+          .where(and(
+            eq(configPolicyFeatureLinks.id, featureLinkIdForLookup),
+            eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
+          ))
+          .limit(1);
+        existingFeatureType = existingLink?.featureType as string | undefined;
+      }
+
+      const touchesMaintenance =
+        (action === 'add' && input.featureType === 'maintenance') ||
+        (action === 'update' && existingFeatureType === 'maintenance');
+
+      if (touchesMaintenance) {
+        // `?.` deliberately: callers build this context in several shapes and a
+        // hard read would turn any principal-less one into a safeHandler-wrapped
+        // generic tool error rather than reaching the real handler.
+        const principalKind = auth.principal?.kind;
+        if (principalKind === 'api_key' || principalKind === 'oauth_grant') {
+          // NOT an MFA check. Machine contexts carry token:{} (mcpServer.ts:2246)
+          // and hasSatisfiedMfa passes ANY context when ENABLE_2FA is off
+          // (middleware/auth.ts:884-887), so an MFA-based denial would admit
+          // exactly the callers this refuses. `ai_agent` is deliberately NOT
+          // here: an approved agent run must proceed (approval is upstream).
+          return JSON.stringify({ error: MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED });
+        }
+        if (action === 'update' && input.featureType !== 'maintenance') {
+          return JSON.stringify({ error: MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED });
+        }
       }
 
       if (action === 'add') {
@@ -864,15 +944,13 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         if (input.featurePolicyId !== undefined) updates.featurePolicyId = input.featurePolicyId as string | null;
         if (input.inlineSettings !== undefined) {
           let inlineSettings: unknown = input.inlineSettings;
-          // update doesn't take featureType, so look up the existing link's
-          // type to know which validate-via-schema rule applies (same reasoning
-          // as the 'add' branch above).
-          const [existingLink] = await db
-            .select({ featureType: configPolicyFeatureLinks.featureType })
-            .from(configPolicyFeatureLinks)
-            .where(and(eq(configPolicyFeatureLinks.id, featureLinkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)))
-            .limit(1);
-          const validated = validateInlineSettingsForFeature(existingLink?.featureType, inlineSettings);
+          // update doesn't take featureType, so the existing link's type says
+          // which validate-via-schema rule applies (same reasoning as the 'add'
+          // branch above). Resolved once, above the maintenance gate — the
+          // lookup has to happen for EVERY update, not only inlineSettings
+          // ones, or a featurePolicyId-only edit of a maintenance link would
+          // slip past that gate entirely.
+          const validated = validateInlineSettingsForFeature(existingFeatureType, inlineSettings);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           inlineSettings = validated.value;
           updates.inlineSettings = inlineSettings;

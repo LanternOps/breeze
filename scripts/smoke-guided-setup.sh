@@ -158,6 +158,8 @@ login() {
     -H 'Content-Type: application/json' -H "Origin: ${origin}" \
     --data "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")" \
     || fail "login request to ${origin} failed"
+  jq -e '.mfaEnrollmentRequired == false' <<<"${body}" >/dev/null \
+    || fail "installer smoke role-MFA relief valve was not honoured at ${origin}"
   jq -er '.tokens.accessToken' <<<"${body}" 2>/dev/null \
     || fail "login at ${origin} returned no access token: $(jq -c 'del(.tokens)' <<<"${body}" 2>/dev/null || echo "${body}")"
 }
@@ -220,6 +222,10 @@ sed -i \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_PASSWORD=.*|BREEZE_BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
   -e "s|^BREEZE_BINARIES_IMAGE_REF=.*|BREEZE_BINARIES_IMAGE_REF=${BINARIES_IMAGE_REF}|" \
   "${WORK_DIR}/.env"
+# This smoke covers installer/reboot, session cookies and partner trust, not
+# enrollment. Persist the documented role-only valve through the systemd reboot;
+# the stored role flag and default forced-MFA behavior are tested separately.
+printf '\nMFA_FORCE_FOR_PARTNER_ADMIN=false\n' >> "${WORK_DIR}/.env"
 echo "  OK  staged"
 
 step "Run scripts/guided-setup.sh --yes end to end (generate, pull, up, health wait, systemd install)"

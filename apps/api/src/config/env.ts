@@ -513,6 +513,51 @@ export function authenticatorAttestationEnforced(): boolean {
   return true;
 }
 
+/**
+ * Apple App Attest configuration (#1374 W03).
+ *
+ * `appId` is Apple's "<TeamID>.<bundle id>" form and is hashed into the
+ * attestation's rpIdHash, so a wrong value here rejects every genuine
+ * attestation rather than accepting a foreign one — fail-closed either way.
+ * Default matches the committed identifiers (apps/mobile/eas.json team
+ * D8W6N2JYMA, apps/mobile/app.json bundle com.breeze.rmm).
+ */
+export const APPLE_APP_ATTEST_APP_ID =
+  process.env.APPLE_APP_ATTEST_APP_ID?.trim() || 'D8W6N2JYMA.com.breeze.rmm';
+
+/**
+ * Which App Attest environment's aaguid sentinel is accepted.
+ *
+ * DEFAULTS TO `production`, and only the exact string `development` opts out.
+ * A typo, an empty value, or a missing variable must NOT silently accept
+ * development attestations: those come from any developer-signed build of the
+ * app, which would hand an attacker the very L4 basis this wave exists to
+ * protect. Read at call time so ops can flip it without a rebuild and tests
+ * need no module reload.
+ *
+ * Unlike a plain equality test this WARNS on an unrecognized value — same
+ * treatment as authenticatorAttestationEnforced() above, and for the same
+ * reason. The failure mode is asymmetric and nasty: a typo (`Development`,
+ * `dev`, a trailing space) resolves to production, and then EVERY genuine
+ * attestation from a development build fails check 8 forever, fleet-wide, in a
+ * way that is indistinguishable request-by-request from a forged blob. Failing
+ * safe is right; failing safe *silently* is what makes a misconfiguration take
+ * weeks to find. It stays a warning rather than a boot refusal because the
+ * wrong value can only ever reject, never admit.
+ */
+export function appleAppAttestEnvironment(): 'production' | 'development' {
+  const raw = process.env.APPLE_APP_ATTEST_ENVIRONMENT?.trim() ?? '';
+  if (raw === 'development') return 'development';
+  if (raw !== '' && raw !== 'production') {
+    console.warn(
+      `[Authenticator] Ignoring unrecognized APPLE_APP_ATTEST_ENVIRONMENT value ${JSON.stringify(raw)} ` +
+        '— expected exactly "production" or "development". Treating it as production, which will reject ' +
+        'every development-build App Attest attestation.',
+    );
+  }
+  return 'production';
+}
+
 // Delegant service configuration for M365 helpdesk agent capability.
 // Delegant is a sibling service that manages AI-agent identity and governance.
 export const DELEGANT_BASE_URL = process.env.DELEGANT_BASE_URL ?? '';

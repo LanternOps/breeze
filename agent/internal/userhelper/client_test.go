@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -87,6 +88,28 @@ func TestExecuteScriptListRunningUsesSharedExecutor(t *testing.T) {
 	})
 	if cancelResult.Status != "completed" {
 		t.Fatalf("expected completed cancel status, got %s (%s)", cancelResult.Status, cancelResult.Error)
+	}
+
+	// #3525: the agent grades every helper's STRUCTURED outcome. A helper that
+	// answers `completed` with no recognisable `outcome` is graded kill_failed,
+	// so asserting only the status would let this whole branch regress to the
+	// old always-`cancelled: true` shape without any test noticing.
+	var cancelPayload struct {
+		ExecutionID string `json:"executionId"`
+		Outcome     string `json:"outcome"`
+		Cancelled   bool   `json:"cancelled"`
+	}
+	if err := json.Unmarshal(cancelResult.Result, &cancelPayload); err != nil {
+		t.Fatalf("unmarshal cancel result: %v", err)
+	}
+	if cancelPayload.Outcome != string(executor.CancelTerminated) {
+		t.Fatalf("cancel outcome = %q, want terminated", cancelPayload.Outcome)
+	}
+	if !cancelPayload.Cancelled {
+		t.Fatal("cancelled = false after a proven termination")
+	}
+	if cancelPayload.ExecutionID != "exec-1" {
+		t.Fatalf("executionId = %q, want exec-1", cancelPayload.ExecutionID)
 	}
 
 	<-done

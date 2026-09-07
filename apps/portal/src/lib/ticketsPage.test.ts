@@ -9,7 +9,7 @@ describe('decideTicketsPage', () => {
     )).toEqual({
       ticketsDisabled: true,
       usageStrictlyDisabled: false,
-      redirectToDevices: false,
+      redirectHome: false,
     });
   });
 
@@ -17,14 +17,14 @@ describe('decideTicketsPage', () => {
     expect(decideTicketsPage(
       { statusCode: 403, code: 'PORTAL_TICKETS_DISABLED' },
       { statusCode: 403 },
-    ).redirectToDevices).toBe(true);
+    ).redirectHome).toBe(true);
   });
 
   it('redirects when tickets are disabled and support usage is unavailable', () => {
     expect(decideTicketsPage(
       { statusCode: 403, code: 'PORTAL_TICKETS_DISABLED' },
       { statusCode: 500 },
-    ).redirectToDevices).toBe(true);
+    ).redirectHome).toBe(true);
   });
 
   it('shows the normal ticket list when tickets are available', () => {
@@ -34,7 +34,7 @@ describe('decideTicketsPage', () => {
     )).toEqual({
       ticketsDisabled: false,
       usageStrictlyDisabled: true,
-      redirectToDevices: false,
+      redirectHome: false,
     });
   });
 });

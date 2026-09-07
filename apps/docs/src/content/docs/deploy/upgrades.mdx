@@ -59,9 +59,54 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 ## Version-specific notes
 
-### v0.110.0 — AI agent graduation and impact accounting
+### v0.110.0 — reboot deferral, device-set billing, QuickBooks payments, portal visibility
 
-**No new environment variables.** Both features run under the flags you already have — `BREEZE_AI_AGENTS_ENABLED` for the nightly impact rollup, and `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` (still off, still not generally available) for promoting an operation to pre-authorized execution. Automatic demotion is not gated by anything and is always on.
+**No breaking changes and no new *required* environment variables.** Everything new is either off by default or optional. A number of new **optional** variables were added, though — see [New optional settings](#new-optional-settings-in-v01100) below and the full [Environment Variables](/deploy/environment/) reference.
+
+**Pull the `portal` container too.** The customer portal runs in its own container and gained several new pages in this release. A bare `docker compose pull` covers it; if you pull services by name, make sure `portal` is on the list alongside `api` and `web`. If you have opted into the [worker split](/deploy/worker-split/), include `worker` as well.
+
+<Aside type="tip" title="Refresh your Compose file from the release">
+  `docker compose pull` updates images — it does **not** update your `docker-compose.yml`. New optional variables only reach the container if they are mapped in the `api` service's `environment:` block, so a value added to `.env` alone silently does nothing. Compare your deployed Compose file against the one published at the release tag and merge in what you need, keeping your own domains, mounts, and overrides.
+</Aside>
+
+#### Database migrations
+
+**53 migrations. Take a database backup first.** All are idempotent and apply automatically on API startup (unless you have set `AUTO_MIGRATE=false`). Every index on a table that can be large is built **concurrently**, so writes are not blocked while they run — the trade-off is that an interrupted build leaves an invalid index behind. If that happens the next boot reports it loudly; recover with `DROP INDEX CONCURRENTLY <name>` and restart.
+
+Three migrations clean up or stamp existing rows and record what they touched as a Postgres `WARNING`. Read these in the API log after the first boot:
+
+| Log line | What to do if the count is above zero |
+|---|---|
+| `cleaned N contract_lines rows whose site belonged to another org` | Re-scope those contract lines in the contract editor before your next billing run. |
+| The site-name stamp on `contract_lines` | This records how many existing site-scoped lines were protected. A line whose site was deleted *before* this release cannot be recovered and keeps billing organization-wide until a technician re-scopes it. |
+| `rls-scoped replay` | Informational. Five earlier migrations wrote rows without the right database scope and are replayed correctly here; the counts tell you how many rows were fixed. |
+
+#### New optional settings in v0.110.0
+
+None of these are required and none of them fail boot when missing. Full descriptions are in [Environment Variables](/deploy/environment/).
+
+| Variable | Why you might set it |
+|---|---|
+| `QBO_WEBHOOK_VERIFIER_TOKEN` | Makes recorded QuickBooks payments come back within seconds instead of on the 15-minute sweep. |
+| `FIREBASE_SERVICE_ACCOUNT` | Enables push notifications to the Android app. |
+| `AUDIT_CHAIN_VERIFY_MODE`, `AUDIT_CHAIN_VERIFY_RESCAN_SLICES` | Nightly audit-chain verification is now incremental by default rather than a full-table walk. `AUDIT_CHAIN_VERIFY_ENABLED=false` now also stops a sweep that is already running. |
+| `TICKET_OUTBOX_RETENTION_DAYS`, `INTENT_OUTBOX_RETENTION_DAYS`, `METRIC_ANOMALY_INCIDENT_RETENTION_DAYS` (and their batch knobs) | Tune how long the new nightly retention sweeps keep delivery and incident history. Defaults to 14 days. |
+| `SMTP_TIMEOUT_MS`, `MAILGUN_TIMEOUT_MS` | Bound how long a wedged mail host can hold an outbound send open. |
+| `BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED` | Already **on** by default. Only set it if you need to accept an approver device's unverified platform-bound claim. |
+| `PARTNER_TRUST_MODE` and friends | Hosted service only — inert on a self-hosted install. |
+
+#### Behaviour changes to know about
+
+- **End-user restart prompts ship off.** Turn them on per policy on the Patch tab with **Let users postpone the restart**. The deadline is the guarantee; the postponement count is a courtesy budget. Linux endpoints need `zenity` installed to show a dialog the user can postpone from — without it they get a plain notification and the restart proceeds on schedule. See [Patch Management](/features/patch-management/).
+- **Unrated patches are never treated as Low** and are excluded from auto-approval unless an update ring opts in. Expect a backlog of pending patches to appear that were previously auto-approved as Low. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches).
+- **Deleting a site used by a site-scoped contract line now fails invoice generation** with a clear error instead of quietly billing every device in the organization. Re-scope or remove the line, then generate again.
+- **Audit-log retention now runs for every organization that has a policy.** New organizations get a default policy automatically; **existing organizations have no policy until an operator saves one**, and nothing is deleted until then. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
+- **New partners are created with inbound email-to-ticket turned off.** Existing partners are unchanged.
+- **Windows 10 and Windows Server 2016 are the declared agent OS floor.** Older Windows builds are refused by the installer rather than enrolling and failing later.
+
+#### AI agent graduation and impact accounting
+
+Both features run under the flags you already have — `BREEZE_AI_AGENTS_ENABLED` for the nightly impact rollup, and `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` (still off, still not generally available) for promoting an operation to pre-authorized execution. Automatic demotion is not gated by anything and is always on.
 
 <Aside type="caution" title="Behaviour change: partner-level pre-authorized operations stop applying on their own">
   A partner-wide agent's `supervisedActionKeys` are now a **ceiling** — what an organization *may* be granted — not an inherited grant. An organization whose agent has no override row of its own now resolves to an **empty** set of pre-authorized operations, whatever the partner baseline lists.

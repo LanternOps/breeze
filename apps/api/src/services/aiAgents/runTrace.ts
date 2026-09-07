@@ -358,11 +358,16 @@ function mapIntentRow(row: RunTraceIntentRowInput): AiAgentRunIntentSummaryDto {
 
 export function buildRunTrace(
   run: RunTraceRunInput,
-  // `null` when the agent row is RLS-invisible to the caller — a partner-wide
+  // `null` when the agent row is RLS-invisible to the caller. A partner-wide
   // agent (#2135) is not reachable via breeze_has_partner_access from an
-  // org-scoped context even though the run it produced (plain org-scoped)
-  // is. The route left-joins ai_agents for exactly this reason: a run must
-  // never disappear because its agent row did.
+  // org-scoped context; since
+  // migrations/2026-10-11-150000-ai-partner-wide-select.sql the separate
+  // FOR SELECT branch does make the caller's OWN partner's partner-wide rows
+  // readable, so this is null far less often — but not never: the branch keys
+  // on the caller's own partner, so a run whose org has moved to a different
+  // partner still has an invisible agent row, while the run itself (plain
+  // org-scoped) stays visible. The route left-joins ai_agents for exactly this
+  // reason: a run must never disappear because its agent row did.
   agent: RunTraceAgentInput | null,
   device: RunTraceDeviceInput | null,
   ledgerRows: RunTraceLedgerRowInput[],

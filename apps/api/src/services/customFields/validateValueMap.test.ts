@@ -65,7 +65,14 @@ describe('validateCustomFieldMap', () => {
 
     const result = await validateCustomFieldMap(ORG_ID, null, { rack_units: '4', ready: 'true' });
 
-    expect(result).toEqual({ ok: true, values: { rack_units: 4, ready: true } });
+    expect(result).toEqual({
+      ok: true,
+      values: { rack_units: 4, ready: true },
+      writes: [
+        { definitionId: 'def-rack_units', fieldKey: 'rack_units', type: 'number', value: 4 },
+        { definitionId: 'def-ready', fieldKey: 'ready', type: 'boolean', value: true },
+      ],
+    });
   });
 
   it('rejects a key with no visible definition as unknown_field', async () => {
@@ -108,7 +115,11 @@ describe('validateCustomFieldMap', () => {
 
       const result = await validateCustomFieldMap('org-1', 'macos', { rustdesk_id: 'abc123' });
 
-      expect(result).toEqual({ ok: true, values: { rustdesk_id: 'abc123' } });
+      expect(result).toEqual({
+        ok: true,
+        values: { rustdesk_id: 'abc123' },
+        writes: [{ definitionId: 'def-rustdesk_id', fieldKey: 'rustdesk_id', type: 'text', value: 'abc123' }],
+      });
     });
 
     it('does not gate at all when deviceTypes is null or empty (applies to every device)', async () => {
@@ -119,7 +130,14 @@ describe('validateCustomFieldMap', () => {
 
       const result = await validateCustomFieldMap('org-1', null, { a: '1', b: '2' });
 
-      expect(result).toEqual({ ok: true, values: { a: '1', b: '2' } });
+      expect(result).toEqual({
+        ok: true,
+        values: { a: '1', b: '2' },
+        writes: [
+          { definitionId: 'def-a', fieldKey: 'a', type: 'text', value: '1' },
+          { definitionId: 'def-b', fieldKey: 'b', type: 'text', value: '2' },
+        ],
+      });
     });
   });
 });

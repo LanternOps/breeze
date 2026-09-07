@@ -7,7 +7,7 @@ import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
 import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
-import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
+import { ACT_ELIGIBLE_TOOL_NAMES, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -71,6 +71,41 @@ export class InvalidSupervisedActionKeysError extends Error {
 }
 
 /**
+ * Spec §4.4. A pre-authorized key goes live on an ORG row only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, a direct `.update(aiAgents)`
+ * under an advisory lock) — never through create/update, no matter how the
+ * caller got here. `rejected` names exactly which keys the write tried to
+ * add so the client can render an actionable message rather than a bare 422.
+ */
+export class SupervisedKeysGrantOnlyError extends Error {
+  readonly code = 'supervised_keys_grant_only';
+
+  constructor(public rejected: Array<{ key: string; reason: 'grant_only' }>) {
+    super(`supervised_keys_grant_only: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'SupervisedKeysGrantOnlyError';
+  }
+}
+
+/**
+ * Spec §4.4: on an ORG row a pre-authorized key goes live only through the
+ * four-eyes grant executor (supervisedKeyGrant.ts, direct UPDATE under an
+ * advisory lock) — never through create/update. Removals stay open so manual
+ * revoke and auto-demotion keep working. Partner rows are the CEILING and are
+ * edited directly, so this is a no-op for them.
+ */
+export function assertOrgRowSupervisedKeysGrantOnly(
+  owner: AgentOwner,
+  existing: readonly string[],
+  next: readonly string[] | undefined,
+): void {
+  if (next === undefined || owner.orgId === null) return;
+  const added = next.filter((key) => !existing.includes(key));
+  if (added.length > 0) {
+    throw new SupervisedKeysGrantOnlyError(added.map((key) => ({ key, reason: 'grant_only' as const })));
+  }
+}
+
+/**
  * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
  * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
  * at least one recipient that currently resolves to a real user (an
@@ -126,8 +161,8 @@ function hasActEligibleSurface(
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
   const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
   const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
-  if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
-  if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
+  if (intersecting.some((entry) => !SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return true;
+  if (!intersecting.some((entry) => SCRIPT_GATED_ACT_TOOLS.has(baseName(entry)))) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
 }
 
@@ -366,9 +401,26 @@ export async function recordAgentMutation(
 
 /**
  * The set of agents this caller may see, on either ownership axis. Partner-wide
- * rows are added only for partner-scoped callers: an org token carries a
- * partnerId but never passes breeze_has_partner_access, so RLS would hide those
- * rows from it regardless — the app layer must not be looser than RLS.
+ * rows are added only for PARTNER-scoped callers.
+ *
+ * LOAD-BEARING, and no longer merely mirroring RLS. It used to be both: an org
+ * token carries a partnerId but never passes breeze_has_partner_access, so RLS
+ * hid partner-wide rows from it regardless and this predicate only avoided being
+ * looser than the database. Since
+ * migrations/2026-10-11-150000-ai-partner-wide-select.sql, ai_agents carries a
+ * separate FOR SELECT policy `org_id IS NULL AND partner_id =
+ * breeze_current_partner_id()`, and an org token DOES populate that GUC — so RLS
+ * now permits an org-scoped SELECT of the caller's own partner's partner-wide
+ * agents. This `auth.scope === 'partner'` gate is what still keeps them out of
+ * org-scoped listings and, crucially, out of `getAgent` — which is what
+ * `POST /ai/agents/:id/runs` (routes/aiAgents.ts) resolves the agent through
+ * before enqueuing a run. An org token cannot resolve a partner-wide agent id,
+ * so it cannot execute the MSP's shared agent. That containment is now an
+ * APP-LAYER property, not an RLS one. Do not "simplify" this to a bare
+ * orgCondition-plus-partner OR on the grounds that RLS will catch it — RLS will
+ * not. (Writes are unaffected either way: the new policy is SELECT-only, so
+ * UPDATE/DELETE targeting of partner-wide rows still requires
+ * breeze_has_partner_access.)
  */
 function accessibleAgentCondition(auth: AuthContext) {
   return auth.scope === 'partner' && auth.partnerId
@@ -387,11 +439,13 @@ export async function listAgents(
   // version of this comment claimed the opposite — that contextless meant a
   // full bypass — which inverted the failure mode on a multi-tenant surface.
   //
-  // The app-layer predicate stays anyway, for two reasons that are real: the
-  // unit-test path mocks the db and has no RLS at all, and the old signature
-  // (_auth, ignored) made an unfiltered read look authorized to the next caller.
-  // Partner-wide rows are only added for partner-scoped callers: an org token
-  // carries a partnerId but never passes breeze_has_partner_access.
+  // The app-layer predicate stays anyway, for three reasons that are real: the
+  // unit-test path mocks the db and has no RLS at all; the old signature
+  // (_auth, ignored) made an unfiltered read look authorized to the next caller;
+  // and since 2026-10-11-150000-ai-partner-wide-select.sql it is STRICTER than
+  // RLS rather than a mirror of it — see accessibleAgentCondition above for why
+  // the `auth.scope === 'partner'` gate is now the only thing keeping
+  // partner-wide agents out of org-scoped listings and org-triggered runs.
   const ownerScope = accessibleAgentCondition(auth);
 
   return db
@@ -511,6 +565,11 @@ export async function createAgent(
   // reason as recipients above — a rejected key must never be persisted.
   assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
 
+  // Spec §4.4: a brand-new ORG row starts with no granted keys, so any create
+  // that supplies a non-empty supervisedActionKeys is trying to add one —
+  // grant-only, refused here regardless of value-validity above.
+  assertOrgRowSupervisedKeysGrantOnly(owner, [], input.actAssets.supervisedActionKeys);
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -599,6 +658,15 @@ export async function updateAgent(
     // the merged/stored value — see assertSupervisedActionKeysValid's doc.
     if (input.actAssets?.supervisedActionKeys !== undefined) {
       assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+      // Spec §4.4: same grant-only rule as createAgent — a patch may keep or
+      // remove an ORG row's already-granted keys, but adding one outside the
+      // four-eyes grant executor is refused before the UPDATE runs.
+      assertOrgRowSupervisedKeysGrantOnly(
+        owner,
+        stored.actAssets.supervisedActionKeys ?? [],
+        input.actAssets.supervisedActionKeys,
+      );
     }
 
     // Task 6 (#3826): prerequisites are checked against what the update will

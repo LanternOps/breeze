@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AppState,
   type AppStateStatus,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Text,
@@ -45,6 +46,7 @@ import { ChatHeader } from './components/ChatHeader';
 import { ColdOpenChips } from './components/ColdOpenChips';
 import { Composer } from './components/Composer';
 import { ConversationList } from './components/ConversationList';
+import { HomeFleetStrip } from './components/HomeFleetStrip';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
@@ -236,6 +238,7 @@ export function HomeScreen() {
                   state: 'completed',
                   output: ev.output,
                   isError: ev.isError ?? false,
+                  handoff: ev.handoff,
                 },
               }));
               dispatch(setInFlightTool(null));
@@ -308,6 +311,9 @@ export function HomeScreen() {
 
   const handleSend = useCallback(
     async (text: string) => {
+      // #5104: the composer keyboard otherwise stays up and covers the
+      // streaming reply as it arrives.
+      Keyboard.dismiss();
       // Abort any prior stream, catch-up poll or settle retry before starting
       // the next turn.
       cancelTurnWork();
@@ -399,6 +405,7 @@ export function HomeScreen() {
       >
         {isCold ? (
           <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+            <HomeFleetStrip />
             <ColdOpenChips onPick={handleChip} />
           </View>
         ) : (
@@ -433,6 +440,10 @@ export function HomeScreen() {
           disabled={status === 'creating-session'}
           draft={draft}
           onDraftConsumed={() => setDraft(undefined)}
+          // Overrides Composer's own default ("Ask Breeze.") — a placeholder
+          // ending in a period reads as a completed sentence rather than an
+          // invitation to type (#5105).
+          placeholder="Ask Breeze"
         />
       </KeyboardAvoidingView>
 

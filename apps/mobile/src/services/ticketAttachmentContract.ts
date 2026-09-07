@@ -202,18 +202,13 @@ export function isAllowedMime(mimeType: string): boolean {
   return (TICKET_ATTACHMENT_LIMITS.allowedMimes as readonly string[]).includes(mimeType);
 }
 
-/**
- * React Native's `FormData` accepts this shape as a file part and streams the
- * file off disk; the DOM typings know nothing about it, hence the cast at the
- * call site. Exported so a test can assert the shape without constructing a
- * FormData whose parts Node cannot introspect the same way.
- */
-export interface AttachmentFilePart {
-  uri: string;
-  name: string;
-  type: string;
-}
-
-export function attachmentFilePart(file: PickedAttachment): AttachmentFilePart {
-  return { uri: file.uri, name: file.name, type: file.mimeType };
-}
+// The multipart file-part builder used to live here as `attachmentFilePart()`,
+// returning React Native's proprietary `{ uri, name, type }` shape. That shape
+// satisfies RN's own FormData/XHR bridge but is NOT what Expo's `fetch`
+// (`globalThis.fetch` since SDK 57 — `winter/fetch/convertFormData.ts`) can
+// serialise: it accepts only a `Blob` or an object exposing `bytes()`, and
+// throws `Unsupported FormDataPart implementation` on the RN shape (#5103).
+// Building the fix (an `expo-file-system` `File`, which implements both)
+// requires a native import, which this module must never carry — see the
+// file-header note. It now lives in `ticketAttachments.ts`, next to the other
+// native-backed helpers.

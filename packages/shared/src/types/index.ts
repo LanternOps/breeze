@@ -162,6 +162,14 @@ export interface Device {
   activeVpns: VpnPresence[] | null;
   createdAt: Date;
   updatedAt: Date;
+  // RMM-QA-176 manual maintenance lease. Serialised from the API as ISO
+  // strings. `maintenanceUntil > now` — not `status` — is the truth of "a
+  // technician put this device into maintenance": the heartbeat overwrites
+  // status on every beat.
+  maintenanceStartedAt?: string | null;
+  maintenanceUntil?: string | null;
+  maintenanceReason?: string | null;
+  maintenanceStartedBy?: string | null;
 }
 
 // Current-state power/battery telemetry for portable devices (#2142). Reported

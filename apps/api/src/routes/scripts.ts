@@ -14,7 +14,6 @@ import {
   scripts,
   scriptExecutions,
   devices,
-  deviceCommands,
   automationPolicies,
   patchPolicies,
   configPolicyComplianceRules,
@@ -44,8 +43,25 @@ import {
 import { scriptBundleRoutes } from './scriptBundle';
 import { cloneScript, isScriptCloneError } from '../services/scriptClone';
 
-import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
-import { applyAutomationActionTerminal } from '../services/automationActionResults';
+import {
+  MAX_GRACE_SECONDS,
+  cancelScriptExecution,
+  clampGraceSeconds,
+  deliverCancelCommand,
+} from '../services/scriptCancellation';
+import { captureException } from '../services/sentry';
+
+/**
+ * #3525 W02b — optional body of POST /executions/:id/cancel.
+ *
+ * The bound mirrors `MAX_GRACE_SECONDS`, which the agent is contractually
+ * promised never to exceed; keeping the two in one place stops the API from
+ * advertising a grace the fleet will not honour.
+ */
+const cancelExecutionBodySchema = z.object({
+  graceSeconds: z.number().int().min(0).max(MAX_GRACE_SECONDS).optional(),
+}).optional();
+
 export const scriptRoutes = new Hono();
 
 // Helper functions
@@ -1204,7 +1220,14 @@ scriptRoutes.get(
   }
 );
 
-// POST /executions/:id/cancel - Cancel pending/running execution
+// POST /executions/:id/cancel - Request a stop for a pending/queued/running execution
+//
+// #3525 W02b. This route no longer stamps `cancelled` itself. It owns the
+// org / site / permission / MFA gates and the audit row; every state decision
+// lives in services/scriptCancellation so the route, the AI tool and the
+// automation fan-out cannot drift. A row only ever becomes `cancelled` when the
+// stop was PROVEN — server-side by retracting an undelivered command, or by the
+// device's own ack.
 scriptRoutes.post(
   '/executions/:id/cancel',
   requireScope('organization', 'partner', 'system'),
@@ -1214,6 +1237,35 @@ scriptRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { id: executionId } = c.req.valid('param');
+
+    // An absent body is the normal case (the web Stop button sends none), so
+    // this is parsed by hand rather than with zValidator('json'), which would
+    // 400 on no body at all. A body that IS present and out of range is
+    // rejected rather than silently reinterpreted: the agent is only promised
+    // 0..30 s, and quietly turning a requested 999 into the 5 s default would
+    // misreport what the endpoint is about to do.
+    //
+    // The empty/malformed split matters for the same reason: `c.req.json()`
+    // throws the same SyntaxError for both, so a bare `.catch(() => ({}))`
+    // would read a truncated `{"graceSeconds":30` as "no grace requested" and
+    // quietly hand the agent 5 s — the very substitution the range check below
+    // refuses, just one step earlier.
+    const rawText = await c.req.text().catch(() => '');
+    let rawBody: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        rawBody = JSON.parse(rawText);
+      } catch {
+        return c.json({ error: 'Malformed JSON body' }, 400);
+      }
+    }
+    const parsedBody = cancelExecutionBodySchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return c.json({
+        error: `graceSeconds must be an integer between 0 and ${MAX_GRACE_SECONDS}`,
+      }, 400);
+    }
+    const graceSeconds = parsedBody.data?.graceSeconds;
 
     // Get execution
     const [execution] = await db
@@ -1244,76 +1296,82 @@ scriptRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Can only cancel pending, queued, or running executions
-    const cancelableStatuses = ['pending', 'queued', 'running'];
-    if (!cancelableStatuses.includes(execution.status)) {
-      return c.json({
-        error: 'Cannot cancel execution with status: ' + execution.status
-      }, 400);
-    }
-
-    // Update execution status to cancelled
-    const [updated] = await db
-      .update(scriptExecutions)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        errorMessage: `Cancelled by user ${auth.user.email}`
-      })
-      .where(and(
-        eq(scriptExecutions.id, executionId),
-        inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-      ))
-      .returning();
-
-    if (!updated) {
-      return c.json({ error: 'Execution is no longer cancellable' }, 409);
-    }
-
-    await applyAutomationActionTerminal({
-      source: 'cancellation',
-      scriptExecutionId: updated.id,
-      terminalStatus: 'cancelled',
-      error: updated.errorMessage ?? null,
-      completedAt: updated.completedAt ?? new Date(),
+    const outcome = await cancelScriptExecution({
+      executionId,
+      actorId: auth.user.id,
+      actorLabel: auth.user.email,
+      graceSeconds,
     });
 
-    // Also cancel any pending device commands for this execution
-    await db
-      .update(deviceCommands)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        result: { cancelled: true, cancelledBy: auth.user.id },
-        ...terminalPayloadErasureSet(),
-      })
-      .where(
-        and(
-          eq(deviceCommands.deviceId, execution.deviceId),
-          eq(deviceCommands.status, 'pending'),
-          sql`${deviceCommands.payload}->>'executionId' = ${executionId}`
-        )
+    if (outcome.kind === 'not_found') {
+      return c.json({ error: 'Execution not found' }, 404);
+    }
+    if (outcome.kind === 'already_terminal') {
+      // Deliberate contract change from today's 400 — 409 is the conflict this
+      // actually is, and openapi.ts documents it.
+      return c.json({ error: `Cannot cancel execution with status: ${outcome.status}` }, 409);
+    }
+    if (outcome.kind === 'inconsistent') {
+      // Absence of the paired script command is not proof that nothing ran.
+      // Fail closed rather than stamping a cancel we cannot justify.
+      captureException(
+        new Error('Cancel requested for an execution with no paired script command'),
+        undefined,
+        { executionId, deviceId: execution.deviceId },
       );
+      // Audited as well as reported: an operator reading this device's history
+      // must be able to see that a stop was attempted and refused, not just
+      // find it in Sentry.
+      writeRouteAudit(c, {
+        orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
+        action: 'script.execution.cancel',
+        resourceType: 'script_execution',
+        resourceId: executionId,
+        details: {
+          scriptExecutionId: executionId,
+          deviceId: execution.deviceId,
+          previousStatus: execution.status,
+          outcome: outcome.kind,
+        },
+      });
+      return c.json({ error: 'Execution state is inconsistent; cancellation refused' }, 500);
+    }
+
+    // POST-COMMIT DELIVERY (spec §2.5). The service committed its own
+    // transaction, so the command row is visible to the agent's ack lookup —
+    // sending before that commit lets a fast ack be routed as orphaned.
+    if (outcome.kind === 'cancelling' && !outcome.alreadyQueued) {
+      await deliverCancelCommand(outcome.cancelCommandId, outcome.deviceId);
+    }
 
     writeRouteAudit(c, {
       orgId: resolveScriptAuditOrgId(auth, null, execution.deviceOrgId ?? null),
       action: 'script.execution.cancel',
       resourceType: 'script_execution',
-      resourceId: updated.id,
+      resourceId: executionId,
       details: {
         scriptExecutionId: executionId,
         deviceId: execution.deviceId,
-        previousStatus: execution.status
+        previousStatus: execution.status,
+        // The audit records what the REQUEST achieved, never an assumed stop.
+        outcome: outcome.kind,
+        ...(outcome.kind === 'cancelling'
+          ? { commandId: outcome.cancelCommandId, graceSeconds: clampGraceSeconds(graceSeconds) }
+          : {}),
       }
     });
 
-    return c.json({
-      success: true,
-      execution: {
-        id: updated.id,
-        status: updated.status,
-        completedAt: updated.completedAt
-      }
-    });
+    const [current] = await db
+      .select({
+        id: scriptExecutions.id,
+        status: scriptExecutions.status,
+        cancelState: scriptExecutions.cancelState,
+        completedAt: scriptExecutions.completedAt,
+      })
+      .from(scriptExecutions)
+      .where(eq(scriptExecutions.id, executionId))
+      .limit(1);
+
+    return c.json({ success: true, execution: current ?? { id: executionId } });
   }
 );

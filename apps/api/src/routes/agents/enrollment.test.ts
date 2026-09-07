@@ -152,6 +152,12 @@ vi.mock('../../services/partnerTrust', () => ({
   })),
 }));
 
+// #4630 — dynamic device group re-evaluation ENQUEUE on enrollment.
+const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -365,6 +371,40 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   it('omits/empty backupServerUrl when env unset', async () => {
     const body = await enrollOk();
     expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
+
+describe('POST /agents/enroll — dynamic device group re-evaluation enqueue (#4630)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('enqueues a device.created re-evaluation for the freshly enrolled device', async () => {
+    await enrollOk();
+
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deviceId: 'device-backup-url',
+        orgId: 'org-backup-url',
+        eventType: 'device.created',
+      }),
+    );
+  });
+
+  it('does not await the enqueue — a stalled queue must not hold the enrollment transaction', async () => {
+    // The enrollment handler body runs inside withSystemDbAccessContext, i.e. an
+    // open transaction on a pooled connection. A never-settling enqueue proves
+    // the call site is `void`-ed: an `await` here would hang the test out.
+    requestDeviceGroupReevaluationMock.mockReturnValue(new Promise(() => {}));
+
+    // enrollOk asserts the 201 itself; reaching this line at all is the proof.
+    await enrollOk();
+
+    expect(requestDeviceGroupReevaluationMock).toHaveBeenCalled();
   });
 });
 

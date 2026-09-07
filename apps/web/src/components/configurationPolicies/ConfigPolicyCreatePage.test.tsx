@@ -206,3 +206,159 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
     });
   });
 });
+
+function startLinkedPolicy() {
+  render(<ConfigPolicyCreatePage />);
+  fireEvent.click(screen.getByText('Link to Existing'));
+}
+
+describe('ConfigPolicyCreatePage — linked mode posts parentPolicyId (#5080)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('org-scoped: fetches eligible parents for the chosen owner scope and posts parentPolicyId', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-9' });
+    orgState.current = { currentOrgId: 'org-9', allOrgs: false, organizations: [] };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/configuration-policies/eligible-parents?ownerScope=organization&orgId=org-9') {
+        return json({ data: [{ id: 'parent-1', name: 'Baseline', ownerScope: 'organization' }] });
+      }
+      if (url === '/configuration-policies' && method === 'POST') return json({ id: 'pol-1' }, true);
+      return json({ error: 'not found' }, false);
+    });
+
+    startLinkedPolicy();
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/configuration-policies/eligible-parents?ownerScope=organization&orgId=org-9'
+      )
+    );
+    await screen.findByText('Baseline');
+    fireEvent.change(screen.getByTestId('policy-link-selector'), { target: { value: 'parent-1' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'Child policy' },
+    });
+    fireEvent.click(screen.getByText('Create Policy'));
+
+    await waitFor(() => {
+      const body = postBody();
+      expect(body.parentPolicyId).toBe('parent-1');
+      expect(body.orgId).toBe('org-9');
+    });
+    expect(navMock).toHaveBeenCalledTimes(1);
+    expect(navMock.mock.calls[0][0]).toBe('/configuration-policies/pol-1');
+    expect(navMock.mock.calls[0][0]).not.toContain('?linked=');
+  });
+
+  it('partner-wide: fetches eligible parents with ownerScope=partner and shows an "All orgs" suffix', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgState.current = {
+      currentOrgId: null,
+      allOrgs: true,
+      organizations: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Beta' }],
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/configuration-policies/eligible-parents?ownerScope=partner') {
+        return json({ data: [{ id: 'parent-9', name: 'MSP Baseline', ownerScope: 'partner' }] });
+      }
+      return json({ error: 'not found' }, false);
+    });
+
+    startLinkedPolicy();
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/configuration-policies/eligible-parents?ownerScope=partner')
+    );
+    expect(await screen.findByText(/MSP Baseline/)).toBeInTheDocument();
+    expect(screen.getByText(/MSP Baseline.*All orgs/)).toBeInTheDocument();
+  });
+
+  it('org-scoped, no org chosen: shows a hint instead of the picker and keeps Create disabled', async () => {
+    // Partner-scope creator in All-orgs view, switched to "a specific organization"
+    // but hasn't picked one yet — there is no orgId to build the eligible-parents
+    // URL from, so the picker must not render (and must not fetch an org-scoped
+    // eligible-parents list with a missing orgId).
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgState.current = {
+      currentOrgId: null,
+      allOrgs: true,
+      organizations: [{ id: 'org-1', name: 'Acme' }],
+    };
+    fetchMock.mockResolvedValue(json({ error: 'not found' }, false));
+
+    startLinkedPolicy();
+    // Default owner scope is partner-wide (All-orgs view), so the picker fetches
+    // eligible-parents?ownerScope=partner before the user switches — that's fine.
+    fireEvent.click(screen.getByTestId('policy-owner-org'));
+
+    expect(
+      fetchMock.mock.calls.some((c) =>
+        String(c[0]).startsWith('/configuration-policies/eligible-parents?ownerScope=organization')
+      )
+    ).toBe(false);
+    expect(screen.getByText('Select an organization for this policy.')).toBeInTheDocument();
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+  });
+
+  it('linked mode without a selected parent keeps Create disabled and does not POST', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'org-9' });
+    orgState.current = { currentOrgId: 'org-9', allOrgs: false, organizations: [] };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/configuration-policies/eligible-parents?ownerScope=organization&orgId=org-9') {
+        return json({ data: [{ id: 'parent-1', name: 'Baseline', ownerScope: 'organization' }] });
+      }
+      return json({ error: 'not found' }, false);
+    });
+
+    startLinkedPolicy();
+    await screen.findByText('Baseline');
+
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText('e.g. Standard Workstation Policy'), {
+      target: { value: 'No parent chosen' },
+    });
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies' && (c[1] as RequestInit)?.method === 'POST')
+    ).toBe(false);
+  });
+
+  it('resets the selected parent when the eligible-parents URL changes (org switched)', async () => {
+    getJwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    orgState.current = {
+      currentOrgId: null,
+      allOrgs: true,
+      organizations: [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Beta' }],
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/configuration-policies/eligible-parents?ownerScope=organization&orgId=org-1') {
+        return json({ data: [{ id: 'parent-a1', name: 'Acme Baseline', ownerScope: 'organization' }] });
+      }
+      if (url === '/configuration-policies/eligible-parents?ownerScope=organization&orgId=org-2') {
+        return json({ data: [{ id: 'parent-b1', name: 'Beta Baseline', ownerScope: 'organization' }] });
+      }
+      return json({ error: 'not found' }, false);
+    });
+
+    startLinkedPolicy();
+    fireEvent.click(screen.getByTestId('policy-owner-org'));
+    fireEvent.change(screen.getByTestId('policy-owner-org-select'), { target: { value: 'org-1' } });
+    await screen.findByText('Acme Baseline');
+    fireEvent.change(screen.getByTestId('policy-link-selector'), { target: { value: 'parent-a1' } });
+    expect(screen.getByText('Create Policy').closest('button')).not.toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('policy-owner-org-select'), { target: { value: 'org-2' } });
+    await screen.findByText('Beta Baseline');
+
+    // A parent valid for org-1 is not valid for org-2 — the stale selection must
+    // not silently ride along into the POST.
+    expect(screen.getByText('Create Policy').closest('button')).toBeDisabled();
+  });
+});

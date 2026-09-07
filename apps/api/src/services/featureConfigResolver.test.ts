@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // The mocked query builder doesn't do real SQL filtering, so a naive mock
 // that just hands back a fixed row array can't prove the join CONDITION
 // changed. Instead this captures the actual condition object built by
-// `resolveAlertRulesForDevice` for the configPolicyFeatureLinks join (an
+// `resolveAlertRulesForDevice` for the configPolicyEffectiveFeatureLinks join (an
 // `eq`/`inArray` node produced by the real, unmocked and/eq/inArray from the
 // mocked 'drizzle-orm' below) and evaluates it against each candidate row's
 // simulated link featureType — the same shadowing bug this migration fixes
@@ -33,10 +33,14 @@ vi.mock('../db/schema', () => ({
     partnerId: 'configurationPolicies.partnerId',
     status: 'configurationPolicies.status',
   },
-  configPolicyFeatureLinks: {
-    id: 'configPolicyFeatureLinks.id',
-    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
-    featureType: 'configPolicyFeatureLinks.featureType',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'configPolicyEffectiveFeatureLinks.id',
+    configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId',
+    sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId',
+    inherited: 'configPolicyEffectiveFeatureLinks.inherited',
+    featureType: 'configPolicyEffectiveFeatureLinks.featureType',
+    featurePolicyId: 'configPolicyEffectiveFeatureLinks.featurePolicyId',
+    inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings',
   },
   configPolicyAssignments: {
     id: 'configPolicyAssignments.id',
@@ -684,7 +688,7 @@ describe('resolveAlertRulesForDevice', () => {
 
   // Recursively walks the mocked condition tree built by the real (unmocked
   // logic, mocked drizzle-orm primitives) and/eq/inArray calls, looking for
-  // the node that constrains configPolicyFeatureLinks.featureType. Any other
+  // the node that constrains configPolicyEffectiveFeatureLinks.featureType. Any other
   // sub-condition (e.g. the configPolicyId equality half of the join) is
   // treated as always-true here — this harness only needs to prove which
   // featureType values the join filter itself admits.
@@ -694,10 +698,10 @@ describe('resolveAlertRulesForDevice', () => {
     if (node.op === 'and' && Array.isArray(node.conditions)) {
       return node.conditions.every((c) => featureTypeConditionAdmits(c, featureType));
     }
-    if (node.op === 'eq' && node.column === 'configPolicyFeatureLinks.featureType') {
+    if (node.op === 'eq' && node.column === 'configPolicyEffectiveFeatureLinks.featureType') {
       return node.value === featureType;
     }
-    if (node.op === 'inArray' && node.column === 'configPolicyFeatureLinks.featureType') {
+    if (node.op === 'inArray' && node.column === 'configPolicyEffectiveFeatureLinks.featureType') {
       return (node.values ?? []).includes(featureType);
     }
     return true;
@@ -705,7 +709,7 @@ describe('resolveAlertRulesForDevice', () => {
 
   // Simulates the assignments -> policies -> featureLinks -> alertRules join
   // chain. `.innerJoin` calls happen in a fixed order in the real code:
-  // (1) configurationPolicies, (2) configPolicyFeatureLinks, (3)
+  // (1) configurationPolicies, (2) configPolicyEffectiveFeatureLinks, (3)
   // configPolicyAlertRules — the 2nd call's condition is the one this test
   // cares about.
   function makeAlertRuleJoinChain(candidateRows: CandidateRow[]) {
@@ -876,7 +880,7 @@ describe('resolveGoverningAlertRulePolicyForDevice', () => {
     return chain;
   }
 
-  // The `policyIdsWithRules` query: configPolicyFeatureLinks innerJoin
+  // The `policyIdsWithRules` query: configPolicyEffectiveFeatureLinks innerJoin
   // configPolicyAlertRules, .where(...), awaited — no orderBy.
   function makeRulesChain(rows: { configPolicyId: string }[]) {
     const chain: any = {

@@ -8,6 +8,12 @@ export interface ToolEvent {
   state: 'started' | 'completed';
   output?: unknown;
   isError?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107) — copied straight off the SSE
+   * `tool_result` event, never derived from `output`, which the tool controls.
+   * See `toolIndicatorLogic.toolRowStatus` for why the distinction matters.
+   */
+  handoff?: string;
 }
 
 export type ChatMessage =
@@ -88,6 +94,7 @@ const aiChatSlice = createSlice({
           existing.state = action.payload.event.state;
           if (action.payload.event.output !== undefined) existing.output = action.payload.event.output;
           if (action.payload.event.isError !== undefined) existing.isError = action.payload.event.isError;
+          if (action.payload.event.handoff !== undefined) existing.handoff = action.payload.event.handoff;
         } else {
           msg.toolEvents.push(action.payload.event);
         }

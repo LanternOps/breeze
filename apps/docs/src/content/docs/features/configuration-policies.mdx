@@ -29,6 +29,42 @@ You choose the ownership scope when creating the policy. Partner-wide policies c
 
 Backup settings cannot be configured on a partner-wide policy — see [Backup](#backup) below.
 
+## Baseline policies (inheritance)
+
+A policy can optionally have one **parent** — a baseline policy it inherits feature settings from. This lets an MSP define a standard baseline once (e.g. "Standard Workstation Baseline") and have every customer-specific policy build on it, instead of copy-pasting the same patch schedule, alert thresholds, and maintenance windows into every org.
+
+**Effective links of a policy** = the policy's own feature links, plus, for any feature type the policy has no link of its own for, the parent's link for that type. In other words: a child's own configuration always wins; anything the child hasn't touched falls through to the parent.
+
+You set the parent when **creating** a policy: choose **Link to Existing** on the New Policy screen and pick a baseline from the list. The parent cannot be changed after the policy is created.
+
+### Which policies can be a parent
+
+| A child that is... | ...can inherit from |
+|---|---|
+| Organization-owned | a policy in the **same organization**, or a **partner-wide** policy owned by the same partner |
+| Partner-wide | only another **partner-wide** policy owned by the same partner |
+
+Only **one level** of inheritance is supported — a baseline policy cannot itself have a parent. If a candidate baseline already has a parent, it won't appear as an eligible baseline for a new policy.
+
+### Overriding and reverting an inherited feature
+
+Open any feature tab on a child policy. If the feature comes from the parent, the tab shows a **Configured (inherited)** badge and the settings are shown read-only, seeded from the parent's configuration:
+
+- Click **Override** to save a copy of the inherited settings as the policy's own link — the tab becomes editable and future parent changes no longer affect this policy for that feature.
+- Click **Revert to Parent** on an overridden feature to delete the policy's own link and fall back to the parent's again.
+
+<Aside type="caution">
+  **The parent's `Active`/`Inactive`/`Archived` status does not gate inheritance.** Archiving a baseline policy does not silently strip security, patch, or backup configuration from every policy that inherits from it — only the *child's own* status controls whether its assignments are evaluated, exactly as for a policy with no parent. Before archiving a widely-inherited baseline, check its Overview tab for the "Inherited by N policies" list to see the blast radius.
+</Aside>
+
+### Deleting a baseline
+
+A policy that other policies inherit from cannot be deleted while those children still reference it — the delete is refused with a list of the policies that need to be moved off it first (deleted, or given a different or no parent) before the baseline itself can be removed. This prevents deleting a widely-used baseline from silently un-configuring every policy built on it.
+
+### MFA and inherited patch / maintenance settings
+
+If a baseline carries a Patch Management or Maintenance Windows feature — both of which require a session with satisfied multi-factor authentication to add or change directly — creating a **new** policy linked to that baseline requires the same MFA session, since the new policy immediately gains that gated configuration through inheritance.
+
 ## Feature types
 
 A policy can bundle multiple feature types:
@@ -82,7 +118,7 @@ Compliance rules support three enforcement levels:
 
 1. Navigate to **Configuration → Policies**.
 
-2. Click **New Policy**.
+2. Click **New Policy**, then choose **Configure New** to start from scratch, or **Link to Existing** to inherit from a baseline policy (see [Baseline policies](#baseline-policies-inheritance) above). Choosing **Link to Existing** adds a picker of eligible baselines — filtered to the ones your chosen ownership scope is allowed to inherit from.
 
 3. Enter a **Name** and optional **Description**.
 
@@ -241,7 +277,7 @@ To see the merged settings a specific device will receive:
 
 1. Navigate to the device's detail page.
 2. Open the **Effective Configuration** tab.
-3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value — including **Breeze Defaults** for any feature not covered by an assigned policy.
+3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value — including **Breeze Defaults** for any feature not covered by an assigned policy. When the assigned policy itself has no link for a feature and the value came from its [baseline parent](#baseline-policies-inheritance) instead, the card also shows **"Inherited from &lt;baseline name&gt;"** — two different kinds of inheritance can stack: the hierarchy chain (which *policy* is assigned) and the baseline relationship (which *policy's own settings* apply).
 
 ```
 GET /configuration-policies/effective/:deviceId
@@ -293,9 +329,10 @@ All paths are relative to `/api/v1`.
 |---|---|---|
 | GET | `/configuration-policies` | List policies |
 | POST | `/configuration-policies` | Create policy |
-| GET | `/configuration-policies/:id` | Get policy |
+| GET | `/configuration-policies/eligible-parents` | List baseline policies eligible as a parent for a given ownership scope (`?ownerScope=organization&orgId=…` or `?ownerScope=partner`) |
+| GET | `/configuration-policies/:id` | Get policy — includes `parentPolicyId`, an embedded `parentPolicy` (read-only, with its own feature links), and `childPolicies` |
 | PATCH | `/configuration-policies/:id` | Update metadata |
-| DELETE | `/configuration-policies/:id` | Delete (cascades to features and assignments) |
+| DELETE | `/configuration-policies/:id` | Delete (cascades to features and assignments). Returns `409` with the list of dependent policies if any policy still inherits from this one. |
 | GET | `/configuration-policies/:id/features` | List feature links |
 | POST | `/configuration-policies/:id/features` | Add feature |
 | PATCH | `/configuration-policies/:id/features/:linkId` | Update feature settings |
@@ -311,6 +348,8 @@ All paths are relative to `/api/v1`.
 | GET | `/configuration-policies/:id/resolve-patch-config/:deviceId` | Resolve patch config for a specific device |
 
 When creating a policy, set `ownerScope` to `organization` (the default) or `partner`. With `ownerScope: "partner"` the policy is owned partner-wide and any supplied `orgId` is ignored — the partner is always derived from the caller's own token, never trusted from the request body. Creating a partner-wide policy requires partner scope (a `403` is returned otherwise). When assigning a partner-wide policy, use `level: "partner"`; the target is resolved from the caller's own partner, so no `targetId` is required.
+
+To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
 When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`, `vulnerability`.
 

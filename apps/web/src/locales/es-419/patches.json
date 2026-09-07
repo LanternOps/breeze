@@ -431,6 +431,8 @@
       "allCategories": "Todas las categorias",
       "default": "Por defecto",
       "severityNote": "Las severidades aplican solo a las actualizaciones del sistema operativo. Las actualizaciones de apps de terceros se controlan con el interruptor de abajo — no se controlan por severidad.",
+      "unratedSeverityNote": "Los parches sin calificación (sin severidad asignada) quedan excluidos de esta selección de severidad y no se aprobarán automáticamente, incluso si se marcan todas las severidades, a menos que active el interruptor de abajo.",
+      "autoApproveUnratedLabel": "También aprobar automáticamente los parches sin calificación",
       "manualDefault": "Cada parche de este anillo necesita aprobación manual.",
       "manualCategory": "Los parches de esta categoría necesitan aprobación manual.",
       "noOverrides": "Todas las categorías siguen el valor predeterminado. Agregue una anulación para tratar uno de manera diferente."

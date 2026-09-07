@@ -1,0 +1,70 @@
+{
+  "passwordReset": {
+    "subject": "Reset your password",
+    "preheader": "Use this link to reset your password. The link expires in 1 hour.",
+    "heading": "Reset your password",
+    "body": "You requested a password reset. Click the button below to choose a new password.",
+    "button": "Reset password",
+    "expiry": "This link expires in 1 hour.",
+    "ignore": "If you didn't request a password reset, you can safely ignore this email."
+  },
+  "emailVerification": {
+    "subject": "Verify your email address",
+    "preheader": "Confirm your email address to activate your account.",
+    "heading": "Verify your email",
+    "body": "Thanks for signing up! Please verify your email address.",
+    "button": "Verify email"
+  },
+  "accountLocked": {
+    "subject": "Your account has been locked",
+    "preheader": "Your account has been temporarily locked due to multiple failed login attempts.",
+    "heading": "Account locked",
+    "body": "Your account has been temporarily locked after {{count}} failed login attempts. Please reset your password to unlock it.",
+    "button": "Reset password"
+  },
+  "emailChanged": {
+    "subject": "Your email address has been changed",
+    "preheader": "Your account email address was recently changed.",
+    "heading": "Email address changed",
+    "body": "The email address on your account was changed to {{newEmail}}. If you did not make this change, contact support immediately.",
+    "notYou": "Didn't make this change?"
+  },
+  "accountDeletion": {
+    "subject": "Your account has been deleted",
+    "preheader": "Your Breeze account has been deleted.",
+    "heading": "Account deleted",
+    "body": "Your account has been permanently deleted. All of your data has been removed."
+  },
+  "userInvite": {
+    "subject": "You've been invited to {{partnerName}}",
+    "preheader": "Accept your invitation to get started.",
+    "heading": "You're invited",
+    "body": "You've been invited to join {{partnerName}} on Breeze. Click below to accept.",
+    "button": "Accept invitation",
+    "expiry": "This invitation expires in {{days}} days."
+  },
+  "invoice": {
+    "subject": "Invoice {{invoiceNumber}} from {{partnerName}}",
+    "preheader": "Your invoice for {{total}} is ready.",
+    "heading": "Invoice {{invoiceNumber}}",
+    "body": "Please find your invoice attached. Click below to view or pay online.",
+    "button": "View invoice",
+    "pdfAttached": "A PDF copy is attached to this email.",
+    "amountDue": "Amount due: {{amount}}",
+    "dueDate": "Due: {{date}}"
+  },
+  "quote": {
+    "subject": "Quote {{quoteNumber}} from {{partnerName}}",
+    "preheader": "Your quote for {{total}} is ready for review.",
+    "heading": "Quote {{quoteNumber}}",
+    "body": "Please review your quote. Click below to view and accept.",
+    "button": "View quote"
+  },
+  "reportScheduled": {
+    "subject": "{{reportName}} — {{date}}",
+    "preheader": "Your scheduled report is ready.",
+    "heading": "Scheduled report",
+    "body": "Your scheduled report {{reportName}} is attached.",
+    "button": "View report"
+  }
+}

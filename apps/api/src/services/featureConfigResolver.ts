@@ -3,7 +3,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import {
   configurationPolicies,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
   configPolicyAlertRules,
   configPolicyAutomations,
@@ -310,17 +310,17 @@ export async function resolveGoverningAlertRulePolicyForDevice(
   // Which of the assigned policies actually hold alert rules today. The
   // candidate is exempt: its rules are the draft being tested.
   const policyIdsWithRules = await db
-    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
-    .from(configPolicyFeatureLinks)
+    .select({ configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId })
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(
       and(
-        eq(configPolicyFeatureLinks.featureType, 'alert_rule'),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'alert_rule'),
         inArray(
-          configPolicyFeatureLinks.configPolicyId,
+          configPolicyEffectiveFeatureLinks.configPolicyId,
           [...new Set(assigned.map((row) => row.configPolicyId))]
         )
       )
@@ -375,17 +375,17 @@ export async function resolveAlertRulesForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         // Server-evaluated rules live exclusively under alert_rule links since the
         // 2026-07-30 ownership consolidation migration.
-        eq(configPolicyFeatureLinks.featureType, 'alert_rule')
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'alert_rule')
       )
     )
     .innerJoin(
       configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyAlertRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -407,15 +407,28 @@ export async function resolveAlertRulesForDevice(
     .map((r) => r.alertRule);
 }
 
+export interface ResolvedDeviceAutomations {
+  /**
+   * The ASSIGNED policy whose assignment won the `automation` feature type for
+   * this device. Through the effective view one automation (and one feature
+   * link id) can belong to a parent AND every child of it, so a link id alone
+   * no longer identifies a policy — schedulers must clamp on this id. See the
+   * spec's execution-identity rule (#5080).
+   */
+  configPolicyId: string;
+  automations: (typeof configPolicyAutomations.$inferSelect)[];
+}
+
 /**
- * Resolves automations for a device via the hierarchy.
- * Returns all automation rows from the WINNING assignment.
+ * Resolves automations for a device via the hierarchy, naming the policy whose
+ * assignment won. `null` when the device is unknown or nothing is assigned —
+ * callers treat that as "skip this device", never as "no constraint applies".
  */
-export async function resolveAutomationsForDevice(
+export async function resolveAutomationsForDeviceWithPolicy(
   deviceId: string
-): Promise<(typeof configPolicyAutomations.$inferSelect)[]> {
+): Promise<ResolvedDeviceAutomations | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
-  if (!hierarchy) return [];
+  if (!hierarchy) return null;
 
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -432,6 +445,7 @@ export async function resolveAutomationsForDevice(
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
       assignmentId: configPolicyAssignments.id,
+      policyId: configurationPolicies.id,
     })
     .from(configPolicyAssignments)
     .innerJoin(
@@ -443,15 +457,15 @@ export async function resolveAutomationsForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'automation')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'automation')
       )
     )
     .innerJoin(
       configPolicyAutomations,
-      eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -461,14 +475,26 @@ export async function resolveAutomationsForDevice(
       asc(configPolicyAutomations.sortOrder)
     );
 
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return null;
 
   const sorted = sortByHierarchy(rows);
-  const winningAssignmentId = sorted[0]!.assignmentId;
+  const winner = sorted[0]!;
+  const winning = sorted.filter((r) => r.assignmentId === winner.assignmentId);
 
-  return sorted
-    .filter((r) => r.assignmentId === winningAssignmentId)
-    .map((r) => r.automation);
+  return {
+    configPolicyId: winner.policyId,
+    automations: winning.map((r) => r.automation),
+  };
+}
+
+/**
+ * Resolves automations for a device via the hierarchy.
+ * Returns all automation rows from the WINNING assignment.
+ */
+export async function resolveAutomationsForDevice(
+  deviceId: string
+): Promise<(typeof configPolicyAutomations.$inferSelect)[]> {
+  return (await resolveAutomationsForDeviceWithPolicy(deviceId))?.automations ?? [];
 }
 
 /**
@@ -653,10 +679,10 @@ export async function resolvePatchConfigDetailsForDevice(
   const rows = await db
     .select({
       patchSettings: configPolicyPatchSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
       configPolicyId: configurationPolicies.id,
       configPolicyName: configurationPolicies.name,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -673,15 +699,15 @@ export async function resolvePatchConfigDetailsForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'patch')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'patch')
       )
     )
     .innerJoin(
       configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyPatchSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -746,9 +772,9 @@ export async function resolveBackupConfigForDevice(
   const rows = await db
     .select({
       backupSettings: configPolicyBackupSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       profileSelections: backupProfiles.selections,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -765,15 +791,15 @@ export async function resolveBackupConfigForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'backup')
       )
     )
     .leftJoin(
       configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     // Deliberately NOT filtered on backupProfiles.isActive: deactivating a
     // profile removes it from the pickers (the list API hides inactive rows)
@@ -861,15 +887,15 @@ export async function resolveMaintenanceConfigForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'maintenance')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'maintenance')
       )
     )
     .innerJoin(
       configPolicyMaintenanceSettings,
-      eq(configPolicyMaintenanceSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyMaintenanceSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -920,15 +946,15 @@ export async function resolveComplianceRulesForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'compliance')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'compliance')
       )
     )
     .innerJoin(
       configPolicyComplianceRules,
-      eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
@@ -969,7 +995,7 @@ export async function resolveSoftwarePolicyForDevice(
   // this device's own hierarchy on top of RLS.
   const rows = await db
     .select({
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -985,10 +1011,10 @@ export async function resolveSoftwarePolicyForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'software_policy')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'software_policy')
       )
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
@@ -1021,20 +1047,20 @@ export async function resolveDeviceIdsForSoftwarePolicy(
   // 1. Find config policies linking to this software policy
   const links = await db
     .select({
-      configPolicyId: configPolicyFeatureLinks.configPolicyId,
+      configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
     .where(
       and(
-        eq(configPolicyFeatureLinks.featureType, 'software_policy'),
-        eq(configPolicyFeatureLinks.featurePolicyId, softwarePolicyId)
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'software_policy'),
+        eq(configPolicyEffectiveFeatureLinks.featurePolicyId, softwarePolicyId)
       )
     );
 
@@ -1173,7 +1199,7 @@ export async function resolveVulnerabilityEnabledForDevice(deviceId: string): Pr
   // hierarchy on top of RLS.
   const rows = await db
     .select({
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -1188,10 +1214,10 @@ export async function resolveVulnerabilityEnabledForDevice(deviceId: string): Pr
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'vulnerability')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'vulnerability')
       )
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
@@ -1224,16 +1250,16 @@ export async function resolveVulnerabilityEnabledForDevice(deviceId: string): Pr
 export async function resolveAllVulnerabilityEnabledDevices(): Promise<Map<string, string[]>> {
   // 1. Active config policies that carry a vulnerability feature link.
   const links = await db
-    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
-    .from(configPolicyFeatureLinks)
+    .select({ configPolicyId: configPolicyEffectiveFeatureLinks.configPolicyId })
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
-    .where(eq(configPolicyFeatureLinks.featureType, 'vulnerability'));
+    .where(eq(configPolicyEffectiveFeatureLinks.featureType, 'vulnerability'));
 
   if (links.length === 0) return new Map();
 
@@ -1357,13 +1383,13 @@ export async function scanScheduledAutomations(): Promise<ScheduledAutomationWit
     })
     .from(configPolicyAutomations)
     .innerJoin(
-      configPolicyFeatureLinks,
-      eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id)
+      configPolicyEffectiveFeatureLinks,
+      eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
@@ -1409,13 +1435,13 @@ export async function scanDueComplianceChecks(): Promise<ComplianceRuleWithTarge
     })
     .from(configPolicyComplianceRules)
     .innerJoin(
-      configPolicyFeatureLinks,
-      eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+      configPolicyEffectiveFeatureLinks,
+      eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
@@ -1661,19 +1687,19 @@ export async function resolveAllBackupAssignedDevices(
   const rows = await db
     .select({
       backupSettings: configPolicyBackupSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
       profileSelections: backupProfiles.selections,
       assignmentLevel: configPolicyAssignments.level,
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
         ownershipCondition
       )
@@ -1684,7 +1710,7 @@ export async function resolveAllBackupAssignedDevices(
     )
     .leftJoin(
       configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     // Deliberately NOT filtered on backupProfiles.isActive: deactivating a
     // profile removes it from the pickers (the list API hides inactive rows)
@@ -1696,7 +1722,7 @@ export async function resolveAllBackupAssignedDevices(
       backupProfiles,
       eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
     )
-    .where(eq(configPolicyFeatureLinks.featureType, 'backup'));
+    .where(eq(configPolicyEffectiveFeatureLinks.featureType, 'backup'));
 
   if (rows.length === 0) return [];
 
@@ -1884,7 +1910,7 @@ export async function resolveBackupProtectionForDevice(
   // config_policy_backup_settings carries its own partner-wide SELECT branch.
   const rows = await db
     .select({
-      featureLinkId: configPolicyFeatureLinks.id,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
       retention: configPolicyBackupSettings.retention,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -1900,15 +1926,15 @@ export async function resolveBackupProtectionForDevice(
       )
     )
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'backup')
       )
     )
     .leftJoin(
       configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      eq(configPolicyBackupSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(

@@ -253,6 +253,26 @@ assert_supported_redis_topology() {
   }
 }
 
+# The post-deploy admission check must prove it reached BREEZE, not merely that
+# something answered. `curl --fail` only fails at >= 400, so an authenticating
+# proxy that covers /health but not /ready answers the probe with a 302 to its
+# identity provider and curl exits 0 — the redirect never reaches the API and
+# the check silently stops being diagnostic (found on a live Cloudflare Access
+# instance, #4007). `-L` is worse: it can land on a 200 login page.
+# `--fail-with-body` does not help either; same >= 400 threshold. So assert the
+# UNREDIRECTED status is exactly 200 and that the body is Breeze's own verdict.
+readiness_ok() {
+  local body status rc
+  body="$(mktemp)"
+  rc=1
+  status="$(curl --silent --show-error --output "${body}" --write-out '%{http_code}' "https://${BREEZE_DOMAIN}/ready")"
+  if [[ "${status}" == "200" ]] && grep -q '"ready":true' "${body}"; then
+    rc=0
+  fi
+  rm -f "${body}"
+  return "${rc}"
+}
+
 expect_barrier_status() {
   local path="$1"
   shift
@@ -408,14 +428,14 @@ fi
 
 echo "[deploy] Running smoke checks"
 for _ in {1..24}; do
-  if curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null 2>&1; then
+  if readiness_ok; then
     break
   fi
   sleep 5
 done
 
-if ! curl --silent --show-error --fail "https://${BREEZE_DOMAIN}/health" >/dev/null; then
-  echo "[deploy] Health check failed: https://${BREEZE_DOMAIN}/health" >&2
+if ! readiness_ok; then
+  echo "[deploy] Readiness check failed: https://${BREEZE_DOMAIN}/ready did not return HTTP 200 with \"ready\":true" >&2
   exit 1
 fi
 

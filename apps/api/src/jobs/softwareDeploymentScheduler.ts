@@ -13,6 +13,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { buildAndDispatchSoftwareInstalls } from '../services/softwareDeployment';
+import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'software-deployment-scheduler';
 const JOB_NAME = 'dispatch-due-software-deployments';
@@ -384,6 +385,7 @@ export async function initializeSoftwareDeploymentScheduler(): Promise<void> {
   if (schedulerWorker) return;
 
   schedulerWorker = createWorker();
+  attachWorkerObservability(schedulerWorker, 'softwareDeploymentScheduler');
   schedulerWorker.on('error', (error) => {
     console.error('[SoftwareDeploymentScheduler] Worker error:', error);
     captureException(error);

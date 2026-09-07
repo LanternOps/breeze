@@ -16,7 +16,9 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../services/deviceActions', () => ({
   sendDeviceCommand: vi.fn(),
   executeScript: vi.fn(),
-  toggleMaintenanceMode: vi.fn(),
+  enterMaintenanceMode: vi.fn(),
+  exitMaintenanceMode: vi.fn(),
+  bulkEnterMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   clearDeviceSessions: vi.fn(),
   restoreDevice: vi.fn(),
