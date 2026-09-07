@@ -84,6 +84,37 @@ describe('agent software inventory observation route', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Software inventory observation conflict' });
   });
+
+  // #5181 / BREEZE-2F: the ingest gave up on lock contention, nothing was
+  // written, and the agent's next push re-sends the same report. A 500 both
+  // mislabelled that as a fault and buried it in error-level Sentry noise.
+  it('maps an exhausted lock_timeout give-up to a retryable 503', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+    vi.mocked(ingestSoftwareInventoryReport).mockRejectedValue(
+      new SoftwareInventoryLockTimeoutError(),
+    );
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('60');
+    expect(await res.json()).toEqual({
+      error: 'Software inventory ingest is contended; retry this report later',
+      code: 'software_inventory_lock_timeout',
+    });
+  });
+
+  it('still lets an unrecognised ingest failure reach the global 500 handler', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+    vi.mocked(ingestSoftwareInventoryReport).mockRejectedValue(new Error('unexpected'));
+    // Hono's default onError renders it as a 500 — the pre-existing path, and
+    // specifically NOT the 503 the lock-timeout branch produces.
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
+    });
+    expect(res.status).toBe(500);
+    expect(res.headers.get('Retry-After')).toBeNull();
+  });
 });
 
 vi.mock('../../services/warrantySync', () => ({
@@ -97,12 +128,14 @@ vi.mock('../../services/warrantyWorker', () => ({
 vi.mock('../../services/softwareInventoryObservations', () => ({
   ingestSoftwareInventoryReport: vi.fn(),
   SoftwareInventoryObservationConflictError: class SoftwareInventoryObservationConflictError extends Error {},
+  SoftwareInventoryLockTimeoutError: class SoftwareInventoryLockTimeoutError extends Error {},
 }));
 
 import { db } from '../../db';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import {
   ingestSoftwareInventoryReport,
+  SoftwareInventoryLockTimeoutError,
   SoftwareInventoryObservationConflictError,
 } from '../../services/softwareInventoryObservations';
 import { inventoryRoutes } from './inventory';

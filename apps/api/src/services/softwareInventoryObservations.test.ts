@@ -6,9 +6,10 @@ import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } fr
 // touches these — `decideSoftwareInventoryAcceptance` and
 // `replaceSoftwareInventoryProjection` take a `tx` argument directly and never
 // reach the module-level `db` import, so mocking it here doesn't affect them.
-const { transactionMock, tightenLockTimeoutMock } = vi.hoisted(() => ({
+const { transactionMock, tightenLockTimeoutMock, captureMessageMock } = vi.hoisted(() => ({
   transactionMock: vi.fn(),
   tightenLockTimeoutMock: vi.fn(async () => null),
+  captureMessageMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -21,11 +22,14 @@ vi.mock('../db/lockTimeout', () => ({
   tightenLockTimeout: tightenLockTimeoutMock,
 }));
 
+vi.mock('./sentry', () => ({ captureMessage: captureMessageMock }));
+
 import {
   decideSoftwareInventoryAcceptance,
   replaceSoftwareInventoryProjection,
   ingestSoftwareInventoryReport,
   INVENTORY_LOCK_TIMEOUT_MS,
+  SoftwareInventoryLockTimeoutError,
 } from './softwareInventoryObservations';
 
 const item = { name: 'Google Chrome', version: '127', vendor: 'Google LLC' };
@@ -317,5 +321,76 @@ describe('ingestSoftwareInventoryReport lock_timeout wiring (#3925)', () => {
 
     expect(attempt).toBe(2);
     expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * #5181 / BREEZE-2F. Exhausting the 55P03 retries is the #3925 bound doing its
+ * job under contention — nothing was written, and the agent re-sends the same
+ * report on its next push. Before this, it rethrew a bare `PostgresError` that
+ * `scrubEvent` stripped to an anonymous error-level Sentry event and the route
+ * turned into a 500.
+ */
+describe('ingestSoftwareInventoryReport lock-timeout give-up reporting (#5181)', () => {
+  const report: LegacySoftwareInventoryReport = { software: [] };
+  const ingest = () => ingestSoftwareInventoryReport({
+    device: { id: 'device-1', orgId: 'org-1', agentVersion: '1.0.0' },
+    report,
+    receivedAt: new Date('2026-09-07T12:00:00.000Z'),
+  });
+
+  beforeEach(() => {
+    transactionMock.mockReset();
+    tightenLockTimeoutMock.mockReset();
+    tightenLockTimeoutMock.mockResolvedValue(null);
+    captureMessageMock.mockReset();
+  });
+
+  /** Every attempt loses the same lock race, so the retry budget runs out. */
+  function alwaysFailWith(error: unknown) {
+    transactionMock.mockImplementation(async (cb: (tx: { execute: () => Promise<never> }) => Promise<unknown>) =>
+      cb({ execute: async () => { throw error; } }));
+  }
+
+  it('reports the exhausted give-up as a warning under its event code and throws SoftwareInventoryLockTimeoutError', async () => {
+    const lockNotAvailable = Object.assign(new Error('lock timeout'), { code: '55P03' });
+    alwaysFailWith(lockNotAvailable);
+
+    const thrown = await ingest().then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(SoftwareInventoryLockTimeoutError);
+    expect((thrown as SoftwareInventoryLockTimeoutError).code).toBe('software_inventory_lock_timeout');
+    expect((thrown as Error).cause).toBe(lockNotAvailable);
+    // All three attempts were spent before giving up.
+    expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(3);
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock).toHaveBeenCalledWith(expect.any(String), {
+      eventCode: 'software_inventory_lock_timeout_exhausted',
+      level: 'warning',
+      tags: { pg_code: '55P03' },
+    });
+  });
+
+  it('leaves a deadlock give-up on the loud error path — no warning, no wrapper', async () => {
+    // 40P01 exhaustion means three consecutive deadlocks, which points at a
+    // lock-ordering regression rather than contention, so it must keep its 500.
+    const deadlock = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    alwaysFailWith(deadlock);
+
+    const thrown = await ingest().then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBe(deadlock);
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves a non-lock failure untouched', async () => {
+    const boom = new Error('something else broke');
+    alwaysFailWith(boom);
+
+    const thrown = await ingest().then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBe(boom);
+    expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock).not.toHaveBeenCalled();
   });
 });

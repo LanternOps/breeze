@@ -14,7 +14,14 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureMessage: captureMessageMock }));
+
 vi.mock('../services/filterEngine', () => ({
+  // Same class identity the route imports, so its `instanceof` check is real.
+  FilterQueryTimeoutError: class FilterQueryTimeoutError extends Error {
+    readonly code = 'filter_query_timeout';
+  },
   // /preview now validates conditions up front (#1044); default to valid.
   validateFilter: vi.fn(() => ({ valid: true, errors: [] })),
   // idsOnly path — returns the complete uncapped id set.
@@ -78,7 +85,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { evaluateFilter, evaluateFilterWithPreview } from '../services/filterEngine';
+import { evaluateFilter, evaluateFilterWithPreview, FilterQueryTimeoutError } from '../services/filterEngine';
 
 function makeFilter(overrides: Record<string, unknown> = {}) {
   return {
@@ -520,6 +527,71 @@ describe('filter routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.totalCount).toBe(0);
+    });
+  });
+
+  /**
+   * #5181 / BREEZE-2C. `withFilterStatementTimeout`'s 500ms bound is the
+   * protection against a pathological filter, but it surfaced as a 500 plus an
+   * anonymous error-level Sentry event — so the intended guard was
+   * indistinguishable from a fault, and the user got no usable advice.
+   */
+  describe('filter preview statement_timeout (#5181)', () => {
+    const CONDITIONS = { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] };
+
+    const preview = (body: Record<string, unknown>, path = '/filters/preview') => app.request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body)
+    });
+
+    const expectTimeoutResponse = async (res: Response) => {
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({
+        error: 'Filter preview took too long to run. Narrow the filter and try again.',
+        code: 'filter_query_timeout'
+      });
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+      expect(captureMessageMock).toHaveBeenCalledWith(expect.any(String), {
+        eventCode: 'filter_preview_statement_timeout',
+        level: 'warning',
+        tags: { pg_code: '57014' }
+      });
+    };
+
+    it('answers 422 and reports a warning when the enriched preview times out', async () => {
+      vi.mocked(evaluateFilterWithPreview).mockRejectedValueOnce(new FilterQueryTimeoutError());
+
+      await expectTimeoutResponse(await preview({ conditions: CONDITIONS }));
+    });
+
+    it('answers 422 and reports a warning when the idsOnly preview times out', async () => {
+      vi.mocked(evaluateFilter).mockRejectedValueOnce(new FilterQueryTimeoutError());
+
+      await expectTimeoutResponse(await preview({ conditions: CONDITIONS, idsOnly: true }));
+    });
+
+    it('answers 422 and reports a warning when a saved-filter preview times out', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeFilter()])
+          })
+        })
+      } as any);
+      vi.mocked(evaluateFilterWithPreview).mockRejectedValueOnce(new FilterQueryTimeoutError());
+
+      await expectTimeoutResponse(await preview({}, `/filters/${FILTER_ID_1}/preview`));
+    });
+
+    it('lets any other engine failure keep its existing 500 path, unreported as a warning', async () => {
+      const boom = new Error('relation does not exist');
+      vi.mocked(evaluateFilterWithPreview).mockRejectedValueOnce(boom);
+
+      // Hono's default onError turns it into a 500 — the pre-existing path,
+      // and specifically NOT the 422 the timeout branch produces.
+      expect((await preview({ conditions: CONDITIONS })).status).toBe(500);
+      expect(captureMessageMock).not.toHaveBeenCalled();
     });
   });
 

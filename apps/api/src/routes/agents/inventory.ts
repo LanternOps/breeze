@@ -24,6 +24,7 @@ import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import {
   ingestSoftwareInventoryReport,
+  SoftwareInventoryLockTimeoutError,
   SoftwareInventoryObservationConflictError,
 } from '../../services/softwareInventoryObservations';
 
@@ -123,6 +124,18 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
   } catch (error) {
     if (error instanceof SoftwareInventoryObservationConflictError) {
       return c.json({ error: 'Software inventory observation conflict' }, 409);
+    }
+    // Lock contention, not a fault: nothing was written and the same report is
+    // still valid, so tell the agent to come back rather than 500-ing (#5181).
+    // The agent's next inventory push re-sends it regardless of what it does
+    // with this response, so the retryable status is honest either way, and
+    // 503 is what keeps the give-up out of the error-level 5xx noise.
+    if (error instanceof SoftwareInventoryLockTimeoutError) {
+      c.header('Retry-After', '60');
+      return c.json({
+        error: 'Software inventory ingest is contended; retry this report later',
+        code: 'software_inventory_lock_timeout',
+      }, 503);
     }
     throw error;
   }

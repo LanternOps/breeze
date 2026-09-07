@@ -5,7 +5,8 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { savedFilters } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilter, evaluateFilterWithPreview, validateFilter, FilterConditionGroup } from '../services/filterEngine';
+import { evaluateFilter, evaluateFilterWithPreview, validateFilter, FilterQueryTimeoutError, FilterConditionGroup } from '../services/filterEngine';
+import { captureMessage } from '../services/sentry';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -41,6 +42,39 @@ const createFilterSchema = createSavedFilterSchema.extend({
 const previewQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).optional()
 });
+
+/**
+ * 57014 out of `withFilterStatementTimeout` means the 500ms bound cancelled the
+ * preview (#5181 / BREEZE-2C). The filter is well-formed — `validateFilter`
+ * already passed — it is just too expensive to run, so the honest answer is a
+ * 4xx that says "narrow it", not the 500 a raw `PostgresError` produced.
+ *
+ * 422 rather than 408: 408 promises that an identical retry can succeed, and
+ * this one cannot — the same filter over the same fleet will hit the same bound
+ * every time. The client's move is to change the request, which is exactly what
+ * "well-formed but unprocessable" means. `code` is the stable discriminator the
+ * web maps to a translated string (the `ActionError.code` / `failureCopy`
+ * convention); `error` is the English fallback for non-UI callers.
+ *
+ * Reported at WARNING level with an event code so the guard tripping is
+ * groupable and alertable in Sentry instead of arriving as an anonymous
+ * error-level exception.
+ */
+const FILTER_PREVIEW_TIMEOUT_BODY = {
+  error: 'Filter preview took too long to run. Narrow the filter and try again.',
+  code: 'filter_query_timeout',
+} as const;
+
+function reportFilterPreviewTimeout(): void {
+  captureMessage('Device filter preview hit its statement_timeout', {
+    eventCode: 'filter_preview_statement_timeout',
+    level: 'warning',
+    // No org/user/filter id: those are exactly the unbounded tag cardinality
+    // the event-code registry exists to keep out. The route audit row
+    // (`filter.preview`) is where per-tenant attribution lives.
+    tags: { pg_code: '57014' },
+  });
+}
 
 filterRoutes.use('*', authMiddleware);
 
@@ -161,12 +195,18 @@ filterRoutes.post(
     // previewLimit cap never truncates this path.
     if (idsOnly) {
       const deviceIds: string[] = [];
-      for (const orgId of orgIds) {
-        const result = await evaluateFilter(
-          conditions as unknown as FilterConditionGroup,
-          { orgId, allowedSiteIds: auth.allowedSiteIds }
-        );
-        deviceIds.push(...result.deviceIds);
+      try {
+        for (const orgId of orgIds) {
+          const result = await evaluateFilter(
+            conditions as unknown as FilterConditionGroup,
+            { orgId, allowedSiteIds: auth.allowedSiteIds }
+          );
+          deviceIds.push(...result.deviceIds);
+        }
+      } catch (error) {
+        if (!(error instanceof FilterQueryTimeoutError)) throw error;
+        reportFilterPreviewTimeout();
+        return c.json(FILTER_PREVIEW_TIMEOUT_BODY, 422);
       }
 
       writeRouteAudit(c, {
@@ -193,13 +233,19 @@ filterRoutes.post(
     const allDevices: Array<{ id: string; hostname: string; displayName: string | null; osType: string; status: string; lastSeenAt: Date | null }> = [];
     let totalCount = 0;
 
-    for (const orgId of orgIds) {
-      const preview = await evaluateFilterWithPreview(
-        conditions as unknown as FilterConditionGroup,
-        { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
-      );
-      totalCount += preview.totalCount;
-      allDevices.push(...preview.devices);
+    try {
+      for (const orgId of orgIds) {
+        const preview = await evaluateFilterWithPreview(
+          conditions as unknown as FilterConditionGroup,
+          { orgId, previewLimit: limit, allowedSiteIds: auth.allowedSiteIds }
+        );
+        totalCount += preview.totalCount;
+        allDevices.push(...preview.devices);
+      }
+    } catch (error) {
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout();
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, 422);
     }
 
     // Trim to limit after aggregating
@@ -450,10 +496,17 @@ filterRoutes.post(
       return c.json({ error: 'Saved filter not found' }, 404);
     }
 
-    const preview = await evaluateFilterWithPreview(
-      filter.conditions as FilterConditionGroup,
-      { orgId: filter.orgId, previewLimit: query.limit, allowedSiteIds: auth.allowedSiteIds }
-    );
+    let preview;
+    try {
+      preview = await evaluateFilterWithPreview(
+        filter.conditions as FilterConditionGroup,
+        { orgId: filter.orgId, previewLimit: query.limit, allowedSiteIds: auth.allowedSiteIds }
+      );
+    } catch (error) {
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout();
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, 422);
+    }
 
     writeRouteAudit(c, {
       orgId: filter.orgId,

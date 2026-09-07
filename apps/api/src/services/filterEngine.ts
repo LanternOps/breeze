@@ -1,6 +1,7 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
+import { pgErrorCode } from '../utils/pgErrors';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
@@ -589,6 +590,20 @@ const FILTER_QUERY_TIMEOUT_MS = 500;
 type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
+ * The bounded `statement_timeout` above cancelled the filter query (SQLSTATE
+ * 57014). That is the guard working as designed — the filter is valid, it is
+ * just too expensive — so callers translate this into a 4xx telling the user
+ * to narrow it, never the 500 a raw `PostgresError` used to produce (#5181 /
+ * BREEZE-2C). Any other SQLSTATE propagates untouched and keeps its 500.
+ */
+export class FilterQueryTimeoutError extends Error {
+  readonly code = 'filter_query_timeout';
+  constructor(options?: { cause?: unknown }) {
+    super('Filter query exceeded its time budget', options);
+  }
+}
+
+/**
  * Run a filter query under a bounded statement_timeout. Uses `db.transaction` so
  * the timeout applies whether the caller is inside the request's RLS transaction
  * (a SAVEPOINT that inherits the tenant GUCs) or on the bare connection pool (the
@@ -620,6 +635,12 @@ async function withFilterStatementTimeout<T>(
       // rejects all commands after a statement error until that savepoint is
       // rolled back, including the restoration in `finally` below.
       return await tx.transaction((queryTx) => run(queryTx));
+    } catch (error) {
+      // Translate ONLY the cancellation this function itself causes. Anything
+      // else — a bad column, a lock error, a dropped connection — is a real
+      // fault and keeps its existing 500 path.
+      if (pgErrorCode(error) === '57014') throw new FilterQueryTimeoutError({ cause: error });
+      throw error;
     } finally {
       await tx.execute(
         sql`select set_config('statement_timeout', ${previousTimeout}, true)`

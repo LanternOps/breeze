@@ -78,6 +78,27 @@ export const SENTRY_EVENT_CODES = [
   'software_upload_malformed_supported_os',
   /** The catalog-polish fact guard caught the model inventing a numeric spec. */
   'catalog_polish_fact_over_claim',
+  /**
+   * A software-inventory ingest exhausted all `retryOnTransientLockError`
+   * attempts on 55P03 (#5181). This is the `lock_timeout` bound from #3925
+   * doing its job under contention, not a fault: the agent re-sends the report
+   * on its next inventory push. Reported at warning level with a retryable 503
+   * to the agent so it stops arriving as an anonymous error-level
+   * `PostgresError`. A sustained stream for one region means real contention on
+   * `device_vulnerabilities` / `software_inventory` — look at the overlapping
+   * `correlateOrg` pass, not at the ingest.
+   */
+  'software_inventory_lock_timeout_exhausted',
+
+  // --- device filters ---------------------------------------------------
+  /**
+   * A device-filter preview was cancelled by `withFilterStatementTimeout`'s
+   * 500ms `statement_timeout` (57014) — the ReDoS/pathological-query bound
+   * doing its job (#5181). The caller gets a 422 telling them to narrow the
+   * filter; this is the operator-side record. A repeated stream from one org
+   * usually means a missing index on a newly filterable column, not an attack.
+   */
+  'filter_preview_statement_timeout',
 
   // --- mobile -----------------------------------------------------------
   /** Push registration lost a race and the phone gets no notifications. */
