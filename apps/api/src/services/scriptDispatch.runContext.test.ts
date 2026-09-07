@@ -51,6 +51,14 @@ vi.mock('./scriptSecretDelivery', () => ({
   failClaimedSecretCommandsForUnsupportedAgent: vi.fn((claimed: unknown[]) => Promise.resolve(claimed)),
 }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+// #4919 — dispatch now owns the maintenance-window gate. Mocked permissive
+// here so this file's subject stays the dispatch mechanics; the gate itself
+// is covered by scriptMaintenanceGate.test.ts and its wiring by
+// scriptDispatch.maintenanceWindow.test.ts.
+vi.mock('./scriptMaintenanceGate', () => ({
+  checkScriptMaintenanceSuppression: vi.fn().mockResolvedValue({ suppressed: false }),
+}));
+
 
 import { db } from '../db';
 import { queueCommand } from './commandQueue';

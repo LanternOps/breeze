@@ -1291,6 +1291,12 @@ type ActionExecutionOutcome =
       scriptExecutionId?: string;
     }
   | { status: 'succeeded' }
+  // #4919 — a device maintenance window suppressed the dispatch. Deliberately
+  // NOT 'failed': the run stays green, trailing actions still execute, and no
+  // on-failure notification fires. An operator's maintenance window is a
+  // policy decision, not an automation defect — the same classification the
+  // `maintenance_window` admission-gate skip already carries.
+  | { status: 'skipped'; message?: string }
   | { status: 'failed'; message?: string };
 
 type ActionExecutionResult = {
@@ -1419,6 +1425,17 @@ export async function executeRunScriptAction(
   });
 
   if (!dispatch.ok) {
+    if (dispatch.code === 'maintenance_suppressed') {
+      return {
+        outcome: { status: 'skipped', message: dispatch.error },
+        log: logEntry(`Skipped run_script action: ${dispatch.error}`, 'warning', {
+          actionType: action.type,
+          actionIndex,
+          deviceId: context.device.id,
+          details: { reason: 'maintenance_suppressed', scriptId: script.id },
+        }),
+      };
+    }
     return {
       outcome: { status: 'failed', message: dispatch.error },
       log: logEntry('Failed to queue run_script action command', 'error', {
@@ -1515,6 +1532,21 @@ async function executeCommandAction(
   });
 
   if (!dispatch.ok) {
+    if (dispatch.code === 'maintenance_suppressed') {
+      // #4919 — `execute_command` reaches the device through the same script
+      // dispatch seam (a `raw` source), so the same window suppresses it. It
+      // gets its own branch because an automation that shells out ad-hoc is
+      // not a smaller blast radius than one that runs a saved script.
+      return {
+        outcome: { status: 'skipped', message: dispatch.error },
+        log: logEntry(`Skipped execute_command action: ${dispatch.error}`, 'warning', {
+          actionType: action.type,
+          actionIndex,
+          deviceId: context.device.id,
+          details: { reason: 'maintenance_suppressed', shell },
+        }),
+      };
+    }
     return {
       outcome: { status: 'failed', message: dispatch.error },
       log: logEntry('Failed to queue execute_command action', 'error', {
@@ -1951,7 +1983,7 @@ async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
-    message: outcome.status === 'failed'
+    message: outcome.status === 'failed' || outcome.status === 'skipped'
       ? outcome.message ?? result.log.message
       : result.log.message,
   });

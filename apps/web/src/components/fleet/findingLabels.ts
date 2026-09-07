@@ -90,6 +90,9 @@ export const SKIP_REASON_LABEL_KEYS: Record<string, string> = {
   decommissioned: 'longTail.fleet.FixPicker.skipReasons.decommissioned',
   timeout: 'longTail.fleet.FixPicker.skipReasons.timeout',
   dispatch_enqueue_failed: 'longTail.fleet.FixPicker.skipReasons.dispatchEnqueueFailed',
+  // #4919 — written at dispatch time when the device is inside a maintenance
+  // window that suppresses scripts.
+  maintenance_window: 'longTail.fleet.FixPicker.skipReasons.maintenanceWindow',
 };
 
 /** `null` for an unrecognised reason so callers fall back to the raw token —

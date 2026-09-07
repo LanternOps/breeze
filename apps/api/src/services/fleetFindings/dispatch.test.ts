@@ -227,7 +227,14 @@ vi.mock('../commandQueue', () => ({
 }));
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+const { maintenanceGateMock } = vi.hoisted(() => ({ maintenanceGateMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+// #4919 — the maintenance gate is unit-tested in scriptMaintenanceGate.test.ts;
+// here it is mocked (permissive by default) so this file tests the WIRING and
+// so the real gate's DB read never runs against the schema-mocked db above.
+vi.mock('../scriptMaintenanceGate', () => ({
+  checkScriptMaintenanceSuppression: maintenanceGateMock,
+}));
 // terminalPayloadErasureSet builds a jsonb SQL expression off the real
 // deviceCommands schema; stub it so the schema-mocked pollRunProgress cancel
 // path doesn't need the full schema. The returned key just rides the SET clause.
@@ -330,6 +337,8 @@ beforeEach(() => {
   getFleetFindingMock.mockReset();
   queueCommandForExecutionMock.mockReset();
   captureExceptionMock.mockReset();
+  maintenanceGateMock.mockReset();
+  maintenanceGateMock.mockResolvedValue({ suppressed: false });
 });
 
 /**
@@ -945,6 +954,56 @@ describe('dispatchRunChunk', () => {
     expect(skip).toBeDefined();
     expect(skip.values.skipReason).toBe('unreachable');
     expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
+  });
+
+  /**
+   * #4919 — fleet remediation is the one script path that does not go through
+   * `dispatchScriptToDevice`, so it cannot inherit that seam's gate and calls
+   * the shared gate itself. Suppression must be a SKIP recorded before the
+   * claim: a claimed-then-abandoned target sits `queued` forever.
+   */
+  it('skips a script target whose device is in a maintenance window, before claiming it', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', scriptId: 'sc-1', commandType: null })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([
+      { orgId: ORG_1, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system', parameters: null },
+    ]);
+    maintenanceGateMock.mockResolvedValue({
+      suppressed: true,
+      reason: 'window_active',
+      message: 'Device is in a maintenance window that suppresses script execution',
+      windowEndsAt: new Date('2030-01-01T00:00:00Z'),
+    });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const skip = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'skipped')!;
+    expect(skip).toBeDefined();
+    expect(skip.values.skipReason).toBe('maintenance_window');
+    // Never claimed: no update flipped this target to `queued`.
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'queued')).toBe(false);
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
+  });
+
+  /**
+   * `suppressScripts` is a statement about running SCRIPTS. A reboot or a
+   * service restart is governed by its own policy, so this path must not
+   * consult the gate for them at all — checking would silently extend the
+   * flag's meaning without anyone deciding to.
+   */
+  it('does not consult the maintenance gate for a command-kind run', async () => {
+    h.selectQueue.push([runRow({ status: 'running' })]); // actionKind: 'command'
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(maintenanceGateMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).toHaveBeenCalled();
   });
 
   it('treats a device that vanished between run creation and dispatch as unreachable', async () => {

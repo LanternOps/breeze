@@ -17,6 +17,7 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import { checkScriptMaintenanceSuppression } from './scriptMaintenanceGate';
 import {
   describeVariableFailure,
   resolveForOrg,
@@ -47,8 +48,15 @@ import {
  * build → sensitive-field encryption at enqueue → queueCommand (audit +
  * dispatch metrics) → claim / JIT-decrypt / WS send / release.
  *
- * Callers own: auth, site permissions, maintenance windows, batching, and
- * any caller-specific status bookkeeping (e.g. automation's 'queued' state).
+ * Maintenance windows are OWNED HERE (#4919). They used to be "the caller's
+ * job", and three of the four callers never did it — an assistant-, automation-
+ * or auto-migration-initiated script ran on a device where the identical
+ * human-initiated run would have been suppressed. The gate now lives on this
+ * seam so every path inherits it, and it is fail-closed: `bypassMaintenanceWindow`
+ * is the only way past it and no caller sets it today.
+ *
+ * Callers own: auth, site permissions, batching, and any caller-specific
+ * status bookkeeping (e.g. automation's 'queued' state).
  * Inserts run in the caller's ambient DB context — request paths stay under
  * RLS; system-context callers must validate ownership before calling.
  */
@@ -95,6 +103,16 @@ export type DispatchScriptInput = {
   // 'saved'` and the script content actually contains a {{var.*}} token; the
   // common token-free path never needs one.
   variableScope?: TenantVariableScope;
+  /**
+   * #4919 — skip the device maintenance-window gate for this dispatch.
+   *
+   * NO caller sets this today, and the default (`false`) is what makes every
+   * path at least as strict as the human `POST /scripts/:id/execute` path has
+   * always been. It exists so a future per-automation "ignore maintenance
+   * windows" option has a seam to land on that is an explicit, greppable
+   * opt-in rather than a fourth path that quietly never checked.
+   */
+  bypassMaintenanceWindow?: boolean;
 };
 
 export type DispatchScriptResult =
@@ -147,6 +165,13 @@ export type DispatchScriptResult =
       code:
         | 'device_decommissioned'
         | 'device_offline'
+        // #4919 — an active maintenance window with `suppressScripts`, OR a
+        // maintenance check that could not be evaluated (fail-closed). The two
+        // are distinguished by `error`, not by the code: every caller reacts
+        // to them identically (record the skip, do not retry now), and a
+        // second code would only invite a caller to handle one and forget the
+        // other — which is the bug this issue was.
+        | 'maintenance_suppressed'
         | 'os_mismatch'
         | 'org_mismatch'
         | 'insert_failed'
@@ -207,6 +232,17 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
+  // #4919 — before the liveness read and before any row is written. Ordered
+  // ahead of the offline gate deliberately: "we would not have run this
+  // anyway" is the more useful answer than "the device is offline", and it
+  // stays the reported reason whatever the device's status happens to be.
+  if (!input.bypassMaintenanceWindow) {
+    const maintenance = await checkScriptMaintenanceSuppression(device.id);
+    if (maintenance.suppressed) {
+      return { ok: false, code: 'maintenance_suppressed', error: maintenance.message };
+    }
+  }
+
   const offlinePolicy: OfflinePolicy =
     input.offlinePolicy ?? (input.requireOnline ? { kind: 'reject' } : defaultOfflinePolicy(CommandTypes.SCRIPT));
   // A `reject` row is only created against a device we just observed online, so

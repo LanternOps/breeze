@@ -2042,7 +2042,8 @@
           "notMember": "Von diesem Befund nicht mehr betroffen",
           "decommissioned": "Gerät ist entfernt",
           "timeout": "Nach 30 Minuten abgelaufen",
-          "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen"
+          "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen",
+          "maintenanceWindow": "Gerät befindet sich in einem Wartungsfenster"
         },
         "viewProgress": "Fortschritt anzeigen",
         "errors": {
