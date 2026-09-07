@@ -53,16 +53,20 @@ export interface QboFault {
  *
  * Deliberately phrase-based rather than fault-code-based: the production
  * incident (#5180) was reported through Sentry, whose scrubber redacts the
- * message, so no verified fault CODE for this rejection exists to key on. Each
- * pattern names both a payment/linked-transaction noun and a
- * refusal/attachment verb, so a generic `Business Validation Error` or a
- * network/gateway failure cannot match — the classification only ever turns a
- * retryable failure into a terminal one, so a false positive would stop a
- * retry that might have worked.
+ * message, so no verified fault CODE for this rejection exists to key on.
+ *
+ * BECAUSE the ground truth is a phrase and not a code, the patterns stay narrow
+ * and the CALLER is gated too (see `isQboPaymentLinkedRefusal`). Each pattern
+ * pairs a payment/linked-transaction noun with an attachment verb, so a generic
+ * `Business Validation Error`, a stale-object fault or a gateway page cannot
+ * match. A bare "…has payments…" form was deliberately NOT included: with no
+ * verb it also matches a transient failure that merely mentions a payment, and
+ * this classification only ever converts a RETRYABLE failure into a terminal
+ * one — a false positive costs a retry that might have worked and hands the
+ * operator a confidently wrong remedy.
  */
 const PAYMENT_LINKED_PATTERNS: readonly RegExp[] = [
   /payments?\s+(?:is|are|was|were|has\s+been|have\s+been)?\s*(?:applied|linked|associated)/i,
-  /(?:has|have|with|contains?)\s+(?:an?\s+)?(?:applied\s+)?payments?\b/i,
   /linked\s+(?:to\s+(?:another|other|an?)\s+)?transactions?/i,
 ];
 
@@ -135,18 +139,36 @@ export function qboFaultOf(err: unknown): QboFault {
  * classify the failure as terminal so the BullMQ ladder does not burn five
  * attempts (and five Sentry alerts) on a deterministic refusal.
  *
- * The attached flag is authoritative — it was computed from the FULL body
- * before truncation. The stored `body` is still consulted as a fallback so a
- * fault assembled by an older code path (or a test fixture) is not missed;
- * that copy is truncated, so it can only ever add a match, never remove one.
+ * TWO GATES BEFORE THE PHRASE IS CONSULTED AT ALL, because a false positive
+ * removes a real outage's retries AND tells the operator to go delete a payment
+ * that does not exist:
+ *
+ *  1. HTTP 400 — Intuit answers a business-validation refusal with 400. A 5xx,
+ *     a timeout or a gateway page is an outage and keeps its retry ladder
+ *     however its body happens to read.
+ *  2. A fault Intuit actually emitted — `code` or `Message` parsed off the
+ *     envelope. An HTML error page from a WAF has neither, so it can never
+ *     reach the phrase match no matter which words it contains.
+ *
+ * Same shape as the 5010 stale-object handling, which likewise decides on the
+ * specific fault rather than on any text that floats past.
+ *
+ * The attached flag is authoritative — computed from the FULL body before
+ * truncation. The stored `body` is still consulted as a fallback so a fault
+ * assembled by an older code path (or a test fixture) is not missed; that copy
+ * is truncated, so it can only ever add a match, never remove one. The error's
+ * own `message` is NOT consulted: it is Breeze's own "<operation> failed with
+ * <status>" string, which carries no Intuit text and would only widen the
+ * surface for a coincidental match.
  */
 export function isQboPaymentLinkedRefusal(err: unknown): boolean {
-  if (qboFaultOf(err).paymentLinked) return true;
-  const body = err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
-    ? (err as { body: string }).body
-    : '';
-  const message = err instanceof Error ? err.message : '';
-  return bodySaysPaymentLinked(`${body} ${message}`);
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: unknown; body?: unknown };
+  if (e.status !== 400) return false;
+  const fault = qboFaultOf(err);
+  if (fault.code === null && fault.message === null) return false;
+  if (fault.paymentLinked) return true;
+  return typeof e.body === 'string' && bodySaysPaymentLinked(e.body);
 }
 
 /**

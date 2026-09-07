@@ -80,6 +80,13 @@ describe('payment-linked refusal classification (#5180)', () => {
     'Object Id 181 was changed by another user',
     'Duplicate Document Number Error : You must specify a different number.',
     '<html>502 Bad Gateway</html>',
+    // The boundary that matters: faults that MENTION a payment for an entirely
+    // different reason. A bare "…has payments…" pattern matched both of these,
+    // which would have turned a different (possibly retryable) fault into a
+    // terminal one carrying a wrong remedy — so the noun always needs its verb.
+    'The transaction has payments totaling 40.00 but the line amounts do not reconcile.',
+    'This estimate contains payments that must be removed before conversion.',
+    'The Payment service is temporarily unavailable, please try again.',
   ])('does NOT flag an unrelated fault: %s', (detail) => {
     expect(parseQboFault(paymentFault(detail)).paymentLinked).toBe(false);
   });
@@ -101,15 +108,51 @@ describe('payment-linked refusal classification (#5180)', () => {
   it('falls back to the stored body when no flag was attached (older fault shape)', () => {
     const err = Object.assign(new Error('QuickBooks invoice void failed with 400'), {
       status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
       body: paymentFault('You cannot void a transaction that has payments applied to it.'),
     });
     expect(isQboPaymentLinkedRefusal(err)).toBe(true);
+  });
+
+  // The two gates that stand in front of the phrase match. Both exist because a
+  // false positive costs a real outage its retry ladder AND tells the operator
+  // to delete a payment that does not exist.
+  it('refuses to classify a non-400 failure, however its body reads', () => {
+    const err = Object.assign(new Error('QuickBooks invoice void failed with 503'), {
+      status: 503,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+      qboPaymentLinked: true,
+      body: paymentFault('You cannot void this invoice because it has payments applied to it.'),
+    });
+    expect(isQboPaymentLinkedRefusal(err)).toBe(false);
+  });
+
+  it('refuses to classify a 400 that carried no Intuit fault at all (a WAF or gateway page)', () => {
+    const err = Object.assign(new Error('QuickBooks invoice void failed with 400'), {
+      status: 400,
+      body: '<html><body>Request blocked: payments applied to it</body></html>',
+    });
+    expect(isQboPaymentLinkedRefusal(err)).toBe(false);
+  });
+
+  it('does not read the error message Breeze wrote itself', () => {
+    // `qboRequest` throws `"<operation> failed with <status>"`. It carries no
+    // Intuit text, so it must never be part of the haystack.
+    const err = Object.assign(new Error('QuickBooks payments applied void failed with 400'), {
+      status: 400, qboFaultCode: '6140', qboFaultMessage: 'Duplicate Document Number Error',
+    });
+    expect(isQboPaymentLinkedRefusal(err)).toBe(false);
   });
 
   it('is false for a plain upstream failure — the classification only ever makes a retryable error terminal', () => {
     expect(isQboPaymentLinkedRefusal(new Error('fetch failed'))).toBe(false);
     expect(isQboPaymentLinkedRefusal(Object.assign(new Error('boom'), {
       status: 500, qboFaultCode: '5010', qboFaultMessage: 'Stale Object Error',
+    }))).toBe(false);
+    expect(isQboPaymentLinkedRefusal(Object.assign(new Error('boom'), {
+      status: 400, qboFaultCode: '5010', qboFaultMessage: 'Stale Object Error',
     }))).toBe(false);
     expect(isQboPaymentLinkedRefusal(undefined)).toBe(false);
   });
