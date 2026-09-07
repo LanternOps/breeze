@@ -10,7 +10,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/breeze-rmm/agent/internal/remote/clipboard"
-	"github.com/breeze-rmm/agent/internal/remote/filedrop"
 )
 
 // SessionPolicy is the server-resolved, agent-enforced policy for a desktop
@@ -420,13 +419,12 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Info("Clipboard sync disabled by policy", "session", sessionID)
 	}
 
-	// Create filedrop DataChannel
-	filedropDC, err := peerConn.CreateDataChannel("filedrop", nil)
-	if err != nil {
-		slog.Warn("Failed to create filedrop DataChannel", "session", sessionID, "error", err.Error())
-	} else if filedropDC != nil {
-		session.fileDropHandler = filedrop.NewFileDropHandler(filedropDC, "")
-	}
+	// Do not register a filedrop channel. Desktop media and input are peer to
+	// peer, so the API cannot authorize or centrally audit file writes that
+	// arrive over an ad-hoc data channel. The legacy handler also has no
+	// first-party viewer consumer or completed-file owner. A future transfer
+	// feature must start from an explicit server-resolved capability and add
+	// durable audit, quota, acknowledgement and cleanup semantics end to end.
 
 	// Create cursor DataChannel — streams remote cursor position to viewer for
 	// instant cursor rendering independent of video frame rate.
