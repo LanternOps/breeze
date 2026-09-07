@@ -374,9 +374,14 @@ anything; publication is always the caller's job, always after the write. VERIFI
 **The two tables differ in a way that matters to W05.** Run terminalization has an *enforced*
 chokepoint: `runService.terminalization.contract.test.ts` is a regex source scan asserting no other
 file in `src/` writes a terminal literal directly onto `aiAgentRuns`. VERIFIED. Intents have no such
-test, `transitionIntent` is the shared primitive, but several call sites deliberately bypass it to
+test. `transitionIntent` is the shared primitive, but several call sites deliberately bypass it to
 get an outbox row or a sibling-table write into the *same* transaction. **W05 should add the intent
 equivalent of that contract test**; it is the mechanism that keeps this inventory from rotting.
+Two working precedents supply the source-scan mechanism:
+`apps/api/src/services/aiAgents/runService.terminalization.contract.test.ts` and the
+`apps/api/src/jobs/agentDispatchBoundary.contract.test.ts` it says it mirrors. The run test's header
+gives the rationale in one line: a writer that bypasses the chokepoint "would silently starve the
+per-org circuit breaker of the failures it exists to count." VERIFIED.
 
 ### 3.1 `ai_agent_runs` terminal writers
 
