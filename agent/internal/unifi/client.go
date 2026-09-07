@@ -194,7 +194,10 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 	offset := 0
 	for page := 0; ; page++ {
 		if page >= maxListPages {
-			return nil, http.StatusOK, fmt.Errorf(
+			// 0, not http.StatusOK: every OTHER non-error return in this file
+			// pairs a 2xx status with a nil error, and 0 matches the convention
+			// already used for transport-level failures in getPage below.
+			return nil, 0, fmt.Errorf(
 				"unifi api %s: exceeded %d pages at offset %d without reaching the controller-reported total — aborting to avoid an unbounded loop",
 				path, maxListPages, offset)
 		}
@@ -211,13 +214,36 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 		if uerr := json.Unmarshal(body, &env); uerr != nil {
 			return nil, status, fmt.Errorf("unifi api %s: bad json: %w", path, uerr)
 		}
-		elems = append(elems, rawElems(env.Data)...)
+		pageElems := rawElems(env.Data)
+		elems = append(elems, pageElems...)
 
-		nextOffset := offset + env.Count
-		if env.Count <= 0 || nextOffset >= env.TotalCount {
+		// Advance by the number of elements actually decoded from `data`, not
+		// the controller-asserted `count` field: a buggy or hostile controller
+		// that claims count:10 while shipping 3 elements would otherwise make
+		// the client skip the 7 real items it never saw. Self-verifying against
+		// the payload we actually received is strictly safer than trusting
+		// server-reported metadata about that same payload.
+		advanced := len(pageElems)
+		nextOffset := offset + advanced
+		switch {
+		case nextOffset >= env.TotalCount:
+			// Done — the accumulated elements reach (or exceed) the
+			// controller's reported total. This is the ONLY success exit: it
+			// also covers the common non-paginated response (TotalCount==0),
+			// since any offset (including 0) is already >= 0.
 			return marshalRawElems(elems), status, nil
+		case advanced <= 0:
+			// A page decoded zero elements while the controller still claims
+			// more exist beyond our current offset. Returning success here
+			// with whatever was collected so far would silently truncate the
+			// list one layer below the exact bug #5101 fixed — so this is an
+			// error, not a quiet stop.
+			return nil, status, fmt.Errorf(
+				"unifi api %s: page at offset %d decoded 0 elements before reaching totalCount %d — aborting rather than silently truncating",
+				path, offset, env.TotalCount)
+		default:
+			offset = nextOffset
 		}
-		offset = nextOffset
 	}
 }
 

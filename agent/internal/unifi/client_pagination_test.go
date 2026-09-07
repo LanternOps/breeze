@@ -134,6 +134,85 @@ func TestPollCollectsDevicesAndClientsAcrossMultiplePages(t *testing.T) {
 	}
 }
 
+// A page that decodes ZERO elements while the controller still claims more
+// exist beyond the current offset (totalCount not yet reached) must error out
+// rather than quietly returning whatever was collected so far — that would
+// reproduce the exact silent-truncation bug #5101 fixed, just one layer down
+// and behind an empty-page edge case instead of "no pagination at all".
+func TestGetErrorsRatherThanSilentlyTruncatingOnEmptyPageBeforeTotal(t *testing.T) {
+	pages := []string{
+		`{"data":[{"id":"d0"}],"offset":0,"limit":1,"count":1,"totalCount":3}`,
+		// Second page unexpectedly empty, but the controller still says 3 exist.
+		`{"data":[],"offset":1,"limit":1,"count":0,"totalCount":3}`,
+	}
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if int(n) > len(pages) {
+			t.Errorf("unexpected extra request #%d — should have stopped after the empty page", n)
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(pages[n-1]))
+	}))
+	defer srv.Close()
+
+	c := NewAPIClient(srv.URL, "k", srv.Client())
+	data, _, err := c.get(context.Background(), "/devices")
+	if err == nil {
+		t.Fatalf("expected an error for an empty page short of totalCount, got data=%s", data)
+	}
+	if int(requests) != 2 {
+		t.Fatalf("made %d requests, want exactly 2 (stop at the empty page, don't retry forever)", requests)
+	}
+}
+
+// A controller that lies about `count` — claiming more elements than it
+// actually put in `data` — must not cause the client to skip real items. The
+// client advances its offset by what it actually decoded from `data`, never
+// the controller-asserted `count` field, so this desync self-corrects instead
+// of silently losing elements.
+func TestGetAdvancesByActualElementsNotClaimedCount(t *testing.T) {
+	// Page 1 claims count:10 (matching totalCount) but only ships 2 elements —
+	// a buggy or hostile controller. If the client trusted `count`, it would
+	// jump straight past totalCount and never fetch the remaining real items.
+	pages := []string{
+		`{"data":[{"id":"d0"},{"id":"d1"}],"offset":0,"limit":10,"count":10,"totalCount":4}`,
+		`{"data":[{"id":"d2"},{"id":"d3"}],"offset":2,"limit":10,"count":2,"totalCount":4}`,
+	}
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if int(n) > len(pages) {
+			// Defensive: a bug in this test's own accounting must not hang the
+			// server goroutine or serve stale data silently.
+			t.Errorf("unexpected extra request #%d", n)
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(pages[n-1]))
+	}))
+	defer srv.Close()
+
+	c := NewAPIClient(srv.URL, "k", srv.Client())
+	data, _, err := c.get(context.Background(), "/devices")
+	if err != nil {
+		t.Fatalf("get error: %v", err)
+	}
+	var got []json.RawMessage
+	if uerr := json.Unmarshal(data, &got); uerr != nil {
+		t.Fatalf("bad combined json: %v", uerr)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d elements, want 4 — a claimed `count` of 10 on a 2-element page caused real items to be skipped", len(got))
+	}
+	if int(requests) != 2 {
+		t.Fatalf("made %d requests, want 2 — offset did not advance correctly off the actual page size", requests)
+	}
+}
+
 // A misbehaving controller that never lets the client's advancing offset
 // reach its reported totalCount (a buggy or actively hostile controller —
 // e.g. one that lies about totalCount) must not spin the collector forever.
