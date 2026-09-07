@@ -1838,6 +1838,7 @@
       "taxVarianceHint": "QuickBooks a calculé un total de taxes différent. Comparez les deux enregistrements avant de clôturer la période.",
       "docNumber": "Document QuickBooks nº {{docNumber}}",
       "lastSynced": "Dernière synchronisation : {{when}}",
+      "syncing": "Synchronisation…",
       "push": "Envoyer vers QuickBooks",
       "pushed": "Facture envoyée vers QuickBooks.",
       "pushFailed": "Échec de l'envoi de la facture vers QuickBooks.",
