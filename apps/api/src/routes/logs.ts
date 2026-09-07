@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
-import { logCorrelations, logCorrelationRules } from '../db/schema';
+import { devices, logCorrelations, logCorrelationRules } from '../db/schema';
 import { enqueueAdHocPatternCorrelationDetection, getLogCorrelationDetectionJob } from '../jobs/logCorrelation';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -24,6 +24,14 @@ import {
   type LogSearchInput,
   updateSavedSearchRunStats,
 } from '../services/logSearch';
+import {
+  captureLogReadAuthority,
+  correlationResultWithinCurrentDeviceCeiling,
+  currentLogReadSiteCeiling,
+  intersectLogReadSiteCeilings,
+  resolveCurrentLogReadDeviceIds,
+  revalidateLogReadAuthority,
+} from '../services/logReadAuthority';
 
 const levelSchema = z.enum(['info', 'warning', 'error', 'critical']);
 const categorySchema = z.enum(['security', 'hardware', 'application', 'system']);
@@ -159,6 +167,25 @@ function mapCorrelationJobState(state: string): 'queued' | 'running' | 'complete
   return 'queued';
 }
 
+function sanitizeSavedQueryScope<T extends { filters: LogSearchInput }>(
+  query: T,
+  allowedDeviceIds: string[] | null,
+  allowedSiteIds: string[] | undefined,
+): T {
+  if (allowedDeviceIds === null && allowedSiteIds === undefined) return query;
+  const allowedDevices = new Set(allowedDeviceIds ?? []);
+  const allowedSites = new Set(allowedSiteIds ?? []);
+  return {
+    ...query,
+    filters: {
+      ...query.filters,
+      deviceIds: query.filters.deviceIds?.filter((id) => allowedDevices.has(id)),
+      siteIds: query.filters.siteIds?.filter((id) => allowedSites.has(id)),
+      allowedDeviceIds: undefined,
+    },
+  };
+}
+
 export const logsRoutes = new Hono();
 const requireLogRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireLogWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
@@ -185,6 +212,13 @@ logsRoutes.post(
         }
         filters = mergeSavedLogSearchFilters(saved.filters, inlineFilters);
       }
+
+      // Apply the live authorization ceiling last: neither an inline filter nor
+      // saved JSON may widen it. [] deliberately reaches logSearch as deny-all.
+      filters.allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth);
+      filters.allowedSiteIds = auth.allowedSiteIds === undefined
+        ? null
+        : Array.from(new Set(auth.allowedSiteIds)).sort();
 
       const result = await searchFleetLogs(auth, filters);
 
@@ -219,8 +253,20 @@ logsRoutes.get(
         return c.json({ error: 'Detection job not found' }, 404);
       }
 
-      if (!auth.canAccessOrg(job.data.orgId)) {
-        return c.json({ error: 'Access denied for requested org' }, 403);
+      if (job.data.authority?.requesterId !== auth.user.id || !auth.canAccessOrg(job.data.orgId)) {
+        return c.json({ error: 'Detection job not found' }, 404);
+      }
+      const live = await revalidateLogReadAuthority(job.data.authority);
+      const requestSiteIds = currentLogReadSiteCeiling(auth, job.data.orgId);
+      const disclosureSiteIds = live
+        ? intersectLogReadSiteCeilings(live.allowedSiteIds, requestSiteIds)
+        : [];
+      if (!live || live.authority.orgId !== job.data.orgId
+        || disclosureSiteIds?.length === 0
+        || !await correlationResultWithinCurrentDeviceCeiling(
+          job.result, job.data.orgId, disclosureSiteIds,
+        )) {
+        return c.json({ error: 'Detection job not found' }, 404);
       }
 
       const status = mapCorrelationJobState(job.state);
@@ -255,6 +301,10 @@ logsRoutes.get(
     const query = c.req.valid('query');
 
     try {
+      const allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth);
+      const allowedSiteIds = auth.allowedSiteIds === undefined
+        ? null
+        : Array.from(new Set(auth.allowedSiteIds)).sort();
       const payload = await getLogAggregation(auth, {
         start: query.start,
         end: query.end,
@@ -266,6 +316,8 @@ logsRoutes.get(
         deviceIds: parseUuidCsv(query.deviceIds),
         siteIds: parseUuidCsv(query.siteIds),
         limit: query.limit,
+        allowedDeviceIds,
+        allowedSiteIds,
       });
 
       return c.json(payload);
@@ -288,6 +340,10 @@ logsRoutes.get(
     const query = c.req.valid('query');
 
     try {
+      const allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth);
+      const allowedSiteIds = auth.allowedSiteIds === undefined
+        ? null
+        : Array.from(new Set(auth.allowedSiteIds)).sort();
       const payload = await getLogTrends(auth, {
         start: query.start,
         end: query.end,
@@ -296,6 +352,8 @@ logsRoutes.get(
         deviceIds: parseUuidCsv(query.deviceIds),
         siteIds: parseUuidCsv(query.siteIds),
         limit: query.limit,
+        allowedDeviceIds,
+        allowedSiteIds,
       });
 
       return c.json(payload);
@@ -325,6 +383,7 @@ logsRoutes.post(
           return c.json({ error: 'orgId is required for this scope' }, 400);
         }
 
+        const authority = captureLogReadAuthority(auth, orgId);
         try {
           const jobId = await enqueueAdHocPatternCorrelationDetection({
             orgId,
@@ -333,6 +392,7 @@ logsRoutes.post(
             timeWindowSeconds: body.timeWindow,
             minDevices: body.minDevices,
             minOccurrences: body.minOccurrences,
+            authority,
           });
 
           return c.json({
@@ -343,6 +403,10 @@ logsRoutes.post(
           }, 202);
         } catch (queueError) {
           console.warn('[logs/correlation/detect] Queue unavailable, running inline fallback:', queueError);
+          const live = await revalidateLogReadAuthority(authority);
+          if (!live) {
+            return c.json({ error: 'Detection authority is no longer valid' }, 403);
+          }
           const result = await detectPatternCorrelation({
             orgId,
             pattern: body.pattern,
@@ -350,6 +414,8 @@ logsRoutes.post(
             timeWindowSeconds: body.timeWindow,
             minDevices: body.minDevices,
             minOccurrences: body.minOccurrences,
+            allowedDeviceIds: live.allowedDeviceIds,
+            allowedSiteIds: live.allowedSiteIds,
           });
 
           return c.json({
@@ -412,6 +478,41 @@ logsRoutes.get(
       conditions.push(eq(logCorrelations.status, query.status));
     }
 
+    const correlationSiteIds = auth.scope === 'organization'
+      ? currentLogReadSiteCeiling(auth, query.orgId ?? auth.orgId ?? '')
+      : null;
+    if (correlationSiteIds?.length === 0) {
+      return c.json({ data: [], limit: query.limit ?? 100, offset: query.offset ?? 0, total: 0 });
+    }
+    const currentDeviceExists = (element: SQL) => sql`EXISTS (
+      SELECT 1 FROM ${devices} AS current_correlation_device
+      WHERE current_correlation_device.id::text = ${element}->>'deviceId'
+        AND current_correlation_device.org_id = ${logCorrelations.orgId}
+        ${correlationSiteIds === null
+          ? sql``
+          : sql`AND current_correlation_device.site_id IN (${sql.join(correlationSiteIds.map((id) => sql`${id}`), sql`, `)})`}
+    )`;
+    // Correlations are indivisible historical resources. Validate every
+    // affected/sample device against its current row inside the list/count
+    // statement, before pagination. Text comparison makes malformed UUIDs a
+    // clean non-match rather than a cast error, and avoids a fleet-sized bind
+    // list or a stale pre-query device snapshot.
+    conditions.push(sql`
+      jsonb_typeof(${logCorrelations.affectedDevices}) = 'array'
+      AND jsonb_array_length(${logCorrelations.affectedDevices}) > 0
+      AND jsonb_typeof(${logCorrelations.sampleLogs}) = 'array'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(${logCorrelations.affectedDevices}) AS affected(device)
+        WHERE NOT (${currentDeviceExists(sql`affected.device`)})
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(${logCorrelations.sampleLogs}) AS sample(log)
+        WHERE NOT (${currentDeviceExists(sql`sample.log`)})
+      )
+    `);
+
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
 
@@ -462,7 +563,8 @@ logsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const data = await listSavedLogSearchQueries(auth);
-    return c.json({ data });
+    const allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth);
+    return c.json({ data: data.map((query) => sanitizeSavedQueryScope(query, allowedDeviceIds, auth.allowedSiteIds)) });
   }
 );
 
@@ -477,7 +579,9 @@ logsRoutes.post(
     const body = c.req.valid('json');
 
     try {
-      const created = await createSavedLogSearchQuery(auth, body);
+      const allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth, body.orgId);
+      const sanitized = sanitizeSavedQueryScope({ filters: body.filters }, allowedDeviceIds, auth.allowedSiteIds);
+      const created = await createSavedLogSearchQuery(auth, { ...body, filters: sanitized.filters });
       return c.json({ data: created }, 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save query';
@@ -500,7 +604,8 @@ logsRoutes.get(
       return c.json({ error: 'Saved query not found' }, 404);
     }
 
-    return c.json({ data: query });
+    const allowedDeviceIds = await resolveCurrentLogReadDeviceIds(auth, query.orgId);
+    return c.json({ data: sanitizeSavedQueryScope(query, allowedDeviceIds, auth.allowedSiteIds) });
   }
 );
 

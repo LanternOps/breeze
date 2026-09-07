@@ -35,6 +35,18 @@ const { getLogCorrelationDetectionJobMock } = vi.hoisted(() => ({
   getLogCorrelationDetectionJobMock: vi.fn(),
 }));
 
+const {
+  captureLogReadAuthorityMock,
+  correlationResultWithinCurrentDeviceCeilingMock,
+  resolveCurrentLogReadDeviceIdsMock,
+  revalidateLogReadAuthorityMock,
+} = vi.hoisted(() => ({
+  captureLogReadAuthorityMock: vi.fn(),
+  correlationResultWithinCurrentDeviceCeilingMock: vi.fn(),
+  resolveCurrentLogReadDeviceIdsMock: vi.fn(),
+  revalidateLogReadAuthorityMock: vi.fn(),
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -45,6 +57,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  devices: { id: 'deviceId', orgId: 'deviceOrgId', siteId: 'deviceSiteId' },
   logCorrelations: {
     id: 'id',
     orgId: 'orgId',
@@ -68,6 +81,22 @@ vi.mock('../db/schema', () => ({
 vi.mock('../jobs/logCorrelation', () => ({
   enqueueAdHocPatternCorrelationDetection: enqueueAdHocPatternCorrelationDetectionMock,
   getLogCorrelationDetectionJob: getLogCorrelationDetectionJobMock,
+}));
+
+vi.mock('../services/logReadAuthority', () => ({
+  captureLogReadAuthority: captureLogReadAuthorityMock,
+  correlationResultWithinCurrentDeviceCeiling: correlationResultWithinCurrentDeviceCeilingMock,
+  currentLogReadSiteCeiling: vi.fn((auth, orgId) => auth.canAccessOrg(orgId)
+    ? (auth.allowedSiteIds ?? null)
+    : []),
+  intersectLogReadSiteCeilings: vi.fn((left, right) => {
+    if (left === null) return right;
+    if (right === null) return left;
+    const rightSet = new Set(right);
+    return left.filter((id: string) => rightSet.has(id));
+  }),
+  resolveCurrentLogReadDeviceIds: resolveCurrentLogReadDeviceIdsMock,
+  revalidateLogReadAuthority: revalidateLogReadAuthorityMock,
 }));
 
 vi.mock('../services/logSearch', () => ({
@@ -158,6 +187,14 @@ describe('logs routes', () => {
     runCorrelationRulesMock.mockResolvedValue([]);
     listSavedLogSearchQueriesMock.mockResolvedValue([]);
     createSavedLogSearchQueryMock.mockResolvedValue({ id: 'query-1' });
+    resolveCurrentLogReadDeviceIdsMock.mockResolvedValue(null);
+    captureLogReadAuthorityMock.mockReturnValue({ requesterId: 'user-1', orgId: '11111111-1111-1111-1111-111111111111' });
+    revalidateLogReadAuthorityMock.mockResolvedValue({
+      authority: { requesterId: 'user-1', orgId: '11111111-1111-1111-1111-111111111111' },
+      allowedDeviceIds: null,
+      allowedSiteIds: null,
+    });
+    correlationResultWithinCurrentDeviceCeilingMock.mockResolvedValue(true);
   });
 
   it('applies saved query filters and request overrides in POST /logs/search', async () => {
@@ -191,6 +228,38 @@ describe('logs routes', () => {
       }),
     );
     expect(updateSavedSearchRunStatsMock).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+  });
+
+  it('applies a deny-all current site ceiling after saved filters are merged', async () => {
+    resolveCurrentLogReadDeviceIdsMock.mockResolvedValue([]);
+    getSavedLogSearchQueryMock.mockResolvedValue({
+      filters: { deviceIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'] },
+    });
+    const res = await app.request('/logs/search', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ savedQueryId: '22222222-2222-4222-8222-222222222222' }),
+    });
+    expect(res.status).toBe(200);
+    expect(searchFleetLogsMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      deviceIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      allowedDeviceIds: [],
+    }));
+  });
+
+  it('applies the same current ceiling to aggregation and trends', async () => {
+    resolveCurrentLogReadDeviceIdsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(['visible-device']);
+    getLogAggregationMock.mockResolvedValue({ data: [] });
+    getLogTrendsMock.mockResolvedValue({ data: [] });
+    expect((await app.request('/logs/aggregation')).status).toBe(200);
+    expect(getLogAggregationMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      allowedDeviceIds: [],
+    }));
+    expect((await app.request('/logs/trends')).status).toBe(200);
+    expect(getLogTrendsMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      allowedDeviceIds: ['visible-device'],
+    }));
   });
 
   it('queues ad-hoc correlation detection jobs and returns 202', async () => {
@@ -253,6 +322,7 @@ describe('logs routes', () => {
         pattern: 'panic',
         isRegex: false,
         queuedAt: '2026-02-21T19:00:00.000Z',
+        authority: { requesterId: 'user-1' },
       },
       result: { mode: 'pattern', detected: true },
       failedReason: null,
@@ -268,7 +338,22 @@ describe('logs routes', () => {
     expect(body.result.detected).toBe(true);
   });
 
-  it('returns 403 for inaccessible detection job org', async () => {
+  it('returns an opaque 404 when a completed job contains a newly hidden device', async () => {
+    getLogCorrelationDetectionJobMock.mockResolvedValue({
+      id: 'job-hidden', name: 'pattern-detect', state: 'completed',
+      data: {
+        type: 'pattern', orgId: '11111111-1111-1111-1111-111111111111',
+        pattern: 'panic', isRegex: false, queuedAt: '2026-02-21T19:00:00.000Z',
+        authority: { requesterId: 'user-1' },
+      },
+      result: { mode: 'pattern', detected: true }, failedReason: null,
+      attemptsMade: 1, processedOn: null, finishedOn: null,
+    });
+    correlationResultWithinCurrentDeviceCeilingMock.mockResolvedValue(false);
+    expect((await app.request('/logs/correlation/detect/job-hidden')).status).toBe(404);
+  });
+
+  it('returns an opaque 404 for a detection job not bound to the requester', async () => {
     getLogCorrelationDetectionJobMock.mockResolvedValue({
       id: 'job-2',
       name: 'pattern-detect',
@@ -279,6 +364,7 @@ describe('logs routes', () => {
         pattern: 'panic',
         isRegex: false,
         queuedAt: '2026-02-21T19:00:00.000Z',
+        authority: { requesterId: 'other-user' },
       },
       result: null,
       failedReason: null,
@@ -288,7 +374,7 @@ describe('logs routes', () => {
     });
 
     const res = await app.request('/logs/correlation/detect/job-2');
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('allows system scope to delete a non-shared saved query', async () => {
@@ -398,6 +484,51 @@ describe('logs routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(body.data[0].id).toBe('q-1');
+  });
+
+  it('removes hidden saved-query scope metadata for a restricted reader', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111',
+        allowedSiteIds: ['22222222-2222-4222-8222-222222222222'],
+        user: { id: 'user-1' }, canAccessOrg: () => true, orgCondition: () => undefined,
+      });
+      return next();
+    });
+    resolveCurrentLogReadDeviceIdsMock.mockResolvedValue(['visible-device']);
+    listSavedLogSearchQueriesMock.mockResolvedValue([{
+      id: 'query-1', filters: {
+        deviceIds: ['visible-device', 'hidden-device'],
+        siteIds: ['22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'],
+      },
+    }]);
+    const res = await app.request('/logs/queries');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ data: [{ filters: {
+      deviceIds: ['visible-device'], siteIds: ['22222222-2222-4222-8222-222222222222'],
+    } }] });
+  });
+
+  it('preserves an explicit deny-all array when every saved target is hidden', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111',
+        allowedSiteIds: ['22222222-2222-4222-8222-222222222222'],
+        user: { id: 'user-1' }, canAccessOrg: () => true, orgCondition: () => undefined,
+      });
+      return next();
+    });
+    resolveCurrentLogReadDeviceIdsMock.mockResolvedValue(['visible-device']);
+    listSavedLogSearchQueriesMock.mockResolvedValue([{
+      id: 'query-hidden', filters: {
+        deviceIds: ['hidden-device'], siteIds: ['33333333-3333-4333-8333-333333333333'],
+      },
+    }]);
+    const res = await app.request('/logs/queries');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ data: [{ filters: {
+      deviceIds: [], siteIds: [],
+    } }] });
   });
 
   it('POST /logs/queries creates a saved query and returns 201', async () => {
