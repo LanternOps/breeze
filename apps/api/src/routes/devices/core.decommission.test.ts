@@ -85,6 +85,14 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+// #5128 — spy on `ne` (pass-through to the real implementation) so the
+// decommission transaction's pending-command cancel write is assertable on
+// its `self_uninstall` exclusion without mocking all of drizzle-orm.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, ne: vi.fn(actual.ne) };
+});
+
 // #3986 task 7 — the route composes `queueDeviceUninstall` into its own
 // decommission transaction; the predicate/insert SQL it builds is already
 // covered on compiled SQL by deviceUninstallDrain.test.ts (task 6). Here we
@@ -120,6 +128,8 @@ import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeard
 import { disconnectAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
+import { ne } from 'drizzle-orm';
+import { deviceCommands } from '../../db/schema';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -294,13 +304,32 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
       });
 
       expect(res.status).toBe(200);
-      // Two writes: the status flip, then the linkage clear.
-      expect(set).toHaveBeenCalledTimes(2);
+      // Three writes: the status flip, the #5128 pending-command cancel
+      // (same transaction), then the linkage clear.
+      expect(set).toHaveBeenCalledTimes(3);
       expect(set).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'decommissioned' }));
+      expect(set).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'cancelled' }));
       expect(set).toHaveBeenNthCalledWith(
-        2,
+        3,
         expect.objectContaining({ possibleReplacementOfDeviceId: null })
       );
+    });
+
+    // #5128 — the uninstall drain's whole purpose is to survive decommission
+    // and deliver on the device's next check-in; a `self_uninstall` row must
+    // never be swept up by the generic pending-command cancel this route now
+    // runs in the same transaction as the status write.
+    it('cancels pending commands but excludes self_uninstall from the sweep', async () => {
+      const { set } = rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'cancelled' }));
+      expect(vi.mocked(ne)).toHaveBeenCalledWith(deviceCommands.type, 'self_uninstall');
     });
 
     it('does not clear linkage when the device is already decommissioned (400)', async () => {

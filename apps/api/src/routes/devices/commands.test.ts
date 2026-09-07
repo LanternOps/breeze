@@ -7,6 +7,22 @@ const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
   assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
 }));
 
+// #5128 — the bulk route, the single POST /:id/commands route, and
+// POST /:id/auto-update all go through this one seam now instead of a raw
+// `db.insert`. Default: delivered to an online device. Individual tests
+// override with `mockResolvedValueOnce` / `mockImplementationOnce` for
+// offline-queue, decommissioned, trust-denial, and insert-failure cases.
+const { dispatchDeviceCommandMock } = vi.hoisted(() => ({
+  dispatchDeviceCommandMock: vi.fn(
+    async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+      ok: true,
+      command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
+      delivery: 'delivered',
+      deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+    }),
+  ),
+}));
+
 // RMM-QA-176: ENABLE_2FA is a module constant (routes/auth/schemas.ts:10); the
 // established way to flip it per test is a getter on a partial module mock
 // (precedent: routes/auth/login.test.ts:271-280). T1 asserts it is TRUE by
@@ -127,6 +143,28 @@ vi.mock('../../services/partnerTrust.commands', async () => ({
   assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
  }));
 
+// #5128 — the ONE enqueue seam (services/dispatchDeviceCommand.ts) has its
+// own dedicated test file (dispatchDeviceCommand.test.ts) covering the real
+// reject/queue/deliver logic; this suite only needs to prove the ROUTE's
+// wiring to it, so it's mocked at the seam rather than driven through a raw
+// `db.insert`/`db.select` rig (which would also require unmocking the heavy
+// transitive chain the real implementation pulls in — agentWs, commandQueue,
+// etc.).
+vi.mock('../../services/dispatchDeviceCommand', () => ({
+  dispatchDeviceCommand: dispatchDeviceCommandMock,
+}));
+
+// #5128 — POST /:id/commands/:commandId/cancel calls this to terminalise any
+// higher-level record (execution row, automation action) the cancelled
+// command owned. Its own module pulls in BullMQ Queue/Worker construction and
+// a long transitive chain (commandResultHandlers -> customFields/scriptWriteBack,
+// which calls `requestLikeFromSnapshot` from auditEvents AT MODULE LOAD —
+// something the auditEvents mock above doesn't export), so it must be mocked
+// at the seam rather than loaded for real.
+vi.mock('../../jobs/staleCommandReaper', () => ({
+  propagateCancelledDeviceCommand: vi.fn(),
+}));
+
 vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => {
   // Partial: maintenanceResourceDigest stays REAL so the binding assertion in
   // T4 compares against the production canonicalization, not a stub.
@@ -149,6 +187,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
+import { propagateCancelledDeviceCommand } from '../../jobs/staleCommandReaper';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -175,6 +214,16 @@ describe('device commands routes', () => {
     // finding — reset both and restore the module-factory default explicitly.
     vi.mocked(validateStepUpGrant).mockReset().mockResolvedValue(true);
     vi.mocked(consumeStepUpGrant).mockReset().mockResolvedValue(true);
+    // Same hazard on the #5128 dispatch seam — restore the delivered-by-default
+    // implementation explicitly rather than relying on clearAllMocks.
+    dispatchDeviceCommandMock.mockReset().mockImplementation(
+      async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+        ok: true,
+        command: { id: 'cmd-1', deviceId, type, status: 'pending', createdAt: new Date() },
+        delivery: 'delivered',
+        deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      }),
+    );
     app = new Hono();
     app.route('/devices', commandsRoutes);
   });
@@ -232,13 +281,6 @@ describe('device commands routes', () => {
       assertDeviceExecuteAllowedMock
         .mockRejectedValueOnce(new TrustDeniedError('TRUST_PROBATION', 'Partner verification is required.', deniedId, 'reboot'))
         .mockResolvedValueOnce(undefined);
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-allowed', deviceId: allowedId, type: 'reboot', status: 'pending', createdAt: new Date(),
-          }]),
-        }),
-      } as never);
 
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
@@ -251,7 +293,9 @@ describe('device commands routes', () => {
         commands: [{ deviceId: allowedId }],
         failed: [{ deviceId: deniedId, code: 'TRUST_PROBATION', message: 'Partner verification is required.' }],
       });
-      expect(db.insert).toHaveBeenCalledTimes(1);
+      // #5128: the trust denial short-circuits BEFORE the dispatch seam, so
+      // only the allowed device reaches it.
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
     });
 
     it('bulk refresh_inventory dedups already-pending devices, skips silently (caught by @xxiaoxiong on #831)', async () => {
@@ -284,19 +328,6 @@ describe('device commands routes', () => {
           })
         } as never);
 
-      // Insert only fires for B.
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-new-b',
-            deviceId: deviceB,
-            type: 'refresh_inventory',
-            status: 'pending',
-            createdAt: new Date()
-          }])
-        })
-      } as never);
-
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -317,8 +348,8 @@ describe('device commands routes', () => {
       expect(body.skipped).toEqual([
         { deviceId: deviceA, code: 'ALREADY_PENDING', commandId: 'cmd-existing-a' },
       ]);
-      // Insert was called exactly once (for B), not twice.
-      expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
+      // #5128: the dispatch seam was only reached once (for B), not twice.
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
     });
 
     it('rejects generic script command requests before device lookup', async () => {
@@ -397,19 +428,6 @@ describe('device commands routes', () => {
           status: 'online',
         } as never);
 
-      // Insert only fires for the allowed device.
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-allowed',
-            deviceId: allowedId,
-            type: 'reboot',
-            status: 'pending',
-            createdAt: new Date(),
-          }]),
-        }),
-      } as never);
-
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
         headers: {
@@ -436,16 +454,16 @@ describe('device commands routes', () => {
           message: 'Access to this site denied.',
         },
       ]);
-      // Exactly one insert — the denial short-circuited before insert for the
-      // second device, but did NOT abort the batch.
-      expect(db.insert).toHaveBeenCalledTimes(1);
+      // #5128: exactly one dispatch — the denial short-circuited before the
+      // seam for the second device, but did NOT abort the batch.
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
     });
 
     it('mixed batch with denied FIRST: subsequent allowed device still gets queued (defends against early-abort refactor)', async () => {
       // Reverse-order companion to the test above. A future refactor that
       // does `if (anyDenied) return early` would pass the [allowed, denied]
       // case but fail this one — the allowed device is processed AFTER the
-      // denial, so it would never reach the insert.
+      // denial, so it would never reach the dispatch seam.
       const deniedId = '11111111-1111-1111-1111-111111111111';
       const allowedId = '22222222-2222-2222-2222-222222222222';
 
@@ -464,18 +482,6 @@ describe('device commands routes', () => {
           siteId: 'site-allowed',
           status: 'online',
         } as never);
-
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-allowed',
-            deviceId: allowedId,
-            type: 'reboot',
-            status: 'pending',
-            createdAt: new Date(),
-          }]),
-        }),
-      } as never);
 
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
@@ -497,11 +503,11 @@ describe('device commands routes', () => {
       expect(body.failed).toEqual([
         { deviceId: deniedId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' },
       ]);
-      expect(db.insert).toHaveBeenCalledTimes(1);
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
     });
 
-    it('records INSERT_FAILED per-device when the insert throws and the batch continues', async () => {
-      // Defends against a refactor that drops the try/catch around insert
+    it('records INSERT_FAILED per-device when the dispatch seam throws and the batch continues', async () => {
+      // Defends against a refactor that drops the try/catch around dispatch
       // and lets one device's DB error 500 the whole batch (losing every
       // prior success).
       const failingId = '11111111-1111-1111-1111-111111111111';
@@ -511,25 +517,11 @@ describe('device commands routes', () => {
         .mockResolvedValueOnce({ id: failingId, orgId: 'org-123', hostname: 'host-fail', status: 'online' } as never)
         .mockResolvedValueOnce({ id: succeedingId, orgId: 'org-123', hostname: 'host-ok', status: 'online' } as never);
 
-      // First insert throws (constraint violation, pool exhaustion, etc.),
-      // second succeeds.
-      vi.mocked(db.insert)
-        .mockReturnValueOnce({
-          values: vi.fn().mockReturnValue({
-            returning: vi.fn().mockRejectedValue(new Error('duplicate key value violates unique constraint')),
-          }),
-        } as never)
-        .mockReturnValueOnce({
-          values: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              id: 'cmd-ok',
-              deviceId: succeedingId,
-              type: 'reboot',
-              status: 'pending',
-              createdAt: new Date(),
-            }]),
-          }),
-        } as never);
+      // First dispatch throws (constraint violation, pool exhaustion, etc.),
+      // second succeeds via the default mock implementation.
+      dispatchDeviceCommandMock.mockRejectedValueOnce(
+        new Error('duplicate key value violates unique constraint'),
+      );
 
       const res = await app.request('/devices/bulk/commands', {
         method: 'POST',
@@ -553,6 +545,43 @@ describe('device commands routes', () => {
           message: 'duplicate key value violates unique constraint',
         },
       ]);
+    });
+
+    it('bulk: an offline device is reported under queuedOffline, not failed', async () => {
+      const onlineId = '11111111-1111-1111-1111-111111111111';
+      const offlineId = '22222222-2222-2222-2222-222222222222';
+
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: onlineId, orgId: 'org-123', hostname: 'host-online', status: 'online' } as never)
+        .mockResolvedValueOnce({ id: offlineId, orgId: 'org-123', hostname: 'host-offline', status: 'offline' } as never);
+
+      dispatchDeviceCommandMock.mockImplementationOnce(
+        async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+          ok: true,
+          command: { id: 'cmd-online', deviceId, type, status: 'pending', createdAt: new Date() },
+          delivery: 'delivered',
+          deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+        }),
+      ).mockImplementationOnce(
+        async ({ deviceId, type }: { deviceId: string; type: string }) => ({
+          ok: true,
+          command: { id: 'cmd-offline', deviceId, type, status: 'pending', createdAt: new Date() },
+          delivery: 'queued_offline',
+          deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+        }),
+      );
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceIds: [onlineId, offlineId], type: 'reboot' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.commands).toHaveLength(2);
+      expect(body.failed).toEqual([]);
+      expect(body.queuedOffline).toEqual([offlineId]);
     });
 
     describe('bulk-wake (type=wake)', () => {
@@ -789,17 +818,18 @@ describe('device commands routes', () => {
         status: 'online'
       } as never);
 
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-raw',
-            deviceId: 'device-a',
-            type: 'collect_evidence',
-            status: 'pending',
-            createdAt: new Date()
-          }])
-        })
-      } as never);
+      dispatchDeviceCommandMock.mockResolvedValueOnce({
+        ok: true,
+        command: {
+          id: 'cmd-raw',
+          deviceId: 'device-a',
+          type: 'collect_evidence',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+        delivery: 'delivered',
+        deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      });
 
       const res = await app.request('/devices/device-a/commands', {
         method: 'POST',
@@ -1672,6 +1702,140 @@ describe('device commands routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
+    // #5128 — the device page's "Queued actions" section reads
+    // ?status=pending; anything not in the known set is a 400 rather than a
+    // silently empty list.
+    it('list: ?status=pending filters, and an unknown status is a 400', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+      } as never);
+
+      vi.mocked(db.select)
+        // count query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }]),
+          }),
+        } as never)
+        // page query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([{
+                    id: 'cmd-pending',
+                    deviceId: 'device-a',
+                    type: 'reboot',
+                    status: 'pending',
+                    payload: {},
+                    result: null,
+                  }]),
+                }),
+              }),
+            }),
+          }),
+        } as never);
+
+      const res = await app.request('/devices/device-a/commands?status=pending', {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.data[0].status).toBe('pending');
+
+      // An unrecognized status value is a 400 — validated BEFORE the device
+      // lookup, so no getDeviceWithOrgCheck mock is needed for this call.
+      const badRes = await app.request('/devices/device-a/commands?status=bogus', {
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(badRes.status).toBe(400);
+    });
+  });
+
+  describe('POST /devices/:id/commands/:commandId/cancel', () => {
+    const DEVICE_ID = 'device-a';
+    const COMMAND_ID = 'cmd-pending-1';
+
+    const mockExistingCommand = (existing: Record<string, unknown> | undefined) => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(existing ? [existing] : []),
+          }),
+        }),
+      } as never);
+    };
+
+    const mockCancelUpdate = (row: { id: string } | undefined) => {
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue(row ? [row] : []),
+          }),
+        }),
+      } as never);
+    };
+
+    beforeEach(() => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: DEVICE_ID,
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online',
+      } as never);
+    });
+
+    it('cancel: flips a pending command to cancelled', async () => {
+      mockExistingCommand({ id: COMMAND_ID, type: 'reboot', payload: {}, status: 'pending' });
+      mockCancelUpdate({ id: COMMAND_ID });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: COMMAND_ID, status: 'cancelled' });
+      expect(propagateCancelledDeviceCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ commandId: COMMAND_ID, type: 'reboot' }),
+      );
+    });
+
+    it('cancel: 409s when the command is not pending', async () => {
+      mockExistingCommand({ id: COMMAND_ID, type: 'reboot', payload: {}, status: 'sent' });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.status).toBe('sent');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('cancel: 404s for a command belonging to another device', async () => {
+      // The lookup scopes the SELECT to (commandId AND deviceId), so a
+      // command that belongs to a different device simply isn't found.
+      mockExistingCommand(undefined);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /devices/:id/auto-update', () => {
     it('returns a trust denial without inserting an auto-update command', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
@@ -1700,22 +1864,22 @@ describe('device commands routes', () => {
         status: 'online'
       } as never);
 
-      vi.mocked(db.insert).mockReturnValueOnce({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-456',
-            deviceId: 'device-a',
-            type: 'set_auto_update',
-            status: 'pending',
-            payload: { enabled: true },
-            createdAt: new Date()
-          }])
-        })
-      } as never);
+      dispatchDeviceCommandMock.mockResolvedValueOnce({
+        ok: true,
+        command: {
+          id: 'cmd-456',
+          deviceId: 'device-a',
+          type: 'set_auto_update',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+        delivery: 'delivered',
+        deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      });
 
       const res = await app.request('/devices/device-a/auto-update', {
         method: 'POST',
-        headers: { 
+        headers: {
           Authorization: 'Bearer token',
           'Content-Type': 'application/json'
         },
@@ -1729,7 +1893,7 @@ describe('device commands routes', () => {
       expect(body.type).toBe('set_auto_update');
       expect(body.status).toBe('pending');
       expect(body.createdAt).toBeDefined();  // Date handling in response
-      expect(db.insert).toHaveBeenCalled();
+      expect(dispatchDeviceCommandMock).toHaveBeenCalled();
     });
 
     it('rejects command for decommissioned device', async () => {
@@ -1775,7 +1939,5 @@ describe('device commands routes', () => {
       expect(res.status).toBe(403);
       expect(db.insert).not.toHaveBeenCalled();
     });
-  });
-
   });
 });
