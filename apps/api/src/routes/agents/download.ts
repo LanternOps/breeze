@@ -564,7 +564,8 @@ breeze_remove_auxiliary() {
     "/Library/Application Support/Breeze/agent.sock" || return 1
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1
-  if printf '%s\\n' "$receipts" | grep -Fxq com.breeze.agent; then
+  # Consume all input: grep -q can SIGPIPE printf under Bash pipefail.
+  if printf '%s\\n' "$receipts" | grep -Fx com.breeze.agent >/dev/null; then
     pkgutil --forget com.breeze.agent || return 1
   fi
 }

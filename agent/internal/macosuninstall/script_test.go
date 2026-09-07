@@ -27,7 +27,7 @@ func TestPackageCleanup(t *testing.T) {
 	}
 	// The socket is volatile runtime state, not part of the pkg payload.
 	artifacts["/Library/Application Support/Breeze/agent.sock"] = true
-	for _, failure := range []string{"", "absent", "no_sessions", "helper", "query", "ps", "receipt", "receipt_list", "rm"} {
+	for _, failure := range []string{"", "absent", "no_sessions", "many_receipts", "helper", "query", "ps", "receipt", "receipt_list", "rm"} {
 		t.Run("failure="+failure, func(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
@@ -61,6 +61,8 @@ elif name=='launchctl':
 elif name=='pkgutil':
  if fail=='receipt_list': sys.exit(1)
  if args[0]=='--pkgs':
+  if fail=='many_receipts':
+   print('com.breeze.agent\n' + ('com.example.other-receipt\n' * 20000)); sys.exit(0)
   print('com.breeze.helper' if fail=='absent' else 'com.breeze.helper\ncom.breeze.agent'); sys.exit(0)
  if fail=='receipt': sys.exit(1)
 elif name=='rm':
@@ -77,10 +79,10 @@ else: sys.exit(91)
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command("/bin/sh", "-c", Script())
+			cmd := exec.Command("/bin/bash", "-o", "pipefail", "-c", Script())
 			cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "FIXTURE_ROOT="+root, "FAIL_COMMAND="+failure)
 			out, err := cmd.CombinedOutput()
-			failed := failure != "" && failure != "absent" && failure != "no_sessions"
+			failed := failure != "" && failure != "absent" && failure != "no_sessions" && failure != "many_receipts"
 			if (err != nil) != failed {
 				t.Fatalf("exit=%v output=%s", err, out)
 			}
