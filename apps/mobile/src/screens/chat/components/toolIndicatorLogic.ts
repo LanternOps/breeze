@@ -29,6 +29,27 @@ function errorText(output: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+const MAX_TOOL_ROW_ERROR_TEXT_LENGTH = 400;
+
+/**
+ * The human-readable error text for a FAILED/DENIED tool row (#5170). Rows in
+ * those states had no expand affordance at all — see the comment on
+ * `toolRowStatus` above, written when this row was still unreachable.
+ * `output.error` wins over `output.message` since that's the field
+ * `errorText()` above already trusts as the tool's own error string.
+ */
+export function toolRowErrorText(output: unknown): string | null {
+  if (!output || typeof output !== 'object') return null;
+  const obj = output as { error?: unknown; message?: unknown };
+  const raw =
+    typeof obj.error === 'string' ? obj.error : typeof obj.message === 'string' ? obj.message : null;
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= MAX_TOOL_ROW_ERROR_TEXT_LENGTH) return trimmed;
+  return `${trimmed.slice(0, MAX_TOOL_ROW_ERROR_TEXT_LENGTH)}…`;
+}
+
 /**
  * Heuristic, and deliberately still a heuristic: a permission-style error
  * reads as DENIED, everything else as FAILED. Unlike the approval handoff
@@ -151,15 +172,47 @@ export function titleCaseToolName(toolName: string): string {
 }
 
 /**
+ * `input.action` values that mean the call only read data despite the tool's
+ * leading verb (`manage_automations` with `action: 'list'` mutates nothing).
+ * MIRROR of the same set in `packages/shared/src/utils/aiToolLabels.ts`.
+ */
+const READ_ONLY_ACTIONS = new Set([
+  'list',
+  'get',
+  'search',
+  'status',
+  'show',
+  'read',
+  'query',
+  'describe',
+  'check',
+  'preview',
+  'view',
+]);
+
+function isReadOnlyAction(input: Record<string, unknown> | undefined): boolean {
+  const action = input?.action;
+  return typeof action === 'string' && READ_ONLY_ACTIONS.has(action.toLowerCase());
+}
+
+/**
  * `aiToolLabel('manage_alerts', 'completed')` → "Updated alerts". Falls back
  * to title case for any tool that does not begin with a known verb, so a newly
  * registered tool never renders as a raw identifier again.
+ *
+ * `input` is the tool call's arguments. When `input.action` is a read-only
+ * verb (list/get/search/…), the row renders with the `get` conjugation
+ * regardless of the tool name's own leading verb (#5170).
  */
-export function aiToolLabel(toolName: string, state: AiToolLabelState): string {
+export function aiToolLabel(
+  toolName: string,
+  state: AiToolLabelState,
+  input?: Record<string, unknown>,
+): string {
   const words = toolNameWords(toolName);
   if (words.length === 0) return 'Tool';
 
-  const forms = VERB_FORMS[words[0].toLowerCase()];
+  const forms = isReadOnlyAction(input) ? VERB_FORMS.get : VERB_FORMS[words[0].toLowerCase()];
   const subject = words.slice(1).join(' ');
   if (!forms || !subject) return titleCaseToolName(toolName);
 

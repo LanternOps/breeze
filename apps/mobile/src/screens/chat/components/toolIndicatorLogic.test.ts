@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aiToolLabel, toolRowStatus, toolRowSuffix } from './toolIndicatorLogic';
+import { aiToolLabel, toolRowErrorText, toolRowStatus, toolRowSuffix } from './toolIndicatorLogic';
 
 describe('toolRowStatus (#5107)', () => {
   it('reads a server-asserted handoff as approved, not failed', () => {
@@ -70,6 +70,39 @@ describe('toolRowSuffix', () => {
   });
 });
 
+describe('toolRowErrorText (#5170)', () => {
+  it('reads output.error', () => {
+    expect(toolRowErrorText({ error: 'restart failed: service not found' })).toBe(
+      'restart failed: service not found',
+    );
+  });
+
+  it('falls back to output.message when there is no error field', () => {
+    expect(toolRowErrorText({ message: 'connection refused' })).toBe('connection refused');
+  });
+
+  it('prefers error over message when both are present', () => {
+    expect(toolRowErrorText({ error: 'primary', message: 'secondary' })).toBe('primary');
+  });
+
+  it('returns null when there is nothing readable', () => {
+    expect(toolRowErrorText(undefined)).toBeNull();
+    expect(toolRowErrorText(null)).toBeNull();
+    expect(toolRowErrorText('a bare string output')).toBeNull();
+    expect(toolRowErrorText({ error: 42 })).toBeNull();
+    expect(toolRowErrorText({ other: 'field' })).toBeNull();
+    expect(toolRowErrorText({ error: '   ' })).toBeNull();
+  });
+
+  it('trims to ~400 chars with an ellipsis', () => {
+    const long = 'x'.repeat(500);
+    const result = toolRowErrorText({ error: long });
+    expect(result).not.toBeNull();
+    expect(result!.length).toBeLessThanOrEqual(401);
+    expect(result!.endsWith('…')).toBe(true);
+  });
+});
+
 describe('aiToolLabel (mobile mirror of packages/shared)', () => {
   it('reads as an action, not a symbol', () => {
     expect(aiToolLabel('manage_alerts', 'completed')).toBe('Updated alerts');
@@ -89,5 +122,36 @@ describe('aiToolLabel (mobile mirror of packages/shared)', () => {
       expect(aiToolLabel(name, 'completed')).not.toContain('_');
       expect(aiToolLabel(name, 'completed').length).toBeGreaterThan(0);
     }
+  });
+
+  it('reads as a check, not a mutation, when input.action is read-only (#5170)', () => {
+    // "Updated automations · DONE" when the assistant only listed automations
+    // reads as a change the tech never asked for. A read-only `action` on the
+    // call forces the `get` verb forms regardless of the leading verb.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'list' })).toBe(
+      'Checked automations',
+    );
+    expect(aiToolLabel('manage_automations', 'running', { action: 'list' })).toBe(
+      'Checking automations',
+    );
+    for (const action of ['list', 'get', 'search', 'status', 'show', 'read', 'query', 'describe', 'check', 'preview', 'view']) {
+      expect(aiToolLabel('manage_services', 'completed', { action })).toBe('Checked services');
+    }
+    // Case-insensitive.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'LIST' })).toBe(
+      'Checked automations',
+    );
+  });
+
+  it('leaves the verb alone when input.action is a mutation or absent', () => {
+    expect(aiToolLabel('manage_automations', 'completed', { action: 'create' })).toBe(
+      'Updated automations',
+    );
+    expect(aiToolLabel('manage_automations', 'completed')).toBe('Updated automations');
+    expect(aiToolLabel('manage_automations', 'completed', {})).toBe('Updated automations');
+    // A non-string action is ignored, not crashed on.
+    expect(aiToolLabel('manage_automations', 'completed', { action: 42 })).toBe(
+      'Updated automations',
+    );
   });
 });
