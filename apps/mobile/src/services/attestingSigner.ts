@@ -40,7 +40,13 @@ export interface AndroidAttestation {
 export type PlatformAttestation = IosAttestation | AndroidAttestation;
 
 export interface AttestingSigner {
-  /** Whether this build can mint an attested hardware key AND attest the app. */
+  /**
+   * Whether this build can mint an attested hardware key AND attest the app.
+   *
+   * May REJECT. A rejection means "unknown", not "no": callers must not treat
+   * it as a licence to register an unattested key (see `approverDevice.ts`).
+   * {@link nullAttestingSigner} only ever resolves `false`.
+   */
   isAvailable(): Promise<boolean>;
   /**
    * Mint the hardware key.
@@ -54,15 +60,16 @@ export interface AttestingSigner {
   /** Attest the app instance, binding the (base64) registration transcript. */
   attestApp(transcriptB64: string): Promise<PlatformAttestation>;
   /**
-   * Biometric-gated ECDSA-SHA256 proof of possession.
+   * Biometric-gated ECDSA-SHA256 signature over the UTF-8 bytes of `payload`
+   * AS GIVEN — no base64 decoding, whatever the payload happens to look like.
    *
-   * Signs the UTF-8 bytes of `transcriptB64` AS GIVEN — it does not decode the
-   * base64. The server verifies the registration PoP over
-   * `transcript.toString('base64')` as UTF-8 (`verifyMobileSignature` in
-   * `apps/api/src/services/mobileHwKey.ts`); decoding here would produce a
-   * signature that never verifies, on every device at once.
+   * Both server-side verifications hash the payload the same way
+   * (`Buffer.from(payload, 'utf8')` in `apps/api/src/services/mobileHwKey.ts`),
+   * so one primitive covers both callers:
+   *  - registration PoP, where the payload is `base64(transcript)`;
+   *  - approval assertions, where it is the server's `mobileNonce`.
    */
-  signTranscript(transcriptB64: string, reason: string): Promise<{ signature: string }>;
+  signPayload(payload: string, reason: string): Promise<{ signature: string }>;
   /** Remove the hardware key. True when one was deleted. */
   deleteAttestedKey(): Promise<boolean>;
 }
@@ -86,7 +93,7 @@ export const nullAttestingSigner: AttestingSigner = {
   async attestApp(): Promise<PlatformAttestation> {
     throw new Error(UNAVAILABLE);
   },
-  async signTranscript(): Promise<{ signature: string }> {
+  async signPayload(): Promise<{ signature: string }> {
     throw new Error(UNAVAILABLE);
   },
   async deleteAttestedKey() {
@@ -140,15 +147,15 @@ export function loadNativeAttestation(): NativeAttestationModule | null {
  */
 export function nativeAttestingSigner(native: NativeAttestationModule): AttestingSigner {
   return {
-    async isAvailable() {
-      try {
-        return await native.isAttestationAvailable();
-      } catch {
-        // An availability probe that throws is a "no", not a crash — but it is
-        // never a "yes", so a device that supports attestation and errors here
-        // takes the legacy path rather than a broken attested one.
-        return false;
-      }
+    isAvailable() {
+      // Deliberately NOT caught. A probe that throws means "I don't know",
+      // which is not the same as "no" — and the caller decides an assurance
+      // level from this answer. Coercing the throw to `false` here would send
+      // a phone that may well have a Secure Enclave down the legacy unattested
+      // path and register it at L2/L3, silently, which is the exact failure
+      // this wave exists to prevent. `approverDevice.runAttempt` turns the
+      // rejection into a visible `attestation_probe_failed`.
+      return native.isAttestationAvailable();
     },
     createAttestedKey(opts) {
       return native.createAttestedKey(opts);
@@ -156,8 +163,8 @@ export function nativeAttestingSigner(native: NativeAttestationModule): Attestin
     attestApp(transcriptB64) {
       return native.attestApp(transcriptB64);
     },
-    signTranscript(transcriptB64, reason) {
-      return native.signWithAttestedKey(transcriptB64, reason);
+    signPayload(payload, reason) {
+      return native.signWithAttestedKey(payload, reason);
     },
     deleteAttestedKey() {
       return native.deleteAttestedKey();

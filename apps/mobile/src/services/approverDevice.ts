@@ -39,6 +39,18 @@ import { registrationTranscriptB64 } from './authenticatorTranscript';
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'breeze_auth_token';
 const CRED_ID_KEY = 'breeze_approver_credential_id';
+/**
+ * Set to '1' alongside the credential id when THIS phone registered through the
+ * attested path, so approval-time signing picks the matching key.
+ *
+ * It is not cosmetic bookkeeping. The server verifies an approval assertion with
+ * the algorithm stored on the DEVICE ROW (`authenticatorAssurance.ts`, "the
+ * algorithm comes from the DEVICE ROW, never from the proof"). An attested row
+ * is ES256, so signing that approval with the legacy Keychain RSA key produces a
+ * signature that cannot verify — the phone would register at L4 and then fail
+ * every proof it ever offered, silently dropping back to L1.
+ */
+const ATTESTED_KEY = 'breeze_approver_attested';
 
 /** The mobile_hw_key proof body the server's approvalProofSchema expects. */
 export interface MobileApprovalProof {
@@ -85,6 +97,10 @@ export type ApproverRegistrationOutcome =
   /**
    * `reason: 'attestation_failed'` specifically means the device SUPPORTS
    * attestation and could not complete it — never that it lacks the hardware.
+   * `reason: 'attestation_probe_failed'` means the availability probe itself
+   * threw, so support was never established either way; both fail closed.
+   * Transport-level failures keep their `exception:<Name>` / `http_<status>`
+   * reasons, so a dropped connection stays distinguishable from a refusal.
    */
   | { status: 'failed'; reason: string };
 
@@ -130,6 +146,13 @@ async function persistRegistration(
   const { device } = await res.json();
   if (!device?.id) {
     return { status: 'failed', reason: 'missing_device_id' };
+  }
+  // Written BEFORE the credential id: `gatherApprovalProof` gates on the
+  // credential id, so if the process dies between the two writes we would
+  // rather have a stale marker with no credential (inert) than a credential
+  // whose signer we then guess wrong.
+  if (attested) {
+    await SecureStore.setItemAsync(ATTESTED_KEY, '1');
   }
   await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
   return { status: 'registered', attested };
@@ -221,7 +244,7 @@ async function registerAttested(
     // One digest, two bindings on the client: the platform attestation commits
     // to it, and the new key signs it under a biometric prompt.
     attestation = await attesting.attestApp(transcriptB64);
-    ({ signature: popSignature } = await attesting.signTranscript(transcriptB64, POP_PROMPT));
+    ({ signature: popSignature } = await attesting.signPayload(transcriptB64, POP_PROMPT));
   } catch (e) {
     throw new AttestationFailed(e);
   }
@@ -255,7 +278,19 @@ function runAttempt(
       if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
         return { status: 'already_registered' };
       }
-      const canAttest = await attesting.isAvailable();
+      let canAttest: boolean;
+      try {
+        canAttest = await attesting.isAvailable();
+      } catch {
+        // The probe itself failed, so we do NOT know whether this phone can
+        // attest. Registering unattested here would be a silent downgrade on a
+        // device that may support L4 — the same harm as a failed attestation,
+        // so it gets the same fail-closed treatment. A distinct reason keeps
+        // "the probe never answered" separable from "attestation was refused"
+        // in support triage. RootNavigator reports `failed` outcomes to Sentry
+        // with the reason as a tag, so this is visible rather than swallowed.
+        return { status: 'failed', reason: 'attestation_probe_failed' };
+      }
       // `unsupported` requires BOTH to be absent. A phone with a Secure Enclave
       // but no `react-native-biometrics` build must not report "no hardware".
       if (!canAttest && !(await signer.isAvailable())) {
@@ -322,17 +357,39 @@ export async function ensureApproverDevice(
 /**
  * Best-effort: produce a hardware-signed proof for an approval decision. Returns
  * null (fall back to an L1 approval) when there is no registered device, no
- * biometric hardware, or the server issues no mobile nonce. A user-cancelled
+ * usable signer, or the server issues no mobile nonce. A user-cancelled
  * biometric prompt propagates as a throw so the caller can abort rather than
  * silently downgrade a deliberate cancel.
+ *
+ * The signer is chosen by how this device REGISTERED (#1374 W05), because the
+ * server verifies with the algorithm on the device row — see {@link ATTESTED_KEY}.
  */
 export async function gatherApprovalProof(
   approvalId: string,
   signer: HardwareSigner = getHardwareSigner(),
+  attesting: AttestingSigner = getAttestingSigner(),
 ): Promise<MobileApprovalProof | null> {
-  if (!(await signer.isAvailable())) return null;
   const credentialId = await SecureStore.getItemAsync(CRED_ID_KEY);
   if (!credentialId) return null;
+
+  // WHICH key signs is decided by how this phone registered, not by what
+  // happens to be available now. The server verifies with the algorithm stored
+  // on the device row, so an attested (ES256) row signed by the legacy RSA key
+  // fails verification every time — and it fails as a rejected proof, i.e. an
+  // approval that quietly lands at L1.
+  const registeredAttested = (await SecureStore.getItemAsync(ATTESTED_KEY)) === '1';
+  let sign: (payload: string, reason: string) => Promise<{ signature: string }>;
+  if (registeredAttested) {
+    // Deliberately NOT falling back to `signer` here. A build or device that can
+    // no longer reach the attested key cannot produce a proof this row accepts;
+    // offering an RSA signature instead would only turn a clean "no proof" into
+    // a verification failure on the server.
+    if (!(await attesting.isAvailable().catch(() => false))) return null;
+    sign = (payload, reason) => attesting.signPayload(payload, reason);
+  } else {
+    if (!(await signer.isAvailable())) return null;
+    sign = (payload, reason) => signer.sign(payload, reason);
+  }
 
   const challengeRes = await authedFetch(`/api/v1/mobile/approvals/${approvalId}/assertion-challenge`, {
     method: 'POST',
@@ -342,7 +399,11 @@ export async function gatherApprovalProof(
   const nonce: string | undefined = challenge?.mobileNonce;
   if (!nonce) return null; // server issued no mobile nonce → device-less path
 
-  const { signature } = await signer.sign(nonce, 'Approve this request');
+  // Signed as the UTF-8 bytes of the nonce string, which is what
+  // `verifyMobileSignature` hashes. A user-cancelled prompt, or a Secure Enclave
+  // key invalidated by a new biometric enrolment, PROPAGATES: the caller aborts
+  // rather than silently downgrading a deliberate refusal to an L1 approval.
+  const { signature } = await sign(nonce, 'Approve this request');
   return { type: 'mobile_hw_key', credentialId, nonce, signature };
 }
 

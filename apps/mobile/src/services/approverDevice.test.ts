@@ -43,7 +43,7 @@ const attesting = {
   isAvailable: vi.fn(),
   createAttestedKey: vi.fn(),
   attestApp: vi.fn(),
-  signTranscript: vi.fn(),
+  signPayload: vi.fn(),
   deleteAttestedKey: vi.fn(),
 };
 let attestingPlatform: 'ios' | 'android' | null = 'ios';
@@ -83,7 +83,7 @@ beforeEach(() => {
   attesting.attestApp
     .mockReset()
     .mockResolvedValue({ platform: 'ios', attestationObject: 'ATT-CBOR', keyId: 'KEY-ID' });
-  attesting.signTranscript.mockReset().mockResolvedValue({ signature: 'POP-SIG' });
+  attesting.signPayload.mockReset().mockResolvedValue({ signature: 'POP-SIG' });
   attesting.deleteAttestedKey.mockReset().mockResolvedValue(true);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -443,6 +443,22 @@ describe('ensureApproverDevice — attested path', () => {
       'breeze_approver_credential_id',
       'dev-att',
     );
+    // Recorded so approval-time signing picks the ES256 key the server row
+    // expects. Without this the device registers at L4 and then fails every
+    // proof it offers.
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_attested', '1');
+  });
+
+  it('does NOT mark the device attested when the legacy path ran', async () => {
+    attesting.isAvailable.mockResolvedValue(false);
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-legacy' } }));
+
+    await ensureApproverDevice(fakeSigner(), 'grant-1');
+
+    expect(secureStore.setItemAsync).not.toHaveBeenCalledWith(
+      'breeze_approver_attested',
+      expect.anything(),
+    );
   });
 
   it('signs and attests the transcript derived from the SERVER challenge, not a client-chosen value', async () => {
@@ -452,9 +468,9 @@ describe('ensureApproverDevice — attested path', () => {
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
     expect(attesting.attestApp).toHaveBeenCalledWith(expectedTranscriptB64);
-    expect(attesting.signTranscript).toHaveBeenCalledWith(expectedTranscriptB64, expect.any(String));
+    expect(attesting.signPayload).toHaveBeenCalledWith(expectedTranscriptB64, expect.any(String));
     // Bound three ways to ONE digest — attestation, PoP, and the key inside it.
-    expect(attesting.attestApp.mock.calls[0][0]).toBe(attesting.signTranscript.mock.calls[0][0]);
+    expect(attesting.attestApp.mock.calls[0][0]).toBe(attesting.signPayload.mock.calls[0][0]);
   });
 
   it('passes the server challenge to key generation so Android can bind it at key-gen time', async () => {
@@ -514,13 +530,17 @@ describe('ensureApproverDevice — attested path', () => {
 
   it('returns failed/attestation_failed when the biometric PoP signature is refused', async () => {
     challengeIssued();
-    attesting.signTranscript.mockRejectedValue(new Error('User cancelled'));
+    attesting.signPayload.mockRejectedValue(new Error('User cancelled'));
 
     await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
       status: 'failed',
       reason: 'attestation_failed',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some((c: unknown[]) => c[0] === `https://api.test${LEGACY_PATH}`),
+    ).toBe(false);
+    expect(secureStore.setItemAsync).not.toHaveBeenCalled();
   });
 
   it('returns failed/attestation_failed when key generation is refused', async () => {
@@ -531,6 +551,10 @@ describe('ensureApproverDevice — attested path', () => {
       status: 'failed',
       reason: 'attestation_failed',
     });
+    expect(
+      fetchMock.mock.calls.some((c: unknown[]) => c[0] === `https://api.test${LEGACY_PATH}`),
+    ).toBe(false);
+    expect(secureStore.setItemAsync).not.toHaveBeenCalled();
   });
 
   it('does not retry with the same attemptId after a 400 — the attempt is single-use', async () => {
@@ -604,6 +628,21 @@ describe('ensureApproverDevice — attested path', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('FAILS CLOSED when the availability probe itself throws — never a legacy fallback', async () => {
+    // A probe that rejects means "unknown", not "unavailable". Treating it as
+    // unavailable would silently register an unattested key on a phone that may
+    // support L4, and nothing would ever surface that.
+    attesting.isAvailable.mockRejectedValue(new Error('bridge exploded'));
+
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'failed',
+      reason: 'attestation_probe_failed',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(attesting.createAttestedKey).not.toHaveBeenCalled();
+    expect(secureStore.setItemAsync).not.toHaveBeenCalled();
+  });
+
   it('takes the attested path even when the LEGACY signer is unavailable', async () => {
     // A phone with a Secure Enclave but no react-native-biometrics key must not
     // be reported as having no hardware.
@@ -613,5 +652,83 @@ describe('ensureApproverDevice — attested path', () => {
     await expect(
       ensureApproverDevice(fakeSigner({ isAvailable: vi.fn().mockResolvedValue(false) }), 'grant-1'),
     ).resolves.toEqual({ status: 'registered', attested: true });
+  });
+});
+
+// ============================================================
+// #1374 W05 — approval-time signer selection
+//
+// The server verifies an approval assertion with the algorithm stored on the
+// DEVICE ROW ("the algorithm comes from the DEVICE ROW, never from the proof",
+// `apps/api/src/services/authenticatorAssurance.ts`). So a phone that registered
+// through the attested path holds an ES256 row and MUST sign with the Secure
+// Enclave key. Signing with the legacy RSA key would produce a proof the server
+// rejects — an approval that silently lands at L1 on a device the UI calls
+// hardware-attested.
+// ============================================================
+describe('gatherApprovalProof — signer selection', () => {
+  function registeredAs(attested: boolean) {
+    secureStore.getItemAsync.mockImplementation(async (k: string) => {
+      if (k === 'breeze_approver_credential_id') return 'cred-99';
+      if (k === 'breeze_approver_attested') return attested ? '1' : null;
+      return 'test-token';
+    });
+  }
+
+  it('signs with the ATTESTED key when this device registered attested', async () => {
+    registeredAs(true);
+    attesting.isAvailable.mockResolvedValue(true);
+    attesting.signPayload.mockResolvedValue({ signature: 'SE-SIG' });
+    const legacy = fakeSigner();
+    fetchMock.mockResolvedValueOnce(json({ mobileNonce: 'approval-nonce' }));
+
+    await expect(gatherApprovalProof('appr-1', legacy, attesting)).resolves.toEqual({
+      type: 'mobile_hw_key',
+      credentialId: 'cred-99',
+      nonce: 'approval-nonce',
+      signature: 'SE-SIG',
+    });
+    // Signed as the raw nonce string — what `verifyMobileSignature` hashes.
+    expect(attesting.signPayload).toHaveBeenCalledWith('approval-nonce', expect.any(String));
+    expect(legacy.sign).not.toHaveBeenCalled();
+  });
+
+  it('signs with the LEGACY key when this device registered unattested', async () => {
+    registeredAs(false);
+    attesting.isAvailable.mockResolvedValue(true);
+    const legacy = fakeSigner();
+    fetchMock.mockResolvedValueOnce(json({ mobileNonce: 'approval-nonce' }));
+
+    const proof = (await gatherApprovalProof('appr-1', legacy, attesting)) as MobileApprovalProof;
+
+    expect(proof.signature).toBe('SIG-B64');
+    expect(legacy.sign).toHaveBeenCalledWith('approval-nonce', expect.any(String));
+    expect(attesting.signPayload).not.toHaveBeenCalled();
+  });
+
+  it('returns null rather than offering an RSA signature the ES256 row would reject', async () => {
+    // Attested row, but the attested signer is gone (older build, module not
+    // linked). Falling back to the legacy key would turn "no proof" into a
+    // server-side verification FAILURE, which is strictly worse.
+    registeredAs(true);
+    attesting.isAvailable.mockResolvedValue(false);
+    const legacy = fakeSigner();
+
+    await expect(gatherApprovalProof('appr-1', legacy, attesting)).resolves.toBeNull();
+    expect(legacy.sign).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates a Secure Enclave key invalidated by a new biometric enrolment', async () => {
+    // `.biometryCurrentSet` means enrolling a new face/finger kills the key.
+    // The app must report that, not silently sign with something else.
+    registeredAs(true);
+    attesting.isAvailable.mockResolvedValue(true);
+    attesting.signPayload.mockRejectedValue(new Error('errSecAuthFailed: key invalidated'));
+    fetchMock.mockResolvedValueOnce(json({ mobileNonce: 'approval-nonce' }));
+
+    await expect(gatherApprovalProof('appr-1', fakeSigner(), attesting)).rejects.toThrow(
+      /invalidated/i,
+    );
   });
 });
