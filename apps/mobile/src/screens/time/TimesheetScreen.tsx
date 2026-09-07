@@ -394,8 +394,13 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         <View style={styles.weekLabels}>
           <Text style={styles.weekRange}>{weekRangeLabel(weekStart)}</Text>
           <Text style={styles.weekTotal}>
-            {formatMinutes(view.totals.totalMinutes)} total ·{' '}
-            {formatMinutes(view.totals.billableMinutes)} billable
+            {/* #5104: `entries` is null until THIS week has actually loaded
+             * (see timesheetLoadState.ts) — `view.totals` off an empty
+             * array reads as a confident "0m total · 0m billable" while the
+             * body below is still showing a spinner. */}
+            {entries === null
+              ? '—'
+              : `${formatMinutes(view.totals.totalMinutes)} total · ${formatMinutes(view.totals.billableMinutes)} billable`}
           </Text>
         </View>
         <Pressable
@@ -437,7 +442,12 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
           {loadError !== null ? (
             <Text style={styles.warning}>{loadError}</Text>
           ) : null}
-          {days.map((day) => {
+          {/* #5104: most-recent-day-first so today's entries on a
+           * mid-to-late week (Wed/Thu/…) don't sit below the fold under
+           * Mon-first ordering — the alternative (anchor/auto-scroll to
+           * today) needs ScrollView layout tracking this screen doesn't have
+           * yet; this is the minimal fix for "reachable without scrolling". */}
+          {days.slice().reverse().map((day) => {
             const dayEntries = view.byDay.get(day) ?? [];
             return (
               <View key={day} style={styles.day}>

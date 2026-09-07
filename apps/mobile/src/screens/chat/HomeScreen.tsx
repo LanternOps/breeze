@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AppState,
   type AppStateStatus,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Text,
@@ -308,6 +309,9 @@ export function HomeScreen() {
 
   const handleSend = useCallback(
     async (text: string) => {
+      // #5104: the composer keyboard otherwise stays up and covers the
+      // streaming reply as it arrives.
+      Keyboard.dismiss();
       // Abort any prior stream, catch-up poll or settle retry before starting
       // the next turn.
       cancelTurnWork();
