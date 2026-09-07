@@ -45,10 +45,14 @@
  * is a SUPERUSER with BYPASSRLS (`breeze_test`), which ignores RLS outright, so
  * every behavioural test in this file passes IDENTICALLY with or without the
  * in-body `set_config('breeze.scope', 'system', true)` elevation. The elevation
- * is load-bearing on a deployment whose migration role lacks BYPASSRLS, because
- * an unelevated read cannot see PARTNER-WIDE definitions at all (there is no
- * partner-wide SELECT branch on `custom_field_definitions` yet — #4944) and the
- * trigger would then reject every legitimate partner-wide value. Hence
+ * is load-bearing on a deployment whose migration role lacks BYPASSRLS: an
+ * unelevated read is bound by whatever the CALLING context can see, and the
+ * trigger would then reject legitimate partner-wide values. #4944 narrowed but
+ * did not remove that exposure — `custom_field_definitions_partner_wide_select`
+ * lets the caller's context reach its OWN partner's partner-wide definitions,
+ * so the common device/org path is now covered, but any caller that sets no
+ * `breeze.current_partner_id` (the GUC the branch keys on) is still blind and
+ * would still get a spurious rejection. Hence
  * `pins the in-body scope elevation` below asserts the function's stored BODY
  * from the catalog. On this stack it is the ONLY assertion here that can fail
  * when the elevation is removed. Do not delete it as redundant. And it asserts
