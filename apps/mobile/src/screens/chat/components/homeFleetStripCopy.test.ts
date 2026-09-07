@@ -37,4 +37,10 @@ describe('formatFleetStripCopy', () => {
       '1 online · 1 offline · no issues',
     );
   });
+
+  it('shows a zero online count plainly rather than collapsing it like issues', () => {
+    expect(formatFleetStripCopy(summary({ online: 0, offline: 5 }, { active: 0 }))).toBe(
+      '0 online · 5 offline · no issues',
+    );
+  });
 });

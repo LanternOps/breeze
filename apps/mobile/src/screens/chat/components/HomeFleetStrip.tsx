@@ -5,6 +5,7 @@ import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 
 import { useApprovalTheme, radii, spacing, type } from '../../../theme';
 import { haptic } from '../../../lib/motion';
+import { reportInternalError } from '../../../lib/errorReporting';
 import { FleetBar } from '../../../components/FleetBar';
 import { getMobileSummary, type MobileSummary } from '../../../services/systems';
 import type { MainTabParamList } from '../../../navigation/MainNavigator';
@@ -38,8 +39,14 @@ export function HomeFleetStrip() {
         setSummary(s);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
+        // Hidden from the user by design (never a red banner on Home), but
+        // still worth a Sentry breadcrumb — otherwise the strip going quiet
+        // for every user (expired token, endpoint regression) has zero
+        // signal anywhere. Mirrors useSystemsData.ts's handling of the same
+        // getMobileSummary() call.
+        reportInternalError(err, 'home-fleet-strip');
         setFailed(true);
         setLoading(false);
       });
