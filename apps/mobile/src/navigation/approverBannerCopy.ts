@@ -34,6 +34,18 @@ export function describeApproverReason(reason: string | null): string | null {
   if (!reason) return null;
   if (reason === 'no_reauth_grant') return null; // expected for a restored session
   if (reason === 'missing_device_id') return 'The server accepted the key but returned no device id.';
+  // #1374 W05 — attestation reasons. None of these is fixed by signing in again:
+  // a fresh grant re-runs the identical attestation against the identical
+  // device and server. Say so, or the banner's remedy sends the user in a loop.
+  if (reason === 'attestation_failed') {
+    return 'This phone supports hardware attestation but could not complete it, so it was not registered. Signing in again will not change this — contact your administrator.';
+  }
+  if (reason === 'attestation_probe_failed') {
+    return 'This phone could not determine whether it supports hardware attestation, so it was not registered. Signing in again will not change this — contact your administrator.';
+  }
+  if (reason === 'attestation_rejected_by_server') {
+    return 'This phone is registered, but the server did not accept its hardware attestation, so critical approvals are unavailable from it. Signing in again will not change this — contact your administrator.';
+  }
   if (reason === 'http_401' || reason === 'http_403') {
     return 'The server rejected this phone’s one-time registration grant (it expires a few minutes after sign-in).';
   }

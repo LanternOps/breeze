@@ -38,10 +38,20 @@ vi.mock('./installationId', () => ({
 const secureStore = {
   getItemAsync: vi.fn(),
   setItemAsync: vi.fn(),
+  deleteItemAsync: vi.fn(),
 };
+/**
+ * `/devices/mobile/verify` 201s whether or not the attestation held; the
+ * verdict is the `platformBoundBasis` on the returned row (W05 round 2).
+ */
+const ANDROID_ATTESTED_DEVICE = {
+  device: { id: 'dev-and', platformBoundBasis: 'android_strongbox_key_attestation' },
+};
+
 vi.mock('expo-secure-store', () => ({
   getItemAsync: (...a: unknown[]) => secureStore.getItemAsync(...a),
   setItemAsync: (...a: unknown[]) => secureStore.setItemAsync(...a),
+  deleteItemAsync: (...a: unknown[]) => secureStore.deleteItemAsync(...a),
 }));
 
 vi.mock('./hardwareSigner', () => ({
@@ -150,6 +160,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   secureStore.getItemAsync.mockReset().mockResolvedValue('test-token');
   secureStore.setItemAsync.mockReset().mockResolvedValue(undefined);
+  secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
   (globalThis as unknown as { fetch: typeof fetchMock }).fetch = fetchMock;
   attesting.isAvailable.mockReset().mockResolvedValue(true);
   attesting.createAttestedKey
@@ -167,7 +178,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('ensureApproverDevice — Android attested path', () => {
   it('asks for an ANDROID challenge, so the server binds the attempt to this platform', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
       status: 'registered',
@@ -186,7 +197,7 @@ describe('ensureApproverDevice — Android attested path', () => {
     // against `androidKeyGenChallenge`. Passing `challenge` through verbatim
     // would fail every Android registration in the field at once.
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -208,7 +219,7 @@ describe('ensureApproverDevice — Android attested path', () => {
       return { platform: 'android', certificateChain: CHAIN };
     });
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -217,7 +228,7 @@ describe('ensureApproverDevice — Android attested path', () => {
 
   it('attests and signs the SERVER-derived transcript, not the keygen challenge', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -227,7 +238,7 @@ describe('ensureApproverDevice — Android attested path', () => {
 
   it('forwards the certificate chain to /verify verbatim, leaf first', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -251,7 +262,7 @@ describe('ensureApproverDevice — Android attested path', () => {
       playIntegrityToken: 'PI-JWS',
     });
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -265,7 +276,7 @@ describe('ensureApproverDevice — Android attested path', () => {
     // sideloaded build can register. A fabricated token would be a forged
     // integrity claim; an empty string would be a schema violation.
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -275,7 +286,7 @@ describe('ensureApproverDevice — Android attested path', () => {
 
   it('still registers (attested) when the token is absent — the chain alone earns L4', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-and' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ANDROID_ATTESTED_DEVICE, 201));
 
     await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
       status: 'registered',
