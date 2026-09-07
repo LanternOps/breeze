@@ -141,6 +141,24 @@ export const partners = pgTable('partners', {
   // surface gate on this; it is NOT in settings JSONB because that is
   // partner-writable and the partner must not be able to self-enable.
   aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
+  // #5075 W04 — which service-desk/billing module this partner runs.
+  // 'native' = Breeze's own service desk & billing (default, and what every
+  // partner ran before this column existed); 'external' = the partner's PSA is
+  // the system of record and `serviceManagementPsaConnectionId` names the
+  // partner-wide connection; 'off' = RMM only — the Service Desk and Billing
+  // nav sections, the org record's Tickets/Billing tabs, and NEW ticket
+  // creation (ticketService.createTicket, 409) are all withdrawn.
+  //
+  // NOT authorization: existing tickets stay readable and every route keeps its
+  // own permission checks. The single behavioural gate is ticket CREATION.
+  // Partner-writable via PATCH /partners/me (unlike aiForOfficeEnabled above,
+  // which is a platform-granted entitlement).
+  serviceManagementMode: text('service_management_mode').$type<'native' | 'external' | 'off'>().notNull().default('native'),
+  // FK to psa_connections(id) ON DELETE RESTRICT, declared in the migration
+  // only: integrations.ts already imports orgs.ts, so a `.references()` here
+  // would close an import cycle. Paired with the mode by
+  // partners_service_management_connection_chk — set iff mode = 'external'.
+  serviceManagementPsaConnectionId: uuid('service_management_psa_connection_id'),
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),

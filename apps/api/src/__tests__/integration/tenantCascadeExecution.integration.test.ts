@@ -384,6 +384,38 @@ describe('cascadeDeleteOrg — end-to-end', () => {
   });
 
   // Regression test for #4100.
+  // #5075 W04: partners.service_management_psa_connection_id -> psa_connections
+  // is ON DELETE RESTRICT and psa_connections is in the org cascade list. The
+  // bind endpoint only accepts partner-wide connections, but nothing in the
+  // schema enforces that, so an org-owned (org_id set, partner_id NULL --
+  // psa_connections_one_owner_chk) connection bound to the partner must
+  // be un-wired (mode and id together -- the CHECK is a biconditional) before
+  // the connection is deleted, or the erasure aborts with 23503.
+  it('erases an org whose PSA connection is bound as the partner\'s Service Management desk', async () => {
+    const testDb = getTestDb();
+    const [conn] = (await testDb.execute(sql`
+      INSERT INTO psa_connections (partner_id, org_id, provider, name, credentials, created_at, updated_at)
+      VALUES (NULL, ${handles.orgIdToErase}, 'connectwise', 'Org-owned PSA', '{}'::jsonb, now(), now())
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await testDb.execute(sql`
+      UPDATE partners
+      SET service_management_mode = 'external', service_management_psa_connection_id = ${conn!.id}
+      WHERE id = ${handles.partnerId}
+    `);
+
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.psa_connections).toBe(1);
+    expect(stats.tablesDeleted.partners).toBe(1); // un-wire count, no partner row removed
+
+    const partnerRows = (await testDb.execute(sql`
+      SELECT service_management_mode AS mode, service_management_psa_connection_id AS conn
+      FROM partners WHERE id = ${handles.partnerId}
+    `)) as unknown as Array<{ mode: string; conn: string | null }>;
+    expect(partnerRows).toEqual([{ mode: 'native', conn: null }]);
+  });
+
   it('erases an org with a populated webhook_deliveries row instead of aborting on FK violation', async () => {
     const testDb = getTestDb();
 
