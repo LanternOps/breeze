@@ -10,7 +10,7 @@ import {
   resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
-import type { Alert, Device } from '../../services/api';
+import type { Alert, Device, FleetFindingCounts } from '../../services/api';
 
 const device = (id: string) => ({ id, name: id } as unknown as Device);
 const alert = (id: string) => ({ id } as unknown as Alert);
@@ -24,6 +24,7 @@ const previous: SystemsSlices = {
   activeAlerts: [alert('act-old')],
   devices: [device('d-old')],
   orgs: [{ id: 'o1', name: 'Org One' }],
+  findings: { total: 1, byOrg: { o1: 1 } } as FleetFindingCounts,
 };
 
 const allOk = {
@@ -32,15 +33,17 @@ const allOk = {
   activeAlerts: ok([alert('act-new')]),
   devices: ok([device('d1'), device('d2')]),
   orgs: ok([{ id: 'o2', name: 'Org Two' }]),
+  findings: ok({ total: 2, byOrg: { o2: 2 } } as FleetFindingCounts),
 };
 
 describe('mergeSystemsResults', () => {
-  it('takes every fresh value when all four succeed, and reports no error', () => {
+  it('takes every fresh value when all six succeed, and reports no error', () => {
     const { slices, error, failed } = mergeSystemsResults(previous, allOk);
     expect(slices.devices).toHaveLength(2);
     expect(slices.alerts[0].id).toBe('a-new');
     expect(slices.activeAlerts[0].id).toBe('act-new');
     expect(slices.orgs[0].id).toBe('o2');
+    expect(slices.findings).toEqual({ total: 2, byOrg: { o2: 2 } });
     expect(error).toBeNull();
     expect(failed).toEqual([]);
   });
@@ -77,11 +80,38 @@ describe('mergeSystemsResults', () => {
       activeAlerts: bad(new Error('x')),
       devices: bad(new Error('x')),
       orgs: bad(new Error('x')),
+      findings: bad(new Error('x')),
     });
     expect(error).toBe(ALL_FAILED_MESSAGE);
-    expect(failed).toHaveLength(5);
+    expect(failed).toHaveLength(6);
     // Nothing is blanked even in the total-failure case — stale beats empty.
     expect(slices).toEqual(previous);
+  });
+
+  it('does NOT report all-failed when only five of the six reject (regression: stale slice-count threshold)', () => {
+    // If the "everything failed" total were still hardcoded at 5, a findings
+    // rejection landing alongside four others would have wrongly tripped
+    // ALL_FAILED_MESSAGE even though `orgs` came back fine.
+    const { error, failed } = mergeSystemsResults(previous, {
+      summary: bad(new Error('x')),
+      alerts: bad(new Error('x')),
+      activeAlerts: bad(new Error('x')),
+      devices: bad(new Error('x')),
+      orgs: ok([{ id: 'o2', name: 'Org Two' }]),
+      findings: bad(new Error('x')),
+    });
+    expect(failed).toHaveLength(5);
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+  });
+
+  it('degrades findings to the last-known value (alerts-only view) when the findings fetch fails', () => {
+    const { slices, error } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(new Error('getFleetFindingCounts failed: 500')),
+    });
+    expect(slices.findings).toEqual(previous.findings);
+    expect(slices.alerts[0].id).toBe('a-new'); // unaffected
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
   });
 
   it('treats an empty successful result as real data, not a failure', () => {

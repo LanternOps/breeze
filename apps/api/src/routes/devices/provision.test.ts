@@ -83,6 +83,12 @@ vi.mock('../../services/provisionCredentialHandle', () => ({
   provisionHandleExpiresAt: vi.fn(() => new Date('2030-01-01T00:00:00.000Z')),
 }));
 
+// #4630 — dynamic device group re-evaluation ENQUEUE on provisioning.
+const requestDeviceGroupReevaluationMock = vi.hoisted(() => vi.fn().mockResolvedValue('job-1'));
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
+}));
+
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { provisionRoutes } from './provision';
@@ -397,6 +403,17 @@ describe('POST /devices/provision', () => {
         expect.objectContaining({
           action: 'device.provision',
           resourceId: 'device-prov-id',
+          orgId: ORG_ID,
+        }),
+      );
+
+      // #4630 — the new device is queued for evaluation against every dynamic
+      // group in its org immediately, not just on its next heartbeat. The
+      // evaluation itself runs off the request's transaction.
+      expect(requestDeviceGroupReevaluationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'device.created',
+          deviceId: 'device-prov-id',
           orgId: ORG_ID,
         }),
       );

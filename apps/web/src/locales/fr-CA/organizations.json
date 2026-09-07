@@ -1,0 +1,117 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organisation",
+    "header": {
+      "type": {
+        "customer": "Client",
+        "internal": "Interne"
+      },
+      "primaryContact": "Contact principal",
+      "noPrimaryContact": "Aucun contact principal",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} sites",
+      "scopeChip": "Espace de travail : {{orgName}}",
+      "scopeChipHint": "Votre espace de travail est réglé sur une autre organisation. Cette page affiche toujours {{orgName}}.",
+      "created": "Client depuis {{date}}"
+    },
+    "actions": {
+      "workHere": "Travailler dans cette organisation",
+      "workHereToast": "Passé à {{orgName}}",
+      "settings": "Paramètres",
+      "more": "Plus d'actions",
+      "archive": "Archiver",
+      "merge": "Fusionner",
+      "restore": "Restaurer",
+      "retry": "Réessayer"
+    },
+    "tabs": {
+      "overview": "Aperçu",
+      "contacts": "Contacts",
+      "sites": "Sites",
+      "devices": "Appareils",
+      "tickets": "Billets",
+      "billing": "Contrats et facturation",
+      "activity": "Activité"
+    },
+    "comingSoon": {
+      "title": "Bientôt disponible",
+      "description": "Cet onglet sera ajouté dans la prochaine mise à jour du dossier de l'organisation."
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Appareils",
+        "devicesSub": "{{online}} sur {{total}} en ligne",
+        "alerts": "Alertes ouvertes",
+        "alertsSub": "{{critical}} critiques · {{high}} élevées",
+        "tickets": "Billets ouverts",
+        "ticketsSub": "{{count}} en attente du client",
+        "contracts": "Contrats actifs",
+        "contractsSub": "Prochain renouvellement {{date}}",
+        "contractsNoRenewal": "Aucun renouvellement à venir",
+        "invoices": "Impayé",
+        "invoicesSub": "Prochaine échéance {{date}}",
+        "invoicesOverdue_one": "{{count}} en retard",
+        "invoicesOverdue_other": "{{count}} en retard",
+        "invoicesNothingDue": "Rien à payer",
+        "contacts": "Contacts",
+        "portalUsers": "Utilisateurs du portail",
+        "sites": "Sites"
+      },
+      "activity": {
+        "title": "Activité récente",
+        "empty": "Aucune activité enregistrée pour le moment.",
+        "failed": "Impossible de charger l'activité récente.",
+        "viewAll": "Voir toute l'activité"
+      },
+      "criticalAlerts": {
+        "title": "Alertes critiques ouvertes",
+        "empty": "Aucune alerte critique ouverte.",
+        "failed": "Impossible de vérifier les alertes critiques ouvertes.",
+        "viewAll": "Voir toutes les alertes"
+      },
+      "lastActivity": "Dernière activité {{date}}",
+      "noSummary": "Les totaux récapitulatifs ne sont pas disponibles pour le moment."
+    },
+    "archived": {
+      "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour apporter des modifications.",
+      "restoreError": "Impossible de restaurer cette organisation."
+    },
+    "lifecycle": {
+      "inaccessible": "Cette organisation est {{status}}, donc ses données en direct ne sont pas disponibles. Vous pouvez tout de même la voir dans la liste des organisations.",
+      "backToList": "Retour aux organisations"
+    },
+    "unavailable": {
+      "title": "Non disponible dans cet espace de travail",
+      "description": "Les dossiers d'organisation sont une vue au niveau du partenaire. Votre connexion est limitée à une seule organisation, donc il n'y a rien à changer ici.",
+      "action": "Aller au tableau de bord"
+    },
+    "notFound": {
+      "title": "Organisation introuvable",
+      "description": "Cette organisation n'existe pas, ou vous n'y avez plus accès.",
+      "action": "Retour aux organisations"
+    },
+    "error": {
+      "title": "Impossible de charger cette organisation",
+      "description": "Une erreur s'est produite lors de la récupération du dossier. Vérifiez votre connexion et réessayez."
+    },
+    "loading": "Chargement de l'organisation…",
+    "tickets": {
+      "tabs": {
+        "open": "Ouverts",
+        "all": "Tous",
+        "closed": "Fermé"
+      },
+      "newTicket": "Nouveau billet",
+      "loadFailed": "Les billets n’ont pas été chargés.",
+      "forbidden": "Vous n'avez pas l'autorisation de consulter les billets.",
+      "truncated": "Affichage de {{shown}} billets sur {{total}}."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contrats",
+        "invoices": "Factures",
+        "quotes": "Devis"
+      }
+    }
+  }
+}

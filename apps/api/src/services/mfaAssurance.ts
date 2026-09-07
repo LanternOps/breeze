@@ -60,9 +60,12 @@ export async function invalidateMfaAssuranceAfterFactorChange(
   userId: string,
   reason: string,
   mutate?: (tx: Tx) => Promise<void>,
+  expected?: Parameters<typeof advanceUserEpochs>[3],
 ): Promise<FactorChangeResult> {
   const epochRow = await dbModule.db.transaction(async (tx: Tx) => {
-    const row = await advanceUserEpochs(tx, userId, { mfa: true });
+    // Self-service proof may have completed before a concurrent reset. Bind
+    // its terminal write to the same epochs under the user-row write lock.
+    const row = await advanceUserEpochs(tx, userId, { mfa: true }, expected);
     await revokeAllRefreshFamilies(tx, userId, reason);
     if (mutate) await mutate(tx);
     return row;

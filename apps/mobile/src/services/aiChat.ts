@@ -127,7 +127,11 @@ export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolUseId: string; toolName: string; input?: unknown }
-  | { type: 'tool_result'; toolUseId: string; output?: unknown; isError?: boolean }
+  // `handoff` is set only by the server's pre-tool-use gate (#5107) — it is the
+  // authoritative "approved, executing under the approval worker" signal.
+  // `output.status` carries the same value but the tool owns that payload, so
+  // it is only a history-replay fallback. See toolIndicatorLogic.ts.
+  | { type: 'tool_result'; toolUseId: string; output?: unknown; isError?: boolean; handoff?: string }
   | { type: 'message_end'; messageId?: string }
   | { type: 'approval_required'; executionId: string; toolName: string; description?: string; approvalRequestId?: string }
   | { type: 'error'; message: string }

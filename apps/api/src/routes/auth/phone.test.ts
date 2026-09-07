@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { createHash } from 'node:crypto';
 
 // Task 7: `db.transaction` runs its callback with `db` itself as `tx` — the
 // factor-mutating routes fold their write into
@@ -128,7 +129,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: null,
       orgId: 'org-1',
       user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-      token: { sid: 'family-1' },
+      token: { sid: 'family-1', aep: 1, mep: 1 },
     });
     return next();
   }),
@@ -173,6 +174,12 @@ describe('phone routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getRedis).mockReturnValue({
+      get: vi.fn().mockResolvedValue(JSON.stringify({
+        phoneDigest: createHash('sha256').update('+15555550100').digest('hex'), authEpoch: 1, mfaEpoch: 1,
+      })),
+      set: vi.fn().mockResolvedValue('OK'),
+    } as any);
     app = new Hono();
     app.route('/auth', phoneRoutes);
   });

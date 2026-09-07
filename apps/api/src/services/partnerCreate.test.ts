@@ -322,4 +322,27 @@ describe('createPartner', () => {
       mcpOriginIp: null,
     });
   });
+
+  // RMM-QA-164: the tenant Partner Admin copy must be created with
+  // force_mfa=true. The 2026-05-25-f migration ran before this row existed
+  // and never revisits it, so the literal on the insert is the invariant.
+  it('inserts the tenant Partner Admin role with forceMfa: true', async () => {
+    await createPartner({
+      orgName: 'Forced MFA Co',
+      adminEmail: 'forced@example.com',
+      adminName: 'Forced',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+      status: 'active',
+    });
+
+    const roleCall = insertCalls.find((c) => (c.table as any).__t === 'roles');
+    expect(roleCall).toBeDefined();
+    expect(roleCall!.values).toMatchObject({
+      scope: 'partner',
+      name: 'Partner Admin',
+      isSystem: true,
+      forceMfa: true,
+    });
+  });
 });

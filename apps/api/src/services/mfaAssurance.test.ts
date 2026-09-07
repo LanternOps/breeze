@@ -49,6 +49,19 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
   });
 
   // (a) User/family authority is acquired before route-specific factor rows.
+  it('rejects stale proof before family revocation, factor mutation or cleanup', async () => {
+    const stale = new Error('epoch precondition mismatch');
+    advanceUserEpochsMock.mockRejectedValueOnce(stale);
+    const mutate = vi.fn();
+    const expected = { authEpoch: 1, mfaEpoch: 1, status: 'active' as const };
+    await expect(invalidateMfaAssuranceAfterFactorChange(userId, 'phone-replacement', mutate, expected)).rejects.toBe(stale);
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, expected);
+    expect(revokeAllRefreshFamiliesMock).not.toHaveBeenCalled();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalled();
+  });
+
   it('advances epochs and revokes families before mutate(tx), then runs post-commit cleanup + teardown', async () => {
     const callOrder: string[] = [];
     const mutate = vi.fn(async (tx: unknown) => {
@@ -82,7 +95,7 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
       'runPostCommitCleanup',
       'terminateUserRemoteSessions',
     ]);
-    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true });
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, undefined);
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'test-reason');
     expect(runPostCommitCleanupMock).toHaveBeenCalledWith(userId);
     expect(terminateUserRemoteSessionsMock).toHaveBeenCalledWith(userId);
@@ -96,7 +109,7 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
   it('works with no mutate provided — still advances the epoch and revokes families', async () => {
     const result = await invalidateMfaAssuranceAfterFactorChange(userId, 'no-mutate');
 
-    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true });
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, undefined);
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'no-mutate');
     expect(result.mfaEpoch).toBe(epochRow.mfaEpoch);
   });
@@ -126,7 +139,7 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
 
     await expect(invalidateMfaAssuranceAfterFactorChange(userId, 'will-fail', mutate)).rejects.toThrow(boom);
 
-    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true });
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, undefined);
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'will-fail');
     expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
     expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalled();

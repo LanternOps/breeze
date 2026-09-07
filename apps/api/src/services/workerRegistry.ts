@@ -574,6 +574,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #2787: async bulk permanent delete of removed devices.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Same class
+    // as orgMerge above. Do NOT flip this to 'global' without re-running
+    // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
+    // and it fails the build on a wrong placement.
+    name: 'deviceBulkPurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceBulkPurge');
+      return { init: m.initializeDeviceBulkPurgeWorker, shutdown: m.shutdownDeviceBulkPurgeWorker };
+    },
+  },
+  {
+    // #2787 item 4: daily purge of removed devices past their org's
+    // device_lifecycle retention window.
+    //
+    // socket-owner because the closure contract test says so, not by judgement:
+    // removedDevicePurge -> services/deviceLifecycle -> services/deviceDeletion
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts — the same
+    // chain that puts deviceBulkPurge above in this class. Do NOT flip this to
+    // 'global' without re-running workerEntrypointClosure.contract.test.ts.
+    name: 'removedDevicePurge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/removedDevicePurge');
+      return { init: m.initializeRemovedDevicePurge, shutdown: m.shutdownRemovedDevicePurge };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -787,6 +819,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/peripheralJobs');
       return { init: m.initializePeripheralJobs, shutdown: m.shutdownPeripheralJobs };
+    },
+  },
+  {
+    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
+    // global: its closure reaches jobs/peripheralJobs.ts (via
+    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    name: 'deviceGroupJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/deviceGroupJobs');
+      return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
     },
   },
   {

@@ -7,6 +7,7 @@ import { invoices } from '../db/schema/invoices';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { settleCheckoutSession } from '../services/stripeSettle';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Reconcile sweep for the API-key payment model (no inbound webhook). Finds
@@ -113,6 +114,7 @@ async function scheduleRepeatableJob(): Promise<void> {
 export async function initializeStripeReconcileSweep(): Promise<void> {
   if (sweepWorker) return;
   sweepWorker = createWorker();
+  attachWorkerObservability(sweepWorker, 'stripeReconcileSweep');
   sweepWorker.on('error', (error) => { console.error('[StripeReconcileSweep] Worker error:', error); captureException(error); });
   sweepWorker.on('failed', (job, error) => { console.error(`[StripeReconcileSweep] Job ${job?.id} failed:`, error); captureException(error); });
   try {

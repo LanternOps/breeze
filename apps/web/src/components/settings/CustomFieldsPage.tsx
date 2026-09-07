@@ -9,6 +9,7 @@ import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwn
 import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from '@breeze/shared';
 import { asList } from '@/lib/asList';
 import HelpTooltip from '../shared/HelpTooltip';
+import RmmCustomFieldImport from '../devices/RmmCustomFieldImport';
 
 interface CustomField extends Omit<CustomFieldDefinition, 'createdAt' | 'updatedAt'> {
   createdAt: string | Date;
@@ -41,6 +42,7 @@ export default function CustomFieldsPage() {
 
   // Modal state
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
+  const [showRmmImport, setShowRmmImport] = useState(false);
   const [selectedField, setSelectedField] = useState<CustomField | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -373,15 +375,25 @@ export default function CustomFieldsPage() {
             {t('customFieldsPage.description')}
           </p>
         </div>
-        <button
-          type="button"
-          data-testid="custom-field-add"
-          onClick={handleOpenCreate}
-          className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          <Plus className="h-4 w-4" />
-          {t('customFieldsPage.actions.add')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="custom-field-import-rmm"
+            onClick={() => setShowRmmImport(true)}
+            className="inline-flex h-10 items-center gap-2 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+          >
+            {t('customFieldsPage.actions.importFromRmm')}
+          </button>
+          <button
+            type="button"
+            data-testid="custom-field-add"
+            onClick={handleOpenCreate}
+            className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            {t('customFieldsPage.actions.add')}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -892,6 +904,20 @@ export default function CustomFieldsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {showRmmImport && (
+        <RmmCustomFieldImport
+          organizationId={currentOrgId}
+          onClose={() => {
+            setShowRmmImport(false);
+            // The wizard writes its own step hash (#import-definitions /
+            // #import-values) while open; leaving it wound up would make the
+            // settings URL misleadingly point at a closed wizard's step.
+            window.location.hash = '';
+            void fetchFields();
+          }}
+        />
       )}
     </div>
   );

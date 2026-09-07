@@ -234,7 +234,7 @@ MFA verification is rate-limited separately from login.
 
 ### Disabling MFA
 
-Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. If the organisation enforces MFA, the endpoint returns `403`.
+Call `POST /auth/mfa/disable` with `currentPassword` and the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. Every **other** session and refresh token for the user is revoked; the calling session is replaced in the same response (new access and refresh tokens, or refreshed cookies in the browser flow), so the user is not signed out by their own request. If the organisation enforces MFA, the endpoint returns `403`. A caller that cannot receive the replacement session (a bearer-only client with no device binding) receives `428`.
 
 ### Recovery Codes
 
@@ -415,6 +415,7 @@ The following named permissions are referenced by route middleware:
 | `REMOTE_ACCESS` | `remote` | `access` |
 | `AUDIT_READ` | `audit` | `read` |
 | `AUDIT_EXPORT` | `audit` | `export` |
+| `AUDIT_MANAGE` | `audit` | `manage` |
 | `ADMIN_ALL` | `*` | `*` |
 
 ### Role Inheritance
@@ -519,7 +520,7 @@ Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require
 | `POST` | `/auth/mfa/setup` | Authenticated | Begin TOTP MFA setup; returns QR code and recovery codes. |
 | `POST` | `/auth/mfa/verify` | Public/Auth | Verify an MFA code during login (with `tempToken`) or setup confirmation. |
 | `POST` | `/auth/mfa/enable` | Authenticated | Confirm MFA setup (frontend settings flow). |
-| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current code). |
+| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current password and code; revokes all other sessions, re-issues the caller's). |
 | `POST` | `/auth/mfa/recovery-codes` | Authenticated | Regenerate MFA recovery codes. |
 | `POST` | `/auth/phone/verify` | Authenticated | Send a phone verification SMS. |
 | `POST` | `/auth/phone/confirm` | Authenticated | Confirm phone verification code. |

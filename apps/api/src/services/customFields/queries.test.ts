@@ -21,6 +21,7 @@ import { db } from '../../db';
 import {
   loadScriptWritableDefinitions,
   loadVisibleCustomFieldDefinitions,
+  valueColumnsFor,
 } from './queries';
 
 interface FixtureDefinition {
@@ -164,5 +165,56 @@ describe('loadScriptWritableDefinitions (retained alias)', () => {
 
   it('is the same function reference as loadVisibleCustomFieldDefinitions', () => {
     expect(loadScriptWritableDefinitions).toBe(loadVisibleCustomFieldDefinitions);
+  });
+});
+
+// #3257 W05: pure column-placement logic for the normalized value table.
+// `persistDeviceCustomFields` (the old whole-jsonb writer) was removed — there
+// is nothing left to unit-test at that name. `persistDeviceCustomFieldValues`
+// itself needs a real Drizzle upsert (onConflictDoUpdate/setWhere) and is
+// exercised against real Postgres by deviceCustomFieldValues.integration.test.ts;
+// this file covers the pure mapping it delegates to.
+describe('valueColumnsFor', () => {
+  const EMPTY = { valueText: null, valueNumber: null, valueBool: null, valueDate: null };
+
+  it('places a text value in valueText, leaving the other three columns null', () => {
+    expect(valueColumnsFor('text', 'A-1')).toEqual({ ...EMPTY, valueText: 'A-1' });
+  });
+
+  it('places a dropdown value in valueText, same as text', () => {
+    expect(valueColumnsFor('dropdown', 'gold')).toEqual({ ...EMPTY, valueText: 'gold' });
+  });
+
+  it('places a number value in valueNumber as-is when already a number', () => {
+    expect(valueColumnsFor('number', 42)).toEqual({ ...EMPTY, valueNumber: 42 });
+  });
+
+  it('coerces a string number into valueNumber', () => {
+    expect(valueColumnsFor('number', '42')).toEqual({ ...EMPTY, valueNumber: 42 });
+  });
+
+  it('places a boolean value in valueBool as-is when already a boolean', () => {
+    expect(valueColumnsFor('boolean', true)).toEqual({ ...EMPTY, valueBool: true });
+    expect(valueColumnsFor('boolean', false)).toEqual({ ...EMPTY, valueBool: false });
+  });
+
+  it('coerces a string boolean into valueBool by exact "true" match', () => {
+    expect(valueColumnsFor('boolean', 'true')).toEqual({ ...EMPTY, valueBool: true });
+    expect(valueColumnsFor('boolean', 'false')).toEqual({ ...EMPTY, valueBool: false });
+  });
+
+  it('places a date value in valueDate, truncated to the first 10 characters', () => {
+    expect(valueColumnsFor('date', '2026-01-15T00:00:00.000Z')).toEqual({
+      ...EMPTY,
+      valueDate: '2026-01-15',
+    });
+  });
+
+  it('returns all-null columns for a null value, regardless of type — a legal, explicit clear', () => {
+    expect(valueColumnsFor('text', null)).toEqual(EMPTY);
+    expect(valueColumnsFor('number', null)).toEqual(EMPTY);
+    expect(valueColumnsFor('boolean', null)).toEqual(EMPTY);
+    expect(valueColumnsFor('dropdown', null)).toEqual(EMPTY);
+    expect(valueColumnsFor('date', null)).toEqual(EMPTY);
   });
 });

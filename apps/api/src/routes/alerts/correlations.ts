@@ -268,7 +268,7 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
     groupMap.set(root, alertIds);
   }
 
-  return [...groupMap.entries()].map(([rootId, alertIds]) => {
+  return [...groupMap.entries()].map(([rootId, alertIds]): CorrelationGroupForUi | null => {
     const groupAlerts = alertIds
       .map((id) => alertMap.get(id))
       .filter((alert): alert is AlertWithDeviceHostname => Boolean(alert))
@@ -277,25 +277,31 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
       (correlation) => alertIds.includes(correlation.parentAlertId) || alertIds.includes(correlation.childAlertId)
     );
     const rootCause = groupAlerts[0] ?? alertMap.get(rootId);
+    // #4448 — fail closed rather than fill `orgId` with a placeholder. This
+    // builder's output is serialised verbatim by `GET /correlations` and
+    // matched on by the ack/resolve fallbacks below, so an `orgId: ''` group
+    // would publish an empty string in a tenancy-bearing field where every
+    // consumer reads it as "org unknown". It used to be filled with exactly
+    // that and kept out of the response only by the `rootCause !== null`
+    // filter that followed the map — a guard coupled to a DIFFERENT field and
+    // pinned to nothing. A group whose root cause cannot be resolved has no
+    // tenant to report, so it is dropped here, where the org is decided.
+    if (!rootCause) return null;
     const avgConfidence = groupCorrelations.length > 0
       ? groupCorrelations.reduce((sum, correlation) => sum + Number(correlation.confidence ?? 0), 0) / groupCorrelations.length
       : 0;
 
     return {
       id: rootId,
-      // Ephemeral (non-persisted) clustering path — `aiVerdict` is only
-      // wired for `buildPersistedCorrelationGroups`'s `GET
-      // /correlations/:groupId`, so `orgId` here exists solely to satisfy
-      // `CorrelationGroupForUi`, not to be read.
-      orgId: rootCause?.orgId ?? '',
-      rootCause: rootCause ? toGroupAlert(rootCause) : null,
+      orgId: rootCause.orgId,
+      rootCause: toGroupAlert(rootCause),
       relatedCount: Math.max(groupAlerts.length - 1, 0),
       alerts: groupAlerts.map(toGroupAlert),
       correlationScore: Math.round(avgConfidence * 100) / 100,
       correlationLinks: groupCorrelations,
       createdAt: groupCorrelations[0]?.createdAt ?? new Date(),
     };
-  }).filter((group) => group.rootCause !== null);
+  }).filter((group): group is CorrelationGroupForUi => group !== null);
 }
 
 async function getAccessiblePersistedGroup(groupId: string, auth: AuthContext): Promise<CorrelationGroupRow | null> {

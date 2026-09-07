@@ -87,6 +87,8 @@ vi.mock('./providerRegistry', () => ({
 
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   organizations, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
 } from '../../db/schema';
@@ -101,6 +103,7 @@ import {
 const PARTNER = 'p1';
 const ORG_A = 'org-a';
 const ORG_B = 'org-b';
+const QUICK_SUPPORT_ORG = 'org-quick-support';
 const ITEM_A = 'item-a';
 
 function connectedConn(overrides: Record<string, unknown> = {}) {
@@ -126,6 +129,8 @@ function pgUniqueViolation(constraint: string) {
 
 interface OrgRow {
   id: string; name: string; email?: string; taxId?: string | null; currencyCode?: string;
+  /** `organizations.type` — defaults to 'customer' in `stubReads`. */
+  type?: 'customer' | 'internal' | 'quick_support';
   billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
   billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
 }
@@ -159,6 +164,38 @@ function conditionContainsValue(obj: unknown, value: string, seen = new Set<unkn
   return false;
 }
 
+/**
+ * Which `organizations.type` predicate a compiled drizzle condition carries:
+ * `'exclude'` for `type <> 'quick_support'`, `'only'` for `type =
+ * 'quick_support'`, `null` for neither.
+ *
+ * Asserts the COMPILED SQL rather than walking the condition object, because
+ * both cheaper checks are vacuous here:
+ *  - a deep search for the string reaches `organizations.type`'s `enumValues`
+ *    through the drizzle `Column -> Table` back-reference, so it matches a
+ *    query that never filters on it at all;
+ *  - a bound-`Param` search matches the value but neither the OPERATOR nor the
+ *    COLUMN, so `eq(organizations.type, 'quick_support')` — the exact
+ *    inversion of the fix — passes it just as happily as `ne`.
+ * Reading the operator off the compiled SQL makes an inverted predicate and a
+ * mis-targeted column both change the answer, and lets the stub model the two
+ * real queries (the proposal list excludes the hidden org; the hidden-id lookup
+ * selects only it) instead of guessing from the value alone.
+ */
+function quickSupportOrgTypePredicate(cond: unknown): 'exclude' | 'only' | null {
+  if (!cond || typeof cond !== 'object') return null;
+  let compiled: { sql: string; params: unknown[] };
+  try {
+    compiled = new PgDialect().sqlToQuery(cond as SQL);
+  } catch {
+    return null;
+  }
+  const match = /"type"\s*(<>|=)\s*\$(\d+)/.exec(compiled.sql);
+  if (!match) return null;
+  if (compiled.params[Number(match[2]) - 1] !== 'quick_support') return null;
+  return match[1] === '<>' ? 'exclude' : 'only';
+}
+
 // Mutable across a single test: `accounting_entity_mappings` reads/writes all
 // share this array, so a syncMappedEntity call that persists a remote ref is
 // immediately visible to the NEXT call in the same test (create-then-retry
@@ -179,6 +216,7 @@ function stubReads(opts: {
 } = {}) {
   const orgRows = (opts.orgs ?? []).map((o) => ({
     deletedAt: null,
+    type: 'customer' as const,
     billingContact: o.email ? { email: o.email } : null,
     taxId: null,
     currencyCode: 'USD',
@@ -202,7 +240,19 @@ function stubReads(opts: {
           throw new Error('query issued without partner scoping — every read must filter by partnerId');
         }
         let rows: unknown[];
-        if (table === organizations) rows = orgRows;
+        // The hidden per-partner `quick_support` org is a real row under the
+        // partner, so every org read in this service has to exclude it the way
+        // GET /orgs/organizations already does. The stub applies that predicate
+        // ONLY when the compiled condition actually carries the literal — a
+        // query that forgets `ne(organizations.type, 'quick_support')` sees the
+        // hidden row exactly as Postgres would, so the assertion discriminates
+        // instead of passing on a mock that filters for the code.
+        if (table === organizations) {
+          const typePredicate = quickSupportOrgTypePredicate(cond);
+          if (typePredicate === 'exclude') rows = orgRows.filter((o) => o.type !== 'quick_support');
+          else if (typePredicate === 'only') rows = orgRows.filter((o) => o.type === 'quick_support');
+          else rows = orgRows;
+        }
         else if (table === organizationExternalLinks) rows = linkRows;
         else if (table === catalogItems) rows = itemRows;
         else if (table === accountingEntityMappings) rows = currentMappingRows;
@@ -426,6 +476,70 @@ describe('listMappingProposals — org matching priority', () => {
     const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
 
     expect(result).toEqual([]);
+  });
+
+  it('excludes the hidden quick_support organization from the proposal list', async () => {
+    // The per-partner 'quick_support' org holds ephemeral Quick Support
+    // sessions. It is a real `organizations` row under the partner and is
+    // inside `accessibleOrgIds` by design (RLS), so — exactly like GET
+    // /orgs/organizations (routes/orgs.ts) — the mapping proposal query has to
+    // exclude it, or the Integrations page offers "Quick Support" as a
+    // QuickBooks Customer to map.
+    stubReads({
+      orgs: [
+        { id: ORG_A, name: 'Acme' },
+        { id: QUICK_SUPPORT_ORG, name: 'Quick Support', type: 'quick_support' },
+      ],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support' }]);
+
+    const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
+
+    expect(result.map((p) => p.breezeEntityId)).toEqual([ORG_A]);
+  });
+
+  it('ignores a stale mapping row owned by the hidden quick_support org when computing claimed remote ids', async () => {
+    // A mapping row confirmed against the hidden org BEFORE it was excluded
+    // from the list still sits in `accounting_entity_mappings`. Dropping the
+    // org from `orgs` without dropping its mapping row leaves the row claiming
+    // a remote Customer that no visible org can ever be matched to — the hidden
+    // org silently steals a candidate from a real one.
+    stubReads({
+      orgs: [
+        { id: ORG_A, name: 'Acme' },
+        { id: QUICK_SUPPORT_ORG, name: 'Quick Support', type: 'quick_support' },
+      ],
+      mappings: [orgMappingRow({
+        id: 'm-stale-qs', breezeEntityId: QUICK_SUPPORT_ORG, remoteEntityId: 'qb-1', linkStatus: 'confirmed',
+      })],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme' }]);
+
+    const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ breezeEntityId: ORG_A, proposedRemoteId: 'qb-1', confidence: 'exact_name' });
+  });
+
+  it('does not backfill an imported-customer mapping row for the hidden quick_support org', async () => {
+    // The tier-2 backfill loop walks `organization_external_links` rows, which
+    // are keyed by org id independently of the org query — so an excluded org
+    // would still get a durable `confirmed` mapping row WRITTEN for it, and
+    // that row would then claim the remote id on every later call.
+    stubReads({
+      orgs: [
+        { id: ORG_A, name: 'Acme' },
+        { id: QUICK_SUPPORT_ORG, name: 'Quick Support', type: 'quick_support' },
+      ],
+      links: [{ orgId: QUICK_SUPPORT_ORG, system: 'quickbooks', externalId: 'qb-9' }],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-9', displayName: 'Acme' }]);
+
+    const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' }, runCtx);
+
+    expect(insertedValues).toHaveLength(0);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ breezeEntityId: ORG_A, proposedRemoteId: 'qb-9' });
   });
 
   it('scopes every DB read to the partner (enforced by stubReads on every test in this suite)', async () => {
@@ -711,6 +825,61 @@ describe('saveMappingDecision', () => {
   it('throws entity_not_found for a Breeze org id that does not belong to this partner', async () => {
     stubReads({ orgs: [] });
     await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+
+  it('throws entity_not_found for the hidden quick_support org (never pushable as a QuickBooks Customer)', async () => {
+    // Defense in depth for the list filter above: hiding the row from the
+    // proposal list is not enough on its own, because the decision route takes
+    // the org id from the request body. A stale mapping row (or a hand-rolled
+    // call) must not be able to push the hidden org to QuickBooks.
+    stubReads({ orgs: [{ id: ORG_A, name: 'Quick Support', type: 'quick_support' }] });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Quick Support', syncToken: '0' }]);
+
+    await expect(saveMappingDecision(confirmOrg('qb-1'), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+
+  it('does not let a stale quick_support mapping row block a real org from confirming that remote id', async () => {
+    // The counterpart to the proposal-list fix: `buildOrgProposals` now offers
+    // 'qb-1' to Acme because the hidden org's claim is ignored, so the confirm
+    // path has to honour that same suggestion. Left unfiltered, the conflict
+    // scan would answer the suggestion with a 409 and the workbench would
+    // propose a mapping that can never be saved.
+    stubReads({
+      orgs: [
+        { id: ORG_A, name: 'Acme' },
+        { id: QUICK_SUPPORT_ORG, name: 'Quick Support', type: 'quick_support' },
+      ],
+      mappings: [orgMappingRow({
+        id: 'm-stale-qs', breezeEntityId: QUICK_SUPPORT_ORG, remoteEntityId: 'qb-1', linkStatus: 'confirmed',
+      })],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '0' }]);
+
+    const row = await saveMappingDecision(confirmOrg('qb-1'), runCtx);
+
+    expect(row).toMatchObject({ breezeEntityId: ORG_A, remoteEntityId: 'qb-1', linkStatus: 'confirmed' });
+  });
+
+  it('rejects create_new for the hidden quick_support org (it would CREATE a QuickBooks Customer)', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Quick Support', type: 'quick_support' }] });
+
+    await expect(saveMappingDecision(createNewOrg(), runCtx)).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+
+  it('still allows UNLINKING a stale quick_support mapping — the only way left to clear one', async () => {
+    // `unlinked` is purely local: it writes `remoteEntityId: null` and never
+    // calls QuickBooks (see saveMappingDecision's doc comment). Applying the
+    // hidden-org exclusion to it too would 404 the one API path that can clear
+    // a mapping row confirmed before the exclusion existed — the row would be
+    // unreachable from the workbench AND unremovable through the API.
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Quick Support', type: 'quick_support' }],
+      mappings: [orgMappingRow({ breezeEntityId: ORG_A, remoteEntityId: 'qb-1', linkStatus: 'confirmed' })],
+    });
+
+    const row = await saveMappingDecision(unlinkOrg(), runCtx);
+
+    expect(row).toMatchObject({ linkStatus: 'unlinked', remoteEntityId: null });
   });
 
   it('converts a 23505 unique violation on the mapping insert into mapping_conflict (DB is the last-line defense)', async () => {

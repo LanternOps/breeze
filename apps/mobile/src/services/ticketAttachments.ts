@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
@@ -9,7 +10,6 @@ import { getServerUrl } from './serverConfig';
 import {
   ATTACHMENT_UPLOAD_TIMEOUT_MS,
   attachmentError,
-  attachmentFilePart,
   isAllowedMime,
   MAX_IMAGE_EDGE,
   TICKET_ATTACHMENT_LIMITS,
@@ -103,8 +103,19 @@ export async function pickFromCamera(): Promise<PickOutcome> {
  */
 export async function pickFromLibrary(remainingSlots: number): Promise<PickOutcome> {
   return runPicker(async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return { ok: false, reason: 'permission-denied' };
+    // iOS 14+'s `launchImageLibraryAsync` runs as `PHPickerViewController`, a
+    // separate, sandboxed process the app never touches directly — it needs
+    // no Photo Library permission at all. Requesting one anyway triggers the
+    // "would like full access to your Photo Library (N photos)" prompt for a
+    // picker that was never going to be denied, and a decline sends the
+    // technician into a permission error for a permission that was never
+    // required (#5103). Android's picker still gates behind
+    // READ_MEDIA_IMAGES/READ_EXTERNAL_STORAGE on older API levels, so it
+    // keeps the request.
+    if (Platform.OS !== 'ios') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return { ok: false, reason: 'permission-denied' };
+    }
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
@@ -183,6 +194,37 @@ export async function prepareImage(file: PickedAttachment): Promise<PickedAttach
 }
 
 /**
+ * Build the multipart file part for the upload request.
+ *
+ * Expo's `fetch` (installed as `globalThis.fetch` since SDK 57 — opt-out
+ * `EXPO_PUBLIC_USE_RN_FETCH=1` — `winter/fetch/convertFormData.ts`) only
+ * accepts a FormData part that is a `Blob` or an object exposing `bytes()`,
+ * and throws `Unsupported FormDataPart implementation` on React Native's own
+ * `{ uri, name, type }` file shape — which is exactly what this function used
+ * to build (#5103; prod had 0 `ticket_attachments` rows for 3 days). Wrapping
+ * the picked URI in an `expo-file-system` `File` (SDK 54+) satisfies both:
+ * it implements `Blob` AND `bytes()`, so the same part serialises whether the
+ * request goes through RN's own FormData bridge or winter fetch's converter.
+ */
+export function attachmentFilePart(file: PickedAttachment): File {
+  const part = new File(file.uri);
+  // `File.name` is a read-only getter derived from whatever path segment the
+  // (often OS-generated, cache) URI happens to end in — not the picker's own
+  // reported name. `getFormDataPartHeaders` in winter fetch's converter reads
+  // `part.name` for the Content-Disposition filename, and `form.append`'s 3rd
+  // argument (below) does NOT reliably reach it: React Native's own FormData
+  // patch only honours a filename argument when the appended value is
+  // `instanceof Blob` (`winter/FormData.ts`'s `normalizeArgs`) — a real
+  // `File` implements `Blob` structurally (satisfying winter fetch's own
+  // `'bytes' in entry` check) but is not an actual `Blob` instance, so that
+  // argument is silently dropped for it on-device. Shadowing the getter with
+  // an own property is what actually gets the picker's name (e.g. the camera
+  // roll's `IMG_1234.JPG`) to the server instead of a cache-path artifact.
+  Object.defineProperty(part, 'name', { value: file.name, configurable: true, enumerable: true });
+  return part;
+}
+
+/**
  * Upload ONE file and return the pending attachment row.
  *
  * The size and type gates run before the request on purpose: a 12 MB photo on
@@ -199,7 +241,13 @@ export async function uploadTicketAttachment(
   }
 
   const form = new FormData();
-  form.append('file', attachmentFilePart(file) as unknown as Blob);
+  // The filename is ALSO passed as the 3rd `append` argument, belt-and-braces
+  // alongside the name shadowed onto the part itself (see
+  // `attachmentFilePart`) — harmless where it's redundant, and load-bearing
+  // for any FormData implementation that DOES honour it for a non-Blob value.
+  // Content-Type is never hand-set here — see api.ts's comment on why the
+  // runtime must generate the multipart boundary itself.
+  form.append('file', attachmentFilePart(file) as unknown as Blob, file.name);
 
   let response: { data?: Partial<TicketAttachmentMeta> };
   try {

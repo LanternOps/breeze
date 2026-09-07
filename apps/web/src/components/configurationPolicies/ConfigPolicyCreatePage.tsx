@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -62,6 +62,23 @@ export default function ConfigPolicyCreatePage() {
   // chosen. Org-scope creators have no picker, so they always use their own
   // current org.
   const orgScopedOrgId = isPartnerScope ? ownerOrgId : (currentOrgId ?? "");
+  // Eligible-parents URL for the "Link to Existing" picker (#5080). Server-side
+  // filtered by the ownership rule and `parent_policy_id IS NULL` — the client
+  // sends only the chosen owner scope. `null` when an org-scoped picker has no
+  // org to scope by yet (a partner-scope creator who chose "a specific
+  // organization" but hasn't picked one), in which case the picker renders a
+  // "select an organization" hint instead of fetching.
+  const eligibleUrl = usePartnerOwner
+    ? "/configuration-policies/eligible-parents?ownerScope=partner"
+    : orgScopedOrgId
+      ? `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${orgScopedOrgId}`
+      : null;
+  // A parent valid for one owner scope/org is not valid for another — clear a
+  // stale selection whenever the picker's URL changes rather than silently
+  // riding an incompatible parentPolicyId into the POST.
+  useEffect(() => {
+    setLinkedPolicyId(null);
+  }, [eligibleUrl]);
   const onSubmit = async (values: CreatePolicyValues) => {
     try {
       setError(undefined);
@@ -78,28 +95,44 @@ export default function ConfigPolicyCreatePage() {
       }
       // Partner-wide: send ownerScope only — the server derives the partner from
       // the caller's token and ignores any client-supplied org/partner id. Org-
-      // scoped: send the concrete org id (the classic shape).
-      const body = usePartnerOwner
-        ? { ...values, ownerScope: "partner" as const }
-        : { ...values, orgId: orgScopedOrgId };
+      // scoped: send the concrete org id (the classic shape). Linked mode adds
+      // parentPolicyId — the parent is now a persisted, validated fact (#5080),
+      // not a `?linked=` query param the detail page had to re-derive.
+      const body = {
+        ...values,
+        ...(usePartnerOwner ? { ownerScope: "partner" as const } : { orgId: orgScopedOrgId }),
+        ...(mode === "linked" && linkedPolicyId ? { parentPolicyId: linkedPolicyId } : {}),
+      };
       const response = await fetchWithAuth("/configuration-policies", {
         method: "POST",
         body: JSON.stringify(body),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
+        // extractApiError prefers a top-level `error` string over `message`,
+        // but this route emits `{ error: 'INVALID_PARENT_POLICY', message:
+        // <human text> }` (one message for not-found/not-eligible/cross-tenant/
+        // has-its-own-parent, so the response isn't an existence oracle) — show
+        // that human message instead of the raw machine code.
+        const parentErrorMessage =
+          data &&
+          typeof data === "object" &&
+          (data as { error?: unknown }).error === "INVALID_PARENT_POLICY" &&
+          typeof (data as { message?: unknown }).message === "string"
+            ? ((data as { message: string }).message)
+            : null;
         throw new Error(
-          extractApiError(
-            data,
-            i18n.t(
-              "policies:configurationPolicies.configPolicyCreatePage.failedToCreatePolicy",
+          parentErrorMessage ??
+            extractApiError(
+              data,
+              i18n.t(
+                "policies:configurationPolicies.configPolicyCreatePage.failedToCreatePolicy",
+              ),
             ),
-          ),
         );
       }
       const policy = await response.json();
-      const params = linkedPolicyId ? `?linked=${linkedPolicyId}` : "";
-      void navigateTo(`/configuration-policies/${policy.id}${params}`);
+      void navigateTo(`/configuration-policies/${policy.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     }
@@ -240,11 +273,19 @@ export default function ConfigPolicyCreatePage() {
               )}
             </p>
             <div className="mt-4">
-              <PolicyLinkSelector
-                fetchUrl="/configuration-policies"
-                selectedId={linkedPolicyId}
-                onSelect={setLinkedPolicyId}
-              />
+              {eligibleUrl ? (
+                <PolicyLinkSelector
+                  fetchUrl={eligibleUrl}
+                  selectedId={linkedPolicyId}
+                  onSelect={setLinkedPolicyId}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
+                  )}
+                </p>
+              )}
             </div>
           </div>
         )}

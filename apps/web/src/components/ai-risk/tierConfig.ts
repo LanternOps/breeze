@@ -70,6 +70,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_fleet_findings', description: 'Deduplicated fleet hygiene findings', category: 'Devices & Hardware' },
       { name: 'analyze_fleet_metrics', description: 'Fleet-wide metric aggregation from rollups', category: 'Devices & Hardware' },
       { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
+      { name: 'get_device_context', description: 'Brain device context lookup', category: 'Devices & Hardware' },
       // Network & DNS
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
       { name: 'get_ip_history', description: 'IP address history', category: 'Network & DNS' },
@@ -83,6 +84,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Alerts & Notifications
       { name: 'manage_alerts (list/get)', description: 'View alerts', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (list)', description: 'List notification channels', category: 'Alerts & Notifications' },
+      { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Alerts & Notifications' },
       // Files, Disk & Registry
       { name: 'analyze_disk_usage', description: 'Filesystem analysis', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (preview)', description: 'Preview cleanup candidates', category: 'Files, Disk & Registry' },
@@ -115,7 +117,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_groups (list/get/preview)', description: 'View device groups', category: 'Fleet Operations' },
       { name: 'manage_maintenance_windows (list/get)', description: 'View maintenance windows', category: 'Fleet Operations' },
       { name: 'manage_automations (list/get/history)', description: 'View automations', category: 'Fleet Operations' },
-      { name: 'manage_alert_rules (list_rules/get_rule/test_rule)', description: 'View alert rules', category: 'Fleet Operations' },
       { name: 'generate_report (list/data/history/download)', description: 'View and download reports', category: 'Fleet Operations' },
       // Backup & Recovery
       { name: 'query_backups', description: 'List backup configs, jobs, and policies', category: 'Backup & Recovery' },
@@ -128,7 +129,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
-      { name: 'get_device_context', description: 'Brain device context lookup', category: 'Remote Access & Control' },
       // Integrations
       { name: 'query_webhooks', description: 'List webhooks and delivery status', category: 'Integrations' },
       { name: 'query_psa_status', description: 'PSA connection status', category: 'Integrations' },
@@ -154,6 +154,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (suppress)', description: 'Suppress alerts temporarily', category: 'Alerts & Notifications' },
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
+      // Devices & Hardware
+      { name: 'set_device_context', description: 'Set brain device context', category: 'Devices & Hardware' },
+      { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Devices & Hardware' },
       // Services & Processes
       { name: 'manage_services (list)', description: 'List services on device', category: 'Services & Processes' },
       // Network & DNS
@@ -161,8 +164,6 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'configure_network_baseline', description: 'Configure network baseline', category: 'Network & DNS' },
       { name: 'manage_dns_policy', description: 'DNS policy management', category: 'Network & DNS' },
       // Remote Access & Control
-      { name: 'set_device_context', description: 'Set brain device context', category: 'Remote Access & Control' },
-      { name: 'resolve_device_context', description: 'Resolve brain device context', category: 'Remote Access & Control' },
       { name: 'execute_command (list_processes/file_list/event_logs_list)', description: 'Read-only device commands (process list, directory listings, event log channel list)', category: 'Remote Access & Control' },
       // Files, Disk & Registry
       { name: 'file_operations (list)', description: 'List directory contents on device', category: 'Files, Disk & Registry' },
@@ -209,6 +210,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Remote Access & Control
       { name: 'execute_command (kill_process/start_service/stop_service/restart_service/file_read/list_services/event_logs_query)', description: 'Mutating system commands, file reads, and commands that can return unredacted credential/PII-bearing content (service binary paths, raw event log messages)', category: 'Remote Access & Control' },
       { name: 'run_script', description: 'Run scripts on up to 10 devices', category: 'Remote Access & Control' },
+      // #4767 — the cancel tool requests a stop on an in-flight script
+      // execution. Noted as missing from this registry in #4990's PR body
+      // when the API side (script_cancel command dispatch) shipped; there is
+      // no automated check that catches the next tool this registry misses.
+      { name: 'cancel_script_execution', description: 'Request a stop on a running script execution', category: 'Remote Access & Control' },
       { name: 'computer_control', description: 'Send input actions to device', category: 'Remote Access & Control' },
       { name: 'create_remote_session', description: 'Create remote terminal or file session', category: 'Remote Access & Control' },
       { name: 'take_screenshot', description: 'Capture device screenshot', category: 'Remote Access & Control' },
@@ -280,8 +286,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'take_screenshot', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'analyze_screen', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
   { toolName: 'create_remote_session', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Remote Access & Control' },
-  { toolName: 'set_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Remote Access & Control' },
-  { toolName: 'resolve_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Remote Access & Control' },
+  { toolName: 'set_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
+  { toolName: 'resolve_device_context', limit: 20, windowSeconds: 300, tier: 2, permission: 'devices.write', category: 'Devices & Hardware' },
   // Services & Processes
   { toolName: 'manage_services', limit: 10, windowSeconds: 300, tier: 3, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_processes', limit: 15, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Services & Processes' },
@@ -329,7 +335,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_groups', limit: 20, windowSeconds: 300, tier: 1, permission: 'groups.write', category: 'Fleet Operations' },
   { toolName: 'manage_maintenance_windows', limit: 15, windowSeconds: 300, tier: 1, permission: 'maintenance.write', category: 'Fleet Operations' },
   { toolName: 'manage_automations', limit: 10, windowSeconds: 600, tier: 1, permission: 'automations.write', category: 'Fleet Operations' },
-  { toolName: 'manage_alert_rules', limit: 15, windowSeconds: 300, tier: 1, permission: 'alerts.write', category: 'Fleet Operations' },
+  { toolName: 'manage_alert_rules', limit: 15, windowSeconds: 300, tier: 1, permission: 'alerts.write', category: 'Alerts & Notifications' },
   { toolName: 'generate_report', limit: 10, windowSeconds: 300, tier: 1, permission: 'reports.write', category: 'Fleet Operations' },
 ];
 

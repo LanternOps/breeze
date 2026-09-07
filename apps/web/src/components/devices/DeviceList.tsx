@@ -14,6 +14,7 @@ import {
   FileCode,
   RotateCcw,
   Settings,
+  Shield,
   Trash2,
   Zap,
   Columns3,
@@ -30,7 +31,12 @@ import type {
   DesktopAccessState,
   RemoteAccessPolicy,
   VpnPresence,
+  FilterConditionGroup,
 } from "@breeze/shared";
+import {
+  matchesMergedListFilters,
+  sortByDisplayName,
+} from "./mergedListFilter";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // Single source of truth for "can this device still accept a queued command?".
 // Hoisted out of this file (#2465): the bulk bar in DevicesPage needs the SAME
@@ -39,6 +45,7 @@ import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 // verified API contract lives next to it — read that before changing this.
 import {
   actionGateHint,
+  classifyBulkSelection,
   isCommandQueueable,
   notOnlineTitle,
   notQueueableTitle,
@@ -89,6 +96,10 @@ import {
 import { groupLinkedDevices } from "./linkedDevices";
 import { useOrgStore } from "@/stores/orgStore";
 import DecommissionedHiddenHint from "./DecommissionedHiddenHint";
+
+// DeviceCompare's selection limit (see DeviceCompare.tsx). Kept here so the
+// bulk menu can explain the cap instead of silently dropping the item.
+const COMPARE_MAX_DEVICES = 4;
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
@@ -160,6 +171,15 @@ export type Device = {
    * for network-discovered rows it is the discovered asset's own IP.
    */
   lanIp?: string | null;
+  // Discovered assets carry a MAC; agent rows leave it unset.
+  macAddress?: string | null;
+  /**
+   * RMM-QA-176 manual maintenance lease end (ISO). `maintenanceUntil > now` —
+   * not `status` — is the truth of "a technician put this device into
+   * maintenance": the heartbeat overwrites `status` on every beat, so a device
+   * with a live lease can read back as `online`. Use `isInMaintenance`.
+   */
+  maintenanceUntil?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;
@@ -203,6 +223,28 @@ export type Device = {
    * device page.
    */
   possibleReplacementOfDeviceId?: string | null;
+  /**
+   * What became of the agent-uninstall this device's Remove queued (#3987).
+   *
+   * Present ONLY on the `GET /devices/:id` detail payload, and only ever
+   * non-null for a `decommissioned` device. The three-way distinction is
+   * load-bearing for `UninstallStateBadge`:
+   *
+   *   undefined → this payload does not carry the field (a list row) — say
+   *               nothing, because we do not know.
+   *   null      → the Remove deliberately left the agent installed.
+   *   object    → an uninstall was queued; `state` says how far it got.
+   *
+   * `state: 'sent'` means the agent's handler acked the command, NOT that the
+   * teardown is confirmed — only `'completed'` claims that.
+   */
+  uninstall?: {
+    state: string;
+    queuedAt?: string | null;
+    sentAt: string | null;
+    completedAt?: string | null;
+    expiresAt: string | null;
+  } | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   /**
@@ -279,6 +321,37 @@ const NETWORK_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "class",
   "type",
 ]);
+// Columns that only ever carry data for agent-managed endpoints. When the rows
+// on screen are all network devices (Network facet, or a network-only fleet)
+// these would render as solid columns of dashes, so they step aside — the
+// same rule that keeps `type` opt-in for agent-only fleets, applied the other
+// way round. The user's column choices are untouched; only rendering adapts.
+const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
+  "os",
+  "osVersion",
+  "osBuild",
+  "architecture",
+  "role",
+  "isHeadless",
+  "pendingReboot",
+  "cpu",
+  "ram",
+  "power",
+  "cpuModel",
+  "cores",
+  "ramTotal",
+  "diskTotal",
+  "agentVersion",
+  "watchdogVersion",
+  "serverUrl",
+  "wanIp",
+  "lastUser",
+  "uptime",
+  "enrolled",
+  "desktopAccess",
+  "reliability",
+  "vpn",
+]);
 
 type DeviceListProps = {
   devices: Device[];
@@ -304,8 +377,8 @@ type DeviceListProps = {
   // DevicesPage and shared with DeviceFilterToolbar. Every other structured
   // filter lives in the server-resolved group (serverFilterIds). Defaults keep
   // DeviceList usable on its own (tests render it standalone).
-  // `onListFiltersChange` is accepted for API symmetry; DeviceList itself no
-  // longer mutates the search filter (the toolbar owns the input).
+  // The toolbar owns the search input; DeviceList only writes the VPN facet
+  // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
   // Initial page size if the user has no stored preference for this browser.
@@ -316,6 +389,9 @@ type DeviceListProps = {
   // Resolution lives in DevicesPage via useAdvancedFilterIds so the list and
   // grid views filter against the same complete, uncapped id set.
   serverFilterIds?: Set<string> | null;
+  // The condition group behind serverFilterIds — network rows are evaluated
+  // against it client-side (see mergedListFilter.ts).
+  advancedFilter?: FilterConditionGroup | null;
   serverFilterLoading?: boolean;
   // True when the last /filters/preview resolution failed (403 on a pinned
   // orgId the caller can't access, 500, network error, …). `serverFilterIds`
@@ -328,6 +404,12 @@ type DeviceListProps = {
   // true only when the active filter group explicitly targets the
   // 'decommissioned' status, so filtering FOR decommissioned still shows them.
   includeDecommissioned?: boolean;
+  /**
+   * Offered only while the rows are visible via the page-level showRemoved
+   * flag (not via an explicit Decommissioned status filter, where hiding
+   * would be a no-op) — renders the "N removed shown — hide" line (#5023).
+   */
+  onHideDecommissioned?: () => void;
   // Applies the Decommissioned status filter upstream (#2251) — the existing
   // unhide mechanism. Wired by DevicesPage; when absent (standalone renders /
   // tests) the "N decommissioned hidden — show" hint is not rendered.
@@ -349,16 +431,6 @@ const statusColors: Record<DeviceStatus, string> = {
   pending: "bg-muted text-muted-foreground border-border",
 };
 
-// Canonical status values stay untouched; only their presentation keys vary.
-const statusLabelKeys: Record<DeviceStatus, string> = {
-  online: "deviceList.statuses.compact.online",
-  offline: "deviceList.statuses.compact.offline",
-  maintenance: "deviceList.statuses.compact.maintenance",
-  decommissioned: "deviceList.statuses.compact.decommissioned",
-  quarantined: "deviceList.statuses.compact.quarantined",
-  updating: "deviceList.statuses.compact.updating",
-  pending: "deviceList.statuses.compact.pending",
-};
 const statusFullLabelKeys: Record<DeviceStatus, string> = {
   online: "deviceList.statuses.full.online",
   offline: "deviceList.statuses.full.offline",
@@ -495,7 +567,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
       : null,
   organization: (d) => d.orgName || null,
   site: (d) => d.siteName || null,
-  os: (d) => osLabels[d.os],
+  // A network row has no OS (the cell renders a dash), so it must sort as a
+  // blank, not as the string "undefined" wedged between macOS and Windows.
+  os: (d) => osLabels[d.os] ?? null,
   osVersion: (d) => formatDeviceOsVersion(d.os, d.osVersion) || null,
   osBuild: (d) => d.osBuild || null,
   architecture: (d) => d.architecture || null,
@@ -511,8 +585,20 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // false/absent renders as a dash (see the cell), so it maps to null like
   // isHeadless — keeping the blanks-last invariant consistent for booleans.
   pendingReboot: (d) => (d.pendingReboot ? 1 : null),
-  cpu: (d) => (d.status === "online" ? d.cpuPercent : null),
-  ram: (d) => (d.status === "online" ? d.ramPercent : null),
+  // Network rows carry a placeholder 0 but render a dash — sort them as
+  // blanks so a CPU/RAM sort actually moves the agent rows.
+  cpu: (d) =>
+    (d.deviceClass ?? "agent") === "network"
+      ? null
+      : d.status === "online"
+        ? d.cpuPercent
+        : null,
+  ram: (d) =>
+    (d.deviceClass ?? "agent") === "network"
+      ? null
+      : d.status === "online"
+        ? d.ramPercent
+        : null,
   // Sort by charge for devices with a battery; no-battery/unknown rows sort as
   // blanks-last null to match the dash the cell renders (#1284 invariant).
   power: (d) =>
@@ -568,12 +654,15 @@ export default function DeviceList({
   onBulkAction,
   pageSize = 10,
   includeDecommissioned = false,
+  onHideDecommissioned,
   onShowDecommissioned,
   serverFilterIds = null,
+  advancedFilter,
   serverFilterLoading = false,
   serverFilterError = false,
   networkDevicesEnabled = false,
   listFilters,
+  onListFiltersChange,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   // Use provided timezone or browser default
@@ -587,15 +676,20 @@ export default function DeviceList({
   // rendered standalone (tests), fall back to the default so search is a no-op.
   const filters = listFilters ?? DEFAULT_LIST_FILTERS;
   const { search: query } = filters;
-  // Unified-list class facet (#1322): All / Agent-managed / Network. Kept
-  // local to DeviceList (it lives next to the count, not in the toolbar).
-  const [classFilter, setClassFilter] = useState<"all" | "agent" | "network">(
-    "all",
-  );
   // Client-side VPN facet (#2139): 'all' | 'any' (any active VPN) | a provider
   // id. Operates on already-loaded cached inventory, mirroring the class facet
   // — no server round-trip, no live command fan-out.
-  const [vpnFilter, setVpnFilter] = useState<"all" | "any" | string>("all");
+  // The VPN facet lives in listFilters (page-owned) so DevicesPage's class
+  // counts and hidden-network notice see it; a standalone render (no
+  // onListFiltersChange) keeps it local.
+  const [localVpnFilter, setLocalVpnFilter] = useState<string>("all");
+  const vpnFilter: string = onListFiltersChange
+    ? (filters.vpn ?? "all")
+    : localVpnFilter;
+  const setVpnFilter = (next: string) => {
+    if (onListFiltersChange) onListFiltersChange({ ...filters, vpn: next });
+    else setLocalVpnFilter(next);
+  };
   const [currentPage, setCurrentPage] = useState(1);
   // Live, user-controllable page size. Initialized from localStorage; the
   // pageSize prop is just the fallback when no preference is stored.
@@ -738,72 +832,78 @@ export default function DeviceList({
     }
   }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
-  // Reset to page 1 whenever the active filters change (device search, the
-  // class facet, and the server-resolved id set are the only things that narrow
-  // the list now). This replaces the per-control setCurrentPage(1) calls that
-  // lived on each filter input before the toolbar was extracted.
+  // Reset to page 1 whenever a list-local narrowing changes (device search,
+  // the VPN facet, the server-resolved id set). The page-level class segment
+  // hands in a new `devices` array instead; a data refresh does too, and must
+  // NOT yank the user back to page 1, so `devices` is deliberately not a dep.
   useEffect(() => {
     setCurrentPage(1);
-  }, [query, classFilter, vpnFilter, serverFilterIds]);
+  }, [query, vpnFilter, serverFilterIds]);
 
-  const filteredDevices = useMemo(() => {
+  // Every filter EXCEPT the hidden-by-default decommissioned rule. Split out
+  // so the removed-hint counts (#2251/#5023) can be taken from the rows the
+  // tech's filters would actually let through — a decommissioned device the
+  // server filter or search already excludes is not "hidden by default" and
+  // must not be counted as showable.
+  const matchingDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return devices.filter((device) => {
-      // Hide decommissioned by default — preserves the old list's hygiene
-      // (status='all' implicitly excluded them). Filtering FOR decommissioned
-      // via a status chip flips includeDecommissioned true upstream.
-      if (!includeDecommissioned && device.status === "decommissioned") {
+      // The server-resolved id set (agent rows), the client-side evaluator
+      // (network rows), the VPN facet and search all live in one shared
+      // predicate so the page-level class counts and the grid can never
+      // disagree with the rows rendered here.
+      if (
+        !matchesMergedListFilters(device, {
+          serverFilterIds,
+          advancedFilter,
+          // The decommissioned rule is applied one step later (filteredDevices)
+          // so decommissionedCount can see what "show" would reveal (#5023).
+          includeDecommissioned: true,
+          query: normalizedQuery,
+          vpn: vpnFilter,
+        })
+      ) {
         return false;
       }
 
-      // Apply server-side advanced filter (status/os/role/org/site/group/… all
-      // resolve through this id set now — they are no longer client-side).
-      if (serverFilterIds !== null && !serverFilterIds.has(device.id)) {
-        return false;
-      }
-
-      const deviceClass = device.deviceClass ?? "agent";
-      const matchesClass =
-        classFilter === "all" ? true : deviceClass === classFilter;
-
-      // VPN facet (#2139): 'all' passes everything; 'any' requires ≥1 active
-      // VPN; a provider id requires that provider to be active on the device.
-      let matchesVpn = true;
-      if (vpnFilter !== "all") {
-        const active = activeVpnList(device.activeVpns);
-        matchesVpn =
-          vpnFilter === "any"
-            ? active.length > 0
-            : active.some((v) => v.provider === vpnFilter);
-      }
-
-      const matchesQuery =
-        normalizedQuery.length === 0
-          ? true
-          : device.hostname.toLowerCase().includes(normalizedQuery) ||
-            (device.displayName?.toLowerCase().includes(normalizedQuery) ??
-              false);
-
-      return matchesClass && matchesVpn && matchesQuery;
+      return true;
     });
   }, [
     devices,
     query,
-    classFilter,
     vpnFilter,
     serverFilterIds,
-    includeDecommissioned,
+    advancedFilter,
   ]);
 
-  // How many decommissioned devices the default view is hiding (#2251). Zero
-  // when they're already visible (includeDecommissioned) so the hint and the
-  // count math below stay consistent with what the table actually shows.
-  const hiddenDecommissionedCount = useMemo(
+  // Hide decommissioned by default — preserves the old list's hygiene
+  // (status='all' implicitly excluded them). Filtering FOR decommissioned via
+  // a status chip, or "show" on the hint, flips includeDecommissioned upstream.
+  const filteredDevices = useMemo(
     () =>
       includeDecommissioned
-        ? 0
-        : devices.filter(d => d.status === 'decommissioned').length,
+        ? matchingDevices
+        : matchingDevices.filter((d) => d.status !== "decommissioned"),
+    [matchingDevices, includeDecommissioned]
+  );
+
+  // Removed devices the current filters would let through (#2251/#5023) —
+  // the ones "show" can actually reveal / "hide" actually removes. Zero on
+  // the hidden side once they're visible (and vice versa) so the hint and
+  // the count line stay consistent with what the table actually shows.
+  const decommissionedCount = useMemo(
+    () => matchingDevices.filter((d) => d.status === "decommissioned").length,
+    [matchingDevices]
+  );
+  const hiddenDecommissionedCount = includeDecommissioned ? 0 : decommissionedCount;
+  // Count-line denominator: the fleet minus every decommissioned row while
+  // they're hidden (regardless of whether the filters would admit them).
+  const countLineTotal = useMemo(
+    () =>
+      includeDecommissioned
+        ? devices.length
+        : devices.filter((d) => d.status !== "decommissioned").length,
     [devices, includeDecommissioned]
   );
 
@@ -841,16 +941,6 @@ export default function DeviceList({
     }
   };
 
-  // Show the class facet only when the network arm is enabled AND a network
-  // device is actually present, so agent-only fleets aren't cluttered with an
-  // inert control. With the feature flag off this is always false.
-  const hasNetworkDevices = useMemo(
-    () =>
-      networkDevicesEnabled &&
-      devices.some((d) => (d.deviceClass ?? "agent") === "network"),
-    [networkDevicesEnabled, devices],
-  );
-
   const sortedDevices = useMemo(() => {
     // Default ordering for the merged list (#1424, deferred item 1). With no
     // column actively selected, agent rows arrive hostname-sorted from the
@@ -861,39 +951,18 @@ export default function DeviceList({
     // key across the whole union: the same `displayName || hostname` the Device
     // column sorts on, with `id` as a stable tiebreaker so client-side
     // pagination is deterministic (a row can't hop pages between renders).
-    if (!sortField) {
-      const byName = sortValue.hostname;
-      // sortValue is typed `string | number | null`; a null/blank name must sort
-      // blanks-last (like the column-sort branch below) rather than become the
-      // string "null"/"" buried among real names. Two blanks tie and fall
-      // through to the id tiebreaker so client-side pagination stays stable.
-      const isBlank = (v: string | number | null) =>
-        v == null || String(v).trim() === "";
-      return [...filteredDevices].sort((a, b) => {
-        const av = byName(a);
-        const bv = byName(b);
-        const aBlank = isBlank(av);
-        const bBlank = isBlank(bv);
-        const cmp =
-          aBlank || bBlank
-            ? aBlank === bBlank
-              ? 0
-              : aBlank
-                ? 1
-                : -1
-            : nameCollator.compare(String(av), String(bv));
-        return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
-      });
-    }
+    if (!sortField) return sortByDisplayName(filteredDevices);
+
     const value = sortValue[sortField];
     const dir = sortDirection === "desc" ? -1 : 1;
 
     return [...filteredDevices].sort((a, b) => {
       const av = value(a);
       const bv = value(b);
-      // Dash cells sort last regardless of direction.
-      if (av === null || bv === null)
-        return av === bv ? 0 : av === null ? 1 : -1;
+      // Dash cells sort last regardless of direction. `== null` on purpose:
+      // an undefined key (a column the row simply lacks) is a blank too.
+      if (av == null || bv == null)
+        return av == bv ? 0 : av == null ? 1 : -1;
       const cmp =
         typeof av === "number" && typeof bv === "number"
           ? av - bv
@@ -958,6 +1027,47 @@ export default function DeviceList({
     setCurrentPage(1);
   };
 
+  // Selection must never outlive the rows it points at: when a class change,
+  // a search/VPN/advanced filter, or a refresh drops a selected device out of
+  // the visible set (filteredDevices — every narrowing, before paging), drop
+  // it from the selection too. Otherwise the bar reads "4 selected" over an
+  // empty table and a bulk action can hit a device nobody can see.
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const present = new Set(filteredDevices.map((d) => d.id));
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (present.has(id)) next.add(id);
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredDevices]);
+
+  const selectedDevices = useMemo(
+    () => filteredDevices.filter((d) => selectedIds.has(d.id)),
+    [filteredDevices, selectedIds],
+  );
+  const selectedAgentCount = useMemo(
+    () => selectedDevices.filter((d) => (d.deviceClass ?? "agent") === "agent").length,
+    [selectedDevices],
+  );
+  const selectedNetworkCount = selectedDevices.length - selectedAgentCount;
+  // Agent-only bulk actions: disabled outright when no agent is selected,
+  // annotated with the eligible count on a mixed selection — the request
+  // funnel in DevicesPage still refuses network rows, this just says so
+  // before the click instead of after.
+  const agentOnlyDisabled = selectedAgentCount === 0;
+  const agentOnlyTitle = agentOnlyDisabled
+    ? t("deviceList.agentOnlyBulkAction")
+    : undefined;
+  const agentOnlySuffix =
+    selectedNetworkCount > 0 && selectedAgentCount > 0 ? (
+      <span className="ml-1 text-xs text-muted-foreground">
+        ({t("deviceList.eligibleOfSelected", { count: selectedAgentCount, total: selectedIds.size })})
+      </span>
+    ) : null;
+
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
       setSelectedIds(new Set(selectablePageDevices.map((d) => d.id)));
@@ -977,11 +1087,25 @@ export default function DeviceList({
   };
 
   const handleBulkAction = (action: string) => {
-    const selectedDevices = devices.filter((d) => selectedIds.has(d.id));
     onBulkAction?.(action, selectedDevices);
     setBulkMenuOpen(false);
     setSelectedIds(new Set());
   };
+
+  /**
+   * #2787 — the bulk bar is SELECTION-AWARE. A selection of only removed
+   * devices gets Restore / Delete permanently and nothing else; every other
+   * selection (including a mixed one) gets the ordinary menu.
+   *
+   * Not merely cosmetic: the removed-only actions call APIs that require
+   * `status = 'decommissioned'`, so offering them for a mixed selection would
+   * reject every active device in the batch. The ordinary actions, by contrast,
+   * already SKIP removed devices via DECOMMISSION_BLOCKED_BULK_ACTIONS, so the
+   * mixed case degrades gracefully on the active menu and badly on the other.
+   */
+  const selectionKind = classifyBulkSelection(
+    devices.filter((d) => selectedIds.has(d.id)).map((d) => d.status),
+  );
 
   const allSelected =
     selectablePageDevices.length > 0 &&
@@ -999,10 +1123,36 @@ export default function DeviceList({
     (networkDevicesEnabled || !NETWORK_ONLY_COLUMNS.has(id)) &&
     (id !== "organization" || isFleetView);
 
+  // Which classes are actually on screen — drives the class-adaptive column
+  // set below (a Network-only view has no use for OS/CPU/RAM; an agent-only
+  // view has no use for Class/Type).
+  const hasAgentRows = useMemo(
+    () =>
+      !networkDevicesEnabled ||
+      devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
+    [networkDevicesEnabled, devices],
+  );
+  const hasNetworkRows = useMemo(
+    () =>
+      networkDevicesEnabled &&
+      devices.some((d) => (d.deviceClass ?? "agent") === "network"),
+    [networkDevicesEnabled, devices],
+  );
+  // The VPN facet is agent-only; never leave it narrowing an all-network view
+  // after its control has gone (the critique's "unmounted filter" dead end).
+  useEffect(() => {
+    if (!hasAgentRows && vpnFilter !== "all") setVpnFilter("all");
+  }, [hasAgentRows, vpnFilter]);
+
+  const classAllowsColumn = (id: ColumnId) =>
+    (hasAgentRows || !AGENT_ONLY_COLUMNS.has(id)) &&
+    (hasNetworkRows || !NETWORK_ONLY_COLUMNS.has(id));
+
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.
   const renderedColumns = columnOrder.filter(
-    (id) => visibleColumns.has(id) && isColumnAvailable(id),
+    (id) =>
+      visibleColumns.has(id) && isColumnAvailable(id) && classAllowsColumn(id),
   );
 
   // sortHeader factors out the repeated header pattern for sortable
@@ -1016,8 +1166,8 @@ export default function DeviceList({
   ) => (
     <th
       key={id}
-      className={`px-3 py-3 cursor-pointer select-none hover:text-foreground${alignRight ? " text-right" : ""}`}
-      title={hint}
+      scope="col"
+      className={`px-3 py-3 select-none${alignRight ? " text-right" : ""}`}
       aria-sort={
         sortField === id
           ? sortDirection === "asc"
@@ -1025,20 +1175,27 @@ export default function DeviceList({
             : "descending"
           : "none"
       }
-      onClick={() => handleSort(id)}
     >
-      <span className="inline-flex items-center gap-1">
+      {/* A real button so sorting is reachable by keyboard; aria-sort stays on
+          the header cell where assistive tech expects it. */}
+      <button
+        type="button"
+        aria-label={hint}
+        title={hint}
+        onClick={() => handleSort(id)}
+        className="inline-flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      >
         {label}
         {sortField === id ? (
           sortDirection === "asc" ? (
-            <ChevronUp className="h-3 w-3" />
+            <ChevronUp aria-hidden="true" className="h-3 w-3" />
           ) : (
-            <ChevronDown className="h-3 w-3" />
+            <ChevronDown aria-hidden="true" className="h-3 w-3" />
           )
         ) : (
-          <ArrowUpDown className="h-3 w-3 opacity-30" />
+          <ArrowUpDown aria-hidden="true" className="h-3 w-3 opacity-30" />
         )}
-      </span>
+      </button>
     </th>
   );
 
@@ -1144,8 +1301,15 @@ export default function DeviceList({
   // header and per-row cell. The thead and tbody iterate `renderedColumns`
   // and pick from this table, so adding a new column means adding one
   // entry here plus the corresponding id to COLUMN_IDS / COLUMN_LABELS.
+  // A dash reads as "not applicable" to sighted users; give assistive tech
+  // the same information instead of a bare U+2014.
   const dash = (
-    <span className="text-muted-foreground">{t("deviceList.text")}</span>
+    <>
+      <span className="text-muted-foreground" aria-hidden="true">
+        {t("deviceList.text")}
+      </span>
+      <span className="sr-only">{t("deviceList.notApplicable")}</span>
+    </>
   );
   // Agent-only columns render "—" for network devices (#1322): the
   // attribute doesn't exist for a printer/router, so don't imply 0/blank.
@@ -1181,7 +1345,7 @@ export default function DeviceList({
       },
     },
     class: {
-      header: () => sortHeader("class", "Class", "Sort by class"),
+      header: () => sortHeader("class", t("deviceList.tableColumns.class"), t("deviceList.sortBy.class")),
       cell: (device) => {
         const deviceClass = device.deviceClass ?? "agent";
         const isNetwork = deviceClass === "network";
@@ -1212,7 +1376,7 @@ export default function DeviceList({
       },
     },
     type: {
-      header: () => sortHeader("type", "Type", "Sort by type"),
+      header: () => sortHeader("type", t("deviceList.tableColumns.type"), t("deviceList.sortBy.type")),
       cell: (device) => {
         // Type is the asset_type of a *network-discovered* device (printer,
         // switch, NAS…). For agent rows the equivalent question — what kind of
@@ -1374,7 +1538,7 @@ export default function DeviceList({
               className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
               title={t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
             >
-              {t(/* i18n-dynamic */ statusLabelKeys[device.status])}
+              {t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
             </span>
             {shouldShowAgentSilentBadge(device) && (
               <span
@@ -1879,13 +2043,35 @@ export default function DeviceList({
     },
   };
 
+  // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
+  // so above that the item renders disabled with the cap as its label + title
+  // instead of disappearing (#5023 paper cut). Shared by the active and the
+  // all-removed branches of the menu.
+  const renderCompareItem = () => {
+    // Only agents can be compared, so the cap counts agents, not rows.
+    const overCap = selectedAgentCount > COMPARE_MAX_DEVICES;
+    const capLabel = t("deviceList.compareMaxDevices", { count: COMPARE_MAX_DEVICES });
+    return (
+      <button
+        type="button"
+        data-testid="bulk-compare"
+        disabled={overCap}
+        title={overCap ? capLabel : undefined}
+        onClick={() => handleBulkAction("compare")}
+        className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+      >
+        {overCap ? capLabel : t("deviceList.compareSelected")}
+      </button>
+    );
+  };
+
   return (
     <div>
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
             {filteredDevices.length} {t("deviceList.of")}{" "}
-            {devices.length - hiddenDecommissionedCount}{" "}
+            {countLineTotal}{" "}
             {t("deviceList.devices")}{" "}
             {serverFilterError ? (
               <span
@@ -1915,42 +2101,22 @@ export default function DeviceList({
                 />
               </span>
             )}
-          </p>
-          {/* Search / Status / OS / quick chips / More / Advanced now live in
-              DeviceFilterToolbar (rendered by DevicesPage). DeviceList keeps
-              only the class facet and the Columns menu next to the count. */}
-          <div className="flex flex-wrap items-center gap-2">
-            {hasNetworkDevices && (
-              <div
-                role="group"
-                aria-label={t("deviceList.filterByDeviceClass")}
-                className="inline-flex h-10 items-center rounded-md border bg-background p-0.5 text-sm"
-              >
-                {(
-                  [
-                    ["all", "All"],
-                    ["agent", "Agent"],
-                    ["network", "Network"],
-                  ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    data-testid={`device-class-filter-${value}`}
-                    aria-pressed={classFilter === value}
-                    onClick={() => setClassFilter(value)}
-                    className={`h-full rounded px-3 font-medium transition ${
-                      classFilter === value
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:bg-muted"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            {onHideDecommissioned && includeDecommissioned && decommissionedCount > 0 && (
+              <span className="ml-2">
+                <DecommissionedHiddenHint
+                  mode="shown"
+                  count={decommissionedCount}
+                  onHide={onHideDecommissioned}
+                />
+              </span>
             )}
-            {visibleColumns.has("vpn") && (
+          </p>
+          {/* Search / Status / OS / quick chips / More / Advanced live in
+              DeviceFilterToolbar and the class segment in DevicesPage. What
+              stays next to the count is list-local: the VPN facet, the
+              "Collapse linked" toggle and the Columns menu. */}
+          <div className="flex flex-wrap items-center gap-2">
+            {visibleColumns.has("vpn") && hasAgentRows && (
               <select
                 aria-label={t("deviceList.filterByVpn")}
                 data-testid="device-vpn-filter"
@@ -2092,8 +2258,14 @@ export default function DeviceList({
 
       {selectedIds.size > 0 && (
         <div className="mt-4 flex items-center gap-3 rounded-md border bg-muted/40 px-4 py-2">
-          <span className="text-sm font-medium">
+          <span className="text-sm font-medium" data-testid="bulk-selection-summary">
             {selectedIds.size} {t("deviceList.selected")}
+            {selectedNetworkCount > 0 && (
+              <span className="font-normal text-muted-foreground">
+                {" · "}
+                {t("deviceList.selectedComposition", { agent: selectedAgentCount, network: selectedNetworkCount })}
+              </span>
+            )}
           </span>
           <div className="relative">
             <button
@@ -2109,62 +2281,74 @@ export default function DeviceList({
                 data-testid="bulk-actions-menu"
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
+                {selectionKind !== "removed" && (
+                  <>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("reboot")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.rebootSelected")}{" "}
+                  {t("deviceList.rebootSelected")}
+                  {agentOnlySuffix}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("run-script")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.runScript")}{" "}
+                  {t("deviceList.runScript")}
+                  {agentOnlySuffix}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("deploy-software")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.deploySoftware")}{" "}
+                  {t("deviceList.deploySoftware")}
+                  {agentOnlySuffix}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("maintenance-on")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.enableMaintenance")}{" "}
+                  {t("deviceList.enableMaintenance")}
+                  {agentOnlySuffix}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleBulkAction("maintenance-off")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.disableMaintenance")}{" "}
+                  {t("deviceList.disableMaintenance")}
+                  {agentOnlySuffix}
                 </button>
                 <hr className="my-1" />
                 <button
                   type="button"
                   onClick={() => handleBulkAction("wake")}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.wakeSelected")}{" "}
+                  {t("deviceList.wakeSelected")}
+                  {agentOnlySuffix}
                 </button>
-                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
-                    so the item only shows for a 2-4 selection. */}
-                {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                  <button
-                    type="button"
-                    data-testid="bulk-compare"
-                    onClick={() => handleBulkAction("compare")}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                  >
-                    {t("deviceList.compareSelected")}{" "}
-                  </button>
-                )}
-                {selectedIds.size >= 2 && (
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit).
+                    Above the cap the item stays put but disabled with the cap
+                    spelled out — it used to vanish silently (#5023). */}
+                {selectedAgentCount >= 2 && renderCompareItem()}
+                {selectedAgentCount >= 2 && (
                   <button
                     type="button"
                     data-testid="bulk-link-multiboot"
@@ -2174,24 +2358,55 @@ export default function DeviceList({
                     {t("deviceList.linkAsMultiBoot")}{" "}
                   </button>
                 )}
-                {selectedIds.size >= 2 && (
+                {selectedAgentCount >= 2 && (
                   <button
                     type="button"
                     data-testid="bulk-link-vm-host"
                     onClick={() => handleBulkAction('link-vm-host')}
                     className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
                   >
-                    Link as VM host + guests
+                    {t("deviceList.linkAsVmHost")}
                   </button>
                 )}
                 <hr className="my-1" />
                 <button
                   type="button"
+                  data-testid="bulk-decommission"
                   onClick={() => handleBulkAction("decommission")}
-                  className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                  disabled={agentOnlyDisabled}
+                  title={agentOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t("deviceList.decommissionSelected")}{" "}
+                  {t("deviceList.decommissionSelected")}
+                  {agentOnlySuffix}
                 </button>
+                  </>
+                )}
+                {selectionKind === "removed" && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="bulk-restore"
+                      onClick={() => handleBulkAction("restore")}
+                      className="w-full px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+                    >
+                      {t("deviceList.restoreSelected")}
+                    </button>
+                    {/* Same 2-4 cap as the active branch — DeviceCompare's own
+                        selection limit. A removed device is a legitimate (if
+                        approximate) comparison subject. */}
+                    {selectedAgentCount >= 2 && renderCompareItem()}
+                    <hr className="my-1" />
+                    <button
+                      type="button"
+                      data-testid="bulk-permanent-delete"
+                      onClick={() => handleBulkAction("permanent-delete")}
+                      className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                    >
+                      {t("deviceList.permanentDeleteSelected")}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -2252,7 +2467,7 @@ export default function DeviceList({
                         onSelect?.(device);
                       }
                     }}
-                    className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden"
+                    className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     <td
                       className={`px-3 py-3 ${offlineGroup || vmRole ? "border-l-2 border-l-primary/40" : ""}`}
@@ -2345,15 +2560,18 @@ export default function DeviceList({
                       {(device.deviceClass ?? "agent") === "network" ? (
                         // Network devices have no agent — none of the remote
                         // actions (desktop/terminal/scripts/reboot) apply.
-                        // Phase 1 routes to the existing Discovery view.
+                        // View opens the network device page (/devices/network/:id).
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
                             data-testid={`device-${device.id}-open-network`}
+                            aria-label={t("deviceList.viewDevice", {
+                              name: device.displayName || device.hostname,
+                            })}
                             onClick={() => onSelect?.(device)}
-                            className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+                            className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                           >
-                            {t("deviceList.view")}{" "}
+                            {t("deviceList.view")}
                           </button>
                         </div>
                       ) : (
@@ -2381,10 +2599,10 @@ export default function DeviceList({
                                 if (rowMenuOpenId !== device.id) {
                                   const rect =
                                     e.currentTarget.getBoundingClientRect();
-                                  // ~280px dropdown height (7 items × ~36px + padding/divider).
+                                  // ~320px dropdown height (8 items × ~36px + padding/divider).
                                   // Flip up when the space below the button is less than that.
                                   setRowMenuFlipUp(
-                                    window.innerHeight - rect.bottom < 300,
+                                    window.innerHeight - rect.bottom < 340,
                                   );
                                   setRowMenuAnchor({
                                     top: rect.top,
@@ -2519,6 +2737,48 @@ export default function DeviceList({
                                   >
                                     <Settings className="h-4 w-4" />
                                     {t("deviceList.settings")}{" "}
+                                  </button>
+                                  {/* #4936: maintenance mode was reachable only
+                                      through Bulk Actions, so acting on ONE
+                                      device meant ticking its checkbox and
+                                      opening a bulk menu. This dispatches the
+                                      same `maintenance` action the page already
+                                      handled — a per-device POST for one id.
+
+                                      Gating: maintenance is a DB flag, not an
+                                      agent command, so it is NOT gated on
+                                      `online` (bulkActionGating.ts lists
+                                      `maintenance-*` as intentionally ungated) —
+                                      suppressing monitoring on a box that has
+                                      already gone dark is the point of it. The
+                                      API does refuse a REMOVED device
+                                      (commands.ts: "Cannot change maintenance
+                                      mode for a decommissioned device"), which
+                                      is exactly the set `isCommandQueueable`
+                                      excludes, so the shared predicate and its
+                                      tooltip are correct here rather than
+                                      borrowed (#3994: no surface should offer an
+                                      action the API rejects). */}
+                                  <button
+                                    type="button"
+                                    data-testid={`device-${device.id}-action-maintenance`}
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(device.status, t)}
+                                    aria-describedby={
+                                      !isCommandQueueable(device.status)
+                                        ? `device-${device.id}-action-gate-hint`
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      onAction?.("maintenance", device);
+                                      setRowMenuOpenId(null);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    <Shield className="h-4 w-4" />
+                                    {device.status === "maintenance"
+                                      ? t("deviceList.exitMaintenance")
+                                      : t("deviceList.enterMaintenance")}{" "}
                                   </button>
                                   <hr className="my-1" />
                                   {device.status === "decommissioned" ? (

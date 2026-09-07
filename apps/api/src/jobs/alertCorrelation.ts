@@ -352,7 +352,7 @@ export async function enqueueAlertCorrelation(options: {
   deviceId: string;
   windowMinutes?: number;
 }): Promise<string | null> {
-  if (!(await shouldProduceMlOutput(options.orgId, 'ml.alert_correlation.enabled'))) {
+  if (!(await withSystemDbAccessContext(() => shouldProduceMlOutput(options.orgId, 'ml.alert_correlation.enabled'), 'alertCorrelation.enqueueGate'))) {
     return null;
   }
 

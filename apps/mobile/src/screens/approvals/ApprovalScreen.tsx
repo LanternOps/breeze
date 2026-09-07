@@ -16,6 +16,7 @@ import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
 
 import { CountdownRing } from './components/CountdownRing';
+import { RequesterAvatar } from './components/RequesterAvatar';
 import { RequesterRow } from './components/RequesterRow';
 import { ActionHeadline } from './components/ActionHeadline';
 import { DetailsCollapse } from './components/DetailsCollapse';
@@ -256,12 +257,15 @@ export function ApprovalScreen() {
           <CountdownRing
             expiresAt={focused.expiresAt}
             onExpire={handleExpire}
-          />
+          >
+            <RequesterAvatar clientLabel={focused.requestingClientLabel} />
+          </CountdownRing>
           <Pressable
             onPress={() => setReportSheetOpen(true)}
             hitSlop={12}
             accessibilityRole="button"
             accessibilityLabel="Report this approval as suspicious"
+            accessibilityHint="Flags this request as malicious and revokes the requesting app's access"
           >
             <Text style={[type.meta, { color: theme.textMd }]}>Report</Text>
           </Pressable>

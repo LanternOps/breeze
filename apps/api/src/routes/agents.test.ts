@@ -150,6 +150,10 @@ vi.mock('../db/schema', () => ({
     'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
     'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
   ] },
+  // unifiTelemetryService.ts builds a canonical-MAC sql fragment from
+  // discoveredAssets.macAddress at module load (#5087), and this suite reaches
+  // it transitively, so the partial mock must expose the column too.
+  discoveredAssets: { id: 'id', macAddress: 'mac_address' },
 }));
 
 vi.mock('../services/enrollmentKeySecurity', async () => {

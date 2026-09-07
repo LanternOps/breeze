@@ -5,9 +5,17 @@ import { getProviderForManufacturer, normalizeManufacturer } from './warrantyPro
 import type { WarrantyLookupResult } from './warrantyProviders';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 
-type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
+export type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
 
-function computeWarrantyStatus(endDate: string | null, warnDays = 90): WarrantyStatus {
+/**
+ * EXPORTED for `services/customFields/import/warrantyTarget.ts` (#3257 W08),
+ * which writes `device_warranty` from an imported CSV and must derive `status`
+ * the same way every other writer does. `evaluateWarrantyAlerts` returns early
+ * on `status === 'unknown'` and the column defaults to it, so a writer that
+ * computed its own status — or skipped it — would ship warranty alerting inert
+ * for every imported device. One function, one rule; do not copy it.
+ */
+export function computeWarrantyStatus(endDate: string | null, warnDays = 90): WarrantyStatus {
   if (!endDate) return 'unknown';
   const now = new Date();
   const end = new Date(endDate);

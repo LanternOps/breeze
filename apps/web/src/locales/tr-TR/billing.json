@@ -599,6 +599,7 @@
         "driftChip": "sayı değişti: {{stored}} → {{live}}", "refresh": "Sayıları yenile", "estimateError": "Güncel cihaz sayısı denetlenemedi.", "pickerError": "Cihaz grupları veya siteler yüklenemedi. Sayfayı yenileyip tekrar deneyin.",
         "groupDeleted": "“{{name}}” cihaz grubu silindi — başka bir tane seçin", "siteDeleted": "“{{name}}” konumu silindi — başka bir tane seçin",
         "typeLocked": "Cihaz grubu, satır oluşturulduktan sonra değiştirilemez — satırı kaldırıp yeniden ekleyin.",
+        "allowanceGroupLabel": "Miktar limiti", "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
         "includedLabel": "Dahil miktar", "overageModeLabel": "Dahil miktarın üstü", "overageBill": "Her ek birimi faturala", "overageFlag": "İnceleme için raporla", "overagePriceLabel": "Aşım fiyatı",
         "driftToast": "{{count}} satır artık güncel cihaz sayısıyla eşleşmiyor: {{lines}}",
         "retargetToast": "{{count}} satır için bu kuruluşa ait cihaz grubu veya konum yeniden seçilmeli"
@@ -1241,6 +1242,7 @@
         "modeClearHint": "Satırlar silinir. Herhangi bir satır manuel veya paket olduğunda zorunludur.",
         "modeReprice": "Katalog satırlarını yeniden fiyatlandır",
         "modeRepriceHint": "Her katalog satırı yeni para biriminin fiyat listesinden çözümlenir. Yalnızca tüm satırlar katalogdan geliyorsa mümkündür.",
+        "modeRepriceUnavailable": "Kullanılamaz — en az bir satır manuel veya paket olduğundan fiyat listesi onu yeniden fiyatlandıramaz. Bunun yerine tüm satırları kaldırın.",
         "confirm": "Bunun teklifin para birimini değiştirdiğini anlıyorum.",
         "submit": "Para birimini değiştir"
       },
@@ -1786,6 +1788,9 @@
       "viaStripe": "Stripe aracılığıyla",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "QuickBooks aracılığıyla",
+      "inQuickbooks": "QuickBooks'ta",
+      "syncingToQuickbooks": "Eşitleniyor…",
+      "quickbooksSyncFailed": "QuickBooks eşitlemesi başarısız oldu",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {
@@ -1836,6 +1841,7 @@
       "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
       "docNumber": "QuickBooks belgesi {{docNumber}}",
       "lastSynced": "Son eşitleme: {{when}}",
+      "syncing": "Eşitleniyor…",
       "push": "QuickBooks'a gönder",
       "pushed": "Fatura QuickBooks'a gönderildi.",
       "pushFailed": "Fatura QuickBooks'a gönderilemedi.",

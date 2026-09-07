@@ -118,6 +118,7 @@ describe('config policy automation run RLS visibility (#1855)', () => {
     // The worker inserts under system db context (automationWorker.ts).
     const run = await withSystemDbAccessContext(() =>
       createConfigPolicyAutomationRun({
+        configPolicyId: policyId,
         automation: automationRow,
         targetDeviceIds: ['dev-1', 'dev-2'],
         triggeredBy: 'scheduler',
@@ -193,6 +194,7 @@ describe('config policy automation run RLS visibility (#1855)', () => {
     await expect(
       withSystemDbAccessContext(() =>
         createConfigPolicyAutomationRun({
+          configPolicyId: policyId,
           automation: orphan,
           targetDeviceIds: ['dev-1'],
           triggeredBy: 'scheduler',
@@ -212,6 +214,7 @@ describe('config policy automation run RLS visibility (#1855)', () => {
   it('a foreign org cannot SELECT another org\'s config policy run', async () => {
     const run = await withSystemDbAccessContext(() =>
       createConfigPolicyAutomationRun({
+        configPolicyId: policyId,
         automation: automationRow,
         targetDeviceIds: ['dev-1'],
         triggeredBy: 'scheduler',

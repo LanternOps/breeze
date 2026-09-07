@@ -147,7 +147,9 @@
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
-    "show": "show"
+    "show": "show",
+    "shownLabel": "{{count}} removed shown",
+    "hide": "hide"
   },
   "deviceActions": {
     "unavailable": {
@@ -181,18 +183,23 @@
       },
       "exitMaintenance": {
         "title": "Exit Maintenance Mode",
-        "message": "Are you sure you want to exit maintenance mode for {{hostname}}? Alerting and monitoring will resume.",
+        "message": "Are you sure you want to exit maintenance mode for {{hostname}}?",
         "confirm": "Exit Maintenance"
       },
       "enterMaintenance": {
         "title": "Enter Maintenance Mode",
-        "message": "Are you sure you want to put {{hostname}} into maintenance mode? Alerting will be suppressed while in this mode.",
+        "message": "Are you sure you want to put {{hostname}} into maintenance mode?",
         "confirm": "Enter Maintenance"
       },
       "decommission": {
         "title": "Remove Device",
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
+      },
+      "permanentDelete": {
+        "title": "Delete {{hostname}} permanently?",
+        "message": "This deletes all history for this device — tickets, alerts, patch and backup records. It cannot be undone.",
+        "confirm": "Delete permanently"
       },
       "clearSessions": {
         "title": "Clear Sessions",
@@ -204,6 +211,22 @@
         "message": "Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session with an active or passwordless sudo credential; otherwise the install fails and the error is reported back.",
         "confirm": "Install Homebrew"
       }
+    },
+    "removeDialog": {
+      "titleOne": "Remove {{hostname}}?",
+      "titleMany": "Remove {{count}} devices?",
+      "bodyOne": "It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
+      "bodyMany": "They will be taken out of your active fleet and stop being monitored. History is kept and you can restore them later.",
+      "summary": "{{online}} online, {{notOnline}} not currently online.",
+      "legend": "What should happen to the Breeze agent?",
+      "uninstall": "Uninstall the Breeze agent",
+      "uninstallOnline": "Queued now — an online agent collects it within moments.",
+      "uninstallQueuedWithWindow": "Queued — runs the next time the device checks in. Cancelled if it hasn't after {{hours}} hours.",
+      "uninstallQueued": "Queued — runs the next time the device checks in.",
+      "uninstallMixed": "Online devices collect it within moments; the rest run it on their next check-in.",
+      "leave": "Leave the agent installed",
+      "leaveHint": "The machine keeps running the agent but can't be managed.",
+      "confirm": "Remove"
     },
     "runScript": "Run Script",
     "remoteTools": "Remote Tools",
@@ -529,7 +552,6 @@
     "s": "s",
     "decommissionCancelled": "Removal cancelled",
     "permanentDeleteCancelled": "Permanent delete cancelled",
-    "permanentlyDeletedWithWarning": "{{hostname}} was deleted, but {{warning}}",
     "failedToQueueScript": "Failed to queue script",
     "loadingDevice": "Loading device...",
     "backToDevices": "Back to devices",
@@ -650,6 +672,7 @@
     "refresh": "Refresh",
     "from": "From:",
     "linkedPolicy": "Linked policy:",
+    "inheritedFrom": "Inherited from {{name}}",
     "notEnforced": "Not enforced",
     "usingBreezeDefaults": "— using Breeze Defaults",
     "inheritanceChain": "Inheritance Chain",
@@ -1015,7 +1038,15 @@
     "online": "Online"
   },
   "deviceList": {
+    "selectedComposition": "{{agent}} agent, {{network}} network",
+    "agentOnlyBulkAction": "Applies to agent devices only",
+    "eligibleOfSelected": "{{count}} of {{total}}",
+    "linkAsVmHost": "Link as VM host + guests",
+    "notApplicable": "Not applicable",
+    "viewDevice": "View {{name}}",
     "tableColumns": {
+      "class": "Class",
+      "type": "Type",
       "device": "Device",
       "organization": "Organization",
       "site": "Site",
@@ -1027,6 +1058,8 @@
       "lastSeen": "Last Seen"
     },
     "sortBy": {
+      "class": "Sort by class",
+      "type": "Sort by type",
       "device": "Sort by device",
       "organization": "Sort by organization",
       "site": "Sort by site",
@@ -1122,8 +1155,11 @@
     "disableMaintenance": "Disable Maintenance",
     "wakeSelected": "Wake Selected",
     "compareSelected": "Compare Selected",
+    "compareMaxDevices": "Compare supports up to {{count}} devices",
     "linkAsMultiBoot": "Link as multi-boot",
     "decommissionSelected": "Remove Selected",
+    "restoreSelected": "Restore Selected",
+    "permanentDeleteSelected": "Delete Permanently…",
     "clearSelection": "Clear selection",
     "selectAllDevicesOnThisPage": "Select all devices on this page",
     "actions": "Actions",
@@ -1136,6 +1172,8 @@
     "sendAWakeOnLanPacket": "Send a Wake-on-LAN packet via an online peer agent on the device's LAN",
     "wake": "Wake",
     "settings": "Settings",
+    "enterMaintenance": "Enter Maintenance",
+    "exitMaintenance": "Exit Maintenance",
     "restore": "Restore",
     "decommission": "Remove",
     "permanentlyDelete": "Delete permanently",
@@ -1783,6 +1821,15 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
+    "importFromRmm": "Import from another RMM",
+    "bulkPurge": {
+      "andMore": "and {{count}} more",
+      "confirm": "Delete permanently",
+      "message": "This cannot be undone. Every record for these devices — history, alerts, scripts, sessions — is deleted with them. Tickets are kept and detached.",
+      "multipleOrgs": "This selection spans {{count}} organizations. Check your organization scope before continuing.",
+      "title": "Permanently delete {{count}} device(s)?",
+      "typeCount": "Type {{count}} to confirm"
+    },
     "confirmDecommissionedSkip": {
       "message": "{{skipped}} of {{total}} selected devices are removed and will be skipped — they no longer have a managed agent. Continue with the remaining {{eligible}} device(s)? Any that are offline will run this when they next check in.",
       "title": "Some selected devices are removed"
@@ -1804,6 +1851,9 @@
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",
+    "hiddenNetworkNotice_one": "1 network device hidden — {{fields}} applies to agent devices only.",
+    "hiddenNetworkNotice_other": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
+    "hiddenNetworkNotice": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
@@ -1819,11 +1869,23 @@
       "bulkMaintenanceAllFailed": "Failed to update maintenance mode for all {{count}} device(s): {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} device(s) {{verb}} maintenance mode; {{failed}} failed: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} devices {{verb}} maintenance mode",
+      "bulkMaintenanceSuccess_one": "{{count}} device {{verb}} maintenance mode",
+      "bulkMaintenanceSuccess_other": "{{count}} devices {{verb}} maintenance mode",
+      "bulkPurgeDone": "{{count}} device(s) permanently deleted",
+      "bulkPurgeDoneWithSkips": "{{purged}} device(s) permanently deleted; {{skipped}} skipped ({{reasons}})",
+      "bulkPurgeFailed": "Permanent delete failed: {{reason}}",
+      "bulkPurgeNoneDeleted": "No device was deleted: {{reasons}}",
+      "bulkPurgeStarted": "Permanently deleting {{count}} device(s)…",
+      "bulkRestoreAllFailed": "Failed to restore all {{count}} device(s)",
+      "bulkRestoreSomeFailed": "{{succeeded}} device(s) restored; {{failed}} failed",
+      "bulkRestoreUninstallAlreadySent": "{{count}} device(s) had already received the uninstall — those machines may need the agent reinstalled.",
+      "bulkRestored": "{{count}} device(s) restored",
       "bulkWakeAllFailed": "Bulk Wake All Failed",
       "bulkWakeSent": "Bulk Wake Sent",
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",
       "commandQueued": "{{action}} queued — will run when {{hostname}} reconnects",
       "commandSent": "{{action}} sent to {{hostname}}",
+      "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "decommissionCancelled": "Removal Cancelled",
       "decommissionFailed": "Remove Failed",
       "decommissioned": "Removed",
@@ -1836,12 +1898,13 @@
       "maintenanceOff": "Maintenance Off",
       "maintenanceOn": "Maintenance On",
       "multibootLinked": "Multiboot Linked",
-      "networkSkipped": "{{count}} network device(s) skipped — this action applies to agent devices only.",
+      "networkSkipped_one": "1 network device skipped — this action applies to agent devices only.",
+      "networkSkipped_other": "{{count}} network devices skipped — this action applies to agent devices only.",
+      "networkSkipped": "{{count}} network devices skipped — this action applies to agent devices only.",
       "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "permanentDeleteCancelled": "Permanent Delete Cancelled",
-      "permanentDeleting": "Permanent Deleting",
-      "permanentlyDeleted": "Permanently Deleted",
-      "permanentlyDeletedWithWarning": "{{hostname}} was deleted, but {{warning}}",
+      "permanentDeleting": "Permanently deleting {{hostname}}…",
+      "permanentlyDeleted": "{{hostname}} permanently deleted",
       "restored": "Restored",
       "scriptQueueFailed": "Script Queue Failed",
       "scriptQueuedMany": "Script Queued Many",
@@ -2129,84 +2192,125 @@
     },
     "title": "macOS Permissions"
   },
+  "maintenanceModeDialog": {
+    "title": "Enter maintenance mode",
+    "titleMany": "Enter maintenance mode on {{deviceCount}} devices",
+    "description": "Records a maintenance window on {{hostname}} and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
+    "descriptionMany": "Records a maintenance window on the selected devices and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
+    "reasonLabel": "Reason",
+    "reasonPlaceholder": "Why is this going into maintenance?",
+    "reasonHint": "3–500 characters. Recorded on the device and in the audit trail.",
+    "durationLabel": "Duration",
+    "durationOptionOne": "1 hour from now",
+    "durationOptionOther": "{{hours}} hours from now",
+    "durationHint": "The window always runs from now — extending replaces the current window instead of adding to it.",
+    "stepUpHeading": "Confirm it's you",
+    "stepUpIntro": "Your organization requires a second factor before maintenance mode can start.",
+    "stepUpCodeLabel": "Authenticator code",
+    "stepUpPasskeyNote": "You'll confirm with your passkey.",
+    "noStepUpFactor": "Add an authenticator app or passkey to your account before putting devices into maintenance mode.",
+    "mfaRequired": "Complete MFA sign-in first, then try again.",
+    "submit": "Start maintenance",
+    "submitStepUp": "Verify and start",
+    "submitting": "Working…",
+    "cancel": "Cancel",
+    "genericError": "Failed to start maintenance mode."
+  },
   "networkDeviceDetailPage": {
     "backToDevices": "Back to devices",
     "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
-    "connecting": "Connecting…",
-    "discoveryAssetView": "Discovery asset view",
-    "emptyPorts": "No open ports detected.",
+    "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
+    "connecting": "Connecting",
+    "discoveryAssetView": "discovery asset view",
+    "emptyPorts": "No open ports were found on the most recent scan.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
-      "load": "Load",
-      "malformed": "Malformed",
+      "load": "Couldn't load this network device. Check your connection and try again.",
+      "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
       "notFound": "Network device not found"
     },
     "fields": {
-      "assetType": "Asset Type",
-      "discoveryMethods": "Discovery Methods",
-      "discoveryProfile": "Discovery Profile",
-      "displayName": "Display Name",
-      "firstSeen": "First Seen",
+      "assetType": "Type",
+      "discoveryMethods": "Discovery methods",
+      "discoveryProfile": "Discovery profile",
+      "displayName": "Display name",
+      "firstSeen": "First seen",
       "hostname": "Hostname",
-      "ipAddress": "Ip Address",
-      "lastSeen": "Last Seen",
-      "linkedDevice": "Linked Device",
-      "macAddress": "Mac Address",
+      "linkedDevice": "Linked device",
       "manufacturer": "Manufacturer",
       "model": "Model",
-      "netbiosName": "Netbios Name",
-      "networkMonitoring": "Network Monitoring",
+      "netbiosName": "NetBIOS name",
+      "networkMonitoring": "Network monitoring",
       "notes": "Notes",
-      "osFingerprint": "Os Fingerprint",
+      "osFingerprint": "OS fingerprint",
       "ping": "Ping",
-      "snmpMonitoring": "SNMP Monitoring",
+      "snmpMonitoring": "SNMP monitoring",
       "status": "Status",
       "tags": "Tags"
     },
     "goBack": "Go back",
-    "lastSeen": "Last seen {{time}}",
+    "live": {
+      "webUiOpened": "Web UI opened in a new tab",
+      "refreshed": "Device details refreshed"
+    },
     "loading": "Loading network device...",
     "manageInDiscovery": "Manage in Discovery",
     "manuallySet": "Manually set",
     "manuallySetWithDetected": "Manually set · scan detected {{type}}",
     "networkDevice": "Network Device",
     "notConfigured": "Not configured",
-    "notLinked": "Not linked",
+    "notLinked": "Not linked to a managed device yet.",
     "openWebUi": "Open Web UI",
+    "ports": {
+      "insecure": "Unencrypted",
+      "insecureHint": "This service sends credentials in clear text. Disable it on the device if you can.",
+      "kind": {
+        "mgmt": "Management",
+        "remote": "Remote access",
+        "print": "Printing",
+        "file": "File sharing"
+      }
+    },
+    "proxyPort": "Port",
+    "proxyPortInvalid": "Enter a port between 1 and 65535",
     "proxyErrors": {
-      "disabled": "This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.",
-      "mfaRequired": "Remote access requires two-factor authentication — enable it in your profile.",
-      "noOnlineAgent": "No online agent is available to bridge this connection. An agent must be online to proxy to {{ip}}."
+      "disabled": "An administrator disabled proxy access to this target. Ask them to re-enable it under Settings, Remote access.",
+      "mfaRequired": "Remote access requires two-factor authentication. Turn it on in your profile, then try again.",
+      "noOnlineAgent": "No online agent can reach {{ip}} right now. Bring an agent on this network online, then try again.",
+      "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
+    "savingType": "Saving…",
+    "resettingType": "Resetting…",
     "sections": {
       "discovery": "Discovery",
       "identity": "Identity",
-      "monitoringStatus": "Monitoring Status",
-      "networkReachability": "Network Reachability",
-      "openPorts": "Open Ports",
-      "snmpData": "SNMP Data"
+      "monitoringStatus": "Monitoring status",
+      "openPorts": "Open ports",
+      "snmpData": "SNMP data"
+    },
+    "stats": {
+      "asOf": "as of {{time}}"
     },
     "tabs": {
       "overview": "Overview",
       "monitoring": "Monitoring"
     },
     "toasts": {
-      "proxyConnectFailed": "Failed to start proxy connection",
-      "typeReset": "Type Reset",
-      "typeResetFailed": "Type Reset Failed",
-      "typeUpdateFailed": "Type Update Failed",
-      "typeUpdated": "Type Updated",
-      "unlinkFailed": "Unlink Failed",
-      "unlinked": "Unlinked",
+      "proxyConnectFailed": "Couldn't open the web UI",
+      "typeReset": "Device type reset to auto-detected",
+      "typeResetFailed": "Couldn't reset the device type",
+      "typeUpdateFailed": "Couldn't update the device type",
+      "typeUpdated": "Device type updated",
+      "unlinkFailed": "Couldn't unlink the device",
+      "unlinked": "Device unlinked",
       "linked": "Device linked",
-      "linkFailed": "Failed to link device"
+      "linkFailed": "Couldn't link the device"
     },
     "unlink": "Unlink",
     "unlinking": "Unlinking…",
-    "viewManagedDevice": "View managed device",
-    "autoLinkSuppressed": "Auto-linking disabled — unlinked by a user",
+    "autoLinkSuppressed": "Auto-linking is off for this asset because someone unlinked it. Link it manually to turn it back on.",
     "linkManually": "Link manually…",
     "linkManuallySelectDevice": "Select a device",
     "linkManuallyLinking": "Linking…",
@@ -2219,7 +2323,17 @@
       "auto": "— auto-detected",
       "manual": "— set manually"
     },
-    "sameDeviceAs": "Same device as {{name}}"
+    "sameDeviceAs": "Same device as {{name}}",
+    "showMore": "Show more",
+    "showLess": "Show less",
+    "showAllPorts": "Show all ({{count}})",
+    "showFewerPorts": "Show fewer",
+    "tryAgain": "Try again",
+    "snmpFields": {
+      "sysName": "System name",
+      "sysDescr": "Description",
+      "sysObjectId": "Object ID (OID)"
+    }
   },
   "osIcons": {
     "linux": "Linux",
@@ -2259,7 +2373,7 @@
       "critical": "Critical",
       "lowDisk": "Low Disk",
       "needsPatches": "Needs Patches",
-      "notSeen7d": "Not Seen7d",
+      "notSeen7d": "Not seen 7d",
       "offline": "Offline",
       "online": "Online",
       "rebootNeeded": "Reboot Needed",
@@ -2378,5 +2492,170 @@
     "colDetectedVersion": "Detected version",
     "colScannedAt": "Last scan",
     "loadMore": "Load more"
+  },
+  "uninstallState": {
+    "pending": "Agent uninstall queued — expires {{when}}",
+    "pendingNoDeadline": "Agent uninstall queued",
+    "sent": "Agent uninstall delivered",
+    "completed": "Agent uninstalled",
+    "expired": "Uninstall expired — the agent never checked in and may still be installed",
+    "failed": "Agent uninstall failed",
+    "cancelled": "Agent uninstall cancelled",
+    "none": "Agent was left installed"
+  },
+  "rmmCustomFieldImport": {
+    "title": "Import from another RMM",
+    "description": "Bring custom fields and their values over from your previous RMM.",
+    "close": "Close",
+    "sourceLabel": "Source",
+    "sources": {
+      "datto_rmm": "Datto RMM",
+      "ninjaone": "NinjaOne",
+      "cw_automate": "ConnectWise Automate",
+      "n_central": "N-central",
+      "csv": "Generic CSV"
+    },
+    "steps": {
+      "definitions": "Field definitions",
+      "values": "Device values"
+    },
+    "backToDefinitions": "Back to field definitions"
+  },
+  "customFieldDefinitionImport": {
+    "dropzone": "Drop a CSV of your incumbent's field list here, or click to browse",
+    "errors": {
+      "previewFailed": "Couldn't preview these field definitions",
+      "importFailed": "Couldn't import these field definitions",
+      "allRefused": "None of these field definitions could be imported — see the errors below"
+    },
+    "ownerScope": {
+      "legend": "Who owns these fields",
+      "allOrganizations": "All organizations",
+      "thisOrganizationOnly": "This organization only"
+    },
+    "grid": {
+      "heading": "{{count}} field found — rename and type each one",
+      "heading_other": "{{count}} fields found — rename and type each one",
+      "sourceLabel": "Source field",
+      "name": "Name",
+      "type": "Type"
+    },
+    "actions": {
+      "preview": "Preview",
+      "previewing": "Previewing…",
+      "import": "Create fields",
+      "importing": "Creating…",
+      "skipToValues": "Skip — continue to values"
+    },
+    "preview": {
+      "heading": "Preview"
+    },
+    "annotations": {
+      "create": "Will be created",
+      "already-exists": "Already exists",
+      "type-conflict": "Type conflict",
+      "key-shadowed": "Key already used on the other scope",
+      "org-not-found": "Organization not found",
+      "partner-wide-denied": "You can't create all-organizations fields"
+    },
+    "summary": "Created {{created}}, skipped {{skipped}}, failed {{failed}}"
+  },
+  "customFieldValueImport": {
+    "dropzone": "Drop a CSV of device values here, or click to browse",
+    "errors": {
+      "previewFailed": "Couldn't preview these values",
+      "importFailed": "Couldn't import these values"
+    },
+    "mode": {
+      "label": "When a value is already set",
+      "skip": "Leave it alone",
+      "update": "Overwrite it"
+    },
+    "dateFormat": {
+      "label": "Date format",
+      "iso": "ISO (2026-12-31)"
+    },
+    "overrideProviderWarranty": "Override manufacturer-provided warranty data",
+    "mapping": {
+      "ignore": "Ignore this column",
+      "identifierGroup": "Match device by…",
+      "identifiers": {
+        "deviceId": "Device ID",
+        "externalSystem": "Source system",
+        "externalId": "Source device ID",
+        "serialNumber": "Serial number",
+        "hostname": "Hostname",
+        "organizationId": "Organization ID"
+      },
+      "customField": "Custom field…",
+      "warrantyGroup": "Warranty",
+      "warranty": {
+        "warrantyStartDate": "Warranty start date",
+        "warrantyEndDate": "Warranty end date",
+        "manufacturer": "Manufacturer"
+      },
+      "fieldKeyPlaceholder": "field_key",
+      "droppedRows": "{{count}} row skipped — no identifier or value mapped",
+      "droppedRows_other": "{{count}} rows skipped — no identifier or value mapped"
+    },
+    "actions": {
+      "preview": "Preview {{count}} row",
+      "preview_other": "Preview {{count}} rows",
+      "previewing": "Previewing…",
+      "import": "Import {{count}} row",
+      "import_other": "Import {{count}} rows",
+      "importing": "Importing…"
+    },
+    "chunkedNotice": "This file is larger than one request — it will be sent in chunks automatically.",
+    "progress": "Chunk {{done}} of {{total}}",
+    "summary": "Applied {{applied}}, skipped {{skipped}}, failed {{failed}} values",
+    "notAttempted": "{{count}} row was not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "notAttempted_other": "{{count}} rows were not attempted because an earlier chunk failed — fix the error below and re-run the import for the remaining rows",
+    "errorRow": "Row {{index}}",
+    "previewStale": "The mapping changed since this preview — re-run preview before importing"
+  },
+  "customFieldImportPreview": {
+    "selectAll": "Select all",
+    "unresolved": "Unresolved",
+    "columns": {
+      "device": "Device",
+      "status": "Status",
+      "values": "Values"
+    },
+    "rowOutcomes": {
+      "matched": "Matched",
+      "linkMatch": "Linked",
+      "ambiguous": "Ambiguous",
+      "notFound": "Not found",
+      "orgNotFound": "Organization not found",
+      "identityConflict": "Conflicting match"
+    },
+    "valueOutcomes": {
+      "applied": "Applied",
+      "skippedAlreadySet": "Already set",
+      "skippedProviderOwned": "Provider-owned",
+      "noDefinition": "No such field",
+      "typeError": "Type error",
+      "notApplicable": "Not applicable to this device",
+      "deviceUnresolved": "Device unresolved"
+    },
+    "hideCandidates": "Hide candidates",
+    "showCandidates": "Show {{count}} candidate",
+    "showCandidates_other": "Show {{count}} candidates",
+    "identityConflictNote": "This row's identifiers point at different devices and cannot be imported as-is — correct the file and re-run preview. The candidates below are shown for reference only.",
+    "picked": "Picked {{deviceId}}",
+    "candidate": {
+      "serial": "Serial: {{value}}",
+      "os": "OS: {{value}}",
+      "enrolled": "Enrolled: {{value}}",
+      "lastSeen": "Last seen: {{value}}",
+      "pick": "Pick",
+      "picked": "Picked"
+    },
+    "warrantyFields": {
+      "warrantyStartDate": "Warranty start date",
+      "warrantyEndDate": "Warranty end date",
+      "manufacturer": "Manufacturer"
+    }
   }
 }

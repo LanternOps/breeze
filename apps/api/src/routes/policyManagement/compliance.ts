@@ -5,7 +5,7 @@ import { db } from '../../db';
 import {
   automationPolicies,
   automationPolicyCompliance,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   devices,
 } from '../../db/schema';
@@ -777,11 +777,19 @@ complianceRoutes.get(
       return c.json({ error: 'Policy not found' }, 404);
     }
 
-    // Get all feature link IDs for this config policy
+    // EFFECTIVE links (#5080), not authored ones. `automationPolicyCompliance`
+    // keys its config-policy rows on the FEATURE LINK id
+    // (policyEvaluationService: `configPolicyId: complianceRule.featureLinkId`),
+    // and since W02 the compliance scanner evaluates a child policy against the
+    // rules it INHERITS — which hang off the parent's link id. Reading the
+    // authored table here would report "no compliance rules configured" for a
+    // child whose devices are actively being evaluated, and for a partner-wide
+    // parent the org tech cannot open the parent to see them either (this route
+    // 404s on `orgId === null`). Read-only report; nothing mutates these ids.
     const featureLinks = await db
-      .select({ id: configPolicyFeatureLinks.id })
-      .from(configPolicyFeatureLinks)
-      .where(eq(configPolicyFeatureLinks.configPolicyId, id));
+      .select({ id: configPolicyEffectiveFeatureLinks.id })
+      .from(configPolicyEffectiveFeatureLinks)
+      .where(eq(configPolicyEffectiveFeatureLinks.configPolicyId, id));
 
     const featureLinkIds = featureLinks.map((link) => link.id);
 

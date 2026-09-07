@@ -19,7 +19,7 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil' },
-  configPolicyFeatureLinks: { featureType: 'configPolicyFeatureLinks.featureType', inlineSettings: 'configPolicyFeatureLinks.inlineSettings', configPolicyId: 'configPolicyFeatureLinks.configPolicyId' },
+  configPolicyEffectiveFeatureLinks: { id: 'configPolicyEffectiveFeatureLinks.id', featureType: 'configPolicyEffectiveFeatureLinks.featureType', inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings', configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId', sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId', inherited: 'configPolicyEffectiveFeatureLinks.inherited' },
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
   configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status', orgId: 'configurationPolicies.orgId', partnerId: 'configurationPolicies.partnerId' },
   deviceGroupMemberships: { deviceId: 'deviceGroupMemberships.deviceId', groupId: 'deviceGroupMemberships.groupId' },

@@ -26,6 +26,15 @@ export type FeatureLink = {
   updatedAt?: string;
 };
 
+/** GET /configuration-policies/:id → parentPolicy (read-only embed; see spec "API"). */
+export type ParentPolicySummary = {
+  id: string;
+  name: string;
+  status: 'active' | 'inactive' | 'archived';
+  orgId: string | null; // null = partner-wide parent
+  featureLinks: FeatureLink[];
+};
+
 export type FeatureTabProps = {
   policyId: string;
   existingLink: FeatureLink | undefined;
@@ -66,4 +75,5 @@ export const FEATURE_META: Record<FeatureType, {
   pam:         { label: 'Privileged Access', fetchUrl: null,              description: 'Windows UAC elevation prompt capture (PAM)' },
   vulnerability: { label: 'Vulnerability Scanning', fetchUrl: null,       description: 'Enable per-device CVE correlation (vulnerability detection)' },
   onedrive_helper: { label: 'OneDrive Helper', fetchUrl: null, description: 'Silently sign in OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries per user.' },
+  device_lifecycle: { label: 'Device Lifecycle', fetchUrl: null, description: 'Permanently delete removed devices after a retention window' },
 };

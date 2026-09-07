@@ -42,7 +42,7 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import type { Tx } from '../../services/authLifecycle';
+import { EpochAdvancePreconditionError, type Tx } from '../../services/authLifecycle';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -206,6 +206,7 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
   const existingPasskeys = await listActivePasskeys(auth.user.id);
   const options = await generatePasskeyRegistrationOptions({
     user: auth.user,
+    epochs: { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number },
     existingPasskeys: existingPasskeys.map(toStoredCredential)
   });
 
@@ -224,6 +225,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   try {
     verification = await verifyPasskeyRegistration({
       userId: auth.user.id,
+      epochs: { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number },
       response: credential
     });
   } catch (err) {
@@ -377,19 +379,27 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   } else {
     // Secondary-factor addition keeps the existing invalidation behavior and
     // does not rotate recovery codes or replace the already-assured session.
-    const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
-      await persistPasskey(tx);
-      const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
+    let result;
+    try {
+      result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+        await persistPasskey(tx);
+        const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
 
-      await tx
-        .update(users)
-        .set({
-          mfaEnabled: true,
-          ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-          updatedAt: new Date()
-        })
-        .where(eq(users.id, auth.user.id));
-    });
+        await tx
+          .update(users)
+          .set({
+            mfaEnabled: true,
+            ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
+      }, { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number, status: 'active' });
+    } catch (error) {
+      if (error instanceof EpochAdvancePreconditionError) {
+        return c.json({ error: 'Authentication changed. Please sign in again.' }, 409);
+      }
+      throw error;
+    }
     mfaEpoch = result.mfaEpoch;
     teardownFailed = result.remoteSessionsTerminated === TEARDOWN_FAILED;
   }

@@ -21,6 +21,7 @@ import {
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
@@ -52,9 +53,16 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
-import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
+import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
+import { buildAgentPreview } from '../services/aiAgents/agentPreview';
+import {
+  loadPartnerBaselineCeiling,
+  loadPartnerBaselineKinds,
+  resolveEffectiveAgent,
+  resolveEffectiveAgentSystem,
+} from '../services/aiAgents/effectivePolicy';
 import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
 import { demoteSupervisedKey } from '../services/aiAgents/supervisedKeyDemote';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
@@ -203,10 +211,12 @@ export function mapError(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
   }
   // Wave 5 Part B (#3827): actAssets.supervisedActionKeys failed write-time
-  // registry validation (validateAuthorizationKeys, policyDecidable.ts).
-  // `rejected` names exactly which keys and why, same shape as `missing`
-  // above, so the client (Task 5's editor) can render an actionable message.
-  if (err instanceof InvalidSupervisedActionKeysError) {
+  // registry validation (validateAuthorizationKeys, policyDecidable.ts) —
+  // OR (Spec §4.4, Task 5, #5049) an org row tried to add a pre-authorized
+  // key outside the four-eyes grant executor. Both name exactly which keys
+  // and why via the same `rejected` shape, so the client (Task 5's editor)
+  // can render an actionable message either way.
+  if (err instanceof InvalidSupervisedActionKeysError || err instanceof SupervisedKeysGrantOnlyError) {
     return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {
@@ -337,16 +347,27 @@ aiAgentsRoutes.get(
     // Batched, never per row: the settings page renders every agent this
     // caller owns, and a per-row query would be one round trip per agent.
     const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    // #4170: one query for the whole page, same convention as loadLastRuns
+    // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
+    // so the list can flag an org row the resolver would treat as inert) and
+    // as its own top-level set (`partnerBaselineKinds`, so the create form can
+    // warn before a kind's org row exists at all to read the per-row flag
+    // off of).
+    const partnerBaselineKinds = await loadPartnerBaselineKinds(auth.partnerId);
     return c.json({
       data: rows.map((row) => {
         const last = lastRuns.get(row.id);
         return {
           ...mapRow(row),
+          // A partner-wide row IS the baseline, so it is always effective by
+          // definition; an org row is effective only if its own kind has one.
+          hasPartnerBaseline: row.partnerId !== null || partnerBaselineKinds.has(row.kind),
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
         };
       }),
+      partnerBaselineKinds: Array.from(partnerBaselineKinds),
     });
   },
 );
@@ -386,6 +407,78 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * Task 4 (#5049): the capability picker's catalog — every agent-reachable
+ * tool, its capability grouping, and the per-kind presets. Derived once from
+ * the registry/TOOL_TIERS/checkGuardrails (agentToolCatalog.ts), not stored,
+ * so it never drifts from what an agent can actually reach. Cached briefly on
+ * the client — it changes only when a code deploy changes the registry.
+ */
+aiAgentsRoutes.get('/tool-catalog', scopes, requireAiRead, async (c) => {
+  c.header('Cache-Control', 'private, max-age=300');
+  return c.json({ data: buildAgentToolCatalog() });
+});
+
+/**
+ * Task 4 (#5049): the partner-wide baseline's tool ceiling for one `kind`,
+ * projected for the create/edit form so an org-scoped caller can see what a
+ * new org row would be capped to WITHOUT being able to read the partner row
+ * itself (`effectivePolicy.ts:341-350` — an org token carries a partnerId but
+ * never passes `breeze_has_partner_access`). A partner-scope caller gets the
+ * same projection when editing/creating an ORG-owned row for its own
+ * partner — a partner token CAN read its own partner rows directly, so this
+ * exposes nothing new; `loadPartnerBaselineCeiling` just saves it a second
+ * round trip. `null` for a system-scope session (nothing to project a
+ * ceiling onto), when the caller carries no `partnerId` at all (self-hosted),
+ * or when no live baseline exists for that kind yet.
+ */
+aiAgentsRoutes.get(
+  '/ceiling',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ kind: z.enum(AI_AGENT_KINDS) })),
+  async (c) => {
+    const auth = c.get('auth');
+    if (auth.scope === 'system' || !auth.partnerId) return c.json({ data: null });
+    const { kind } = c.req.valid('query');
+    return c.json({ data: await loadPartnerBaselineCeiling(auth.partnerId, kind) });
+  },
+);
+
+/**
+ * Task 11 (#5051), spec §4.6 step 4 — the guided create flow's review step
+ * evaluates a DRAFT policy server-side, through the same catalog/ceiling
+ * helpers `/tool-catalog` and `/ceiling` already expose, so the review card
+ * can never drift from what `POST /` would actually enforce. `body` is
+ * `previewAiAgentSchema` — `createAiAgentSchema` with `name` optional, since
+ * the review step can run before Step 1's name is finalised. No row is
+ * created or read; this never touches the database beyond the SAME
+ * partner-axis ceiling projection `/ceiling` performs, and only when the
+ * draft being previewed is ORG-owned (`ownerScope !== 'partner'`) — a
+ * partner-wide draft's own row IS the ceiling, so there is nothing to
+ * project onto it. This mirrors `/ceiling`'s own scope gate exactly: any
+ * non-system caller with a `partnerId` qualifies, including a partner-scope
+ * caller previewing an org-owned draft (e.g. creating a new org-scoped
+ * agent for one of its orgs) — that caller can read its own partner row
+ * directly, so projecting the ceiling exposes nothing new and just saves it
+ * a round trip, same rationale as `/ceiling`'s own docstring above. `null`
+ * for a system-scope session or a caller with no `partnerId` (self-hosted).
+ */
+aiAgentsRoutes.post(
+  '/preview',
+  scopes,
+  requireAiRead,
+  zValidator('json', previewAiAgentSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const ceiling = auth.scope !== 'system' && auth.partnerId && body.ownerScope !== 'partner'
+      ? await loadPartnerBaselineCeiling(auth.partnerId, body.kind)
+      : null;
+    return c.json({ data: buildAgentPreview(body, ceiling, buildAgentToolCatalog()) });
+  },
+);
 
 /**
  * Orgs per system-context transaction in the `byOrg` fan-out of
@@ -1022,13 +1115,18 @@ aiAgentsRoutes.get(
         costCents: aiAgentRuns.costCents,
       })
       .from(aiAgentRuns)
-      // LEFT, not INNER: ai_agents is a dual-ownership table (#2135) whose RLS
-      // policy denies partner-wide rows to an org-scoped caller entirely
-      // (breeze_has_partner_access is false — org tokens carry no accessible
-      // partner ids). ai_agent_runs itself is plain org-scoped and stays
-      // visible, so an inner join would silently drop every run produced by
-      // a partner-wide agent from this list. agentName instead comes back
-      // null for those rows (see AiAgentRunListItemDto.agentName).
+      // LEFT, not INNER. ai_agents is a dual-ownership table (#2135), and until
+      // 2026-10-11-150000-ai-partner-wide-select.sql its RLS denied partner-wide
+      // rows to an org-scoped caller outright (breeze_has_partner_access is
+      // false — org tokens carry no accessible partner ids), so every run
+      // produced by a partner-wide agent would have been dropped by an inner
+      // join. That branch now makes the OWNING partner's partner-wide rows
+      // readable from an org context, so agentName resolves in the common case.
+      // The LEFT stays because the gap is narrowed, not closed: the branch keys
+      // on the CALLER's own partner, so a run whose org has since been moved to
+      // a different partner (org move/merge) still sees an invisible agent row,
+      // and agentName comes back null for it (see
+      // AiAgentRunListItemDto.agentName) rather than the run vanishing.
       .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
       .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
       .where(and(...conditions))
@@ -1100,9 +1198,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       deviceHostname: devices.hostname,
     })
     .from(aiAgentRuns)
-    // LEFT, not INNER — same RLS-visibility gap as `GET /runs` above: a
-    // partner-wide agent's ai_agents row is invisible to an org-scoped
-    // caller, but the run it produced must still be returned rather than
+    // LEFT, not INNER — same residual RLS-visibility gap as `GET /runs` above.
+    // Since 2026-10-11-150000-ai-partner-wide-select.sql an org-scoped caller
+    // CAN see its own partner's partner-wide agent rows, so this usually
+    // resolves; it still does not for a run whose org has since moved to
+    // another partner. In that case the run must still be returned rather than
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))

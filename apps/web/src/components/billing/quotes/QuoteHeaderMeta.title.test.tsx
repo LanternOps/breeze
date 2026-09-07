@@ -173,4 +173,18 @@ describe('QuoteHeaderMeta — title save reporting', () => {
 
     expect(input.value).toBe('Original title — draft in progress');
   });
+
+  // #4937 — the slot is a flex child of DocumentWorkspace's title cluster, and
+  // `min-w-0` let the header row shrink it below its own content: at a 1280px
+  // viewport the input measured 102px against 208px of text. jsdom has no
+  // layout engine, so this pins the flex contract (a real min-width floor, not
+  // `min-w-0`) that makes the cluster wrap the status pill instead of starving
+  // the title.
+  it('keeps a width floor on the title slot so the header row cannot collapse it (#4937)', () => {
+    render(<QuoteHeaderMeta detail={detail()} onChanged={vi.fn()} />);
+    const slot = screen.getByTestId('quote-header-meta');
+    expect(slot.className).toMatch(/\bmin-w-52\b/);
+    expect(slot.className).not.toMatch(/\bmin-w-0\b/);
+    expect(screen.getByTestId('quote-title').className).toMatch(/\bw-full\b/);
+  });
 });

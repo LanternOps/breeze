@@ -39,6 +39,10 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
+    // #3525 W05 — the dispatch fence reads the run row FOR SHARE through
+    // db.execute before either runner seeds. Returning no row is "run not
+    // found", which the fence deliberately treats as "not cancelled".
+    execute: vi.fn(async () => []),
   },
 }));
 
@@ -46,7 +50,7 @@ vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
   automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
-  configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
+  configPolicyEffectiveFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
   configurationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
   organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
   automationResourceBindings: { automationId: 'automationId' },
@@ -197,7 +201,7 @@ function mockSelectChain(result: unknown[]) {
 
 // createConfigPolicyAutomationRun resolves the owning configurationPolicies.id
 // from the feature-link id via:
-//   db.select({ configPolicyId }).from(configPolicyFeatureLinks).where(...).limit(1)
+//   db.select({ configPolicyId }).from(configPolicyEffectiveFeatureLinks).where(...).limit(1)
 // Mock that lookup so the inserted configPolicyId is the resolved policy id, not
 // the feature-link id (issue #1855).
 function mockResolveConfigPolicyId(configPolicyId: string | null) {
@@ -251,6 +255,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1', 'dev-2'],
       triggeredBy: 'scheduler',
@@ -287,6 +292,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation,
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'manual',
@@ -319,6 +325,7 @@ describe('createConfigPolicyAutomationRun', () => {
     const valuesMock = mockInsertCapturingValues([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation,
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'scheduler',
@@ -342,6 +349,7 @@ describe('createConfigPolicyAutomationRun', () => {
 
     await expect(
       createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
         automation: makeConfigPolicyAutomation({ featureLinkId: 'fl-orphan' }),
         targetDeviceIds: ['dev-1'],
         triggeredBy: 'scheduler',
@@ -357,6 +365,7 @@ describe('createConfigPolicyAutomationRun', () => {
 
     await expect(
       createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
         automation: makeConfigPolicyAutomation(),
         targetDeviceIds: ['dev-1'],
         triggeredBy: 'scheduler',
@@ -375,6 +384,7 @@ describe('createConfigPolicyAutomationRun', () => {
     mockInsertReturning([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1', 'dev-2', 'dev-3'],
       triggeredBy: 'scheduler',
@@ -394,6 +404,7 @@ describe('createConfigPolicyAutomationRun', () => {
     mockInsertReturning([run]);
 
     const result = await createConfigPolicyAutomationRun({
+      configPolicyId: 'cp-1',
       automation: makeConfigPolicyAutomation(),
       targetDeviceIds: ['dev-1'],
       triggeredBy: 'cron-worker',
@@ -412,6 +423,8 @@ describe('executeConfigPolicyAutomationRun', () => {
     seedActionResultsMock.mockResolvedValue(undefined);
     recordActionDispatchMock.mockResolvedValue(true);
     reconcileRunMock.mockResolvedValue(undefined);
+    // Default fence read: no row, i.e. "not cancelled".
+    vi.mocked(db.execute).mockResolvedValue([] as any);
   });
 
   it('throws when orgId cannot be resolved', async () => {
@@ -423,8 +436,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     await expect(
       executeConfigPolicyAutomationRun(
         makeConfigPolicyAutomation(),
+        'cp-1',
         ['dev-1'],
-        'scheduler'
+        'scheduler',
       )
     ).rejects.toThrow('Could not resolve orgId');
   });
@@ -473,7 +487,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(1);
@@ -540,7 +554,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('running');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
@@ -630,7 +644,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesFailed).toBe(1);
     expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -708,7 +722,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       }],
     });
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(result.status).toBe('failed');
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
@@ -780,7 +794,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       return { ok: true, commandId: 'cmd-2', executionId: null, delivered: true, executedAt: new Date() } as any;
     });
 
-    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1', 'dev-2'], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1', 'dev-2'], 'scheduler');
     expect(result.status).toBe('running');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
@@ -869,6 +883,7 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     const result = await executeConfigPolicyAutomationRun(
       automation,
+      'cp-1',
       deviceRows.map((d) => d.id),
       'scheduler',
     );
@@ -939,7 +954,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
-    await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(publishEvent).not.toHaveBeenCalled();
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
@@ -998,7 +1013,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
-    await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+    await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
 
     expect(publishEvent).not.toHaveBeenCalled();
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
@@ -1043,11 +1058,71 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    const result = await executeConfigPolicyAutomationRun(automation, [], 'scheduler');
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', [], 'scheduler');
     expect(result.status).toBe('completed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
+  });
+
+  // #3525 W05 — the config-policy runner carries the same fence. Cancelling a
+  // config-policy run is out of scope for the ROUTE (OD10-B), but the fence is
+  // unconditional so a run cancelled through any other door still stops here.
+  it('refuses to seed a config-policy run that was already cancelled', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [{ type: 'execute_command', command: 'echo nope' }],
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online' },
+            ]),
+          }),
+        } as any;
+      }
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+    });
+
+    const run = { id: 'run-cp-cancelled', automationId: null, status: 'cancelled', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // The FOR SHARE fence read sees the cancelled run.
+    vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
+
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
+
+    expect(result).toEqual({
+      runId: 'run-cp-cancelled',
+      status: 'cancelled',
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+    });
+    expect(seedActionResultsMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+    expect(reconcileRunMock).not.toHaveBeenCalled();
   });
 
   it('propagates reconciliation publication failures', async () => {
@@ -1106,7 +1181,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     reconcileRunMock.mockRejectedValueOnce(new Error('Redis down'));
 
     await expect(
-      executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler')
+      executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler')
     ).rejects.toThrow('Redis down');
   });
 });
@@ -1196,5 +1271,69 @@ describe('executeAutomationRun durable dispatch', () => {
       commandId: 'cmd-ordinary',
     }));
     expect(reconcileRunMock).toHaveBeenCalledWith(run.id);
+  });
+
+  // #3525 W05 — the dispatch fence. A BullMQ job is not permission to
+  // dispatch: before this wave neither runner checked run status, so a job
+  // picked up after an operator hit Stop ran the whole automation anyway.
+  it('refuses to seed anything at all for an already-cancelled run', async () => {
+    const run = {
+      id: 'run-cancelled',
+      automationId: 'auto-cancelled',
+      status: 'cancelled',
+      triggeredBy: 'scheduler',
+      logs: [],
+    };
+    const automation = {
+      id: 'auto-cancelled',
+      orgId: 'org-1',
+      partnerId: null,
+      name: 'Cancelled automation',
+      trigger: { type: 'manual' },
+      conditions: null,
+      actions: [{ type: 'execute_command', command: 'echo nope' }],
+      onFailure: 'stop',
+      notificationTargets: null,
+      createdBy: 'user-1',
+    };
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        const rows = selectCall === 1 ? [run] : [automation];
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          }),
+        } as any;
+      }
+      if (selectCall === 3) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+            osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null,
+            customFields: null,
+          }]),
+        }),
+      } as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    // The fence read (SELECT ... FOR SHARE) sees the cancelled run.
+    vi.mocked(db.execute).mockResolvedValueOnce([{ status: 'cancelled' }] as any);
+
+    const result = await executeAutomationRun(run.id, ['dev-1']);
+
+    expect(result).toEqual({ status: 'cancelled', devicesSucceeded: 0, devicesFailed: 0 });
+    expect(seedActionResultsMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 });

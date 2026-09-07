@@ -28,3 +28,18 @@ describe('reports page structure', () => {
     expect(listSource).toContain("'Generate security summary'");
   });
 });
+
+describe('reports page visibility gate', () => {
+  it('bounces through the shared helper', () => {
+    expect(pageSource).toContain('isPortalPageDisabled(response)');
+    expect(pageSource).toContain('redirectToPortalHomeAfterDisabled(Astro)');
+  });
+
+  it('no longer bounces to a page a toggle can switch off', () => {
+    // This page was the only one that handled its gate, and it sent the customer
+    // to /devices — itself gated on Self-service. With both off, one deliberate
+    // switch-off became two hops ending in a "couldn't load your devices" error
+    // (#4932). Every gated page now shares one never-gated target.
+    expect(pageSource).not.toContain("withBase('/devices')");
+  });
+});

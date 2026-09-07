@@ -128,6 +128,36 @@ describe('QuoteEditor device-set lines', () => {
     expect(within(allowance).getByRole('spinbutton', { name: 'Overage price' })).toBeInTheDocument();
   });
 
+  // #4937 — the sr-only legend, the *enable-the-allowance* checkbox and the
+  // number input all rendered `deviceSet.includedLabel`, so the visible form
+  // read "Included quantity ☐ / Included quantity [ ]" and a screen reader
+  // heard the same string three times. Mirrors the contract editor: the
+  // checkbox names the ACTION, the legend names the GROUP, and only the number
+  // input is "Included quantity".
+  it('gives the create-form allowance group, toggle and quantity input three distinct names', () => {
+    mount();
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-b1'));
+    fireEvent.click(screen.getByTestId('quote-line-mode-b1-manual'));
+    fireEvent.change(screen.getByTestId('quote-manual-recurrence-b1'), { target: { value: 'monthly' } });
+    fireEvent.click(screen.getByTestId('quote-manual-device-set-toggle-b1'));
+    fireEvent.click(screen.getByTestId('quote-manual-device-set-allowance-b1'));
+
+    const createAllowance = screen.getByTestId('quote-manual-device-set-allowance-group-b1');
+    expect(screen.getByRole('group', { name: 'Quantity allowance' })).toBe(createAllowance);
+    expect(within(createAllowance).getByRole('checkbox', { name: 'Include a fixed quantity, then handle extras' })).toBeChecked();
+    expect(within(createAllowance).getByRole('spinbutton', { name: 'Included quantity' })).toBeInTheDocument();
+    expect(within(createAllowance).getAllByText('Included quantity')).toHaveLength(1);
+  });
+
+  it('gives an existing line allowance group, toggle and quantity input three distinct names', async () => {
+    mount([line({ includedQuantity: '25', overageMode: 'bill', overageUnitPrice: '12' })]);
+    const allowance = await screen.findByTestId('quote-line-device-set-allowance-l1');
+    expect(screen.getByRole('group', { name: 'Quantity allowance' })).toBe(allowance);
+    expect(within(allowance).getByRole('checkbox', { name: 'Include a fixed quantity, then handle extras' })).toBeChecked();
+    expect(within(allowance).getByRole('spinbutton', { name: 'Included quantity' })).toBeInTheDocument();
+    expect(within(allowance).getAllByText('Included quantity')).toHaveLength(1);
+  });
+
   it('shows an inline error and manual runAction refresh when the live count check fails', async () => {
     vi.mocked(fetchWithAuth).mockImplementation(async (path, init) => {
       if (String(path).includes('device-set-estimate')) throw new Error('offline');

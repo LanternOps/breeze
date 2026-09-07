@@ -25,6 +25,7 @@ import {
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../../services/timeEntryAccess';
 import { Toast } from '../../components/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
+import { isLongEntry } from './timesheetLongEntry';
 import { reportInternalError } from '../../lib/errorReporting';
 import { ticketRef } from '../tickets/ticketCopy';
 
@@ -276,6 +277,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
       ? tickets.find((candidate) => candidate.id === entry.ticketId)
       : undefined;
     const isEditing = editingId === entry.id;
+    const long = isLongEntry(entry.durationMinutes);
 
     return (
       <View key={entry.id} style={styles.entry}>
@@ -288,7 +290,12 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
                 'Ticket')
               : 'No ticket'}
           </Text>
-          <Text style={styles.entryDuration}>{formatMinutes(entry.durationMinutes)}</Text>
+          <Text
+            style={[styles.entryDuration, long && styles.entryDurationLong]}
+            accessibilityLabel={long ? `${formatMinutes(entry.durationMinutes)}, long entry` : undefined}
+          >
+            {formatMinutes(entry.durationMinutes)}
+          </Text>
         </View>
         <Text style={styles.entryMeta}>
           {startTimeLabel(entry.startedAt)}
@@ -394,8 +401,13 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         <View style={styles.weekLabels}>
           <Text style={styles.weekRange}>{weekRangeLabel(weekStart)}</Text>
           <Text style={styles.weekTotal}>
-            {formatMinutes(view.totals.totalMinutes)} total ·{' '}
-            {formatMinutes(view.totals.billableMinutes)} billable
+            {/* #5104: `entries` is null until THIS week has actually loaded
+             * (see timesheetLoadState.ts) — `view.totals` off an empty
+             * array reads as a confident "0m total · 0m billable" while the
+             * body below is still showing a spinner. */}
+            {entries === null
+              ? '—'
+              : `${formatMinutes(view.totals.totalMinutes)} total · ${formatMinutes(view.totals.billableMinutes)} billable`}
           </Text>
         </View>
         <Pressable
@@ -437,7 +449,12 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
           {loadError !== null ? (
             <Text style={styles.warning}>{loadError}</Text>
           ) : null}
-          {days.map((day) => {
+          {/* #5104: most-recent-day-first so today's entries on a
+           * mid-to-late week (Wed/Thu/…) don't sit below the fold under
+           * Mon-first ordering — the alternative (anchor/auto-scroll to
+           * today) needs ScrollView layout tracking this screen doesn't have
+           * yet; this is the minimal fix for "reachable without scrolling". */}
+          {days.slice().reverse().map((day) => {
             const dayEntries = view.byDay.get(day) ?? [];
             return (
               <View key={day} style={styles.day}>
@@ -521,6 +538,7 @@ const styles = StyleSheet.create({
   entryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   entryRef: { ...type.monoMd, color: palette.dark.textMd },
   entryDuration: { ...type.bodyMd, color: palette.dark.textHi },
+  entryDurationLong: { color: palette.warning.base },
   entryMeta: { ...type.meta, color: palette.dark.textLo, marginTop: spacing['1'] },
   entryBody: { ...type.body, color: palette.dark.textHi, marginTop: spacing['2'] },
   lockNote: { ...type.meta, color: palette.warning.base, marginTop: spacing['2'] },

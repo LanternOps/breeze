@@ -247,6 +247,28 @@ function policySource(principal: PartnerApiPrincipalContext, query: ExportQueryI
       JOIN public.config_policy_assignments a ON a.config_policy_id = cp.id
       ${assignmentEffectiveOrgSql(principal.partnerId)}
       WHERE (cp.org_id = resolved.org_id OR (cp.org_id IS NULL AND cp.partner_id = ${principal.partnerId}::uuid))
+    ),
+    -- Parent closure (#5080). Policies are selected through their ASSIGNMENTS,
+    -- so an inherited baseline with no assignment of its own would vanish from
+    -- the export while its exported children still reference it by
+    -- parentPolicyId. Bind each parent to the same orgs its children are bound
+    -- to, so a consumer can reconstruct inheritance.
+    --
+    -- The ownership rule already guarantees a parent is same-org or
+    -- partner-wide-of-the-same-partner, but the predicate below re-asserts it
+    -- rather than inheriting that assumption: this query emits rows into a
+    -- tenant's export, so it must be independently unable to cross a tenant.
+    parent_orgs AS (
+      SELECT parent.id AS policy_id, child_ao.org_id,
+             child_ao.partner_export_updated_at, child_ao.material_updated_at
+      FROM assignment_orgs child_ao
+      JOIN public.configuration_policies child ON child.id = child_ao.policy_id
+      JOIN public.configuration_policies parent ON parent.id = child.parent_policy_id
+      WHERE child.parent_policy_id IS NOT NULL
+        AND (
+          parent.org_id = child_ao.org_id
+          OR (parent.org_id IS NULL AND parent.partner_id = ${principal.partnerId}::uuid)
+        )
     )
     SELECT cp.id, ao.org_id,
       cp.created_at,
@@ -256,13 +278,18 @@ function policySource(principal: PartnerApiPrincipalContext, query: ExportQueryI
         'name', cp.name,
         'description', cp.description,
         'status', cp.status,
+        'parentPolicyId', cp.parent_policy_id,
         'features', COALESCE(features.items, '[]'::jsonb)
       ) AS definition
     FROM public.configuration_policies cp
     JOIN (
       SELECT policy_id, org_id, MAX(partner_export_updated_at) AS partner_export_updated_at,
              MAX(material_updated_at) AS material_updated_at
-      FROM assignment_orgs GROUP BY policy_id, org_id
+      FROM (
+        SELECT policy_id, org_id, partner_export_updated_at, material_updated_at FROM assignment_orgs
+        UNION ALL
+        SELECT policy_id, org_id, partner_export_updated_at, material_updated_at FROM parent_orgs
+      ) u GROUP BY policy_id, org_id
     ) ao ON ao.policy_id = cp.id
     LEFT JOIN LATERAL (
       SELECT jsonb_agg(jsonb_build_object(
@@ -432,16 +459,30 @@ function customFieldValueSource(principal: PartnerApiPrincipalContext, query: Ex
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-field-values')}),
     value_rows AS (
+      -- Reads the normalized value table (#3257 W05). The previous shape joined
+      -- the flat, string-keyed devices.custom_fields jsonb to the DUAL-AXIS
+      -- definitions table on field_key, so one datum stored under a key that an
+      -- org-owned AND a partner-wide definition both declared produced TWO
+      -- records, each under a different synthetic id (the identity hash includes
+      -- the definition id). W03 forbids new collisions; reading the value table
+      -- makes the duplication structurally impossible, because the ROW is the
+      -- datum and UNIQUE (device_id, definition_id) bounds it.
+      --
+      -- The identity_hash input is deliberately UNCHANGED — still
+      -- md5(device_id || ':' || definition_id) — so shipped partner-API
+      -- consumers do not see every record's id churn and re-sync.
       SELECT d.id AS device_id, d.site_id, d.created_at AS device_created_at,
-        f.id AS definition_id, f.created_at AS definition_created_at,
-        f.name, f.field_key, f.type, d.custom_fields->f.field_key AS value,
+        v.definition_id, f.created_at AS definition_created_at,
+        f.name, v.field_key, f.type,
+        COALESCE(to_jsonb(v.value_text), to_jsonb(v.value_number),
+                 to_jsonb(v.value_bool), to_jsonb(v.value_date::text),
+                 'null'::jsonb) AS value,
         eo.id AS org_id, eo.material_updated_at,
-        md5(d.id::text || ':' || f.id::text) AS identity_hash
-      FROM public.devices d
+        md5(d.id::text || ':' || v.definition_id::text) AS identity_hash
+      FROM public.device_custom_field_values v
+      JOIN public.devices d ON d.id = v.device_id
       JOIN effective_orgs eo ON eo.id = d.org_id
-      JOIN public.custom_field_definitions f
-        ON (f.org_id = eo.id OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid))
-       AND d.custom_fields ? f.field_key
+      JOIN public.custom_field_definitions f ON f.id = v.definition_id
     )
     SELECT (
         substr(identity_hash, 1, 8) || '-' || substr(identity_hash, 9, 4) || '-5' ||

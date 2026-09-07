@@ -8,8 +8,9 @@ import AutomationRunHistory, {
   type DeviceRunResult,
   type DeviceScriptResult,
 } from './AutomationRunHistory';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { usePermissions } from '@/lib/permissions';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -171,6 +172,10 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
 
 export default function AutomationsPage() {
   const { t } = useTranslation('scripts');
+  const { permissions } = usePermissions();
+  // #3262 — mirrors canManagePartnerWidePolicies(auth) server-side. UX only;
+  // the cancel route re-checks this on every request.
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -423,6 +428,9 @@ export default function AutomationsPage() {
           onClose={handleCloseModal}
           automationName={selectedAutomation.name}
           onLoadRunDetail={fetchRunDetail}
+          permissions={permissions}
+          canManagePartnerWide={canManagePartnerWide}
+          onRunCancelled={() => void fetchRunHistory(selectedAutomation)}
         />
       )}
     </div>

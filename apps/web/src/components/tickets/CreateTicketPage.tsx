@@ -6,6 +6,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { buildResponseValidator, coerceFormResponses, type TicketFormField } from '@breeze/shared';
+import { useHashState } from '@/lib/useHashState';
 import TicketFormFields from './TicketFormFields';
 import type { TicketPriority } from './ticketConfig';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
@@ -21,11 +22,23 @@ interface AvailableTicketForm {
 // Sentinel for the "type a requester manually" choice in the select.
 const MANUAL_REQUESTER = '__manual__';
 
+/** Pure parser for `#orgId=<id>` (the organization record's Tickets tab links
+ *  here as `/tickets/new#orgId=<id>` — #5075 W03), fed to `useHashState` so the
+ *  read happens post-mount rather than in a `useState` initializer. This page
+ *  is server-rendered (`client:load`), so reading `window.location.hash`
+ *  directly in the initializer would render `''` on the server and the real
+ *  org id on the client's first paint — the #2421 hydration-mismatch class
+ *  (see `ContractWorkspace.tsx`'s identical `presetOrgId` pattern for the
+ *  contracts equivalent of this same deep link). */
+function parseOrgIdHash(hash: string): string | undefined {
+  return new URLSearchParams(hash).get('orgId') || undefined;
+}
+
 export default function CreateTicketPage() {
   const { t } = useTranslation('tickets');
   const [orgs, setOrgs] = useState<Option[]>([]);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
-  const [orgId, setOrgId] = useState('');
+  const [orgId, setOrgId] = useHashState('', parseOrgIdHash);
   const [orgLocked, setOrgLocked] = useState(false);
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
