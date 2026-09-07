@@ -5,7 +5,9 @@ tracking_issue: LanternOps/breeze#4622
 
 **Date:** 2026-09-07
 **Issue:** #4622 (`enhancement`, `category:devices`, `category:discovery`, `effort:m`)
-**Status:** Draft for approval. Advisor quorum run (Fable position + Codex `xhigh` read-only, `gpt-6-astra`). **The two advisors disagreed on the central table-shape fork** — Fable recommends a new `manual_assets` table (B), Codex recommends a generic `assets` supertype (C). Both arguments and the tie-break are in Open Decision 1; this needs an owner decision before a plan is written.
+**Status:** Draft for approval; **Open Decision 1 resolved by the owner on 2026-09-07 — option B**, with the scope split below. Decisions 2–7 still await the owner. Advisor quorum run (Fable position + Codex `xhigh` read-only, `gpt-6-astra`); the advisors disagreed on the table-shape fork (Fable B, Codex C) — both arguments and the tie-break are kept in Open Decision 1 for the record.
+
+> **Scope split (owner, 2026-09-07).** Two features were hiding in #4622. This spec covers **manual assets with no network identity** (a spare laptop, a desk phone, a non-networked printer): a plain inventory record, option B, with **no address columns and no monitoring parity**. Anything with a network identity (an IP, hostname or URL) is a **manual network asset** and is tracked in **#5213**: a hand-entered `discovered_assets` row (`source = 'manual'`) that inherits everything a network device has — monitors on the poll cycle, alerts, SNMP, tunnels, topology, the network list arm — including website/URL targets. The rule between them: *has a network identity → #5213; does not → this spec.* The two link, never merge: a manual asset that later gains a network presence links via `linked_discovered_asset_id` (Decision 5).
 **Related:** #1424 (unified list phase 2 + per-asset detail pages), #1322 (network arm, shipped), #3210 (HP/Lenovo warranty providers), #3451 (link/unlink discoverability), #4623 (license/subscription tracking).
 
 ## Problem
@@ -44,7 +46,7 @@ MFA step-up: the discovery mutators carry `requireMfa()`; device edits do not. M
 
 ### Decision: a new `manual_assets` table, unioned as a third arm (option B)
 
-> **Contested.** Codex `xhigh` recommends option C (a generic `assets` supertype) instead. Everything in this section assumes B; if the owner picks C, Open Decision 1 says what to do instead.
+> **Resolved: B** (owner, 2026-09-07). Codex `xhigh` had recommended option C (a generic `assets` supertype); the argument is preserved in Open Decision 1. Network-identity assets are out of this table entirely — see #5213.
 
 Rejected alternatives are argued in Open Decision 1. The short form: `discovered_assets` means *"a scanner observed this on the wire"* — `approval_status`, `is_online`, `first_seen_at`/`last_seen_at`, `open_ports`, `snmp_data`, `os_fingerprint`, `response_time_ms`, `discovery_methods`, `last_job_id`, `auto_link_suppressed_at`. Every one of those is meaningless for a hand-entered row, and every existing consumer of the table — the auto-linker's MAC matching, disappeared-asset alerting, baseline change detection, the pending-approval queue — would need a `source <> 'manual'` guard that is invisible when omitted. That is precisely the fail-open-by-omission failure mode this repo's contract tests exist to catch, and no contract test covers it.
 
@@ -200,6 +202,8 @@ For `device_warranty`, `manual_asset_id` joins `included` (a tenant identifier).
 
 ## Out of scope
 
+- **Manual network assets** — anything with an IP, hostname or URL, including website/uptime targets. They are `discovered_assets` rows, not `manual_assets` rows, so they get monitors, alerts, SNMP, tunnels and topology for free: **#5213**. This table deliberately has no `ip_address`, `hostname` or `url` column; adding one later would be a design regression, not an enhancement.
+
 - **License / subscription tracking (#4623).** A separate table and lifecycle. The design here deliberately leaves room: #4623 prescribes "assignable to `device_id` and/or `user_id`", which should become "and/or `manual_asset_id`" when it is built.
 - **Per-asset detail *pages* (#1424).** v1 edits a manual asset in a modal from the list. The full three-class detail-page story — including where link/unlink lives (#3451) — belongs to #1424, which owns the routing and pagination unification. This spec must not pre-empt it, only avoid blocking it (hence a stable `id` and a class discriminator on every DTO).
 - **CSV / bulk import.** Argued out of v1 in Open Decision 6, but the `source` enum ships with `'import'` so adding it is additive.
@@ -211,7 +215,7 @@ For `device_warranty`, `manual_asset_id` joins `included` (a tenant identifier).
 
 ## Open Decisions
 
-**1. Table shape: relax `discovered_assets` (A), new `manual_assets` table (B), or a generic `assets` supertype (C)?**
+**1. Table shape: relax `discovered_assets` (A), new `manual_assets` table (B), or a generic `assets` supertype (C)?** — **RESOLVED: B** (owner, 2026-09-07), with network-identity assets split out to #5213 (which is, in effect, A applied only to rows that genuinely are network observations-to-be). Record of the argument follows.
 *A* reuses the network arm, the approval/link machinery and (eventually) the #1424 detail page for free, but pollutes an observation table with hand-entered rows: every existing consumer (auto-linker MAC match, disappeared-asset alerting, baseline change detection, pending-approval queue, the `(org_id, ip_address)` unique index which must become partial, and the scan worker's `ON CONFLICT` target) needs a `source <> 'manual'` guard that no contract test enforces. *C* is the right end-state but requires rewriting a shipped hot table plus UniFi sync and the discovery worker — far beyond `effort:m`, and it would block on #1424. *B* costs a third arm in the union, a third class in `mergedListFilter.ts`, and full RLS/cascade/export/org-merge registration — all mechanical and all covered by contract tests that fail loudly.
 **Codex `xhigh` disagreed and recommends C.** Its decisive factor is *identity surviving a change in how an asset is managed*: installing an agent on a spare laptop should preserve its inventory id, assignment, warranty, custom fields and detail URL, and under B that laptop ends up with two ids (a `manual_assets.id` and a `devices.id`) joined by a FK, with the manual row hidden. It argues C is not merely the end-state but the only shape that resolves promotion at all, and that a supertype covering *only* discovery and manual entry — without `devices` — leaves the central problem unsolved. It concedes C is the largest migration (`asset_id` on both `devices` and `discovered_assets`, re-keying `device_warranty` and the custom-field value table) and proposes paying it additively with compatibility adapters.
 
