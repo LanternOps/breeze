@@ -1,9 +1,13 @@
+---
+tracking_issue: LanternOps/breeze#5215
+---
+
 # Tool Catalog (bring-your-own MCP/OpenAPI sources) and AI-Authored Flows: Design
 
 **Date:** 2026-09-07
 **Status:** Approved in dialogue (Todd, 2026-09-07). Codex `xhigh` quorum run 2026-09-07: agrees on both structural choices (D1 new tables, D3 in-house expressions), disagrees on four points, all accepted and folded in as **Amendment** call-outs; summary in §11. Awaiting written-spec review.
 **Extends:** `2026-08-22-ai-agents-program-and-wave1-design.md` (ai_agents, ai_agent_runs, fan-out, act-mode assets), `2026-08-05-tier3-supervised-four-eyes-split-design.md`, `2026-07-18-action-intents-approval-layer-design.md`, `2026-08-23-per-partner-llm-byok-design.md` (encrypted tenant secrets pattern).
-**Tracking:** to be registered via `feature-lifecycle` when the implementation plan is written.
+**Tracking:** LanternOps/breeze#5215 (waves #5216–#5221, registered 2026-09-07). Roadmap: `docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-flows-roadmap.md`; W1 plan: `2026-09-07-tool-catalog-w1-tool-sources-mcp.md`.
 
 ---
 
