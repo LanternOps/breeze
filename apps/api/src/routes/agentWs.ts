@@ -62,6 +62,7 @@ import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
@@ -1974,7 +1975,6 @@ async function processCommandResult(
     // transports is still applied once.
     if (command.type === 'software_install') {
       try {
-        const { reconcileSoftwareInstallResult } = await import('../services/softwareDeployment');
         // Short org wrap (#3021): deployment_results is an RLS-guarded org table.
         await runWithAgentOrgDbAccess('agentWs.commandResult.softwareInstall', orgId, partnerId, () =>
           reconcileSoftwareInstallResult(command, resolvedDeviceId!, normalizedResult)

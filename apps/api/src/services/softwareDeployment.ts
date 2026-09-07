@@ -17,7 +17,6 @@ import { loadTenantVariableScope, resolveForOrg } from './tenantVariableResoluti
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import { deliveryTtlMs } from './commandOfflinePolicy';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
-import { applySoftwareInstallResult } from './softwareDeploymentResult';
 import {
   evaluateManagedSoftwareDispatch,
   type ManagedSoftwareDispatchDenialReason,
@@ -89,53 +88,6 @@ export interface SoftwareInstallDispatchOutcome {
    * It used to be `null` on the WS path, which created no row at all.
    */
   deviceCommandId: string;
-}
-
-/**
- * Reconcile a `software_install` result onto its `deployment_results` row
- * (#5128). Extracted so BOTH transports run identical logic: the HTTP result
- * route (`routes/agents/commands.ts`) and the WebSocket generic result path
- * (`routes/agentWs.ts`). Before this, only the HTTP route reconciled by
- * payload, and the WS path relied on the legacy
- * `sw-install-<deployment>-<device>-<attempt>` command id — which new dispatches
- * no longer use, because they push with the persisted row's UUID.
- *
- * The helper's own `status='pending'` + `retryCount === attempt` guard makes
- * double delivery (HTTP and WS) and a result from a retry-superseded attempt a
- * no-op, so calling this from both paths is safe.
- */
-export async function reconcileSoftwareInstallResult(
-  command: { type: string; payload: unknown },
-  deviceId: string,
-  normalized: {
-    status: 'completed' | 'failed' | 'timeout';
-    exitCode?: number | null;
-    stdout?: string | null;
-    stderr?: string | null;
-    error?: string | null;
-    startedAt?: string | null;
-    durationMs?: number | null;
-  },
-): Promise<void> {
-  if (command.type !== 'software_install') return;
-  const payload =
-    command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
-      ? (command.payload as Record<string, unknown>)
-      : {};
-  if (typeof payload.deploymentId !== 'string') return;
-
-  await applySoftwareInstallResult({
-    deploymentId: payload.deploymentId,
-    deviceId,
-    status: normalized.status,
-    exitCode: normalized.exitCode,
-    stdout: normalized.stdout,
-    stderr: normalized.stderr,
-    error: normalized.error,
-    startedAt: normalized.startedAt,
-    durationMs: normalized.durationMs,
-    attemptNumber: typeof payload.retryCount === 'number' ? payload.retryCount : 0,
-  });
 }
 
 /**

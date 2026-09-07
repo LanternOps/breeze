@@ -38,9 +38,9 @@ import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../ser
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
-import { reconcileSoftwareInstallResult } from '../../services/softwareDeployment';
 
 import {
   ACCEPTED_COMMAND_RESULT_STATUSES,
