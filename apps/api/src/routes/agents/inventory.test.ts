@@ -97,7 +97,10 @@ describe('agent software inventory observation route', () => {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
     });
     expect(res.status).toBe(503);
-    expect(res.headers.get('Retry-After')).toBe('60');
+    // Must stay well inside the agent's 30s request context, which this
+    // ingest has already eaten ~15s of — see the route comment. A large value
+    // is swallowed by the deadline and costs the agent every in-process retry.
+    expect(Number(res.headers.get('Retry-After'))).toBeLessThanOrEqual(10);
     expect(await res.json()).toEqual({
       error: 'Software inventory ingest is contended; retry this report later',
       code: 'software_inventory_lock_timeout',

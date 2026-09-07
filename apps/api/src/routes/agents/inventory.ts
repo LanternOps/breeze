@@ -127,11 +127,22 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
     }
     // Lock contention, not a fault: nothing was written and the same report is
     // still valid, so tell the agent to come back rather than 500-ing (#5181).
-    // The agent's next inventory push re-sends it regardless of what it does
-    // with this response, so the retryable status is honest either way, and
-    // 503 is what keeps the give-up out of the error-level 5xx noise.
+    // The agent's next 15-minute inventory push re-sends it regardless, so the
+    // retryable status is honest either way — 503 is what keeps the give-up out
+    // of the error-level 5xx noise.
+    //
+    // Retry-After is 5s, and the value matters. `sendInventoryData`
+    // (agent/internal/heartbeat/heartbeat.go) gives the whole call a 30s
+    // context, and `httputil.Do` REPLACES its 1s/2s/4s backoff with any
+    // Retry-After we send. This ingest can already have burned ~15s of that
+    // budget (3 attempts × a 5s `lock_timeout`), so a large value — 60, say —
+    // would be cut short by the context deadline and the agent would get ZERO
+    // in-process retries, strictly worse than the 500 path it replaces. 5s
+    // leaves room for one real retry while still giving the contending
+    // `correlateOrg` pass time to release its locks; httputil jitters it, so a
+    // fleet-wide contention event does not re-synchronise on the way back.
     if (error instanceof SoftwareInventoryLockTimeoutError) {
-      c.header('Retry-After', '60');
+      c.header('Retry-After', '5');
       return c.json({
         error: 'Software inventory ingest is contended; retry this report later',
         code: 'software_inventory_lock_timeout',
