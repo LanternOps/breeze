@@ -842,7 +842,7 @@ excluded from fix-held watches because they carry no post-execution verification
 - Intent-anchored watches are graded by the same recovery and recurrence sweep as run-anchored ones
   (`fixWatch.ts:551`).
 
-Watches are anchored **both** ways: `run_id` stays `NOT NULL` (`aiAgentFixWatches.ts:66`) and
+Watches are anchored **both** ways: `run_id` stays `NOT NULL` (`aiAgentFixWatches.ts:65`) and
 `intent_id` is additive.
 
 **Scope differences.**
