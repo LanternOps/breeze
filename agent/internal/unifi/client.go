@@ -157,21 +157,84 @@ func DefaultHTTPClient() *http.Client {
 	}
 }
 
-// envelope is the Integration API's list wrapper. The controller also returns
-// `offset`, `limit`, `count` and `totalCount` alongside `data`: these endpoints
-// are PAGINATED and this client reads only the first page. Any site with more
-// devices or clients than the controller's page size is therefore silently
-// truncated. That is a pre-existing defect, orthogonal to the field-name fix in
-// this file, and is left for a follow-up rather than folded in here — fixing it
-// means a bounded offset loop on every list call, with its own tests.
+// envelope is the Integration API's list wrapper. Offset/Limit/Count/TotalCount
+// describe pagination: a single request may return fewer than TotalCount
+// elements, and the caller must keep requesting with an advancing offset until
+// it has seen TotalCount elements. get() below does that internally so every
+// caller sees the FULL list from one call — a site with more devices or
+// clients than the controller's page size no longer gets silently truncated
+// (#5101).
 type envelope struct {
-	Data json.RawMessage `json:"data"`
+	Data       json.RawMessage `json:"data"`
+	Offset     int             `json:"offset"`
+	Limit      int             `json:"limit"`
+	Count      int             `json:"count"`
+	TotalCount int             `json:"totalCount"`
 }
 
-// get returns (body, statusCode, error). A 404 on the integration base is treated by
-// Poll as "integration unavailable / firmware too old" rather than a hard error.
+// maxListPages bounds how many pages a single get() call will request. The
+// client tracks its OWN offset — starting at 0, advancing by the page's Count —
+// rather than trusting the controller's echoed `offset` field, so a controller
+// that ignores the offset query param and re-serves the same page cannot desync
+// the client's counter. This cap is the second line of defense: it exists for a
+// controller that reports a TotalCount the client's advancing offset can never
+// catch up to (buggy, or actively hostile), so a single poll can never turn
+// into an unbounded number of requests. 500 pages comfortably covers any real
+// UniFi site — even a tiny page size of 25 covers 12,500 devices/clients.
+const maxListPages = 500
+
+// get returns (body, statusCode, error), transparently following pagination:
+// it keeps requesting pages with an advancing offset until the controller's
+// totalCount is reached (or the hard page cap fires), concatenating every
+// page's data elements into one JSON array. A 404 on the integration base is
+// treated by Poll as "integration unavailable / firmware too old" rather than
+// a hard error.
 func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	var elems []json.RawMessage
+	offset := 0
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			return nil, http.StatusOK, fmt.Errorf(
+				"unifi api %s: exceeded %d pages at offset %d without reaching the controller-reported total — aborting to avoid an unbounded loop",
+				path, maxListPages, offset)
+		}
+
+		body, status, err := c.getPage(ctx, path, offset)
+		if err != nil {
+			return nil, status, err
+		}
+		if status == http.StatusNotFound {
+			return nil, status, nil
+		}
+
+		var env envelope
+		if uerr := json.Unmarshal(body, &env); uerr != nil {
+			return nil, status, fmt.Errorf("unifi api %s: bad json: %w", path, uerr)
+		}
+		elems = append(elems, rawElems(env.Data)...)
+
+		nextOffset := offset + env.Count
+		if env.Count <= 0 || nextOffset >= env.TotalCount {
+			return marshalRawElems(elems), status, nil
+		}
+		offset = nextOffset
+	}
+}
+
+// getPage issues one page request. offset==0 is sent with no query string at
+// all, so a non-paginated endpoint (or a controller that omits offset/count/
+// totalCount entirely) behaves exactly as before this change — one request,
+// first-page-only.
+func (c *APIClient) getPage(ctx context.Context, path string, offset int) (json.RawMessage, int, error) {
+	reqPath := path
+	if offset > 0 {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		reqPath = fmt.Sprintf("%s%soffset=%d", path, sep, offset)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+reqPath, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -194,11 +257,22 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 		// the misleading "bad json" we'd otherwise hit on the truncated body.
 		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: read body: %w", path, rerr)
 	}
-	var env envelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: bad json: %w", path, err)
+	return body, resp.StatusCode, nil
+}
+
+// marshalRawElems re-assembles paginated elements into one JSON array so
+// callers of get() keep decoding a single array, unaware pagination happened.
+func marshalRawElems(elems []json.RawMessage) json.RawMessage {
+	if elems == nil {
+		elems = []json.RawMessage{}
 	}
-	return env.Data, resp.StatusCode, nil
+	out, err := json.Marshal(elems)
+	if err != nil {
+		// elems are fragments already validated by json.Unmarshal when they were
+		// read out of rawElems; re-marshaling []json.RawMessage cannot fail.
+		return json.RawMessage("[]")
+	}
+	return out
 }
 
 // Poll reads sites, then devices + clients per site, tagging each with its SiteID.
