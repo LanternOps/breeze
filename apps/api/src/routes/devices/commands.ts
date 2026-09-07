@@ -23,6 +23,10 @@ import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
+import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
+import type { QueuedCommand } from '../../services/commandQueue';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommand } from '../../jobs/staleCommandReaper';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
@@ -32,6 +36,10 @@ export const commandsRoutes = new Hono();
 commandsRoutes.use('*', authMiddleware);
 
 const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+
+/** #5128 — the `?status=` values `GET /:id/commands` accepts. */
+const LISTABLE_COMMAND_STATUSES = ['pending', 'sent', 'completed', 'failed', 'cancelled'] as const;
+type ListableCommandStatus = (typeof LISTABLE_COMMAND_STATUSES)[number];
 const COMMAND_WAKE_ON_LAN = 'wake_on_lan';
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
@@ -161,6 +169,10 @@ commandsRoutes.post(
     // Surfaced separately from `failed` so the caller can say "N queued,
     // M already pending" without misreporting deduped devices as failures.
     const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
+    // #5128: devices that were not online, whose command is now waiting for
+    // them to reconnect. Reported separately from `failed` — the work was
+    // accepted, it just has not been delivered yet.
+    const queuedOffline: string[] = [];
 
     for (const deviceId of deviceIds) {
       const device = await getDeviceWithOrgCheck(deviceId, auth);
@@ -211,36 +223,37 @@ commandsRoutes.post(
         }
       }
 
-      // Wrap the insert so a constraint violation, pool exhaustion, or
-      // other postgres error on one device records as INSERT_FAILED for
-      // that device instead of throwing out of the whole loop and
-      // 500-ing the entire batch (losing every prior success).
-      let command: typeof deviceCommands.$inferSelect | undefined;
+      // #5128: through the one enqueue seam rather than a raw insert, so the
+      // row carries a delivery deadline and its submitting org, and an online
+      // device gets the socket push instead of waiting for the next heartbeat.
+      // Still wrapped: a constraint violation or pool exhaustion on one device
+      // records as INSERT_FAILED for that device rather than 500-ing the whole
+      // batch and losing every prior success.
+      let command: QueuedCommand | undefined;
+      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | undefined;
       try {
-        [command] = await db
-          .insert(deviceCommands)
-          .values({
-            deviceId,
-            type: data.type,
-            payload: data.payload || {},
-            status: 'pending',
-            createdBy: auth.user.id
-          })
-          .returning();
+        // `wake` never reaches here — it returns from its own relay path above.
+        const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
+        if (!res.ok) {
+          if (res.code === 'trust_denied' && res.trust) {
+            failed.push({ deviceId, code: res.error as TrustDenyCode, message: res.trust.reason });
+          } else {
+            failed.push({
+              deviceId,
+              code: res.code === 'device_decommissioned' ? 'DECOMMISSIONED' : 'INSERT_FAILED',
+              message: res.error,
+            });
+          }
+          continue;
+        }
+        command = res.command;
+        delivery = res.delivery;
       } catch (err) {
         failed.push({
           deviceId,
           code: 'INSERT_FAILED',
           message: err instanceof Error ? err.message : 'Failed to queue command.',
         });
-        continue;
-      }
-
-      if (!command) {
-        // `returning()` on a successful insert always yields ≥1 row, so
-        // this branch is defensive against a future driver change rather
-        // than a path that fires in practice.
-        failed.push({ deviceId, code: 'INSERT_FAILED', message: 'Failed to queue command.' });
         continue;
       }
 
@@ -251,6 +264,7 @@ commandsRoutes.post(
         status: command.status,
         createdAt: command.createdAt
       });
+      if (delivery === 'queued_offline') queuedOffline.push(deviceId);
 
       writeRouteAudit(c, {
         orgId: device.orgId,
@@ -266,7 +280,7 @@ commandsRoutes.post(
       });
     }
 
-    return c.json({ commands: commandList, failed, skipped }, 201);
+    return c.json({ commands: commandList, failed, skipped, queuedOffline }, 201);
   }
 );
 
@@ -541,20 +555,33 @@ commandsRoutes.post(
       }, 202);
     }
 
-    const [command] = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId,
-        type: data.type,
-        payload: data.payload || {},
-        status: 'pending',
-        createdBy: auth.user.id
-      })
-      .returning();
-
-    if (!command) {
-      return c.json({ error: 'Failed to queue command' }, 500);
+    // #5128: through the one enqueue seam. The row now carries a delivery
+    // deadline and its submitting org, and an online device gets the socket
+    // push here instead of waiting for its next heartbeat.
+    const res = await dispatchDeviceCommand({
+      deviceId,
+      type: data.type,
+      payload: data.payload || {},
+      userId: auth.user.id,
+    });
+    if (!res.ok) {
+      if (res.code === 'device_decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
+      if (res.code === 'device_not_found') {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      if (res.code === 'trust_denied' && res.trust) {
+        return c.json(trustDenyBody({
+          allow: false,
+          code: res.error as TrustDenyCode,
+          capability: 'device_execute',
+          reason: res.trust.reason,
+        }, false), 403);
+      }
+      return c.json({ error: res.error }, 500);
     }
+    const command = res.command;
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -564,7 +591,8 @@ commandsRoutes.post(
       resourceName: data.type,
       details: {
         deviceId,
-        ...commandAuditDetails(command.id, data.type, data.payload || {})
+        ...commandAuditDetails(command.id, data.type, data.payload || {}),
+        delivery: res.delivery,
       }
     });
 
@@ -573,7 +601,12 @@ commandsRoutes.post(
       deviceId: command.deviceId,
       type: command.type,
       status: command.status,
-      createdAt: command.createdAt
+      createdAt: command.createdAt,
+      // #5128: how the command was handed over, and when it expires if the
+      // device never comes back. 'queued_offline' is what the UI renders as
+      // "Runs when the device is online — expires <date>".
+      delivery: res.delivery,
+      deliverBy: res.deliverBy,
     }, 201);
   }
 );
@@ -816,20 +849,31 @@ commandsRoutes.post(
       }, false), 403);
     }
 
-    const [command] = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId,
-        type: COMMAND_SET_AUTO_UPDATE,
-        payload: { enabled: data.enabled },
-        status: 'pending',
-        createdBy: auth.user.id
-      })
-      .returning();
-
-    if (!command) {
-      return c.json({ error: 'Failed to queue command' }, 500);
+    // #5128: through the one enqueue seam (see the single-command route).
+    const res = await dispatchDeviceCommand({
+      deviceId,
+      type: COMMAND_SET_AUTO_UPDATE,
+      payload: { enabled: data.enabled },
+      userId: auth.user.id,
+    });
+    if (!res.ok) {
+      if (res.code === 'device_decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
+      if (res.code === 'device_not_found') {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      if (res.code === 'trust_denied' && res.trust) {
+        return c.json(trustDenyBody({
+          allow: false,
+          code: res.error as TrustDenyCode,
+          capability: 'device_execute',
+          reason: res.trust.reason,
+        }, false), 403);
+      }
+      return c.json({ error: res.error }, 500);
     }
+    const command = res.command;
 
     writeRouteAudit(c, {
       orgId: device.orgId,
@@ -849,7 +893,9 @@ commandsRoutes.post(
       deviceId: command.deviceId,
       type: command.type,
       status: command.status,
-      createdAt: command.createdAt
+      createdAt: command.createdAt,
+      delivery: res.delivery,
+      deliverBy: res.deliverBy,
     }, 201);
   }
 );
@@ -862,8 +908,18 @@ commandsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
-    const { page = '1', limit = '50' } = c.req.query();
+    const { page = '1', limit = '50', status } = c.req.query();
     const pagination = getPagination({ page, limit });
+
+    // #5128: `?status=pending` is what the device page's "Queued actions"
+    // section reads. Validated against the known set so an unrecognised value
+    // is a 400 rather than a silently empty list.
+    if (status !== undefined && !LISTABLE_COMMAND_STATUSES.includes(status as ListableCommandStatus)) {
+      return c.json(
+        { error: `Invalid status filter. Expected one of: ${LISTABLE_COMMAND_STATUSES.join(', ')}` },
+        400,
+      );
+    }
 
     const device = await getDeviceWithOrgCheck(deviceId, auth);
     if (!device) {
@@ -873,16 +929,20 @@ commandsRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    const listFilter = status
+      ? and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, status))
+      : eq(deviceCommands.deviceId, deviceId);
+
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(deviceCommands)
-      .where(eq(deviceCommands.deviceId, deviceId));
+      .where(listFilter);
     const total = Number(countResult[0]?.count ?? 0);
 
     const commands = await db
       .select()
       .from(deviceCommands)
-      .where(eq(deviceCommands.deviceId, deviceId))
+      .where(listFilter)
       .orderBy(desc(deviceCommands.createdAt), desc(deviceCommands.id))
       .limit(pagination.limit)
       .offset(pagination.offset);
@@ -934,5 +994,92 @@ commandsRoutes.get(
     // allowRawStdout only takes effect for artifact-bearing command types
     // (capture_pprof profiles); everything else stays redacted (#2401).
     return c.json({ data: sanitizeCommandForHistory(command, { allowRawStdout: true }) });
+  }
+);
+
+// POST /devices/:id/commands/:commandId/cancel — user cancel of a queued command (#5128 §G).
+//
+// Same permission as issuing one: cancelling is not a read. CAS on
+// status='pending' so a command the agent claimed a millisecond ago is a 409,
+// never a silent "cancelled" for work that is already running on the machine.
+commandsRoutes.post(
+  '/:id/commands/:commandId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+    const commandId = c.req.param('commandId')!;
+
+    const device = await getDeviceWithOrgCheck(deviceId, auth);
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // Read the payload BEFORE the update: `terminalPayloadErasureSet()` strips
+    // it, and `returning()` reflects post-update values, so a propagator that
+    // keys on `payload.executionId` would get nothing back from the UPDATE.
+    const [existing] = await db
+      .select({
+        id: deviceCommands.id,
+        type: deviceCommands.type,
+        payload: deviceCommands.payload,
+        status: deviceCommands.status,
+      })
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+      .limit(1);
+
+    if (!existing) {
+      return c.json({ error: 'Command not found' }, 404);
+    }
+    if (existing.status !== 'pending') {
+      return c.json({ error: 'Command is not pending', status: existing.status }, 409);
+    }
+
+    const completedAt = new Date();
+    const [row] = await db
+      .update(deviceCommands)
+      .set({
+        status: 'cancelled',
+        completedAt,
+        result: { status: 'cancelled', reason: 'user_cancelled', cancelledBy: auth.user.id },
+        ...terminalPayloadErasureSet(),
+      })
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'pending'),
+        ),
+      )
+      .returning({ id: deviceCommands.id });
+
+    if (!row) {
+      // Lost the CAS race — the agent claimed it between the SELECT and here.
+      return c.json({ error: 'Command is not pending' }, 409);
+    }
+
+    await propagateCancelledDeviceCommand({
+      commandId: row.id,
+      type: existing.type,
+      payload: existing.payload as Record<string, unknown> | null,
+      completedAt,
+      cancelledBy: auth.user.id,
+    });
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.command.cancel',
+      resourceType: 'device_command',
+      resourceId: row.id,
+      resourceName: existing.type,
+      details: { deviceId, commandType: existing.type },
+    });
+
+    return c.json({ id: row.id, status: 'cancelled' });
   }
 );

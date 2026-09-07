@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
-import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
   devices,
+  deviceCommands,
   deviceHardware,
   deviceReliability,
   deviceNetwork,
@@ -19,6 +20,7 @@ import {
   organizations,
   users,
 } from '../../db/schema';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import {
   authMiddleware,
   isInteractiveUserSession,
@@ -1825,6 +1827,34 @@ coreRoutes.delete(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+
+      // #5128 — cancel this device's ordinary queued work in the SAME
+      // transaction as the status write. `self_uninstall` is explicitly
+      // EXCLUDED: the uninstall drain's whole purpose is to survive
+      // decommission and deliver when the machine next checks in, and
+      // `queueDeviceUninstall` below may be about to write exactly such a row.
+      // Claim-time eligibility refuses to deliver ordinary work to a
+      // decommissioned device anyway; this is what stops those rows sitting
+      // `pending` until their deadline.
+      await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: new Date(),
+          result: {
+            status: 'cancelled',
+            reason: 'device_decommissioned',
+            cancelledBy: 'device_decommission',
+          },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
 
       if (uninstallAgent) {
         const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);

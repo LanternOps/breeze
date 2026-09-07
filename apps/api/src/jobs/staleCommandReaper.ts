@@ -218,6 +218,55 @@ export async function propagateTimedOutDeviceCommand(params: {
   await enqueueDrExecutionReconcile(drExecutionId, 0);
 }
 
+/**
+ * Terminalise the higher-level records owned by a device command a USER just
+ * cancelled (#5128 §G). Sibling of `propagateTimedOutDeviceCommand`: the
+ * command row itself is already terminal by the time this runs; this only
+ * stops the owning record from waiting forever on a delivery that will never
+ * happen.
+ *
+ * W3 adds the `patch_job_results` branch. Anything without a branch is a no-op
+ * by design — a generic command has no higher-level record (#5128 §F).
+ */
+export async function propagateCancelledDeviceCommand(params: {
+  commandId: string;
+  type: string;
+  payload: Record<string, unknown> | null;
+  completedAt: Date;
+  cancelledBy?: string | null;
+}): Promise<void> {
+  const { commandId, type, payload, completedAt } = params;
+  const errorMessage = 'Cancelled before the device received it';
+
+  if (type === 'script') {
+    const executionId =
+      payload && typeof payload.executionId === 'string' && payload.executionId.trim().length > 0
+        ? payload.executionId
+        : null;
+    if (executionId) {
+      await db
+        .update(scriptExecutions)
+        .set({ status: 'cancelled', errorMessage, completedAt })
+        .where(
+          and(
+            eq(scriptExecutions.id, executionId),
+            inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
+          ),
+        );
+    }
+  }
+
+  await db
+    .update(deploymentResults)
+    .set({ status: 'cancelled', errorMessage, completedAt })
+    .where(
+      and(
+        eq(deploymentResults.deviceCommandId, commandId),
+        eq(deploymentResults.status, 'pending'),
+      ),
+    );
+}
+
 // ── Reap functions ────────────────────────────────────────────────
 
 export async function reapStaleDeviceCommands(): Promise<number> {

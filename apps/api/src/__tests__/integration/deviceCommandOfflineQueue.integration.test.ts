@@ -50,7 +50,9 @@ function claim(deviceId: string) {
   return asSystem(() => claimPendingCommandsForDevice(deviceId, 10, 'agent', undefined, { ...AGENT_CAPS }));
 }
 
-async function makeDevice(orgId: string, siteId: string, status: string) {
+type DeviceStatus = (typeof devices.$inferInsert)['status'];
+
+async function makeDevice(orgId: string, siteId: string, status: DeviceStatus) {
   const [device] = await getTestDb()
     .insert(devices)
     .values({

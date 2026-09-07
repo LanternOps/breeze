@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { devices, sites, organizations, tickets } from '../../db/schema';
+import { deviceCommands, devices, sites, organizations, tickets } from '../../db/schema';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import {
   authMiddleware,
   requireMfa,
@@ -315,6 +316,22 @@ moveOrgRoutes.post(
           .where(eq(devices.id, deviceId))
           .returning();
         updated = row;
+
+        // #5128 — cancel this device's queued work in the SAME transaction as
+        // the org flip. Claim-time eligibility already refuses to deliver a row
+        // whose `submitted_org_id` no longer matches, so this is cleanup rather
+        // than the safety property: it stops the rows sitting `pending` until
+        // their deadline and shows the operator the truth immediately. Rows are
+        // erased of payload like any other terminal transition.
+        await tx
+          .update(deviceCommands)
+          .set({
+            status: 'cancelled',
+            completedAt: new Date(),
+            result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'device_move_org' },
+            ...terminalPayloadErasureSet(),
+          })
+          .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, 'pending')));
 
         // #2138 — if the moved device left a link group with a single lone
         // profile behind — or it was a vm_host group's HOST (#2308), leaving
