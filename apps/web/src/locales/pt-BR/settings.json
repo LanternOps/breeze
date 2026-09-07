@@ -1617,7 +1617,14 @@
       "invalidSupervisedActionKeys": "Uma ou mais ações selecionadas não podem ser autorizadas pela política.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Esse agente já está ativo.",
-      "actRecipientsUnreachable": "As funções de notificação selecionadas não têm membros ativos, então ninguém poderia ser consultado. Escolha uma função com membros antes de ativar o modo Agir."
+      "actRecipientsUnreachable": "As funções de notificação selecionadas não têm membros ativos, então ninguém poderia ser consultado. Escolha uma função com membros antes de ativar o modo Agir.",
+      "invalidScriptIds": "Um ou mais scripts não podem ser autorizados para este agente.",
+      "scriptRejected": "Script {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "não é um script que o proprietário deste agente possa ver",
+        "not_in_partner_baseline": "fora da linha de base do parceiro",
+        "run_script_not_allowed": "\"Executar um script\" não é permitido para este agente"
+      }
     },
     "actions": {
       "add": "Novo agente",
@@ -2718,7 +2725,9 @@
       "approvers_other": "{{roles}} são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
       "approversCount_one": "{{count}} função é consultada, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
       "approversCount_other": "{{count}} funções são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "scriptGateNote": "{{list}} só será executado sem supervisão depois que um script for autorizado para este agente; até lá, gera uma solicitação de aprovação."
+      "scriptGateNote": "{{list}} só será executado sem supervisão depois que um script for autorizado para este agente; até lá, gera uma solicitação de aprovação.",
+      "scriptsAuthorized_one": "{{count}} script está autorizado a executar sem supervisão.",
+      "scriptsAuthorized_other": "{{count}} scripts estão autorizados a executar sem supervisão."
     },
     "flow": {
       "title": "Novo agente",
@@ -2772,6 +2781,21 @@
         "recommendedPrefix": "Recomendado:",
         "taken": "Já em uso para este proprietário"
       }
+    },
+    "scripts": {
+      "legend": "Scripts autorizados a executar sem supervisão",
+      "hint": "No modo Agir, \"Executar um script\" é executado sem aprovação apenas para os scripts marcados aqui. Todo o resto continua sendo uma solicitação de aprovação.",
+      "ceilingHint": "Os scripts no nível do parceiro são um limite: o agente de uma organização só pode escolher desta lista.",
+      "runScriptRequired": "Adicione \"Executar um script\" em \"O que ele faz\" antes de autorizar scripts.",
+      "runScriptNotInBaseline": "A linha de base do parceiro não permite \"Executar um script\" para este tipo de agente, então nenhum script pode executar sem supervisão.",
+      "ceilingUnavailable": "Não foi possível carregar a linha de base do parceiro, então nenhum script pode ser autorizado agora.",
+      "ceilingLoading": "Verificando a linha de base do parceiro…",
+      "loading": "Carregando scripts…",
+      "failed": "Não foi possível carregar os scripts, então a autorização de scripts sem supervisão não pode ser alterada agora.",
+      "empty": "Nenhum script disponível.",
+      "searchPlaceholder": "Pesquisar scripts…",
+      "selectedCount_one": "{{count}} script autorizado",
+      "selectedCount_other": "{{count}} scripts autorizados"
     }
   },
   "apiKeyForm": {

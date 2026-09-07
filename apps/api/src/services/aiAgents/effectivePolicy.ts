@@ -366,6 +366,28 @@ export async function loadPartnerBaselineKinds(
 }
 
 /**
+ * The partner an organization belongs to — the ceiling an ORG-owned row is
+ * narrowed by comes from the organization, never from the caller's own
+ * partnerId (a system-scope session has none; #5089 review: POST /preview
+ * and GET /ceiling used to hand such a caller no ceiling at all, so the
+ * review card promised an unattended run the create then 422'd through
+ * scriptAuthorization.ts). Plain org read under the caller's own db context.
+ *
+ * `organizations.partner_id` is NOT NULL, so `null` here means exactly one
+ * thing: the org row is not visible to this context (unknown id, or RLS).
+ * A write-time caller must treat that as an invariant violation and fail
+ * CLOSED — never as "no baseline" (scriptAuthorization.ts).
+ */
+export async function resolveOrgPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
+
+/**
  * The partner-wide baseline's tool ceiling for ONE kind, projected for an
  * org-scoped caller that cannot read the partner row itself. Same
  * partner-axis read as `loadPartnerBaselineKinds`; nothing but the two

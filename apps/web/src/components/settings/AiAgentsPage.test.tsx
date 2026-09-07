@@ -440,7 +440,7 @@ describe('AiAgentsPage', () => {
     );
     const patch = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
     const body = JSON.parse((patch?.[1] as RequestInit).body as string);
-    expect(body.actAssets).toEqual({ supervisedActionKeys: ['manage_services:restart'] });
+    expect(body.actAssets).toEqual({ supervisedActionKeys: ['manage_services:restart'], scriptIds: [] });
   });
 
   it('surfaces the invalid_supervised_action_keys 422 body as structured, per-key issues (wave 5 Part B, #3827)', async () => {
@@ -727,7 +727,7 @@ describe('AiAgentsPage mode radiogroup (#4187 UI critique)', () => {
     );
     const body = lastPatchBody();
     expect(body.mode).toBe('shadow');
-    expect(body.actAssets).toEqual({ supervisedActionKeys: [] });
+    expect(body.actAssets).toEqual({ supervisedActionKeys: [], scriptIds: [] });
   });
 
   it('does not claim keys will be omitted when there were none to omit', async () => {

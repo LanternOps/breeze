@@ -215,6 +215,51 @@ describe('buildAgentPreview', () => {
       catalog,
     );
     expect(both.operations[0]).toMatchObject({ outcome: 'unattended', unattendedBlockedBy: null });
+    // The card's "N scripts authorized" note reads the same intersection.
+    expect(orgOnly.authorizedScriptCount).toBe(0);
+    expect(both.authorizedScriptCount).toBe(1);
+  });
+
+  it('act mode: an org draft\'s scripts count for nothing when the partner ceiling bars run_script itself (#5089 review)', () => {
+    // effectivePolicy.ts intersects the allowlists first, so run_script never
+    // reaches the run loop for this org — the scripts it lists, even ones the
+    // baseline also lists, are inert. The same write is what
+    // scriptAuthorization.ts rejects as run_script_not_allowed.
+    const script = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+    const preview = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script] }),
+      { toolAllowlist: ['manage_services:restart'], supervisedActionKeys: [], scriptIds: [script] },
+      catalog,
+    );
+    expect(preview.authorizedScriptCount).toBe(0);
+    expect(preview.operations[0]).toMatchObject({
+      key: 'run_script',
+      outcome: 'approval_request',
+      unattendedBlockedBy: 'authorized_scripts',
+      withinCeiling: false,
+    });
+  });
+
+  it('act mode: scripts count for nothing while the draft\'s own allowlist does not admit run_script — the card must not say "N scripts authorized" for a draft that cannot run any (#5089 review)', () => {
+    const script = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+    const preview = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['manage_services:restart'], scriptIds: [script] }),
+      null,
+      catalog,
+    );
+    expect(preview.authorizedScriptCount).toBe(0);
+    // A scoped form does not count either (isToolAllowlisted with action null).
+    expect(buildAgentPreview(draft({ mode: 'act', toolAllowlist: ['run_script:execute'], scriptIds: [script] }), null, catalog).authorizedScriptCount).toBe(0);
+  });
+
+  it('act mode: a script id listed twice is authorized once (#5089 review)', () => {
+    const script = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+    const preview = buildAgentPreview(
+      draft({ mode: 'act', toolAllowlist: ['run_script'], scriptIds: [script, script] }),
+      null,
+      catalog,
+    );
+    expect(preview.authorizedScriptCount).toBe(1);
   });
 
   it('act mode: a non-act-eligible tier-3 operation still falls back to approval_request', () => {
