@@ -1366,7 +1366,7 @@ describe('mobile routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(mockSelectWhereChain([{ count: 1 }]) as any)
         .mockReturnValueOnce(
-          mockSelectOrderChain([
+          mockSelectLeftJoinChain([
             {
               id: '11111111-2222-4333-8444-555555555555',
               orgId: 'org-123',
@@ -1375,7 +1375,8 @@ describe('mobile routes', () => {
               displayName: 'Host 1',
               osType: 'linux',
               status: 'online',
-              lastSeenAt: new Date()
+              lastSeenAt: new Date(),
+              organizationName: 'Acme Corp'
             }
           ]) as any
         );
@@ -1388,6 +1389,9 @@ describe('mobile routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+      // #5104: the mobile app's row meta line ("org · site") and Device
+      // Details org row both depend on this field actually being returned.
+      expect(body.data[0].organizationName).toBe('Acme Corp');
     });
 
     it('should return empty list when partner has no orgs', async () => {
@@ -1429,26 +1433,31 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn((where: unknown) => {
-              captured.rowsWhere = where;
-              return {
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      {
-                        id: 'device-allowed',
-                        orgId: 'org-123',
-                        siteId: SITE_ALLOWED,
-                        hostname: 'allowed-host',
-                        displayName: 'Allowed Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      }
-                    ])
+            // #5104: the rows query now leftJoins organizations for the
+            // row's org name before .where(...).
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.rowsWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'device-allowed',
+                          orgId: 'org-123',
+                          siteId: SITE_ALLOWED,
+                          hostname: 'allowed-host',
+                          displayName: 'Allowed Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date(),
+                          organizationName: 'Acme Corp'
+                        }
+                      ])
+                    })
                   })
-                })
-              };
+                };
+              })
             })
           })
         } as any);
@@ -1478,36 +1487,38 @@ describe('mobile routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn((where: unknown) => {
-              captured.rowsWhere = where;
-              return {
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      {
-                        id: 'device-allowed',
-                        orgId: 'org-123',
-                        siteId: SITE_ALLOWED,
-                        hostname: 'allowed-host',
-                        displayName: 'Allowed Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      },
-                      {
-                        id: 'device-denied',
-                        orgId: 'org-123',
-                        siteId: SITE_DENIED,
-                        hostname: 'denied-host',
-                        displayName: 'Denied Host',
-                        osType: 'linux',
-                        status: 'online',
-                        lastSeenAt: new Date()
-                      }
-                    ])
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn((where: unknown) => {
+                captured.rowsWhere = where;
+                return {
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'device-allowed',
+                          orgId: 'org-123',
+                          siteId: SITE_ALLOWED,
+                          hostname: 'allowed-host',
+                          displayName: 'Allowed Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date()
+                        },
+                        {
+                          id: 'device-denied',
+                          orgId: 'org-123',
+                          siteId: SITE_DENIED,
+                          hostname: 'denied-host',
+                          displayName: 'Denied Host',
+                          osType: 'linux',
+                          status: 'online',
+                          lastSeenAt: new Date()
+                        }
+                      ])
+                    })
                   })
-                })
-              };
+                };
+              })
             })
           })
         } as any);
@@ -1546,7 +1557,7 @@ describe('mobile routes', () => {
         const rows = [row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')];
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
-          .mockReturnValueOnce(mockSelectOrderChainCapturing(rows, captured) as any); // 3 rows for limit=2 => hasMore
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing(rows, captured) as any); // 3 rows for limit=2 => hasMore
 
         const res = await app.request('/mobile/devices?limit=2', { method: 'GET' });
 
@@ -1568,7 +1579,7 @@ describe('mobile routes', () => {
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
           .mockReturnValueOnce(
-            mockSelectOrderChain([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')]) as any
+            mockSelectLeftJoinChain([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host'), row('dddddddd-0000-4000-8000-00000000000c', 'c-host')]) as any
           );
 
         const page1 = await app.request('/mobile/devices?limit=2', { method: 'GET' });
@@ -1579,7 +1590,7 @@ describe('mobile routes', () => {
         const captured: { where?: unknown; orderByArgs?: unknown[] } = {};
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
-          .mockReturnValueOnce(mockSelectOrderChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any);
+          .mockReturnValueOnce(mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000c', 'c-host')], captured) as any);
 
         const page2 = await app.request(`/mobile/devices?limit=2&cursor=${encodeURIComponent(cursor)}`, {
           method: 'GET'
@@ -1601,7 +1612,7 @@ describe('mobile routes', () => {
         vi.mocked(db.select)
           .mockReturnValueOnce(mockSelectWhereChain([{ count: 3 }]) as any)
           .mockReturnValueOnce(
-            mockSelectOrderChainCapturing([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host')], captured) as any
+            mockSelectLeftJoinChainCapturing([row('dddddddd-0000-4000-8000-00000000000a', 'a-host'), row('dddddddd-0000-4000-8000-00000000000b', 'b-host')], captured) as any
           );
 
         const res = await app.request('/mobile/devices?page=1&limit=1', { method: 'GET' });
@@ -2254,6 +2265,57 @@ describe('mobile routes', () => {
         expect(body.alerts.total).toBe(0);
         // Only two db.select calls: no alert-agg issued (short-circuited)
         expect(selectMock).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('decommissioned devices (#5106)', () => {
+      it('builds a total that excludes decommissioned devices and surfaces a decommissioned count', async () => {
+        const selectMock = vi.mocked(db.select);
+        selectMock
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 34, online: 34, offline: 0, maintenance: 0, decommissioned: 20 }
+            ]) as any
+          )
+          .mockReturnValueOnce(
+            mockSelectWhereChain([
+              { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
+            ]) as any
+          );
+
+        const res = await app.request('/mobile/summary', { method: 'GET' });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Passed through from the (mocked) aggregate row — proves the route
+        // surfaces the new decommissioned bucket instead of dropping it.
+        expect(body.devices).toEqual({
+          total: 34,
+          online: 34,
+          offline: 0,
+          maintenance: 0,
+          decommissioned: 20
+        });
+
+        // Structural check on the real (unmocked) SQL fragment the route
+        // builds for `total`: it must reference devices.status and exclude
+        // 'decommissioned', not `count(*)` — otherwise decommissioned rows
+        // silently inflate the total past what online+offline+maintenance
+        // show (the original bug: hero read 77, legend summed to 57).
+        const deviceSelectArgs = selectMock.mock.calls[0]![0] as Record<string, any>;
+        const totalChunks = deviceSelectArgs.total.queryChunks;
+        expect(totalChunks).toContainEqual(devices.status);
+        const totalSqlText = totalChunks
+          .filter((chunk: any) => typeof chunk?.value?.[0] === 'string')
+          .map((chunk: any) => chunk.value[0])
+          .join('');
+        expect(totalSqlText).not.toMatch(/^count\(\*\)$/);
+        expect(totalSqlText).toContain('decommissioned');
+        expect(totalSqlText).toMatch(/!=|<>/);
+
+        // decommissioned field itself must be a dedicated aggregate, not a
+        // pass-through of total.
+        const decommissionedChunks = deviceSelectArgs.decommissioned.queryChunks;
+        expect(decommissionedChunks).toContainEqual(devices.status);
       });
     });
   });

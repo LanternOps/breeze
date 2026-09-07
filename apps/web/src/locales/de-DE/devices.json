@@ -679,7 +679,8 @@
     "priority": "Priorität",
     "level": "Ebene",
     "policy2": "Richtlinie",
-    "features": "Funktionen"
+    "features": "Funktionen",
+    "inheritedFrom": "Geerbt von {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",

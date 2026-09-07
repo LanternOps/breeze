@@ -118,4 +118,23 @@ describe('EventLogTab', () => {
     expect(payload.inlineSettings).not.toHaveProperty('enableFullTextSearch');
     expect(payload.inlineSettings).not.toHaveProperty('enableCorrelation');
   });
+
+  // #5080: `featurePolicyId` means a standalone entity id — Event Log is
+  // inline settings, so it must never carry the parent CONFIG policy's id.
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(
+      <EventLogTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId="parent-1"
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
+    expect(payload.featurePolicyId).toBeNull();
+  });
 });

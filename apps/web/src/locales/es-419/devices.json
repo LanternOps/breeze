@@ -679,7 +679,8 @@
     "priority": "Prioridad",
     "level": "Nivel",
     "policy2": "Política",
-    "features": "Características"
+    "features": "Características",
+    "inheritedFrom": "Heredado de {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",

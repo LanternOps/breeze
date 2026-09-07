@@ -317,6 +317,11 @@ type MobileDeviceRecord = {
     diskUsage?: number;
   };
   siteName?: string;
+  // List endpoint (`GET /mobile/devices`) sends `organizationName`; the
+  // single-device endpoint (`GET /devices/:id`, devices/core.ts) sends the
+  // same value under `orgName`. Both are read in mapDevice() below (#5104).
+  organizationName?: string | null;
+  orgName?: string | null;
 };
 
 // Token management
@@ -626,6 +631,7 @@ function mapDevice(device: MobileDeviceRecord): Device {
     status: mapStatus(device.status),
     lastSeen: device.lastSeenAt || undefined,
     organizationId: device.orgId || undefined,
+    organizationName: device.organizationName || device.orgName || undefined,
     siteId: device.siteId || undefined,
     siteName: device.siteName || undefined,
     metrics: device.metrics,
@@ -1124,19 +1130,26 @@ export async function getDevice(id: string): Promise<Device> {
 }
 
 export async function getDeviceMetrics(id: string): Promise<Device['metrics']> {
+  // GET /devices/:id/metrics (apps/api/src/routes/devices/metrics.ts) returns
+  // buckets keyed `cpu`/`ram`/`disk` (aggregateMetricsByInterval), not
+  // `avgCpuPercent`/`avgRamPercent`/`avgDiskPercent` — those are the internal
+  // DB-row field names used before aggregation, never sent over the wire
+  // (#5104). Buckets are ordered ascending (queryMetricRollups /
+  // queryRawMetricBuckets both `orderBy(asc(...))`), so the last element is
+  // genuinely the most recent sample.
   const response = await requestWithPrefix<{
     data?: {
-      avgCpuPercent?: number;
-      avgRamPercent?: number;
-      avgDiskPercent?: number;
+      cpu?: number;
+      ram?: number;
+      disk?: number;
     }[];
   }>(`/devices/${id}/metrics`, API_CORE_PREFIX);
   const latest = response.data?.[response.data.length - 1];
   if (!latest) return undefined;
   return {
-    cpuUsage: latest.avgCpuPercent,
-    memoryUsage: latest.avgRamPercent,
-    diskUsage: latest.avgDiskPercent
+    cpuUsage: latest.cpu,
+    memoryUsage: latest.ram,
+    diskUsage: latest.disk
   };
 }
 

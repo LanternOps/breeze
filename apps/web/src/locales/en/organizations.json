@@ -94,6 +94,24 @@
       "title": "Could not load this organization",
       "description": "Something went wrong fetching the record. Check your connection and try again."
     },
-    "loading": "Loading organization…"
+    "loading": "Loading organization…",
+    "tickets": {
+      "tabs": {
+        "open": "Open",
+        "all": "All",
+        "closed": "Closed"
+      },
+      "newTicket": "New ticket",
+      "loadFailed": "Tickets failed to load.",
+      "forbidden": "You don't have permission to view tickets.",
+      "truncated": "Showing {{shown}} of {{total}} tickets."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contracts",
+        "invoices": "Invoices",
+        "quotes": "Quotes"
+      }
+    }
   }
 }

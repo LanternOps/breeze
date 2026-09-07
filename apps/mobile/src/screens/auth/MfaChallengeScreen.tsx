@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -105,6 +106,10 @@ export function MfaChallengeScreen() {
     const submittedCode = normalizeNativeMfaSubmission(selectedMethod, code);
     if (!mfaChallenge || (isRecovery ? submittedCode.length === 0 : submittedCode.length !== 6)) return;
     haptic.tap();
+    // #5104: without this, the number pad survives the navigator swap to the
+    // Home screen and sits over it until the user manually dismisses it —
+    // same pattern as ApprovalGate.tsx's takeover dismiss.
+    Keyboard.dismiss();
     dispatch(verifyMfaAsync({ code: submittedCode, tempToken: mfaChallenge.tempToken, method: selectedMethod }));
   }
 
