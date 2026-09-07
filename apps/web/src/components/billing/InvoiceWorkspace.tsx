@@ -239,8 +239,11 @@ export default function InvoiceWorkspace({ id }: Props) {
       {activeTab === 'preview' && (
         <InvoiceDocumentPreview detail={detail} />
       )}
+      {/* `reload` is passed through unwrapped (not `() => void reload()`) so
+          the accounting-sync watch can await the refetch it triggers and never
+          overlap two polls — see AccountingSyncCard. */}
       {activeTab === 'detail' && (
-        <InvoiceDetail detail={detail} onChanged={() => void reload()} actionsInHeader />
+        <InvoiceDetail detail={detail} onChanged={reload} actionsInHeader />
       )}
     </DocumentWorkspace>
   );

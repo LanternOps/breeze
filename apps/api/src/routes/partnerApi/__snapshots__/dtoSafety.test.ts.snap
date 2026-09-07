@@ -87,6 +87,7 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
   "id": "string",
   "name": "string",
   "orgId": "string",
+  "parentPolicyId": "object",
   "revision": "string",
   "siteId": "object",
   "sourceScope": "string",

@@ -160,3 +160,90 @@ export async function withDevicePartnerPolicyVisibility<T, E extends PartnerVisi
     }
   }
 }
+
+// ============================================
+// One-level inheritance (#5080)
+// ============================================
+
+/** The ownership axes of a `configuration_policies` row (org XOR partner). */
+export type PolicyOwnerRef = { orgId: string | null; partnerId: string | null };
+
+/**
+ * App-layer MIRROR of `public.breeze_config_policy_parent_compatible`
+ * (migration 2026-10-12-100000-config-policy-inheritance.sql).
+ *
+ * The database constraint trigger `configuration_policies_parent_guard` is the
+ * AUTHORITY — this exists so `createConfigPolicy` can return a friendly
+ * `INVALID_PARENT_POLICY` 400 instead of surfacing a raw 23514, and so the
+ * eligible-parents picker filters by the same rule server-side. Keep the two in
+ * step; `configPolicyInheritance.integration.test.ts` proves they agree against
+ * real Postgres.
+ *
+ * The rule:
+ *
+ * | child                       | allowed parent                                                |
+ * |-----------------------------|---------------------------------------------------------------|
+ * | org-owned (org O, partner P)| same org (`parent.org_id = O`), or partner-wide of P            |
+ * | partner-wide (partner P)    | partner-wide of the same partner only                           |
+ *
+ * Plus one level (`parent.parentPolicyId IS NULL`) and `parent.id <> child.id`.
+ * Fails CLOSED for any shape it does not recognise.
+ *
+ * @param child       the prospective child's own axes, plus `orgPartnerId` —
+ *                    the partner of `child.orgId`, read under the caller's own
+ *                    RLS context. Never a client-supplied partner id.
+ * @param parent      the prospective parent row.
+ * @param childId     the child's id when it already exists (self-parent guard).
+ *                    Omitted at create time, where the id does not exist yet and
+ *                    a collision is impossible.
+ */
+export function isCompatibleParent(
+  child: PolicyOwnerRef & { orgPartnerId: string | null },
+  parent: PolicyOwnerRef & { parentPolicyId: string | null; id: string },
+  childId?: string,
+): boolean {
+  if (childId && parent.id === childId) return false;
+  if (parent.parentPolicyId !== null) return false; // one level only
+  if (child.orgId) {
+    return (
+      parent.orgId === child.orgId
+      || (parent.orgId === null
+        && parent.partnerId !== null
+        && child.orgPartnerId !== null
+        && parent.partnerId === child.orgPartnerId)
+    );
+  }
+  if (child.partnerId) return parent.orgId === null && parent.partnerId === child.partnerId;
+  return false;
+}
+
+/**
+ * The parent named on create is not found, not visible, not eligible, belongs to
+ * another tenant, or already has a parent of its own.
+ *
+ * ONE message for all of those on purpose: a caller must not be able to use the
+ * response to probe which policy ids exist. Routes map this to
+ * `400 { error: 'INVALID_PARENT_POLICY' }`.
+ */
+export class InvalidParentPolicyError extends Error {
+  readonly code = 'INVALID_PARENT_POLICY' as const;
+  constructor() {
+    super('Parent configuration policy not found or not eligible');
+    this.name = 'InvalidParentPolicyError';
+  }
+}
+
+/**
+ * Deleting a policy that other policies inherit from. The self-FK is the
+ * backstop (a 23503 maps to the same error); this pre-check exists so the
+ * response can name the blocking children for the confirm dialog.
+ *
+ * Routes map this to `409 { error: 'POLICY_HAS_CHILDREN', children }`.
+ */
+export class PolicyHasChildrenError extends Error {
+  readonly code = 'POLICY_HAS_CHILDREN' as const;
+  constructor(public readonly children: { id: string; name: string }[]) {
+    super('Configuration policy has child policies that inherit from it');
+    this.name = 'PolicyHasChildrenError';
+  }
+}
