@@ -733,11 +733,15 @@ describe('QuickBooks payment push — real Postgres', () => {
     await withSystemDbAccessContext(() => voidPayment(recorded.audit.paymentId, fx.actor));
     const mappingId = (await loadOnePaymentMapping(fx)).id;
 
-    // The age is measured on created_at, NOT updated_at — the lease CAS bumps
-    // updated_at on every attempt, so an age measured on it would never expire.
+    // The age is measured on pending_since — when the DELETE became owed. Not
+    // updated_at (the lease CAS bumps it on every attempt, so an age read there
+    // never expires) and not created_at (the age of the MAPPING: a re-owned or
+    // long-synced row is already past the window on the day its payment is
+    // voided). `created_at` is back-dated too, as a NEGATIVE control: it stays
+    // young enough to prove the drop is not reading it.
     await withSystemDbAccessContext(() => db
       .update(accountingEntityMappings)
-      .set({ createdAt: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - 60_000) })
+      .set({ pendingSince: new Date(Date.now() - PAYMENT_DELETE_UNRESOLVED_GRACE_MS - 60_000) })
       .where(eq(accountingEntityMappings.id, mappingId))
       .returning({ id: accountingEntityMappings.id }));
 
@@ -1314,8 +1318,14 @@ describe('QuickBooks payment push — real Postgres', () => {
     const doStart = migrationText.indexOf('DO $$\nDECLARE');
     expect(scopedStart).toBeGreaterThan(-1);
     expect(doStart).toBeGreaterThan(scopedStart);
-    const scopedBackfill = migrationText.slice(scopedStart);
-    const unscopedBackfill = migrationText.slice(doStart);
+    // Bounded to the FIRST DO block, not to end-of-file: later sections of this
+    // migration add columns, and replaying DDL as `breeze_app` fails with
+    // "must be owner of table" — which would make this test report an ownership
+    // error instead of the RLS behaviour it exists to prove.
+    const doEnd = migrationText.indexOf('END $$;', doStart) + 'END $$;'.length;
+    expect(doEnd).toBeGreaterThan(doStart);
+    const scopedBackfill = migrationText.slice(scopedStart, doEnd);
+    const unscopedBackfill = migrationText.slice(doStart, doEnd);
 
     const fx = await seedFixture();
     const invoiceId = await seedInvoice(fx);
