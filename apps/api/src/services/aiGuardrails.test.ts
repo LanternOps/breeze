@@ -315,6 +315,15 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       expect(result.description).toBe('Kill process PID 2920 on device 74e15ef8...');
     });
 
+    it('kill_process names the process alone when no PID is given', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { processName: 'SupportAssistAgent.exe' },
+      });
+      expect(result.description).toBe('Kill process "SupportAssistAgent.exe" on device 74e15ef8...');
+    });
+
     it('kill_process falls back to the generic signature when payload has neither field (no regression)', () => {
       const result = checkGuardrails('execute_command', {
         deviceId: DEVICE_ID,
@@ -336,13 +345,16 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       expect(result.description).toBe(expected);
     });
 
-    it('start_service falls back to the generic signature without a service name (no regression)', () => {
-      const result = checkGuardrails('execute_command', {
-        deviceId: DEVICE_ID,
-        commandType: 'start_service',
-      });
-      expect(result.description).toBe('Execute "start_service" command on device 74e15ef8...');
-    });
+    it.each(['start_service', 'stop_service', 'restart_service'])(
+      '%s falls back to the generic signature without a service name (no regression)',
+      (commandType) => {
+        const result = checkGuardrails('execute_command', {
+          deviceId: DEVICE_ID,
+          commandType,
+        });
+        expect(result.description).toBe(`Execute "${commandType}" command on device 74e15ef8...`);
+      }
+    );
 
     it('file_read names the target path', () => {
       const result = checkGuardrails('execute_command', {
@@ -355,6 +367,14 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       );
     });
 
+    it('file_list falls back to a plain "List files" headline without a path', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_list',
+      });
+      expect(result.description).toBe('List files on device 74e15ef8...');
+    });
+
     it('event_logs_query names the log', () => {
       const result = checkGuardrails('execute_command', {
         deviceId: DEVICE_ID,
@@ -362,6 +382,14 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
         payload: { logName: 'Security' },
       });
       expect(result.description).toBe('Query "Security" event log on device 74e15ef8...');
+    });
+
+    it('event_logs_query falls back to a plain "Query event log" headline without a logName', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'event_logs_query',
+      });
+      expect(result.description).toBe('Query event log on device 74e15ef8...');
     });
 
     it('list_processes, list_services, event_logs_list, file_list get plain-English headlines', () => {
