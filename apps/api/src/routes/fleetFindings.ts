@@ -59,6 +59,12 @@ const findingIdParamSchema = z.object({
   id: z.string().guid(),
 });
 
+// Same defect, same fix, different param name: `getRemediationRun` runs
+// `eq(fleetRemediationRuns.id, runId)` against the same kind of uuid column.
+const runIdParamSchema = z.object({
+  runId: z.string().guid(),
+});
+
 const listQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   kind: z.enum(KIND_VALUES).optional(),
@@ -165,17 +171,23 @@ fleetFindingsRoutes.get('/counts', requireScope('organization', 'partner', 'syst
 // registered first anyway (and any NEW single-segment static route, e.g. a
 // bare `/runs`, MUST be registered before `/:id`, to avoid Hono matching it
 // as an id).
-fleetFindingsRoutes.get('/runs/:runId', requireScope('organization', 'partner', 'system'), requireFindingsRead, async (c) => {
-  const auth = c.get('auth');
-  const runId = c.req.param('runId')!;
+fleetFindingsRoutes.get(
+  '/runs/:runId',
+  requireScope('organization', 'partner', 'system'),
+  requireFindingsRead,
+  zValidator('param', runIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { runId } = c.req.valid('param');
 
-  const run = await getRemediationRun(auth, runId);
-  if (!run) {
-    return c.json({ error: 'Remediation run not found' }, 404);
+    const run = await getRemediationRun(auth, runId);
+    if (!run) {
+      return c.json({ error: 'Remediation run not found' }, 404);
+    }
+
+    return c.json(run);
   }
-
-  return c.json(run);
-});
+);
 
 fleetFindingsRoutes.get(
   '/:id/runs',

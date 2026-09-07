@@ -197,6 +197,7 @@ const DEVICE_2 = 'd2222222-2222-4222-8222-222222222222';
 const SITE_1 = 's1111111-1111-4111-8111-111111111111';
 const SITE_2 = 's2222222-2222-4222-8222-222222222222';
 const SCRIPT_1 = 'c1111111-1111-4111-8111-111111111111';
+const RUN_1 = 'e1111111-1111-4111-8111-111111111111';
 
 interface AuthOverrides {
   scope?: 'organization' | 'partner' | 'system';
@@ -595,6 +596,8 @@ describe('GET /fleet/findings/:id', () => {
   it('rejects a non-UUID id with 400 before touching the database (BREEZE-2M)', async () => {
     const res = await get(makeAuth(), '/not-a-uuid');
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details.fieldErrors).toHaveProperty('id');
     expect(h.mockSelect).not.toHaveBeenCalled();
   });
 
@@ -736,6 +739,8 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
   it('rejects a non-UUID id with 400 before touching the database (BREEZE-2M)', async () => {
     const res = await patch(makeAuth(), '/not-a-uuid', { action: 'acknowledge' });
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details.fieldErrors).toHaveProperty('id');
     expect(h.mockSelect).not.toHaveBeenCalled();
   });
 
@@ -896,7 +901,7 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
 function runRow(overrides: Record<string, unknown> = {}) {
   return {
-    id: 'run-1',
+    id: RUN_1,
     orgId: ORG_1,
     findingId: FINDING_1,
     findingRevision: 1,
@@ -918,15 +923,26 @@ function runRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GET /fleet/findings/runs/:runId', () => {
+  // Sentry BREEZE-2M: the same unvalidated-uuid-into-Postgres shape as the
+  // finding-id routes below, just keyed on `runId` against
+  // `fleetRemediationRuns.id` (also a uuid column) instead of `fleetFindings.id`.
+  it('rejects a non-UUID runId with 400 before touching the database (BREEZE-2M)', async () => {
+    const res = await get(makeAuth(), '/runs/not-a-uuid');
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details.fieldErrors).toHaveProperty('runId');
+    expect(h.mockSelect).not.toHaveBeenCalled();
+  });
+
   it('returns 404 for an unknown run id', async () => {
     h.selectQueue.push([]);
-    const res = await get(makeAuth(), '/runs/run-1');
+    const res = await get(makeAuth(), `/runs/${RUN_1}`);
     expect(res.status).toBe(404);
   });
 
   it('org token cannot see a run belonging to a foreign org (404, org-condition applied)', async () => {
     h.selectQueue.push([]);
-    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/runs/run-1');
+    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), `/runs/${RUN_1}`);
     expect(res.status).toBe(404);
 
     const where = h.capturedWheres[0] as { args: unknown[] };
@@ -937,7 +953,7 @@ describe('GET /fleet/findings/runs/:runId', () => {
     h.selectQueue.push([runRow()]);
     h.selectQueue.push([
       {
-        runId: 'run-1',
+        runId: RUN_1,
         orgId: ORG_1,
         targetDeviceUuid: DEVICE_1,
         hostnameSnapshot: 'WS-01',
@@ -951,10 +967,10 @@ describe('GET /fleet/findings/runs/:runId', () => {
       },
     ]);
 
-    const res = await get(makeAuth(), '/runs/run-1');
+    const res = await get(makeAuth(), `/runs/${RUN_1}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.id).toBe('run-1');
+    expect(body.id).toBe(RUN_1);
     expect(body.targets).toEqual([
       expect.objectContaining({ deviceId: DEVICE_1, hostname: 'WS-01', status: 'queued' }),
     ]);
@@ -964,7 +980,7 @@ describe('GET /fleet/findings/runs/:runId', () => {
     h.selectQueue.push([runRow()]);
     h.selectQueue.push([
       {
-        runId: 'run-1',
+        runId: RUN_1,
         orgId: ORG_1,
         targetDeviceUuid: DEVICE_1,
         hostnameSnapshot: 'WS-01',
@@ -977,7 +993,7 @@ describe('GET /fleet/findings/runs/:runId', () => {
         completedAt: null,
       },
       {
-        runId: 'run-1',
+        runId: RUN_1,
         orgId: ORG_1,
         targetDeviceUuid: DEVICE_2,
         hostnameSnapshot: 'WS-02',
@@ -991,7 +1007,7 @@ describe('GET /fleet/findings/runs/:runId', () => {
       },
     ]);
 
-    const res = await get(makeAuth({ allowedSiteIds: [SITE_1] }), '/runs/run-1');
+    const res = await get(makeAuth({ allowedSiteIds: [SITE_1] }), `/runs/${RUN_1}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.targets).toHaveLength(1);
@@ -1003,6 +1019,8 @@ describe('GET /fleet/findings/:id/runs', () => {
   it('rejects a non-UUID id with 400 before touching the database (BREEZE-2M)', async () => {
     const res = await get(makeAuth(), '/not-a-uuid/runs');
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details.fieldErrors).toHaveProperty('id');
     expect(h.mockSelect).not.toHaveBeenCalled();
   });
 
@@ -1032,6 +1050,8 @@ describe('POST /fleet/findings/:id/remediate', () => {
       parameters: {},
     });
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.details.fieldErrors).toHaveProperty('id');
     expect(createRemediationRunMock).not.toHaveBeenCalled();
   });
 
