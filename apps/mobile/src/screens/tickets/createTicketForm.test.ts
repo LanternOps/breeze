@@ -6,6 +6,7 @@ import {
   canSubmitTicket,
   defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
+  isExpectedAssigneeLoadFailure,
   preselectOrg,
   TICKET_PRIORITY_OPTIONS,
 } from './createTicketForm';
@@ -101,6 +102,20 @@ describe('priority options', () => {
   it('offers every API priority in escalation order and defaults to normal', () => {
     expect(TICKET_PRIORITY_OPTIONS).toEqual(['low', 'normal', 'high', 'urgent']);
     expect(DEFAULT_TICKET_PRIORITY).toBe('normal');
+  });
+});
+
+describe('isExpectedAssigneeLoadFailure', () => {
+  it('treats a 403 from GET /users as the expected no-users:read case (not reported)', () => {
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 403, message: 'Forbidden' })).toBe(true);
+  });
+  it('reports everything else — server errors, network failures, garbage', () => {
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 500, message: 'boom' })).toBe(false);
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 404, message: 'gone' })).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(new TypeError('Network request failed'))).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(null)).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(undefined)).toBe(false);
+    expect(isExpectedAssigneeLoadFailure('403')).toBe(false);
   });
 });
 

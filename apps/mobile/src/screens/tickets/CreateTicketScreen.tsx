@@ -30,6 +30,7 @@ import {
   canSubmitTicket,
   defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
+  isExpectedAssigneeLoadFailure,
   preselectOrg,
   SUBJECT_MAX_LENGTH,
   TICKET_PRIORITY_OPTIONS,
@@ -86,9 +87,10 @@ export function CreateTicketScreen() {
   }, [loadOrgs]);
 
   // #5188: assignable staff for the picker. Degrades silently to
-  // Unassigned + "(you)" on failure (403 for a tech without `users:read`,
-  // network error, …) — `assigneeOptions` already handles an empty list, so
-  // there is no error state or toast here, only a Sentry breadcrumb.
+  // Unassigned + "(you)" on failure — `assigneeOptions` already handles an
+  // empty list, so there is no error state or toast here. A 403 (tech without
+  // `users:read`) is the permission model working and is not reported at all;
+  // anything else goes to Sentry via reportInternalError.
   useEffect(() => {
     let cancelled = false;
     listAssignableUsers()
@@ -96,6 +98,7 @@ export function CreateTicketScreen() {
         if (!cancelled) setStaff(users);
       })
       .catch((err) => {
+        if (isExpectedAssigneeLoadFailure(err)) return;
         reportInternalError(err, 'CreateTicketScreen.loadAssignableUsers');
       });
     return () => {

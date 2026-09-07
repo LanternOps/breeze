@@ -98,6 +98,19 @@ export function defaultAssigneeId(me: { id: string } | null | undefined): string
 }
 
 /**
+ * Whether a failed `GET /users` is the EXPECTED case for this screen — a tech
+ * whose role lacks `users:read` gets a 403 every time they open New ticket.
+ * That is a permission model working as designed, not a defect, so it must
+ * not become a Sentry event per screen open (same precedent as
+ * `DEVICE_BLOCKED_CODE` in `lib/errorReporting.ts`). Anything else — 5xx,
+ * network failure, a non-ApiError throw — is still worth reporting.
+ */
+export function isExpectedAssigneeLoadFailure(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  return (err as { statusCode?: unknown }).statusCode === 403;
+}
+
+/**
  * Assignee sheet contents: "Unassigned" first, the signed-in tech pinned
  * second labeled "(you)", then the rest of `staff` sorted by display name.
  * `staff` may be empty — the `GET /users` fetch failed (403 for a tech without
