@@ -419,6 +419,43 @@ describe('unifiSyncService.syncIntegration', () => {
     const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
     expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
   });
+
+  // Twin of unifiTelemetryService.test.ts's "normalizes device MAC
+  // (uppercase/hyphen) for asset linking and storage" (#5096/#5087) — the
+  // OTHER direction from the test above. There the stored key was
+  // non-canonical and the incoming mac already canonical, which does not
+  // exercise canonicalMac(device.mac) on the JS side (an already-canonical
+  // input is a no-op for that call). Here the incoming mac is non-canonical
+  // and the stored row is already canonical, so only a bound query parameter
+  // that was actually run through canonicalMac() can match.
+  it('links a device when the INCOMING mac is non-canonical (#5102, twin of #5096)', async () => {
+    const { writes, db } = scriptedDb({
+      mappings: [BASE_MAPPING],
+      assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
+    });
+    const client = fakeClient([
+      {
+        ...NET_NEW_DEVICE,
+        mac: 'AA-BB-CC-DD-EE-FF', // controller reports uppercase/hyphenated
+        ip: '10.0.0.99', // deliberately does not match any asset — mac must be what links it
+      },
+    ]);
+
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+
+    expect(result.status).toBe('success');
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+
+    // Stored canonical (lowercase, colon-separated), matching the telemetry path.
+    const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
+    expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -523,6 +560,10 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(renderSql(set.assetType)).toBe(
       `${MANUAL_GUARD_SQL}$8 else "discovered_assets"."asset_type" end`,
     );
+    // #5102: a device with no mac must not degrade into '' on the enrich write
+    // either (which would match a blank-mac row) — canonicalMac(null) is null,
+    // and macAddress: mac ?? undefined must stay undefined, not ''.
+    expect(set.macAddress).toBeUndefined();
   });
 
   it('leaves both type columns alone when the sync cannot classify the device', async () => {
