@@ -403,7 +403,10 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     const thrown = await run().then(() => undefined, (error: unknown) => error);
 
     expect(thrown).toBeInstanceOf(FilterQueryTimeoutError);
-    expect((thrown as FilterQueryTimeoutError).code).toBe('filter_query_timeout');
+    expect((thrown as FilterQueryTimeoutError).errorCode).toBe('filter_query_timeout');
+    // Must NOT be `code`: that field is duck-typed by `pgErrorCode`, which reads
+    // the outer error before the cause, and would mislabel the pg_code tag.
+    expect((thrown as { code?: unknown }).code).toBeUndefined();
     expect((thrown as Error).cause).toBe(canceled);
     // The timeout must still be restored on the way out.
     expectTimeoutWrappedQuery();

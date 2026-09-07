@@ -359,7 +359,10 @@ describe('ingestSoftwareInventoryReport lock-timeout give-up reporting (#5181)',
     const thrown = await ingest().then(() => undefined, (error: unknown) => error);
 
     expect(thrown).toBeInstanceOf(SoftwareInventoryLockTimeoutError);
-    expect((thrown as SoftwareInventoryLockTimeoutError).code).toBe('software_inventory_lock_timeout');
+    expect((thrown as SoftwareInventoryLockTimeoutError).errorCode).toBe('software_inventory_lock_timeout');
+    // Must NOT be `code`: `pgErrorCode` reads the outer error's `.code` before
+    // walking `.cause`, so that name would shadow the real 55P03 SQLSTATE.
+    expect((thrown as { code?: unknown }).code).toBeUndefined();
     expect((thrown as Error).cause).toBe(lockNotAvailable);
     // All three attempts were spent before giving up.
     expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(3);

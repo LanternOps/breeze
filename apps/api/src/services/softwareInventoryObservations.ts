@@ -12,6 +12,7 @@ import { resolveInventoryVersion } from '../routes/agents/agentSelfInventory';
 import { sanitizeDate } from '../routes/agents/helpers';
 import { pgErrorCode, retryOnTransientLockError } from '../utils/pgErrors';
 import { captureMessage } from './sentry';
+import { throttledReporter } from './sentryThrottle';
 
 /**
  * Bound for `lock_timeout`, set at the top of the ingest transaction (#3925).
@@ -83,6 +84,34 @@ export class SoftwareInventoryObservationConflictError extends Error {
 }
 
 /**
+ * Throttled because the condition is bursty by construction: contention on
+ * `device_vulnerabilities` / `software_inventory` is fleet-wide, so a single
+ * long-running `correlateOrg` pass can make every device reporting in that
+ * window give up at once. The observed baseline is low (5 events in 2 days on
+ * US, #5181), but the baseline is not the risk — the storm is.
+ *
+ * No signal is lost: `retryOnTransientLockError` still logs every individual
+ * attempt, with the device id, on the unthrottled console path.
+ */
+const reportInventoryLockTimeoutExhausted = throttledReporter(60_000, (suppressed) => {
+  captureMessage(
+    'Software inventory ingest exhausted its lock_timeout retries',
+    {
+      eventCode: 'software_inventory_lock_timeout_exhausted',
+      level: 'warning',
+      // `pg_code` is the only tag: device/org ids are exactly the unbounded
+      // cardinality the event-code registry exists to keep out, and the
+      // per-attempt console.warn in `retryOnTransientLockError` already
+      // carries the device id for anyone reading server logs.
+      tags: { pg_code: '55P03' },
+    },
+  );
+  if (suppressed > 0) {
+    console.warn(`[softwareInventory] ${suppressed} further lock_timeout give-ups suppressed since the last Sentry report`);
+  }
+});
+
+/**
  * The ingest gave up after every `retryOnTransientLockError` attempt hit 55P03
  * (#5181). Distinct from a fault: the projection was NOT written, nothing is
  * inconsistent, and the agent's next inventory push carries the same report.
@@ -94,7 +123,13 @@ export class SoftwareInventoryObservationConflictError extends Error {
  * error-level 500 path it has today.
  */
 export class SoftwareInventoryLockTimeoutError extends Error {
-  readonly code = 'software_inventory_lock_timeout';
+  /**
+   * NOT named `code` — see the identical note on `FilterQueryTimeoutError`.
+   * This class wraps the 55P03 `PostgresError` as its cause, and `pgErrorCode`
+   * reads the outer `.code` first, so naming it `code` would mislabel the
+   * `pg_code` Sentry tag with this literal instead of the real SQLSTATE.
+   */
+  readonly errorCode = 'software_inventory_lock_timeout';
   constructor(options?: { cause?: unknown }) {
     super('Software inventory ingest could not acquire its locks in time', options);
   }
@@ -302,18 +337,7 @@ export async function ingestSoftwareInventoryReport(input: {
     // indistinguishable from a real fault once the scrubber redacts the
     // message (#5181 / BREEZE-2F).
     if (pgErrorCode(error) !== '55P03') throw error;
-    captureMessage(
-      'Software inventory ingest exhausted its lock_timeout retries',
-      {
-        eventCode: 'software_inventory_lock_timeout_exhausted',
-        level: 'warning',
-        // `pg_code` is the only tag: device/org ids are exactly the unbounded
-        // cardinality the event-code registry exists to keep out, and the
-        // per-attempt console.warn in `retryOnTransientLockError` already
-        // carries the device id for anyone reading server logs.
-        tags: { pg_code: '55P03' },
-      },
-    );
+    reportInventoryLockTimeoutExhausted();
     throw new SoftwareInventoryLockTimeoutError({ cause: error });
   }
 }

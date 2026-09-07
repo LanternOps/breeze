@@ -97,10 +97,15 @@ describe('agent software inventory observation route', () => {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
     });
     expect(res.status).toBe(503);
-    // Must stay well inside the agent's 30s request context, which this
-    // ingest has already eaten ~15s of — see the route comment. A large value
-    // is swallowed by the deadline and costs the agent every in-process retry.
-    expect(Number(res.headers.get('Retry-After'))).toBeLessThanOrEqual(10);
+    // Assert the header is PRESENT and its value, not just a numeric range:
+    // `Number(null)` is 0, so a range check alone passes when the header is
+    // missing entirely — and the header is the whole point of the fix.
+    const retryAfter = res.headers.get('Retry-After');
+    expect(retryAfter).toBe('5');
+    // Must stay well inside the agent's 30s request context, which this ingest
+    // has already eaten ~15s of — see the route comment. A large value is
+    // swallowed by the deadline and costs the agent every in-process retry.
+    expect(Number(retryAfter)).toBeLessThanOrEqual(10);
     expect(await res.json()).toEqual({
       error: 'Software inventory ingest is contended; retry this report later',
       code: 'software_inventory_lock_timeout',

@@ -597,7 +597,16 @@ type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * BREEZE-2C). Any other SQLSTATE propagates untouched and keeps its 500.
  */
 export class FilterQueryTimeoutError extends Error {
-  readonly code = 'filter_query_timeout';
+  /**
+   * NOT named `code`. `pgErrorCode` (utils/pgErrors.ts) duck-types any error
+   * with a string `.code`, checking the OUTER object before walking `.cause` —
+   * so a `code` field here would shadow the real SQLSTATE sitting on the cause
+   * and make `sentry.ts` tag the event `pg_code: 'filter_query_timeout'`
+   * instead of `'57014'`, defeating the SQLSTATE grouping that tag exists for.
+   * Any error class that wraps a Postgres error as its cause has to avoid the
+   * name.
+   */
+  readonly errorCode = 'filter_query_timeout';
   constructor(options?: { cause?: unknown }) {
     super('Filter query exceeded its time budget', options);
   }
@@ -636,9 +645,21 @@ async function withFilterStatementTimeout<T>(
       // rolled back, including the restoration in `finally` below.
       return await tx.transaction((queryTx) => run(queryTx));
     } catch (error) {
-      // Translate ONLY the cancellation this function itself causes. Anything
-      // else — a bad column, a lock error, a dropped connection — is a real
-      // fault and keeps its existing 500 path.
+      // Anything that is not a cancellation — a bad column, a lock error, a
+      // dropped connection — is a real fault and keeps its existing 500 path.
+      //
+      // 57014 is `query_canceled`, and this function's own 500ms
+      // `statement_timeout` is NOT its only source: `pg_cancel_backend()` and a
+      // hot-standby recovery conflict raise it too. Discriminating further
+      // would mean matching the driver's message text, which is localized by
+      // `lc_messages` and so would silently stop matching on a differently
+      // configured deployment — worse than the imprecision. The imprecision is
+      // bounded and acceptable here: the window is 500ms wide, the caller's
+      // worst case is being told to narrow a filter that was actually
+      // cancelled by an operator, and the event code's registry entry records
+      // this caveat so triage does not read the warning as proof of a slow
+      // filter. What it must never do is silently swallow a genuine fault, and
+      // it does not — every other SQLSTATE still propagates untouched.
       if (pgErrorCode(error) === '57014') throw new FilterQueryTimeoutError({ cause: error });
       throw error;
     } finally {

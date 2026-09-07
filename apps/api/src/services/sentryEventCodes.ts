@@ -97,6 +97,15 @@ export const SENTRY_EVENT_CODES = [
    * doing its job (#5181). The caller gets a 422 telling them to narrow the
    * filter; this is the operator-side record. A repeated stream from one org
    * usually means a missing index on a newly filterable column, not an attack.
+   *
+   * TRIAGE CAVEAT: 57014 is `query_canceled` generally, not `statement_timeout`
+   * specifically — `pg_cancel_backend()` and hot-standby recovery conflicts
+   * raise it too, and the route cannot tell them apart without matching
+   * `lc_messages`-localized text. If these appear alongside an incident
+   * involving manual query cancellation or a replica promotion, rule that out
+   * before concluding a filter is slow. Throttled to one event per minute per
+   * process; the unthrottled per-occurrence lines (with the org id) are in the
+   * server log.
    */
   'filter_preview_statement_timeout',
 
