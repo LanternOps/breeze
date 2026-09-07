@@ -3331,6 +3331,7 @@
     "passkeyRenamed": "Passkey umbenannt",
     "currentPasswordIsRequiredToDeleteAPasskey": "Zum Löschen eines Passkeys ist das aktuelle Passwort erforderlich",
     "passkeyDeleted": "Passkey gelöscht",
+    "signInAgainToContinue": "Melden Sie sich erneut an, um fortzufahren.",
     "failedToLoadPasskeys": "Passkeys konnten nicht geladen werden",
     "failedToUpdateProfile": "Profil konnte nicht aktualisiert werden",
     "failedToUploadAvatar": "Avatar konnte nicht hochgeladen werden",

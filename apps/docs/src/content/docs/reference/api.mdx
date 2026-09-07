@@ -1187,7 +1187,7 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/agents/enroll` | Enrollment secret | Enroll new device |
-| `GET` | `/agents/download/:os/:arch` | None | Download agent binary |
+| `GET` | `/agents/download/:os/:arch` | None | Download agent binary. Optional `?version=` serves that exact registered release instead of the promoted one (used for pinned/pilot versions); an unregistered version returns 404. |
 | `GET` | `/agents/install.sh` | None | One-line install script |
 
 ### Agent Versions

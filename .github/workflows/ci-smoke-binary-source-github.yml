@@ -202,6 +202,48 @@ jobs:
           jq -e '.manifest != null and (.manifest | length) > 0' /tmp/dl.json
           jq -e '.manifestSignature != null and (.manifestSignature | length) > 0' /tmp/dl.json
 
+      - name: Verify the returned URL is version-pinned and 302s to THAT release (#5159)
+        run: |
+          # #5159: the URL /agent-versions/:version/download hands back must
+          # resolve to the SAME release its checksum came from. Before the fix
+          # it was versionless and the route served whatever was promoted, so
+          # a pinned/unpromoted version got another release's bytes and the
+          # agent looped forever on a checksum mismatch it could never clear.
+          url=$(jq -er '.url' /tmp/dl.json)
+          case "$url" in
+            *"version=0.65.8"*) echo "OK — URL is pinned to the requested version" ;;
+            *)
+              echo "REGRESSION (#5159): expected ?version=0.65.8 in the returned URL, got: ${url}"
+              exit 1
+              ;;
+          esac
+
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+          if [ "$STATUS" != "302" ]; then
+            echo "Expected 302 from the version-pinned download URL; got ${STATUS}"
+            exit 1
+          fi
+          LOCATION=$(curl -s -o /dev/null -w '%{redirect_url}' "$url")
+          echo "Pinned redirect target: ${LOCATION}"
+          case "$LOCATION" in
+            *"/releases/download/v0.65.8/"*)
+              echo "OK — pinned URL redirects to the v0.65.8 release asset"
+              ;;
+            *)
+              echo "REGRESSION (#5159): pinned URL served a different release: ${LOCATION}"
+              exit 1
+              ;;
+          esac
+
+          # An unregistered version must 404, never fall back to the promoted
+          # release — silent substitution is the bug being fixed.
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64?version=0.0.0-not-registered')
+          if [ "$STATUS" != "404" ]; then
+            echo "Expected 404 for an unregistered ?version=; got ${STATUS}"
+            exit 1
+          fi
+
       - name: Verify /agents/download proxy route 302s to github
         run: |
           STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
@@ -227,6 +269,50 @@ jobs:
               ;;
           esac
           shopt -u nocasematch
+
+      - name: Reproduce the #5159 divergence against a real database
+        env:
+          PGPASSWORD: breeze
+        run: |
+          # Everything above runs with ONE registered release, so the pinned
+          # and promoted versions coincide and the original bug cannot appear.
+          # Force them apart the way AGENT_AUTO_PROMOTE=false + an org
+          # agentVersionPins pilot does in production: promote a DIFFERENT
+          # version than the one the caller pins.
+          PSQL="psql -h localhost -U breeze -d breeze -v ON_ERROR_STOP=1"
+          $PSQL -c "INSERT INTO agent_versions (version, platform, architecture, component, download_url, checksum, file_size, edition, is_latest) SELECT '0.65.7', platform, architecture, component, download_url, checksum, file_size, edition, false FROM agent_versions WHERE component='agent' AND platform='linux' AND architecture='amd64' AND version='0.65.8' ON CONFLICT DO NOTHING;"
+          $PSQL -c "UPDATE agent_versions SET is_latest = (version='0.65.7') WHERE component='agent' AND platform='linux' AND architecture='amd64';"
+
+          # Guard the fixture itself: if the seed matched no row, the two
+          # assertions below would compare identical versions and pass
+          # vacuously.
+          PROMOTED=$(psql -h localhost -U breeze -d breeze -tAc \
+            "SELECT version FROM agent_versions WHERE component='agent' AND platform='linux' AND architecture='amd64' AND is_latest")
+          if [ "$PROMOTED" != "0.65.7" ]; then
+            echo "Fixture failed: expected 0.65.7 promoted, got '${PROMOTED}'"
+            exit 1
+          fi
+
+          # The versionless route follows the promotion.
+          PROMOTED_LOC=$(curl -s -o /dev/null -w '%{redirect_url}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64')
+          echo "versionless -> ${PROMOTED_LOC}"
+          case "$PROMOTED_LOC" in
+            *"/releases/download/v0.65.7/"*) echo "OK — versionless serves the promoted release" ;;
+            *) echo "Expected the promoted v0.65.7 asset; got ${PROMOTED_LOC}"; exit 1 ;;
+          esac
+
+          # THE BUG: a pinned, deliberately UNPROMOTED version must still get
+          # its own bytes. Before the fix this returned the v0.65.7 asset
+          # while the agent held the v0.65.8 checksum, and the device sat in
+          # "Updating" forever.
+          PINNED_LOC=$(curl -s -o /dev/null -w '%{redirect_url}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64?version=0.65.8')
+          echo "pinned -> ${PINNED_LOC}"
+          case "$PINNED_LOC" in
+            *"/releases/download/v0.65.8/"*) echo "OK — pinned, unpromoted version serves its OWN release" ;;
+            *) echo "REGRESSION (#5159): pinned v0.65.8 served ${PINNED_LOC}"; exit 1 ;;
+          esac
 
       - name: Stop API
         if: always()
