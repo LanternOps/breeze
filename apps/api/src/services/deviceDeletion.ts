@@ -269,6 +269,23 @@ export async function deleteDeviceCascade(
   // here anyway for the single detach-tables contract
   // (getDeviceCascadeDeleteTables et al.), not because this line is the only
   // thing that does the work for that table.
+  // AI Operator tasks need more than the generic `device_id = NULL` below
+  // (#5205 W03, #5208): a task whose target device is gone must also RECORD
+  // that, or a detached task is indistinguishable from a task that never had a
+  // target, and a live one must be fenced or the coordinator keeps trying to
+  // act on a device that no longer exists. Runs first so the generic loop that
+  // follows is a no-op for these rows rather than clobbering the stamp.
+  // `stopping` is deliberately not terminal — an in-flight command may still
+  // report, and its result belongs on the operation row (spec §6.3).
+  await tx.execute(sql`
+    UPDATE ai_operator_tasks
+       SET device_id = NULL,
+           target_detached_at = COALESCE(target_detached_at, now()),
+           target_detached_reason = COALESCE(target_detached_reason, 'device_deleted'),
+           state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
+           updated_at = now()
+     WHERE device_id = ${deviceId}`);
+
   for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
     await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
   }

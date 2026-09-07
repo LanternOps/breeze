@@ -230,6 +230,33 @@ export const actionIntents = pgTable(
      * scopeDeviceId, never a retarget.
      */
     scopeTicketId: uuid('scope_ticket_id'),
+    /**
+     * AI Operator operation identity, reserved ON the intent (spec §6.5,
+     * #5205 W03). All three are NULL for every legacy/non-task intent and all
+     * three are set for a task-linked one — `action_intents_task_link_chk`
+     * enforces all-or-none; the guarantee that a task-linked admission never
+     * yields a null `operation_key` comes from the single task-aware creation
+     * path added in W04, not from this CHECK.
+     *
+     * The composite `(task_id, org_id) -> ai_operator_tasks(id, org_id)` FK is
+     * SQL-ONLY (migrations/2026-10-14-100000-ai-operator-thin-slice.sql):
+     * `aiOperatorTasks.ts` imports THIS module for its own operation->intent
+     * FK, so declaring the reverse edge in Drizzle would be a module cycle.
+     * Postgres has the constraint either way. Same technique as
+     * `reports.sourceAiAgentScheduleId`.
+     *
+     * There is deliberately NO unique index on (org_id, task_id,
+     * operation_key). `createActionIntent`'s ON CONFLICT names
+     * (org_id, idempotency_key), and Postgres suppresses conflicts on the
+     * named inference target only — a second arbiter would turn an idempotent
+     * replay into a bare 23505 (baseline H1/C6). W04 derives the task-linked
+     * `idempotencyKey` from task identity so `action_intents_org_idem_uniq`
+     * stays the single arbiter; sequential replay is guarded by
+     * `ai_operator_operations_org_task_op_uq` instead.
+     */
+    taskId: uuid('task_id'),
+    taskStepKey: text('task_step_key'),
+    operationKey: text('operation_key'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -424,6 +451,11 @@ export const actionIntents = pgTable(
     orgCreatedIdx: index('action_intents_org_created_idx').on(table.orgId, table.createdAt),
     orgExecutedIdx: index('action_intents_org_executed_idx')
       .on(table.orgId, table.executedAt).where(sql`${table.executedAt} IS NOT NULL`),
+    // NON-UNIQUE on purpose — see the taskId column comment. A lookup aid for
+    // "which intents belong to this task operation", never an ON CONFLICT
+    // arbiter.
+    taskOperationIdx: index('action_intents_task_operation_idx')
+      .on(table.orgId, table.taskId, table.operationKey).where(sql`${table.taskId} IS NOT NULL`),
   }),
 );
 

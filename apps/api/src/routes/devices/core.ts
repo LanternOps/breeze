@@ -164,8 +164,15 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // devices it charged for, by hostname, after a hard delete. Its device_id FK is
 // declared ON DELETE SET NULL to match, and the table is deliberately NOT
 // append-only so this generic UPDATE loop can run as breeze_app.
+// ai_operator_tasks (#5205 W03, #5208) also detaches: an AI Operator task is
+// durable remediation history — what was attempted, on what, with what result —
+// and must outlive the device it targeted, exactly like an agent run. Its
+// device_id FK is ON DELETE SET NULL to match. Two callers stamp the reason
+// beyond the generic device_id = NULL this list drives: deviceDeletion.ts
+// ('device_deleted') and moveOrg.ts ('device_moved'); both also fence any live
+// task, because a task whose target has vanished must not keep executing.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -191,6 +198,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
+ *
+ * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
+ * #5208): AI Operator task history stays in the org that delegated the work.
+ * `org_id` is the task's immutable tenant and anchors three composite
+ * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
+ * operation, a linked run or a linked intent. moveOrg detaches instead —
+ * device_id = NULL plus target_detached_at/reason and a fence of any live
+ * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
  * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
  * an org_id column but is cascade-deleted, not moved. (a) Exposure history

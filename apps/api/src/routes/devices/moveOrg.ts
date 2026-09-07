@@ -401,6 +401,35 @@ moveOrgRoutes.post(
               WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // AI Operator task history stays with the SOURCE org too (#5205 W03,
+        // #5208), for the same reason agent runs do — and with one addition
+        // the runs statement above does not need: a task is LIVE work, not a
+        // finished record. A task still queued/running/waiting/paused holds a
+        // lease and a next_wake_at, so leaving it alone would let the
+        // coordinator keep acting on a device that now belongs to a different
+        // tenant. Sever the pointer, record WHY (the frozen target_label is
+        // retained, so the evidence still says what it was pointed at), and
+        // fence the task to `stopping` — spec §6.1's "cancel, expiry, handoff,
+        // authority loss" edge. `stopping` is deliberately NOT terminal: an
+        // in-flight device command may still return, and its result must land
+        // on the operation row before the reconciler settles the task (§6.3).
+        //
+        // LOAD-BEARING, like the invoice_line_devices statement below rather
+        // than the ai_agent_runs one above: ai_operator_tasks is excluded from
+        // breeze_device_child_orgid_tables(), so the generic re-stamp loop
+        // never touches it — but breeze_cascade_device_org_id() carries an
+        // identical statement so a DIRECT devices.org_id UPDATE that bypasses
+        // this route cannot strand a cross-tenant pointer either.
+        await tx.execute(
+          sql`UPDATE ai_operator_tasks
+                 SET device_id = NULL,
+                     target_detached_at = COALESCE(target_detached_at, now()),
+                     target_detached_reason = COALESCE(target_detached_reason, 'device_moved'),
+                     state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice
         // and its lines do not move. UNLIKE the ai_agent_runs statement above,
         // which normally matches nothing because breeze_cascade_device_org_id()

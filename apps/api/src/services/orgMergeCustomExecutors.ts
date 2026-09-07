@@ -264,6 +264,82 @@ const resolveTicketDrafts: CustomMergeExecutor = async (loser) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// ai_operator_tasks — FENCE, then leave for erasure (#5205 W03, #5208).
+//
+// This executor deliberately DEVIATES from the "every executor leaves ZERO rows
+// behind under the loser org" line in this file's header, and the deviation is
+// the point. AI Operator task history is source-org history for exactly the
+// reason ai_agent_runs is (owner decision 2026-08-23): a task's evidence — its
+// runs, its intents, its device command — all stays with the loser, so
+// repointing the task alone would split one remediation's story across two
+// orgs. `ai_operator_tasks.org_id` also anchors three composite (x, org_id)
+// FKs, so a bare repoint would 23503 regardless.
+//
+// So why is this `custom` rather than plain `leave-for-erasure`, like
+// ai_operator_operations and ai_operator_task_outbox next to it in the
+// registry? Because leaving the rows ALONE is not safe. `mergeAiAgents`
+// repoints every loser-org `ai_agents` row to the survivor, and a task still in
+// a live state holds a lease, a next_wake_at and an agent_id — it would keep
+// coordinating under a dead tenant, against an agent that now belongs to
+// someone else, and could dispatch a real device command while doing it. The
+// fence stops new work: state -> 'stopping' (spec §6.1's "cancel, expiry,
+// handoff, authority loss" edge), lease released, wake cancelled, and the
+// reason recorded in the exportable `outcome_detail` text column.
+//
+// It runs in the RESOLVE phase, which is what makes "before ai_agents
+// repoints" true. The walk order is the reverse topological cascade order —
+// parents first — and `ai_agents` is a PARENT of `ai_operator_tasks`
+// (tasks.agent_id -> ai_agents.id), so in the `move` phase ai_agents would run
+// FIRST. Resolve completes for every table before move starts for any of them,
+// which is the only ordering that gets the fence in ahead of the repoint.
+//
+// In-flight effects are deliberately NOT touched. 'stopping' is not terminal:
+// spec §6.3 requires that a late device-command result still land on its
+// operation row, and the reconciler settles the task afterwards. Terminalising
+// here would hide an effect that is still running on a real machine.
+// ---------------------------------------------------------------------------
+
+/** Live task states — the ones the fence stops. Mirrors AI_OPERATOR_TASK_LIVE_STATES. */
+const AI_OPERATOR_LIVE_TASK_STATES = sql`('queued', 'running', 'waiting', 'paused')`;
+
+const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
+  const fenced = await run(sql`
+    UPDATE ai_operator_tasks
+       SET state = 'stopping',
+           lease_owner = NULL,
+           lease_expires_at = NULL,
+           next_wake_at = NULL,
+           outcome_detail = left(
+             coalesce(outcome_detail || E'\n', '')
+             || 'Fenced by an organization merge: the owning organization was merged away, so the Operator stopped admitting new work on this task.',
+             4000),
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`);
+  return {
+    moved: 0,
+    dropped: 0,
+    notes: fenced > 0
+      ? [
+          `ai_operator_tasks: fenced ${fenced} live AI Operator task(s) from the merged-away org `
+          + '(state -> stopping, lease released, scheduled wake cancelled) so nothing keeps executing '
+          + 'under a dead tenant once its agents repoint to the survivor. The task records themselves '
+          + 'are NOT re-tenanted — Operator history stays with the source org, same rule as agent runs, '
+          + 'and is erased with the loser shell. Re-delegate the work under the surviving organization '
+          + 'if it still needs doing.',
+        ]
+      : [],
+  };
+};
+
+/**
+ * ai_operator_tasks, MOVE half — a no-op. The resolve half above did the whole
+ * disposition; the rows stay put on purpose (leave-for-erasure semantics),
+ * which is why there is nothing left to do here.
+ */
+const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
@@ -1055,6 +1131,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   incidents: mergeIncidents,
   reports: mergeReports,
   ticket_drafts: moveTicketDrafts,
+  ai_operator_tasks: moveAiOperatorTasks,
 };
 
 /**
@@ -1074,6 +1151,9 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
 export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   discovered_assets: resolveDiscoveredAssets,
   ticket_drafts: resolveTicketDrafts,
+  // Must run in resolve, not move: ai_agents is a PARENT of ai_operator_tasks
+  // and would otherwise repoint first. See fenceAiOperatorTasks' header.
+  ai_operator_tasks: fenceAiOperatorTasks,
 };
 
 /**
@@ -1097,6 +1177,13 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
     SELECT count(*)::int AS n FROM enrollment_keys
      WHERE org_id = ${uuid(loser)}
        AND (expires_at IS NULL OR expires_at > now())`,
+  // Mirrors fenceAiOperatorTasks' WHERE exactly. Fencing is neither a drop nor
+  // a repoint, but it IS an irreversible stop of live automation, so it belongs
+  // in the preview beside the other revocations rather than nowhere.
+  ai_operator_tasks: (loser) => sql`
+    SELECT count(*)::int AS n FROM ai_operator_tasks
+     WHERE org_id = ${uuid(loser)}
+       AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`,
 };
 
 /**
