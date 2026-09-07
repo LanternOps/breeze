@@ -17,7 +17,7 @@ import {
   devices,
   configurationPolicies,
   organizations,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyBackupSettings,
   hypervVms,
   sqlInstances,
@@ -154,10 +154,10 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
     .selectDistinct({ orgId: configurationPolicies.orgId })
     .from(configurationPolicies)
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'backup')
       )
     )
     .where(eq(configurationPolicies.status, 'active'));
@@ -169,10 +169,10 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
     .selectDistinct({ partnerId: configurationPolicies.partnerId })
     .from(configurationPolicies)
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'backup')
       )
     )
     .where(and(eq(configurationPolicies.status, 'active'), isNull(configurationPolicies.orgId)));

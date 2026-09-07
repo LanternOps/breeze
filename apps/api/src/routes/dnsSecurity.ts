@@ -189,13 +189,11 @@ const createIntegrationSchema = z.object({
         message: 'apiSecret is required for Cisco Umbrella'
       });
     }
-    if (!data.config?.organizationId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['config', 'organizationId'],
-        message: 'organizationId is required for Cisco Umbrella'
-      });
-    }
+    // NOTE: no organizationId check. The next-gen Umbrella Reports API
+    // (api.umbrella.com/reports/v2/activity) carries no org path segment — the
+    // OAuth2 token's `sub` claim (`org/<orgId>/client/<apiKey>`) scopes every
+    // call — so requiring one blocks a working credential (#4597). The field
+    // is still accepted, and still stored, for pre-existing integrations.
   }
 
   if (data.provider === 'cloudflare' && !data.config?.accountId) {

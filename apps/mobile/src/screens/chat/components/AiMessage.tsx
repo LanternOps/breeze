@@ -9,6 +9,7 @@ import { renderBlockForOutput } from '../blocks';
 import { MarkdownBody } from './MarkdownBody';
 import { StreamingPulse } from './StreamingPulse';
 import { ToolIndicator } from './ToolIndicator';
+import { toolRowStatus } from './toolIndicatorLogic';
 
 interface Props {
   message: Extract<ChatMessage, { role: 'assistant' }>;
@@ -30,16 +31,21 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
       {message.toolEvents
         .filter((t) => t.state === 'completed')
         .map((t) => {
-          // Errors always render as the audit indicator (DENIED / FAILED),
-          // never as a block — failure shouldn't masquerade as data.
-          if (t.isError) {
+          const status = toolRowStatus({ isError: t.isError, output: t.output, handoff: t.handoff });
+          // Anything that is not a plain completion renders as the audit
+          // indicator, never as a block: a failure shouldn't masquerade as
+          // data, and an approval handoff has no data yet — the worker is
+          // still executing it (#5107). `output` is always forwarded so the
+          // indicator can classify the row itself.
+          if (status !== 'completed') {
             return (
               <ToolIndicator
                 key={t.toolUseId}
                 toolName={t.toolName}
                 state="completed"
-                isError
+                isError={t.isError}
                 output={t.output}
+                handoff={t.handoff}
               />
             );
           }

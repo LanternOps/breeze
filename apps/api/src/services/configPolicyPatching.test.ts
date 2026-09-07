@@ -28,6 +28,15 @@ vi.mock('../db/schema', () => ({
     featurePolicyId: 'feature_policy_id',
     inlineSettings: 'inline_settings',
   },
+  configPolicyEffectiveFeatureLinks: {
+    id: 'id',
+    configPolicyId: 'config_policy_id',
+    sourcePolicyId: 'source_policy_id',
+    inherited: 'inherited',
+    featureType: 'feature_type',
+    featurePolicyId: 'feature_policy_id',
+    inlineSettings: 'inline_settings',
+  },
   configPolicyPatchSettings: {
     id: 'id',
     featureLinkId: 'feature_link_id',

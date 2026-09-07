@@ -133,7 +133,10 @@
       "removing": "Eliminando...",
       "removeConfiguration": "Eliminar configuración",
       "complianceStatus2": "compliance_status",
-      "assignments2": "asignaciones"
+      "assignments2": "asignaciones",
+      "managedByYourMsp": "Administrado por su MSP",
+      "inheritedByPolicies_one": "Heredado por {{count}} política",
+      "inheritedByPolicies_other": "Heredado por {{count}} políticas"
     },
     "configPolicyList": {
       "archived": "Archivado",
@@ -152,7 +155,8 @@
       "of2": "de",
       "itsOwningOrganization": "su organización propietaria",
       "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}",
-      "summary": "{{filtered}} de {{total}} políticas"
+      "summary": "{{filtered}} de {{total}} políticas",
+      "inheritsBadge": "Hereda"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "No se pudieron recuperar las políticas de configuración",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "¿Está seguro de que desea eliminar?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Esto también eliminará todos los enlaces y asignaciones de funciones. Esta acción no se puede deshacer.",
       "delete": "borrar",
-      "deleting": "Eliminando..."
+      "deleting": "Eliminando...",
+      "deleteBlockedByChildren": "Elimine primero las políticas que heredan de esta:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "No se pudieron cargar las tareas",
@@ -938,7 +943,8 @@
         "loadingPolicies": "Cargando políticas...",
         "noExistingPoliciesFound": "No se encontraron políticas existentes.",
         "selectAPolicy": "Seleccione una política...",
-        "clearSelection": "Borrar selección"
+        "clearSelection": "Borrar selección",
+        "allOrgs": "Todas las orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

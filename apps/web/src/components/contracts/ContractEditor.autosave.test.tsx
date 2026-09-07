@@ -207,6 +207,15 @@ describe('ContractEditor — blur autosave (existing contract)', () => {
     expect(await screen.findByTestId('contract-form-org-readonly')).toHaveTextContent('Acme');
   });
 
+  it('links the read-only org name to its organization record (#5075 W03)', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    await screen.findByTestId('contract-form-name');
+    const link = await screen.findByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/organizations/org-1');
+    expect(link).toHaveTextContent('Acme');
+  });
+
   it('shows an inline error when the custom interval is emptied, and does not PATCH', async () => {
     render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
     const cadence = await screen.findByTestId('contract-form-interval');

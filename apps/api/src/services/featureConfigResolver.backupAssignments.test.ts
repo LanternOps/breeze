@@ -119,11 +119,14 @@ vi.mock('../db/schema', () => ({
     orgId: 'configurationPolicies.orgId',
     status: 'configurationPolicies.status',
   },
-  configPolicyFeatureLinks: {
-    id: 'configPolicyFeatureLinks.id',
-    configPolicyId: 'configPolicyFeatureLinks.configPolicyId',
-    featureType: 'configPolicyFeatureLinks.featureType',
-    featurePolicyId: 'configPolicyFeatureLinks.featurePolicyId',
+  configPolicyEffectiveFeatureLinks: {
+    id: 'configPolicyEffectiveFeatureLinks.id',
+    configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId',
+    sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId',
+    inherited: 'configPolicyEffectiveFeatureLinks.inherited',
+    featureType: 'configPolicyEffectiveFeatureLinks.featureType',
+    featurePolicyId: 'configPolicyEffectiveFeatureLinks.featurePolicyId',
+    inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings',
   },
   configPolicyAssignments: {
     level: 'configPolicyAssignments.level',

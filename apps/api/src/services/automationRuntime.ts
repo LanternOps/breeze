@@ -11,7 +11,7 @@ import {
   automationRuns,
   automationRunDeviceResults,
   configPolicyAutomations,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   deviceGroupMemberships,
   devices,
@@ -2832,9 +2832,22 @@ export { isCronDue, matchesCronField } from './cronDue';
 
 type ConfigPolicyAutomationRow = typeof configPolicyAutomations.$inferSelect;
 
+/**
+ * Resolves the owner of a config-policy automation run.
+ *
+ * #5080: takes the ASSIGNED policy id as well as the feature-link id, and
+ * verifies the link is EFFECTIVE for that policy through
+ * `config_policy_effective_feature_links`. A feature link that a parent
+ * authored belongs to the parent AND every child inheriting it, so resolving
+ * "the" policy from a link id alone would attribute a child's run — and its
+ * reference resolution, its org clamp, and its `automation_runs` row — to
+ * whichever owner the planner returned first. Returning null when the pair does
+ * not resolve makes the caller fail the run rather than proceed unclamped.
+ */
 async function resolveConfigPolicyAutomationContext(
   tx: DbTransaction,
   featureLinkId: string,
+  configPolicyId: string,
 ): Promise<{ configPolicyId: string; orgId: string | null; partnerId: string | null } | null> {
   const [row] = await tx
     .select({
@@ -2842,12 +2855,15 @@ async function resolveConfigPolicyAutomationContext(
       orgId: configurationPolicies.orgId,
       partnerId: configurationPolicies.partnerId,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
     )
-    .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+    .where(and(
+      eq(configPolicyEffectiveFeatureLinks.id, featureLinkId),
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configPolicyId),
+    ))
     .limit(1);
   return row ?? null;
 }
@@ -2855,6 +2871,8 @@ async function resolveConfigPolicyAutomationContext(
 async function admitConfigPolicyAutomationRun(
   options: {
     automation: ConfigPolicyAutomationRow;
+    /** The ASSIGNED policy this run executes under (#5080). */
+    configPolicyId: string;
     targetDeviceIds: string[];
     triggeredBy: string;
     details?: Record<string, unknown>;
@@ -2867,10 +2885,14 @@ async function admitConfigPolicyAutomationRun(
   resolvedReferences: ResolvedAutomationReferences | null;
 }> {
   return db.transaction(async (tx) => {
-    const context = await resolveConfigPolicyAutomationContext(tx, options.automation.featureLinkId);
+    const context = await resolveConfigPolicyAutomationContext(
+      tx,
+      options.automation.featureLinkId,
+      options.configPolicyId,
+    );
     if (!context) {
       throw new Error(
-        `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId})`,
+        `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId}, configPolicyId=${options.configPolicyId})`,
       );
     }
     if (requireOrgId && !context.orgId) {
@@ -2923,6 +2945,8 @@ async function admitConfigPolicyAutomationRun(
  */
 export async function createConfigPolicyAutomationRun(options: {
   automation: ConfigPolicyAutomationRow;
+  /** The ASSIGNED policy this run executes under (#5080). */
+  configPolicyId: string;
   targetDeviceIds: string[];
   triggeredBy: string;
   details?: Record<string, unknown>;
@@ -2938,6 +2962,8 @@ export async function createConfigPolicyAutomationRun(options: {
  */
 export async function executeConfigPolicyAutomationRun(
   automation: ConfigPolicyAutomationRow,
+  /** The ASSIGNED policy this run executes under (#5080). */
+  configPolicyId: string,
   targetDeviceIds: string[],
   triggeredBy: string,
 ): Promise<{
@@ -2954,7 +2980,7 @@ export async function executeConfigPolicyAutomationRun(
     // pre-authorization runtime contract. No action can be dispatched because
     // parsing failed, so this branch deliberately skips reference resolution.
     const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-      { automation, targetDeviceIds, triggeredBy },
+      { automation, configPolicyId, targetDeviceIds, triggeredBy },
       null,
       true,
     ));
@@ -2979,7 +3005,7 @@ export async function executeConfigPolicyAutomationRun(
     };
   }
   const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-    { automation, targetDeviceIds, triggeredBy },
+    { automation, configPolicyId, targetDeviceIds, triggeredBy },
     actions,
     true,
   ));

@@ -249,6 +249,10 @@ describe('automation execution DB context ownership', () => {
       data: {
         type: 'execute-config-policy-run',
         configPolicyAutomationId: '33333333-3333-4333-8333-333333333333',
+        // Required since #5080: without it the handler short-circuits on the
+        // missing-policy guard BEFORE reaching executeConfigPolicyAutomationRun,
+        // and this test would stay green while testing nothing about its subject.
+        configPolicyId: '44444444-4444-4444-8444-444444444444',
         targetDeviceIds: ['22222222-2222-4222-8222-222222222222'],
         triggeredBy: 'scheduler',
       },

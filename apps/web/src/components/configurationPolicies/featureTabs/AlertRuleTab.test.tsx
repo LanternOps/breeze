@@ -932,3 +932,49 @@ describe('AlertRuleTab rule-card header is a non-nesting disclosure', () => {
     expect(header.getAttribute('aria-expanded')).toBe('false');
   });
 });
+
+// #5080: `featurePolicyId` means a standalone entity id (update ring, backup
+// profile, ...) — Alert Rule is inline settings, so it must never carry the
+// parent CONFIG policy's own id.
+describe('AlertRuleTab — featurePolicyId payload (#5080)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'Existing rule',
+                severity: 'high',
+                conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+                cooldownMinutes: 15,
+                autoResolve: false,
+              },
+            ],
+          },
+        }}
+        linkedPolicyId="parent-1"
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
+    expect(payload.featurePolicyId).toBeNull();
+  });
+});

@@ -9,12 +9,12 @@ import { db } from '../db';
 import {
   patchJobs,
   configPolicyPatchSettings,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
   configurationPolicies,
 } from '../db/schema';
 import { eq, and, asc } from 'drizzle-orm';
-import { resolvePatchConfigForDevice, checkDeviceMaintenanceWindow } from './featureConfigResolver';
+import { resolvePatchConfigDetailsForDevice, checkDeviceMaintenanceWindow } from './featureConfigResolver';
 
 // ============================================
 // Types
@@ -103,9 +103,11 @@ export async function createPatchJobFromConfigPolicy(
  * Resolves the config-policy patch settings for a device via
  * the hierarchy, then creates a patch job if settings exist.
  *
- * Looks up the actual `configPolicyId` from the feature link
- * so the patch job references the configuration policy, not the
- * feature link.
+ * The `configPolicyId` comes from the resolver, which knows which ASSIGNED
+ * policy won. It is NOT reverse-mapped from the feature link any more (#5080):
+ * through `config_policy_effective_feature_links` one link id belongs to the
+ * authoring parent and every child inheriting it, so a link → policy lookup
+ * would stamp an arbitrary policy — and its org — onto the patch job.
  *
  * Returns `null` when no config policy patch settings apply to this device,
  * or when the device is in a maintenance window with patching suppressed.
@@ -120,19 +122,10 @@ export async function createPatchJobForDeviceFromPolicy(
     return null;
   }
 
-  const settings = await resolvePatchConfigForDevice(deviceId);
-  if (!settings) return null;
+  const resolved = await resolvePatchConfigDetailsForDevice(deviceId);
+  if (!resolved) return null;
 
-  // Resolve the configPolicyId from the feature link
-  const [featureLink] = await db
-    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
-    .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.id, settings.featureLinkId))
-    .limit(1);
-
-  if (!featureLink) return null;
-
-  return createPatchJobFromConfigPolicy(deviceId, settings, orgId, featureLink.configPolicyId);
+  return createPatchJobFromConfigPolicy(deviceId, resolved.settings, orgId, resolved.configPolicyId);
 }
 
 // ============================================
@@ -165,13 +158,13 @@ export async function scanScheduledPatchSettings(): Promise<ScheduledPatchSettin
     })
     .from(configPolicyPatchSettings)
     .innerJoin(
-      configPolicyFeatureLinks,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
+      configPolicyEffectiveFeatureLinks,
+      eq(configPolicyPatchSettings.featureLinkId, configPolicyEffectiveFeatureLinks.id)
     )
     .innerJoin(
       configurationPolicies,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active')
       )
     )
