@@ -52,7 +52,8 @@ import { getTestDb } from './setup';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { partnerUsers } from '../../db/schema/users';
-import { tickets } from '../../db/schema/portal';
+import { tickets, ticketComments } from '../../db/schema/portal';
+import { auditLogs } from '../../db/schema';
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAuthContextForIntent } from '../../services/actionIntents/actorContext';
@@ -545,27 +546,8 @@ async function createAgentMoveOrgIntent(
 
 describe('#4650 move_org action-intent release (agent-owned): real-Postgres end-to-end coverage', () => {
   runDb(
-    '(e) an approved agent-owned move_org intent widens accessibleOrgIds cross-org when rebuilt for release (partner-scoped agent, same-partner target)',
+    '(e) #4830 approved agent-owned move_org completes with AI attribution and no cross-org run pointer',
     async () => {
-      // Drives the REAL creation + four-eyes approval pipeline (createActionIntent
-      // -> approvalRoutes decide), then calls the exact release-time function,
-      // buildAuthContextForIntent, against the resulting real, approved
-      // action_intents row (real aiAgents/aiAgentRuns/organizations reads, no
-      // mocks) — proving buildAgentOwnedAuthContext's widening end-to-end for a
-      // genuinely approved agent-owned intent.
-      //
-      // Deliberately stops at the rebuilt AuthContext rather than also calling
-      // `releaseApprovedIntent` through to tool execution: doing so surfaced a
-      // SEPARATE, pre-existing bug unrelated to accessibleOrgIds — `moveTicketOrg`'s
-      // "moved" system-comment insert (ticketService.ts) writes `actor.userId`
-      // (== `auth.user.id`, the agent's synthetic id for an ai_agent principal,
-      // per `agentRunIdFrom`'s doc comment in aiToolsTicketing.ts) into
-      // `ticket_comments.user_id`, which is not a real `users` row and violates
-      // that table's RLS/FK — every OTHER manage_tickets action routes an
-      // ai_agent principal through a dedicated AI-safe executor instead of the
-      // shared human-actor ticketService functions; `move_org` does not. This
-      // was unreachable before #4650 (accessibleOrgIds always 403'd first) and
-      // needs its own fix/design decision — tracked separately, not fixed here.
       const s = await seedAgentScenario();
       const { intentId } = await createAgentMoveOrgIntent(s, s.orgBId);
 
@@ -583,6 +565,26 @@ describe('#4650 move_org action-intent release (agent-owned): real-Postgres end-
       expect(auth!.canAccessOrg(s.orgAId)).toBe(true);
       expect(auth!.canAccessOrg(s.orgBId)).toBe(true);
       expect(auth!.principal).toEqual({ kind: 'ai_agent', agentId: s.agentId, runId: s.runId });
+
+      await releaseApprovedIntent(intentId);
+      expect(await readIntent(intentId)).toMatchObject({ status: 'completed', errorCode: null });
+      expect(await readTicketOrgId(s.ticketId)).toBe(s.orgBId);
+      const [run] = await getTestDb().select().from(aiAgentRuns).where(eq(aiAgentRuns.id, s.runId));
+      expect(run).toMatchObject({ orgId: s.orgAId, ticketId: null });
+      const comments = await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, s.ticketId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]).toMatchObject({
+        userId: null, agentRunId: null, originPrincipalKind: 'ai_agent',
+        authorType: 'ai_agent', authorName: 'Test Ticket Agent', commentType: 'system', isPublic: false,
+      });
+      const audits = await getTestDb().select().from(auditLogs).where(eq(auditLogs.resourceId, s.ticketId));
+      const moveAudits = audits.filter((row) => row.action.startsWith('ticket.move_org.'));
+      expect(moveAudits).toHaveLength(2);
+      expect(moveAudits.map((row) => row.orgId).sort()).toEqual([s.orgAId, s.orgBId].sort());
+      for (const row of moveAudits) {
+        expect(row).toMatchObject({ actorType: 'ai_agent', actorId: s.agentId, initiatedBy: 'ai' });
+      }
+
     },
   );
 
@@ -604,6 +606,12 @@ describe('#4650 move_org action-intent release (agent-owned): real-Postgres end-
       expect(auth).not.toBeNull();
       expect(auth!.accessibleOrgIds).toEqual([s.orgAId]);
       expect(auth!.canAccessOrg(orgC.id)).toBe(false);
+
+      await releaseApprovedIntent(intentId);
+      expect(await readIntent(intentId)).toMatchObject({ status: 'failed', errorCode: 'tool_returned_error' });
+      expect(await readTicketOrgId(s.ticketId)).toBe(s.orgAId);
+      expect(await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, s.ticketId))).toEqual([]);
+
     },
   );
 });

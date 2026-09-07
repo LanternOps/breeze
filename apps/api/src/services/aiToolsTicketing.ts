@@ -755,7 +755,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           // here) go through. The tombstone previously done here covered
           // neither ticket_drafts nor terminal-status intents; both were
           // fixed at the source instead of patched here.
-          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
+          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId),
+            auth.principal.kind === 'ai_agent'
+              ? { kind: 'ai_agent', agentId: auth.principal.agentId, name: auth.user.name }
+              : actor);
           return JSON.stringify({ ticket });
         } catch (err) {
           const json = serviceErrorToJson(err);
