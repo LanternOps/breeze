@@ -296,6 +296,39 @@ moveOrgRoutes.post(
           dropped: Number(customFieldMove?.dropped ?? 0),
         };
 
+        // #4622 — a manual asset is org-scoped hand-entered inventory bound to
+        // this device by the composite FK (linked_device_id, org_id) ->
+        // devices(id, org_id). Once the device leaves the org that link is not
+        // merely stale but unrepresentable, so null it. The ROW survives: it
+        // carries serial, asset tag, assigned contact and notes that belong to
+        // the SOURCE org and must outlive the link.
+        //
+        // Placement is load-bearing and stricter than the
+        // device_group_memberships detach further down:
+        // manual_assets_linked_device_org_fk is DEFERRABLE INITIALLY IMMEDIATE
+        // (the CLAUDE.md default for a composite FK referencing an org_id
+        // column), so its referential check fires at the end of the `UPDATE
+        // devices SET org_id` statement immediately below. A detach placed
+        // after that flip — or left to breeze_cascade_device_org_id(), which
+        // shares the same after-row queue as the RI check and is ordered
+        // against it only by trigger name — would arrive too late and abort the
+        // move with 23503.
+        //
+        // manual_assets has no device_id column, so the generic re-stamp loop
+        // cannot reach it, and it is deliberately absent from
+        // getDeviceOrgDenormalizedTables(): a link-only table is not
+        // device-managed and moveOrg.coverage.test.ts reports a listed one as
+        // an orphan.
+        //
+        // An org MERGE never reaches this route and must not detach: it runs
+        // SET CONSTRAINTS ALL DEFERRED and re-points manual_assets wholesale
+        // (services/orgMergeRegistry.ts REPOINT_TABLES), keeping the link valid
+        // inside the survivor org.
+        await tx.execute(
+          sql`UPDATE manual_assets SET linked_device_id = NULL
+              WHERE linked_device_id = ${deviceId}::uuid`,
+        );
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx

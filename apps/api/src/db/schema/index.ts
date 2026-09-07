@@ -32,6 +32,7 @@ export * from './analytics';
 export * from './fleetFindings';
 export * from './plugins';
 export * from './discovery';
+export * from './manualAssets';
 export * from './mobile';
 export * from './maintenance';
 export * from './security';

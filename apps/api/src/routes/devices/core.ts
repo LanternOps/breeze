@@ -94,6 +94,16 @@ import { requireCapability } from '../../services/partnerTrust';
 export const DEVICE_LINKED_DEVICE_ID_TABLES = [
   'network_change_events',
   'discovered_assets',
+  // #4622 — a manual asset points at the device an agent was later installed
+  // on. DETACHED, never deleted: the row is hand-entered inventory (serial,
+  // asset tag, assigned contact, notes) that must outlive the device row.
+  // No DEVICE_LINK_DEPENDENT_COLUMNS entry: manual_assets declares no
+  // link-conditional CHECK constraint, so nothing else needs clearing.
+  // Deliberately absent from CORE_DEVICE_ORG_DENORMALIZED_TABLES too — it has
+  // no device_id column, so it is link-only rather than device-managed, and
+  // moveOrg.coverage.test.ts reports a listed non-device-managed table as an
+  // orphan. Its cross-org detach is hand-written in moveOrg.ts instead.
+  'manual_assets',
 ] as const;
 
 /**

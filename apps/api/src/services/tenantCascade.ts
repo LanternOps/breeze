@@ -301,6 +301,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'm365_connections',
   'm365_consent_sessions',
   'maintenance_windows',
+  // #4622 — org-scoped hand-entered inventory. Not append-only and carrying no
+  // immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
+  'manual_assets',
   'metric_anomalies',
   'metric_anomaly_candidates',
   'metric_anomaly_incidents',

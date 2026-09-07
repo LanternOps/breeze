@@ -643,6 +643,11 @@ const REPOINT_TABLES: readonly string[] = [
   "log_search_queries",
   "m365_consent_sessions",
   "maintenance_windows",
+  // #4622 — plain repoint, NOT repoint-dedupe: there is no org-unique key on
+  // manual_assets by design (serial is deliberately non-unique), so merging two
+  // orgs that each hold the same physical asset yields two rows. That is the
+  // honest outcome and is resolvable by hand.
+  "manual_assets",
   "metric_anomalies",
   "metric_anomaly_candidates",
   "metric_anomaly_incidents",
