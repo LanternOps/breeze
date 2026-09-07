@@ -1,7 +1,7 @@
 # Offline Work Queue — Design
 
 **Date:** 2026-09-06
-**Status:** Draft v2 — post advisor quorum (Codex gpt-6 xhigh, read-only, against `02e8e5b29d`). Both advisors chose Approach A; the one open disagreement is OD-4 (how much to re-authorise at claim). Pending Todd review.
+**Status:** Approved 2026-09-06 (Todd). All nine Open Decisions resolved per their stated recommendation; OD-4 staged as written (claim-time org/lifecycle/trust/requester checks now, full permission rehydration as W6 after Track B #3985). Quorum: Codex gpt-6 xhigh, read-only, against `02e8e5b29d`.
 **Issue:** LanternOps/breeze#5128 (predecessor #4981 second half, same reporter; #4226 item 7 raises the patch-side case).
 **Ask (Discord, MSP technician):** "Every action in Breeze should not depend on the machine being online. Software updates, patches, scripts, software deployment should not just fail when you click on them — they should switch to pending, then run once the machine is online."
 
@@ -173,7 +173,7 @@ No change. Delivery, dedup (`markCommandSeen`), and result submission are unchan
 - Partner-configurable TTLs (OD-1), fleet-wide "Pending work" page, notifications when deferred work finally runs.
 - Fixing `if_required` reboots ignoring maintenance windows (filed as its own issue).
 
-## Open Decisions
+## Open Decisions (resolved 2026-09-06 — the bolded recommendation in each is the decision)
 
 1. **TTL classes.** (a) one 7-day constant; (b) per-class constants, env-tunable: scripts and software 7 d, patch installs 7 d capped by next occurrence, inventory/config syncs 24 h, power-state 24 h, `reject`-raced rows 5 min; (c) partner-configurable. **Recommend (b)** (Codex; Fable initially preferred (a) — conceded that a 7-day `refresh_inventory` or reboot has no user value). (c) later, once (b) has data.
 2. **Scheduled patch installs for offline devices.** (a) `offlineBehavior: 'queue'` default; TTL = min(patch TTL, next occurrence); next occurrence supersedes; delivery held during `suppressPatching` windows; (b) flat TTL, no supersession — can double-install on a device that reconnects at the next occurrence; (c) keep skipping. **Recommend (a)**.
