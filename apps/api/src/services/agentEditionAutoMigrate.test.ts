@@ -251,6 +251,45 @@ describe('maybeDispatchEditionMigration', () => {
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
+  /**
+   * #4919 — dispatch now refuses a device inside a maintenance window that
+   * suppresses scripts. The migration IS this device's update, so deferring is
+   * correct; what must NOT happen is the deferral being treated like the
+   * `insert_failed` refusal above. That path adds the device to the
+   * process-lifetime `failedDevices` veto and reports to Sentry — which would
+   * mean a device that happened to heartbeat during a nightly window never
+   * migrated again until the API restarted, and would page on an operator's
+   * own maintenance schedule.
+   */
+  it('defers (claim released, no Sentry, retryable next beat) when dispatch reports maintenance_suppressed', async () => {
+    const claim = primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(captureException).not.toHaveBeenCalled();
+    expect(claim.set).toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+
+    // The device is NOT vetoed in-process: the next heartbeat (window now
+    // closed, dispatch permitted) tries again and succeeds.
+    vi.mocked(dispatchScriptToDevice).mockClear();
+    const claim2 = primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-2', executionId: 'exec-2', delivered: true,
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(claim2.set).toHaveBeenCalledWith(
+      expect.objectContaining({ editionMigrationDispatchedAt: expect.any(Date) }),
+    );
+  });
+
   it('never throws into the caller — a dispatch CRASH keeps the claim (queue state indeterminate)', async () => {
     const claim = primeHappyPath();
     vi.mocked(dispatchScriptToDevice).mockRejectedValue(new Error('boom'));
