@@ -49,7 +49,7 @@ func TestGetFollowsPaginationOffset(t *testing.T) {
 					elems = append(elems, fmt.Sprintf(`{"id":"d%d","macAddress":"aa:bb:cc:dd:ee:%02d","name":"dev%d"}`, i, i, i))
 				}
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{"data":[%s],"offset":%d,"limit":%d,"count":%d,"totalCount":%d}`,
+				_, _ = fmt.Fprintf(w, `{"data":[%s],"offset":%d,"limit":%d,"count":%d,"totalCount":%d}`,
 					strings.Join(elems, ","), offset, tt.pageSize, len(elems), tt.totalItems)
 			}))
 			defer srv.Close()
@@ -231,7 +231,7 @@ func TestGetStopsAtHardPageCapWhenControllerNeverAdvances(t *testing.T) {
 			elems[i] = fmt.Sprintf(`{"id":"d%d","macAddress":"aa:bb:cc:dd:ee:%02d"}`, i, i)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"data":[%s],"offset":0,"limit":%d,"count":%d,"totalCount":%d}`,
+		_, _ = fmt.Fprintf(w, `{"data":[%s],"offset":0,"limit":%d,"count":%d,"totalCount":%d}`,
 			strings.Join(elems, ","), pageItems, pageItems, totalCount)
 	}))
 	defer srv.Close()
