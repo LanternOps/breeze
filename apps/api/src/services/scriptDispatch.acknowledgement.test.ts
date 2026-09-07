@@ -10,7 +10,10 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
-vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
+vi.mock('./commandQueue', async () => {
+  const { CommandTypes } = await import('./commandTypes');
+  return { CommandTypes, queueCommand: vi.fn() };
+});
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
   releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
