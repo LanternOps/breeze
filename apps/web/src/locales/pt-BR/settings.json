@@ -3331,6 +3331,7 @@
     "passkeyRenamed": "Chave de acesso renomeada",
     "currentPasswordIsRequiredToDeleteAPasskey": "A senha atual é necessária para excluir uma chave de acesso",
     "passkeyDeleted": "Chave de acesso excluída",
+    "signInAgainToContinue": "Entre novamente para continuar.",
     "failedToLoadPasskeys": "Falha ao carregar as chaves de acesso",
     "failedToUpdateProfile": "Falha ao atualizar o perfil",
     "failedToUploadAvatar": "Falha ao enviar avatar",

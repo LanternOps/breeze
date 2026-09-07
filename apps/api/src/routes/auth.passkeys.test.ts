@@ -76,6 +76,42 @@ vi.mock('../services', () => {
     await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
     return { ...tokens, familyId };
   });
+  const runFactorWrite = async (input: any) => {
+    const tx: any = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve(dbState.insertReturning)),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          dbState.updateSets.push(values);
+          const whereResult: any = Promise.resolve(undefined);
+          whereResult.returning = vi.fn(() => Promise.resolve([{ id: 'user-123' }]));
+          return { where: vi.fn(() => whereResult) };
+        }),
+      })),
+      delete: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve(undefined)),
+      })),
+    };
+    const value = await input.persistFactor(tx, input.recoveryCodeHashes ?? []);
+    return {
+      value,
+      recoveryCodes: [...(input.recoveryCodes ?? [])],
+      issued: {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        refreshJti: 'replacement-jti',
+        expiresInSeconds: 900,
+        familyId: 'replacement-family',
+        transitionId: 'transition-1',
+        generation: 1,
+      },
+      mfaEpoch: 2,
+      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+    };
+  };
   class AuthBindingRotationRequiredError extends Error {
     status = 428;
     constructor(readonly replacement: unknown) { super('rotation required'); }
@@ -131,39 +167,17 @@ vi.mock('../services', () => {
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
-  completeInitialMfaEnrollment: vi.fn(async (input: any) => {
-    const tx: any = {
-      insert: vi.fn(() => ({
-        values: vi.fn(() => ({
-          returning: vi.fn(() => Promise.resolve(dbState.insertReturning)),
-        })),
-      })),
-      update: vi.fn(() => ({
-        set: vi.fn((values: Record<string, unknown>) => {
-          dbState.updateSets.push(values);
-          const whereResult: any = Promise.resolve(undefined);
-          whereResult.returning = vi.fn(() => Promise.resolve([{ id: 'user-123' }]));
-          return { where: vi.fn(() => whereResult) };
-        }),
-      })),
-    };
-    const value = await input.persistFactor(tx, input.recoveryCodeHashes);
-    return {
-      value,
-      recoveryCodes: [...input.recoveryCodes],
-      issued: {
-        accessToken: 'replacement-access-token',
-        refreshToken: 'replacement-refresh-token',
-        refreshJti: 'replacement-jti',
-        expiresInSeconds: 900,
-        familyId: 'replacement-family',
-        transitionId: 'transition-1',
-        generation: 1,
-      },
-      mfaEpoch: 2,
-      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
-    };
-  }),
+  // All three session-replacing factor writes share one body: run the caller's
+  // `persistFactor` against a queue-backed transaction stub and hand back a
+  // replacement session. They differ only in whether a recovery-code pair rides
+  // along — a REMOVAL (#4934 /mfa/disable, #5038 passkey delete) and a
+  // SECONDARY ADDITION (#5038 passkey register on a protected account) install
+  // none, so the real service omits those fields from the input type entirely
+  // and the mock must default them rather than read `input.recoveryCodeHashes`
+  // off an object that never carries it.
+  completeInitialMfaEnrollment: vi.fn(async (input: any) => runFactorWrite(input)),
+  completeMfaFactorRemoval: vi.fn(async (input: any) => runFactorWrite(input)),
+  completeAdditionalMfaFactorEnrollment: vi.fn(async (input: any) => runFactorWrite(input)),
   issueUserSessionLegacyDuringTransition: issueLegacy,
   bindIssuedUserSession: vi.fn(async () => undefined),
   authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
@@ -396,9 +410,14 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import {
+  AuthBindingRotationRequiredError,
   AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   beginAuthIssuance,
+  bindIssuedUserSession,
   cancelAuthIssuance,
+  completeAdditionalMfaFactorEnrollment,
+  completeMfaFactorRemoval,
   createTokenPair,
   finishAuthIssuance,
   getRedis,
@@ -409,6 +428,7 @@ import {
   verifyPassword,
 } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
+import { authMiddleware } from '../middleware/auth';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
@@ -1763,6 +1783,291 @@ describe('passkey MFA auth routes', () => {
       mfaEnabled: false,
       mfaMethod: null,
     }));
+  });
+
+  // #5038: adding a passkey to an ALREADY-PROTECTED account and deleting a
+  // passkey both used to run through invalidateMfaAssuranceAfterFactorChange,
+  // which bumps mfa_epoch and revokes every refresh family WITHOUT re-issuing
+  // the actor. The caller's own next request then 401s on the stale `mep`, its
+  // refresh fails against a family revoked in the same transaction, and the web
+  // client hard-redirects to /login?reason=session-expired — the user is signed
+  // out by the very action they just took. Same class #4934/#5008 fixed for
+  // /mfa/disable: evict every OTHER session, keep the caller.
+  describe('#5038 passkey factor writes keep the calling session', () => {
+    // Query order for register/verify on a protected account: the
+    // userIsMfaProtected gate, #4018's resolveEnrollmentStepUp passwordHash
+    // read, then the terminal route's live enrollment-state read.
+    function queueProtectedRegisterReads() {
+      dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 1 }]);
+      dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+      dbState.selectQueue.push([{ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+    }
+
+    function registerSecondPasskey() {
+      return app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ credential: { id: 'credential-1', response: {} }, stepUpGrantId: 'grant-1' }),
+      });
+    }
+
+    // Query order for DELETE: the password step-up hash, the owned-passkey
+    // lookup, then the factor-state count.
+    function queueDeleteReads(state: Record<string, unknown> = {}) {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(true);
+      dbState.selectQueue.push(
+        [{ passwordHash: '$argon2id$hash' }],
+        [{ id: 'credential-1', userId: 'user-123' }],
+        [{ passkeyCount: 2, hasTotp: true, hasSms: false, currentMfaMethod: 'totp', forceMfa: false, orgRequiresMfa: false, ...state }],
+      );
+    }
+
+    function deletePasskey() {
+      return app.request('/auth/passkeys/credential-1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+    }
+
+    it('re-issues the caller when a second passkey is added to a protected account', async () => {
+      queueProtectedRegisterReads();
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        success: true,
+        passkey: { id: 'passkey-credential-1' },
+        // The replacement access token is what keeps the caller authenticated
+        // past its own epoch bump.
+        tokens: { accessToken: 'replacement-access-token', expiresInSeconds: 900 },
+      });
+      // Adding a SECOND factor must not rotate the account's existing recovery
+      // codes — there is no one-time secret in this response.
+      expect(body.recoveryCodes).toBeUndefined();
+      // ...and the rotated refresh cookie is what survives the family revoke.
+      expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
+
+      expect(completeAdditionalMfaFactorEnrollment).toHaveBeenCalledTimes(1);
+      const input = vi.mocked(completeAdditionalMfaFactorEnrollment).mock.calls[0]?.[0] as any;
+      expect(input).toMatchObject({ userId: 'user-123', revokeReason: 'passkey-register' });
+      // A secondary addition installs NO code set.
+      expect(input.recoveryCodes).toBeUndefined();
+      expect(input.recoveryCodeHashes).toBeUndefined();
+    });
+
+    it('does not clear the session cookies when a second passkey is added', async () => {
+      queueProtectedRegisterReads();
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(200);
+      const cookies = res.headers.getSetCookie?.() ?? [];
+      expect(cookies.length).toBeGreaterThan(0);
+      for (const cookie of cookies) {
+        // A cleared cookie is `<name>=; ... Max-Age=0` — the shape the eviction
+        // path used to leave the browser with.
+        expect(cookie).not.toContain('Max-Age=0');
+        expect(cookie).not.toMatch(/breeze_(refresh|csrf)_token=;/);
+      }
+      expect(cookies.find((cookie) => cookie.startsWith('breeze_refresh_token=')))
+        .toContain('replacement-refresh-token');
+    });
+
+    // SR-001 + the "carry forward, never elevate" rule: the replacement inherits
+    // the SIGNED `mdid` binding (never the forgeable header) and the caller's
+    // own assurance claim.
+    it('carries the signed binding and the caller assurance into the replacement', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          orgId: 'org-5',
+          partnerId: 'partner-2',
+          scope: 'organization',
+          token: { sid: 'session-123', mfa: true, aep: 4, mep: 9, mdid: 'signed-device-1', roleId: 'role-7' },
+        });
+        return next();
+      }) as never);
+      queueProtectedRegisterReads();
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer access-token',
+          'x-breeze-mobile-device-id': 'forged-device-header',
+        },
+        body: JSON.stringify({ credential: { id: 'credential-1', response: {} }, stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(200);
+      const input = vi.mocked(completeAdditionalMfaFactorEnrollment).mock.calls[0]?.[0] as any;
+      expect(input.expectedAuthEpoch).toBe(4);
+      expect(input.expectedMfaEpoch).toBe(9);
+      expect(input.identity).toMatchObject({
+        userId: 'user-123',
+        roleId: 'role-7',
+        orgId: 'org-5',
+        partnerId: 'partner-2',
+        scope: 'organization',
+        mfa: true,
+        mobileDeviceId: 'signed-device-1',
+      });
+      expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
+    });
+
+    // Post-commit: the passkey is already registered and every other session is
+    // already dead, so a failure installing the replacement must not turn a
+    // completed registration into a 500 the user retries.
+    it('still reports the registration when the replacement session install fails', async () => {
+      queueProtectedRegisterReads();
+      vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      // Discriminating even though a pre-fix route also answers 200 with no
+      // tokens: the install has to have been ATTEMPTED for its failure to be
+      // the reason they are missing.
+      expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
+      // The refresh JTI was never bound, so the access token would die at its
+      // first refresh — withhold it rather than sell the caller a few minutes.
+      expect(body.tokens).toBeUndefined();
+    });
+
+    it('surfaces a lost issuance race on registration as 409', async () => {
+      queueProtectedRegisterReads();
+      vi.mocked(completeAdditionalMfaFactorEnrollment).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(409);
+      expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-issues the caller when a passkey is deleted', async () => {
+      queueDeleteReads();
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        success: true,
+        tokens: { accessToken: 'replacement-access-token', expiresInSeconds: 900 },
+      });
+      expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
+
+      expect(completeMfaFactorRemoval).toHaveBeenCalledTimes(1);
+      const input = vi.mocked(completeMfaFactorRemoval).mock.calls[0]?.[0] as any;
+      expect(input).toMatchObject({ userId: 'user-123', revokeReason: 'passkey-delete' });
+      expect(input.recoveryCodes).toBeUndefined();
+      expect(input.recoveryCodeHashes).toBeUndefined();
+    });
+
+    it('does not clear the session cookies when a passkey is deleted', async () => {
+      queueDeleteReads();
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(200);
+      const cookies = res.headers.getSetCookie?.() ?? [];
+      expect(cookies.length).toBeGreaterThan(0);
+      for (const cookie of cookies) {
+        expect(cookie).not.toContain('Max-Age=0');
+        expect(cookie).not.toMatch(/breeze_(refresh|csrf)_token=;/);
+      }
+      expect(cookies.find((cookie) => cookie.startsWith('breeze_refresh_token=')))
+        .toContain('replacement-refresh-token');
+    });
+
+    // Removing the LAST factor leaves the account unprotected — the caller keeps
+    // whatever assurance it already had (a fresh login would mint `mfa` true
+    // vacuously once mfa_enabled is false), and is still not evicted.
+    it('re-issues the caller when the last passkey is deleted and MFA turns off', async () => {
+      queueDeleteReads({ passkeyCount: 1, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey' });
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        success: true,
+        tokens: { accessToken: 'replacement-access-token' },
+      });
+      expect(dbState.updateSets).toContainEqual(expect.objectContaining({
+        mfaEnabled: false,
+        mfaMethod: null,
+      }));
+    });
+
+    it('still reports the deletion when the replacement session install fails', async () => {
+      queueDeleteReads();
+      vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
+      expect(body.tokens).toBeUndefined();
+    });
+
+    // Every other beginAuthIssuance caller in this repo asserts the 428 the
+    // shared admission helper answers when the client's auth binding must be
+    // rotated before a session can be issued (login.test.ts, invite.test.ts,
+    // cfAccessRedirectLogin.test.ts). These two call sites are new, so they get
+    // the same guard: a regression in the wiring — a dropped
+    // `if (!response) throw error` fallback, or a branch that forgets to cancel
+    // the capability — would otherwise go unnoticed.
+    it('answers 428 and writes nothing when the binding must be rotated before registration', async () => {
+      queueProtectedRegisterReads();
+      vi.mocked(beginAuthIssuance).mockRejectedValueOnce(
+        // The real constructor takes (replacement, reason); this suite's mock
+        // class only stores the first, so the reason is a placeholder.
+        new AuthBindingRotationRequiredError({ id: 'binding-2' } as never, 'rotation-required' as never),
+      );
+
+      const res = await registerSecondPasskey();
+
+      expect(res.status).toBe(428);
+      expect(await res.json()).toMatchObject({ reason: 'auth_binding_rotation_required' });
+      expect(completeAdditionalMfaFactorEnrollment).not.toHaveBeenCalled();
+      // Nothing was admitted, so there is no capability to cancel.
+      expect(cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(dbState.updateSets).toHaveLength(0);
+    });
+
+    it('answers 428 and deletes nothing when the binding must be rotated before deletion', async () => {
+      queueDeleteReads();
+      vi.mocked(beginAuthIssuance).mockRejectedValueOnce(
+        // The real constructor takes (replacement, reason); this suite's mock
+        // class only stores the first, so the reason is a placeholder.
+        new AuthBindingRotationRequiredError({ id: 'binding-2' } as never, 'rotation-required' as never),
+      );
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(428);
+      expect(await res.json()).toMatchObject({ reason: 'auth_binding_rotation_required' });
+      expect(completeMfaFactorRemoval).not.toHaveBeenCalled();
+      expect(cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(dbState.updateSets).toHaveLength(0);
+    });
+
+    it('surfaces a lost issuance race on deletion as 409 without deleting the passkey', async () => {
+      queueDeleteReads();
+      vi.mocked(completeMfaFactorRemoval).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+      const res = await deletePasskey();
+
+      expect(res.status).toBe(409);
+      expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
+    });
   });
 
   // mfa.ts guard: a passkey pending session must be routed to passkey verification.
