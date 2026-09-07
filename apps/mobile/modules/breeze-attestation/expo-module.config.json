@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["BreezeAttestationModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.breezeattestation.BreezeAttestationModule"]
+  }
+}

@@ -1,23 +1,40 @@
 /**
  * Breeze Authenticator (Phase 3) — mobile hardware-key approver client.
  *
- * Bridges the device's biometric-gated {@link HardwareSigner} to the server
- * approver endpoints. The phone holds a non-exportable RSA key in the Secure
- * Enclave / StrongBox; the server stores only the public key and verifies an
- * RSA-SHA256 signature over a one-time nonce (NOT WebAuthn — a raw signature).
+ * Bridges the device's biometric-gated signers to the server approver
+ * endpoints. There are TWO registration paths, and which one runs decides the
+ * assurance ceiling of every approval this phone ever makes:
  *
- * All functions are best-effort and FAIL OPEN: a technician with no registered
- * device (or no biometric hardware) simply approves without a proof (recorded
- * as L1). Registration now happens silently at login, using the login-minted
- * grant, via {@link ensureApproverDevice} — there is no manual setup step and
- * no PIN. The key activates server-side on its first approval signature
- * (deferred proof-of-possession).
+ *  - **Attested (#1374 W05/W06).** When `attestingSigner` reports available, the
+ *    phone mints a Secure Enclave / StrongBox **P-256** key and registers it
+ *    through the two-step challenge/verify protocol, proving both possession of
+ *    the key and the integrity of the app. Reaches L4.
+ *  - **Legacy, unattested.** Otherwise the single-POST `/devices` route registers
+ *    the {@link HardwareSigner}'s biometric-gated Keychain **RSA** key. The server
+ *    records it `unattested`, which is honest: nothing vouches for where that key
+ *    lives, so it is capped at L2/L3.
+ *
+ * The choice is one-way. A device that CAN attest and then FAILS must not fall
+ * back to the legacy path (`attestation_failed`): silently registering an
+ * unattested key would leave the technician believing their phone can approve
+ * critical requests when it cannot, with nothing anywhere saying otherwise.
+ *
+ * All functions are best-effort and FAIL OPEN with respect to LOGIN: a
+ * technician with no registered device simply approves without a proof (L1).
+ * They never throw and never block sign-in. Registration happens silently at
+ * login using the login-minted grant, via {@link ensureApproverDevice}.
  */
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
 import { getHardwareSigner, type HardwareSigner } from './hardwareSigner';
 import { getOrCreateInstallationId } from './installationId';
 import { fetchWithAuthRefresh } from './authedFetch';
+import {
+  attestationPlatform,
+  getAttestingSigner,
+  type AttestingSigner,
+} from './attestingSigner';
+import { registrationTranscriptB64 } from './authenticatorTranscript';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const TOKEN_KEY = 'breeze_auth_token';
@@ -56,10 +73,19 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
  * expected to tell them.
  */
 export type ApproverRegistrationOutcome =
-  | { status: 'registered' }
+  /**
+   * `attested` records WHICH path succeeded. It is not cosmetic: an
+   * `attested: false` registration can never reach L4, and W07's banner reads
+   * this to say so rather than letting the user find out at approval time.
+   */
+  | { status: 'registered'; attested: boolean }
   | { status: 'already_registered' }
   | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
+  /**
+   * `reason: 'attestation_failed'` specifically means the device SUPPORTS
+   * attestation and could not complete it — never that it lacks the hardware.
+   */
   | { status: 'failed'; reason: string };
 
 // Single-flight: RootNavigator's effect can re-fire while a registration is in
@@ -76,41 +102,178 @@ export type ApproverRegistrationOutcome =
 // grant, still funnelled through the same single in-flight slot.
 let inFlight: Promise<ApproverRegistrationOutcome> | null = null;
 
+const DEVICE_LABEL = 'This device';
+const POP_PROMPT = 'Register this phone for approvals';
+
+/** Thrown inside the attested branch so it can never resolve as a legacy retry. */
+class AttestationFailed extends Error {
+  constructor(cause: unknown) {
+    super(`attestation_failed: ${(cause as Error)?.message ?? 'unknown'}`);
+    this.name = 'AttestationFailed';
+  }
+}
+
+/**
+ * Persist the server-issued device id and report success.
+ *
+ * A 2xx with no device id is a FAILURE, not a success with a missing field:
+ * without the id `gatherApprovalProof` can never build a proof, so every later
+ * approval would silently drop to L1 with nothing recorded about why.
+ */
+async function persistRegistration(
+  res: Response,
+  attested: boolean,
+): Promise<ApproverRegistrationOutcome> {
+  if (!res.ok) {
+    return { status: 'failed', reason: `http_${res.status}` };
+  }
+  const { device } = await res.json();
+  if (!device?.id) {
+    return { status: 'failed', reason: 'missing_device_id' };
+  }
+  await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
+  return { status: 'registered', attested };
+}
+
+/**
+ * Legacy single-POST registration of the biometric-gated Keychain RSA key.
+ * The server records it `unattested`; it works at L2/L3 and can never reach L4.
+ * Still the ONLY path on a device with no Secure Enclave / StrongBox, and on
+ * Android until W06 lands the Kotlin half of the native module.
+ */
+async function registerUnattested(
+  signer: HardwareSigner,
+  registerGrant: string,
+): Promise<ApproverRegistrationOutcome> {
+  const { publicKey } = await signer.createKeys(); // silent, no biometric
+  const res = await authedFetch('/api/v1/authenticator/devices', {
+    method: 'POST',
+    body: JSON.stringify({
+      publicKey,
+      label: DEVICE_LABEL,
+      registerGrantId: registerGrant,
+    }),
+  });
+  return persistRegistration(res, false);
+}
+
+/**
+ * Two-step attested registration (#1374 W02 protocol, W05/W06 clients).
+ *
+ * Every value that matters is the SERVER's: the attempt id and challenge come
+ * from /challenge, and the transcript is derived from them plus the key being
+ * registered. The phone chooses nothing it then proves.
+ *
+ * Throws {@link AttestationFailed} for any native-side refusal, so the caller
+ * reports `attestation_failed` instead of quietly retrying unattested.
+ */
+async function registerAttested(
+  attesting: AttestingSigner,
+  registerGrant: string,
+): Promise<ApproverRegistrationOutcome> {
+  const platform = attestationPlatform();
+  if (!platform) {
+    // `isAvailable()` said yes on a runtime that is neither iOS nor Android.
+    // Unreachable in practice, and fail-closed if it ever is not: we cannot
+    // name a platform the server would bind the attempt to.
+    throw new AttestationFailed(new Error('no attestable platform'));
+  }
+
+  const challengeRes = await authedFetch('/api/v1/authenticator/devices/mobile/challenge', {
+    method: 'POST',
+    // The grant is validated NON-consuming here and consumed at /verify, so a
+    // failed attestation does not burn it.
+    body: JSON.stringify({ platform, registerGrantId: registerGrant }),
+  });
+  if (!challengeRes.ok) {
+    // No key minted yet — nothing to clean up, and nothing was consumed.
+    return { status: 'failed', reason: `http_${challengeRes.status}` };
+  }
+  const { attemptId, challenge } = (await challengeRes.json()) as {
+    attemptId?: string;
+    challenge?: string;
+  };
+  if (!attemptId || !challenge) {
+    // Hashing `undefined` here would produce a well-formed transcript that
+    // could never verify, and a 401 nobody could trace back to this response.
+    return { status: 'failed', reason: 'missing_challenge' };
+  }
+
+  let key;
+  let transcriptB64: string;
+  let attestation;
+  let popSignature: string;
+  try {
+    // The challenge is passed at key-generation time for Android, where
+    // `setAttestationChallenge` is a KeyGenParameterSpec property and cannot be
+    // supplied later. iOS ignores it (App Attest binds the transcript at
+    // `attestKey` time). Note the ordering constraint this creates on Android:
+    // the transcript commits to the public key, so it cannot also be the
+    // key-generation challenge — Android binds the server challenge instead,
+    // and the API-side check for that binding is tracked separately.
+    key = await attesting.createAttestedKey({ attestationChallengeB64: challenge });
+    transcriptB64 = await registrationTranscriptB64({
+      attemptId,
+      challenge,
+      publicKeyAlg: key.alg,
+      publicKeySpkiB64: key.publicKeySpkiB64,
+    });
+    // One digest, two bindings on the client: the platform attestation commits
+    // to it, and the new key signs it under a biometric prompt.
+    attestation = await attesting.attestApp(transcriptB64);
+    ({ signature: popSignature } = await attesting.signTranscript(transcriptB64, POP_PROMPT));
+  } catch (e) {
+    throw new AttestationFailed(e);
+  }
+
+  const verifyRes = await authedFetch('/api/v1/authenticator/devices/mobile/verify', {
+    method: 'POST',
+    body: JSON.stringify({
+      registerGrantId: registerGrant,
+      attemptId,
+      publicKey: key.publicKeySpkiB64,
+      publicKeyAlg: key.alg,
+      label: DEVICE_LABEL,
+      popSignature,
+      attestation,
+    }),
+  });
+  // Deliberately NO retry here. The attempt is single-use and already consumed
+  // server-side, so replaying `attemptId` can only ever 400 again; the next
+  // call mints a fresh attempt.
+  return persistRegistration(verifyRes, true);
+}
+
 /** Run one registration attempt, occupying (and then releasing) `inFlight`. */
 function runAttempt(
   signer: HardwareSigner,
   registerGrant: string | undefined,
+  attesting: AttestingSigner,
 ): Promise<ApproverRegistrationOutcome> {
   inFlight = (async (): Promise<ApproverRegistrationOutcome> => {
     try {
       if (await SecureStore.getItemAsync(CRED_ID_KEY)) {
         return { status: 'already_registered' };
       }
-      if (!(await signer.isAvailable())) {
+      const canAttest = await attesting.isAvailable();
+      // `unsupported` requires BOTH to be absent. A phone with a Secure Enclave
+      // but no `react-native-biometrics` build must not report "no hardware".
+      if (!canAttest && !(await signer.isAvailable())) {
         return { status: 'unsupported', reason: 'no_hardware' };
       }
       if (!registerGrant) {
         return { status: 'deferred', reason: 'no_reauth_grant' };
       }
-      const { publicKey } = await signer.createKeys();              // silent, no biometric
-      const res = await authedFetch('/api/v1/authenticator/devices', {
-        method: 'POST',
-        body: JSON.stringify({
-          publicKey,
-          label: 'This device',
-          registerGrantId: registerGrant,
-        }),
-      });
-      if (!res.ok) {
-        return { status: 'failed', reason: `http_${res.status}` };
-      }
-      const { device } = await res.json();
-      if (!device?.id) {
-        return { status: 'failed', reason: 'missing_device_id' };
-      }
-      await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
-      return { status: 'registered' };
+      return canAttest
+        ? await registerAttested(attesting, registerGrant)
+        : await registerUnattested(signer, registerGrant);
     } catch (e) {
+      if (e instanceof AttestationFailed) {
+        // Fail CLOSED. Falling through to the legacy path here would register
+        // an unattested key on a device the user reasonably believes is
+        // hardware-attested, and cap their approvals at L3 with no signal.
+        return { status: 'failed', reason: 'attestation_failed' };
+      }
       return { status: 'failed', reason: `exception:${(e as Error)?.name ?? 'unknown'}` };
     }
   })();
@@ -138,6 +301,7 @@ function runAttempt(
 export async function ensureApproverDevice(
   signer: HardwareSigner = getHardwareSigner(),
   registerGrant?: string,
+  attesting: AttestingSigner = getAttestingSigner(),
 ): Promise<ApproverRegistrationOutcome> {
   if (inFlight) {
     if (!registerGrant) return inFlight;
@@ -150,9 +314,9 @@ export async function ensureApproverDevice(
     if (priorOutcome.status === 'registered' || priorOutcome.status === 'already_registered') {
       return priorOutcome;
     }
-    return runAttempt(signer, registerGrant);
+    return runAttempt(signer, registerGrant, attesting);
   }
-  return runAttempt(signer, registerGrant);
+  return runAttempt(signer, registerGrant, attesting);
 }
 
 /**
