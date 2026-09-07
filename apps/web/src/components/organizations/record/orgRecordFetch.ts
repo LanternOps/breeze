@@ -10,7 +10,16 @@ import { fetchWithAuth, type FetchWithAuthOptions } from '@/stores/auth';
  * as real data rather than as an error. Every request from inside the record
  * therefore names its org explicitly.
  */
-export type OrgFetch = (
+// Nominally branded (the `__orgPinned` marker) rather than a plain structural
+// function type: `fetchWithAuth` itself has a compatible signature (its
+// options bag is a superset with everything optional), so under structural
+// typing a bare `fetchWithAuth` would type-check anywhere an `OrgFetch` is
+// expected — silently defeating the one guarantee this type exists for
+// (#5110 review). The brand means only `makeOrgFetch`'s return value
+// satisfies `OrgFetch`; every other call site is a compile error, not a
+// runtime leak waiting to happen.
+declare const ORG_PINNED: unique symbol;
+export type OrgFetch = ((
   path: string,
   // Both escape hatches are omitted, not just `orgIdOverride`: the two are
   // merged into one options bag below, and `skipOrgIdInjection` un-pins the
@@ -18,7 +27,7 @@ export type OrgFetch = (
   // takes first. Omitting only the obvious one would leave the pin defeatable
   // by the less obvious one, which is the whole guarantee this type exists for.
   init?: Omit<FetchWithAuthOptions, 'orgIdOverride' | 'skipOrgIdInjection'>,
-) => Promise<Response>;
+) => Promise<Response>) & { readonly [ORG_PINNED]: true };
 
 /**
  * The organization row as `GET /orgs/organizations/:id` returns it — only the
@@ -67,7 +76,10 @@ export interface OrgSummary {
  * `applyOrgId`).
  */
 export function makeOrgFetch(orgId: string): OrgFetch {
-  return (path, init) => fetchWithAuth(path, { ...init, orgIdOverride: orgId });
+  // The only legitimate construction site — the cast is what the brand above
+  // exists to make necessary; every OTHER call site gets a compile error
+  // instead of silently accepting a plain, unpinned `fetchWithAuth`.
+  return ((path, init) => fetchWithAuth(path, { ...init, orgIdOverride: orgId })) as OrgFetch;
 }
 
 /**
