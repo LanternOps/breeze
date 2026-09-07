@@ -5,18 +5,26 @@ import {
   ORG_NAME_UNAVAILABLE,
   ORG_NAME_UNKNOWN,
   PARTIAL_FAILED_MESSAGE,
+  isUnsupportedSlice,
   mergeSystemsResults,
   rejectionReasons,
   resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
-import type { Alert, Device, FleetFindingCounts } from '../../services/api';
+import type { Alert, ApiError, Device, FleetFindingCounts } from '../../services/api';
 
 const device = (id: string) => ({ id, name: id } as unknown as Device);
 const alert = (id: string) => ({ id } as unknown as Alert);
 
 const ok = <T,>(value: T): PromiseSettledResult<T> => ({ status: 'fulfilled', value });
 const bad = (reason: unknown): PromiseSettledResult<never> => ({ status: 'rejected', reason });
+
+// Simulated without importing the real ApiError class — this file must not
+// force a runtime import of services/api.ts, which pulls in
+// expo-secure-store / @sentry/react-native and cannot load under the node
+// vitest runtime (same pattern as lib/errorReporting.test.ts).
+const apiError = (statusCode: number, message: string): Partial<ApiError> =>
+  Object.assign(new Error(message), { name: 'ApiError', statusCode }) as Partial<ApiError>;
 
 const previous: SystemsSlices = {
   summary: { online: 1 } as never,
@@ -123,6 +131,73 @@ describe('mergeSystemsResults', () => {
     });
     expect(slices.devices).toEqual([]);
     expect(error).toBeNull();
+  });
+});
+
+describe('isUnsupportedSlice (#5172 — findings 404 degrades silently)', () => {
+  it('is true for findings rejected with a 404 ApiError', () => {
+    const result = bad(apiError(404, 'not found'));
+    expect(isUnsupportedSlice('findings', result)).toBe(true);
+  });
+
+  it('is false for findings rejected with a 500 ApiError', () => {
+    const result = bad(apiError(500, 'server error'));
+    expect(isUnsupportedSlice('findings', result)).toBe(false);
+  });
+
+  it('is false for findings rejected with a plain network error (no statusCode)', () => {
+    const result = bad(new TypeError('Network request failed'));
+    expect(isUnsupportedSlice('findings', result)).toBe(false);
+  });
+
+  it('is false for devices rejected with a 404 — only optional slices get the exemption', () => {
+    const result = bad(apiError(404, 'not found'));
+    expect(isUnsupportedSlice('devices', result)).toBe(false);
+  });
+
+  it('is false when the result is fulfilled', () => {
+    expect(isUnsupportedSlice('findings', ok({ total: 0, byOrg: {} }))).toBe(false);
+  });
+});
+
+describe('mergeSystemsResults — findings 404 degrade (#5172)', () => {
+  it('a 404 on findings: null result, no banner, not in failed', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(apiError(404, 'not found')),
+    });
+    expect(slices.findings).toBeNull();
+    expect(error).toBeNull();
+    expect(failed).toEqual([]);
+  });
+
+  it('a 500 on findings: keeps last-known value and still shows the banner', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(apiError(500, 'server error')),
+    });
+    expect(slices.findings).toEqual(previous.findings);
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['findings']);
+  });
+
+  it('a network error on findings: still shows the banner', () => {
+    const { error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      findings: bad(new TypeError('Network request failed')),
+    });
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['findings']);
+  });
+
+  it('a 404 on devices is STILL a banner — devices is not an optional slice', () => {
+    const { slices, error, failed } = mergeSystemsResults(previous, {
+      ...allOk,
+      devices: bad(apiError(404, 'not found')),
+    });
+    expect(slices.devices).toEqual(previous.devices); // stale, not nulled
+    expect(error).toBe(PARTIAL_FAILED_MESSAGE);
+    expect(failed).toEqual(['devices']);
   });
 });
 

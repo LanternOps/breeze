@@ -11,10 +11,12 @@ import { ScrollView } from 'react-native-gesture-handler';
 
 import { useAppDispatch, useAppSelector } from '../../store';
 import { approve, deny, markExpired, reportSuspicious } from '../../store/approvalsSlice';
+import { selectFocusedApproval } from '../../navigation/approvalTakeover';
 import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
 
+import { shouldShowEmptyApprovalState } from './approvalDecidedTransition';
 import { CountdownRing } from './components/CountdownRing';
 import { RequesterAvatar } from './components/RequesterAvatar';
 import { RequesterRow } from './components/RequesterRow';
@@ -35,9 +37,9 @@ export function ApprovalScreen() {
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
 
-  const focused = useAppSelector((s) =>
-    s.approvals.pending.find((a) => a.id === s.approvals.focusId && a.status === 'pending')
-  );
+  // #5172: shared with ApprovalGate so the takeover Modal's visibility and
+  // this screen's content branch can never drift apart — see approvalTakeover.ts.
+  const focused = useAppSelector((s) => selectFocusedApproval(s.approvals));
   const inFlight = useAppSelector((s) =>
     focused ? (s.approvals.decisionInFlight[focused.id] ?? null) : null
   );
@@ -217,13 +219,40 @@ export function ApprovalScreen() {
     dispatch(markExpired(focused.id));
   }
 
+  // A toast bound to a request that is no longer on screen is stale; a toast
+  // with no approval id (report outcome, focus-swap guard) is screen-global.
+  // Computed before the `!focused` branch below (#5172): the decision that
+  // just cleared `focused` is exactly what queues this toast, so the toast's
+  // liveness has to be known before deciding what "no focused row" renders.
+  const toastVisible = !!toast && (toast.approvalId === null || toast.approvalId === focused?.id);
+
   if (!focused) {
+    if (shouldShowEmptyApprovalState({ focused: false, decisionToastPending: toastVisible })) {
+      return (
+        <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top + spacing[10], paddingHorizontal: spacing[6] }}>
+          <Text style={[type.title, { color: theme.textHi }]}>No pending approvals</Text>
+          <Text style={[type.body, { color: theme.textMd, marginTop: spacing[2] }]}>
+            You're all caught up.
+          </Text>
+        </View>
+      );
+    }
+    // A decision (approve/deny/report) was just confirmed on the last
+    // pending row and its outcome toast is still owed. Hold on a neutral
+    // background instead of flashing "No pending approvals" while the
+    // takeover Modal's native dismiss transition is still in flight (#5172)
+    // — the toast clears this itself via `onHidden`, at which point
+    // `shouldShowEmptyApprovalState` above takes the branch that renders
+    // the genuine empty state (or ApprovalGate has finished dismissing the
+    // Modal and this has already stopped being visible to the user).
     return (
-      <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top + spacing[10], paddingHorizontal: spacing[6] }}>
-        <Text style={[type.title, { color: theme.textHi }]}>No pending approvals</Text>
-        <Text style={[type.body, { color: theme.textMd, marginTop: spacing[2] }]}>
-          You're all caught up.
-        </Text>
+      <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
+        <Toast
+          visible={toastVisible}
+          text={toast?.text ?? ''}
+          kind={toast?.kind ?? 'success'}
+          onHidden={() => setToast(null)}
+        />
       </View>
     );
   }
@@ -238,9 +267,6 @@ export function ApprovalScreen() {
   // other flow keeps the existing actionLabel + generic JSON details.
   const flowType = resolveApprovalFlowType(focused);
   const copy = getApprovalCopy(focused);
-  // A toast bound to a request that is no longer on screen is stale; a toast
-  // with no approval id (report outcome, focus-swap guard) is screen-global.
-  const toastVisible = !!toast && (toast.approvalId === null || toast.approvalId === focused.id);
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
