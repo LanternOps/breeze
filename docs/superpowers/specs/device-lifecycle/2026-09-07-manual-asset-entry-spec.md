@@ -148,6 +148,8 @@ Two ways a manual asset stops being purely manual:
 
 ## Tenancy & data model impact
 
+> **Superseded in part by the plan (2026-09-07).** The registration table below asked the plan to "check, not assume" two device-side lists; both checks came back inverted and one exposed a real bug. Authoritative: `docs/superpowers/plans/device-lifecycle/2026-09-07-manual-asset-entry.md` § *Corrections to the spec* — (1) `manual_assets` goes in `DEVICE_LINKED_DEVICE_ID_TABLES`, not `CORE_DEVICE_CASCADE_DELETE_TABLES`; (2) it must NOT be in `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (adding it reds Test API); (3) the composite `(linked_device_id, org_id)` FK needs an explicit detach in `moveOrg.ts` before the restamp loop or `POST /devices/:id/move-org` aborts with 23503; (4) `device_warranty.manual_asset_id` is `ON DELETE CASCADE`. Where this section and the plan disagree, the plan wins.
+
 **RLS shape: Shape 1 (direct `org_id`), `breeze_has_org_access(org_id)`.** Auto-discovered by the coverage contract test — the header at `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:33-36` confirms org_id tables need no allowlist entry. RLS must be `ENABLE` + `FORCE` with all four DML policies **in the same migration that creates the table** — never deferred.
 
 **`org_id NOT NULL` justification (required by CLAUDE.md):** manual assets are customer inventory records, not config/policy; there is no coherent partner-wide manual asset, so the Partner-Wide First default does not apply.
