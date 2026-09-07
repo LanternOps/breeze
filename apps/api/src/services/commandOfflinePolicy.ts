@@ -1,4 +1,4 @@
-import { CommandTypes } from './commandQueue';
+import { CommandTypes } from './commandTypes';
 
 /**
  * Whether a device command may wait for an offline device, and for how long
@@ -120,6 +120,20 @@ const LIVE: readonly string[] = [
   // Addressed to a RELAY agent on the target's LAN — that relay must be online.
   C.WAKE_ON_LAN,
   C.CAPTURE_PPROF,
+  // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
+  // which waits for the result synchronously (`waitForCommandResult`) — the one
+  // combination the design forbids pairing with `queue` (#5128 §A). The two
+  // agent-binary types are additionally refused by `queueCommand` outright
+  // (AGENT_BINARY_UPDATE_COMMAND_TYPES, #4093), so `live` is the only
+  // self-consistent class for them.
+  'network_discovery',
+  'update_agent',
+  'update_watchdog',
+  'restart_agent',
+  // Session-bound: a PAM elevation grant and a remote-desktop stream stop are
+  // meaningless once the session they belong to is gone.
+  'actuate_elevation',
+  'desktop_stream_stop',
 ];
 
 /**
@@ -167,6 +181,8 @@ const SHORT: readonly string[] = [
   C.AGENT_ROLLBACK_V1,
   'update',
   'set_auto_update',
+  // Policy push that converges: the next sync supersedes a stale one.
+  'apply_browser_policy',
 ];
 
 /**
@@ -195,6 +211,13 @@ const EXTRA_ROUTE_TYPES: readonly string[] = [
   'update',
   'set_auto_update',
   'wake',
+  'network_discovery',
+  'update_agent',
+  'update_watchdog',
+  'restart_agent',
+  'actuate_elevation',
+  'desktop_stream_stop',
+  'apply_browser_policy',
 ];
 
 // Build the registry from CommandTypes so a NEW type cannot be added without

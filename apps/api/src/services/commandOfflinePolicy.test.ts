@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CommandTypes } from './commandQueue';
+import { CommandTypes } from './commandTypes';
 import { createCommandSchema, bulkCommandSchema } from '../routes/devices/schemas';
 import {
   COMMAND_OFFLINE_POLICY_REGISTRY,
@@ -32,6 +32,50 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     ]);
     const missing = [...routeTypes].filter((t) => !(t in COMMAND_OFFLINE_POLICY_REGISTRY));
     expect(missing).toEqual([]);
+  });
+
+  it('covers every device_commands.type literal the API writes outside CommandTypes', () => {
+    // Swept from every `.insert(deviceCommands)` / queueCommand / executeCommand
+    // / queueCommandForExecution call site in apps/api/src (#5128 W1). A type
+    // missing here throws at the seam, so this list is the fail-closed contract:
+    // add the literal AND its class when a new one appears.
+    const extras = [
+      'actuate_elevation',
+      'apply_browser_policy',
+      'desktop_stream_stop',
+      'network_discovery',
+      'reboot',
+      'restart_agent',
+      'schedule_reboot',
+      'set_auto_update',
+      'shutdown',
+      'update',
+      'update_agent',
+      'update_watchdog',
+      'wake',
+    ];
+    const missing = extras.filter((t) => !(t in COMMAND_OFFLINE_POLICY_REGISTRY));
+    expect(missing).toEqual([]);
+  });
+
+  it('agent-binary and session-bound types reject rather than queue', () => {
+    // `update_agent` / `update_watchdog` are refused by queueCommand outright
+    // (#4093) and only reach the agent via executeCommand, which waits for the
+    // result — the one pairing the design forbids with `queue` (#5128 §A).
+    expect(defaultOfflinePolicy('update_agent')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('update_watchdog')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('restart_agent')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('network_discovery')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('actuate_elevation')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('desktop_stream_stop')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('wake')).toEqual({ kind: 'reject' });
+  });
+
+  it('schedule_reboot shares the power-state TTL', () => {
+    expect(defaultOfflinePolicy('schedule_reboot')).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('power_state'),
+    });
   });
 
   it('throws for an unregistered type', () => {
