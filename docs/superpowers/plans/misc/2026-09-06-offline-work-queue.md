@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#5128
+tracking_issue: LanternOps/breeze#5131
 ---
 
 # Offline Work Queue — Implementation Plan
@@ -13,6 +13,8 @@ tracking_issue: LanternOps/breeze#5128
 **Tech Stack:** Hono routes + Drizzle (`apps/api`), hand-written SQL migrations, Zod validators in `packages/shared`, BullMQ reaper/worker jobs, Astro + React islands + Vitest/jsdom (`apps/web`).
 
 **Spec:** `docs/superpowers/specs/misc/2026-09-06-offline-work-queue-design.md` (approved 2026-09-06). Section references below (§A–§J, OD-n) point into that document.
+
+**Tracking:** feature LanternOps/breeze#5131 (request: #5128). Wave sub-issues — W01 #5132 · W02 #5133 · W03 #5134 · W04 #5135 · W05 #5136 · W06 #5137. Branch per wave: `feature/5131-offline-work-queue/wave-<subissue#>` from `main`; PR body `Closes #<subissue>`.
 
 ## Global Constraints
 
@@ -83,7 +85,7 @@ tracking_issue: LanternOps/breeze#5128
 
 ## Wave 1 — Core: deadline column, policy seam, two-clock reaper, claim eligibility, cancel
 
-Branch: `feature/5128-offline-work-queue/wave-<subissue#>` from `main`. Everything in this wave ships behind `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED=false` for previously-rejecting callers; scripts, software and generic commands gain the deadline immediately (they already queue today).
+Branch: `feature/5131-offline-work-queue/wave-5132` from `main`. Everything in this wave ships behind `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED=false` for previously-rejecting callers; scripts, software and generic commands gain the deadline immediately (they already queue today).
 
 ### Task 1.1: Schema + migration for `deliver_by` and `submitted_org_id`
 
