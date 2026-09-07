@@ -41,6 +41,18 @@
 --     global row. Kept legal rather than rejected so an existing built-in
 --     hierarchy is not nulled out; it is closed under erasure regardless.
 --
+-- DELIBERATELY NOT ADDED: the analogue of `organizations_partner_config_policy_guard`
+-- (an AFTER UPDATE OF partner_id trigger on `organizations`). An org changing
+-- partner could in principle strand an org-owned category under a partner-wide
+-- parent of its OLD partner. Two reasons it is documented rather than guarded:
+-- erasure safety no longer depends on the invariant at all (layer 1 handles the
+-- cascade whatever the data says), and the compatibility helper below re-derives
+-- the parent's partner from `organizations` on every write, so a later partner
+-- change cannot make a NEW edge pass a check it should have failed. What it
+-- would leave is a stale EXISTING edge, on a table with no write path, at the
+-- cost of a per-row trigger on `organizations`. Revisit if script categories
+-- ever gain routes.
+--
 -- Idempotent; no inner BEGIN/COMMIT. Contains DML (the cleanup below), so it
 -- elects system scope first.
 
@@ -103,16 +115,15 @@ BEGIN
      AND c.id <> p.id
      AND public.breeze_script_category_parent_compatible(c.org_id, c.partner_id, p.org_id, p.partner_id) IS NOT TRUE;
   GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN
-    RAISE WARNING 'cleaned % script_categories row(s) whose parent_id crossed the ownership axis', n;
-  END IF;
+  -- Unconditional, including 0: silence is indistinguishable from "never
+  -- checked", and a non-zero count here is evidence that a tenant's erasure was
+  -- already broken. (CLAUDE.md, lesson from 2026-06-10-c.)
+  RAISE WARNING 'cleaned % script_categories row(s) whose parent_id crossed the ownership axis', n;
 
   -- Self-parenting rows, which the CHECK below would otherwise reject.
   UPDATE public.script_categories SET parent_id = NULL WHERE parent_id = id;
   GET DIAGNOSTICS n = ROW_COUNT;
-  IF n > 0 THEN
-    RAISE WARNING 'cleaned % self-parenting script_categories row(s)', n;
-  END IF;
+  RAISE WARNING 'cleaned % self-parenting script_categories row(s)', n;
 END $$;
 
 -- ============================================================
@@ -152,6 +163,25 @@ AS $$
 DECLARE
   p RECORD;
 BEGIN
+  -- Ownership moves are system-only, and this is checked FIRST so the answer to
+  -- "may this role move ownership at all" never depends on which edge happens
+  -- to be inspected. It is NOT redundant with the incoming-edge scan further
+  -- down, and the two do not degrade the same way: the outgoing-edge check is a
+  -- single-row lookup that fails CLOSED when RLS hides the parent (NOT FOUND ->
+  -- reject), but the incoming-edge check is an `EXISTS` over many rows and fails
+  -- OPEN — a conflicting child in a tenant the caller cannot see simply does not
+  -- appear, `EXISTS` is false, and the orphaning move is allowed. Refusing the
+  -- non-system move outright removes that asymmetry. (Same reasoning as
+  -- breeze_config_policy_parent_guard; the HTTP API never changes ownership and
+  -- org merge runs in system context.)
+  IF TG_OP = 'UPDATE'
+     AND (NEW.org_id IS DISTINCT FROM OLD.org_id OR NEW.partner_id IS DISTINCT FROM OLD.partner_id)
+     AND public.breeze_current_scope() <> 'system' THEN
+    RAISE EXCEPTION USING ERRCODE = '23514',
+      CONSTRAINT = 'script_categories_owner_immutable',
+      MESSAGE = 'script category ownership can only change in system context';
+  END IF;
+
   -- Outgoing edge: this row's own parent.
   IF NEW.parent_id IS NOT NULL THEN
     SELECT sc.org_id, sc.partner_id INTO p
