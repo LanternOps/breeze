@@ -79,7 +79,8 @@ Goal: remove ambiguity about which existing services can truthfully supply execu
 - [ ] Reconcile issue status against code/tests for already implemented anomaly triggers and intent fix watches (#4178, #4206). Record scope differences; do not close issues solely because similarly named code exists.
 - [ ] Inventory all run and intent terminal writers, including inline execution and stale-result reapers.
 - [ ] Define typed execution adapters: admit, dispatch/reference, observe, verify, cancel-if-supported, reconcile-unknown.
-- [ ] Decide the operation reference for single-operation tasks: whether the intent id (supervised) and act-execution id (act mode) can stand in for `ai_operator_operations` until P3-2, and what P3-2 must adopt. Record the answer; P3-1 depends on it.
+- [ ] Confirm the quorum-settled operation identity (spec §6.5): task-scoped `task_id`/`task_step_key`/`operation_key` columns on `action_intents` plus a minimal `ai_operator_operations` row from P3-1 onward. Record the exact partial-unique predicate and the same-task relaxation of the "key reused by another run" rejection (intentService.ts:1527).
+- [ ] Verify the thin slice's execution adapter end to end: `manage_services:restart` is a device command (aiToolsScripts.ts:649), so record how command completion is observed, what a lost acknowledgement looks like, and how the device-command result row is authorized on read.
 - [ ] Document each initial recipe's exact supported platforms, input schema, policy mapping, prerequisite reads, accepted result references, and verification criterion.
 - [ ] Verify current site visibility and device/ticket move semantics; record fixtures needed for live-DB tests.
 - [ ] Establish the safe task DTO/event/export projection; audit #4181 before widening trace detail.
@@ -94,31 +95,33 @@ Exit: the service recovery workflow has a complete adapter contract and represen
 
 ### P3-1 — Thin vertical slice: one task, one recipe, approval continuation
 
-Goal: prove acceptance scenario 3 (spec §13) before the full task model exists, so the coordinator, outbox, and verification contracts are learned on real code rather than designed twice.
+Goal: prove acceptance scenario 3 (spec §13) before the full task model exists, so the coordinator, outbox, claim, and verification contracts are learned on real code rather than designed twice. Per the quorum, every mechanism the slice's crash tests need lives in the slice; nothing is "deferred to P3-3" if a P3-1 test exercises it.
 
 Scope, deliberately narrow:
 
-- [ ] One recipe: supported service recovery on one device, supervised mode only (intent path; no direct act, no fleet, no trial, no free-text intake).
-- [ ] One migration: `ai_operator_tasks` with the §11 identity, scope, authority, state, lease, budget, deadline, `next_wake_at`, and outcome columns; the three nullable task-linkage columns plus CHECK on `ai_agent_runs`; `prompt_version`/`model_id` on runs; the `(next_wake_at) WHERE state = 'waiting'`, `(org_id, state, updated_at DESC)`, and unique run-admission indexes; RLS, composite FKs, and cascade/export/merge/move registration in the same PR.
-- [ ] Operation identity per the P3-0 decision (intent id as the operation reference; argument digest on the intent). `ai_operator_operations` arrives in P3-2 and adopts these rows.
-- [ ] Terminal publication: `intent_completed`/`intent_failed` outbox events from the release worker and expiry reaper only (the two writers this recipe needs), plus a minimal `ai_operator_task_outbox` with its partial index.
-- [ ] Coordinator: lease CAS with `lease_epoch`, two typed waits (`approval`, `execution`), wake on outbox, bounded polling fallback from `next_wake_at`, one new run from a checkpoint when verification fails, the `submit_task_step` outcome tool.
+- [ ] One recipe: supported service recovery on one device, supervised mode only (intent path; no direct act, no fleet, no trial, no free-text intake). Execution adapter is the device command (`restart_service`); execution reference is the device command id; the domain result is the command completion record.
+- [ ] Minimum coherent schema, one migration: `ai_operator_tasks` (spec §11 identity, scope, authority, state, phase, wait reason, lease/`lease_epoch`, budget, deadline, `next_wake_at`, outcome, plus an inline `current_step_key` and bounded `checkpoint` jsonb, with an explicit forward migration to step rows in P3-2); a minimal `ai_operator_operations` (org, task, `operation_key`, `attempt_ordinal`, `intent_id`, `execution_ref_kind`/`execution_ref_id`, `dispatch_state`, `result_state`, bounded `result`, timestamps); `ai_operator_task_outbox`; the three nullable task columns on `action_intents` with all-or-none CHECK and the live-only partial unique on `(org_id, task_id, operation_key)`; the three nullable task-linkage columns plus CHECK, `prompt_version`, and `resolved_model` on `ai_agent_runs`. All §11.1 indexes for these tables, RLS, DEFERRABLE composite FKs, and cascade/export/merge/move registration in the same PR.
+- [ ] Identity: task-scoped intent creation so a continuation run re-proposing the same operation attaches to the existing intent (spec §6.5); operation row written in the same transaction as the intent.
+- [ ] Claim: extend the existing `approved → executing` CAS (intentReleaseWorker.ts:676) with task state, revision, deadline, authority, and `lease_epoch`; extend the kill-switch reversal (:139) and cancellation (intentService.ts:2044) so a task-linked `executing` intent has one owner and cancel-during-execution records in-flight.
+- [ ] Results: the operation row stores the execution reference at dispatch and the result on arrival in their own writes, independent of the intent's status CAS; the reaper's `failed:execution_lost` and the losing-CAS path (intentReleaseWorker.ts:1054) both land on the operation row instead of being dropped.
+- [ ] Terminal publication: `intent_completed`/`intent_failed` outbox events from the release worker and expiry reaper (the two writers this recipe needs), with a contract test pinning them.
+- [ ] Coordinator: lease CAS with `lease_epoch`; two typed waits (`approval`, `execution`); wake acknowledged only after the task transition commits; bounded polling from `next_wake_at`; recovery scans over queued-past-wake, waiting-past-wake, running-past-lease, and terminal-with-unsettled-operation; results from a superseded epoch accepted under their original identity; one new run from the checkpoint when verification fails; the `submit_task_step` outcome tool.
 - [ ] Verification: reuse `actVerify`/`fixWatch` evidence for the service criterion; typed passed/failed/inconclusive.
-- [ ] UI: `/operator/tasks/:taskId` read-only detail (objective, target, state, wait reason, linked runs, intents, verification result) and a "Delegate to Operator" action on the device page and alert detail. Approvals go through the existing inbox with task provenance. No workspace home yet. The device page shows task-linked work as a read-only feed (#5022, first cut).
-- [ ] Metrics from §11.2 wired from day one; `scheduleRegistry` lane claimed; kill-switch fencing on admission and dispatch claim.
-- [ ] Feature flags: `AI_OPERATOR_TASKS_ENABLED` plus a per-recipe flag, both off by default.
+- [ ] UI: `/operator/tasks/:taskId` read-only detail (objective, target, state, wait reason, linked runs, intents, operation and result, verification) and a "Delegate to Operator" action on the device page and alert detail. Approvals go through the existing inbox with task provenance. No workspace home yet. The device page shows task-linked work as a read-only feed (#5022, first cut).
+- [ ] Metrics from §11.2 wired from day one; sub-hourly ticks below the `scheduleRegistry` threshold, hourly reconciler pass on a lane; kill-switch fencing on admission and dispatch claim.
+- [ ] Feature flags: `AI_OPERATOR_TASKS_ENABLED` plus a per-recipe flag, both off by default. Internal and test orgs only (decision D2).
 
-Not in this wave: targets/steps/operations/events tables, pause/handoff/retry, task-wide budgets beyond the existing run budget, fleet, trial, task drafts, workflow configurations.
+Not in this wave: targets, steps, and events tables; pause/handoff/retry; task-wide budgets beyond the existing run budget; direct-act operations; fleet; trial; task drafts; workflow configurations.
 
-PRs (4): (1) schema, RLS, registrations, indexes, EXPLAIN contract; (2) intent terminal outbox events plus a contract test pinning the two writers; (3) coordinator, run admission, `submit_task_step`, verification; (4) UI and a Playwright data-testid flow for approve-after-browser-close.
+PRs (5): (1) schema, RLS, registrations, indexes, EXPLAIN contract, reference lifecycle hooks for device move and org merge; (2) intent identity columns, task-scoped creation, claim/kill-switch/cancel extension, operation result persistence; (3) outbox events and writer contract test; (4) coordinator, run admission, `submit_task_step`, verification, recovery scans; (5) UI and a Playwright data-testid flow for approve-after-browser-close.
 
-Validation: acceptance scenarios 3, 4 (lost Redis delivery), 5 (crash before and after dispatch), 7 (inconclusive verification cannot resolve), 12 (`breeze_app` RLS), 13 (existing runs unchanged); duplicate wake delivery; lease reclaim while the original run finishes.
+Validation: acceptance scenarios 3, 4 (lost Redis delivery), 5 (crash before and after dispatch, after domain result, before checkpoint commit), 7 (inconclusive verification cannot resolve), 12 (`breeze_app` RLS), 13 (existing runs unchanged); duplicate wake delivery; lease reclaim while the original run finishes; reaper race against a slow command; continuation run re-proposing the same operation attaches, never duplicates; cancel during `executing`; device moved between approval and execution.
 
-Exit: on a dev stack, delegate a service recovery, close the browser, approve from the inbox later, restart the API worker mid-execution, and watch the same task reach `completed + verified_resolved` with exactly one script execution. Record what the slice taught before P3-2 is planned in detail.
+Exit: on a dev stack, delegate a service recovery, close the browser, approve from the inbox later, restart the API worker mid-execution, and watch the same task reach `completed + verified_resolved` with exactly one device command. Record what the slice taught before P3-2 is planned in detail.
 
 ### P3-2 — Task model, ownership, admission, and API
 
-- [ ] Add targets, steps, operations, and events tables with forced RLS/composite FKs and the §11.1 indexes in their creating migrations; extend `ai_operator_tasks` as needed; adopt P3-1 rows into `ai_operator_operations`.
+- [ ] Add targets, steps, and events tables with forced RLS/DEFERRABLE composite FKs and the §11.1 indexes in their creating migrations; migrate P3-1's inline `current_step_key`/`checkpoint` to step rows; widen `ai_operator_operations` with plan revision, argument digest, and verification state. No intent is recreated and no execution key changes.
 - [ ] Add closed shared task/step/checkpoint schemas, explicit lifecycle transitions, origin attribution, source links, and bounded content.
 - [ ] Implement task admission with pinned agent, one org, frozen targets/criteria, current requester ceiling where applicable, and client idempotency.
 - [ ] Add task-wide limits/reservations as policy snapshot v10 with compatible v9 readers; count parent/child work without budget resets.
@@ -139,11 +142,11 @@ Exit: admit, inspect, cancel an inert queued task; duplicate delivery creates on
 
 - [ ] Add durable operation identity and argument-digest checks; bind direct act/intent/domain execution to one operation owner.
 - [ ] Extend intent creation to atomically attach task operation context and persist required wakeup evidence.
-- [ ] Extend terminal-result publication from the two P3-1 writers to every inventoried writer; transactional outbox plus authoritative reconciliation; contract test pins writer coverage.
+- [ ] Extend terminal-result publication and operation result persistence from the two P3-1 writers to every inventoried writer (inline SDK path, stale-execution paths, domain executors); contract test pins writer coverage.
 - [ ] Implement coordinator and outbox jobs using the existing queue registry, role split, shutdown, and DB-context patterns; batch size and `SKIP LOCKED` per §11.2.
 - [ ] Route each automatic occurrence through one legacy-or-task admission owner; attach repeated evidence and avoid conflicting work across independently created tasks. Land the §6.4 sunset contract test (legacy owner list can only shrink).
 - [ ] Resume with fresh bounded runs from typed checkpoints only after the necessary result dependencies complete.
-- [ ] Implement the shared atomic dispatch-claim boundary with pause/stop/handoff transitions for direct act, intent release, and domain adapters; check expiry, authority tightening, requester access loss, and detached targets.
+- [ ] Generalize the P3-1 dispatch claim to direct act and domain adapters and add pause/stop/handoff transitions; check expiry, authority tightening, requester access loss, and detached targets.
 - [ ] Implement pause, stopping/in-flight observation, bounded confirmed-nonexecution retry, and unknown-effect handoff.
 - [ ] Deliver durable deduplicated attention/outcome notifications, authorized owner/team fallback, and visible delivery failures through existing notification infrastructure.
 - [ ] Make supported Tier-2 task proposals actionable through the existing intent lifecycle; keep legacy free-form behavior unchanged.
@@ -316,8 +319,9 @@ This optimization does not block core Operator completion. It must not silently 
 ## 7. Cross-wave engineering requirements
 
 - Every schema wave includes new idempotent migrations, forced RLS, composite tenant constraints, coverage registrations, drift checks, and live `breeze_app` contracts. Never defer policies to a later wave or edit shipped migrations.
-- Every polled or list query on a new table ships with its partial index (spec §11.1) and an EXPLAIN contract test run as `breeze_app` with `enable_seqscan = off`. State columns are `text` with CHECK, never `pgEnum`.
-- Every new repeatable job registers in `jobs/scheduleRegistry.ts` on a free lane; no bare `every: 24h`. Pollers batch with `FOR UPDATE SKIP LOCKED` and release the connection before waiting (spec §11.2).
+- Every polled or list query on a new table ships with its partial index (spec §11.1) and an EXPLAIN contract test run as `breeze_app` with `enable_seqscan = off`. State columns are `text` with CHECK, never `pgEnum`. Partial-index predicates are literals in the `sql` template, never interpolated or `eq()`-bound values.
+- Hourly-and-coarser repeatables register in `jobs/scheduleRegistry.ts` on a free lane; sub-hourly ticks stay below `COARSE_REPEAT_INTERVAL_MS`; no bare `every: 24h`. Pollers batch with `FOR UPDATE SKIP LOCKED` and release the connection before waiting (spec §11.2).
+- Every new table follows the spec §11.3 reference lifecycle matrix: no hard FK to device-denormalized or merge-repointed tables, DEFERRABLE composite org FKs, append-only tables in `AUDIT_ADMIN_REQUIRED_TABLES`, dual-owner tables with the SELECT-only partner-wide policy.
 - The §11.2 metrics are exported from the first coordinator PR, and thresholds are recorded before the P3 release gate.
 - Every queue change enters the existing queue/subscriber/worker lifecycle registry, role split, shutdown, lock, and erasure contracts.
 - All task/intent/execution identities survive delivery retries; uncertain effects never receive an automatic fresh identity.
@@ -345,6 +349,6 @@ No elapsed-time estimate is assigned before P3-0 validates adapter readiness. Th
 
 ## 9. Decisions needed before registration
 
-- **D1 — Patch maintenance ordering.** Recommended: P4-3 after T1 and T3, because it carries the highest blast radius (reboots on customer machines) and the smallest delta over existing patch policies. Alternative: keep it directly after P4-1 as the roadmap implies. Product call.
+- **D1 — Patch maintenance ordering.** Recommended: P4-3 after T1 and T3 as a product sequencing preference, because it carries the highest blast radius (reboots on customer machines) and the smallest delta over existing patch policies. This is not a technical dependency (quorum disagreement, accepted): P4-3's hard prerequisites are P4-0, P4-1, T3's instrumentation subset (task, effect, verification, and intervention timestamps), and its own pilot evidence. Alternative: keep it directly after P4-1 as the roadmap implies. Product call.
 - **D2 — Thin slice exposure.** Recommended: P3-1 ships behind flags to internal/test orgs only and is not a marketed release; the first customer-facing claim waits for P3-5. Alternative: enroll one friendly partner at P3-1 for earlier feedback.
-- **D3 — Operation reference for single-operation tasks.** Settled in P3-0 (intent id / act-execution id until P3-2). Listed here so the P3-0 outcome is reviewed before P3-1 is registered.
+- **D3 — Operation identity in the thin slice.** Settled by the 2026-09-07 quorum: intent ids alone are not a safe reference because intent idempotency is run-scoped and live-only (intentService.ts:1182, :1476, :1527). P3-1 reserves task-scoped identity on `action_intents` and writes a minimal `ai_operator_operations` row (spec §6.5). Listed here so P3-0 confirms the exact predicate before P3-1 is registered.
