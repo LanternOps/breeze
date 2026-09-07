@@ -43,7 +43,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       upsertConnection: vi.fn(),
       deleteConnection: vi.fn(async () => ({
         removed: true,
-        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] as string[] },
       })),
       exchangeCode: vi.fn(),
       fetchRealmSettings: vi.fn(),
@@ -52,7 +52,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       refreshRealmSettings: vi.fn(),
       resetConnectionForRealmChange: vi.fn(async () => ({
         mappingsDeleted: 0,
-        owedPaymentDeletes: { count: 0, remoteEntityIds: [] },
+        owedPaymentDeletes: { count: 0, remoteEntityIds: [] as string[] },
       })),
       captureException: vi.fn(),
       captureMessage: vi.fn(),
@@ -987,7 +987,7 @@ describe('accounting routes', () => {
       // thing that lets a human find those Payments in QuickBooks afterwards.
       mocks.deleteConnection.mockResolvedValueOnce({
         removed: true,
-        owedPaymentDeletes: { count: 2, remoteEntityIds: ['181/145', '182/146'] },
+        owedPaymentDeletes: { count: 2, remoteEntityIds: ['181/145', '182/146'] as string[] },
       });
 
       const res = await app.request('/accounting/quickbooks/disconnect', { method: 'POST' });
