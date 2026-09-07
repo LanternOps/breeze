@@ -111,59 +111,90 @@ function compareLanCandidates(a: LanIpCandidate, b: LanIpCandidate): number {
  * device with many network interfaces, alerts, or tickets can never fan the
  * page's row count out — verified by
  * "...without fanning out the row" in mobile.test.ts.
+ *
+ * Each of the three lookups is independently fault-isolated: a failure in
+ * any one (a lock/timeout blip on `device_network`/`alerts`/`tickets`, say)
+ * must not 500 the whole device list when the core device-row query already
+ * succeeded — this is pure enrichment on top of an otherwise-working page.
+ * The count maps are `| null` on failure (never silently coerced to an empty
+ * map) specifically so the caller can tell "the query failed" apart from
+ * "the query succeeded and found zero open alerts/tickets" — collapsing
+ * those into the same `0` would render a false "Open alerts · 0" for a
+ * device that may have several unresolved critical alerts.
  */
 async function loadDeviceDetailsV1Fields(deviceIds: string[]): Promise<{
   lanIpByDevice: Map<string, string>;
-  openAlertCountByDevice: Map<string, number>;
-  openTicketCountByDevice: Map<string, number>;
+  openAlertCountByDevice: Map<string, number> | null;
+  openTicketCountByDevice: Map<string, number> | null;
 }> {
   const lanIpByDevice = new Map<string, string>();
-  const openAlertCountByDevice = new Map<string, number>();
-  const openTicketCountByDevice = new Map<string, number>();
 
   if (deviceIds.length === 0) {
-    return { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice };
+    return { lanIpByDevice, openAlertCountByDevice: new Map(), openTicketCountByDevice: new Map() };
   }
 
-  const networkRows = await db
-    .select({
-      deviceId: deviceNetwork.deviceId,
-      ipAddress: deviceNetwork.ipAddress,
-      ipType: deviceNetwork.ipType,
-      isPrimary: deviceNetwork.isPrimary,
-      interfaceName: deviceNetwork.interfaceName
-    })
-    .from(deviceNetwork)
-    .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
+  try {
+    const networkRows = await db
+      .select({
+        deviceId: deviceNetwork.deviceId,
+        ipAddress: deviceNetwork.ipAddress,
+        ipType: deviceNetwork.ipType,
+        isPrimary: deviceNetwork.isPrimary,
+        interfaceName: deviceNetwork.interfaceName
+      })
+      .from(deviceNetwork)
+      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
 
-  const candidatesByDevice = new Map<string, LanIpCandidate[]>();
-  for (const row of networkRows) {
-    if (!row.ipAddress) continue;
-    const list = candidatesByDevice.get(row.deviceId) ?? [];
-    list.push(row as LanIpCandidate);
-    candidatesByDevice.set(row.deviceId, list);
-  }
-  for (const [deviceId, candidates] of candidatesByDevice) {
-    const best = candidates.slice().sort(compareLanCandidates)[0];
-    if (best?.ipAddress) lanIpByDevice.set(deviceId, best.ipAddress);
-  }
-
-  const alertCountRows = await db
-    .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
-    .from(alerts)
-    .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES)))
-    .groupBy(alerts.deviceId);
-  for (const row of alertCountRows) {
-    openAlertCountByDevice.set(row.deviceId, Number(row.count));
+    const candidatesByDevice = new Map<string, LanIpCandidate[]>();
+    for (const row of networkRows) {
+      if (!row.ipAddress) continue;
+      const list = candidatesByDevice.get(row.deviceId) ?? [];
+      list.push(row as LanIpCandidate);
+      candidatesByDevice.set(row.deviceId, list);
+    }
+    for (const [deviceId, candidates] of candidatesByDevice) {
+      const best = candidates.slice().sort(compareLanCandidates)[0];
+      if (best?.ipAddress) lanIpByDevice.set(deviceId, best.ipAddress);
+    }
+  } catch (error) {
+    // Degrades to "no LAN IP known" for this page — indistinguishable from a
+    // device that genuinely has none, which is an acceptable fallback (unlike
+    // the counts below, there's no "confirmed zero" reading for an IP).
+    console.error('[MobileRoutes] Failed to load LAN IPs for device list:', error);
   }
 
-  const ticketCountRows = await db
-    .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
-    .from(tickets)
-    .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
-    .groupBy(tickets.deviceId);
-  for (const row of ticketCountRows) {
-    if (row.deviceId) openTicketCountByDevice.set(row.deviceId, Number(row.count));
+  let openAlertCountByDevice: Map<string, number> | null = new Map();
+  try {
+    const alertCountRows = await db
+      .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
+      .from(alerts)
+      .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES)))
+      .groupBy(alerts.deviceId);
+    for (const row of alertCountRows) {
+      openAlertCountByDevice.set(row.deviceId, Number(row.count));
+    }
+  } catch (error) {
+    console.error('[MobileRoutes] Failed to load open alert counts for device list:', error);
+    openAlertCountByDevice = null;
+  }
+
+  let openTicketCountByDevice: Map<string, number> | null = new Map();
+  try {
+    const ticketCountRows = await db
+      .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
+      .from(tickets)
+      .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
+      .groupBy(tickets.deviceId);
+    for (const row of ticketCountRows) {
+      // tickets.deviceId is nullable in general, but inArray(...) above
+      // already excludes NULL rows (`NULL IN (...)` is never true in SQL) —
+      // this guard can't actually trip today. Kept as defense-in-depth
+      // against a future refactor (e.g. a LEFT JOIN) loosening that filter.
+      if (row.deviceId) openTicketCountByDevice.set(row.deviceId, Number(row.count));
+    }
+  } catch (error) {
+    console.error('[MobileRoutes] Failed to load open ticket counts for device list:', error);
+    openTicketCountByDevice = null;
   }
 
   return { lanIpByDevice, openAlertCountByDevice, openTicketCountByDevice };
@@ -1417,8 +1448,11 @@ mobileRoutes.get(
         ...rest,
         publicIp: lastSeenIp ?? null,
         lanIp: lanIpByDevice.get(d.id) ?? null,
-        openAlertCount: openAlertCountByDevice.get(d.id) ?? 0,
-        openTicketCount: openTicketCountByDevice.get(d.id) ?? 0
+        // `null` map = the count query itself failed for this page — send
+        // `null` (never a false `0`) so the client renders "unknown" rather
+        // than a confident, wrong zero. See loadDeviceDetailsV1Fields.
+        openAlertCount: openAlertCountByDevice === null ? null : (openAlertCountByDevice.get(d.id) ?? 0),
+        openTicketCount: openTicketCountByDevice === null ? null : (openTicketCountByDevice.get(d.id) ?? 0)
       };
     });
 

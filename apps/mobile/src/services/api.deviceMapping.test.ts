@@ -139,6 +139,33 @@ describe('Device Details v1 fields (#5140)', () => {
     expect(device!.openTicketCount).toBe(2);
   });
 
+  it('maps an explicit null count (server-side count query failed) to undefined, not 0', async () => {
+    fetchWithTimeout.mockImplementationOnce(() =>
+      jsonResponse({
+        data: [
+          {
+            id: 'device-1',
+            hostname: 'host-1',
+            status: 'online',
+            orgId: 'org-1',
+            openAlertCount: null,
+            openTicketCount: 4,
+          },
+        ],
+        pagination: { page: 1, limit: 100, total: 1, nextCursor: null },
+      })
+    );
+
+    const [device] = await getDevices();
+
+    // formatCountLabel (deviceDetailFields.ts) treats undefined the same as
+    // null — an em dash, not a false "0" — so mapDevice normalizing an
+    // explicit API-side null to undefined here is the correct behavior, not
+    // a lossy simplification.
+    expect(device!.openAlertCount).toBeUndefined();
+    expect(device!.openTicketCount).toBe(4);
+  });
+
   it('a device with none of the new fields still maps without throwing', async () => {
     fetchWithTimeout.mockImplementationOnce(() =>
       jsonResponse({

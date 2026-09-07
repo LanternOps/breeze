@@ -335,12 +335,14 @@ type MobileDeviceRecord = {
   // endpoint (`GET /mobile/devices`, routes/mobile.ts) today — see that
   // route's loadDeviceDetailsV1Fields for how each is computed. Absent
   // (rather than null) on any response shape that doesn't send them yet.
+  // The counts are also explicitly `null` (never a false `0`) when the
+  // server-side count query itself failed — see loadDeviceDetailsV1Fields.
   osVersion?: string | null;
   lastUser?: string | null;
   lanIp?: string | null;
   publicIp?: string | null;
-  openAlertCount?: number;
-  openTicketCount?: number;
+  openAlertCount?: number | null;
+  openTicketCount?: number | null;
 };
 
 // Token management
