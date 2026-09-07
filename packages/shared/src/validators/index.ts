@@ -535,6 +535,11 @@ export const createConfigPolicySchema = z.object({
   // from the caller's own partner_id — a client-supplied partner id is NEVER
   // trusted. orgId is ignored when ownerScope is 'partner'.
   ownerScope: z.enum(['organization', 'partner']).optional(),
+  // One-level, create-only inheritance (#5080). Validated server-side against
+  // the ownership rule (same org, or partner-wide of the org's partner) and by
+  // the configuration_policies_parent_guard constraint trigger. Deliberately
+  // absent from updateConfigPolicySchema: parent_policy_id is immutable.
+  parentPolicyId: z.string().guid().optional(),
 });
 
 export const updateConfigPolicySchema = z.object({

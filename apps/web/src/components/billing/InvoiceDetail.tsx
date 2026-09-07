@@ -36,7 +36,9 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
   detail: InvoiceDetailData;
-  onChanged: () => void;
+  /** Refetch the invoice. May return a promise — AccountingSyncCard's sync
+   *  watch awaits it so its polls cannot overlap. */
+  onChanged: () => void | Promise<void>;
   /** The workspace header owns the primary actions (Issue / Issue & Send /
    *  Download PDF / Delete draft) — suppress the rail copy so the two don't
    *  render at once (mirrors QuoteDetail.actionsInHeader). */
@@ -563,6 +565,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             invoiceId={invoice.id}
             sync={detail.accountingSync}
             invoiceStatus={invoice.status}
+            invoiceTouchedAt={invoice.updatedAt}
             canPush={can('invoices', 'write')}
             onChanged={onChanged}
           />

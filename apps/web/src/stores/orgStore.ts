@@ -16,7 +16,16 @@ export interface Organization {
   id: string;
   partnerId: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'inactive' | 'merging' | 'archived' | 'purging';
+  /**
+   * Mirrors the API's organization status enum (`orgStatusEnum`,
+   * `apps/api/src/db/schema/orgs.ts`). `inactive` was never one of its values
+   * — that spelling belongs to SSO providers, and to the (also drifted)
+   * `Partner.status` union above — while `churned` and `offboarding` were
+   * missing. Lifecycle branches keyed off this type therefore type-checked
+   * against states the server can never send, and failed to compile against
+   * the ones it does (#5075 W01).
+   */
+  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding' | 'merging' | 'archived' | 'purging';
   trialEndsAt?: string;
   /** ISO 4217 billing currency (wave 1, `organizations.currency_code`). Present on
    *  the partner/system-scope list (full row); the org-scoped projection of

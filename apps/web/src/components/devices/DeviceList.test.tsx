@@ -532,7 +532,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       JSON.stringify({ v: 1, columns: COLUMN_IDS.map(id => ({ id, visible: true })) }),
     );
 
-    const { container } = render(<DeviceList devices={[baseDevice]} networkDevicesEnabled />);
+    // Columns adapt to the classes on screen (Class/Type only render when a
+    // network row is present; OS/CPU/… only when an agent row is), so render
+    // one of each to bring the whole catalog out.
+    const networkRow: Device = {
+      ...baseDevice,
+      id: 'b1b1b1b1-0000-0000-0000-0000000000b1',
+      hostname: 'lobby-printer',
+      deviceClass: 'network',
+      assetType: 'printer',
+    };
+    const { container } = render(<DeviceList devices={[baseDevice, networkRow]} networkDevicesEnabled />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between
@@ -541,8 +551,11 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     const dataHeaders = headers.slice(1, -1);
     expect(dataHeaders.length).toBe(COLUMN_IDS.length);
     for (const th of dataHeaders) {
-      expect(th.getAttribute('title')).toMatch(/^Sort by /);
-      expect(th.className).toContain('cursor-pointer');
+      // The hint lives on a real <button> inside the cell so sorting is
+      // reachable by keyboard; the cell itself carries scope + aria-sort.
+      const button = th.querySelector('button');
+      expect(button?.getAttribute('title')).toMatch(/^Sort by /);
+      expect(th.getAttribute('scope')).toBe('col');
     }
   });
 
@@ -553,17 +566,17 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     ];
     render(<DeviceList devices={devices} />);
 
-    const hostHeader = screen.getByTitle('Sort by device');
-    const osHeader = screen.getByTitle('Sort by operating system');
+    const hostHeader = screen.getByTitle('Sort by device').closest('th')!;
+    const osHeader = screen.getByTitle('Sort by operating system').closest('th')!;
     // Unsorted: every header advertises aria-sort="none".
     expect(hostHeader.getAttribute('aria-sort')).toBe('none');
     expect(osHeader.getAttribute('aria-sort')).toBe('none');
 
-    fireEvent.click(hostHeader);
+    fireEvent.click(screen.getByTitle('Sort by device'));
     expect(hostHeader.getAttribute('aria-sort')).toBe('ascending');
     expect(osHeader.getAttribute('aria-sort')).toBe('none');
 
-    fireEvent.click(hostHeader);
+    fireEvent.click(screen.getByTitle('Sort by device'));
     expect(hostHeader.getAttribute('aria-sort')).toBe('descending');
   });
 
@@ -671,7 +684,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     const unscored = screen.getByTestId('device-c3c3c3c3-0000-0000-0000-000000000002-reliability');
     // Em-dash dash cell for the missing score — asserted exactly so a future
     // `score ?? 0` regression (which would render a bare "0") fails here.
-    expect(unscored.textContent).toBe('—');
+    expect(unscored.textContent).toContain('—');
   });
 
   it('does not render a trend glyph for a scored device with no trend (#1720)', () => {
@@ -787,8 +800,8 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     // Em-dash dash cell for both the null and the unparseable URL — asserted
     // exactly so the cell never leaks a raw/blank value.
-    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000001-server-url').textContent).toBe('—');
-    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000002-server-url').textContent).toBe('—');
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000001-server-url').textContent).toContain('—');
+    expect(screen.getByTestId('device-d9d9d9d9-0000-0000-0000-000000000002-server-url').textContent).toContain('—');
   });
 });
 

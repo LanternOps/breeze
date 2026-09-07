@@ -13,6 +13,12 @@ export interface UseAgentToolCatalogResult {
   error: boolean;
   /** True while the catalog fetch is in flight — independent of the (secondary, org-only) ceiling fetch. */
   loading: boolean;
+  /** True once the ceiling question is settled: a partner draft (no ceiling
+   *  applies), or an org draft whose fetch has resolved — success OR failure.
+   *  While false, `ceiling === null` means "not known yet", not "no
+   *  baseline", and a caller must not treat the draft as unconstrained
+   *  (#5063 review: the drawer over-reported authorized scripts otherwise). */
+  ceilingResolved: boolean;
 }
 
 /**
@@ -33,6 +39,7 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
   const [catalogError, setCatalogError] = useState(false);
   const [ceiling, setCeiling] = useState<AgentCeilingDto | null>(null);
   const [ceilingError, setCeilingError] = useState(false);
+  const [ceilingSettled, setCeilingSettled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,8 +65,10 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
     if (ownerScope !== 'organization') {
       setCeiling(null);
       setCeilingError(false);
+      setCeilingSettled(true);
       return;
     }
+    setCeilingSettled(false);
     let cancelled = false;
     void (async () => {
       try {
@@ -69,9 +78,13 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
         if (cancelled) return;
         setCeiling(body.data ?? null);
         setCeilingError(false);
+        setCeilingSettled(true);
       } catch (err) {
         console.error('[useAgentToolCatalog] could not load agent ceiling', err);
-        if (!cancelled) setCeilingError(true);
+        if (!cancelled) {
+          setCeilingError(true);
+          setCeilingSettled(true);
+        }
       }
     })();
     return () => {
@@ -79,5 +92,11 @@ export function useAgentToolCatalog({ kind, ownerScope }: UseAgentToolCatalogOpt
     };
   }, [kind, ownerScope]);
 
-  return { catalog, ceiling, error: catalogError || ceilingError, loading: catalog === null && !catalogError };
+  return {
+    catalog,
+    ceiling,
+    error: catalogError || ceilingError,
+    loading: catalog === null && !catalogError,
+    ceilingResolved: ceilingSettled,
+  };
 }

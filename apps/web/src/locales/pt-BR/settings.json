@@ -4461,7 +4461,9 @@
       "tryAgain": "Tente novamente",
       "editOrganization": "Editar organização",
       "archiveOrganization": "Arquivar organização",
-      "deleting": "Excluindo..."
+      "deleting": "Excluindo...",
+      "openRecord": "Abrir registro",
+      "openSettings": "Configurações"
     },
     "errors": {
       "fetchOrganizations": "Falha ao buscar organizações",

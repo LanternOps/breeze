@@ -726,7 +726,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(
-          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+          'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
+          // Icon rail: no horizontal padding, center the icon in the full row so
+          // the highlight box and icon share the rail's centre line regardless
+          // of the available width.
+          labels ? 'px-3' : 'justify-center',
           isActive
             ? 'bg-primary text-primary-foreground'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -872,7 +876,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         </div>
       </div>
 
-      <nav ref={navScrollRef} data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
+      {/* Stable gutter only with labels: it stops the labels shifting when a
+          section expands and a scrollbar appears. In the 64px icon rail it
+          would eat ~15px of a 48px content box on classic scrollbars, pushing
+          the icons off-centre (see Sidebar.collapsedrail.test.tsx). */}
+      <nav
+        ref={navScrollRef}
+        data-tour="sidebar-nav"
+        className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2"
+        style={{ scrollbarGutter: showLabels ? 'stable' : 'auto' }}
+      >
         {topLevelNav.map((item) => renderNavItem(item))}
         {navSections.map((section) => renderCollapsibleSection(section))}
         {extensionsSection && renderCollapsibleSection(extensionsSection)}

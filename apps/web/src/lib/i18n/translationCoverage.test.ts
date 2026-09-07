@@ -68,6 +68,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
+    'organizations.json': 4, // W01 #5075: cognates — "Sites", "{{count}} site(s)"
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -161,6 +162,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
+    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -251,9 +253,14 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 142,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 38,
+    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -353,9 +360,14 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 142,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" — the same word in
+    // French, added when the Class/Type headers were moved off hardcoded English.
+    // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
+    // plus the unified-device-list branch).
+    'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 40,
+    'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -462,11 +474,14 @@ const namespaceDuplicateBaselines = {
     // "field_key" (literal format tokens/example keys, not wording); plus
     // customFieldImportPreview.columns.status "Status" and grid.name "Name"
     // — both spelled identically in German.
-    'devices.json': 154,
+    // +1 (2026-09-06): deviceList.tableColumns.type "Type" arrived with the
+    // unified-device-list branch; re-measured after merging main.
+    'devices.json': 155,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
+    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -542,6 +557,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
+    'organizations.json': 1, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -607,6 +623,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 83,
     'discovery.json': 9,
     'integrations.json': 22,
+    'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",

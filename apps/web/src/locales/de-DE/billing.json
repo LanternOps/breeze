@@ -1841,6 +1841,7 @@
       "taxVarianceHint": "QuickBooks hat eine abweichende Steuersumme berechnet. Vergleichen Sie beide Datensätze, bevor Sie die Periode abschließen.",
       "docNumber": "QuickBooks-Beleg {{docNumber}}",
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
+      "syncing": "Wird übertragen…",
       "push": "An QuickBooks übertragen",
       "pushed": "Rechnung an QuickBooks übertragen.",
       "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",
