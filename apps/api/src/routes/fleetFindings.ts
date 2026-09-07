@@ -50,6 +50,15 @@ function parseStatusCsv(raw: string | undefined): StatusValue[] | null {
   return items as StatusValue[];
 }
 
+// Sentry BREEZE-2M: every route below took `c.req.param('id')!` straight into
+// `eq(fleetFindings.id, id)` / `eq(fleetRemediationRuns.findingId, id)` calls
+// on a uuid column with no validation, so a non-UUID id reached Postgres and
+// came back 22P02 (invalid_text_representation) as an unhandled 500. Mirrors
+// `filterIdParamSchema` in `routes/filters.ts`.
+const findingIdParamSchema = z.object({
+  id: z.string().guid(),
+});
+
 const listQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   kind: z.enum(KIND_VALUES).optional(),
@@ -168,30 +177,37 @@ fleetFindingsRoutes.get('/runs/:runId', requireScope('organization', 'partner', 
   return c.json(run);
 });
 
-fleetFindingsRoutes.get('/:id/runs', requireScope('organization', 'partner', 'system'), requireFindingsRead, async (c) => {
-  const auth = c.get('auth');
-  const id = c.req.param('id')!;
+fleetFindingsRoutes.get(
+  '/:id/runs',
+  requireScope('organization', 'partner', 'system'),
+  requireFindingsRead,
+  zValidator('param', findingIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
 
-  const finding = await getFleetFinding(auth, id);
-  if (!finding) {
-    return c.json({ error: 'Finding not found' }, 404);
+    const finding = await getFleetFinding(auth, id);
+    if (!finding) {
+      return c.json({ error: 'Finding not found' }, 404);
+    }
+
+    // `getFleetFinding` already caps this at the last 10 runs; that's fine for
+    // this endpoint's purpose (recent remediation history alongside the
+    // finding), not a general paginated run listing.
+    return c.json({ runs: finding.runs });
   }
-
-  // `getFleetFinding` already caps this at the last 10 runs; that's fine for
-  // this endpoint's purpose (recent remediation history alongside the
-  // finding), not a general paginated run listing.
-  return c.json({ runs: finding.runs });
-});
+);
 
 fleetFindingsRoutes.post(
   '/:id/remediate',
   requireScope('organization', 'partner', 'system'),
   requireFindingsExecute,
   requireMfa(),
+  zValidator('param', findingIdParamSchema),
   zValidator('json', remediateBodySchema),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id')!;
+    const { id } = c.req.valid('param');
     const body = c.req.valid('json') as RemediateRequest;
 
     let result;
@@ -280,26 +296,33 @@ fleetFindingsRoutes.post(
   }
 );
 
-fleetFindingsRoutes.get('/:id', requireScope('organization', 'partner', 'system'), requireFindingsRead, async (c) => {
-  const auth = c.get('auth');
-  const id = c.req.param('id')!;
+fleetFindingsRoutes.get(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  requireFindingsRead,
+  zValidator('param', findingIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
 
-  const finding = await getFleetFinding(auth, id);
-  if (!finding) {
-    return c.json({ error: 'Finding not found' }, 404);
+    const finding = await getFleetFinding(auth, id);
+    if (!finding) {
+      return c.json({ error: 'Finding not found' }, 404);
+    }
+
+    return c.json(finding);
   }
-
-  return c.json(finding);
-});
+);
 
 fleetFindingsRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireFindingsWrite,
+  zValidator('param', findingIdParamSchema),
   zValidator('json', patchBodySchema),
   async (c) => {
     const auth = c.get('auth');
-    const id = c.req.param('id')!;
+    const { id } = c.req.valid('param');
     const body = c.req.valid('json');
 
     const result = await applyFleetFindingLifecycle(
