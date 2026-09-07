@@ -468,21 +468,39 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
     expect(res.headers.get('location')).not.toContain(PROMOTED_VERSION);
   });
 
-  it('pins the watchdog and backup routes the same way', async () => {
-    const watchdog = await downloadRoutes.request(
-      `/download/watchdog/linux/amd64?version=${PINNED_VERSION}`,
-    );
-    expect(watchdog.headers.get('location')).toBe(
-      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-watchdog-linux-amd64`,
-    );
+  it.each([
+    ['watchdog', '/download/watchdog/linux/amd64', 'linux', 'amd64', 'breeze-watchdog-linux-amd64'],
+    ['backup', '/download/backup/linux/amd64', 'linux', 'amd64', 'breeze-backup-linux-amd64'],
+    ['helper', '/download/helper/darwin/arm64', 'darwin', 'arm64', 'breeze-helper-darwin'],
+    ['user-helper', '/download/user-helper/windows/amd64', 'windows', 'amd64', 'breeze-user-helper-windows-amd64'],
+  ])(
+    'pins the %s route to the requested version, resolved for ITS OWN component',
+    async (component, path, os, arch, asset) => {
+      // The component argument matters and the mock is arg-blind, so assert
+      // the call itself: a route that passed a hardcoded 'agent' (or its
+      // neighbour's component) would resolve the wrong row in production and
+      // still produce a correct-looking Location here.
+      vi.mocked(getRegisteredComponentVersion).mockClear();
+      vi.mocked(getGithubHelperUrl).mockImplementation(
+        (o: string, version?: string) =>
+          `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-helper-${o}`,
+      );
+      vi.mocked(getGithubUserHelperUrl).mockImplementation(urlFor('user-helper'));
 
-    const backup = await downloadRoutes.request(
-      `/download/backup/linux/amd64?version=${PINNED_VERSION}`,
-    );
-    expect(backup.headers.get('location')).toBe(
-      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-backup-linux-amd64`,
-    );
-  });
+      const res = await downloadRoutes.request(`${path}?version=${PINNED_VERSION}`);
+
+      expect(res.status).toBe(302);
+      expect(getRegisteredComponentVersion).toHaveBeenCalledWith(
+        component,
+        os,
+        arch,
+        PINNED_VERSION,
+      );
+      expect(res.headers.get('location')).toBe(
+        `https://github.test/releases/download/v${PINNED_VERSION}/${asset}`,
+      );
+    },
+  );
 
   it('404s an unregistered version instead of substituting the promoted one', async () => {
     // These routes are public and unauthenticated: an arbitrary caller-supplied
@@ -532,6 +550,29 @@ describe('component downloads honour an explicit ?version= pin (issue #5159)', (
     );
 
     expect(res.status).toBe(409);
+  });
+
+  it('warns instead of silently serving when local mode cannot tell which build it holds', async () => {
+    // Neither BINARY_VERSION nor BREEZE_VERSION set. Refusing would break a
+    // deployment whose disk build IS the requested one, so we serve — but the
+    // operator must be able to trace a later checksum failure back to here
+    // rather than to an unrelated cause.
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    // Not a 409: the guard could not be evaluated, so it must not fire.
+    expect(res.status).toBe(404);
+    expect(
+      warn.mock.calls.some(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('without being able to verify it'),
+      ),
+    ).toBe(true);
   });
 
   it('serves normally in local mode when the requested version matches the build', async () => {

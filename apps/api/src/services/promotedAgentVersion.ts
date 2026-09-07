@@ -282,7 +282,21 @@ export async function getRegisteredComponentVersion(
   // literal "unknown" for locally-registered binaries with no version file,
   // and "vunknown" is not a release tag. Treat it as unresolvable rather than
   // building a URL that 404s at GitHub.
-  if (!row || row.version === 'unknown') return null;
+  if (!row || row.version === 'unknown') {
+    // Log HERE, not only at the call site: this resolver owns the knowledge
+    // that no row matched, and a future second caller must not have to
+    // rediscover that it needs its own logging. Mirrors the promoted lookup's
+    // no-row warning. No Sentry capture — unlike a missing promoted row (a
+    // deployment-wide fault), an unregistered version is a per-request
+    // condition an unauthenticated caller can trigger at will, so capturing it
+    // would hand anyone a quota-burn lever.
+    console.warn(
+      `[promotedAgentVersion] no ${edition}-edition agent_versions row for ` +
+        `${component} ${platform}/${arch} v${requestedVersion}; the caller ` +
+        `must fail closed rather than serve the promoted release (#5159).`,
+    );
+    return null;
+  }
 
   return row.version;
 }

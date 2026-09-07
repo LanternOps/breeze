@@ -270,6 +270,50 @@ jobs:
           esac
           shopt -u nocasematch
 
+      - name: Reproduce the #5159 divergence against a real database
+        env:
+          PGPASSWORD: breeze
+        run: |
+          # Everything above runs with ONE registered release, so the pinned
+          # and promoted versions coincide and the original bug cannot appear.
+          # Force them apart the way AGENT_AUTO_PROMOTE=false + an org
+          # agentVersionPins pilot does in production: promote a DIFFERENT
+          # version than the one the caller pins.
+          PSQL="psql -h localhost -U breeze -d breeze -v ON_ERROR_STOP=1"
+          $PSQL -c "INSERT INTO agent_versions (version, platform, architecture, component, download_url, checksum, file_size, edition, is_latest) SELECT '0.65.7', platform, architecture, component, download_url, checksum, file_size, edition, false FROM agent_versions WHERE component='agent' AND platform='linux' AND architecture='amd64' AND version='0.65.8' ON CONFLICT DO NOTHING;"
+          $PSQL -c "UPDATE agent_versions SET is_latest = (version='0.65.7') WHERE component='agent' AND platform='linux' AND architecture='amd64';"
+
+          # Guard the fixture itself: if the seed matched no row, the two
+          # assertions below would compare identical versions and pass
+          # vacuously.
+          PROMOTED=$(psql -h localhost -U breeze -d breeze -tAc \
+            "SELECT version FROM agent_versions WHERE component='agent' AND platform='linux' AND architecture='amd64' AND is_latest")
+          if [ "$PROMOTED" != "0.65.7" ]; then
+            echo "Fixture failed: expected 0.65.7 promoted, got '${PROMOTED}'"
+            exit 1
+          fi
+
+          # The versionless route follows the promotion.
+          PROMOTED_LOC=$(curl -s -o /dev/null -w '%{redirect_url}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64')
+          echo "versionless -> ${PROMOTED_LOC}"
+          case "$PROMOTED_LOC" in
+            *"/releases/download/v0.65.7/"*) echo "OK — versionless serves the promoted release" ;;
+            *) echo "Expected the promoted v0.65.7 asset; got ${PROMOTED_LOC}"; exit 1 ;;
+          esac
+
+          # THE BUG: a pinned, deliberately UNPROMOTED version must still get
+          # its own bytes. Before the fix this returned the v0.65.7 asset
+          # while the agent held the v0.65.8 checksum, and the device sat in
+          # "Updating" forever.
+          PINNED_LOC=$(curl -s -o /dev/null -w '%{redirect_url}' \
+            'http://localhost:3001/api/v1/agents/download/linux/amd64?version=0.65.8')
+          echo "pinned -> ${PINNED_LOC}"
+          case "$PINNED_LOC" in
+            *"/releases/download/v0.65.8/"*) echo "OK — pinned, unpromoted version serves its OWN release" ;;
+            *) echo "REGRESSION (#5159): pinned v0.65.8 served ${PINNED_LOC}"; exit 1 ;;
+          esac
+
       - name: Stop API
         if: always()
         run: |

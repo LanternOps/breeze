@@ -185,6 +185,17 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // check be the backstop.
     if (requestedVersion) {
       const localVersion = getGithubReleaseVersion();
+      if (localVersion === 'latest') {
+        // Neither BINARY_VERSION nor BREEZE_VERSION is set, so we cannot say
+        // which build is on disk and cannot evaluate the guard. Serving is
+        // still the right call (refusing would break a deployment whose disk
+        // build IS the requested one), but say so: if the agent then reports a
+        // checksum failure, this line is what tells an operator why.
+        console.warn(
+          `[${config.logTag}] serving ${filename} for a requested version without being able to verify it: set BINARY_VERSION or BREEZE_VERSION so this server knows which build it holds`,
+          { requestedVersion },
+        );
+      }
       if (localVersion !== 'latest' && localVersion !== requestedVersion) {
         console.warn(
           `[${config.logTag}] refusing to serve ${filename}: local mode has only the ${localVersion} build`,

@@ -832,6 +832,48 @@ describe("agentVersions routes", () => {
       }
     });
 
+    it("does NOT pin the \"unknown\" sentinel version, which is not a release tag (#5159)", async () => {
+      // binarySync stores the literal "unknown" for a locally-registered
+      // binary with no version file. Pinning it would build a URL the download
+      // route answers with a 404 ("vunknown" is not a release tag), where
+      // today it falls back to the env-resolved release and keeps working.
+      const rows = [
+        {
+          version: "unknown",
+          downloadUrl: "https://s3.example.com/agent-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(1),
+          releaseNotes: null,
+        },
+      ];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/latest?platform=linux&arch=amd64",
+        );
+        const body = await res.json();
+        expect(body.downloadUrl).toBe(
+          "https://us.example.com/api/v1/agents/download/linux/amd64",
+        );
+        expect(body.downloadUrl).not.toContain("unknown");
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
     it("does NOT pin the version in local mode, where the route serves one disk build (#5159)", async () => {
       // Local mode streams the single binary in the binaries volume and cannot
       // select a release; pinning there would turn a working download into a
