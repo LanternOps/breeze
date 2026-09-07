@@ -24,6 +24,7 @@ export interface CreateTicketBody {
   subject: string;
   description?: string;
   priority: TicketPriority;
+  assigneeId?: string;
 }
 
 export type BuildResult =
@@ -34,12 +35,15 @@ export type BuildResult =
  * The exact JSON the screen POSTs to `/tickets`, or the first reason it must
  * not. Priority is always sent: the server falls back to 'normal' when absent,
  * but the chip row shows a selection, so what is on screen is what is sent.
+ * `assigneeId` is omitted (not sent as null) for "Unassigned" — the server
+ * only ever sees the field when a real user id was picked.
  */
 export function buildCreateTicketBody(input: {
   orgId: string | null;
   subject: string;
   description: string;
   priority: TicketPriority;
+  assigneeId?: string | null;
 }): BuildResult {
   if (!input.orgId) return { ok: false, reason: 'org' };
   const subject = input.subject.trim();
@@ -47,6 +51,7 @@ export function buildCreateTicketBody(input: {
   const description = input.description.trim();
   const body: CreateTicketBody = { orgId: input.orgId, subject, priority: input.priority };
   if (description) body.description = description;
+  if (input.assigneeId) body.assigneeId = input.assigneeId;
   return { ok: true, body };
 }
 
@@ -66,4 +71,54 @@ export function preselectOrg(orgs: readonly OrgOption[], userOrgId: string | und
   if (userOrgId && orgs.some((o) => o.id === userOrgId)) return userOrgId;
   if (orgs.length === 1) return orgs[0].id;
   return null;
+}
+
+/** A row from `GET /users`, trimmed to what the assignee picker needs. */
+export interface AssigneeUser {
+  id: string;
+  name: string | null;
+  email: string;
+}
+
+export interface AssigneeOption {
+  /** `null` is the "Unassigned" row — sent as an omitted field, not literal null. */
+  id: string | null;
+  label: string;
+}
+
+/** Display name for a user row: the name, or the email when it is blank. */
+export function assigneeDisplayName(user: { name: string | null | undefined; email: string }): string {
+  const name = user.name?.trim();
+  return name ? name : user.email;
+}
+
+/** #5188: the signed-in tech is the default assignee on a new ticket. */
+export function defaultAssigneeId(me: { id: string } | null | undefined): string | null {
+  return me?.id ?? null;
+}
+
+/**
+ * Assignee sheet contents: "Unassigned" first, the signed-in tech pinned
+ * second labeled "(you)", then the rest of `staff` sorted by display name.
+ * `staff` may be empty — the `GET /users` fetch failed (403 for a tech without
+ * `users:read`, network error, …) — in which case the sheet still offers
+ * Unassigned + you rather than erroring.
+ */
+export function assigneeOptions(
+  staff: readonly AssigneeUser[],
+  me: AssigneeUser | null | undefined
+): AssigneeOption[] {
+  const options: AssigneeOption[] = [{ id: null, label: 'Unassigned' }];
+  if (me) options.push({ id: me.id, label: `${assigneeDisplayName(me)} (you)` });
+
+  const seen = new Set<string>(me ? [me.id] : []);
+  const rest: AssigneeOption[] = [];
+  for (const user of staff) {
+    if (!user.id || seen.has(user.id)) continue;
+    seen.add(user.id);
+    rest.push({ id: user.id, label: assigneeDisplayName(user) });
+  }
+  rest.sort((a, b) => a.label.localeCompare(b.label));
+
+  return [...options, ...rest];
 }
