@@ -238,7 +238,7 @@ The API validator (`services/flowValidator.ts`) runs against the owner's resolve
 4. **Amendment (quorum):** `approval: pre_approved` is allowed only when the step's tool/action is **policy-decidable** per `services/actionIntents/policyDecidable.ts` (four-eyes tools and actions can never be pre-approved; a policy is a mechanism, not a second human), **and** the tool declares an asset-binding field (`assetArgs`, e.g. `run_script.scriptId`, `deploy_software.catalogItemId`), **and** that field is a literal. Enabling records an **effect binding** for the step: asset id plus content digest (the `actRevalidation.ts` pattern for scripts). At run time the binding is revalidated; drift fails the step with `binding_drift` and never executes. Tenant tools may not be pre-approved in v1.
 5. Effective tier of the flow = max step tier; recorded on the row for list badges and for `flow.<slug>` registration.
 6. Partner-wide flows may only reference partner-wide or core assets (scripts, notification channels), never an org's asset; reuses the ownership check `automation_resource_bindings` performs today.
-7. Enabling re-runs validation, and additionally checks the enabling user holds every permission the steps need (`checkToolPermission` per step, as if in chat).
+7. Enabling re-runs validation, and additionally checks the enabling user holds every permission the steps need (`checkToolPermission` per step, as if in chat). This is the delegation decision; runs do not re-check the user (§6.5).
 
 ### 6.4 Data model
 
@@ -249,8 +249,8 @@ The API validator (`services/flowValidator.ts`) runs against the owner's resolve
 | id, org_id / partner_id (XOR), slug (unique per owner), name, description | |
 | definition jsonb, definition_version int | version increments on every save; runs pin the version they started with |
 | effective_tier smallint | |
-| status enum `draft` \| `enabled` \| `paused` \| `disabled` | `paused` is system-set (enabling user disabled, source in error, budget exhausted) and carries `paused_reason` |
-| enabled_by_user_id, enabled_at | permission principal for runs |
+| status enum `draft` \| `enabled` \| `paused` \| `disabled` | `paused` is system-set (a referenced source in error or disabled, an enabled tool removed by re-discovery, budget or run cap exhausted, a step's tool revision or effect binding drifted) and carries `paused_reason` |
+| enabled_by_user_id, enabled_at | the delegating user: audit and the enable-time permission check; runs execute as the flow principal, not as this user |
 | created_by_user_id, ai_session_id null, managed_by_agent_id null | provenance |
 | webhook_secret_encrypted text null, webhook_token_fingerprint | webhook trigger only |
 | created_at, updated_at | |
@@ -287,7 +287,7 @@ The API validator (`services/flowValidator.ts`) runs against the owner's resolve
 
 1. Load run + flow definition at the pinned version. Set `running`.
 2. From `current_step_id`, for each step: evaluate `when` (skip → `skipped`); render input; validate against tool schema; if `forEach`, expand items and process with the declared concurrency, one `flow_run_steps` row per item.
-3. Guardrails per (step, item): `checkToolPermission` for the enabling user, `checkToolTier`, per-source rate limit, flow budget (§6.7).
+3. Guardrails per (step, item): policy checks under the flow principal (tool still enabled and revision unchanged, tier, effect binding, source active), per-source rate limit, flow budget (§6.7).
 4. Tier 3 and not pre-approved: create an `action_intent` (source `flow`, new enum value) and an `approval_request` whose card reads "Flow *name*, step *id*: *tool*" with the rendered input; set run and step to `awaiting_approval`, store the cursor, return. The approval decision handler (existing) re-enqueues the run on approve, sets `failed` with `error='rejected'` on deny, and the existing expiry sweep sets `expired` after `FLOW_APPROVAL_TTL_HOURS` (default 24).
 5. Execute via `executeTool` (same path as chat). On error: `onFailure: stop` → run `failed`; `continue` → step `failed`, next step. Transient errors (network, 5xx, 429) on Tier 1 steps retry 3× with backoff; mutating steps never auto-retry.
 6. `wait` steps re-enqueue the job with a delay and return.
@@ -358,7 +358,7 @@ Approvals: the existing inbox and mobile cards work unchanged; the card body gai
 
 ## 9. Testing
 
-- **Unit (Test API job):** expression grammar (every operator, null semantics, prototype-pollution attempts, depth limits); renderer (type preservation, nested templates, missing paths); OpenAPI → tools generator on three fixture specs (petstore, a Halo-like spec with `operationId` gaps, a spec with remote `$ref` that must be rejected); MCP client against an in-process fake streamable-HTTP server (list, call, structured vs text results, timeouts, oversize responses); egress guard (each blocked range, redirect rules, self-hosted flag vs `IS_HOSTED`); flow validator (each rule in §6.3 red then green); runner state machine (pause on Tier 3, resume on approve, deny, expire, `wait` re-enqueue, for-each with a failing item under stop and continue, dedupe collision, disabled enabling user → paused); resolver (dotted-name policy, cache invalidation, visibility matrix org/partner).
+- **Unit (Test API job):** expression grammar (every operator, null semantics, prototype-pollution attempts, depth limits); renderer (type preservation, nested templates, missing paths); OpenAPI → tools generator on three fixture specs (petstore, a Halo-like spec with `operationId` gaps, a spec with remote `$ref` that must be rejected); MCP client against an in-process fake streamable-HTTP server (list, call, structured vs text results, timeouts, oversize responses); egress guard (each blocked range, redirect rules, self-hosted flag vs `IS_HOSTED`); flow validator (each rule in §6.3 red then green); runner state machine (pause on Tier 3, resume on approve, deny, expire, `wait` re-enqueue, for-each with a failing item under stop and continue, dedupe collision, worker death mid-mutation → `unknown_outcome`, drift on resume → `failed`, cancel between items); resolver (dotted-name policy, cache invalidation, visibility matrix org/partner).
 - **Integration (needs Postgres):** `toolSourcesPartnerRls.integration.test.ts` and `flowsPartnerRls.integration.test.ts` (cross-partner forge 42501, XOR 23514, org isolation, partner-wide fan-out creates one run per org); RLS coverage, tenant cascade, org-merge, export-policy and erasure round-trip contract suites; event-trigger subscriber against the real event bus.
 - **E2E (Playwright, data-testid):** register a fake MCP source, enable a read tool, ask chat a question that uses it; draft a flow in chat, open the card, enable it with one pre-approved step, fire the trigger, approve the Tier 3 step in the inbox, read the completed run checklist.
 
