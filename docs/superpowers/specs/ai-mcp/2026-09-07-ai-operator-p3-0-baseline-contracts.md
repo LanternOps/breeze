@@ -26,7 +26,7 @@ Line numbers drift. Cite by symbol name as well as line where the symbol is stab
 both answered yes. A device command result is readable by id through an authorized route
 (`apps/api/src/routes/devices/commands.ts:960`, VERIFIED), and the proposed operation identity can
 be made safe, though not in the shape §6.5 currently describes. Section 5 states the required
-change. Section 11 lists eighteen corrections to the spec and plan.
+change. Section 11 lists nineteen corrections to the spec and plan.
 
 ---
 
@@ -177,7 +177,7 @@ control characters, and bounds the length. VERIFIED. Server-side validation does
 |---|---|---|
 | Action key | `apps/api/src/services/actionIntents/policyDecidableKeys.ts:97-104` | `manage_services:restart`, `headlessCompatible: true`, `maxTargetCardinality: 1`, `requiresEffectPin: true`. VERIFIED. |
 | Tier / approval scope | `apps/api/src/services/aiGuardrails.ts:192` (`TIER3_ACTIONS`) and `:421-424` (`TIER3_SUPERVISED_ACTIONS`) | Tier 3, **supervised** (not four-eyes), resolved by `resolveApprovalScope` (`:555-598`). VERIFIED. |
-| Agent policy | `AiAgentPolicy.actAssets` (`packages/shared/src/types/aiAgents.ts:359`), `AiAgentActAssets` (`:327-346`) | `supervisedActionKeys` must contain `manage_services:restart` for a policy-decided release. Partner is a **ceiling**: the effective set is the intersection of partner and org (`apps/api/src/services/aiAgents/effectivePolicy.ts:199`), so an org-only grant does nothing unless the partner baseline already holds the key. VERIFIED via the Phase 2 spec amendment and the cited line. |
+| Agent policy | `AiAgentPolicy.actAssets` (`packages/shared/src/types/aiAgents.ts:359`), `AiAgentActAssets` (`:327-346`) | `supervisedActionKeys` must contain `manage_services:restart` for a policy-decided release. Partner is a **ceiling**: the effective set is `intersectToolRefs(partner.actAssets.supervisedActionKeys ?? [], ...)` at `apps/api/src/services/aiAgents/effectivePolicy.ts:297-299`, so an org-only grant does nothing unless the partner baseline already holds the key. With no org row at all the effective set is forced to `[]` (`:191-192`). VERIFIED. **Note the Phase 2 spec cites `:199` for this; that line is now an unrelated `pick` helper.** |
 | Guardrail check | `checkAgentGuardrails` (`apps/api/src/services/aiGuardrails.ts:1739`) | In order: env flag, DB kill switch, snapshot validity, base tier, secret-bearing, human-only tools, site scope, `policy.enabled` / `mode !== 'off'`, tool allowlist, `protectedResources.services`, then the mode branch. VERIFIED. |
 | Mode | same | `shadow` or unmatched `act` yields `disposition: 'propose'`; only a manifest-matched `act` executes directly. P3-1 is supervised only, so the propose path is the only one in scope. VERIFIED. |
 
@@ -1296,6 +1296,13 @@ and left to finish, not cancelled.
 "terminal publication" bullet names "the release worker and expiry reaper (the two writers this
 recipe needs)", the report-suspicious path is a third, and a rejected task operation that publishes
 nothing would strand the task in `waiting` until its deadline. Add it to the PR (3) scope.
+
+**C19, the Phase 2 spec's `effectivePolicy.ts:199` citation for the partner/org intersection is
+stale.** At this baseline `:199` is an unrelated `pick` helper. The intersection is
+`intersectToolRefs(partner.actAssets.supervisedActionKeys ?? [], ...)` at `:297-299`, and the
+"no org row means `[]`" rule is at `:191-192`. VERIFIED. Recorded because §2.3 of this document
+depends on the fact, and because it shows Phase 2 spec citations should be re-read, not trusted,
+when P3 waves quote them.
 
 **Non-contradictions, confirmed as written.** Spec §2's claims about `finishRun` publishing after
 the write (`runLoop.ts:1898` then `:1916`), the reaper's `failed:execution_lost`
