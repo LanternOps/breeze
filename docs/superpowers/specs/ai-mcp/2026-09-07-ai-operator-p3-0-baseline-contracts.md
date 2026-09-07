@@ -223,7 +223,7 @@ This is the most important operational fact in the slice, and it is not in the s
 
 | Clock | Value | Where |
 |---|---|---|
-| Tool wait | **30 s** | `aiToolsScripts.ts:663` passes `timeoutMs: 30000`; `waitForCommandResult` polls until then (`commandQueue.ts:619, 625`). VERIFIED. |
+| Tool wait | **30 s** | `aiToolsScripts.ts:662` passes `timeoutMs: 30000`; `waitForCommandResult` polls until then (`commandQueue.ts:619, 625`). VERIFIED. |
 | Device-command reap | **5 min** | `restart_service` is in `SHORT_TIMEOUT_TYPES` (`apps/api/src/services/commandTimeouts.ts:25-33`), so `getCommandTimeoutMs` returns `FIVE_MINUTES` (`:145`). VERIFIED. |
 | Intent stale-executing reap | **20 min** | `STALE_EXECUTING_TIMEOUT_MINUTES = 20` (`apps/api/src/jobs/intentExpiryReaper.ts:81`). VERIFIED. |
 
