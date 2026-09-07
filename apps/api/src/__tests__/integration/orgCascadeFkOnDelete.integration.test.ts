@@ -204,7 +204,13 @@ const preClearOrder = new Map(
  * too -- otherwise an un-cleared grandchild aborts the original DELETE.
  */
 function protectedTables(rows: FkRow[]): Set<string> {
-  const reached = new Set<string>([...cascadeTables, ...preClearOrder.keys()]);
+  // An `unwire` pre-clear UPDATEs its table to release an FK and deletes
+  // nothing from it, so that table is not a parent erasure removes rows from
+  // (it still occupies a pre-clear step for the edge it releases).
+  const deletingPreClears = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES
+    .filter((entry) => entry.kind !== 'unwire')
+    .map((entry) => entry.table);
+  const reached = new Set<string>([...cascadeTables, ...deletingPreClears]);
   for (let changed = true; changed;) {
     changed = false;
     for (const row of rows) {

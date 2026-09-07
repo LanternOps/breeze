@@ -529,6 +529,14 @@ export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
  */
 const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   table: string;
+  /**
+   * `'unwire'` marks an entry whose clearSql is an UPDATE that releases an FK
+   * (nulls the referencing column) and removes NO rows from `table`. The
+   * FK-on-delete ledger uses it to keep `table` out of the set of parents an
+   * erasure deletes from; the entry still counts as a pre-clear step for the
+   * FK it releases. Absent means the entry DELETEs from `table`.
+   */
+  kind?: 'unwire';
   clearSql: (orgId: string) => ReturnType<typeof sql>;
 }> = [
   {
@@ -607,6 +615,7 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // not a deletion. No partner row is ever removed by an org erasure.
   {
     table: 'partners',
+    kind: 'unwire',
     clearSql: (orgId) => sql`
       UPDATE partners
       SET service_management_mode = 'native',
@@ -1175,7 +1184,30 @@ export async function cascadeDeletePartner(
   // partner that ever exercised SSO would fail the sweep on the
   // sso_providers/users DELETEs (FK violation) without this pre-clear.
   // Mirrors the ASSOCIATED_SYSTEM_SCOPED_TABLES step in cascadeDeleteOrg.
-  const partnerAssociatedPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
+  const partnerAssociatedPreClears: ReadonlyArray<{ table: string; statsKey?: string; clearSql: ReturnType<typeof sql> }> = [
+    // Service Management un-wire (#5075 W04). The partner's OWN row holds
+    // partners.service_management_psa_connection_id -> psa_connections.id,
+    // ON DELETE RESTRICT, and the partner-axis sweep below runs
+    // `DELETE FROM psa_connections WHERE partner_id = ...` -- which is exactly
+    // the partner-wide row PATCH /orgs/partners/me binds. Without this the
+    // sweep aborts the purge with 23503 for every partner in external mode.
+    // The org-axis twin in ASSOCIATED_SYSTEM_SCOPED_TABLES covers org-owned
+    // connections; this one covers the live partner-wide case. Both columns
+    // move together because partners_service_management_connection_chk is a
+    // biconditional. It is an UPDATE, not a DELETE, and the final partners
+    // DELETE below already owns tablesDeleted['partners'], so the un-wire
+    // count is recorded under its own key rather than inflating that one.
+    {
+      table: 'partners',
+      statsKey: 'partners.service_management_unwired',
+      clearSql: sql`
+        UPDATE partners
+        SET service_management_mode = 'native',
+            service_management_psa_connection_id = NULL
+        WHERE id = ${partnerId}
+          AND service_management_psa_connection_id IS NOT NULL
+      `,
+    },
     {
       table: 'user_sso_identities',
       clearSql: sql`
@@ -1272,7 +1304,8 @@ export async function cascadeDeletePartner(
         const result = await dbModule.db.execute(assoc.clearSql);
         return extractRowCount(result);
       });
-      tablesDeleted[assoc.table] = (tablesDeleted[assoc.table] ?? 0) + count;
+      const key = assoc.statsKey ?? assoc.table;
+      tablesDeleted[key] = (tablesDeleted[key] ?? 0) + count;
       totalRowsDeleted += count;
     } catch (err) {
       if (!isUndefinedTable(err)) {
