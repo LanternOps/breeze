@@ -310,9 +310,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           // acted"; `result.delivery` is the dispatch core's own outcome, so
           // an offline device gets the honest "runs when it reconnects" copy
           // instead of a false "command sent".
+          //
+          // 'queued_live' means the device IS online — only the immediate
+          // socket push missed, and the next heartbeat (seconds away) claims
+          // it. Only 'queued_offline' means "wait for it to reconnect".
           showToast({
             type: "success",
-            message: result.delivery === "delivered"
+            message: result.delivery !== "queued_offline"
               ? `${label} command sent to ${device.hostname}`
               : result.deliverBy
                 ? t("devicesPage.toasts.runsWhenOnline", { date: formatDateTime(result.deliverBy) })

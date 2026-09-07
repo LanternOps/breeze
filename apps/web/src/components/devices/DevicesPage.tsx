@@ -939,9 +939,16 @@ export default function DevicesPage() {
           // not the pre-request device.status snapshot: a device that came
           // online between page load and click is reported correctly either
           // way, where the old status heuristic could be stale.
+          //
+          // 'queued_live' means the device IS online — the immediate socket
+          // push just didn't land (no live session, or preferHeartbeat), so
+          // the next heartbeat (seconds away) claims it. That is NOT the
+          // "wait for it to reconnect" story `queued_offline` tells; treat it
+          // as sent, same as 'delivered', or an online device gets told it's
+          // offline.
           showToast({
             type: 'success',
-            message: result.delivery === 'delivered'
+            message: result.delivery !== 'queued_offline'
               ? t('devicesPage.toasts.commandSent', { action: label, hostname: device.hostname })
               : result.deliverBy
                 ? t('devicesPage.toasts.runsWhenOnline', { date: formatDateTime(result.deliverBy) })

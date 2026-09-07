@@ -2663,11 +2663,13 @@
   "queuedActions": {
     "title": "Ações na fila",
     "system": "Sistema",
+    "aUser": "um usuário",
     "requestedBy": "Solicitado por {{who}}",
     "expires": "Expira em {{date}}",
     "cancel": "Cancelar",
     "cancelled": "Ação na fila cancelada",
     "cancelFailed": "Falha ao cancelar a ação na fila",
+    "loadFailed": "Não foi possível carregar as ações na fila.",
     "empty": "Nenhuma ação na fila"
   }
 }

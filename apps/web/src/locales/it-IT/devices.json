@@ -2663,11 +2663,13 @@
   "queuedActions": {
     "title": "Azioni in coda",
     "system": "Sistema",
+    "aUser": "un utente",
     "requestedBy": "Richiesto da {{who}}",
     "expires": "Scade il {{date}}",
     "cancel": "Annulla",
     "cancelled": "Azione in coda annullata",
     "cancelFailed": "Impossibile annullare l'azione in coda",
+    "loadFailed": "Impossibile caricare le azioni in coda.",
     "empty": "Nessuna azione in coda"
   }
 }

@@ -2388,11 +2388,13 @@
   "queuedActions": {
     "title": "Queued actions",
     "system": "System",
+    "aUser": "a user",
     "requestedBy": "Requested by {{who}}",
     "expires": "Expires {{date}}",
     "cancel": "Cancel",
     "cancelled": "Queued action cancelled",
     "cancelFailed": "Failed to cancel queued action",
+    "loadFailed": "Couldn't load queued actions.",
     "empty": "No queued actions"
   },
   "savedViewsMenu": {

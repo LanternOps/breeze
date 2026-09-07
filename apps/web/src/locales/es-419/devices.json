@@ -2663,11 +2663,13 @@
   "queuedActions": {
     "title": "Acciones en cola",
     "system": "Sistema",
+    "aUser": "un usuario",
     "requestedBy": "Solicitado por {{who}}",
     "expires": "Vence el {{date}}",
     "cancel": "Cancelar",
     "cancelled": "Acción en cola cancelada",
     "cancelFailed": "No se pudo cancelar la acción en cola",
+    "loadFailed": "No se pudieron cargar las acciones en cola.",
     "empty": "No hay acciones en cola"
   }
 }

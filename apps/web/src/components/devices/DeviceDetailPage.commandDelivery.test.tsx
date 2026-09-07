@@ -125,4 +125,39 @@ describe('DeviceDetailPage single-command toast reads delivery, not device.statu
     expect(success?.message).toMatch(/runs when the device is online/i);
     expect(success?.message).not.toMatch(/command sent/i);
   });
+
+  // #5128 W2 regression: 'queued_live' means the device IS online — only the
+  // immediate socket push missed, and the next heartbeat (seconds away)
+  // claims it. A `!== 'delivered'` check would misreport an online device as
+  // offline.
+  it('reports "sent" (not "runs when online") for queued_live — the device is online, only the immediate push missed', async () => {
+    const toasts = await rebootFromDetailPage({
+      id: 'cmd-1',
+      deviceId: DEVICE_ID,
+      type: 'reboot',
+      status: 'pending',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      delivery: 'queued_live',
+      deliverBy: null,
+    });
+
+    const success = toasts.find((t) => t.type === 'success');
+    expect(success?.message).toMatch(/reboot command sent to ws-detail-01/i);
+    expect(success?.message).not.toMatch(/runs when the device is online/i);
+  });
+
+  it('omits the expiry clause when a queued_offline result carries no deliverBy', async () => {
+    const toasts = await rebootFromDetailPage({
+      id: 'cmd-1',
+      deviceId: DEVICE_ID,
+      type: 'reboot',
+      status: 'pending',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      delivery: 'queued_offline',
+      deliverBy: null,
+    });
+
+    const success = toasts.find((t) => t.type === 'success');
+    expect(success?.message).toBe('Runs when the device is online');
+  });
 });

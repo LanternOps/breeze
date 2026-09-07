@@ -1357,6 +1357,50 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
   });
 
+  // #5128 W2 — the bulk toast reads `queuedOffline` off the W1 response
+  // shape and appends the count via `queuedOfflineTail`. Untested until now:
+  // a wrong field name, an off-by-one, or a broken interpolation key would
+  // ship silently, and bulk reboot of a partly-offline fleet is a core flow.
+  it('bulk toast reports how many of the sent commands were queued for offline devices', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendBulkCommand).mockResolvedValue({
+      commands: [{}, {}, {}],
+      failed: [],
+      skipped: [],
+      queuedOffline: [DEV_2, DEV_3],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /2 queued for offline devices/i.test(m))).toBe(true);
+    });
+  });
+
+  it('bulk toast omits the queued-offline clause when nothing was queued', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendBulkCommand).mockResolvedValue({
+      commands: [{}, {}, {}],
+      failed: [],
+      skipped: [],
+      queuedOffline: [],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /queued for offline devices/i.test(m))).toBe(false);
+    });
+  });
+
   it('refuses outright when EVERY selected device is decommissioned', async () => {
     const { sendBulkCommand } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
@@ -1501,7 +1545,15 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     // between page load and click).
     async function rebootDeviceWithStatus(
       status: string,
-      opts: { delivered?: boolean; deliverBy?: string | null } = {},
+      opts: {
+        delivered?: boolean;
+        deliverBy?: string | null;
+        // Raw override for the 'queued_live' outcome — the device IS online,
+        // only the immediate socket push missed (no live session,
+        // preferHeartbeat); distinct from both 'delivered' and
+        // 'queued_offline'. Takes precedence over `delivered` when set.
+        delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+      } = {},
     ) {
       const { sendDeviceCommand } = await import('../../services/deviceActions');
       const { showToast } = await import('../shared/Toast');
@@ -1516,7 +1568,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         type: 'reboot',
         status: 'pending',
         createdAt: '2026-09-01T00:00:00.000Z',
-        delivery: delivered ? 'delivered' : 'queued_offline',
+        delivery: opts.delivery ?? (delivered ? 'delivered' : 'queued_offline'),
         deliverBy,
       } as never);
 
@@ -1589,6 +1641,18 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         expect(success?.message).not.toMatch(/sent to/i);
       },
     );
+
+    // #5128 W2 regression: 'queued_live' means the device IS online — only
+    // the immediate socket push missed (no live session, preferHeartbeat),
+    // so the next heartbeat (seconds away) claims it. A `!== 'delivered'`
+    // check would misreport this as "runs when the device is online",
+    // telling the operator an online device is offline.
+    it('a queued_live result (device online, immediate push missed) reports "sent", not "runs when online"', async () => {
+      const toasts = await rebootDeviceWithStatus('online', { delivery: 'queued_live', deliverBy: null });
+      const success = toasts.find(c => c.type === 'success');
+      expect(success?.message).toMatch(/sent to host-alpha/i);
+      expect(success?.message).not.toMatch(/runs when the device is online/i);
+    });
 
     // #5128 W2 — a queued command that carries no deliverBy (a legacy row,
     // or a policy that never sets a TTL) falls back to the no-expiry copy

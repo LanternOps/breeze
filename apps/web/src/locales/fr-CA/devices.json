@@ -2663,11 +2663,13 @@
   "queuedActions": {
     "title": "Actions en file d'attente",
     "system": "Système",
+    "aUser": "un utilisateur",
     "requestedBy": "Demandé par {{who}}",
     "expires": "Expire le {{date}}",
     "cancel": "Annuler",
     "cancelled": "Action en file d'attente annulée",
     "cancelFailed": "Échec de l'annulation de l'action en file d'attente",
+    "loadFailed": "Impossible de charger les actions en file d'attente.",
     "empty": "Aucune action en file d'attente"
   }
 }

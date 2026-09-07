@@ -2663,11 +2663,13 @@
   "queuedActions": {
     "title": "Aktionen in der Warteschlange",
     "system": "System",
+    "aUser": "ein Benutzer",
     "requestedBy": "Angefordert von {{who}}",
     "expires": "Läuft ab am {{date}}",
     "cancel": "Abbrechen",
     "cancelled": "Aktion in der Warteschlange abgebrochen",
     "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
+    "loadFailed": "Warteschlangenaktionen konnten nicht geladen werden.",
     "empty": "Keine ausstehenden Aktionen"
   }
 }

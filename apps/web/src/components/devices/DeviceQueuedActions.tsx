@@ -38,24 +38,33 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
   const { t } = useTranslation("devices");
   const [rows, setRows] = useState<QueuedCommand[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // A load FAILURE (non-401 HTTP error, thrown fetch, bad body) is not the
+  // same state as "this device genuinely has nothing queued" — collapsing
+  // them (both rendering nothing) would tell an operator a device has no
+  // pending work when the truth is "we couldn't check". Only the 401 case
+  // stays silent: the auth redirect owns telling the user about that one.
+  const [loadError, setLoadError] = useState(false);
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
+    setLoadError(false);
     try {
       const res = await fetchWithAuth(`/devices/${deviceId}/commands?status=pending&limit=50`);
       if (res.status === 401) {
-        // Session expired — the auth redirect owns telling the user, not
-        // this card. Leave the list empty rather than toast or retry.
         return;
       }
       if (!res.ok) {
+        console.error(`[DeviceQueuedActions] failed to load pending commands: HTTP ${res.status}`);
+        setLoadError(true);
         setRows([]);
         return;
       }
       const json = await res.json();
       const data: QueuedCommand[] = Array.isArray(json?.data) ? json.data : [];
       setRows(data);
-    } catch {
+    } catch (err) {
+      console.error('[DeviceQueuedActions] failed to load pending commands', err);
+      setLoadError(true);
       setRows([]);
     } finally {
       setLoaded(true);
@@ -64,6 +73,7 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
 
   useEffect(() => {
     setLoaded(false);
+    setLoadError(false);
     setRows([]);
     void load();
   }, [load]);
@@ -95,7 +105,11 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
     }
   };
 
-  if (!loaded || rows.length === 0) return null;
+  if (!loaded) return null;
+  // Genuinely empty (no error) stays hidden entirely (design §H). A load
+  // failure is handled below instead — it must never look identical to
+  // "nothing queued".
+  if (!loadError && rows.length === 0) return null;
 
   return (
     <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="device-queued-actions">
@@ -103,37 +117,57 @@ export default function DeviceQueuedActions({ deviceId }: DeviceQueuedActionsPro
         <Clock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         <h3 className="text-sm font-semibold">{t("queuedActions.title")}</h3>
       </div>
-      <ul className="mt-3 space-y-2">
-        {rows.map((row) => (
-          <li
-            key={row.id}
-            data-testid="queued-action-row"
-            className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
+      {loadError ? (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {t("queuedActions.loadFailed")}{" "}
+          <button
+            type="button"
+            data-testid="queued-actions-retry"
+            onClick={() => void load()}
+            className="font-medium text-primary hover:underline"
           >
-            <div className="min-w-0">
-              <p className="truncate font-medium">{humanizeCommandType(row.type)}</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {t("queuedActions.requestedBy", { who: row.createdBy ?? t("queuedActions.system") })}
-                {row.deliverBy && (
-                  <>
-                    {" · "}
-                    {t("queuedActions.expires", { date: formatDateTime(row.deliverBy) })}
-                  </>
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              data-testid="queued-action-cancel"
-              onClick={() => handleCancel(row.id)}
-              disabled={cancellingIds.has(row.id)}
-              className="shrink-0 rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+            {t("common:actions.retry")}
+          </button>
+        </p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {rows.map((row) => (
+            <li
+              key={row.id}
+              data-testid="queued-action-row"
+              className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
             >
-              {t("queuedActions.cancel")}
-            </button>
-          </li>
-        ))}
-      </ul>
+              <div className="min-w-0">
+                <p className="truncate font-medium">{humanizeCommandType(row.type)}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {/* `createdBy` is a bare user id (no name join on this
+                      endpoint) — a raw UUID would be meaningless to an
+                      operator, so this only distinguishes human- from
+                      system-initiated, not who specifically. */}
+                  {t("queuedActions.requestedBy", {
+                    who: row.createdBy ? t("queuedActions.aUser") : t("queuedActions.system"),
+                  })}
+                  {row.deliverBy && (
+                    <>
+                      {" · "}
+                      {t("queuedActions.expires", { date: formatDateTime(row.deliverBy) })}
+                    </>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="queued-action-cancel"
+                onClick={() => handleCancel(row.id)}
+                disabled={cancellingIds.has(row.id)}
+                className="shrink-0 rounded-md border px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
+              >
+                {t("queuedActions.cancel")}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
