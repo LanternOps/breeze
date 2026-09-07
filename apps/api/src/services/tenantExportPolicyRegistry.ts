@@ -336,7 +336,17 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "pam_rules": tablePolicy("org_id", {"included":["id","org_id","site_id","name","description","enabled","priority","match_signer","match_signer_thumbprint","match_signer_group_id","match_path_glob","match_parent_image","match_command_line","match_user","match_ad_group","match_tool_name","match_risk_tier","verdict","approval_duration_minutes","suspended_verdict","reapproved_at","reapproved_by_user_id","created_by_user_id","created_at","updated_at"],"reviewedIncluded":["match_hash"],"excludedSensitive":[],"excludedOpen":["match_negate","time_window"]}),
   "pam_signer_groups": tablePolicy("org_id", {"included":["id","org_id","name","description","created_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["signers"]}),
   "partner_enrollment_key_idempotency": tablePolicy("org_id", {"included":["id","partner_id","partner_service_principal_id","org_id","idempotency_key","enrollment_key_id","created_at"],"reviewedIncluded":["request_fingerprint"],"excludedSensitive":[],"excludedOpen":[]}),
-  "patch_compliance_reports": tablePolicy("org_id", {"included":["id","org_id","requested_by","status","format","source","severity","row_count","output_path","error_message","started_at","completed_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary"]}),
+  // execution_scope_* (SEC-095): the requester's persisted report-export
+  // authority ceiling. execution_scope_site_ids is uuid[], not json/jsonb/bytea,
+  // so it is not an open container; the remaining columns are a version number,
+  // a kind enum-ish string, a user id, a sha256 hex digest of the envelope, a
+  // capture timestamp and a principal-kind string. None matches
+  // SUSPICIOUS_NAME_PARTS ('fingerprint' is not in that list) and none is
+  // credential material — the digest is an integrity value over non-secret
+  // content, same treatment as partner_enrollment_key_idempotency's
+  // request_fingerprint above, which is reviewedIncluded only because its table
+  // is enrollment-key adjacent. Plain `included` here.
+  "patch_compliance_reports": tablePolicy("org_id", {"included":["id","org_id","requested_by","status","format","source","severity","row_count","output_path","error_message","started_at","completed_at","created_at","updated_at","execution_scope_version","execution_scope_kind","execution_scope_site_ids","execution_scope_user_id","execution_scope_fingerprint","execution_scope_captured_at","execution_scope_principal_kind"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["summary"]}),
   "patch_compliance_snapshots": tablePolicy("org_id", {"included":["id","org_id","ring_id","snapshot_date","total_devices","compliant_devices","non_compliant_devices","critical_missing","important_missing","patches_pending_approval","patches_installed_24h","failed_installs_24h","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details_by_category"]}),
   "patch_jobs": tablePolicy("org_id", {"included":["id","org_id","policy_id","ring_id","config_policy_id","name","status","scheduled_at","started_at","completed_at","devices_total","devices_completed","devices_failed","devices_pending","devices_queued","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["patches","targets"]}),
   "pax8_company_mappings": tablePolicy("org_id", {"included":["id","integration_id","partner_id","pax8_company_id","pax8_company_name","status","org_id","ignored","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["metadata"]}),

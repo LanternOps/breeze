@@ -26,6 +26,24 @@ const mockAuthState = vi.hoisted(() => ({
   ] as Array<{ resource: string; action: string }>
 }));
 
+const reportAuthorityState = vi.hoisted(() => ({
+  result: {
+    ok: true as const,
+    authority: {
+      principalKind: 'user' as const,
+      scope: {
+        version: 1 as const,
+        kind: 'restricted' as const,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        siteIds: ['66666666-6666-4666-8666-666666666666'],
+      },
+      principalUserId: '33333333-3333-3333-3333-333333333333',
+      capturedAt: new Date('2026-09-06T12:00:00Z'),
+      fingerprint: 'a'.repeat(64),
+    },
+  } as any,
+}));
+
 vi.mock('drizzle-orm', () => {
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })) as unknown;
 
@@ -113,7 +131,14 @@ vi.mock('../../db/schema', () => ({
     startedAt: 'patchComplianceReports.startedAt',
     completedAt: 'patchComplianceReports.completedAt',
     createdAt: 'patchComplianceReports.createdAt',
-    outputPath: 'patchComplianceReports.outputPath'
+    outputPath: 'patchComplianceReports.outputPath',
+    executionScopeVersion: 'patchComplianceReports.executionScopeVersion',
+    executionScopeKind: 'patchComplianceReports.executionScopeKind',
+    executionScopeSiteIds: 'patchComplianceReports.executionScopeSiteIds',
+    executionScopeUserId: 'patchComplianceReports.executionScopeUserId',
+    executionScopeFingerprint: 'patchComplianceReports.executionScopeFingerprint',
+    executionScopeCapturedAt: 'patchComplianceReports.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'patchComplianceReports.executionScopePrincipalKind',
   },
   patchRollbacks: {
     deviceId: 'patchRollbacks.deviceId',
@@ -133,6 +158,36 @@ vi.mock('../../services/commandQueue', () => ({
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
   writeAuditEvent: vi.fn()
+}));
+
+vi.mock('../../services/siteScope', () => ({
+  resolveRequestReportAuthority: vi.fn(async () => reportAuthorityState.result),
+  persistedSiteScopeValues: vi.fn((authority: any) => ({
+    executionScopeVersion: 1,
+    executionScopeKind: authority.scope.kind,
+    executionScopeSiteIds: authority.scope.kind === 'restricted'
+      ? authority.scope.siteIds
+      : null,
+    executionScopeUserId: authority.principalUserId,
+    executionScopeFingerprint: authority.fingerprint,
+    executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: authority.principalKind,
+  })),
+  decodeSiteScope: vi.fn((row: any, orgId: string) => {
+    if (row.executionScopeFingerprint === 'bad') throw new Error('bad scope');
+    if (row.executionScopeVersion !== 1) {
+      return { version: 1, kind: 'legacy_unscoped', orgId };
+    }
+    return row.executionScopeKind === 'restricted'
+      ? { version: 1, kind: 'restricted', orgId, siteIds: row.executionScopeSiteIds }
+      : { version: 1, kind: 'unrestricted', orgId };
+  }),
+  isSiteScopeSubset: vi.fn((stored: any, current: any) => {
+    if (stored.kind === 'legacy_unscoped') return false;
+    if (current.kind === 'unrestricted') return true;
+    if (stored.kind === 'unrestricted') return false;
+    return stored.siteIds.every((siteId: string) => current.siteIds.includes(siteId));
+  }),
 }));
 
 vi.mock('../../jobs/patchComplianceReportWorker', () => ({
@@ -266,6 +321,21 @@ describe('patch routes', () => {
     mockAuthState.partnerOrgAccess = null;
     mockAuthState.accessibleOrgIds = [ACCESSIBLE_ORG_ID];
     mockAuthState.permissions = [{ resource: '*', action: '*' }];
+    reportAuthorityState.result = {
+      ok: true,
+      authority: {
+        principalKind: 'user',
+        scope: {
+          version: 1,
+          kind: 'restricted',
+          orgId: ACCESSIBLE_ORG_ID,
+          siteIds: ['66666666-6666-4666-8666-666666666666'],
+        },
+        principalUserId: USER_ID,
+        capturedAt: new Date('2026-09-06T12:00:00Z'),
+        fingerprint: 'a'.repeat(64),
+      },
+    };
     app = new Hono();
     app.route('/patches', patchRoutes);
   });
@@ -694,18 +764,19 @@ describe('patch routes', () => {
 
   it('queues a compliance report request and returns a persisted report id', async () => {
     const reportId = '55555555-5555-5555-5555-555555555555';
+    const values = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: reportId,
+          orgId: ACCESSIBLE_ORG_ID,
+          status: 'pending',
+          format: 'csv'
+        }
+      ])
+    });
 
     vi.mocked(db.insert).mockReturnValueOnce({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([
-          {
-            id: reportId,
-            orgId: ACCESSIBLE_ORG_ID,
-            status: 'pending',
-            format: 'csv'
-          }
-        ])
-      })
+      values,
     } as any);
 
     const res = await app.request('/patches/compliance/report?source=apple&severity=critical', {
@@ -721,6 +792,32 @@ describe('patch routes', () => {
     expect(body.source).toBe('apple');
     expect(body.severity).toBe('critical');
     expect(enqueuePatchComplianceReport).toHaveBeenCalledWith(reportId);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ACCESSIBLE_ORG_ID,
+      requestedBy: USER_ID,
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopePrincipalKind: 'user',
+    }));
+  });
+
+  it('fails closed before persistence when exact export authority cannot be resolved', async () => {
+    reportAuthorityState.result = {
+      ok: false,
+      reason: 'empty_scope',
+    } as any;
+
+    const res = await app.request('/patches/compliance/report', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(enqueuePatchComplianceReport).not.toHaveBeenCalled();
   });
 
   it('denies queueing a compliance report without reports export permission', async () => {
@@ -779,7 +876,14 @@ describe('patch routes', () => {
       startedAt: now,
       completedAt: now,
       createdAt: now,
-      outputPath: '/tmp/report.csv'
+      outputPath: '/tmp/report.csv',
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeCapturedAt: now,
+      executionScopePrincipalKind: 'user',
     }]) as any);
 
     const res = await app.request(`/patches/compliance/report/${reportId}`, {
@@ -790,6 +894,64 @@ describe('patch routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.id).toBe(reportId);
+  });
+
+  it('returns an opaque not-found when current read scope is narrower than the stored report scope', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const now = new Date('2026-05-02T12:00:00Z');
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+    reportAuthorityState.result.authority.scope = {
+      version: 1,
+      kind: 'restricted',
+      orgId: ACCESSIBLE_ORG_ID,
+      siteIds: ['77777777-7777-4777-8777-777777777777'],
+    };
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/report.csv',
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeCapturedAt: now,
+      executionScopePrincipalKind: 'user',
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
+  });
+
+  it('returns an opaque not-found for legacy report scope before exposing status metadata', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/report.csv',
+      executionScopeVersion: null,
+      executionScopeKind: null,
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: null,
+      executionScopeCapturedAt: null,
+      executionScopePrincipalKind: null,
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
   });
 
   it('denies report status without reports read permission', async () => {
@@ -816,6 +978,39 @@ describe('patch routes', () => {
 
     expect(res.status).toBe(403);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('returns an opaque not-found before file access when download scope has narrowed', async () => {
+    const reportId = '55555555-5555-5555-5555-555555555555';
+    const now = new Date('2026-05-02T12:00:00Z');
+    mockAuthState.permissions = [{ resource: 'reports', action: 'export' }];
+    reportAuthorityState.result.authority.scope = {
+      version: 1,
+      kind: 'restricted',
+      orgId: ACCESSIBLE_ORG_ID,
+      siteIds: ['77777777-7777-4777-8777-777777777777'],
+    };
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereLimitResult([{
+      id: reportId,
+      orgId: ACCESSIBLE_ORG_ID,
+      status: 'completed',
+      format: 'csv',
+      outputPath: '/tmp/hidden-report.csv',
+      executionScopeVersion: 1,
+      executionScopeKind: 'restricted',
+      executionScopeSiteIds: ['66666666-6666-4666-8666-666666666666'],
+      executionScopeUserId: USER_ID,
+      executionScopeFingerprint: 'a'.repeat(64),
+      executionScopeCapturedAt: now,
+      executionScopePrincipalKind: 'user',
+    }]) as any);
+
+    const res = await app.request(`/patches/compliance/report/${reportId}/download`, {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Report not found' });
   });
 
   it('queues rollback commands for accessible devices', async () => {

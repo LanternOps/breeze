@@ -7,6 +7,13 @@ import { Job, Queue, Worker } from 'bullmq';
 import * as dbModule from '../db';
 import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnum, patchSeverityEnum } from '../db/schema';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
+import {
+  decodeSiteScope,
+  intersectSiteScopes,
+  resolveLiveReportAuthority,
+  type LiveSiteScopeV1,
+  type PersistedSiteScopeColumns,
+} from '../services/siteScope';
 import { attachWorkerObservability } from './workerObservability';
 
 const { db } = dbModule;
@@ -21,7 +28,7 @@ const PATCH_REPORT_STORAGE_PATH = process.env.PATCH_REPORT_STORAGE_PATH || './da
 type PatchSource = typeof patchSourceEnum.enumValues[number];
 type PatchSeverity = typeof patchSeverityEnum.enumValues[number];
 
-interface GenerateComplianceReportJobData {
+export interface GenerateComplianceReportJobData {
   type: 'generate-compliance-report';
   reportId: string;
 }
@@ -72,6 +79,7 @@ function buildSummaryFromRows(rows: Array<{ status: string; count: number }>): C
 
 async function generateComplianceSummary(
   orgId: string,
+  scope: LiveSiteScopeV1,
   source?: PatchSource | null,
   severity?: PatchSeverity | null
 ): Promise<ComplianceSummary> {
@@ -80,26 +88,14 @@ async function generateComplianceSummary(
   // machine borrowed for one ~20-minute session. That org stays inside
   // technicians' accessibleOrgIds for RLS reasons, so it is NOT filtered for us
   // — a borrowed home PC must never skew an MSP's patch-compliance reporting.
-  const orgDevices = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
-
-  const deviceIds = orgDevices.map((entry) => entry.id);
-
-  if (deviceIds.length === 0) {
-    return {
-      total: 0,
-      pending: 0,
-      installed: 0,
-      failed: 0,
-      missing: 0,
-      skipped: 0,
-      compliancePercent: 100
-    };
+  const complianceConditions = [
+    eq(devicePatches.orgId, orgId),
+    eq(devices.orgId, orgId),
+    eq(devices.isEphemeral, false),
+  ];
+  if (scope.kind === 'restricted') {
+    complianceConditions.push(inArray(devices.siteId, scope.siteIds));
   }
-
-  const complianceConditions = [inArray(devicePatches.deviceId, deviceIds)];
   if (source) {
     complianceConditions.push(eq(patches.source, source));
   }
@@ -113,6 +109,13 @@ async function generateComplianceSummary(
       count: sql<number>`count(*)`
     })
     .from(devicePatches)
+    .innerJoin(
+      devices,
+      and(
+        eq(devicePatches.deviceId, devices.id),
+        eq(devicePatches.orgId, devices.orgId),
+      ),
+    )
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
     .where(and(...complianceConditions))
     .groupBy(devicePatches.status);
@@ -150,7 +153,7 @@ function formatComplianceCsv(reportId: string, orgId: string, source: PatchSourc
 
 async function processGenerateComplianceReport(
   data: GenerateComplianceReportJobData
-): Promise<{ outputPath: string; rowCount: number }> {
+): Promise<{ outputPath: string; rowCount: number } | null> {
   const [report] = await db
     .select({
       id: patchComplianceReports.id,
@@ -158,7 +161,15 @@ async function processGenerateComplianceReport(
       format: patchComplianceReports.format,
       source: patchComplianceReports.source,
       severity: patchComplianceReports.severity,
-      status: patchComplianceReports.status
+      status: patchComplianceReports.status,
+      requestedBy: patchComplianceReports.requestedBy,
+      executionScopeVersion: patchComplianceReports.executionScopeVersion,
+      executionScopeKind: patchComplianceReports.executionScopeKind,
+      executionScopeSiteIds: patchComplianceReports.executionScopeSiteIds,
+      executionScopeUserId: patchComplianceReports.executionScopeUserId,
+      executionScopeFingerprint: patchComplianceReports.executionScopeFingerprint,
+      executionScopeCapturedAt: patchComplianceReports.executionScopeCapturedAt,
+      executionScopePrincipalKind: patchComplianceReports.executionScopePrincipalKind,
     })
     .from(patchComplianceReports)
     .where(eq(patchComplianceReports.id, data.reportId))
@@ -168,11 +179,7 @@ async function processGenerateComplianceReport(
     throw new Error('Report request not found');
   }
 
-  if (report.format !== 'csv') {
-    throw new Error('Only CSV patch compliance reports are currently supported');
-  }
-
-  await db
+  const claimed = await db
     .update(patchComplianceReports)
     .set({
       status: 'running',
@@ -180,10 +187,56 @@ async function processGenerateComplianceReport(
       updatedAt: new Date(),
       errorMessage: null
     })
-    .where(eq(patchComplianceReports.id, report.id));
+    .where(and(
+      eq(patchComplianceReports.id, report.id),
+      eq(patchComplianceReports.status, 'pending'),
+    ))
+    .returning({ id: patchComplianceReports.id });
+  if (claimed.length === 0) return null;
+
+  if (report.format !== 'csv') {
+    throw new Error('Only CSV patch compliance reports are currently supported');
+  }
+
+  let persistedScope;
+  try {
+    if (
+      report.requestedBy === null
+      || report.executionScopeUserId !== report.requestedBy
+      || report.executionScopePrincipalKind !== 'user'
+    ) {
+      throw new Error('invalid report authority principal');
+    }
+    persistedScope = decodeSiteScope(
+      report as unknown as PersistedSiteScopeColumns,
+      report.orgId,
+    );
+  } catch {
+    throw new Error('Report execution authority is invalid or legacy');
+  }
+  if (persistedScope.kind === 'legacy_unscoped') {
+    throw new Error('Report execution authority is invalid or legacy');
+  }
+
+  const liveResult = await resolveLiveReportAuthority(
+    report.requestedBy,
+    report.orgId,
+    'export',
+  );
+  if (!liveResult.ok) {
+    throw new Error('Report execution authority is no longer valid');
+  }
+  const effectiveScope = intersectSiteScopes(
+    persistedScope,
+    liveResult.authority.scope,
+  );
+  if (!effectiveScope || effectiveScope.kind === 'legacy_unscoped') {
+    throw new Error('Report execution authority has no current site scope');
+  }
 
   const summary = await generateComplianceSummary(
     report.orgId,
+    effectiveScope,
     report.source as PatchSource | null,
     report.severity as PatchSeverity | null
   );
@@ -219,6 +272,42 @@ async function processGenerateComplianceReport(
   };
 }
 
+export async function processPatchComplianceReportJob(
+  data: GenerateComplianceReportJobData,
+): Promise<{ outputPath: string; rowCount: number } | null> {
+  let processingError: unknown;
+  const result = await runWithSystemDbAccess(async () => {
+    try {
+      return await processGenerateComplianceReport(data);
+    } catch (error) {
+      processingError = error;
+      const message = error instanceof Error
+        ? error.message
+        : 'Unknown report generation failure';
+      // Do not rethrow inside this transaction: doing so would roll back both
+      // the pending -> running claim and this terminal transition, reopening a
+      // race in which a second delivery can claim the row and be overwritten.
+      await db
+        .update(patchComplianceReports)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          errorMessage: message,
+        })
+        .where(and(
+          eq(patchComplianceReports.id, data.reportId),
+          eq(patchComplianceReports.status, 'running'),
+        ));
+      return null;
+    }
+  });
+  if (processingError !== undefined) {
+    throw processingError;
+  }
+  return result;
+}
+
 export function getPatchComplianceReportQueue(): Queue<PatchComplianceReportJobData> {
   if (!patchComplianceReportQueue) {
     patchComplianceReportQueue = new Queue<PatchComplianceReportJobData>(PATCH_COMPLIANCE_REPORT_QUEUE, {
@@ -230,22 +319,14 @@ export function getPatchComplianceReportQueue(): Queue<PatchComplianceReportJobD
 }
 
 async function processReportInline(reportId: string): Promise<void> {
-  await runWithSystemDbAccess(async () => {
-    try {
-      await processGenerateComplianceReport({ type: 'generate-compliance-report', reportId });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown report generation failure';
-      await db
-        .update(patchComplianceReports)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-          errorMessage: message
-        })
-        .where(eq(patchComplianceReports.id, reportId));
-    }
-  });
+  try {
+    await processPatchComplianceReportJob({
+      type: 'generate-compliance-report',
+      reportId,
+    });
+  } catch {
+    // The shared processor records the fail-closed terminal state.
+  }
 }
 
 export async function enqueuePatchComplianceReport(
@@ -297,31 +378,12 @@ function createPatchComplianceReportWorker(): Worker<PatchComplianceReportJobDat
   return new Worker<PatchComplianceReportJobData>(
     PATCH_COMPLIANCE_REPORT_QUEUE,
     async (job: Job<PatchComplianceReportJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        try {
-          switch (job.data.type) {
-            case 'generate-compliance-report':
-              return await processGenerateComplianceReport(job.data);
-            default:
-              throw new Error(`Unknown patch compliance report job type: ${(job.data as { type: string }).type}`);
-          }
-        } catch (error) {
-          const reportId = job.data.reportId;
-          const message = error instanceof Error ? error.message : 'Unknown report generation failure';
-
-          await db
-            .update(patchComplianceReports)
-            .set({
-              status: 'failed',
-              completedAt: new Date(),
-              updatedAt: new Date(),
-              errorMessage: message
-            })
-            .where(eq(patchComplianceReports.id, reportId));
-
-          throw error;
-        }
-      });
+      switch (job.data.type) {
+        case 'generate-compliance-report':
+          return processPatchComplianceReportJob(job.data);
+        default:
+          throw new Error(`Unknown patch compliance report job type: ${(job.data as { type: string }).type}`);
+      }
     },
     {
       connection: getBullMQConnection(),
