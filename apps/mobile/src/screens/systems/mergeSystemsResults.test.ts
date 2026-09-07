@@ -213,6 +213,21 @@ describe('rejectionReasons', () => {
   it('is empty when nothing failed', () => {
     expect(rejectionReasons(allOk)).toEqual([]);
   });
+
+  it('excludes a 404 on findings (#5172) — expected + permanent on an older server, not a Sentry-worthy error', () => {
+    // Reported via useSystemsData's `for (const reason of rejectionReasons(...))
+    // reportInternalError(...)` loop. Without this exclusion, every self-hoster
+    // a release behind spams Sentry with the exact condition mergeSystemsResults
+    // already treats as "feature unavailable", forever, on every fetch.
+    expect(
+      rejectionReasons({ ...allOk, findings: bad(apiError(404, 'not found')) })
+    ).toEqual([]);
+  });
+
+  it('still reports a 500 on findings — that IS a real failure', () => {
+    const reason = apiError(500, 'server error');
+    expect(rejectionReasons({ ...allOk, findings: bad(reason) })).toEqual([reason]);
+  });
 });
 
 

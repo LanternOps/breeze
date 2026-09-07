@@ -20,3 +20,31 @@ export function shouldShowEmptyApprovalState(inputs: {
 }): boolean {
   return !inputs.focused && !inputs.decisionToastPending;
 }
+
+/**
+ * Whether a queued toast should be shown right now.
+ *
+ * `approve`/`deny` queue their confirmation with `approvalId: <the decided
+ * row's own id>` — a real, non-null string, never `null`. A naive
+ * `toast.approvalId === focusedId` check therefore goes false the instant
+ * `dropAndRefocus` clears focus on the LAST pending row (`focusedId` becomes
+ * `undefined`, but the toast's id is not) — silently dropping the exact
+ * confirmation #5172 is about. `approvalId: null` is reserved for toasts
+ * that are screen-global by design (report-suspicious outcome, expiry,
+ * focus-swap guard) and are always shown regardless of focus.
+ *
+ * The remaining case — a toast for a row OTHER than the one now focused
+ * (focus rolled forward to the NEXT pending request, not to nothing) — stays
+ * dropped on purpose: see the `toast` state doc in ApprovalScreen.tsx for why
+ * (the wash/shake animation is the confirmation that survives a focus swap,
+ * not the toast).
+ */
+export function isDecisionToastVisible(
+  toast: { approvalId: string | null } | null,
+  focusedId: string | undefined
+): boolean {
+  if (!toast) return false;
+  if (toast.approvalId === null) return true;
+  if (focusedId === undefined) return true;
+  return toast.approvalId === focusedId;
+}

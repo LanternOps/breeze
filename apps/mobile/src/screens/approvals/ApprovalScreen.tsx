@@ -16,7 +16,7 @@ import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
 
-import { shouldShowEmptyApprovalState } from './approvalDecidedTransition';
+import { isDecisionToastVisible, shouldShowEmptyApprovalState } from './approvalDecidedTransition';
 import { CountdownRing } from './components/CountdownRing';
 import { RequesterAvatar } from './components/RequesterAvatar';
 import { RequesterRow } from './components/RequesterRow';
@@ -53,8 +53,12 @@ export function ApprovalScreen() {
   // focus in the same tick the "Approved · …" toast is queued — so without
   // the key, A's success toast renders over B's Approve/Deny buttons. The
   // success/deny confirmations are therefore deliberately dropped once focus
-  // has moved on (the wash / shake animation is the feedback that survives);
-  // outcome ERRORS use `approvalId: null` and stay visible regardless.
+  // rolls onto a DIFFERENT pending request (the wash/shake animation is the
+  // feedback that survives that case). When focus instead rolls to NOTHING
+  // (A was the last pending row), the toast is exactly what rescues the
+  // takeover from flashing "No pending approvals" before it — see
+  // `isDecisionToastVisible` (#5172). Outcome ERRORS use `approvalId: null`
+  // and stay visible regardless of focus either way.
   const [toast, setToast] = useState<{
     approvalId: string | null;
     kind: 'success' | 'error';
@@ -63,6 +67,22 @@ export function ApprovalScreen() {
   const [reportSheetOpen, setReportSheetOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const expiredHandledRef = useRef<string | null>(null);
+
+  // Safety net for the neutral holding view below (#5172): the ONLY other
+  // path that clears `toast` is <Toast>'s own exit-animation completion
+  // callback (`onHidden`), which Reanimated only calls when the animation
+  // actually finishes (`finished === true`) — an interruption (app
+  // backgrounded mid-exit, a fast remount) can skip it. Before this fix a
+  // stuck `toast` was harmless noise; now, while nothing is focused, it is
+  // the one thing standing between the holding view and the genuine empty
+  // state, so a plain JS backstop guarantees this can't wedge open forever.
+  // Toast's own lifecycle is enter (240ms) + hold (1800ms) + exit (180ms);
+  // comfortably doubled here.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // When does the user "see" the approval? When ApprovalScreen mounts onto a
   // focused approval — that's the takeover moment. We stamp it per approval
@@ -224,7 +244,7 @@ export function ApprovalScreen() {
   // Computed before the `!focused` branch below (#5172): the decision that
   // just cleared `focused` is exactly what queues this toast, so the toast's
   // liveness has to be known before deciding what "no focused row" renders.
-  const toastVisible = !!toast && (toast.approvalId === null || toast.approvalId === focused?.id);
+  const toastVisible = isDecisionToastVisible(toast, focused?.id);
 
   if (!focused) {
     if (shouldShowEmptyApprovalState({ focused: false, decisionToastPending: toastVisible })) {

@@ -133,14 +133,22 @@ export function mergeSystemsResults(
   return { slices, error, failed };
 }
 
-/** The rejection reasons, for Sentry. Empty when nothing failed. */
+/**
+ * The rejection reasons worth reporting to Sentry. Empty when nothing failed.
+ *
+ * Mirrors `mergeSystemsResults`' own `failed` classification exactly (via
+ * `isUnsupportedSlice`) rather than every raw rejection: a 404 on `findings`
+ * is expected and permanent on a server a release behind, not a bug — same
+ * precedent as `DEVICE_BLOCKED_CODE` in `lib/errorReporting.ts` for another
+ * expected, recurring condition. Reporting it anyway would spam Sentry on
+ * every fetch for the lifetime of that server (#5172).
+ */
 export function rejectionReasons(results: {
   [K in keyof SystemsSlices]: PromiseSettledResult<unknown>;
 }): unknown[] {
   return (['summary', 'alerts', 'activeAlerts', 'devices', 'orgs', 'findings'] as const)
-    .map((k) => results[k])
-    .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-    .map((r) => r.reason);
+    .filter((k) => results[k].status === 'rejected' && !isUnsupportedSlice(k, results[k]))
+    .map((k) => (results[k] as PromiseRejectedResult).reason);
 }
 
 /**
