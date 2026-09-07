@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reconcileTelemetry } from './unifiTelemetryService';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { DbExecutor } from './unifiConnectionService';
 
 type WriteRecord = { table: any; values: any; conflict?: any };
@@ -346,8 +347,12 @@ describe('reconcileTelemetry', () => {
     // (possibly manual) row.
     expect(assetInsert.conflict?.set).not.toHaveProperty('source');
     // Without targetWhere, Postgres cannot infer the partial unique index and
-    // the upsert fails at runtime with 42P10.
+    // the upsert fails at runtime with 42P10. Assert the PREDICATE, not just
+    // the key: `targetWhere: sql`true`` would satisfy a key-presence check and
+    // still 42P10 against a real server.
     expect(Object.keys(assetInsert.conflict ?? {})).toContain('targetWhere');
+    const predicate = new PgDialect().sqlToQuery(assetInsert.conflict.targetWhere).sql;
+    expect(predicate).toMatch(/"ip_address"\s+is not null/i);
   });
 
   // Metrics the agent could not collect arrive absent from the body. They must

@@ -14,10 +14,40 @@ import './setup';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sql, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { discoveredAssets, discoveryJobs, discoveryProfiles } from '../../db/schema';
+import { devices, discoveredAssets, discoveryJobs, discoveryProfiles } from '../../db/schema';
+import { unifiCollectors, unifiIntegrations } from '../../db/schema/unifi';
 import { processResults } from '../../jobs/discoveryWorker';
+import { reconcileTelemetry } from '../../services/unifi/unifiTelemetryService';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createSite } from './db-utils';
+
+/**
+ * Makes every `select ... from discovered_assets` come back empty so the UniFi
+ * writer misses its own lookups and is forced down the INSERT ... ON CONFLICT
+ * branch — the only way to exercise the partial-index arbiter deterministically
+ * (in production it is reached by a race with agent discovery). Mirrors the
+ * helper of the same name in unifiAssetTypeSource.integration.test.ts.
+ */
+function dbWithBlindAssetLookups(database: any) {
+  const emptyChain: any = {
+    where: () => emptyChain,
+    limit: () => emptyChain,
+    then: (resolve: (v: unknown) => void) => resolve([]),
+  };
+  return {
+    ...database,
+    select: (...args: any[]) => {
+      const real = database.select(...args);
+      return {
+        ...real,
+        from: (table: any) => (table === discoveredAssets ? emptyChain : real.from(table)),
+      };
+    },
+    insert: database.insert.bind(database),
+    update: database.update.bind(database),
+    delete: database.delete.bind(database),
+  };
+}
 
 let orgId: string;
 let siteId: string;
@@ -46,6 +76,15 @@ beforeEach(async () => {
 
 afterEach(async () => {
   const raw = getTestDb();
+  // Children before parents: unifi_device_telemetry.discovered_asset_id has no
+  // ON DELETE, so it must go first or the asset delete raises 23503.
+  await raw.execute(sql`
+    delete from unifi_device_telemetry where discovered_asset_id in
+      (select id from discovered_assets where org_id = ${orgId})`);
+  await raw.execute(sql`
+    delete from unifi_clients where discovered_asset_id in
+      (select id from discovered_assets where org_id = ${orgId})`);
+  await raw.execute(sql`delete from unifi_collectors where org_id = ${orgId}`);
   await raw.delete(discoveredAssets).where(eq(discoveredAssets.orgId, orgId));
   await raw.delete(discoveryJobs).where(eq(discoveryJobs.orgId, orgId));
   await raw.delete(discoveryProfiles).where(eq(discoveryProfiles.orgId, orgId));
@@ -182,6 +221,18 @@ describe('manual network assets — scan upsert (#5213)', () => {
     expect(row!.hostname).toBe('fresh-name');
   });
 
+  it('accepts a manual row identified by hostname alone', async () => {
+    // The third arm of discovered_assets_manual_identity_chk (ip OR hostname OR
+    // url). The other two arms are covered above; without this one the CHECK
+    // could reject hostname-only rows and no test would notice.
+    const id = await insertManualAsset({ hostname: 'printer.lan' });
+    const raw = getTestDb();
+    const [row] = await raw.select().from(discoveredAssets).where(eq(discoveredAssets.id, id));
+    expect(row!.hostname).toBe('printer.lan');
+    expect(row!.ipAddress).toBeNull();
+    expect(row!.url).toBeNull();
+  });
+
   it('does not raise device_disappeared for a never-scanned manual IP', async () => {
     await insertManualAsset({ ipAddress: '10.4.4.5' });
 
@@ -201,5 +252,55 @@ describe('manual network assets — scan upsert (#5213)', () => {
       select count(*)::int as n from network_change_events
        where org_id = ${orgId} and event_type = 'device_disappeared'`);
     expect((events as unknown as { n: number }[])[0]!.n).toBe(0);
+  });
+});
+
+describe('UniFi telemetry upsert against the partial index (#5213)', () => {
+  /**
+   * The telemetry writer's ON CONFLICT targets the now-PARTIAL
+   * discovered_assets_org_ip_unique. Postgres only INFERS a partial unique
+   * index when the statement repeats its predicate; without `targetWhere` the
+   * statement raises 42P10 at runtime — which no compiled-SQL mock can observe.
+   * This is the live-server proof for that path.
+   */
+  it('absorbs a colliding non-NULL IP without 42P10 and does not relabel the row', async () => {
+    const raw = getTestDb() as any;
+    const unique = Math.random().toString(36).slice(2, 8);
+    const [device] = await raw.insert(devices).values({
+      orgId, siteId,
+      agentId: `unifi-collector-agent-${unique}`,
+      hostname: `unifi-collector-host-${unique}`,
+      osType: 'linux', osVersion: '22.04', architecture: 'x86_64',
+      agentVersion: '0.0.0-test', status: 'online',
+    }).returning({ id: devices.id });
+    const partnerId = (await raw.execute(sql`
+      select partner_id from organizations where id = ${orgId}`)) as unknown as { partner_id: string }[];
+    const [integration] = await raw.insert(unifiIntegrations)
+      .values({ partnerId: partnerId[0]!.partner_id, apiKeyEncrypted: 'test-cloud-key' })
+      .returning({ id: unifiIntegrations.id });
+    const [collector] = await raw.insert(unifiCollectors).values({
+      integrationId: integration.id, orgId, siteId,
+      unifiHostId: `host-${unique}`, collectorDeviceId: device.id,
+      controllerUrl: `https://unifi-${unique}.example`,
+      localApiKeyEncrypted: 'test-local-key',
+    }).returning({ id: unifiCollectors.id });
+
+    // The colliding row an agent scan would have written a moment earlier.
+    const manualId = await insertManualAsset({ ipAddress: '10.4.4.9', hostname: 'operator-name' });
+
+    await reconcileTelemetry(dbWithBlindAssetLookups(raw), {
+      collectorId: collector.id,
+      polledAt: new Date().toISOString(),
+      firmwareOk: true,
+      devices: [{ unifiDeviceId: `ud-${unique}`, mac: 'aa:bb:cc:11:22:33', name: 'AP-1',
+                  raw: { ipAddress: '10.4.4.9' } } as never],
+      clients: [],
+    });
+
+    const rows = await raw.select().from(discoveredAssets)
+      .where(eq(discoveredAssets.ipAddress, '10.4.4.9'));
+    expect(rows).toHaveLength(1);            // the partial arbiter was inferred
+    expect(rows[0]!.id).toBe(manualId);
+    expect(rows[0]!.source).toBe('manual');  // conflict branch never rewrites source
   });
 });

@@ -1258,9 +1258,21 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     for (const asset of monitoredExistingAssets) {
       // #5213: ip_address is nullable now, while network_change_events.ip_address
       // is inet NOT NULL. An IP-less asset can never legitimately reach here (it
-      // cannot have been "seen" by an IP scan), so this narrows the type AND
-      // states the guard.
-      if (!asset.ipAddress) continue;
+      // cannot have been "seen" by an IP scan — buildMonitoredAssetConditions
+      // requires is_online = true AND last_seen_at IS NOT NULL, and only the
+      // IP-matched scan branch ever sets those), so this narrows the type AND
+      // states the guard. It is unreachable by design, which is exactly why it
+      // LOGS rather than skipping silently: if it ever fires, an invariant broke
+      // (e.g. a writer started defaulting is_online to true on a manual row) and
+      // a bare `continue` would hide that regression instead of surfacing it.
+      if (!asset.ipAddress) {
+        console.warn(
+          `[DiscoveryWorker] Invariant violated: monitored asset ${asset.id} reached the ` +
+          'disappeared sweep with a NULL ip_address — skipping. A row with no IP should ' +
+          'never be is_online=true with a non-null last_seen_at (#5213).'
+        );
+        continue;
+      }
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
           .set({ isOnline: false })
