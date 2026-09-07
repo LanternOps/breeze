@@ -640,6 +640,16 @@ export interface AgentPreviewDto {
   /** `catalog.tools.filter(t => t.readOnly).length` — the "always on" reads, independent of `operations` below. */
   readOnlyToolCount: number;
   /**
+   * Scripts the draft is effectively authorized to run unattended:
+   * `actAssets.scriptIds` (deduped), intersected with the partner ceiling's
+   * list when there is a ceiling (#5065). Always `0` when the draft's own
+   * allowlist, or the ceiling's, does not admit `run_script` — the
+   * allowlists intersect first, so nothing could run whatever the lists
+   * share (#5089 review). Drives the `run_script` outcome and the review
+   * card's "N scripts authorized" note.
+   */
+  authorizedScriptCount: number;
+  /**
    * One entry per resolved MUTATING operation the draft's `toolAllowlist`
    * admits, deduplicated by `key`. A bare entry on a multi-operation tool
    * expands to every one of that tool's non-read-only operations (its

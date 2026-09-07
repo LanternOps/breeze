@@ -61,6 +61,7 @@ const otherKey = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const OTHER_SPKI_DER = otherKey.publicKey.export({ format: 'der', type: 'spki' });
 
 const TRANSCRIPT = crypto.randomBytes(32);
+const KEYGEN_CHALLENGE = crypto.randomBytes(32);
 
 function keyAttestationResult(overrides: Record<string, unknown> = {}) {
   return {
@@ -82,6 +83,7 @@ const run = (attestation: MobileAttestation = androidAttestation()) =>
   verifyPlatformAttestation({
     attestation,
     transcript: TRANSCRIPT,
+    keyGenChallenge: KEYGEN_CHALLENGE,
     publicKeySpkiB64: REGISTERED_SPKI_B64,
     publicKeyAlg: 'ES256',
   });
@@ -118,11 +120,13 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
     expect((await run()).basis).toBe('android_strongbox_key_attestation');
   });
 
-  it('binds the attestation to the registration transcript and our package', async () => {
+  it('binds the certificate to the KEYGEN challenge (not the transcript) and our package', async () => {
+    // The KeyStore challenge is fixed before the key — and therefore the
+    // transcript's SPKI — exists, so the cert carries the keygen digest.
     await run();
     expect(androidMock.verifyAndroidKeyAttestation).toHaveBeenCalledWith({
       certificateChainDerB64: ['leaf', 'ca'],
-      expectedChallenge: TRANSCRIPT,
+      expectedChallenge: KEYGEN_CHALLENGE,
       expectedPackageName: 'com.breeze.rmm',
     });
   });
@@ -252,6 +256,7 @@ describe('verifyPlatformAttestation — Android branch (#1374 W04)', () => {
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'ios', attestationObject: 'cbor', keyId: 'kid' },
       transcript: TRANSCRIPT,
+      keyGenChallenge: KEYGEN_CHALLENGE,
       publicKeySpkiB64: REGISTERED_SPKI_B64,
       publicKeyAlg: 'ES256',
     });

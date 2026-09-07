@@ -1111,6 +1111,14 @@
       "notSecretRow": "Non è segreta: usa \"Da una variabile\"",
       "secretHint": "Consegnata solo come variabile d’ambiente {{env}}: non viene mai scritta nello script. Richiede l’esecuzione nel contesto di sistema e un agent che supporti la consegna sicura dei segreti.",
       "hint": "Viene risolto per ogni dispositivo di destinazione all’esecuzione dello script: nessuno deve indicarlo."
+    },
+    "securityReview": {
+      "title": "Verifica di sicurezza",
+      "blockedHint_one": "Questo script corrisponde a 1 pattern che l'agente rifiuta di eseguire senza una conferma.",
+      "blockedHint_other": "Questo script corrisponde a {{count}} pattern che l'agente rifiuta di eseguire senza una conferma. Conferma ciascuno che intendi consentire.",
+      "clearedHint": "Tutti i pattern rilevati sono stati confermati.",
+      "willBlock": "Non confermato — l'agente rifiuterà di eseguire questo script.",
+      "footnote": "Una conferma si applica solo a questo script e copre solo i pattern elencati qui. Se in seguito aggiungi un'altra operazione rischiosa, verrà bloccata finché non confermi anche quella."
     }
   },
   "scriptList": {

@@ -1025,6 +1025,7 @@ describe('verifyPlatformAttestation is fail-closed against the L4 trusted set (#
         const result = await verifyPlatformAttestation({
           attestation,
           transcript,
+          keyGenChallenge: transcript,
           publicKeySpkiB64: 'spki',
           publicKeyAlg,
         });

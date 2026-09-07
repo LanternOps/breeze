@@ -56,7 +56,7 @@ export function canSubmitTicket(input: { orgId: string | null; subject: string; 
 }
 
 /**
- * Which organisation to start on: the signed-in user's own org when it is in
+ * Which organization to start on: the signed-in user's own org when it is in
  * the list (org-scoped technicians only ever see one), else the only org when
  * there is exactly one, else nothing — a partner user with several customers
  * has to choose, and a silent default would file tickets against the wrong

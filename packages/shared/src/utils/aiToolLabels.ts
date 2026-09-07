@@ -91,16 +91,51 @@ export function titleCaseToolName(toolName: string): string {
 }
 
 /**
+ * `input.action` values that mean the call only read data despite the tool's
+ * leading verb (`manage_automations` with `action: 'list'` mutates nothing).
+ * A tech reading "Updated automations" for a call that only looked something
+ * up reads it as a change they never asked for (#5170) — force the `get`
+ * verb forms whenever the call carries one of these, regardless of the tool
+ * name's own verb.
+ */
+const READ_ONLY_ACTIONS = new Set([
+  'list',
+  'get',
+  'search',
+  'status',
+  'show',
+  'read',
+  'query',
+  'describe',
+  'check',
+  'preview',
+  'view',
+]);
+
+function isReadOnlyAction(input: Record<string, unknown> | undefined): boolean {
+  const action = input?.action;
+  return typeof action === 'string' && READ_ONLY_ACTIONS.has(action.toLowerCase());
+}
+
+/**
  * The label for a tool row, e.g. `aiToolLabel('manage_alerts', 'completed')`
  * → "Updated alerts". Falls back to `titleCaseToolName` for any tool whose
  * name does not begin with a known verb, or which is nothing but a verb.
+ *
+ * `input` is the tool call's arguments. When `input.action` is a read-only
+ * verb (list/get/search/…), the row renders with the `get` conjugation
+ * ("Checking"/"Checked") no matter what the tool name's leading verb is.
  */
-export function aiToolLabel(toolName: string, state: AiToolLabelState): string {
+export function aiToolLabel(
+  toolName: string,
+  state: AiToolLabelState,
+  input?: Record<string, unknown>,
+): string {
   const words = bareToolName(toolName).split('_').filter(Boolean);
   const verb = words[0];
   if (verb === undefined) return 'Tool';
 
-  const forms = VERB_FORMS[verb.toLowerCase()];
+  const forms = isReadOnlyAction(input) ? VERB_FORMS.get : VERB_FORMS[verb.toLowerCase()];
   const subject = words.slice(1).join(' ');
   // A bare verb ("get_", "run") has no subject to attach, so "Checked" alone
   // would say nothing — fall through to the neutral name instead.

@@ -20,6 +20,27 @@ vi.mock('@/lib/orgSwitch', () => ({
 const navigateToMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
+// OverflowTabs (the tab strip this page renders into) measures button widths
+// via `offsetWidth` against the container's `clientWidth`; jsdom always
+// reports 0 for both, which its own computeVisible() collapses to "only the
+// active tab fits" — every other tab lands unrendered behind a closed "More"
+// menu (see OverflowTabs.test.tsx and NetworkDeviceDetailPage.test.tsx for the
+// same stub). This page doesn't pass OverflowTabs a `testIdPrefix`, so there
+// is no way to reach a specific tab except by its accessible role/name —
+// stubbing a roomy layout for the whole file is what makes that possible.
+const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+
+function stubWideLayout() {
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 60 });
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, value: 2000 });
+}
+
+function restoreLayout() {
+  if (originalOffsetWidth) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffsetWidth);
+  if (originalClientWidth) Object.defineProperty(HTMLElement.prototype, 'clientWidth', originalClientWidth);
+}
+
 // A partner JWT: `{"scope":"partner","orgId":null,"partnerId":"p1"}`.
 const PARTNER_TOKEN = `h.${btoa(JSON.stringify({ scope: 'partner', partnerId: 'p1' }))}.s`;
 const ORG_TOKEN = `h.${btoa(JSON.stringify({ scope: 'organization', orgId: RECORD_ORG }))}.s`;
@@ -98,12 +119,14 @@ beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, 'fetch');
   seedAuth(PARTNER_TOKEN);
   seedStore([{ id: RECORD_ORG, name: 'Acme Dental' }, { id: OTHER_ORG, name: 'Beta Legal' }], OTHER_ORG);
+  stubWideLayout();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   registerOrgIdProvider(() => null);
   window.location.hash = '';
+  restoreLayout();
 });
 
 describe('OrganizationRecordPage — happy path', () => {
@@ -300,5 +323,35 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-overview-tab')).toBeTruthy());
+  });
+});
+
+describe('OrganizationRecordPage — Service Management mode gate (#5075 W04)', () => {
+  beforeEach(() => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json(ORG_BODY),
+    });
+  });
+
+  it('hides the Tickets and Billing tabs when the partner runs Service Management off', async () => {
+    useOrgStore.setState({ serviceManagementMode: 'off' } as never);
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
+
+    expect(screen.queryByRole('tab', { name: 'Tickets' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Contracts & Billing' })).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Contacts' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Sites' })).toBeTruthy();
+  });
+
+  it('shows the Tickets and Billing tabs when the partner runs the native mode (proves the gate, not a permissions accident)', async () => {
+    useOrgStore.setState({ serviceManagementMode: 'native' } as never);
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
+
+    expect(screen.getByRole('tab', { name: 'Tickets' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Contracts & Billing' })).toBeTruthy();
   });
 });

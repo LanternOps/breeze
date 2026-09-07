@@ -59,11 +59,10 @@
  *
  * ## Deliberately NOT seeded
  *
- * PR #4863 (issue #4519) proved three live erasure failures that are their own
+ * PR #4863 (issue #4519) proved live erasure failures; these two remain
  * open bugs. Seeding them here would make this suite red for a defect it is
  * not fixing, so they are skipped on purpose and named instead:
  *   - `restore_jobs.command_id` (#4871)
- *   - `action_intents` scope_ticket SET NULL onto a NOT NULL `org_id` (#4872)
  *   - `script_categories.parent_id` with a NULL `org_id` (#4873)
  */
 import './setup';

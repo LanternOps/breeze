@@ -13,7 +13,7 @@ import { toolRowStatus } from './toolIndicatorLogic';
 
 interface Props {
   message: Extract<ChatMessage, { role: 'assistant' }>;
-  inFlightTool: { toolUseId: string; toolName: string } | null;
+  inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   onRetry?: () => void;
 }
 
@@ -46,6 +46,7 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
                 isError={t.isError}
                 output={t.output}
                 handoff={t.handoff}
+                input={t.input}
               />
             );
           }
@@ -54,13 +55,13 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
             return <Fragment key={t.toolUseId}>{block}</Fragment>;
           }
           return (
-            <ToolIndicator key={t.toolUseId} toolName={t.toolName} state="completed" />
+            <ToolIndicator key={t.toolUseId} toolName={t.toolName} state="completed" input={t.input} />
           );
         })}
 
       {message.content ? (
         <View style={{ paddingHorizontal: spacing[6] }}>
-          <MarkdownBody content={message.content} />
+          <MarkdownBody content={message.content} streaming={message.isStreaming} />
         </View>
       ) : null}
 
@@ -71,7 +72,7 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
       ) : null}
 
       {message.isStreaming && inFlightTool ? (
-        <ToolIndicator toolName={inFlightTool.toolName} state="started" />
+        <ToolIndicator toolName={inFlightTool.toolName} state="started" input={inFlightTool.input} />
       ) : null}
 
       {message.failed ? (

@@ -359,6 +359,53 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
     'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
   shutdown: () =>
     'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+  // #5173: execute_command multiplexes on `commandType` (input.payload is the
+  // agent-command-specific parameters, `z.record(z.string(), z.unknown())` —
+  // deliberately unvalidated, so this is a read-only extraction for display,
+  // never a validation gate). A commandType not covered here, or one whose
+  // payload lacks the field its sentence needs, returns null and falls back
+  // to the catalog description below — same no-regression contract as every
+  // other builder in this map.
+  execute_command: (input) => {
+    const commandType = nonEmptyString(input.commandType);
+    if (!commandType) return null;
+    const payload = input.payload && typeof input.payload === 'object'
+      ? input.payload as Record<string, unknown>
+      : {};
+    const name = nonEmptyString(payload.name);
+    const path = nonEmptyString(payload.path);
+    const logName = nonEmptyString(payload.logName);
+    switch (commandType) {
+      case 'kill_process':
+        return 'Terminates the process immediately. Unsaved work in it is lost.';
+      case 'start_service':
+        return name ? `Starting "${name}".` : null;
+      case 'stop_service':
+        return name
+          ? `Stopping "${name}" will make it — and anything that depends on it — unavailable until it is started again.`
+          : null;
+      case 'restart_service':
+        return name ? `Restarting "${name}" will briefly interrupt it and anything that depends on it.` : null;
+      case 'list_services':
+        return 'Lists services on the device; does not change anything.';
+      case 'list_processes':
+        return 'Lists running processes on the device; does not change anything.';
+      case 'file_read':
+        return path ? `Reads "${path}"; does not modify it.` : "Reads a file's contents; does not modify it.";
+      case 'file_list':
+        return path
+          ? `Lists files in "${path}"; does not change anything.`
+          : 'Lists files in a directory; does not change anything.';
+      case 'event_logs_list':
+        return 'Lists available event logs; does not change anything.';
+      case 'event_logs_query':
+        return logName
+          ? `Reads matching entries from the "${logName}" event log; does not change anything.`
+          : 'Reads matching event log entries; does not change anything.';
+      default:
+        return null;
+    }
+  },
 };
 
 /**

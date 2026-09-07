@@ -378,10 +378,12 @@ docker compose up --build -d
 
 **Deleting a config file? Sweep the Compose mounts in the same PR.** Docker creates a missing bind-mount source as an empty **directory** on the host, which then gets `COPY`d into dev images where Vite/PostCSS discovery dies on it (`EISDIR`) — `breeze-web` comes up permanently unhealthy on a fresh clone. `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) parses every tracked compose file and fails when a file-shaped, repo-relative bind-mount source doesn't exist — or has already become a phantom directory. Extensionless sources (`./agent/bin`) are exempt as intended build outputs; out-of-repo sources (`../breeze-billing/…`) can't be asserted and are skipped. Shipped three times before the guard existed: #1999 (postcss), #2208 (partial tailwind), #2012 (the mounts #2208 missed).
 
-### PR Merge Process
-- Branch protection requires status checks, but the repo owner uses `--admin` to bypass when CI is green
-- Use `gh pr merge --squash --admin` (merge commits are disabled on this repo)
-- This is the normal workflow — do not wait for branch protection rules to be satisfied
+### PR Merge Process — merge queue (since 2026-09-07)
+- `main` uses GitHub's **merge queue**. Merge with `gh pr merge <N> --squash` (no `--admin`): the PR is enqueued, the queue rebuilds it on top of whatever is ahead of it, runs the full `CI Success` gate on that merge ref, and lands it serially. `--auto` is implied by the queue; `--squash` only (merge commits are disabled).
+- **Never `--admin`.** Admin bypass skips the queue and lands the commit directly, which is exactly what produced the 09-06/09-07 pile-ups: concurrent sessions each admin-merging cancelled 59 of 80 main CI runs in 48h, so main's true state was never evaluated, and sibling PRs went CONFLICTING mid-sweep. Reserve `--admin` for a genuine emergency (main red and the fix itself cannot pass the queue), and say so in the PR.
+- No reviewer approval is required by the ruleset any more; the review round is the `/pr-review-toolkit:review-pr` pass recorded on the PR, not a GitHub approval. Required check is `CI Success` only. Docs-only PRs get a passing `CI Success` from `ci-docs-only.yml` so they can enter the queue.
+- Queue semantics to know: a PR must be green on its own head to be enqueued; the queue then runs `ci.yml` under the `merge_group` event with **no path filters** and with the smoke jobs blocking (they are non-blocking on `pull_request` only). If the queue run fails, the PR is dequeued with a comment — fix and re-enqueue, do not bypass.
+- Any session may enqueue its own reviewed, green PR. Serialisation is the queue's job now, not a single-merger rule.
 
 ### Production Deploy (EU + US droplets)
 

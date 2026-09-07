@@ -88,7 +88,7 @@ export default function AiToolCallCard({
         )}
         <StatusIcon />
         <span className="font-medium text-gray-700 dark:text-gray-300">
-          {aiToolLabel(toolName, isExecuting ? "running" : "completed")}
+          {aiToolLabel(toolName, isExecuting ? "running" : "completed", input)}
         </span>
         {isApprovedExecuting ? (
           <span className="text-amber-400">

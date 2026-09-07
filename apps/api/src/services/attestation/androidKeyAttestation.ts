@@ -91,7 +91,11 @@ export interface AndroidKeyAttestationResult {
 export interface VerifyAndroidKeyAttestationInput {
   /** base64 DER certificates, leaf first, as `KeyStore.getCertificateChain()` returns. */
   certificateChainDerB64: string[];
-  /** The registration transcript. Compared byte-exact against `attestationChallenge`. */
+  /**
+   * `androidKeyGenChallenge(...)` for this attempt — NOT the registration
+   * transcript, which embeds the SPKI and so cannot exist at key generation.
+   * Compared byte-exact against `attestationChallenge`.
+   */
   expectedChallenge: Buffer;
   expectedPackageName: string;
   /** Defaults to the pinned Google hardware attestation roots. Tests inject their own. */

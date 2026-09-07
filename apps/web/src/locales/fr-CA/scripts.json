@@ -1111,6 +1111,14 @@
       "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
       "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
+    },
+    "securityReview": {
+      "title": "Revue de sécurité",
+      "blockedHint_one": "Ce script correspond à 1 motif que l'agent refuse d'exécuter sans confirmation.",
+      "blockedHint_other": "Ce script correspond à {{count}} motifs que l'agent refuse d'exécuter sans confirmation. Confirmez chacun de ceux que vous souhaitez autoriser.",
+      "clearedHint": "Tous les motifs détectés ont été confirmés.",
+      "willBlock": "Non confirmé — l'agent refusera d'exécuter ce script.",
+      "footnote": "Une confirmation s'applique uniquement à ce script et ne couvre que les motifs listés ici. Si vous ajoutez plus tard une autre opération à risque, elle sera bloquée jusqu'à ce que vous la confirmiez aussi."
     }
   },
   "scriptList": {

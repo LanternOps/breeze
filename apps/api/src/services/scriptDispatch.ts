@@ -259,6 +259,17 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
   const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
   const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+  // #5129 — the agent STRICT-pattern descriptions a human acknowledged on the
+  // script record. Server-decided and delivered over the authenticated command
+  // channel; the agent never supplies it.
+  //
+  // A `raw` source has no script record and therefore no acknowledgement, so
+  // ad-hoc content (the automation `execute_command` action, remediation
+  // suggestions) keeps the pre-#5129 behaviour exactly: any Strict match is
+  // refused on the device. That is deliberate — there is no human decision on
+  // file for content that exists only for the duration of one dispatch.
+  const acknowledgedSecurityPatterns =
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? []) : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so
@@ -531,6 +542,10 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(hasSecrets ? { secretEnv } : {}),
       timeoutSeconds,
       runAs,
+      // #5129. Omitted when empty so the wire stays identical to pre-#5129 for
+      // every script that acknowledges nothing — and an absent key is what the
+      // agent already treats as fail-closed.
+      ...(acknowledgedSecurityPatterns.length > 0 ? { acknowledgedSecurityPatterns } : {}),
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';

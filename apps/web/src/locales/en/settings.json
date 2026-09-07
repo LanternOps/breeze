@@ -582,7 +582,18 @@
     "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
     "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
-    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations."
+    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
+    "modules": {
+      "title": "Modules",
+      "description": "Choose which parts of Breeze this MSP runs. Turning Service Management off hides the service desk and customer billing everywhere and stops new tickets being created.",
+      "nativeLabel": "Breeze service desk & billing",
+      "nativeDescription": "Tickets, timesheets, quotes, invoices and contracts run in Breeze. This is the default.",
+      "offLabel": "Off — RMM only",
+      "offDescription": "Hides the Service Desk and Billing sections and the customer record’s Tickets and Billing tabs. Existing tickets stay readable; no new ones can be created.",
+      "externalNote": "This partner runs an external PSA. Changing that is not available here yet.",
+      "saved": "Modules updated",
+      "saveFailed": "Failed to update modules"
+    }
   },
   "loginBranding": {
     "saved": "Login branding saved",
@@ -1617,7 +1628,14 @@
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "That agent is already live.",
-      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode."
+      "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode.",
+      "invalidScriptIds": "One or more scripts can't be authorized for this agent.",
+      "scriptRejected": "Script {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "not a script this agent's owner can see",
+        "not_in_partner_baseline": "not in the partner baseline",
+        "run_script_not_allowed": "Run a script is not allowed for this agent"
+      }
     },
     "actions": {
       "add": "New agent",
@@ -2718,7 +2736,9 @@
       "approvers_other": "{{roles}} are asked, via inbox, chat and mobile push. First decision wins.",
       "approversCount_one": "{{count}} role is asked, via inbox, chat and mobile push. First decision wins.",
       "approversCount_other": "{{count}} roles are asked, via inbox, chat and mobile push. First decision wins.",
-      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request."
+      "scriptGateNote": "{{list}} will only run unattended once a script is authorized for this agent; until then it raises an approval request.",
+      "scriptsAuthorized_one": "{{count}} script is authorized to run unattended.",
+      "scriptsAuthorized_other": "{{count}} scripts are authorized to run unattended."
     },
     "flow": {
       "title": "New agent",
@@ -2772,6 +2792,21 @@
         "recommendedPrefix": "Recommended:",
         "taken": "Already in use for this owner"
       }
+    },
+    "scripts": {
+      "legend": "Scripts allowed to run unattended",
+      "hint": "In act mode, Run a script executes without approval only for the scripts ticked here. Everything else stays an approval request.",
+      "ceilingHint": "Partner-level scripts are a ceiling: an organization's agent can only pick from this list.",
+      "runScriptRequired": "Add \"Run a script\" under What it does before authorizing scripts.",
+      "runScriptNotInBaseline": "The partner baseline doesn't allow \"Run a script\" for this kind of agent, so no script can run unattended.",
+      "ceilingUnavailable": "Couldn't load the partner baseline, so scripts can't be authorized right now.",
+      "ceilingLoading": "Checking the partner baseline…",
+      "loading": "Loading scripts…",
+      "failed": "Couldn't load scripts, so unattended script authorization can't be changed right now.",
+      "empty": "No scripts available.",
+      "searchPlaceholder": "Search scripts…",
+      "selectedCount_one": "{{count}} script authorized",
+      "selectedCount_other": "{{count}} scripts authorized"
     }
   },
   "apiKeyForm": {

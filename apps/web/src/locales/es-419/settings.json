@@ -582,7 +582,18 @@
     "selfSaving": "Esta sección guarda sus propios cambios.",
     "saveSettings": "Guardar configuración",
     "enforcedDescription": "Los valores que establezca aquí se aplicarán en todas las organizaciones. Deje los campos vacíos para permitir que cada organización configure individualmente.",
-    "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones."
+    "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones.",
+    "modules": {
+      "title": "Módulos",
+      "description": "Elija qué partes de Breeze usa este MSP. Desactivar la gestión de servicios oculta la mesa de servicio y la facturación de clientes en todas partes e impide crear tickets nuevos.",
+      "nativeLabel": "Mesa de servicio y facturación de Breeze",
+      "nativeDescription": "Los tickets, las hojas de tiempo, las cotizaciones, las facturas y los contratos se gestionan en Breeze. Es la opción predeterminada.",
+      "offLabel": "Desactivado: solo RMM",
+      "offDescription": "Oculta las secciones Mesa de servicio y Facturación y las pestañas Tickets y Facturación del registro del cliente. Los tickets existentes siguen siendo visibles; no se pueden crear nuevos.",
+      "externalNote": "Este socio usa un PSA externo. Todavía no se puede cambiar desde aquí.",
+      "saved": "Módulos actualizados",
+      "saveFailed": "No se pudieron actualizar los módulos"
+    }
   },
   "loginBranding": {
     "saved": "Marca de inicio de sesión guardada",
@@ -1617,7 +1628,14 @@
       "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Ese agente ya está activo.",
-      "actRecipientsUnreachable": "Los roles de notificación seleccionados no tienen miembros activos, por lo que no se podría consultar a nadie. Elija un rol con miembros antes de habilitar el modo Actuar."
+      "actRecipientsUnreachable": "Los roles de notificación seleccionados no tienen miembros activos, por lo que no se podría consultar a nadie. Elija un rol con miembros antes de habilitar el modo Actuar.",
+      "invalidScriptIds": "Uno o más scripts no se pueden autorizar para este agente.",
+      "scriptRejected": "Script {{id}}: {{reason}}",
+      "scriptReject": {
+        "not_found": "no es un script que el propietario de este agente pueda ver",
+        "not_in_partner_baseline": "no está en la línea base del partner",
+        "run_script_not_allowed": "\"Ejecutar un script\" no está permitido para este agente"
+      }
     },
     "actions": {
       "add": "Nuevo agente",
@@ -2718,7 +2736,9 @@
       "approvers_other": "Se consulta a {{roles}}, por bandeja de entrada, chat y notificaciones push móviles. Gana la primera decisión.",
       "approversCount_one": "Se consulta a {{count}} rol, por bandeja de entrada, chat y notificaciones push móviles. Gana la primera decisión.",
       "approversCount_other": "Se consulta a {{count}} roles, por bandeja de entrada, chat y notificaciones push móviles. Gana la primera decisión.",
-      "scriptGateNote": "{{list}} solo se ejecutará sin supervisión cuando se autorice un script para este agente; hasta entonces genera una solicitud de aprobación."
+      "scriptGateNote": "{{list}} solo se ejecutará sin supervisión cuando se autorice un script para este agente; hasta entonces genera una solicitud de aprobación.",
+      "scriptsAuthorized_one": "{{count}} script está autorizado para ejecutarse sin supervisión.",
+      "scriptsAuthorized_other": "{{count}} scripts están autorizados para ejecutarse sin supervisión."
     },
     "flow": {
       "title": "Nuevo agente",
@@ -2772,6 +2792,21 @@
         "recommendedPrefix": "Recomendado:",
         "taken": "Ya está en uso para este propietario"
       }
+    },
+    "scripts": {
+      "legend": "Scripts que pueden ejecutarse sin supervisión",
+      "hint": "En el modo Actuar, \"Ejecutar un script\" se ejecuta sin aprobación solo para los scripts marcados aquí. Todo lo demás sigue siendo una solicitud de aprobación.",
+      "ceilingHint": "Los scripts a nivel de partner son un límite: el agente de una organización solo puede elegir de esta lista.",
+      "runScriptRequired": "Agregue \"Ejecutar un script\" en \"Qué hace\" antes de autorizar scripts.",
+      "runScriptNotInBaseline": "La línea base del partner no permite \"Ejecutar un script\" para este tipo de agente, así que ningún script puede ejecutarse sin supervisión.",
+      "ceilingUnavailable": "No se pudo cargar la línea base del partner, así que por ahora no se pueden autorizar scripts.",
+      "ceilingLoading": "Comprobando la línea base del partner…",
+      "loading": "Cargando scripts…",
+      "failed": "No se pudieron cargar los scripts, por lo que la autorización de scripts sin supervisión no se puede cambiar ahora.",
+      "empty": "No hay scripts disponibles.",
+      "searchPlaceholder": "Buscar scripts…",
+      "selectedCount_one": "{{count}} script autorizado",
+      "selectedCount_other": "{{count}} scripts autorizados"
     }
   },
   "apiKeyForm": {
