@@ -381,7 +381,7 @@ equivalent of that contract test**; it is the mechanism that keeps this inventor
 
 | file:line | function | status written | in a transaction? | publishes afterwards | result payload |
 |---|---|---|---|---|---|
-| `services/aiAgents/runLoop.ts:1898` (in `finishRun`, `:1892`) | `finishRun` | `completed` / `failed` / `awaiting_approval` (the three `TERMINAL_EVENT` keys, `:1787-1791`) | the CAS runs in `inSystemDbContext` inside `transitionRunStatus` | `safePublish(TERMINAL_EVENT[status], ...)` at `:1915`, **after** the write returns, with `runId`, `agentId`, `deviceId`, `intentIds`, `costCents`, `errorCode`; then best-effort notifications, fix watch and op evidence | Writes `summary`, `outcome` (jsonb), `intentIds`, `turnCount`, `costCents`, `finishedAt` in the same `set()` |
+| `services/aiAgents/runLoop.ts:1898` (in `finishRun`, `:1892`) | `finishRun` | `completed` / `failed` / `awaiting_approval` (the three `TERMINAL_EVENT` keys, `:1787-1791`) | the CAS runs in `inSystemDbContext` inside `transitionRunStatus` | `safePublish(TERMINAL_EVENT[status], ...)` at `:1916`, **after** the write returns, with `runId`, `agentId`, `deviceId`, `intentIds`, `costCents`, `errorCode`; then best-effort notifications, fix watch and op evidence | Writes `summary`, `outcome` (jsonb), `intentIds`, `turnCount`, `costCents`, `finishedAt` in the same `set()` |
 | `services/aiAgents/runLoop.ts:1621` | `executeAgentRun` stop gate | `skipped`, `errorCode: 'policy_revoked_before_start'` | same chokepoint | `safePublish('ai.agent.run.skipped', ...)` | none |
 | `services/aiAgents/runLoop.ts:1768` | `executeAgentRun` catch block | `failed`, error code from the thrown `AgentRunError` / `AgentRunOwnershipError`, else `run_failed` | same chokepoint | `safePublish('ai.agent.run.failed', ...)`, only if the CAS won | none |
 | `services/aiAgents/runService.ts:593` (in `reapStalledAgentRuns`) | stalled reaper | `failed`, `errorCode: 'stalled'`, `finishedAt` | CAS with an extra `stale` guard re-checking the cutoff atomically (`:585-596`) | nothing, returns `reapedIds` to its caller | none; the run's own outcome is left as it was |
@@ -729,7 +729,7 @@ adapter must always go through it, never a direct `db.select()` on `device_comma
 ## 6. Legacy trigger admission owners and sunset list
 
 Every path that automatically admits an `ai_agent_runs` row today. The single entry point is
-`createAndEnqueueAgentRun` (`apps/api/src/services/aiAgents/runService.ts:697`); this list is its
+`createAndEnqueueAgentRun` (`apps/api/src/services/aiAgents/runService.ts:702`); this list is its
 callers, minus the human "run now" route.
 
 **`dedupeKey` is not computed centrally.** `runService.ts:705` destructures it verbatim from the
@@ -885,7 +885,7 @@ Run DTOs use **named-field mapper functions, never object spread**, plus a type-
   `mapIntentRow` (`:338-357`, dropping `toolInput`, `toolOutput`, `approvedBy`, `commandId`,
   `arguments`). VERIFIED.
 - Tripwire: `AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS = ['args','toolInput','toolOutput','arguments']`
-  (`packages/shared/src/types/aiAgentRuns.ts:41`), with the header at `:19-37` arguing the leak is
+  (`packages/shared/src/types/aiAgentRuns.ts:44`), with the header at `:19-37` arguing the leak is
   "impossible by construction, not just avoided by convention". Enforced by `JSON.stringify`
   substring assertions in `runTrace.test.ts` and `routes/aiAgents.test.ts`. VERIFIED.
 
@@ -1298,7 +1298,7 @@ recipe needs)", the report-suspicious path is a third, and a rejected task opera
 nothing would strand the task in `waiting` until its deadline. Add it to the PR (3) scope.
 
 **Non-contradictions, confirmed as written.** Spec §2's claims about `finishRun` publishing after
-the write (`runLoop.ts:1898` then `:1915`), the reaper's `failed:execution_lost`
+the write (`runLoop.ts:1898` then `:1916`), the reaper's `failed:execution_lost`
 (`intentExpiryReaper.ts:274-276`), the losing CAS discarding the result
 (`intentReleaseWorker.ts:1053-1068`), cancel covering only `pending_approval` and `approved`
 (`intentService.ts:2043-2048`), the release claim at `:676`, the kill-switch reversal at `:139`, the
