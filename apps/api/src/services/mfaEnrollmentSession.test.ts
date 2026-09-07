@@ -41,7 +41,12 @@ vi.mock('./remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: terminateUserRemoteSessionsMock,
 }));
 
-import { completeInitialMfaEnrollment, completeMfaFactorRemoval, replaceSessionOnMfaFactorWrite } from './mfaEnrollmentSession';
+import {
+  completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
+  completeMfaFactorReplacement,
+  replaceSessionOnMfaFactorWrite,
+} from './mfaEnrollmentSession';
 import type { AuthIssuanceCapability } from './authBrowserTransition';
 import { EpochAdvancePreconditionError } from './authLifecycle';
 import type { AuthorizedUserSession, UserSessionIdentity } from './userSession';
@@ -551,6 +556,117 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
       revokeReason: 'initial-mfa-enrollment',
       persistFactor: vi.fn(),
     } as never)).rejects.toThrow(/recovery-code/i);
+
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('completeMfaFactorReplacement — swapping the material behind a live factor (#5198)', () => {
+  const tx = { marker: 'transaction' } as never;
+  const capability = { marker: 'capability' } as unknown as AuthIssuanceCapability;
+  const identity: UserSessionIdentity = {
+    userId: 'user-123',
+    email: 'user@example.com',
+    roleId: 'role-123',
+    orgId: 'org-123',
+    partnerId: 'partner-123',
+    scope: 'organization',
+    // Carried forward from a caller whose token was NOT MFA-assured — a
+    // replacement must never elevate assurance.
+    mfa: false,
+  };
+  const issued = {
+    accessToken: 'access',
+    refreshToken: 'refresh',
+    refreshJti: 'refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'family-new',
+    transitionId: 'transition-123',
+    generation: 4,
+  } as unknown as AuthorizedUserSession;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    finishAuthIssuanceMock.mockImplementation(
+      async (_capability: unknown, callback: (value: unknown) => Promise<unknown>) => callback(tx),
+    );
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 3, mfaEpoch: 8, emailEpoch: 1, passwordResetEpoch: 1,
+    });
+    revokeAllRefreshFamiliesMock.mockResolvedValue(undefined);
+    issueUserSessionMock.mockResolvedValue(issued);
+    runPostCommitCleanupMock.mockResolvedValue({ redisOk: true, permissionCacheOk: true, oauthOk: true });
+    terminateUserRemoteSessionsMock.mockResolvedValue(0);
+  });
+
+  it('revokes every family and re-issues the caller while installing no codes', async () => {
+    const persistFactor = vi.fn(async (suppliedTx: unknown, hashes: readonly string[]) => {
+      expect(suppliedTx).toBe(tx);
+      // A phone swap reveals no new one-time secret, so it must not overwrite
+      // the account's existing recovery-code set with an empty one.
+      expect(hashes).toEqual([]);
+      return undefined;
+    });
+
+    const result = await completeMfaFactorReplacement({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'phone-replacement',
+      persistFactor,
+    });
+
+    expect(persistFactor).toHaveBeenCalledTimes(1);
+    // Every OTHER session still dies, under the live-factor precondition: a
+    // replacement predicated on a factor that is already gone must lose.
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(
+      tx,
+      identity.userId,
+      { mfa: true },
+      { authEpoch: 3, mfaEpoch: 7, mfaEnabled: true, status: 'active' },
+    );
+    expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(tx, identity.userId, 'phone-replacement');
+    // ...and the ACTOR is re-issued against the POST-bump epochs rather than
+    // evicted along with them — the whole point of #5198.
+    expect(issueUserSessionMock).toHaveBeenCalledWith(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: 3, mfaEpoch: 8 },
+    });
+    expect(result.issued).toBe(issued);
+    expect(result.recoveryCodes).toEqual([]);
+    expect(runPostCommitCleanupMock.mock.calls[0]?.[1]?.preserveTokensIssuedAtOrAfter)
+      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+
+  it('maps a lost epoch precondition onto the auth-issuance conflict the route answers 409 with', async () => {
+    advanceUserEpochsMock.mockRejectedValueOnce(new EpochAdvancePreconditionError());
+
+    await expect(completeMfaFactorReplacement({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'phone-replacement',
+      persistFactor: vi.fn(),
+    })).rejects.toThrow(/authentication issuance/i);
+  });
+
+  it('refuses a code pair — a replacement is not a rotation', async () => {
+    await expect(completeMfaFactorReplacement({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'phone-replacement',
+      recoveryCodes: ['code-1'],
+      recoveryCodeHashes: ['hash-1'],
+      persistFactor: vi.fn(),
+    } as never)).rejects.toThrow(/recovery codes/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
   });

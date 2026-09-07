@@ -85,6 +85,21 @@ vi.mock('../../services', () => ({
   beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
   cancelAuthIssuance: vi.fn(async () => undefined),
   bindIssuedUserSession: vi.fn(async () => undefined),
+  completeMfaFactorReplacement: vi.fn(async () => ({
+    value: undefined,
+    recoveryCodes: [],
+    issued: {
+      accessToken: 'replacement-access-token',
+      refreshToken: 'replacement-refresh-token',
+      refreshJti: 'replacement-jti',
+      expiresInSeconds: 900,
+      familyId: 'replacement-family',
+      transitionId: 'transition-1',
+      generation: 1,
+    },
+    mfaEpoch: 2,
+    cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+  })),
   completeInitialMfaEnrollment: vi.fn(async (input: any) => ({
     value: undefined,
     recoveryCodes: [...input.recoveryCodes],
@@ -106,6 +121,10 @@ vi.mock('../../services', () => ({
   AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
   AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
   AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
 }));
 
 vi.mock('../../services/twilio', () => ({
@@ -157,7 +176,15 @@ import { db } from '../../db';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getTwilioService } from '../../services/twilio';
 import { writeAuthAudit, enforceExistingFactorStepUp } from './helpers';
-import { completeInitialMfaEnrollment, getRedis, getUserEpochs, rateLimiter } from '../../services';
+import { authMiddleware } from '../../middleware/auth';
+import {
+  bindIssuedUserSession,
+  completeInitialMfaEnrollment,
+  completeMfaFactorReplacement,
+  getRedis,
+  getUserEpochs,
+  rateLimiter,
+} from '../../services';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -496,7 +523,9 @@ describe('phone routes', () => {
       });
     }
 
-    it('invalidates MFA assurance when replacing an already-active SMS factor', async () => {
+    // #5198: replacing the number behind a LIVE SMS factor must still revoke
+    // every OTHER session, but must REPLACE the caller's rather than evict it.
+    it('replaces the caller session (rather than evicting it) when replacing an already-active SMS factor', async () => {
       mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
       mockValidCode();
 
@@ -506,18 +535,113 @@ describe('phone routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(body.message).toBe('Phone number verified');
+      // The caller gets a working session back in the same response — the whole
+      // point of the fix. Before it, the response carried no tokens and the
+      // caller's next request 401'd on a stale `mep`.
+      expect(body.sessionReplaced).toBe(true);
+      expect(body.tokens?.accessToken).toBe('replacement-access-token');
+      // The replacement is bound before it is handed back; an unbound refresh
+      // JTI would die at its first refresh.
+      expect(bindIssuedUserSession).toHaveBeenCalledOnce();
 
-      // Routes through invalidateMfaAssuranceAfterFactorChange, which folds
-      // its write into db.transaction rather than a bare db.update.
-      expect(db.transaction).toHaveBeenCalled();
+      // Routes through the session-replacement primitive, NOT the bare
+      // epoch-bumping invalidation it used to use.
+      expect(completeMfaFactorReplacement).toHaveBeenCalledOnce();
+      const input = vi.mocked(completeMfaFactorReplacement).mock.calls[0]?.[0] as any;
+      // Every OTHER session still dies: the primitive is the one that advances
+      // mfa_epoch and revokes the families, under the live-factor precondition.
+      expect(input.revokeReason).toBe('phone-replacement');
+      expect(input.expectedAuthEpoch).toBe(1);
+      expect(input.expectedMfaEpoch).toBe(1);
+      // Assurance is carried forward, never elevated: this caller's token
+      // carried no `mfa` claim, so neither may the replacement.
+      expect(input.identity.mfa).toBe(false);
+      // SR-001: binding comes from the signed `mdid` claim (absent here), never
+      // the request header.
+      expect(input.identity.mobileDeviceId).toBeUndefined();
+      // A replacement rotates NO recovery codes — the account's set stays valid.
+      expect(input).not.toHaveProperty('recoveryCodes');
 
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
           action: 'auth.phone.verify.confirmed',
-          details: expect.objectContaining({ smsFactorReplacement: true }),
+          details: expect.objectContaining({ smsFactorReplacement: true, sessionInstalled: true }),
         })
       );
+    });
+
+    // SR-001: the header must not be able to re-bind a session on a re-mint.
+    it('takes the replacement device binding from the signed mdid claim, not the request header', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+      vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: () => unknown) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: 'org-1',
+          user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
+          token: { sid: 'family-1', aep: 1, mep: 1, mfa: true, mdid: 'signed-device' },
+        });
+        return next();
+      }) as never);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-breeze-mobile-device-id': 'forged-device' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '123456',
+          currentPassword: 'correct-password',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const input = vi.mocked(completeMfaFactorReplacement).mock.calls[0]?.[0] as any;
+      expect(input.identity.mobileDeviceId).toBe('signed-device');
+      expect(input.identity.mfa).toBe(true);
+    });
+
+    // The write is already committed and every other session is already gone;
+    // a failed post-commit install must not become a retryable error, and the
+    // unusable tokens must be withheld.
+    it('withholds tokens (but still reports success) when the post-commit session install fails', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+      vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      // The client is still told its old session is gone, so it can prompt a
+      // re-login instead of discovering it as a stray 401 later.
+      expect(body.sessionReplaced).toBe(true);
+      expect(body.tokens).toBeUndefined();
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ sessionInstalled: false }),
+        })
+      );
+    });
+
+    it.each([
+      ['AuthIssuanceConflictError', 409],
+      ['AuthBindingRotationRequiredError', 428],
+    ] as const)('answers %s from the auth-issuance admission path with %i', async (errorName, status) => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+      const services = await import('../../services');
+      const ErrorClass = (services as any)[errorName];
+      vi.mocked(completeMfaFactorReplacement).mockRejectedValueOnce(new ErrorClass({}));
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(status);
+      // The capability is released rather than leaked when the write is refused.
+      expect(services.cancelAuthIssuance).toHaveBeenCalledOnce();
     });
 
     it('does NOT invalidate MFA assurance during initial SMS enrollment (no active SMS factor)', async () => {
@@ -531,10 +655,14 @@ describe('phone routes', () => {
       expect(body.success).toBe(true);
       expect(body.message).toBe('Phone number verified');
 
-      // Must NOT route through the invalidation transaction — that would
+      // Must NOT route through the session-replacement primitive — that would
       // sign the user out mid-enrollment before /mfa/sms/enable ever runs.
+      expect(completeMfaFactorReplacement).not.toHaveBeenCalled();
       expect(db.transaction).not.toHaveBeenCalled();
       expect(db.update).toHaveBeenCalled();
+      // Nothing was revoked, so there is no replacement to report or adopt.
+      expect(body.sessionReplaced).toBeUndefined();
+      expect(body.tokens).toBeUndefined();
 
       expect(writeAuthAudit).toHaveBeenCalledWith(
         expect.anything(),
@@ -582,7 +710,7 @@ describe('phone routes', () => {
       // to burn anyway, and the consume happens only at the factor write.
       expect(checkVerificationCode).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
-      expect(db.transaction).not.toHaveBeenCalled();
+      expect(completeMfaFactorReplacement).not.toHaveBeenCalled();
       expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
       expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
         expect.anything(),
@@ -656,7 +784,7 @@ describe('phone routes', () => {
         { consume: false }
       );
       expect(db.update).not.toHaveBeenCalled();
-      expect(db.transaction).not.toHaveBeenCalled();
+      expect(completeMfaFactorReplacement).not.toHaveBeenCalled();
     });
   });
 });

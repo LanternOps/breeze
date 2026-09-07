@@ -184,3 +184,10 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 
 ---
 
+
+## Changing your phone number keeps you signed in (#5198)
+
+**Self-Hosting / Upgrade Notes.**
+- Behaviour change (API), no migration and no new env vars: confirming a phone number that REPLACES the one behind an already-active SMS factor still advances `mfa_epoch` and revokes every refresh family — every OTHER session is signed out — but the calling session is now REPLACED in the same response instead of evicted (it previously bounced the user to `/login?reason=session-expired` by their own action). `POST /auth/phone/confirm` now returns `sessionReplaced: true` plus `tokens.accessToken` on that branch, alongside rotated refresh/CSRF cookies the client must adopt, and can now answer **409** (another authentication issuance is in flight, or the factor set changed concurrently — nothing was written) and **428** (the client auth binding must be rotated first) from the shared auth-issuance admission path. `tokens` is withheld on the rare post-commit install failure, in which case the client must re-authenticate. Initial phone verification (no active SMS factor yet) is unchanged and returns neither field.
+
+---
