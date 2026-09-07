@@ -2059,6 +2059,13 @@ describe('fanOutOwedPayments', () => {
     const paymentsRead = stmtsOf('select', 'invoice_payments').at(-1)!;
     expect(compiledSql(paymentsRead.where).toLowerCase())
       .toContain(`"invoice_payments"."created_at" at time zone 'utc'`);
+    // And the bound value is a STRING, not a Date. postgres.js binds a raw
+    // `sql`` ` fragment's parameters itself and throws
+    // `Buffer.byteLength ... Received an instance of Date` at bind time — a
+    // failure no compiled-SQL assertion can see, and which only showed up
+    // against real Postgres. The `::timestamptz` cast keeps it typed.
+    expect(paramsOf(paymentsRead.where).some((p) => p instanceof Date)).toBe(false);
+    expect(compiledSql(paymentsRead.where).toLowerCase()).toContain('::timestamptz');
   });
 
   it('returns nothing when the invoice itself is not synced', async () => {

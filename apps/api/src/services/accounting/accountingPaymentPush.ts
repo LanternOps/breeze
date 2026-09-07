@@ -1273,7 +1273,13 @@ export async function fanOutOwedPayments(
       .where(and(
         eq(invoicePayments.invoiceId, invoiceId),
         ...(conn.pushPaymentsSince
-          ? [sql`(${invoicePayments.createdAt} AT TIME ZONE 'UTC') >= ${conn.pushPaymentsSince}`]
+          // `.toISOString()`, NOT the Date: postgres.js binds a raw `sql``
+          // fragment's parameters itself and throws
+          // `Buffer.byteLength ... Received an instance of Date` at bind time.
+          // A compiled-SQL unit assertion cannot see that — only a real
+          // Postgres round trip does. The explicit `::timestamptz` keeps the
+          // comparison typed now that the parameter is text.
+          ? [sql`(${invoicePayments.createdAt} AT TIME ZONE 'UTC') >= ${conn.pushPaymentsSince.toISOString()}::timestamptz`]
           : []),
       ));
     if (payments.length === 0) return [];
