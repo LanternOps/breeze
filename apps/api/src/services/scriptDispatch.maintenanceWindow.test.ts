@@ -121,7 +121,14 @@ describe('dispatchScriptToDevice — maintenance window gate (#4919)', () => {
     expect(queueCommand).not.toHaveBeenCalled();
   });
 
-  it('is fail-closed: a gate that could not evaluate the window still refuses, with a distinct message', async () => {
+  /**
+   * Fail-closed, but under a DIFFERENT code. Callers test for
+   * `maintenance_suppressed` to take their benign skip branch and let anything
+   * else fall through to their existing failure handling, so an unevaluatable
+   * check has to be a distinct code or a fleet-wide outage of the maintenance
+   * config renders as green runs with no on-failure notifications.
+   */
+  it('is fail-closed on an unevaluatable window, under the FAULT code, not the skip code', async () => {
     vi.mocked(checkScriptMaintenanceSuppression).mockResolvedValue(
       suppressed('check_failed', 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)'),
     );
@@ -131,9 +138,38 @@ describe('dispatchScriptToDevice — maintenance window gate (#4919)', () => {
       source: { kind: 'saved', script: savedScript() },
     });
 
-    expect(r).toMatchObject({ ok: false, code: 'maintenance_suppressed' });
+    expect(r).toMatchObject({ ok: false, code: 'maintenance_check_failed' });
+    expect(r.ok === false && r.code).not.toBe('maintenance_suppressed');
     expect(r.ok === false && r.error).toContain('fail-closed');
     expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The gate runs ahead of the offline re-read on purpose: "we would not have
+   * run this anyway" is the more useful reported reason than "the device is
+   * offline", and it must stay the answer whatever the device's status is.
+   */
+  it('reports the window, not offline, for a suppressed device that is also offline', async () => {
+    vi.mocked(checkScriptMaintenanceSuppression).mockResolvedValue(
+      suppressed('window_active', 'Device is in a maintenance window that suppresses script execution'),
+    );
+    // The requireOnline live re-read would say 'offline' if it ever ran.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ status: 'offline' }]) }),
+      }),
+    } as any);
+
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }),
+      source: { kind: 'saved', script: savedScript() },
+      requireOnline: true,
+    });
+
+    expect(r).toMatchObject({ ok: false, code: 'maintenance_suppressed' });
+    expect(r.ok === false && r.code).not.toBe('device_offline');
+    // The liveness query never ran — the gate short-circuited before it.
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('dispatches normally when no window suppresses scripts', async () => {

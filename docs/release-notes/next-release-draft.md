@@ -193,7 +193,11 @@ assistant's `run_script`, automation `run_script` / `execute_command` actions,
 fleet-fix remediation runs, and agent edition auto-migration — not just the
 manual Run Script route. The check moved into the shared dispatch seam and is
 fail-closed: a maintenance window that cannot be evaluated refuses the run
-rather than allowing it. Each path records the skip instead of reporting a
-failure (the assistant is told the device is suppressed, automation action
-results read `skipped`, and fleet-fix targets get the new
-`maintenance_window` skip reason). No env vars, no migrations.
+rather than allowing it. Each path records an open window as a **skip**, not a
+failure — the assistant is told the device is suppressed, automation action
+results read `skipped` (the run stays green and trailing actions still run),
+and fleet-fix targets get the new `maintenance_window` skip reason. A window
+that **cannot be evaluated** is deliberately the opposite: it keeps the
+ordinary failure treatment (reddened run, on-failure notifications, Sentry), so
+an outage of the maintenance config can never render as a fleet of green runs.
+No env vars, no migrations.

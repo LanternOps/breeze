@@ -446,6 +446,29 @@ describe('run_script honours a device maintenance window (#4919)', () => {
     expect(result.log.message).toContain('maintenance window');
   });
 
+  /**
+   * The whole reason `maintenance_check_failed` is a separate code: a fault in
+   * the safety check is NOT the operator's schedule. It must keep the failure
+   * treatment (run reddened, on-failure notifications, `onFailure: 'stop'`
+   * honoured), or a fleet-wide maintenance-config outage renders as green runs.
+   */
+  it('treats an UNEVALUATABLE maintenance check as a failure, not a skip', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome.status).not.toBe('skipped');
+  });
+
   it('still reports an ordinary dispatch refusal as a failure', async () => {
     dispatchMock.mockResolvedValueOnce({
       ok: false,

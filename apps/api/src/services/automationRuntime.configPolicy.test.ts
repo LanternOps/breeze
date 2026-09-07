@@ -727,8 +727,13 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'skipped',
     }));
+    // The skip REASON is persisted on the action result, not just the status —
+    // `persistActionExecutionOutcome` had to learn to take `outcome.message`
+    // for 'skipped' as well as 'failed', or the row records the generic log
+    // line and the operator cannot tell a maintenance skip from any other.
     expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
       runId: 'run-1', deviceId: 'dev-1', actionIndex: 1, status: 'skipped',
+      message: expect.stringContaining('maintenance window'),
     }));
   });
 

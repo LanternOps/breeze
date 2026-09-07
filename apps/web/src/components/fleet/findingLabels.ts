@@ -73,7 +73,9 @@ export const TARGET_STATUS_CHIP_CLASSES: Record<FleetTargetStatus, string> = {
 };
 
 /** Mirrors `RemediationSkipReason` in the API's dispatch service — the reasons
- *  a device is rejected at RUN-CREATION time.
+ *  a device is rejected at RUN-CREATION time, plus `maintenance_window`
+ *  (#4919), which is the one member written at DISPATCH time: a window open at
+ *  creation may well be shut by the time a queued run reaches its chunk.
  *
  *  `skip_reason` is also written later, on a target row, by two paths that are
  *  not `RemediationSkipReason` values: `timeout` (pollRunProgress, after

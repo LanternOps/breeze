@@ -687,6 +687,14 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
     if (run.actionKind === 'script') {
       const maintenance = await checkScriptMaintenanceSuppression(target.targetDeviceUuid);
       if (maintenance.suppressed) {
+        if (maintenance.reason === 'check_failed') {
+          // A fault in the safety check, not the operator's schedule. Recording
+          // it as a `skipped` target would bury a maintenance-config outage
+          // inside a status operators read as "nothing to see here" — this run
+          // never verified it was safe to run, and that is a failure.
+          await markTargetFailed(runId, target.targetDeviceUuid, maintenance.message);
+          continue;
+        }
         await markTargetSkipped(runId, target.targetDeviceUuid, 'maintenance_window');
         continue;
       }

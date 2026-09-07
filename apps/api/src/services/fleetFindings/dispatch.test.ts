@@ -993,6 +993,32 @@ describe('dispatchRunChunk', () => {
    * consult the gate for them at all — checking would silently extend the
    * flag's meaning without anyone deciding to.
    */
+  it('FAILS a script target whose maintenance window could not be evaluated, rather than skipping it', async () => {
+    // `skipped` is the status an operator reads as "nothing to see here". A
+    // maintenance config we could not read is a broken safety dependency and
+    // has to surface as a failure.
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', scriptId: 'sc-1', commandType: null })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]);
+    h.selectQueue.push([
+      { orgId: ORG_1, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system', parameters: null },
+    ]);
+    maintenanceGateMock.mockResolvedValue({
+      suppressed: true,
+      reason: 'check_failed',
+      message: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+      windowEndsAt: null,
+    });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failed = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failed).toBeDefined();
+    expect(failed.values.resultSummary).toContain('fail-closed');
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'skipped')).toBe(false);
+  });
+
   it('does not consult the maintenance gate for a command-kind run', async () => {
     h.selectQueue.push([runRow({ status: 'running' })]); // actionKind: 'command'
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);

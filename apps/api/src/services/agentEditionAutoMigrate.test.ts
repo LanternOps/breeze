@@ -290,6 +290,27 @@ describe('maybeDispatchEditionMigration', () => {
     );
   });
 
+  it('treats an UNEVALUATABLE maintenance check as a fault: Sentry, and vetoed in-process', async () => {
+    // Distinct from the deferral above. A maintenance config we cannot read is
+    // a broken safety dependency; retrying it every 60s forever while staying
+    // silent is exactly the shape that hides an outage.
+    primeHappyPath();
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    } as never);
+
+    await maybeDispatchEditionMigration(baseArgs());
+    expect(captureException).toHaveBeenCalled();
+
+    // Vetoed in-process: no second attempt this process lifetime.
+    vi.mocked(dispatchScriptToDevice).mockClear();
+    vi.mocked(db.update).mockClear();
+    await maybeDispatchEditionMigration(baseArgs());
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
   it('never throws into the caller — a dispatch CRASH keeps the claim (queue state indeterminate)', async () => {
     const claim = primeHappyPath();
     vi.mocked(dispatchScriptToDevice).mockRejectedValue(new Error('boom'));

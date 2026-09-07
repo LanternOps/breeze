@@ -165,13 +165,25 @@ export type DispatchScriptResult =
       code:
         | 'device_decommissioned'
         | 'device_offline'
-        // #4919 — an active maintenance window with `suppressScripts`, OR a
-        // maintenance check that could not be evaluated (fail-closed). The two
-        // are distinguished by `error`, not by the code: every caller reacts
-        // to them identically (record the skip, do not retry now), and a
-        // second code would only invite a caller to handle one and forget the
-        // other — which is the bug this issue was.
+        // #4919 — an active maintenance window with `suppressScripts`. The
+        // operator's own schedule: every caller records this as a SKIP, keeps
+        // the run green, and does not retry now.
         | 'maintenance_suppressed'
+        // #4919 — the maintenance check could not be EVALUATED (the config
+        // resolve threw). We still refuse — fail-closed — but this is a fault
+        // in a safety dependency, not a policy decision, and it must not be
+        // reported as a scheduled skip.
+        //
+        // It is a separate code rather than a field on `maintenance_suppressed`
+        // BECAUSE of how callers are written: each one tests
+        // `code === 'maintenance_suppressed'` for its skip branch and lets
+        // everything else fall through to its existing failure handling. A
+        // caller that never learns this code therefore treats it as a failure
+        // — which is the correct, conservative outcome. Folding both into one
+        // code had the opposite failure mode: a fleet-wide maintenance-check
+        // outage rendered as green automation runs with zero on-failure
+        // notifications.
+        | 'maintenance_check_failed'
         | 'os_mismatch'
         | 'org_mismatch'
         | 'insert_failed'
@@ -239,7 +251,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (!input.bypassMaintenanceWindow) {
     const maintenance = await checkScriptMaintenanceSuppression(device.id);
     if (maintenance.suppressed) {
-      return { ok: false, code: 'maintenance_suppressed', error: maintenance.message };
+      // The gate's `reason` is carried through as the CODE, not flattened into
+      // free text: callers branch on `code` and never parse `error`, so a
+      // discriminator that survives only in the message reaches no decision.
+      return {
+        ok: false,
+        code: maintenance.reason === 'check_failed' ? 'maintenance_check_failed' : 'maintenance_suppressed',
+        error: maintenance.message,
+      };
     }
   }
 
