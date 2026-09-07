@@ -855,7 +855,7 @@ Watches are anchored **both** ways: `run_id` stays `NOT NULL` (`aiAgentFixWatche
    construction (`policyDecide.ts:502` treats a missing run id as "structurally impossible").
    So the named category is covered. VERIFIED.
 3. **A residual gap the fix does not close.** A watch only opens `if (anchor.alertId)`
-   (`intentReleaseWorker.ts:452`). When the originating run has no triggering alert, a
+   (`intentReleaseWorker.ts:455`). When the originating run has no triggering alert, a
    schedule, sweep, ticket or manual run releasing a policy-decided intent, the code instead
    credits the operation `verified` immediately with no watch at all, on the stated reasoning that
    "an operation no watch will ever look at must not sit un-gradeable forever" (`:436-441`). For
@@ -1201,8 +1201,9 @@ correct citations are the seven call sites plus the constraint
 `ai_agent_runs_org_dedupe_key_uq` (`apps/api/migrations/2026-09-02-ai-agents.sql:119-121`).
 
 **C4, `manage_services`'s `executeCommand` call is at `aiToolsScripts.ts:660`, not `:649`.** Spec
-§2 and §6.5 both cite `:649`; that line is inside the tool *definition* block (`:623-641`). The
-handler's `executeCommand` call is `:660-664`. VERIFIED.
+§2 and §6.5 both cite `:649`. At the baseline commit that line is
+`const { executeCommand } = await getCommandQueue();`, the destructured import of the function, not
+a call to it. The call is `:660-664`. VERIFIED.
 
 **C5, the outbox event values are at `actionIntents.ts:92-99`, not `:449`.** Spec §2 cites `:449`
 for "`event_type`, values …"; `:449` is the column declaration
@@ -1248,7 +1249,7 @@ independent `list_services` read, never the dispatch result (§2.1).
 `isFixWatchEligible` requires `run.modeAtStart === 'act'` (`fixWatch.ts:133-139`), and P3-1 is
 supervised-only by design (plan P3-1, "supervised mode only"). Separately, `watchReleasedIntent`
 credits `verified` immediately when the run has no `alertId` (`intentReleaseWorker.ts:436-441,
-452`). So reusing the existing verification path unchanged would either open no watch or
+455`). So reusing the existing verification path unchanged would either open no watch or
 auto-credit. §6.5's "reuse `actVerify`/`fixWatch` evidence" needs an explicit statement of which
 gate the task path uses.
 
