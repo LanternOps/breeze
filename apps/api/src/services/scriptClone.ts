@@ -131,6 +131,13 @@ export async function cloneScript(
         isSystem: false,
         version: 1,
         exitCodeSeverityMapping: source.exitCodeSeverityMapping ?? null,
+        // #5129 — `acknowledgedSecurityPatterns` is DELIBERATELY not copied, so
+        // the clone starts with nothing acknowledged (the column defaults to
+        // '{}') and its first run of a Strict pattern is refused until someone
+        // signs off on the copy. An acknowledgement records a named human
+        // accepting a specific risk on a specific script; the person cloning
+        // may not be that person, and a clone is usually the starting point for
+        // edits. Do not "complete" this copy list by adding it.
         createdBy: auth.user.id,
       })
       .returning();

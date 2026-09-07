@@ -68,6 +68,10 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         timeoutSeconds: scriptData.timeoutSeconds || 300,
         runAs: scriptData.runAs || 'system',
         exitCodeSeverityMapping: mappingToRows(scriptData.exitCodeSeverityMapping),
+        // #5129 — seed the security-review checkboxes from what is already
+        // acknowledged, so an ordinary edit re-submits the existing approval
+        // instead of appearing to revoke it.
+        acknowledgedSecurityPatterns: scriptData.acknowledgedSecurityPatterns ?? [],
         // Seed the "Available to" re-scope picker from the current scope
         // (issue #1734): org_id NULL = partner-wide ("All Orgs"), else a
         // specific org. The picker only renders for partner-scope users.

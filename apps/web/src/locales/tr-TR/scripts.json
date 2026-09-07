@@ -1048,6 +1048,14 @@
       "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
     },
+    "securityReview": {
+      "title": "Güvenlik incelemesi",
+      "blockedHint_one": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği 1 desenle eşleşiyor.",
+      "blockedHint_other": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği {{count}} desenle eşleşiyor. Kabul etmek istediğiniz her birini onaylayın.",
+      "clearedHint": "Algılanan tüm desenler onaylandı.",
+      "willBlock": "Onaylanmadı — aracı bu komut dosyasını çalıştırmayı reddedecek.",
+      "footnote": "Bir onay yalnızca bu komut dosyası için geçerlidir ve yalnızca burada listelenen desenleri kapsar. Daha sonra farklı riskli bir işlem eklerseniz, onu da onaylayana kadar engellenir."
+    },
     "parameterSources": {
       "runtime": "Çalışma anında sorulur",
       "tenantVariable": "Bir değişkenden",

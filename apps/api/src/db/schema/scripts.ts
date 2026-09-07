@@ -46,6 +46,26 @@ export const scripts = pgTable('scripts', {
   // NULL = legacy behavior (non-zero exit = error). When set, see
   // ScriptExitCodeSeverityMapping above and deriveSeverityFromScript().
   exitCodeSeverityMapping: jsonb('exit_code_severity_mapping').$type<ScriptExitCodeSeverityMapping>(),
+  // #5129 — the agent's STRICT-level danger-pattern DESCRIPTIONS an admin
+  // explicitly acknowledged for this script (e.g. "PowerShell HKLM
+  // modification"). Dispatched with every run; the agent allows exactly these
+  // Strict patterns and still blocks any other match. Basic-level patterns
+  // ignore this entirely and can never be acknowledged.
+  //
+  // A SET, not a boolean, on purpose: a boolean would mean acknowledging an
+  // HKLM write permanently disarms Strict checking for the script, so a later
+  // edit introducing a credential-dumping pattern would inherit the approval
+  // silently. Re-derived on every save as (submitted ∩ patterns the content
+  // actually matches) — see services/scriptSecurityAcknowledgement.ts.
+  acknowledgedSecurityPatterns: text('acknowledged_security_patterns')
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
+  // Who granted the most recent acknowledgement, and when. The audit log is
+  // the forensic record; these exist so the script record itself can say who
+  // accepted the risk without a log query.
+  securityAcknowledgedBy: uuid('security_acknowledged_by').references(() => users.id),
+  securityAcknowledgedAt: timestamp('security_acknowledged_at'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

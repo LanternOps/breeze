@@ -1111,6 +1111,14 @@
       "notSecretRow": "Não é secreta — use \"De uma variável\"",
       "secretHint": "Entregue apenas como a variável de ambiente {{env}} — nunca escrita no script. Exige execução no contexto do sistema e um agente compatível com a entrega segura de segredos.",
       "hint": "Resolvido para cada dispositivo de destino quando o script é executado — ninguém precisa informar."
+    },
+    "securityReview": {
+      "title": "Revisão de segurança",
+      "blockedHint_one": "Este script corresponde a 1 padrão que o agente se recusa a executar sem um reconhecimento.",
+      "blockedHint_other": "Este script corresponde a {{count}} padrões que o agente se recusa a executar sem um reconhecimento. Reconheça cada um que você pretende permitir.",
+      "clearedHint": "Todos os padrões detectados foram reconhecidos.",
+      "willBlock": "Não reconhecido — o agente se recusará a executar este script.",
+      "footnote": "Um reconhecimento se aplica somente a este script e cobre apenas os padrões listados aqui. Se você adicionar depois uma operação arriscada diferente, ela será bloqueada até que você também a reconheça."
     }
   },
   "scriptList": {
