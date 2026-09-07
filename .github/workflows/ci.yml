@@ -2745,6 +2745,9 @@ jobs:
           # The built-in Workspace extension defaults ON in the dev override; its
           # migrations are pure cost for a portal hydration run, so keep it off.
           BREEZE_WORKSPACE_ENABLED=false
+          # tests/ai-agents.spec.ts (#5048) needs the AI agents page enabled;
+          # the spec skips itself when GET /ai/agents/tool-catalog is not 200.
+          BREEZE_AI_AGENTS_ENABLED=true
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
@@ -2821,7 +2824,7 @@ jobs:
       # exercised at all. It depends on the portal rows in
       # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts
 
       - name: Upload Playwright report
         if: failure()
