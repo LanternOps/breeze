@@ -14,6 +14,22 @@ describe('buildActionLabel', () => {
   });
 
   it('swaps the device-id stub for the hostname when known', () => {
+    // #5173: the underlying aiGuardrails headline is now command-type-aware
+    // ('Restart service "Spooler" on device 6eae0f70...' instead of the raw
+    // 'Execute "restart_service" command on device 6eae0f70...' signature) —
+    // buildActionLabel's substitution must keep matching the SAME
+    // "on device <id>..." stub regardless of what precedes it.
+    expect(
+      buildActionLabel({
+        toolName: 'execute_command',
+        input: { commandType: 'restart_service', payload: { name: 'Spooler' } },
+        reason: 'Restart service "Spooler" on device 6eae0f70...',
+        deviceHostname: 'KIT',
+      }),
+    ).toBe('Restart service "Spooler" on KIT');
+  });
+
+  it('still swaps the device-id stub for the hostname on the pre-existing generic signature (no regression)', () => {
     expect(
       buildActionLabel({
         toolName: 'execute_command',
