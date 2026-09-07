@@ -1575,11 +1575,38 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
         eq(accountingEntityMappings.breezeEntityId, paymentId),
       ))
       .limit(1);
+    // ...but ONLY while a sweep would actually re-import it (review wave 2,
+    // finding 8). The refusal's entire argument is "the next CDC sweep would
+    // pull it straight back in". With `pull_payments` off — or the realm
+    // disconnected, or the connection deleted — no such sweep runs: the CDC pass
+    // skips every QuickBooks-origin change (`skipped_pull_disabled`), so the
+    // refusal stops protecting anything and instead makes the payment
+    // PERMANENTLY unremovable in Breeze. In that state the void is allowed and
+    // touches nothing in QuickBooks: `requestPaymentDelete` deletes a
+    // QuickBooks-origin mapping outright and returns null, so no delete job is
+    // enqueued and Breeze never asks QuickBooks to remove a Payment it did not
+    // create. The audit says so explicitly, because the QuickBooks record
+    // surviving is the part a reader must not have to infer.
+    let quickbooksRecordUntouched = false;
     if (existingMapping && !existingMapping.breezeOrigin) {
-      throw new InvoiceServiceError(
-        'This payment came from QuickBooks; reverse it in QuickBooks instead',
-        409, 'QUICKBOOKS_OWNED_PAYMENT',
-      );
+      const [conn] = await tx
+        .select({
+          status: accountingConnections.status,
+          pullPayments: accountingConnections.pullPayments,
+        })
+        .from(accountingConnections)
+        .where(and(
+          eq(accountingConnections.partnerId, parentInv.partnerId),
+          eq(accountingConnections.provider, 'quickbooks'),
+        ))
+        .limit(1);
+      if (conn && conn.status === 'connected' && conn.pullPayments) {
+        throw new InvoiceServiceError(
+          'This payment came from QuickBooks; reverse it in QuickBooks instead',
+          409, 'QUICKBOOKS_OWNED_PAYMENT',
+        );
+      }
+      quickbooksRecordUntouched = true;
     }
 
     // Capture the destroyed row's financial details BEFORE the delete so the voided
@@ -1592,6 +1619,9 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       method: pay.method,
       reference: pay.reference,
       recordedBy: pay.recordedBy,
+      // Present ONLY on the QuickBooks-origin branch above, so an ordinary void
+      // does not carry a field that reads as meaningful when it is not.
+      ...(quickbooksRecordUntouched ? { quickbooksRecordUntouched: true } : {}),
     };
     // Settle the 'payment' accounting_entity_mappings row FIRST, inside this
     // same transaction. breeze_entity_id is polymorphic (no FK, so nothing

@@ -1842,11 +1842,15 @@ describe('voidPayment -> QuickBooks delete hook', () => {
   function queueVoidPaymentReads(
     payment: Record<string, unknown>,
     mappingRows: Array<Record<string, unknown>> = [],
+    // Only read when the mapping probe says QuickBooks-origin, so the ordinary
+    // Breeze-payment path queues nothing extra.
+    connectionRows?: Array<Record<string, unknown>>,
   ) {
     queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
     queueResult([payment]);                                                              // payment re-read under lock
     queueResult(mappingRows);                                                            // payment mapping origin probe
+    if (connectionRows) queueResult(connectionRows);                                     // QuickBooks connection probe
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum
@@ -1914,7 +1918,7 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     // Until now only the UI hid the button, so any API client could void a row
     // QuickBooks owns — and the next CDC sweep would pull it straight back in,
     // leaving an audit trail of a void that did nothing.
-    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }]);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: true }]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
       status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
@@ -1922,6 +1926,49 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
     expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
     expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when pull_payments is off', async () => {
+    // The refusal's whole argument is "the next CDC sweep would pull it straight
+    // back in". With pull off there is no such sweep — Breeze skips every
+    // QuickBooks-origin change — so the refusal makes the payment permanently
+    // unremovable instead of protecting anything (review wave 2, finding 8).
+    requestPaymentDeleteMock.mockResolvedValue(null); // QBO-origin: the mapping is DELETED, nothing enqueued
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: false }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', quickbooksRecordUntouched: true });
+    expect(requestPaymentDeleteMock).toHaveBeenCalled();
+    // No QuickBooks write: Breeze never created that Payment.
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when the connection is not connected', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'reauth_required', pullPayments: true }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ quickbooksRecordUntouched: true });
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when the connection is gone entirely', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], []);
+
+    await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({
+      audit: { quickbooksRecordUntouched: true },
+    });
+  });
+
+  it('does not flag an ordinary Breeze payment as QuickBooks-untouched', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).not.toHaveProperty('quickbooksRecordUntouched');
   });
 });
 
