@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { useHashTab } from '@/lib/useHashState';
 
@@ -597,38 +598,49 @@ export default function RemoteToolsPage({
   }, [deviceId]);
 
   const handleStartService = useCallback(async (name: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/start`, {
-      method: 'POST'
-    });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.startService'));
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/start`, {
+          method: 'POST'
+        }),
+        errorFallback: t('remoteToolsPage.errors.startService'),
+      });
+    } finally {
+      // Re-sync from the server whether the command succeeded or failed, so
+      // a failed command never leaves the row showing a stale pre-action
+      // status with no indication anything went wrong (#5088).
+      await fetchServices();
     }
-    await fetchServices();
-  }, [deviceId, fetchServices]);
+  }, [deviceId, fetchServices, t]);
 
   const handleStopService = useCallback(async (name: string) => {
-    const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/stop`, {
-      method: 'POST'
-    });
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.stopService'));
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/stop`, {
+          method: 'POST'
+        }),
+        errorFallback: t('remoteToolsPage.errors.stopService'),
+      });
+    } finally {
+      await fetchServices();
     }
-    await fetchServices();
-  }, [deviceId, fetchServices]);
+  }, [deviceId, fetchServices, t]);
 
   const handleRestartService = useCallback(async (name: string) => {
     const isAgent = isAgentService(name);
 
-    const res = await fetchWithAuth(
-      `/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`,
-      { method: 'POST' }
-    );
-
-    if (!res.ok) {
-      const json = await res.json();
-      throw new Error(json.error || t('remoteToolsPage.errors.restartService'));
+    try {
+      await runAction({
+        request: () => fetchWithAuth(
+          `/system-tools/devices/${deviceId}/services/${encodeURIComponent(name)}/restart`,
+          { method: 'POST' }
+        ),
+        errorFallback: t('remoteToolsPage.errors.restartService'),
+      });
+    } catch (err) {
+      // Same re-sync-on-failure rule as start/stop above (#5088).
+      await fetchServices();
+      throw err;
     }
 
     if (isAgent) {
@@ -661,7 +673,7 @@ export default function RemoteToolsPage({
     } else {
       fetchServices();
     }
-  }, [deviceId, fetchServices]);
+  }, [deviceId, fetchServices, t]);
 
   // Event logs API calls
   const fetchEventLogs = useCallback(async () => {

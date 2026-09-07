@@ -96,4 +96,13 @@ describe('QuoteDetail — Customer label', () => {
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
     expect(screen.getByTestId('quote-detail-customer')).toHaveTextContent(ORG_ID.slice(0, 8));
   });
+
+  it('links the customer name to its organization record (#5075 W03)', async () => {
+    render(<QuoteDetail detail={detailWith('Globex Inc')} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    const link = screen.getByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', `/organizations/${ORG_ID}`);
+    expect(link).toHaveTextContent('Globex Inc');
+  });
 });

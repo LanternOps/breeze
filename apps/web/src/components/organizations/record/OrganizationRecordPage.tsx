@@ -24,8 +24,10 @@ import { usePermissions } from '@/lib/permissions';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
+import OrgBillingTab from './OrgBillingTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
 import { tabFromHash, visibleTabs, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
 
@@ -289,8 +291,12 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       {effectiveTab === 'overview' ? (
         <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} />
+      ) : effectiveTab === 'tickets' ? (
+        <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />
+      ) : effectiveTab === 'billing' ? (
+        <OrgBillingTab orgId={orgId} />
       ) : (
-        // W02/W03 replace these with the real tabs; the ids are already routable
+        // W02 replaces the rest with the real tabs; the ids are already routable
         // so a deep link saved today keeps working when they land.
         <div
           data-testid={`org-record-tab-placeholder-${effectiveTab}`}

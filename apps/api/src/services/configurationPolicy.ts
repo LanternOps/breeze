@@ -4,6 +4,7 @@ import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
   configPolicyAlertRules,
   configPolicyAutomations,
@@ -167,6 +168,12 @@ interface ResolvedFeature {
   sourcePolicyId: string;
   sourcePolicyName: string;
   sourcePriority: number;
+  // Provenance for inherited links (#5080). `sourcePolicyId` stays the ASSIGNED
+  // policy — the assignment that won is what put this feature on the device, and
+  // it is what an ownership clamp must key on. These two name the policy that
+  // AUTHORED the link, and are non-null only when the link came from a parent.
+  inheritedFromPolicyId: string | null;
+  inheritedFromPolicyName: string | null;
 }
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -2152,10 +2159,11 @@ async function resolveEffectiveConfigWithExecutor(
   // partner-AXIS rows, and it is what makes the contract hold for a
   // hand-built context that omits `currentPartnerId`. Retiring it is a
   // separate, reviewable change.
-  const rows = await withDevicePartnerPolicyVisibility(
+  const { rows, inheritedPolicyNames } = await withDevicePartnerPolicyVisibility(
     executor,
     org?.partnerId ?? null,
-    (ex) => ex
+    async (ex) => {
+    const linkRows = await ex
     .select({
       assignmentId: configPolicyAssignments.id,
       assignmentLevel: configPolicyAssignments.level,
@@ -2164,10 +2172,12 @@ async function resolveEffectiveConfigWithExecutor(
       assignmentCreatedAt: configPolicyAssignments.createdAt,
       policyId: configurationPolicies.id,
       policyName: configurationPolicies.name,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featureType: configPolicyFeatureLinks.featureType,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      featureType: configPolicyEffectiveFeatureLinks.featureType,
+      featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      inherited: configPolicyEffectiveFeatureLinks.inherited,
+      linkSourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, and(
@@ -2179,7 +2189,12 @@ async function resolveEffectiveConfigWithExecutor(
         ? sql`(${configurationPolicies.orgId} = ${device.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${org.partnerId}))`
         : eq(configurationPolicies.orgId, device.orgId)
     ))
-    .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
+    // Effective links (#5080): the policy's own rows PLUS its parent's rows for
+    // feature types it does not override. Same join shape as the base table.
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+    )
     .where(and(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       // Apply the optional role/os device-type filter (#1724). A NULL filter
@@ -2187,7 +2202,34 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
       sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
     ))
-      .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt),
+      .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+
+    // Name the AUTHORING policy for provenance (#5080). A separate lookup rather
+    // than a join: it runs only when something is actually inherited, keeps the
+    // hot resolver join at the shape it has always had, and — the reason it is
+    // NOT an inner join — a parent whose POLICY row this caller cannot see must
+    // still deliver its LINK. Link visibility (config_policy_feature_links, which
+    // carries a partner-wide SELECT branch) and policy-row visibility are
+    // separate RLS decisions; joining them would let the narrower one silently
+    // drop an inherited feature, which is a config-delivery hole, not a display
+    // bug. A missing name degrades to null and the feature still resolves.
+    // It runs inside this widened scope because a partner-wide parent is exactly
+    // the case an org-scoped context cannot otherwise see.
+    const inheritedIds = [
+      ...new Set(linkRows.filter((r) => r.inherited).map((r) => r.linkSourcePolicyId)),
+    ];
+    const nameRows = inheritedIds.length
+      ? await ex
+          .select({ id: configurationPolicies.id, name: configurationPolicies.name })
+          .from(configurationPolicies)
+          .where(inArray(configurationPolicies.id, inheritedIds))
+      : [];
+
+    return {
+      rows: linkRows,
+      inheritedPolicyNames: new Map(nameRows.map((r) => [r.id, r.name])),
+    };
+    },
   );
 
   // 6. Sort by level priority (device=5 first), then priority ASC, then createdAt ASC
@@ -2223,6 +2265,10 @@ async function resolveEffectiveConfigWithExecutor(
         sourcePolicyId: row.policyId,
         sourcePolicyName: row.policyName,
         sourcePriority: row.assignmentPriority,
+        inheritedFromPolicyId: row.inherited ? row.linkSourcePolicyId : null,
+        inheritedFromPolicyName: row.inherited
+          ? inheritedPolicyNames.get(row.linkSourcePolicyId) ?? null
+          : null,
       };
     }
 
@@ -2264,6 +2310,8 @@ async function resolveEffectiveConfigWithExecutor(
         sourcePolicyId: BREEZE_DEFAULTS_SENTINEL,
         sourcePolicyName: 'Breeze Defaults',
         sourcePriority: 0,
+        inheritedFromPolicyId: null,
+        inheritedFromPolicyName: null,
       };
       synthesized.push(entry.featureType);
     }

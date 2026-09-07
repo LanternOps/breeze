@@ -49,6 +49,7 @@ export const TAB_PERMISSION: Record<OrgRecordTab, ReadonlyArray<Grant>> = {
   billing: [
     { resource: 'contracts', action: 'read' },
     { resource: 'invoices', action: 'read' },
+    { resource: 'quotes', action: 'read' },
   ],
   activity: [{ resource: 'audit', action: 'read' }],
 };

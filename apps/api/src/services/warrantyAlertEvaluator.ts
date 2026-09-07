@@ -10,7 +10,7 @@ import {
   deviceWarranty,
   devices,
   alerts,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configPolicyAssignments,
   configurationPolicies,
   deviceGroupMemberships,
@@ -129,14 +129,14 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
 
   const rows = await db
     .select({
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
       level: configPolicyAssignments.level,
       priority: configPolicyAssignments.priority,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id)
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id)
     )
     .innerJoin(
       configPolicyAssignments,
@@ -144,7 +144,7 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
     )
     .where(
       and(
-        eq(configPolicyFeatureLinks.featureType, 'warranty'),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'warranty'),
         eq(configurationPolicies.status, 'active'),
         // Ownership axis, distinct from the assignment axis above: a
         // partner-wide policy is `org_id NULL` + `partner_id` set (#1724), so a

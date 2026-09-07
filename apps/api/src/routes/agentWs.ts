@@ -62,6 +62,7 @@ import { getActiveTrustKeyset } from '../services/manifestSigning';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   applySoftwareInstallResult,
+  reconcileSoftwareInstallResult,
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../services/softwareDeploymentResult';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
@@ -1958,6 +1959,28 @@ async function processCommandResult(
         await runOutsideDbContext(() => enqueueDrExecutionReconcile(drExecutionId));
       } catch (err) {
         console.error(`[AgentWs] Failed to enqueue DR reconciliation for ${result.commandId}:`, err);
+        captureException(err);
+      }
+    }
+
+    // #5128 — software installs now arrive here. A software_install pushed over
+    // this socket used to carry the synthetic
+    // `sw-install-<deployment>-<device>-<attempt>` id and was reconciled by the
+    // regex branch above; new dispatches persist a device_commands row FIRST and
+    // push with its UUID, so they land on this generic path instead. Without
+    // this the deployment_results row would strand as `pending` forever on the
+    // websocket transport. The regex branch above is kept for frames already in
+    // flight from before the deploy. Reconciliation is idempotent (guarded on
+    // status='pending' + matching attempt), so a result that reaches BOTH
+    // transports is still applied once.
+    if (command.type === 'software_install') {
+      try {
+        // Short org wrap (#3021): deployment_results is an RLS-guarded org table.
+        await runWithAgentOrgDbAccess('agentWs.commandResult.softwareInstall', orgId, partnerId, () =>
+          reconcileSoftwareInstallResult(command, resolvedDeviceId!, normalizedResult)
+        );
+      } catch (err) {
+        console.error(`[AgentWs] Failed to reconcile software-install result ${result.commandId}:`, err);
         captureException(err);
       }
     }

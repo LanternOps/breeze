@@ -1788,6 +1788,9 @@
       "viaStripe": "via Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "via QuickBooks",
+      "inQuickbooks": "In QuickBooks",
+      "syncingToQuickbooks": "Syncing…",
+      "quickbooksSyncFailed": "QuickBooks sync failed",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
@@ -1838,6 +1841,7 @@
       "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
       "docNumber": "QuickBooks document {{docNumber}}",
       "lastSynced": "Last synced {{when}}",
+      "syncing": "Syncing…",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
       "pushFailed": "Failed to push the invoice to QuickBooks.",

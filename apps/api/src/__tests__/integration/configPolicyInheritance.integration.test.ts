@@ -26,9 +26,16 @@
  *     system-context escalation anywhere.
  *  4. DELETION. A parent with children cannot be deleted alone, but an org
  *     cascade that removes the family in ONE statement still succeeds.
+ *  5. ERASURE ROW-SET CLOSURE. The org-erasure FK ledger
+ *     (orgCascadeFkOnDeleteAllowlist.ts) pins this self-FK with a reviewed
+ *     argument instead of a migration. The "erasure row-set closure" describe
+ *     block below is that argument's evidence, plus the two service-shape
+ *     properties it leans on (single-statement org erasure; the partner purge
+ *     clearing org children before partner-wide baselines).
  */
 import './setup';
 import { getTestDb } from './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -36,6 +43,10 @@ import {
   configurationPolicies,
   configPolicyFeatureLinks,
   configPolicyEffectiveFeatureLinks,
+  configPolicyAssignments,
+  configPolicyAlertRules,
+  configPolicyEventLogSettings,
+  devices,
 } from '../../db/schema';
 import {
   createConfigPolicy,
@@ -46,8 +57,14 @@ import {
   InvalidParentPolicyError,
   PolicyHasChildrenError,
 } from '../../services/configurationPolicy';
+import { resolveEffectiveConfig } from '../../services/configurationPolicy';
+import { resolveAlertRulesForDevice } from '../../services/featureConfigResolver';
+import { buildEventLogConfigUpdate, EVENT_LOG_DEFAULTS } from '../../routes/agents/helpers';
+import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
+import { getOrgPurgeRemovedAfterDays } from '../../services/deviceLifecyclePolicy';
+import { cascadeDeleteOrg, cascadeDeletePartner } from '../../services/tenantCascade';
 import type { AuthContext } from '../../middleware/auth';
-import { createPartner, createOrganization } from './db-utils';
+import { createPartner, createOrganization, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -111,7 +128,12 @@ function orgAuth(orgId: string, partnerId: string): AuthContext {
     accessibleOrgIds: [orgId],
     partnerOrgAccess: undefined,
     user: { id: null },
-    orgCondition: () => eq(configurationPolicies.orgId, orgId),
+    // Honour the column the caller passes: the effective-config resolver
+    // applies this to `devices.org_id`, not to configuration_policies. A
+    // hardcoded column produces a query referencing a table that is not in the
+    // FROM clause (42P01), which is a harness bug that looks like a code bug.
+    orgCondition: (col?: unknown) =>
+      eq((col ?? configurationPolicies.orgId) as typeof configurationPolicies.orgId, orgId),
     canAccessOrg: (o: string) => o === orgId,
   } as unknown as AuthContext;
 }
@@ -181,6 +203,99 @@ afterEach(async () => {
       db.delete(configurationPolicies).where(eq(configurationPolicies.id, row.id)));
   }
 });
+
+// --- W02 resolution helpers -------------------------------------------------
+// Devices are tracked separately from policies: a device outlives the policies
+// assigned to it, and the policy teardown above is ordered by the self-FK.
+const createdDevices: string[] = [];
+
+afterEach(async () => {
+  if (createdDevices.length === 0) return;
+  const ids = [...createdDevices];
+  createdDevices.length = 0;
+  await withDbAccessContext(SYSTEM_CTX, () =>
+    db.delete(devices).where(inArray(devices.id, ids)));
+});
+
+async function seedInheritanceDevice(orgId: string, siteId: string): Promise<{ id: string }> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const suffix = Math.random().toString(36).slice(2, 10);
+    const [row] = await db
+      .insert(devices)
+      .values({
+        orgId,
+        siteId,
+        agentId: `agent-inh-${suffix}`,
+        hostname: `host-inh-${suffix}`,
+        osType: 'windows',
+        osVersion: '1.0',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+        status: 'online',
+        deviceRole: 'workstation',
+      })
+      .returning({ id: devices.id });
+    createdDevices.push(row!.id);
+    return row!;
+  });
+}
+
+async function seedAssignment(
+  configPolicyId: string,
+  level: 'partner' | 'organization' | 'site',
+  targetId: string,
+  priority = 0,
+): Promise<void> {
+  await withDbAccessContext(SYSTEM_CTX, () =>
+    db.insert(configPolicyAssignments).values({ configPolicyId, level, targetId, priority }));
+}
+
+/** An event_log link plus its normalized settings row, keyed by the link id. */
+async function seedEventLogLink(configPolicyId: string, maxEventsPerCycle: number): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [link] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId, featureType: 'event_log' })
+      .returning({ id: configPolicyFeatureLinks.id });
+    await db.insert(configPolicyEventLogSettings).values({
+      featureLinkId: link!.id,
+      maxEventsPerCycle,
+    });
+    return link!.id;
+  });
+}
+
+/** A link whose settings live entirely in the compat inline JSONB. */
+async function seedInlineLink(
+  configPolicyId: string,
+  featureType: 'helper' | 'device_lifecycle',
+  inlineSettings: Record<string, unknown>,
+): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [link] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId, featureType, inlineSettings })
+      .returning({ id: configPolicyFeatureLinks.id });
+    return link!.id;
+  });
+}
+
+/** An alert_rule link plus one rule row hanging off it. */
+async function seedAlertRuleLink(configPolicyId: string, name: string): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [link] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId, featureType: 'alert_rule' })
+      .returning({ id: configPolicyFeatureLinks.id });
+    await db.insert(configPolicyAlertRules).values({
+      featureLinkId: link!.id,
+      name,
+      severity: 'medium',
+      conditions: { metric: 'cpu', operator: 'gt', threshold: 90 },
+    });
+    return link!.id;
+  });
+}
 
 interface Tenancy {
   p1: string;
@@ -929,5 +1044,302 @@ describe('config policy inheritance — deletion (live DB)', () => {
       db.select({ id: configurationPolicies.id }).from(configurationPolicies)
         .where(inArray(configurationPolicies.id, [parent.id, child.id])));
     expect(remaining).toEqual([{ id: parent.id }]);
+  });
+});
+
+// ============================================================
+// 5. Resolution — inheritance actually reaches devices (#5080 W02)
+// ============================================================
+
+/**
+ * W01 proved the VIEW inherits. This proves the READERS do: the generic
+ * effective-config resolver, one `featureConfigResolver` function, and one
+ * agent-facing config builder under the real agent context.
+ *
+ * Every one of these is invisible to a unit test. The unit suites stub the
+ * schema module by table name, so they prove which identifier a query names —
+ * not that an org-scoped `breeze_app` session can actually read a partner-wide
+ * parent's links through `security_invoker`, and not that the inherited row's
+ * (parent) link id still joins the normalized settings table. Both of those are
+ * the difference between "a device gets its MSP's baseline" and "a device gets
+ * nothing", which is the bug the whole feature exists to fix.
+ */
+describe('config policy inheritance — resolution reaches devices (live DB)', () => {
+  it('generic resolver: an inherited feature resolves with the PARENT named as its origin', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    // Partner-wide baseline authors event_log; the child overrides monitoring.
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedLink(parent.id, 'event_log');
+    await seedLink(parent.id, 'monitoring');
+    await seedLink(child.id, 'monitoring');
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const resolved = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
+      resolveEffectiveConfig(device.id, orgAuth(t.a1, t.p1)));
+
+    expect(resolved).not.toBeNull();
+
+    // The inherited feature is delivered, and says where it came from.
+    const eventLog = resolved!.features.event_log!;
+    expect(eventLog).toBeDefined();
+    expect(eventLog.inheritedFromPolicyId).toBe(parent.id);
+    expect(eventLog.inheritedFromPolicyName).toBe('MSP baseline');
+    // …but the ASSIGNED policy is still the child: that is the assignment that
+    // won, and it is what any ownership clamp keys on.
+    expect(eventLog.sourcePolicyId).toBe(child.id);
+    expect(eventLog.sourceLevel).toBe('organization');
+
+    // The overridden feature carries no provenance at all.
+    const monitoring = resolved!.features.monitoring!;
+    expect(monitoring.inheritedFromPolicyId).toBeNull();
+    expect(monitoring.inheritedFromPolicyName).toBeNull();
+    expect(monitoring.sourcePolicyId).toBe(child.id);
+  });
+
+  it('featureConfigResolver: alert rules authored by the parent reach a child\'s device', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a2 });
+    const device = await seedInheritanceDevice(t.a2, site.id);
+
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a2, name: 'A2 child', parentPolicyId: parent.id });
+    const parentAlertLink = await seedAlertRuleLink(parent.id, 'Baseline CPU rule');
+    await seedAssignment(child.id, 'organization', t.a2);
+
+    const rules = await withDbAccessContext(orgContext(t.a2, t.p1), () =>
+      resolveAlertRulesForDevice(device.id));
+
+    // The rule row hangs off the PARENT's link id — the reason the view keeps
+    // it rather than synthesising a new one.
+    expect(rules.map((r) => r.name)).toEqual(['Baseline CPU rule']);
+    expect(rules[0]!.featureLinkId).toBe(parentAlertLink);
+  });
+
+  it('agent delivery: an AGENT context receives the partner-wide parent\'s event_log settings', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedEventLogLink(parent.id, 777);
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const update = await withDbAccessContext(agentContext(t.a1, t.p1), () =>
+      buildEventLogConfigUpdate(device.id));
+
+    // 777, not EVENT_LOG_DEFAULTS.maxEventsPerCycle (100): the settings row
+    // reached the agent through the child's assignment and the parent's link,
+    // with no system-context escalation anywhere on the path.
+    expect(update.max_events_per_cycle).toBe(777);
+  });
+
+  it('agent delivery: a child that overrides the feature keeps its OWN settings', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedEventLogLink(parent.id, 777);
+    await seedEventLogLink(child.id, 42);
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const update = await withDbAccessContext(agentContext(t.a1, t.p1), () =>
+      buildEventLogConfigUpdate(device.id));
+
+    expect(update.max_events_per_cycle).toBe(42);
+  });
+
+  it('agent delivery: an inherited HELPER restriction reaches the device under the agent context', async () => {
+    // The security-relevant one: this resolver's fallback is the permissive
+    // 'standard', so a baseline that restricts the helper agent to 'basic' and
+    // fails to resolve does not error — it silently over-permissions.
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedInlineLink(parent.id, 'helper', { permissionLevel: 'basic' });
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const level = await withDbAccessContext(agentContext(t.a1, t.p1), () =>
+      resolveHelperPermissionLevelForDevice(device.id));
+
+    expect(level).toBe('basic');
+  });
+
+  it('an inherited device_lifecycle window reaches the org-level resolver', async () => {
+    const t = await seedTenancy();
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedInlineLink(parent.id, 'device_lifecycle', { purgeRemovedAfterDays: 45 });
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const days = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
+      getOrgPurgeRemovedAfterDays(t.a1));
+
+    expect(days).toBe(45);
+  });
+
+  it('a device under a policy with no parent is unaffected', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    const root = await seedPolicy({ orgId: t.a1, name: 'A1 root' });
+    await seedEventLogLink(root.id, 55);
+    await seedAssignment(root.id, 'organization', t.a1);
+
+    const resolved = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
+      resolveEffectiveConfig(device.id, orgAuth(t.a1, t.p1)));
+
+    expect(resolved!.features.event_log!.inheritedFromPolicyId).toBeNull();
+    expect(resolved!.features.event_log!.sourcePolicyId).toBe(root.id);
+  });
+
+  it('inheritance does not cross tenants: another partner\'s baseline reaches nothing', async () => {
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    // A1's own child, assigned — but the event_log link lives on ANOTHER
+    // partner's baseline, which is not (and cannot be) its parent.
+    const foreignBaseline = await seedPolicy({ partnerId: t.p2, name: 'Other MSP baseline' });
+    await seedEventLogLink(foreignBaseline.id, 777);
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child' });
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const update = await withDbAccessContext(agentContext(t.a1, t.p1), () =>
+      buildEventLogConfigUpdate(device.id));
+
+    expect(update.max_events_per_cycle).toBe(EVENT_LOG_DEFAULTS.maxEventsPerCycle);
+  });
+});
+
+
+// ============================================================
+// 6. Erasure row-set closure -- the evidence behind the org-cascade FK ledger
+// ============================================================
+
+/**
+ * `orgCascadeFkOnDelete.integration.test.ts` classifies
+ * `configuration_policies(parent_policy_id)` as `self-ref-open-row-set`: the
+ * table's `org_id` is nullable (partner-wide policies, epic #2135), so from the
+ * catalog alone it cannot tell whether `DELETE ... WHERE org_id = $1` removes a
+ * row set closed under the self-reference. It is pinned in the ledger with the
+ * argument that the W01 constraint trigger closes it. That argument is only
+ * worth something if it is checked, so these tests check it (#5123).
+ *
+ * Closure needs exactly one thing: no row that SURVIVES the erasure statement
+ * may reference a row it deletes. The surviving rows are the partner-wide ones
+ * and other orgs' rows, so the first two tests are the COMPLETE set of edges
+ * that could break it -- both refused, in SYSTEM scope, which is the widest
+ * scope any erasure or merge path runs under. Those two are the closure proof;
+ * they fail the moment the guard stops rejecting a forged edge.
+ *
+ * The last two tests are a different, weaker property, and are not a second
+ * proof of closure -- they seed only LEGAL edges, so they would pass even with
+ * the guard gone. What they pin is the erasure SHAPE the closure argument
+ * assumes: `cascadeDeleteOrg` still removes an org's policies in ONE statement
+ * (so NO ACTION is checked once, against the final state, not per row), and
+ * `cascadeDeletePartner` still runs its per-org cascades BEFORE the partner-axis
+ * sweep, so an org-owned child is always gone before the partner-wide baseline
+ * it inherits from is deleted. Both are properties of the service, not the
+ * schema, so nothing else would catch a refactor that changed them.
+ */
+describe('config policy inheritance -- erasure row-set closure (live DB)', () => {
+  it('SYSTEM scope still refuses a partner-wide child under an org-owned parent', async () => {
+    const t = await seedTenancy();
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+
+    // The edge that would break closure: this child SURVIVES
+    // `DELETE ... WHERE org_id = a1` (its org_id IS NULL) while its parent does not.
+    await expectSqlState(
+      () => seedPolicy({
+        partnerId: t.p1,
+        name: 'forged partner-wide child',
+        parentPolicyId: orgParent.id,
+      }),
+      '23514',
+      'configuration_policies_parent_guard',
+    );
+  });
+
+  it("SYSTEM scope still refuses a child of ANOTHER org's parent", async () => {
+    const t = await seedTenancy();
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+
+    // The other surviving shape: a2's row referencing a1's row.
+    await expectSqlState(
+      () => seedPolicy({
+        orgId: t.a2,
+        name: 'forged cross-org child',
+        parentPolicyId: orgParent.id,
+      }),
+      '23514',
+      'configuration_policies_parent_guard',
+    );
+  });
+
+  it('the real org erasure removes a parent+child family and leaves the partner-wide baseline', async () => {
+    const t = await seedTenancy();
+    const baseline = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const orgParent = await seedPolicy({ orgId: t.a1, name: 'A1 baseline' });
+    const orgChild = await seedPolicy({
+      orgId: t.a1, name: 'A1 child', parentPolicyId: orgParent.id,
+    });
+    const inheritsBaseline = await seedPolicy({
+      orgId: t.a1, name: 'A1 child of the MSP baseline', parentPolicyId: baseline.id,
+    });
+
+    // The real service, not a hand-written DELETE (the sibling tests above
+    // already cover the hand-written shape). Every edge seeded here is LEGAL, so
+    // this does not re-prove closure -- it pins the single-statement erasure the
+    // closure argument depends on.
+    await expect(cascadeDeleteOrg(t.a1, randomUUID(), 'config-policy-erasure@test.invalid'))
+      .resolves.toBeDefined();
+
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: configurationPolicies.id }).from(configurationPolicies)
+        .where(inArray(configurationPolicies.id, [
+          baseline.id, orgParent.id, orgChild.id, inheritsBaseline.id,
+        ])));
+    expect(remaining).toEqual([{ id: baseline.id }]);
+  });
+
+  /**
+   * The partner purge is the one place the ORDER of two separate statements is
+   * load-bearing for this FK. `cascadeDeletePartner` runs `cascadeDeleteOrg` for
+   * every child org first, then a partner-axis sweep that deletes the partner's
+   * own `configuration_policies` baselines. An org-owned child of a partner-wide
+   * baseline is removed by the first phase; the baseline by the second. Reverse
+   * them and the sweep raises 23503 mid-purge, leaving the partner half-deleted
+   * -- the #4100 failure mode, on the partner axis. Nothing else covers it:
+   * tenantCascadePartner.integration.test.ts seeds no configuration_policies.
+   */
+  it('the real partner purge deletes org children before the partner-wide baseline', async () => {
+    const t = await seedTenancy();
+    const baseline = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const orgChild = await seedPolicy({
+      orgId: t.a1, name: 'A1 child of the MSP baseline', parentPolicyId: baseline.id,
+    });
+    // A partner-wide child too: this pair is removed by the SWEEP's own single
+    // statement, so it also has to be closed under the self-reference.
+    const partnerChild = await seedPolicy({
+      partnerId: t.p1, name: 'partner-wide child', parentPolicyId: baseline.id,
+    });
+
+    await expect(cascadeDeletePartner(t.p1, randomUUID())).resolves.toBeDefined();
+
+    const remaining = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: configurationPolicies.id }).from(configurationPolicies)
+        .where(inArray(configurationPolicies.id, [baseline.id, orgChild.id, partnerChild.id])));
+    expect(remaining).toEqual([]);
   });
 });

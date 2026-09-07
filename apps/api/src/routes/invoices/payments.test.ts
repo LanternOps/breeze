@@ -104,6 +104,30 @@ describe('invoice payment audit logging', () => {
     });
   });
 
+  it('DELETE /:id/payments/:pid carries the untouched-QuickBooks flag into the audit details', async () => {
+    // A QuickBooks-origin void Breeze was allowed to take because no CDC sweep
+    // would re-import it. The QuickBooks Payment is still standing, and a reader
+    // of this event must not have to infer that (review wave 3, finding D2).
+    (svc.voidPayment as any).mockResolvedValue({
+      invoice: { id: INV_ID, status: 'sent' },
+      audit: {
+        orgId: ORG_ID, paymentId: PAY_ID, invoiceId: INV_ID,
+        amount: '40.00', method: 'card', reference: 'REF-1', recordedBy: 'u9',
+        quickbooksRecordUntouched: true, untouchedReason: 'pull_disabled',
+      }
+    });
+
+    await app().request(`/${INV_ID}/payments/${PAY_ID}`, { method: 'DELETE' });
+
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided',
+      details: expect.objectContaining({
+        quickbooksRecordUntouched: true,
+        untouchedReason: 'pull_disabled',
+      }),
+    }));
+  });
+
   it('does not write an audit entry when the service throws', async () => {
     (svc.recordPayment as any).mockRejectedValue(new InvoiceServiceError('Payment exceeds balance', 409, 'OVERPAYMENT'));
     const res = await app().request(`/${INV_ID}/payments`, {

@@ -107,9 +107,26 @@ vi.mock('drizzle-orm', () => {
     sql: sqlTag,
     desc: vi.fn((col: unknown) => ({ desc: col })),
     inArray: vi.fn((...args: unknown[]) => ({ inArray: args })),
+    // #5128: the decommission transaction cancels the device's pending
+    // commands EXCEPT self_uninstall, so it needs `ne`.
+    ne: vi.fn((...args: unknown[]) => ({ ne: args })),
+    isNull: vi.fn((...args: unknown[]) => ({ isNull: args })),
+    isNotNull: vi.fn((...args: unknown[]) => ({ isNotNull: args })),
+    gt: vi.fn((...args: unknown[]) => ({ gt: args })),
+    lt: vi.fn((...args: unknown[]) => ({ lt: args })),
+    or: vi.fn((...args: unknown[]) => ({ or: args })),
     count: vi.fn()
   };
 });
+
+// #5128: the generic device-command routes now enqueue through the single
+// seam instead of a raw insert. Mocked here so this harness keeps testing the
+// ROUTE (auth, site scoping, response shape) rather than the seam, which has
+// its own suite in services/dispatchDeviceCommand.test.ts.
+const dispatchDeviceCommandMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/dispatchDeviceCommand', () => ({
+  dispatchDeviceCommand: (...args: unknown[]) => dispatchDeviceCommandMock(...(args as [])),
+}));
 
 // #3986 task 7 follow-up — this harness previously had NO `db.transaction`
 // stub at all (not merely unimplemented: the property didn't exist), so the
@@ -1009,17 +1026,20 @@ describe('device routes', () => {
           })
         })
       } as any);
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'cmd-1',
-            deviceId: '11111111-2222-4333-8444-555555555555',
-            type: 'reboot',
-            status: 'pending',
-            createdAt: new Date()
-          }])
-        })
-      } as any);
+      // #5128: the row is created by the enqueue seam, not a raw insert here.
+      const deliverBy = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      dispatchDeviceCommandMock.mockResolvedValue({
+        ok: true,
+        command: {
+          id: 'cmd-1',
+          deviceId: '11111111-2222-4333-8444-555555555555',
+          type: 'reboot',
+          status: 'pending',
+          createdAt: new Date()
+        },
+        delivery: 'delivered',
+        deliverBy,
+      });
 
       const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/commands', {
         method: 'POST',
@@ -1031,6 +1051,44 @@ describe('device routes', () => {
       const body = await res.json();
       expect(body.id).toBe('cmd-1');
       expect(body.status).toBe('pending');
+      // #5128: the response now tells the caller how the command was handed
+      // over and when it expires if the device never comes back.
+      expect(body.delivery).toBe('delivered');
+      expect(body.deliverBy).toBe(deliverBy.toISOString());
+      expect(dispatchDeviceCommandMock).toHaveBeenCalledWith(
+        expect.objectContaining({ deviceId: '11111111-2222-4333-8444-555555555555', type: 'reboot' })
+      );
+    });
+
+    it('reports an offline device as queued rather than failing the request', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'offline' }])
+          })
+        })
+      } as any);
+      dispatchDeviceCommandMock.mockResolvedValue({
+        ok: true,
+        command: {
+          id: 'cmd-2',
+          deviceId: '11111111-2222-4333-8444-555555555555',
+          type: 'reboot',
+          status: 'pending',
+          createdAt: new Date()
+        },
+        delivery: 'queued_offline',
+        deliverBy: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+
+      const res = await app.request('/devices/11111111-2222-4333-8444-555555555555/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'reboot' })
+      });
+
+      expect(res.status).toBe(201);
+      expect((await res.json()).delivery).toBe('queued_offline');
     });
 
     it('should reject generic script commands', async () => {

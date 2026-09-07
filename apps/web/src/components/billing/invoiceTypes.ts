@@ -62,6 +62,15 @@ export interface InvoiceSummary {
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
   createdAt: string;
+  /**
+   * Last write to the invoice row. Always present on the detail payload (the
+   * API returns the whole row), but optional here because it was undeclared
+   * until now and list projections may omit it. Used by AccountingSyncCard as
+   * the only sub-minute "was this just issued?" signal the payload has —
+   * `issueDate` is a DATE and `sentAt` is null for an Issue that sent no
+   * email.
+   */
+  updatedAt?: string | null;
   /** null identifies an invoice created before device evidence was recorded. */
   evidenceVersion?: number | null;
 }
@@ -186,6 +195,13 @@ export interface InvoicePayment {
    *  are not hand-voidable either — a Breeze-side reverse would not touch the
    *  books and the next reconcile would pull the payment straight back in. */
   source?: 'stripe' | 'manual' | 'quickbooks';
+  /** QuickBooks push state for a BREEZE-ORIGIN payment (Phase D2). Null when the
+   *  payment has no QuickBooks mapping, and always null for `source: 'quickbooks'`
+   *  (that badge already says QuickBooks owns the row). */
+  accountingSync?: {
+    status: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+    lastError: string | null;
+  } | null;
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {

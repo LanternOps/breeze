@@ -37,6 +37,21 @@ function normalizeMac(mac: string): string {
   return mac.trim().toLowerCase().replace(/-/g, ':');
 }
 
+// Nullable variant for the device path, where mac is optional on the wire.
+// An empty/whitespace mac must collapse to null, not to '', so it never matches
+// a blank macAddress row.
+function canonicalMac(mac: string | null | undefined): string | null {
+  if (!mac) return null;
+  const normalized = normalizeMac(mac);
+  return normalized.length > 0 ? normalized : null;
+}
+
+// Both sides of a MAC comparison must be canonicalised. discovered_assets rows
+// are written by several producers (agent discovery, UniFi sync, this service),
+// and only the app layer enforces the format — there is no DB CHECK — so a row
+// stored uppercase or hyphenated is possible and must still match.
+const canonicalAssetMac = sql`lower(replace(${discoveredAssets.macAddress}, '-', ':'))`;
+
 // Extract IP from a telemetry device's raw payload.
 // UniFi device JSON uses `ipAddress`; guard against other field names too.
 function deviceIp(raw: unknown): string | null {
@@ -56,23 +71,29 @@ async function linkTelemetryDeviceToAsset(
   orgId: string,
   siteId: string,
   device: TelemetryDeviceDto,
+  mac: string | null,
 ): Promise<string | null> {
   const ip = deviceIp(device.raw);
   if (!ip) return null;
 
   const enrich = {
-    macAddress: device.mac ?? undefined,
+    // Store the canonical form: this row is the one every other producer matches
+    // against, so writing the source's casing here would poison future lookups.
+    macAddress: mac ?? undefined,
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     isOnline: true,
     lastSeenAt: new Date(),
   };
 
-  // 1. Match by (org_id, mac) first — the stable identifier.
+  // 1. Match by (org_id, mac) first — the stable identifier. Normalize both
+  //    sides, exactly as the client path below does. Before #5087 the agent
+  //    decoded `mac` from a field the controller never sends, so this branch was
+  //    dead in production and the missing normalization never showed up.
   let existing: { id: string } | null = null;
-  if (device.mac) {
+  if (mac) {
     const byMac = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
-      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.macAddress, device.mac))).limit(1);
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(canonicalAssetMac, mac))).limit(1);
     existing = byMac[0] ?? null;
   }
 
@@ -147,17 +168,27 @@ export async function reconcileTelemetry(
   for (const d of payload.devices) {
     seenDeviceIds.add(d.unifiDeviceId);
     const { orgId, siteId } = resolveSite(d.unifiSiteId);
-    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d);
+    const mac = canonicalMac(d.mac);
+    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d, mac);
+    // A metric the agent could not collect is omitted from the body, and must
+    // persist as SQL NULL so the UI can render "—" instead of a fabricated 0.
+    // Explicit `?? null` matters most on the UPDATE path: drizzle drops
+    // `undefined` keys from SET, which would silently preserve a stale value
+    // written by an older agent that still sent zeros.
+    const metrics = {
+      uptimeSeconds: d.uptimeSeconds ?? null, cpuPct: d.cpuPct ?? null, memPct: d.memPct ?? null,
+      txBytes: d.txBytes ?? null, rxBytes: d.rxBytes ?? null, numClients: d.numClients ?? null,
+    };
     await db.insert(unifiDeviceTelemetry).values({
-      collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac: d.mac, name: d.name,
-      uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
+      collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac, name: d.name,
+      ...metrics,
+      discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
-        orgId, siteId, mac: d.mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        orgId, siteId, mac, name: d.name, ...metrics,
+        discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });
@@ -184,7 +215,7 @@ export async function reconcileTelemetry(
     // Normalize both sides so casing/separator differences don't miss the link.
     let discoveredAssetId: string | null = null;
     const [asset] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
-      .where(and(eq(discoveredAssets.orgId, orgId), eq(sql`lower(replace(${discoveredAssets.macAddress}, '-', ':'))`, mac))).limit(1);
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(canonicalAssetMac, mac))).limit(1);
     discoveredAssetId = asset?.id ?? null;
 
     await db.insert(unifiClients).values({

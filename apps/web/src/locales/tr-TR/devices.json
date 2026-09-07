@@ -679,7 +679,8 @@
     "priority": "Öncelik",
     "level": "Seviye",
     "policy2": "Politika",
-    "features": "Özellikler"
+    "features": "Özellikler",
+    "inheritedFrom": "Şuradan devralındı: {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",

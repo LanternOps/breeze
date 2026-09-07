@@ -2,7 +2,7 @@ import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
   configPolicyAssignments,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   deviceGroupMemberships,
   devices,
@@ -81,15 +81,15 @@ export async function resolveHelperPermissionLevelForDevice(
     .select({
       level: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
     .innerJoin(
-      configPolicyFeatureLinks,
+      configPolicyEffectiveFeatureLinks,
       and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'helper'),
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'helper'),
       ),
     )
     .where(and(eq(configurationPolicies.status, 'active'), or(...targetConditions)));

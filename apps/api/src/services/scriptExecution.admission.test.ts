@@ -99,6 +99,8 @@ const dispatched = (id: string) => ({
   executionId: `execution-${id}`,
   delivered: false,
   deliveryOutcome: 'no_agent' as const,
+  // #5128: every ok dispatch now reports its delivery deadline.
+  deliverBy: new Date('2026-09-13T00:00:00Z'),
   executedAt: null,
   ignoredParameters: [],
   runAs: 'system' as const,

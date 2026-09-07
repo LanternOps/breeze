@@ -1788,6 +1788,9 @@
       "viaStripe": "Stripe aracılığıyla",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "QuickBooks aracılığıyla",
+      "inQuickbooks": "QuickBooks'ta",
+      "syncingToQuickbooks": "Eşitleniyor…",
+      "quickbooksSyncFailed": "QuickBooks eşitlemesi başarısız oldu",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {
@@ -1838,6 +1841,7 @@
       "taxVarianceHint": "QuickBooks farklı bir vergi toplamı hesapladı. Dönemi kapatmadan önce iki kaydı karşılaştırın.",
       "docNumber": "QuickBooks belgesi {{docNumber}}",
       "lastSynced": "Son eşitleme: {{when}}",
+      "syncing": "Eşitleniyor…",
       "push": "QuickBooks'a gönder",
       "pushed": "Fatura QuickBooks'a gönderildi.",
       "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
