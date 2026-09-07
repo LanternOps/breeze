@@ -323,6 +323,14 @@ runDb('serializes reverse writes to sensitive-data candidates with one UUID', as
       'sensitive-data mover',
     );
     secondWork = sqlState(() => second.begin(async (tx) => {
+      // #5080 W01 made configuration_policies ownership a SYSTEM-context-only
+      // operation (constraint trigger configuration_policies_parent_guard,
+      // constraint configuration_policies_owner_immutable, 23514). Org merge --
+      // the only path that moves a policy's owner -- runs in system scope, so
+      // that is the scope this race has to model; without the election the
+      // owner move is refused by the guard before the reference validator this
+      // test is about ever runs (#5123).
+      await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing sensitive fallback backend');
       secondEntered.resolve(backend.pid);
