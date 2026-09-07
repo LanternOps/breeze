@@ -1,0 +1,149 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CommandTypes } from './commandQueue';
+import { createCommandSchema, bulkCommandSchema } from '../routes/devices/schemas';
+import {
+  COMMAND_OFFLINE_POLICY_REGISTRY,
+  REJECT_RACE_GRACE_MS,
+  UnregisteredCommandTypeError,
+  defaultOfflinePolicy,
+  deliverByFor,
+  deliveryTtlMs,
+  isOfflineQueueEnabled,
+  resolveOfflinePolicy,
+} from './commandOfflinePolicy';
+
+describe('commandOfflinePolicy registry (#5128 W1)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('covers every CommandTypes value (fail-closed)', () => {
+    const missing = Object.values(CommandTypes).filter((t) => !(t in COMMAND_OFFLINE_POLICY_REGISTRY));
+    expect(missing).toEqual([]);
+  });
+
+  it('covers every type the generic device-command routes accept', () => {
+    // The route enums carry literals that are NOT in CommandTypes ('reboot',
+    // 'shutdown', 'update', 'wake'), so the registry must classify them too or
+    // the seam throws on a reboot.
+    const routeTypes = new Set<string>([
+      ...createCommandSchema.shape.type.options,
+      ...bulkCommandSchema.shape.type.options,
+    ]);
+    const missing = [...routeTypes].filter((t) => !(t in COMMAND_OFFLINE_POLICY_REGISTRY));
+    expect(missing).toEqual([]);
+  });
+
+  it('throws for an unregistered type', () => {
+    expect(() => defaultOfflinePolicy('definitely_not_a_command')).toThrow(UnregisteredCommandTypeError);
+    expect(() => defaultOfflinePolicy('definitely_not_a_command')).toThrow(/COMMAND_OFFLINE_POLICY_REGISTRY/);
+  });
+
+  it('rejects live/interactive types and queues fire-and-forget types', () => {
+    expect(defaultOfflinePolicy(CommandTypes.TERMINAL_START)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.LIST_PROCESSES)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.TAKE_SCREENSHOT)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.SCRIPT)).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('standard'),
+    });
+    expect(defaultOfflinePolicy(CommandTypes.REFRESH_INVENTORY)).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('short'),
+    });
+    expect(defaultOfflinePolicy('reboot')).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('power_state'),
+    });
+    expect(defaultOfflinePolicy('shutdown')).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('power_state'),
+    });
+    expect(defaultOfflinePolicy(CommandTypes.REBOOT_SAFE_MODE)).toEqual({
+      kind: 'queue',
+      deliverWithinMs: deliveryTtlMs('power_state'),
+    });
+  });
+
+  it('backup and restore types stay reject (out of scope for v1)', () => {
+    expect(defaultOfflinePolicy(CommandTypes.BACKUP_RUN)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.BACKUP_RESTORE)).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy(CommandTypes.BMR_RECOVER)).toEqual({ kind: 'reject' });
+  });
+
+  it('standard TTL is 7 days by default and env-tunable', () => {
+    expect(deliveryTtlMs('standard')).toBe(7 * 24 * 60 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_TTL_HOURS', '48');
+    expect(deliveryTtlMs('standard')).toBe(48 * 60 * 60 * 1000);
+  });
+
+  it('short and power_state TTLs default to 24 hours and are env-tunable', () => {
+    expect(deliveryTtlMs('short')).toBe(24 * 60 * 60 * 1000);
+    expect(deliveryTtlMs('power_state')).toBe(24 * 60 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS', '6');
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS', '2');
+    expect(deliveryTtlMs('short')).toBe(6 * 60 * 60 * 1000);
+    expect(deliveryTtlMs('power_state')).toBe(2 * 60 * 60 * 1000);
+  });
+
+  it('an invalid or non-positive TTL env value falls back to the default', () => {
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_TTL_HOURS', 'not-a-number');
+    expect(deliveryTtlMs('standard')).toBe(7 * 24 * 60 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_TTL_HOURS', '0');
+    expect(deliveryTtlMs('standard')).toBe(7 * 24 * 60 * 60 * 1000);
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_TTL_HOURS', '-5');
+    expect(deliveryTtlMs('standard')).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('live TTL is the reject race grace, not a queue window', () => {
+    expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
+  });
+
+  it('flag off + previouslyRejected keeps reject; flag on lets the registry queue', () => {
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+    expect(isOfflineQueueEnabled()).toBe(false);
+    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, undefined, { previouslyRejected: true })).toEqual({
+      kind: 'reject',
+    });
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
+    expect(isOfflineQueueEnabled()).toBe(true);
+    expect(resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, undefined, { previouslyRejected: true }).kind).toBe(
+      'queue'
+    );
+  });
+
+  it('the flag does not gate callers that already queued today', () => {
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, undefined, { previouslyRejected: false }).kind).toBe('queue');
+    expect(resolveOfflinePolicy(CommandTypes.SOFTWARE_INSTALL, undefined, { previouslyRejected: false }).kind).toBe(
+      'queue'
+    );
+  });
+
+  it('an explicit requested policy always wins over the flag and the registry', () => {
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+    expect(
+      resolveOfflinePolicy(CommandTypes.INSTALL_PATCHES, { kind: 'queue', deliverWithinMs: 1000 }, {
+        previouslyRejected: true,
+      })
+    ).toEqual({ kind: 'queue', deliverWithinMs: 1000 });
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
+    expect(resolveOfflinePolicy(CommandTypes.SCRIPT, { kind: 'reject' }, { previouslyRejected: false })).toEqual({
+      kind: 'reject',
+    });
+  });
+
+  it('an explicit policy for an unregistered type still throws (fail-closed)', () => {
+    expect(() =>
+      resolveOfflinePolicy('definitely_not_a_command', { kind: 'reject' }, { previouslyRejected: false })
+    ).toThrow(UnregisteredCommandTypeError);
+  });
+
+  it('deliverByFor: queue adds deliverWithinMs; reject adds the race grace', () => {
+    const now = new Date('2026-09-06T00:00:00Z');
+    expect(deliverByFor({ kind: 'queue', deliverWithinMs: 60_000 }, now).toISOString()).toBe(
+      '2026-09-06T00:01:00.000Z'
+    );
+    expect(deliverByFor({ kind: 'reject' }, now).getTime()).toBe(now.getTime() + REJECT_RACE_GRACE_MS);
+  });
+});
