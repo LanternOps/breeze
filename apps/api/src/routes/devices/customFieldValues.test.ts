@@ -93,6 +93,8 @@ vi.mock('../../middleware/apiKeyAuth', () => ({
       id: API_KEY_ID,
       orgId: org,
       partnerId: null,
+      allowedSiteIds: c.req.header('x-test-key-sites') === undefined
+        ? undefined : c.req.header('x-test-key-sites').split(',').filter(Boolean),
       name: 'Automation key',
       keyPrefix: 'brz_test',
       scopes,
@@ -352,6 +354,34 @@ describe('device custom-field value routes (#2066)', () => {
       expect(res.status).toBe(404);
       // The sensitive write must not be reported as audited success.
       expect(vi.mocked(createAuditLog)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delegated API-key site scope', () => {
+    it.each([
+      ['GET', 'allowed-other-site'], ['PATCH', 'allowed-other-site'],
+      ['GET', ''], ['PATCH', ''],
+    ])('denies %s outside the live allowlist %s without mutation', async (method, sites) => {
+      rigDeviceLookup(makeDevice({ siteId: 'denied-site' }));
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        method,
+        headers: { 'X-API-Key': 'brz_test', 'x-test-scopes': 'devices:read,devices:write',
+          'x-test-key-sites': sites, 'Content-Type': 'application/json' },
+        ...(method === 'PATCH' ? { body: JSON.stringify({ note: 'unchanged' }) } : {}),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+      expect(persistDeviceCustomFieldValues).not.toHaveBeenCalled();
+      expect(createAuditLog).not.toHaveBeenCalled();
+    });
+
+    it('permits an allowed-site key read', async () => {
+      rigDeviceLookup(makeDevice({ siteId: 'allowed-site' }));
+      const res = await app.request(`/devices/${DEVICE_ID}/custom-fields`, {
+        headers: { 'X-API-Key': 'brz_test', 'x-test-scopes': 'devices:read', 'x-test-key-sites': 'allowed-site' },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ customFields: { existing_field: 'keep-me' } });
     });
   });
 
