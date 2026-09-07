@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices, sites, organizations, tickets } from '../../db/schema';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { propagateCancelledDeviceCommands } from '../../jobs/staleCommandReaper';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   requireMfa,
@@ -327,6 +327,11 @@ moveOrgRoutes.post(
         // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
         // keys on `payload.executionId`, and `terminalPayloadErasureSet()`
         // strips it (`returning()` reflects post-update values).
+        // `self_uninstall` is EXCLUDED, matching the decommission path in
+        // core.ts: the uninstall drain must still deliver. A device moved out
+        // of an org while its removal is queued still has to lose its agent —
+        // cancelling that row leaves the customer's machine managed by an MSP
+        // that no longer owns it.
         const cancelledForMove = await tx
           .select({
             id: deviceCommands.id,
@@ -334,7 +339,13 @@ moveOrgRoutes.post(
             payload: deviceCommands.payload,
           })
           .from(deviceCommands)
-          .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, 'pending')));
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.status, 'pending'),
+              ne(deviceCommands.type, 'self_uninstall'),
+            ),
+          );
 
         const moveCancelledAt = new Date();
         await tx
@@ -345,7 +356,13 @@ moveOrgRoutes.post(
             result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'device_move_org' },
             ...terminalPayloadErasureSet(),
           })
-          .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, 'pending')));
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.status, 'pending'),
+              ne(deviceCommands.type, 'self_uninstall'),
+            ),
+          );
 
         // Terminalise the OWNING records too, in this same transaction. Without
         // this a cancelled command leaves its script_executions /

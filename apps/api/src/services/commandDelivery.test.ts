@@ -39,6 +39,8 @@ import {
   deliveryRefreshers,
   prepareClaimedCommandsForDelivery,
   refreshPayloadForDelivery,
+  registerDeliveryRefresher,
+  __resetDeliveryRefreshersForTests,
 } from './commandDelivery';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 
@@ -235,8 +237,18 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
-    for (const key of Object.keys(deliveryRefreshers)) delete deliveryRefreshers[key];
+    __resetDeliveryRefreshersForTests();
     Object.assign(deliveryRefreshers, original);
+  });
+
+  it('registerDeliveryRefresher refuses to overwrite an existing registration', () => {
+    // Two modules competing for one command type would let import order decide
+    // which payload an agent receives, and nothing would report it.
+    expect(() => registerDeliveryRefresher('software_install', async (p) => p)).toThrow(
+      /already registered for "software_install"/,
+    );
+    __resetDeliveryRefreshersForTests();
+    expect(() => registerDeliveryRefresher('software_install', async (p) => p)).not.toThrow();
   });
 
   it('ships a software_install refresher out of the box, so no import order can silence it', () => {
@@ -328,7 +340,12 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
       throw new Error('presign down');
     };
     await expect(refreshPayloadForDelivery('software_install', { s3Key: 'k' })).resolves.toBeNull();
+    // Reported, not just logged: a refresher that starts failing silently
+    // downgrades every enqueue-time push to a heartbeat wait, and nothing else
+    // on that path surfaces it.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     await expect(refreshPayloadForDelivery('script', { a: 1 })).resolves.toEqual({ a: 1 });
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('decryptClaimedCommandsForDelivery is still exported as an alias of the new name', () => {

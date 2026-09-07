@@ -67,7 +67,7 @@ const { partitionClaimableMock } = vi.hoisted(() => ({ partitionClaimableMock: v
 
 vi.mock('./commandClaimEligibility', () => ({
   partitionClaimable: partitionClaimableMock,
-  POWER_STATE_TYPES: new Set(['reboot', 'shutdown', 'reboot_safe_mode']),
+  POWER_STATE_BARRIER_TYPES: new Set(['reboot', 'shutdown', 'reboot_safe_mode']),
   typeHolds: {},
 }));
 

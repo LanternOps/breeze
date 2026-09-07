@@ -1,12 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { assertAllowedMock, userStatusMock, updateMock, setMock, whereMock } = vi.hoisted(() => ({
+const {
+  assertAllowedMock,
+  userStatusMock,
+  updateMock,
+  setMock,
+  whereMock,
+  returningMock,
+  propagateMock,
+  captureExceptionMock,
+} = vi.hoisted(() => ({
   assertAllowedMock: vi.fn(),
   userStatusMock: vi.fn(),
   updateMock: vi.fn(),
   setMock: vi.fn(),
   whereMock: vi.fn(),
+  returningMock: vi.fn(),
+  propagateMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('./partnerTrust.commands', () => ({
@@ -35,9 +47,22 @@ vi.mock('../db/schema', () => ({
   users: { id: 'users.id', status: 'users.status' },
 }));
 vi.mock('./sensitiveCommandPayload', () => ({ terminalPayloadErasureSet: () => ({ payload: null }) }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...(a as [])) }));
+// #5128 review round 2 — the claim-time cancel must terminalise the OWNING
+// record (script_executions / deployment_results) inside the SAME transaction.
+// Mocked at the seam so this suite can assert exactly which rows reach it.
+vi.mock('./commandCancelPropagation', () => ({
+  propagateCancelledDeviceCommands: (...a: unknown[]) => propagateMock(...(a as [])),
+}));
 
-import { POWER_STATE_TYPES, partitionClaimable, typeHolds } from './commandClaimEligibility';
+import {
+  POWER_STATE_BARRIER_TYPES,
+  partitionClaimable,
+  registerTypeHold,
+  typeHolds,
+  __resetEligibilityFaultThrottleForTests,
+  __resetTypeHoldsForTests,
+} from './commandClaimEligibility';
 
 const ORG = '22222222-2222-4222-8222-222222222222';
 const OTHER_ORG = '33333333-3333-4333-8333-333333333333';
@@ -52,11 +77,18 @@ const row = (over: Partial<Row> = {}): Row => ({
   createdBy: null,
   submittedOrgId: ORG,
   deliverBy: null,
+  payload: null,
   ...over,
 });
 
+/**
+ * The cancel UPDATE now ends in `.returning({ id })` — only a row the CAS
+ * actually flipped may be propagated. `returningMock` therefore decides, per
+ * call, whether that row "won"; the default says every cancel won.
+ */
 function tx() {
-  whereMock.mockResolvedValue([]);
+  returningMock.mockResolvedValue([{ id: 'flipped' }]);
+  whereMock.mockReturnValue({ returning: (...a: unknown[]) => returningMock(...(a as [])) });
   setMock.mockReturnValue({ where: (...a: unknown[]) => whereMock(...(a as [])) });
   updateMock.mockReturnValue({ set: (...a: unknown[]) => setMock(...(a as [])) });
   return {
@@ -70,7 +102,8 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     vi.resetAllMocks();
     assertAllowedMock.mockResolvedValue(undefined);
     userStatusMock.mockResolvedValue([{ status: 'active' }]);
-    for (const key of Object.keys(typeHolds)) delete typeHolds[key];
+    __resetTypeHoldsForTests();
+    __resetEligibilityFaultThrottleForTests();
   });
 
   it('passes an ordinary row through and writes nothing', async () => {
@@ -244,7 +277,7 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
   });
 
   it('reboot, shutdown and reboot_safe_mode are the barrier set', () => {
-    expect([...POWER_STATE_TYPES].sort()).toEqual(['reboot', 'reboot_safe_mode', 'shutdown']);
+    expect([...POWER_STATE_BARRIER_TYPES].sort()).toEqual(['reboot', 'reboot_safe_mode', 'shutdown']);
   });
 
   it('cancel writes are CAS-guarded on the id AND status=pending', async () => {
@@ -278,5 +311,136 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     ]);
     expect(r.cancelled).toEqual([{ id: 'c1', reason: 'submitter_org_erased' }]);
     expect(r.claimable).toEqual([]);
+  });
+  // ── Claim-time cancellation must terminalise the OWNING record ──────────
+  //
+  // A cancelled command is TERMINAL, so the command reaper (which scans only
+  // pending/sent) never revisits it. Without propagation the owning
+  // script_executions / deployment_results row sits `pending` forever — the
+  // exact silent death #5128 exists to remove, and the same contract the
+  // cancel-on-event sweeps (moveOrg.ts, core.ts) already honour.
+
+  it('propagates the cancel to the owning records inside the SAME transaction', async () => {
+    const t = tx();
+    await partitionClaimable(t, device, [
+      row({ id: 'c1', type: 'script', payload: { executionId: 'exec-1' }, submittedOrgId: OTHER_ORG }),
+    ]);
+
+    expect(propagateMock).toHaveBeenCalledTimes(1);
+    const [subjects, completedAt, executor] = propagateMock.mock.calls[0]!;
+    expect(subjects).toEqual([{ id: 'c1', type: 'script', payload: { executionId: 'exec-1' } }]);
+    expect(completedAt).toBeInstanceOf(Date);
+    // The transaction handle, not the ambient db: a rollback of the claim must
+    // roll the owning record back with it.
+    expect(executor).toBe(t);
+  });
+
+  it('a row whose CAS matched nothing is NOT propagated', async () => {
+    // The row lost the race to a concurrent claim, so it is being DELIVERED.
+    // Cancelling its script execution would terminalise work about to run on
+    // the machine.
+    const t = tx();
+    // The second cancel's CAS matches zero rows.
+    returningMock.mockReset();
+    returningMock.mockResolvedValueOnce([{ id: 'won' }]).mockResolvedValueOnce([]);
+
+    await partitionClaimable(t, device, [
+      row({ id: 'won', type: 'script', payload: { executionId: 'exec-won' }, submittedOrgId: OTHER_ORG }),
+      row({ id: 'lost', type: 'script', payload: { executionId: 'exec-lost' }, submittedOrgId: OTHER_ORG }),
+    ]);
+
+    expect(updateMock).toHaveBeenCalledTimes(2);
+    expect(propagateMock).toHaveBeenCalledTimes(1);
+    expect(propagateMock.mock.calls[0]![0]).toEqual([
+      { id: 'won', type: 'script', payload: { executionId: 'exec-won' } },
+    ]);
+  });
+
+  it('nothing cancelled → the propagator is never called', async () => {
+    await partitionClaimable(tx(), device, [row()]);
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-object payload reaches the propagator as null rather than crashing it', async () => {
+    await partitionClaimable(tx(), device, [
+      row({ id: 'c1', type: 'script', payload: 'not-an-object', submittedOrgId: OTHER_ORG }),
+    ]);
+    expect(propagateMock.mock.calls[0]![0]).toEqual([{ id: 'c1', type: 'script', payload: null }]);
+  });
+
+  // ── Uninstall drain exemption ───────────────────────────────────────────
+
+  it('a queued self_uninstall survives an inactive requester', async () => {
+    // Remove-with-uninstall is routinely queued by a tech who leaves before the
+    // machine next checks in. Cancelling it here leaves the agent installed on
+    // a customer box the MSP has decided to stop managing — the same drain
+    // core.ts protects with its ne(type,'self_uninstall') exclusion.
+    userStatusMock.mockResolvedValue([{ status: 'disabled' }]);
+    const r = await partitionClaimable(tx(), device, [
+      row({ id: 'u', type: 'self_uninstall', createdBy: USER }),
+      row({ id: 'other', createdBy: USER }),
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['u']);
+    expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
+  });
+
+  it('a self_uninstall survives EVERY cancel at once: decommissioned + trust-denied + inactive tech + org drift', async () => {
+    // #3986 regression (caught by deviceUninstallDrain.integration.test.ts):
+    // every one of these checks asks "should this device still work for this
+    // tenant?", and for a removal the answer is always yes. The drain has its
+    // own deadline (device_remove_expires_at) and its own auth gate
+    // (agentAuth's drain window); cancelling it strands an agent on a machine
+    // the MSP has stopped managing.
+    const { TrustDeniedError } = await import('./partnerTrust.commands');
+    assertAllowedMock.mockRejectedValue(
+      new TrustDeniedError('TRUST_RESTRICTED', 'suspended', 'd1', 'self_uninstall'),
+    );
+    userStatusMock.mockResolvedValue([{ status: 'disabled' }]);
+
+    const r = await partitionClaimable(tx(), { ...device, status: 'decommissioned' }, [
+      row({
+        id: 'u',
+        type: 'self_uninstall',
+        createdBy: USER,
+        submittedOrgId: OTHER_ORG,
+        deliverBy: new Date(Date.now() + 3600_000),
+      }),
+    ]);
+
+    expect(r.claimable.map((x) => x.id)).toEqual(['u']);
+    expect(r.cancelled).toEqual([]);
+    expect(r.held).toEqual([]);
+    expect(updateMock).not.toHaveBeenCalled();
+    // The trust check is not even consulted — the drain short-circuits first.
+    expect(assertAllowedMock).not.toHaveBeenCalled();
+  });
+
+  // ── Registry guard + Sentry throttle ────────────────────────────────────
+
+  it('registerTypeHold refuses to overwrite an existing hold', () => {
+    registerTypeHold('install_patches', async () => true);
+    expect(() => registerTypeHold('install_patches', async () => false)).toThrow(
+      /already registered for "install_patches"/,
+    );
+    expect(typeHolds.install_patches).toBeDefined();
+  });
+
+  it('the eligibility-fault Sentry capture is throttled per device, but the log is not', async () => {
+    // One partner-trust outage would otherwise emit one event per row per
+    // heartbeat per device.
+    assertAllowedMock.mockRejectedValue(new Error('db down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await partitionClaimable(tx(), device, [row({ id: 'a' }), row({ id: 'b' })]);
+      await partitionClaimable(tx(), device, [row({ id: 'c' })]);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledTimes(3);
+
+      // A DIFFERENT device is a different fault surface and still reports.
+      await partitionClaimable(tx(), { ...device, id: 'd2' }, [row({ id: 'd' })]);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

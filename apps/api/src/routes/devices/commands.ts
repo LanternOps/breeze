@@ -26,7 +26,7 @@ import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { propagateCancelledDeviceCommand } from '../../jobs/staleCommandReaper';
+import { propagateCancelledDeviceCommand } from '../../services/commandCancelPropagation';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
@@ -1019,67 +1019,83 @@ commandsRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    // Read the payload BEFORE the update: `terminalPayloadErasureSet()` strips
-    // it, and `returning()` reflects post-update values, so a propagator that
-    // keys on `payload.executionId` would get nothing back from the UPDATE.
-    const [existing] = await db
-      .select({
-        id: deviceCommands.id,
-        type: deviceCommands.type,
-        payload: deviceCommands.payload,
-        status: deviceCommands.status,
-      })
-      .from(deviceCommands)
-      .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
-      .limit(1);
+    // The read, the CAS and the propagation are ONE transaction. Without it a
+    // crash between the flip and the propagation leaves a cancelled command
+    // owning a `script_executions` / `deployment_results` row that is still
+    // `pending` — and nothing revisits it, because the reaper only scans
+    // pending/sent COMMANDS. The HTTP response is chosen after the commit.
+    const outcome = await db.transaction(async (tx) => {
+      // Read the payload BEFORE the update: `terminalPayloadErasureSet()` strips
+      // it, and `returning()` reflects post-update values, so a propagator that
+      // keys on `payload.executionId` would get nothing back from the UPDATE.
+      const [existing] = await tx
+        .select({
+          id: deviceCommands.id,
+          type: deviceCommands.type,
+          payload: deviceCommands.payload,
+          status: deviceCommands.status,
+        })
+        .from(deviceCommands)
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+        .limit(1);
 
-    if (!existing) {
+      if (!existing) return { kind: 'not_found' } as const;
+      if (existing.status !== 'pending') {
+        return { kind: 'not_pending' as const, status: existing.status };
+      }
+
+      const completedAt = new Date();
+      const [row] = await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt,
+          result: { status: 'cancelled', reason: 'user_cancelled', cancelledBy: auth.user.id },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(
+          and(
+            eq(deviceCommands.id, commandId),
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+          ),
+        )
+        .returning({ id: deviceCommands.id });
+
+      // Lost the CAS race — the agent claimed it between the SELECT and here.
+      if (!row) return { kind: 'cas_lost' } as const;
+
+      await propagateCancelledDeviceCommand({
+        commandId: row.id,
+        type: existing.type,
+        payload: existing.payload as Record<string, unknown> | null,
+        completedAt,
+        cancelledBy: auth.user.id,
+        executor: tx,
+      });
+
+      return { kind: 'cancelled' as const, id: row.id, type: existing.type };
+    });
+
+    if (outcome.kind === 'not_found') {
       return c.json({ error: 'Command not found' }, 404);
     }
-    if (existing.status !== 'pending') {
-      return c.json({ error: 'Command is not pending', status: existing.status }, 409);
+    if (outcome.kind === 'not_pending') {
+      return c.json({ error: 'Command is not pending', status: outcome.status }, 409);
     }
-
-    const completedAt = new Date();
-    const [row] = await db
-      .update(deviceCommands)
-      .set({
-        status: 'cancelled',
-        completedAt,
-        result: { status: 'cancelled', reason: 'user_cancelled', cancelledBy: auth.user.id },
-        ...terminalPayloadErasureSet(),
-      })
-      .where(
-        and(
-          eq(deviceCommands.id, commandId),
-          eq(deviceCommands.deviceId, deviceId),
-          eq(deviceCommands.status, 'pending'),
-        ),
-      )
-      .returning({ id: deviceCommands.id });
-
-    if (!row) {
-      // Lost the CAS race — the agent claimed it between the SELECT and here.
+    if (outcome.kind === 'cas_lost') {
       return c.json({ error: 'Command is not pending' }, 409);
     }
-
-    await propagateCancelledDeviceCommand({
-      commandId: row.id,
-      type: existing.type,
-      payload: existing.payload as Record<string, unknown> | null,
-      completedAt,
-      cancelledBy: auth.user.id,
-    });
 
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.command.cancel',
       resourceType: 'device_command',
-      resourceId: row.id,
-      resourceName: existing.type,
-      details: { deviceId, commandType: existing.type },
+      resourceId: outcome.id,
+      resourceName: outcome.type,
+      details: { deviceId, commandType: outcome.type },
     });
 
-    return c.json({ id: row.id, status: 'cancelled' });
+    return c.json({ id: outcome.id, status: 'cancelled' });
   }
 );

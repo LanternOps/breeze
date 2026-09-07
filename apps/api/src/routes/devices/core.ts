@@ -21,7 +21,7 @@ import {
   users,
 } from '../../db/schema';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { propagateCancelledDeviceCommands } from '../../jobs/staleCommandReaper';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   isInteractiveUserSession,

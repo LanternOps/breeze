@@ -4,7 +4,9 @@
 -- claimed the row (pending -> sent). It is separate from the execution timeout
 -- (services/commandTimeouts.ts), which the stale reaper applies to `sent` rows
 -- from executed_at. NULL keeps today's rule for rows created before this
--- migration, so no backfill is needed and old pending rows behave as before.
+-- migration, so no backfill is needed and old pending rows behave as before
+-- (software_install's retired 7-day special case is preserved for such legacy
+-- rows inside the reaper, not here).
 --
 -- submitted_org_id is PROVENANCE, NOT TENANCY. device_commands is intentionally
 -- system-scoped (agent WS path, no RLS -- see CLAUDE.md). This column records the

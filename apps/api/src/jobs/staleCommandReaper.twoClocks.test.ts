@@ -307,4 +307,63 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
       expect.objectContaining({ source: 'reaper', commandId: 'c1', terminalStatus: 'timed_out' })
     );
   });
+  // ── Legacy software_install keeps its retired 7-day queue wait ──────────
+  //
+  // #5128 folded `software_install` into the 2-hour LONG_TIMEOUT_TYPES tier
+  // because its queue wait is now a `deliver_by` deadline. Rows written before
+  // the 2026-10-13 migration have no deadline and fall into the legacy branch,
+  // where the EXECUTION timeout doubles as the queue wait — so without the
+  // carve-out the first reaper pass after deploy would fail a week's worth of
+  // legitimately-waiting installs as "agent never received the command".
+
+  const legacyInstall = (over: Record<string, unknown> = {}) => ({
+    id: 'si-1',
+    type: 'software_install',
+    payload: {},
+    status: 'pending',
+    createdAt: new Date(NOW - 3 * HOUR),
+    executedAt: null,
+    deliverBy: null,
+    ...over,
+  });
+
+  it('a legacy pending software_install 3 hours old is NOT reaped, despite the 2 h execution timeout', async () => {
+    selectMock.mockReturnValue(selectChain([legacyInstall()]));
+    expect(await reapStaleDeviceCommands()).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('a legacy pending software_install 8 days old IS reaped, as a timeout', async () => {
+    selectMock.mockReturnValue(selectChain([legacyInstall({ createdAt: new Date(NOW - 8 * DAY) })]));
+    const { command: update } = routeUpdates([{ id: 'si-1' }]);
+
+    expect(await reapStaleDeviceCommands()).toBe(1);
+    expect(update.set).toHaveBeenCalledWith(
+      expect.objectContaining({ result: expect.objectContaining({ status: 'timeout' }) })
+    );
+    const setArg = update.set.mock.calls[0]![0] as { result: { error: string } };
+    expect(setArg.result.error).toContain('agent never received the command');
+    // The message reports the clock that was actually applied (7 days), not the
+    // 2-hour execution timeout that would have been used without the carve-out.
+    expect(setArg.result.error).toContain(`${7 * 24 * 60} min`);
+  });
+
+  it('the 7-day carve-out applies ONLY to the legacy branch: a software_install with a deliver_by still expires on it', async () => {
+    const deliverBy = new Date(NOW - 1000);
+    selectMock.mockReturnValue(selectChain([legacyInstall({ deliverBy, createdAt: new Date(NOW - HOUR) })]));
+    const { command: update } = routeUpdates([{ id: 'si-1' }]);
+
+    expect(await reapStaleDeviceCommands()).toBe(1);
+    expect(update.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: expect.objectContaining({ reason: 'not_delivered_before_deadline' }),
+      })
+    );
+  });
+
+  it('the carve-out does not leak to other types: a legacy script row still uses its own timeout', async () => {
+    selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy: null })]));
+    routeUpdates([{ id: 'c1' }]);
+    expect(await reapStaleDeviceCommands()).toBe(1);
+  });
 });

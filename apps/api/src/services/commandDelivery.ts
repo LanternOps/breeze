@@ -30,15 +30,33 @@ export type DeliveryRefresher = (payload: Record<string, unknown>) => Promise<Re
  * to close. Feature modules that need a refresher after boot may still assign
  * into this record (W3's patch work does).
  */
-export const deliveryRefreshers: Record<string, DeliveryRefresher> = {
-  // Uploaded installers travel as an S3 key; the one-hour presigned URL is
-  // minted at delivery so an install claimed six hours later still downloads.
-  software_install: async (payload) => {
-    const s3Key = typeof payload.s3Key === 'string' ? payload.s3Key : null;
-    if (!s3Key || !isS3Configured()) return payload;
-    return { ...payload, downloadUrl: await getPresignedUrl(s3Key, 3600) };
-  },
-};
+export const deliveryRefreshers: Record<string, DeliveryRefresher> = {};
+
+/**
+ * Register a refresher for a command type. Refuses to overwrite an existing
+ * one: two modules silently competing for `software_install` would mean the
+ * import order decides which payload an agent receives, and nothing would
+ * report it.
+ */
+export function registerDeliveryRefresher(type: string, refresher: DeliveryRefresher): void {
+  if (deliveryRefreshers[type]) {
+    throw new Error(`A delivery refresher is already registered for "${type}"`);
+  }
+  deliveryRefreshers[type] = refresher;
+}
+
+/** Test-only: drop every registered refresher so a suite can install its own. */
+export function __resetDeliveryRefreshersForTests(): void {
+  for (const key of Object.keys(deliveryRefreshers)) delete deliveryRefreshers[key];
+}
+
+// Uploaded installers travel as an S3 key; the one-hour presigned URL is
+// minted at delivery so an install claimed six hours later still downloads.
+registerDeliveryRefresher('software_install', async (payload) => {
+  const s3Key = typeof payload.s3Key === 'string' ? payload.s3Key : null;
+  if (!s3Key || !isS3Configured()) return payload;
+  return { ...payload, downloadUrl: await getPresignedUrl(s3Key, 3600) };
+});
 
 /**
  * The subset of a just-claimed `device_commands` row that batch delivery needs.
@@ -224,10 +242,15 @@ export async function refreshPayloadForDelivery(
   try {
     return await refresher(payload);
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error('[commandDelivery] delivery refresher failed on the enqueue-time push', {
       type,
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
     });
+    // Reported, not just logged: a refresher that starts failing (an S3 outage,
+    // say) silently downgrades every enqueue-time push to a heartbeat wait, and
+    // nothing else on this path surfaces that.
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return null;
   }
 }

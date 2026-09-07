@@ -219,95 +219,27 @@ export async function propagateTimedOutDeviceCommand(params: {
 }
 
 /**
- * Terminalise the higher-level records owned by a device command a USER just
- * cancelled (#5128 §G). Sibling of `propagateTimedOutDeviceCommand`: the
- * command row itself is already terminal by the time this runs; this only
- * stops the owning record from waiting forever on a delivery that will never
- * happen.
- *
- * W3 adds the `patch_job_results` branch. Anything without a branch is a no-op
- * by design — a generic command has no higher-level record (#5128 §F).
+ * Cancel propagation moved to `services/commandCancelPropagation.ts` (#5128
+ * review round 2): claim-time eligibility has to call it from inside the
+ * heartbeat claim transaction, and this module imports `services/commandQueue`,
+ * which reaches `commandClaimEligibility` — importing the reaper from there
+ * would close an import cycle. Re-exported so the existing route importers are
+ * unchanged.
  */
-/**
- * Anything that can run the propagation UPDATEs: the ambient `db`, or a caller's
- * open transaction handle.
- */
-type DbExecutor = Pick<typeof db, 'update'>;
-
-export type DeviceCommandCancelSubject = {
-  id: string;
-  type: string;
-  payload: Record<string, unknown> | null;
-};
+export {
+  propagateCancelledDeviceCommand,
+  propagateCancelledDeviceCommands,
+  type DeviceCommandCancelSubject,
+} from '../services/commandCancelPropagation';
 
 /**
- * Bulk sibling of `propagateCancelledDeviceCommand` for the cancel-on-event
- * paths (org move, decommission), which cancel every pending row for a device
- * in one UPDATE. Takes the caller's transaction so the owning records are
- * terminalised atomically with the cancel itself.
+ * The queue wait `software_install` carried before #5128 gave it a real
+ * `deliver_by` deadline. Applies ONLY to legacy rows (`deliver_by IS NULL`),
+ * where the execution timeout is also the queue wait; rows created before
+ * deliver_by existed (2026-10-13 migration). Remove once no pending
+ * software_install row predates it.
  */
-export async function propagateCancelledDeviceCommands(
-  rows: readonly DeviceCommandCancelSubject[],
-  completedAt: Date,
-  executor: DbExecutor = db,
-): Promise<void> {
-  for (const row of rows) {
-    await propagateCancelledDeviceCommand({
-      commandId: row.id,
-      type: row.type,
-      payload: row.payload,
-      completedAt,
-      executor,
-    });
-  }
-}
-
-export async function propagateCancelledDeviceCommand(params: {
-  commandId: string;
-  type: string;
-  payload: Record<string, unknown> | null;
-  completedAt: Date;
-  cancelledBy?: string | null;
-  /**
-   * #5128: the cancel-on-event callers run inside their own transaction (the
-   * org flip / the decommission write) and must terminalise the owning records
-   * in that SAME transaction, or a rollback would leave a cancelled command
-   * with a `script_executions` / `deployment_results` row still `pending`.
-   */
-  executor?: DbExecutor;
-}): Promise<void> {
-  const { commandId, type, payload, completedAt } = params;
-  const executor: DbExecutor = params.executor ?? db;
-  const errorMessage = 'Cancelled before the device received it';
-
-  if (type === 'script') {
-    const executionId =
-      payload && typeof payload.executionId === 'string' && payload.executionId.trim().length > 0
-        ? payload.executionId
-        : null;
-    if (executionId) {
-      await executor
-        .update(scriptExecutions)
-        .set({ status: 'cancelled', errorMessage, completedAt })
-        .where(
-          and(
-            eq(scriptExecutions.id, executionId),
-            inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
-          ),
-        );
-    }
-  }
-
-  await executor
-    .update(deploymentResults)
-    .set({ status: 'cancelled', errorMessage, completedAt })
-    .where(
-      and(
-        eq(deploymentResults.deviceCommandId, commandId),
-        eq(deploymentResults.status, 'pending'),
-      ),
-    );
-}
+const LEGACY_SOFTWARE_INSTALL_QUEUE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ── Reap functions ────────────────────────────────────────────────
 
@@ -478,9 +410,19 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       kind = 'timeout';
       errorMsg = `Server-side timeout: no response from agent after ${Math.round(timeoutMs / 60000)} minutes`;
     } else {
-      due = now - cmd.createdAt.getTime() >= timeoutMs;
+      // LEGACY rows only (`deliver_by IS NULL`). #5128 folded
+      // `software_install` into the 2-hour LONG_TIMEOUT_TYPES tier because its
+      // queue wait is now expressed as a `deliver_by` deadline — but rows
+      // written before the 2026-10-13 migration have no deadline and land
+      // here, where the execution timeout doubles as the queue wait. Applying
+      // 2 h to them would reap a week's worth of legitimately-waiting installs
+      // on the first pass after deploy, so their retired 7-day rule is kept
+      // for exactly this branch.
+      const legacyTimeoutMs =
+        cmd.type === 'software_install' ? LEGACY_SOFTWARE_INSTALL_QUEUE_MS : timeoutMs;
+      due = now - cmd.createdAt.getTime() >= legacyTimeoutMs;
       kind = 'timeout';
-      errorMsg = `Command expired: agent never received the command (${Math.round(timeoutMs / 60000)} min timeout)`;
+      errorMsg = `Command expired: agent never received the command (${Math.round(legacyTimeoutMs / 60000)} min timeout)`;
     }
 
     if (!due) continue;

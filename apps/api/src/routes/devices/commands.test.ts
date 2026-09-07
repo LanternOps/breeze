@@ -156,12 +156,10 @@ vi.mock('../../services/dispatchDeviceCommand', () => ({
 
 // #5128 — POST /:id/commands/:commandId/cancel calls this to terminalise any
 // higher-level record (execution row, automation action) the cancelled
-// command owned. Its own module pulls in BullMQ Queue/Worker construction and
-// a long transitive chain (commandResultHandlers -> customFields/scriptWriteBack,
-// which calls `requestLikeFromSnapshot` from auditEvents AT MODULE LOAD —
-// something the auditEvents mock above doesn't export), so it must be mocked
-// at the seam rather than loaded for real.
-vi.mock('../../jobs/staleCommandReaper', () => ({
+// command owned. Mocked at the seam so the route's wiring (including which
+// executor it hands the propagator) is assertable without the real
+// script_executions / deployment_results writes.
+vi.mock('../../services/commandCancelPropagation', () => ({
   propagateCancelledDeviceCommand: vi.fn(),
 }));
 
@@ -187,7 +185,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
-import { propagateCancelledDeviceCommand } from '../../jobs/staleCommandReaper';
+import { propagateCancelledDeviceCommand } from '../../services/commandCancelPropagation';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -1762,24 +1760,34 @@ describe('device commands routes', () => {
     const DEVICE_ID = 'device-a';
     const COMMAND_ID = 'cmd-pending-1';
 
-    const mockExistingCommand = (existing: Record<string, unknown> | undefined) => {
-      vi.mocked(db.select).mockReturnValueOnce({
+    // #5128 review round 2 — the read, the CAS and the propagation now run in
+    // ONE `db.transaction`, so the rig drives `tx.select` / `tx.update` rather
+    // than the ambient db. `txSelect`/`txUpdate` are exposed so the CAS-lost
+    // branch can assert the propagator was never reached.
+    let txSelect = vi.fn();
+    let txUpdate = vi.fn();
+    let txHandle: unknown = null;
+
+    const rigCancelTransaction = (opts: {
+      existing?: Record<string, unknown> | undefined;
+      updated?: { id: string } | undefined;
+    }) => {
+      txSelect = vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(existing ? [existing] : []),
+            limit: vi.fn().mockResolvedValue(opts.existing ? [opts.existing] : []),
           }),
         }),
-      } as never);
-    };
-
-    const mockCancelUpdate = (row: { id: string } | undefined) => {
-      vi.mocked(db.update).mockReturnValueOnce({
+      });
+      txUpdate = vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue(row ? [row] : []),
+            returning: vi.fn().mockResolvedValue(opts.updated ? [opts.updated] : []),
           }),
         }),
-      } as never);
+      });
+      txHandle = { select: txSelect, update: txUpdate };
+      vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(txHandle));
     };
 
     beforeEach(() => {
@@ -1791,9 +1799,11 @@ describe('device commands routes', () => {
       } as never);
     });
 
-    it('cancel: flips a pending command to cancelled', async () => {
-      mockExistingCommand({ id: COMMAND_ID, type: 'reboot', payload: {}, status: 'pending' });
-      mockCancelUpdate({ id: COMMAND_ID });
+    it('cancel: flips a pending command to cancelled, propagating on the SAME transaction', async () => {
+      rigCancelTransaction({
+        existing: { id: COMMAND_ID, type: 'reboot', payload: {}, status: 'pending' },
+        updated: { id: COMMAND_ID },
+      });
 
       const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
         method: 'POST',
@@ -1802,13 +1812,16 @@ describe('device commands routes', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: COMMAND_ID, status: 'cancelled' });
+      // A crash between the flip and the propagation would otherwise leave a
+      // cancelled command owning a still-`pending` script_executions /
+      // deployment_results row that nothing ever revisits.
       expect(propagateCancelledDeviceCommand).toHaveBeenCalledWith(
-        expect.objectContaining({ commandId: COMMAND_ID, type: 'reboot' }),
+        expect.objectContaining({ commandId: COMMAND_ID, type: 'reboot', executor: txHandle }),
       );
     });
 
     it('cancel: 409s when the command is not pending', async () => {
-      mockExistingCommand({ id: COMMAND_ID, type: 'reboot', payload: {}, status: 'sent' });
+      rigCancelTransaction({ existing: { id: COMMAND_ID, type: 'reboot', payload: {}, status: 'sent' } });
 
       const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
         method: 'POST',
@@ -1818,13 +1831,35 @@ describe('device commands routes', () => {
       expect(res.status).toBe(409);
       const body = await res.json();
       expect(body.status).toBe('sent');
-      expect(db.update).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
+    });
+
+    it('cancel: 409s and does NOT propagate when the CAS loses the race', async () => {
+      // The SELECT saw `pending`, but the agent claimed the row before the
+      // UPDATE landed. That command is now being DELIVERED — terminalising its
+      // owning script execution would cancel work about to run on the machine.
+      rigCancelTransaction({
+        existing: { id: COMMAND_ID, type: 'script', payload: { executionId: 'exec-1' }, status: 'pending' },
+        updated: undefined,
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Command is not pending' });
+      expect(txUpdate).toHaveBeenCalledTimes(1);
+      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('cancel: 404s for a command belonging to another device', async () => {
       // The lookup scopes the SELECT to (commandId AND deviceId), so a
       // command that belongs to a different device simply isn't found.
-      mockExistingCommand(undefined);
+      rigCancelTransaction({ existing: undefined });
 
       const res = await app.request(`/devices/${DEVICE_ID}/commands/${COMMAND_ID}/cancel`, {
         method: 'POST',
@@ -1832,7 +1867,8 @@ describe('device commands routes', () => {
       });
 
       expect(res.status).toBe(404);
-      expect(db.update).not.toHaveBeenCalled();
+      expect(txUpdate).not.toHaveBeenCalled();
+      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
     });
   });
 

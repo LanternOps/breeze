@@ -86,7 +86,7 @@ In `reapStaleDeviceCommands`:
 
 ### D. Single seam and call-site migration
 
-One function owns enqueue: `dispatchDeviceCommand(deviceId, type, payload, { offlinePolicy, userId, targetRole, expectedOrgId, ... })`. In order: device lookup + `expectedOrgId` check → `assertDeviceExecuteAllowed` (partner trust) → if the device is not online and the policy is `reject`, return the existing `device_offline` error → `queueCommand` with `deliver_by` + `submitted_org_id` → if the agent socket is live, the existing claim → prepare → push → release-on-failure loop. Return value gains `delivery: 'delivered' | 'queued_offline'`.
+One function owns enqueue: `dispatchDeviceCommand(input: DispatchDeviceCommandInput)`, a single options object with `{ deviceId, type, payload?, userId?, offlinePolicy?, previouslyRejected?, expectedOrgId?, preferHeartbeat? }`. There is no `targetRole`: watchdog-targeted commands stay on `executeCommand`. In order: device lookup + `expectedOrgId` check → device lifecycle → `assertDeviceExecuteAllowed` (partner trust) → if the device is not online and the policy is `reject`, return the existing `device_offline` error → `queueCommand` with `deliver_by` + `submitted_org_id` → if the agent socket is live, the existing claim → prepare → push → release-on-failure loop. Return value gains `delivery: 'delivered' | 'queued_offline' | 'queued_live'` (`queued_live` = the device is online but the push did not happen, so the next heartbeat claims it).
 
 **Late-binding payload preparation.** A single `prepareCommandForDelivery(row)` runs on *both* claim paths (WS push and heartbeat batch) and owns everything that must be fresh at delivery: the existing `decryptCommandForDelivery`, plus re-minting presigned download URLs for `software_install` from the stored `s3Key`. Payloads store stable references, never time-limited URLs. Rows whose preparation fails are released back to `pending` (existing fence) and counted.
 
@@ -136,6 +136,7 @@ Call sites and their intended disposition (the plan enumerates every caller; thi
 - **Not re-checked in v1:** full org/site/action permission rehydration of the requester, and script edit/delete (the payload is an immutable snapshot at request time; editing must never substitute code). Both become possible once Track B's authorization-subject shape lands (OD-4).
 - **Cancel-on-event (cleanup, in addition to claim checks):** device decommission (`routes/devices/core.ts` ~1813, same transaction as the status write) and org move (`routes/devices/moveOrg.ts` ~297) cancel that device's ordinary pending rows with the matching reason. Partner suspension keeps its existing socket/token handling and queued-uninstall path (`tenantLifecycle.ts`).
 - **User cancel:** `POST /devices/:id/commands/:commandId/cancel` flips `pending → cancelled` (CAS on `status='pending'`), erases the payload, and propagates to the owning record (script execution `cancelled`, patch result `skipped`, deployment result `cancelled`). Same permission as issuing the command.
+- **Claim-time cancellations propagate to the owning record inside the claim transaction, exactly like cancel-on-event.**
 
 ### H. Visibility
 

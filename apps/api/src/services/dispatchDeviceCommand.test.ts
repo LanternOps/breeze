@@ -9,6 +9,7 @@ const {
   selectMock,
   refreshMock,
   decryptMock,
+  captureExceptionMock,
 } = vi.hoisted(() => ({
   queueCommandMock: vi.fn(),
   claimMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
   selectMock: vi.fn(),
   refreshMock: vi.fn(),
   decryptMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -41,6 +43,9 @@ vi.mock('./sensitiveCommandPayload', () => ({
   toAgentCommandFrame: (c: unknown) => c,
 }));
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: (...a: unknown[]) => sendMock(...(a as [])) }));
+vi.mock('./sentry', () => ({
+  captureException: (...a: unknown[]) => captureExceptionMock(...(a as [])),
+}));
 vi.mock('./partnerTrust.commands', () => ({
   assertDeviceExecuteAllowed: (...a: unknown[]) => assertAllowedMock(...(a as [])),
   TrustDeniedError: class TrustDeniedError extends Error {
@@ -291,5 +296,27 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     selectReturning(deviceRow('maintenance'));
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script' });
     expect(res.ok && res.delivery).toBe('queued_offline');
+  });
+  it('a release that itself fails still reports queued_live, and is captured', async () => {
+    // The command IS persisted and the caller's response is already true, so a
+    // failed release must not 500 a request whose write committed. The cost is
+    // that the row sits `sent` until the reaper's EXECUTION clock reaps it —
+    // recoverable, and worth reporting.
+    selectReturning(deviceRow('online'));
+    const executedAt = new Date();
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt });
+    sendMock.mockReturnValue(false);
+    releaseMock.mockRejectedValue(new Error('pool exhausted'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('queued_live');
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('cmd-1');
+      expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('refresh_inventory');
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

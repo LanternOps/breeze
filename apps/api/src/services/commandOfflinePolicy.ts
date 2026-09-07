@@ -192,7 +192,7 @@ const SHORT: readonly string[] = [
  * is wrong — but not the barrier: it only asks the agent to schedule, and the
  * agent owns the delay and user deferral from there.
  */
-const POWER_STATE: readonly string[] = ['reboot', 'shutdown', C.REBOOT_SAFE_MODE, 'schedule_reboot'];
+const POWER_STATE_TTL_TYPES: readonly string[] = ['reboot', 'shutdown', C.REBOOT_SAFE_MODE, 'schedule_reboot'];
 
 /**
  * Command type literals the API writes that are NOT members of `CommandTypes`:
@@ -265,7 +265,7 @@ for (const type of EXTRA_ROUTE_TYPES) registry[type] = 'standard';
 for (const type of LIVE) registry[type] = 'live';
 for (const type of BACKUP_AND_RESTORE) registry[type] = 'live';
 for (const type of SHORT) registry[type] = 'short';
-for (const type of POWER_STATE) registry[type] = 'power_state';
+for (const type of POWER_STATE_TTL_TYPES) registry[type] = 'power_state';
 registry.wake = 'live';
 
 export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTtlClass>> = Object.freeze(registry);
@@ -279,7 +279,7 @@ export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTt
  * an oversight.
  */
 export const EXPLICITLY_CLASSIFIED_COMMAND_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([...LIVE, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE, ...STANDARD_REVIEWED]),
+  new Set<string>([...LIVE, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE_TTL_TYPES, ...STANDARD_REVIEWED]),
 ) as ReadonlySet<string>;
 
 export function defaultOfflinePolicy(type: string): OfflinePolicy {

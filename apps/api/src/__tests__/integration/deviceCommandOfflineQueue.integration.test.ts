@@ -7,12 +7,20 @@ import { Hono } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { withSystemDbAccessContext } from '../../db';
-import { deviceCommands, devices, scriptExecutions, scripts, users } from '../../db/schema';
 import {
-  propagateCancelledDeviceCommands,
+  deploymentResults,
+  deviceCommands,
+  devices,
+  scriptExecutions,
+  scripts,
+  softwareDeployments,
+  users,
+} from '../../db/schema';
+import {
   reapStaleDeviceCommands,
   reapStaleScriptExecutions,
 } from '../../jobs/staleCommandReaper';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import { commandsRoutes } from '../../routes/devices/commands';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
@@ -677,6 +685,75 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
       .limit(1);
     expect(after?.status).toBe('cancelled');
     expect(after?.errorMessage).not.toContain('no response from agent');
+  });
+
+  it('a claim-time cancel terminalises the OWNING deployment_results row, not just the command', async () => {
+    // The gap this pins: `partitionClaimable` cancels the device_commands row
+    // directly. A cancelled command is TERMINAL, so the command reaper (which
+    // scans only pending/sent) never revisits it — without propagation inside
+    // the claim transaction the deployment_results row hangs `pending` forever
+    // and the Software page shows an install that is neither running nor done.
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+
+    const [deployment] = await getTestDb()
+      .insert(softwareDeployments)
+      .values({
+        orgId: env.organization.id,
+        name: 'Claim Cancel Deployment',
+        deploymentType: 'install',
+        targetType: 'device',
+        targetIds: [device.id],
+        scheduleType: 'immediate',
+      })
+      .returning();
+
+    const [command] = await getTestDb()
+      .insert(deviceCommands)
+      .values({
+        deviceId: device.id,
+        type: 'software_install',
+        payload: { deploymentId: deployment!.id, s3Key: 'installers/app.exe' },
+        status: 'pending',
+        deliverBy: new Date(Date.now() + DAY_MS),
+        submittedOrgId: env.organization.id,
+      })
+      .returning();
+
+    const [result] = await getTestDb()
+      .insert(deploymentResults)
+      .values({
+        deploymentId: deployment!.id,
+        deviceId: device.id,
+        status: 'pending',
+        deviceCommandId: command!.id,
+      })
+      .returning();
+
+    // Move the device out from under the queued install.
+    const otherPartner = await createPartner({ name: `Other Partner ${randomUUID().slice(0, 8)}` });
+    const otherOrg = await createOrganization({
+      partnerId: otherPartner.id,
+      name: `Other Org ${randomUUID().slice(0, 8)}`,
+    });
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    await getTestDb()
+      .update(devices)
+      .set({ orgId: otherOrg.id, siteId: otherSite.id })
+      .where(eq(devices.id, device.id));
+
+    expect(await claim(device.id)).toEqual([]);
+
+    const after = await commandRow(command!.id);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.result).toMatchObject({ reason: 'device_moved_org' });
+
+    const [resultAfter] = await getTestDb()
+      .select()
+      .from(deploymentResults)
+      .where(eq(deploymentResults.id, result!.id))
+      .limit(1);
+    expect(resultAfter?.status).toBe('cancelled');
+    expect(resultAfter?.errorMessage).toBe('Cancelled before the device received it');
   });
 
 });
