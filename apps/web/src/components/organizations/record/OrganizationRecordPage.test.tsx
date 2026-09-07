@@ -181,19 +181,11 @@ describe('OrganizationRecordPage — happy path', () => {
     expect(screen.queryByTestId('org-overview-tile-invoices')).toBeNull();
   });
 
-  it('opens the tab named in the URL hash — an unimplemented tab shows the placeholder', async () => {
-    window.location.hash = '#activity';
-    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
-    await waitFor(() => expect(screen.getByTestId('org-record-tab-placeholder-activity')).toBeTruthy());
-    expect(screen.queryByTestId('org-overview-tab')).toBeNull();
-  });
-
   it('opens the Tickets tab named in the URL hash, pinned to the record org', async () => {
     window.location.hash = '#tickets';
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-tickets-tab')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tab')).toBeNull();
-    expect(screen.queryByTestId('org-record-tab-placeholder-tickets')).toBeNull();
     await waitFor(() => expect(requestedUrls.some((u) => u.includes('/tickets?') && u.includes(`orgId=${RECORD_ORG}`))).toBe(true));
   });
 
@@ -202,7 +194,40 @@ describe('OrganizationRecordPage — happy path', () => {
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-billing-tab')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tab')).toBeNull();
-    expect(screen.queryByTestId('org-record-tab-placeholder-billing')).toBeNull();
+  });
+
+  it('#contacts renders ContactsCard scoped to the record org', async () => {
+    window.location.hash = '#contacts';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-card')).toBeTruthy());
+    await waitFor(() => expect(requestedUrls.some((u) => u.includes(`/orgs/organizations/${RECORD_ORG}/contacts`))).toBe(true));
+  });
+
+  it('#sites renders OrgSitesTab, pinned to the record org via orgIdOverride', async () => {
+    window.location.hash = '#sites';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-sites-tab')).toBeTruthy());
+    await waitFor(() => expect(requestedUrls.some((u) => u.includes(`orgId=${RECORD_ORG}`) && u.includes('/orgs/sites'))).toBe(true));
+    // No request in this tab ever carries the switcher's org.
+    for (const url of requestedUrls) expect(url).not.toContain(OTHER_ORG);
+  });
+
+  it('#devices renders OrgDevicesTab, pinned to the record org', async () => {
+    window.location.hash = '#devices';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-devices-tab')).toBeTruthy());
+    await waitFor(() => expect(requestedUrls.some((u) => u.includes('/devices') && u.includes(`orgId=${RECORD_ORG}`))).toBe(true));
+    for (const url of requestedUrls) expect(url).not.toContain(OTHER_ORG);
+  });
+
+  it('#activity renders OrgActivityTab, pinned to the record org', async () => {
+    window.location.hash = '#activity';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-activity-tab')).toBeTruthy());
+    await waitFor(() =>
+      expect(requestedUrls.some((u) => u.includes('/audit-logs') && u.includes(`orgId=${RECORD_ORG}`))).toBe(true),
+    );
+    for (const url of requestedUrls) expect(url).not.toContain(OTHER_ORG);
   });
 
   it('switches the context and lands on the dashboard from Work in this org', async () => {
@@ -298,7 +323,6 @@ describe('OrganizationRecordPage — permission gating', () => {
     });
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-overview-tab')).toBeTruthy());
-    expect(screen.queryByTestId('org-record-tab-placeholder-devices')).toBeNull();
   });
 });
 

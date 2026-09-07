@@ -4454,7 +4454,8 @@
       "saveOrder": "No se pudo guardar el orden de la organización",
       "saveOrganization": "No se pudo guardar la organización",
       "saveSite": "No se pudo guardar el sitio ({{status}})",
-      "deleteSite": "No se pudo eliminar el sitio"
+      "deleteSite": "No se pudo eliminar el sitio",
+      "loadSites": "No se pudieron cargar los sitios de esta organización."
     },
     "status": {
       "active": "Activo",
