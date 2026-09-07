@@ -276,7 +276,7 @@ function fireAudit(conn: AccountingConnection, audit: PendingAudit): void {
   } catch (err) {
     // Never let an audit failure undo committed money state.
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPull', action: audit.action, resourceId: audit.resourceId,
+      service: 'accountingPaymentPull', accounting_audit_action: audit.action, accounting_audit_resource_id: audit.resourceId,
     });
   }
 }
@@ -488,7 +488,7 @@ async function applyInsideTransaction(
     captureException(
       new Error(`${message} (remotePaymentId=${line.remotePaymentId}, invoiceId=${inv.id})`),
       undefined,
-      { service: 'accountingPaymentPull', remotePaymentId: line.remotePaymentId, invoiceId: inv.id },
+      { service: 'accountingPaymentPull', remote_entity_id: line.remotePaymentId, invoice_id: inv.id },
     );
     return noAudit(result('invoice_void', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
@@ -543,9 +543,12 @@ async function applyInsideTransaction(
     await markInvoiceMappingError(conn, invoiceMapping.id, `${PAYMENT_PULL_ERROR_PREFIX}${err.message}`);
     captureException(err, undefined, {
       service: 'accountingPaymentPull',
-      remotePaymentId: line.remotePaymentId,
-      remoteInvoiceId: line.remoteInvoiceId,
-      invoiceId: inv.id,
+      remote_entity_id: line.remotePaymentId,
+      // No allowlisted equivalent exists for the QBO-side invoice id
+      // (remoteInvoiceId) yet — omitted rather than tagged with an
+      // unallowlisted key; invoice_id below is Breeze's own invoice id and is
+      // sufficient to find the mapping row for this line.
+      invoice_id: inv.id,
     });
     return noAudit(result('currency_mismatch', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
