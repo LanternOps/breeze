@@ -137,8 +137,8 @@ importers:
         specifier: ^1.3.1
         version: 1.3.1(@hono/node-server@2.1.1(hono@4.13.5))(hono@4.13.5)
       '@hono/zod-validator':
-        specifier: ^0.9.0
-        version: 0.9.0(hono@4.13.5)(zod@4.4.3)
+        specifier: ^0.9.1
+        version: 0.9.1(hono@4.13.5)(zod@4.4.3)
       '@levischuck/tiny-cbor':
         specifier: ^0.2.11
         version: 0.2.11
@@ -3098,8 +3098,8 @@ packages:
       '@hono/node-server': ^1.19.11
       hono: ^4.6.0
 
-  '@hono/zod-validator@0.9.0':
-    resolution: {integrity: sha512-n0ZSXmCiHVIp4Y5wlOOyZCeTd/rsawA/qW1cipB8QOYKZ9N8Tk0nZUZCXho9cu374AN4JpDNKioNKBJ/W+LBug==}
+  '@hono/zod-validator@0.9.1':
+    resolution: {integrity: sha512-iiv6w0qrIc0arfvCtUqBWsvl4fXjzaTcQcCJTTtCnkawF9HHGE+KjEl0ox3gQJ6rKZEgE3mLExlQCF72M+mNuw==}
     peerDependencies:
       hono: '>=4.11.2'
       zod: ^3.25.0 || ^4.0.0
@@ -14574,7 +14574,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.9.0(hono@4.13.5)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.1(hono@4.13.5)(zod@4.4.3)':
     dependencies:
       hono: 4.13.5
       zod: 4.4.3
