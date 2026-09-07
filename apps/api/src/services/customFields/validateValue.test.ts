@@ -98,6 +98,21 @@ describe('validateCustomFieldValue', () => {
     }
   });
 
+  it('treats an empty string as a clear for dropdown and date, not a rejection', () => {
+    // The device-edit UI's <select> and <input type="date"> editors report a
+    // clear as '' (the blank option / an emptied date input), unlike the
+    // number editor which already normalises its clear to `null` before
+    // submitting. Without this, clearing either field 400s instead of clearing.
+    const dd = { fieldKey: 'tier', type: 'dropdown' as const, options: { choices: ['gold', 'silver'] } };
+    expect(validateCustomFieldValue(dd, '')).toEqual({ ok: true, value: null });
+    expect(validateCustomFieldValue(date, '')).toEqual({ ok: true, value: null });
+  });
+
+  it('still rejects an empty string for number and boolean (no clear convention there)', () => {
+    expect(validateCustomFieldValue(num, '')).toEqual({ ok: false, reason: 'invalid_type' });
+    expect(validateCustomFieldValue(bool, '')).toEqual({ ok: false, reason: 'invalid_type' });
+  });
+
   it('rejects objects and arrays outright', () => {
     expect(validateCustomFieldValue(text, { a: 1 })).toEqual({ ok: false, reason: 'invalid_type' });
     expect(validateCustomFieldValue(text, [1])).toEqual({ ok: false, reason: 'invalid_type' });

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Trash2 } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Play, Pencil, Copy, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScriptLanguage, OSType, ScriptRunAs } from '@breeze/shared';
 import { ScopeBadge } from '../shared/ScopeBadge';
@@ -37,6 +37,7 @@ type ScriptListProps = {
   categories?: string[];
   onRun?: (script: Script) => void;
   onEdit?: (script: Script) => void;
+  onDuplicate?: (script: Script) => void;
   onDelete?: (script: Script) => void;
   pageSize?: number;
   timezone?: string;
@@ -87,6 +88,7 @@ export default function ScriptList({
   categories = [],
   onRun,
   onEdit,
+  onDuplicate,
   onDelete,
   pageSize = 10,
   timezone,
@@ -377,6 +379,19 @@ export default function ScriptList({
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
+                      {onDuplicate && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDuplicate(script);
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                          title={t('scriptList.actions.duplicateTitle')}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={(e) => {

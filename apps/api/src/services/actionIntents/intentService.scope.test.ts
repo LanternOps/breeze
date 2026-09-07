@@ -477,6 +477,76 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #5106 — the approval headline must never surface the raw device-id stub
+// (aiGuardrails.buildApprovalDescription emits "... on device 6eae0f70...")
+// when the scoped device is loadable. `buildActionLabel` already does the
+// substitution given a hostname; the bug was that the scoped-device read
+// (line ~914) never selected hostname/displayName, so the call site (line
+// ~1074) had nothing to pass.
+// ---------------------------------------------------------------------------
+describe('createActionIntent — action label device hostname (#5106)', () => {
+  it('replaces the "on device <id>..." stub with the resolved device hostname', async () => {
+    const idStub = SCOPE_DEVICE_ID.slice(0, 8);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: 'supervised',
+      description: `Restart service "Spooler" on device ${idStub}...`,
+    });
+    queueSweepContext({
+      scopedDevice: [{ id: SCOPE_DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'KIT', displayName: null }],
+    });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+
+    const approvalRows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }>;
+    expect(approvalRows[0]?.actionLabel).toContain('on KIT');
+    expect(approvalRows[0]?.actionLabel).not.toMatch(/on device [0-9a-f]{8}\.\.\./i);
+  });
+
+  it('falls back to displayName when the device has no hostname override preference set', async () => {
+    const idStub = SCOPE_DEVICE_ID.slice(0, 8);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: 'supervised',
+      description: `Restart service "Spooler" on device ${idStub}...`,
+    });
+    queueSweepContext({
+      scopedDevice: [
+        { id: SCOPE_DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'raw-host-01', displayName: 'Front Desk PC' },
+      ],
+    });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+
+    const approvalRows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }>;
+    expect(approvalRows[0]?.actionLabel).toContain('on Front Desk PC');
+  });
+
+  it('leaves a device-less (unscoped) intent label untouched', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: 'supervised',
+      description: 'Restart a service',
+    });
+    queueSweepContext({ run: { deviceId: SCOPE_DEVICE_ID }, scopedDevice: [] });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput({ scope: undefined }));
+
+    const approvalRows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }>;
+    expect(approvalRows[0]?.actionLabel).toBe('Restart a service');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Final-review fix (#4189, item 1) — spec §4.2 amendment: a SWEEP-minted
 // proposal is a supervised inbox card this wave. It is never policy-decided,
 // so a sweep can never auto-execute even on a partner that has policy-decide

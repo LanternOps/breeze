@@ -16,6 +16,8 @@ vi.mock('./scriptDispatch', () => ({
     deliveryOutcome: 'sent',
     executedAt: new Date('2026-08-11T00:00:00Z'),
     ignoredParameters: [],
+    runAs: 'system' as const,
+    targetSessionId: null,
   }),
 }));
 // See scriptExecution.test.ts for why the resolver itself is stubbed here
@@ -49,6 +51,8 @@ describe('automationRuntime', () => {
       deliveryOutcome: 'sent',
       executedAt: new Date('2026-08-11T00:00:00Z'),
       ignoredParameters: [],
+      runAs: 'system' as const,
+      targetSessionId: null,
     } as any);
     vi.mocked(loadTenantVariableScope).mockResolvedValue({ orgIds: new Set() } as any);
   });
@@ -218,6 +222,8 @@ describe('automationRuntime', () => {
       deliveryOutcome: 'sent',
       executedAt: new Date('2026-08-11T00:00:00Z'),
       ignoredParameters: ['api_key'],
+      runAs: 'system' as const,
+      targetSessionId: null,
     } as any);
 
     const result = await executeRunScriptAction(

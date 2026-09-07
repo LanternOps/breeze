@@ -18,11 +18,16 @@ import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services
 import { createAuditLog } from '../../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
+import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 
 /**
  * Device custom-field VALUE read/write API.
  *
- * Device custom-field values live in the `devices.custom_fields` JSONB column.
+ * Device custom-field values live in the `device_custom_field_values` table
+ * (#3257 W05). `devices.custom_fields` is a trigger-maintained PROJECTION of it,
+ * kept so the ~34 existing JS readers and both partner-export statement triggers
+ * work unchanged — it is a read surface only and is never written from here.
  * The only built-in way to write them used to be `PATCH /devices/:id`, which is
  * gated on `authMiddleware` (browser session JWT only) + `requireMfa()` — so an
  * automation calling with an `X-API-Key` header was rejected at the very first
@@ -30,8 +35,10 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
  * was no API-key-authenticated path to stash a value (e.g. a script writing a
  * BitLocker recovery key into a custom field).
  *
- * NOT A SECRETS STORE: `custom_fields` is general automation/inventory data
- * stored in plaintext JSONB with no field-level encryption. It is the right
+ * NOT A SECRETS STORE: a custom-field value is general automation/inventory data
+ * stored in plaintext with no field-level encryption — and since W05 it is also
+ * `included` in the GDPR tenant export (`tenantExportPolicyRegistry.ts`), where
+ * the jsonb column it replaced was `excludedOpen`. It is the right
  * place for asset tags, notes, external IDs, etc. — it is NOT a vault. Real
  * secrets (BitLocker/FileVault recovery keys and similar) belong in the
  * dedicated, encrypted recovery-key feature tracked in #2021; exposing a value
@@ -59,6 +66,14 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
  * AFTER it, so mounting after `coreRoutes` would re-introduce the session-only
  * `authMiddleware` ahead of our API-key branch and resurrect the 401. See the
  * `hono_router_use_wildcard_root_mount_auth_leak` lesson.
+ *
+ * #3257 W04: a PATCH now requires a matching `custom_field_definitions` row —
+ * a key with no visible definition is rejected `400 unknown_field`, and a
+ * value that doesn't match the definition's declared type is rejected
+ * `400 invalid-custom-field-value`. The `bitlocker_recovery_key` example above
+ * is pre-#3257 framing kept for the auth-flavour narrative; a caller must now
+ * create the field's definition first (`routes/customFields.ts`) before a
+ * PATCH here will accept it.
  */
 export const customFieldValuesRoutes = new Hono();
 
@@ -225,17 +240,48 @@ customFieldValuesRoutes.patch(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    // Merge with existing values rather than replacing the whole object, matching
-    // the PATCH /devices/:id semantics.
-    const merged = { ...readExistingCustomFields(device.customFields), ...updates };
+    // Validate every key against its definition BEFORE merging. Custom-field
+    // values are an execution sink (installerVariables substitutes them into
+    // installer command lines) and a targeting control (filterEngine's
+    // custom.<key> selects deployment targets), so an unconstrained
+    // Record<string, string|number|boolean|null> was the wrong contract on
+    // both branches of dualAuth (#3257 W04). All-or-nothing: one PATCH is one
+    // operator action, unlike the importer's partial-apply bulk load.
+    const validation = await validateCustomFieldMap(device.orgId, device.osType, updates);
+    if (!validation.ok) {
+      return c.json(
+        {
+          error: INVALID_CUSTOM_FIELD_VALUE_MESSAGE,
+          code: 'invalid-custom-field-value',
+          fields: validation.rejected,
+        },
+        400,
+      );
+    }
 
+    // Writes go to `device_custom_field_values`, NOT to the jsonb (#3257 W05).
+    // `devices.custom_fields` is now a trigger-maintained projection of that
+    // table, so writing it here would be silently overwritten by the next value
+    // write and would bypass both the composite device/org FK and the definition
+    // coherence trigger. Merge semantics are unchanged — an upsert keyed on
+    // (device_id, definition_id) only touches the keys in this request, which is
+    // exactly what merging into the existing object used to mean.
+    await persistDeviceCustomFieldValues(
+      deviceId,
+      device.orgId,
+      validation.writes,
+      access.audit.actorType === 'api_key' ? 'api' : 'manual',
+    );
+
+    // Re-read the projection the trigger just rebuilt. It is the response
+    // contract (unchanged) and the only place unmanaged legacy keys survive.
     const [updated] = await db
-      .update(devices)
-      .set({ customFields: merged, updatedAt: new Date() })
+      .select({ customFields: devices.customFields })
+      .from(devices)
       // The org predicate is redundant under RLS + the org-checked lookup above,
-      // but pins the write to the exact verified device as defense-in-depth.
+      // but pins the read to the exact verified device as defense-in-depth.
       .where(and(eq(devices.id, deviceId), eq(devices.orgId, device.orgId)))
-      .returning({ customFields: devices.customFields });
+      .limit(1);
 
     if (!updated) {
       return c.json({ error: 'Device not found' }, 404);

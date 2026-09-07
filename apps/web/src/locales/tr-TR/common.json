@@ -168,6 +168,19 @@
     "optional": "İsteğe bağlı",
     "required": "Gerekli"
   },
+  "runContext": {
+    "label": "Farklı Çalıştır",
+    "scriptDefault": "Komut dosyası varsayılanı",
+    "scriptDefaultNamed": "Komut dosyası varsayılanı ({{context}})",
+    "system": "Sistem",
+    "user": "Oturum açmış kullanıcı",
+    "elevated": "Yükseltilmiş",
+    "unknown": "Kaydedilmedi",
+    "userInSession": "Oturum açmış kullanıcı (oturum {{session}})",
+    "sessionLabel": "Hedef oturum",
+    "sessionAny": "Herhangi bir etkin oturum",
+    "effectiveLabel": "Çalıştırma bağlamı"
+  },
   "shared": {
     "accessDenied": {
       "title": "Erişim engellendi",
@@ -358,6 +371,9 @@
       "criticalPending": "{{count}} kritik yamalar beklemede",
       "criticalPending_one": "{{count}} kritik yama bekleniyor",
       "criticalPending_other": "{{count}} kritik yamalar beklemede",
+      "unratedPending": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
+      "unratedPending_one": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
+      "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "empty": "Henüz yama verisi yok"
     },
     "vuln": {

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import JSZip from 'jszip';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 
@@ -39,6 +40,44 @@ interface SeededOrgs {
   siteId: string;
   siteName: string;
   prohibitedSentinels: string[];
+  /** #3257 W05 — the custom-field value that must REACH the archive, readable. */
+  customFieldValueSentinel: string;
+}
+
+// Seed the real backup dependency chain, including the command FK that used
+// to abort org erasure before restore_jobs reached its cascade step (#4871).
+async function seedRestore(orgId: string) {
+  const db = getTestDb();
+  const [site] = await db.execute(sql`SELECT id FROM sites WHERE org_id = ${orgId} LIMIT 1`);
+  let [device] = await db.execute(sql`SELECT id FROM devices WHERE org_id = ${orgId} LIMIT 1`);
+  if (!device) {
+    [device] = await db.execute(sql`
+      INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+      VALUES (${orgId}, ${site!.id as string}, ${crypto.randomUUID()}, 'restore-fixture', 'windows', '11', 'amd64', '1.0.0')
+      RETURNING id
+    `);
+  }
+  const deviceId = device!.id as string;
+  const [config] = await db.execute(sql`
+    INSERT INTO backup_configs (org_id, name, type, provider, provider_config)
+    VALUES (${orgId}, 'Restore fixture', 'file', 'local', '{}') RETURNING id
+  `);
+  const [job] = await db.execute(sql`
+    INSERT INTO backup_jobs (org_id, config_id, device_id)
+    VALUES (${orgId}, ${config!.id as string}, ${deviceId}) RETURNING id
+  `);
+  const [snapshot] = await db.execute(sql`
+    INSERT INTO backup_snapshots (org_id, job_id, device_id, snapshot_id)
+    VALUES (${orgId}, ${job!.id as string}, ${deviceId}, ${crypto.randomUUID()}) RETURNING id
+  `);
+  const [command] = await db.execute(sql`
+    INSERT INTO device_commands (device_id, type) VALUES (${deviceId}, 'restore_backup') RETURNING id
+  `);
+  const [restore] = await db.execute(sql`
+    INSERT INTO restore_jobs (org_id, snapshot_id, device_id, restore_type, command_id)
+    VALUES (${orgId}, ${snapshot!.id as string}, ${deviceId}, 'full', ${command!.id as string}) RETURNING id
+  `);
+  return { restoreId: restore!.id as string, commandId: command!.id as string };
 }
 
 async function seedTwoOrgs(): Promise<SeededOrgs> {
@@ -115,6 +154,8 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
   // and a sanitized revoke error — proves the export excludes them and
   // cascadeDeleteOrg removes the row.
   const deviceId = crypto.randomUUID();
+  const customFieldDefinitionId = crypto.randomUUID();
+  const customFieldValueSentinel = `ASSET-TAG-${suffix}`;
   await db.execute(sql`
     INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
     VALUES (${deviceId}, ${orgA}, ${siteA1}, ${'roundtrip-agent-' + suffix}, 'roundtrip-host', 'windows', '11', 'amd64', '1.0.0')
@@ -129,6 +170,24 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
       ${mtlsFingerprintSentinel}, ${'MTLS-SPKI-' + suffix}, 'active', now(), now() + interval '1 year',
       now(), 2, ${'MTLS-REVOKE-ERROR-' + suffix}
     )
+  `);
+
+  // device_custom_field_values (#3257 W05): one value on that device. Before
+  // W05, custom-field values lived in `devices.custom_fields`, a jsonb column —
+  // and every json/jsonb column is `excludedOpen` in the tenant-export policy,
+  // so every custom-field value a tenant ever stored was SILENTLY DROPPED from
+  // their GDPR export. The registry completeness check catches a deleted policy
+  // entry, but only THIS assertion proves the data itself reaches the archive,
+  // readable — which is why `field_key` is denormalized onto the row at all
+  // (readOrgRows is a bare column projection with no joins, so a
+  // definition_id-only row would export as an opaque uuid).
+  await db.execute(sql`
+    INSERT INTO custom_field_definitions (id, org_id, name, field_key, type)
+    VALUES (${customFieldDefinitionId}, ${orgA}, 'Asset Tag', 'asset_tag', 'text')
+  `);
+  await db.execute(sql`
+    INSERT INTO device_custom_field_values (device_id, org_id, definition_id, field_key, value_text, source)
+    VALUES (${deviceId}, ${orgA}, ${customFieldDefinitionId}, 'asset_tag', ${customFieldValueSentinel}, 'manual')
   `);
 
   await db.execute(sql`
@@ -264,6 +323,7 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     siteId: siteA1,
     siteName: siteA1Name,
     prohibitedSentinels,
+    customFieldValueSentinel,
   };
 }
 
@@ -286,7 +346,10 @@ describe('tenant export + erasure round-trip (live DB)', () => {
   });
 
   it('export manifest reflects only the target org rows', async () => {
-    const { orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels } = await seedTwoOrgs();
+    const {
+      orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
+      customFieldValueSentinel,
+    } = await seedTwoOrgs();
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -306,6 +369,11 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
     // device_mtls_certificates.json carries the one certificate history row.
     expect(byName.get('device_mtls_certificates.json')?.rowCount).toBe(1);
+    // device_custom_field_values.json carries the one custom-field value
+    // (#3257 W05). Before W05 these lived in the `devices.custom_fields` jsonb,
+    // which is `excludedOpen` like every json column — so a tenant's whole
+    // custom-field dataset was silently absent from their GDPR export.
+    expect(byName.get('device_custom_field_values.json')?.rowCount).toBe(1);
     // portal_branding.json carries the one portal-visibility-flags row.
     expect(byName.get('portal_branding.json')?.rowCount).toBe(1);
     // Every manifest entry carries a sha256.
@@ -315,6 +383,22 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(manifest.orgId).toBe(orgA);
 
     const archive = await JSZip.loadAsync(zipBuffer);
+    // The value must be READABLE in the archive, not just counted: `field_key`
+    // is denormalized onto the row precisely because `readOrgRows` is a bare
+    // column projection with no joins, so a definition_id-only row would export
+    // as an opaque uuid the data subject cannot interpret. Assert both the human
+    // -readable key and the value itself.
+    const customFieldValueRows = JSON.parse(
+      await archive.file('device_custom_field_values.json')!.async('string'),
+    ) as Array<Record<string, unknown>>;
+    expect(customFieldValueRows).toEqual([
+      expect.objectContaining({
+        org_id: orgA,
+        field_key: 'asset_tag',
+        value_text: customFieldValueSentinel,
+      }),
+    ]);
+
     const portalBrandingRows = JSON.parse(
       await archive.file('portal_branding.json')!.async('string'),
     ) as Array<Record<string, unknown>>;
@@ -410,9 +494,22 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     }
   });
 
+  it('detaches a deleted command without deleting its restore job, including after migration replay', async () => {
+    const db = getTestDb();
+    const { orgA } = await seedTwoOrgs();
+    const { restoreId, commandId } = await seedRestore(orgA);
+    await replayMigration('2026-10-09-000200-restore-job-command-set-null.sql');
+    await replayMigration('2026-10-09-000200-restore-job-command-set-null.sql');
+    await db.execute(sql`DELETE FROM device_commands WHERE id = ${commandId}`);
+    const rows = await db.execute(sql`SELECT command_id FROM restore_jobs WHERE id = ${restoreId}`);
+    expect([...rows]).toEqual([{ command_id: null }]);
+  });
+
   it('cascade erases the target org and leaves the other org intact', async () => {
     const db = getTestDb();
     const { orgA, orgB } = await seedTwoOrgs();
+    const restoreA = await seedRestore(orgA);
+    const restoreB = await seedRestore(orgB);
 
     // Sanity: both orgs populated before erasure.
     expect(await rowCount(db, 'sites', orgA)).toBe(2);
@@ -425,7 +522,17 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(await rowCount(db, 'invoice_line_devices', orgA)).toBe(1);
     expect(await rowCount(db, 'contract_billing_period_outcomes', orgA)).toBe(1);
 
+    expect(await rowCount(db, 'restore_jobs', orgA)).toBe(1);
+    expect(await rowCount(db, 'restore_jobs', orgB)).toBe(1);
     const stats = await cascadeDeleteOrg(orgA, PERFORMED_BY, PERFORMED_EMAIL);
+    expect(await rowCount(db, 'restore_jobs', orgA)).toBe(0);
+    expect(stats.tablesDeleted.restore_jobs).toBe(1);
+    expect([...(await db.execute(sql`SELECT id FROM device_commands WHERE id = ${restoreA.commandId}`))]).toEqual([]);
+    expect([...(await db.execute(sql`SELECT command_id FROM restore_jobs WHERE id = ${restoreB.restoreId}`))])
+      .toEqual([{ command_id: restoreB.commandId }]);
+    expect([...(await db.execute(sql`SELECT id FROM device_commands WHERE id = ${restoreB.commandId}`))])
+      .toEqual([{ id: restoreB.commandId }]);
+
 
     // Target org fully wiped.
     expect(await rowCount(db, 'sites', orgA)).toBe(0);

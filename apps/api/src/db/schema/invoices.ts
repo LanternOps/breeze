@@ -69,8 +69,8 @@ export const invoices = pgTable('invoices', {
   // reads ONLY this column afterwards, so a later partner-default change cannot
   // alter what a sanctioned re-render produces.
   deviceAppendix: boolean('device_appendix'),
-  // #3205 W07: 1 = billing evidence written at generation. NULL = pre-W07 or
-  // never generated from a contract. Invoice-level `recorded` flag — never
+  // #3205 W07: 1 = billing evidence captured at generation or interactive
+  // contract-line materialization. NULL = no evidence capture recorded. Invoice-level `recorded` flag — never
   // derived from an evidence row count.
   evidenceVersion: smallint('evidence_version'),
   termsAndConditions: text('terms_and_conditions'),

@@ -120,6 +120,8 @@ services:
       HOST: 0.0.0.0
       PORT: 4321
       PUBLIC_APP_VERSION: dev
+      # Empty → the web default (on); set false in .env to test the agent-only list.
+      PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST: ${PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST:-}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:4321/']
       start_period: 60s

@@ -1,6 +1,6 @@
 // apps/api/src/services/aiAgents/toolAllowlist.test.ts
 import { describe, expect, it } from 'vitest';
-import { isToolAllowlisted } from './toolAllowlist';
+import { intersectToolRefs, isToolAllowlisted } from './toolAllowlist';
 
 describe('isToolAllowlisted', () => {
   it('admits every action of a bare tool entry', () => {
@@ -33,5 +33,42 @@ describe('isToolAllowlisted', () => {
   it('never matches a different tool by prefix', () => {
     expect(isToolAllowlisted(['manage_services'], 'manage_services_v2', 'restart')).toBe(false);
     expect(isToolAllowlisted(['manage_services:restart'], 'manage', 'services:restart')).toBe(false);
+  });
+});
+
+describe('intersectToolRefs', () => {
+  it('keeps a scoped entry when the other side holds the bare tool (partner ceiling is a wildcard)', () => {
+    expect(intersectToolRefs(['manage_services'], ['manage_services:restart']))
+      .toEqual(['manage_services:restart']);
+    expect(intersectToolRefs(['manage_services:restart'], ['manage_services']))
+      .toEqual(['manage_services:restart']);
+  });
+
+  it('keeps a bare entry only when both sides are bare', () => {
+    expect(intersectToolRefs(['run_script'], ['run_script'])).toEqual(['run_script']);
+    expect(intersectToolRefs(['manage_services'], ['manage_services:stop', 'disk_cleanup:execute']))
+      .toEqual(['manage_services:stop']);
+  });
+
+  it('drops entries the other side never admits', () => {
+    expect(intersectToolRefs(['manage_services:restart'], ['manage_services:stop'])).toEqual([]);
+    expect(intersectToolRefs(['run_script'], [])).toEqual([]);
+  });
+
+  it('is sound and complete against isToolAllowlisted', () => {
+    const tools = ['manage_services', 'disk_cleanup', 'run_script'];
+    const actions = ['restart', 'execute', null];
+    const universe: string[] = [];
+    for (const t of tools) { universe.push(t); for (const a of actions) if (a) universe.push(`${t}:${a}`); }
+    const subsets = (xs: string[]): string[][] =>
+      xs.reduce<string[][]>((acc, x) => acc.concat(acc.map((s) => [...s, x])), [[]]);
+    const lists = subsets(universe).filter((s) => s.length <= 3);
+    for (const a of lists) for (const b of lists) {
+      const merged = intersectToolRefs(a, b);
+      for (const t of tools) for (const act of actions) {
+        const both = isToolAllowlisted(a, t, act) && isToolAllowlisted(b, t, act);
+        expect(isToolAllowlisted(merged, t, act)).toBe(both);
+      }
+    }
   });
 });

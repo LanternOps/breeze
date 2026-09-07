@@ -41,6 +41,9 @@ Related skills, not repeated here: `feature-pipeline` (intake and gates),
 5. Parallel fixers that add migrations each get a **distinct migration slot** in the
    brief (`2026-10-0X-100300`, `100500`, `100700`…); same prefix ties sort by slug.
    PRs that `CREATE OR REPLACE` a shared trigger function merge one at a time.
+6. **Public roadmap label.** The feature parent (and the issue, for a standalone
+   customer-facing fix) carries `p` before its first wave is dispatched. See
+   "Public roadmap (`p`)" below.
 
 ## Dispatch
 
@@ -113,6 +116,48 @@ gh pr merge <N> --repo LanternOps/breeze --squash --admin
 `mcp__feature-lifecycle__complete_wave` → wait for the post-merge `main` run to finish
 before the next merge in a train → dispatch the next unblocked wave → when every
 wave is merged, `mcp__feature-lifecycle__close_feature` with the not-verified list.
+Closing a `p`-labelled feature is what moves it to "Recently shipped" — confirm the
+label is still on the parent (not only on the roadmap item it came from) before
+closing.
+
+## Public roadmap (`p`)
+
+breezermm.com/roadmap/ renders exactly the LanternOps/breeze issues carrying the
+label `p` (marketing repo `src/lib/roadmap.ts`). The label is deliberately one
+character so it reads as noise on a public issue. Column is derived, not chosen:
+
+| Issue shape | Column |
+|---|---|
+| `roadmap` + `p`, open, `status:idea` / `status:considering` | Exploring |
+| `roadmap` + `p`, open, `status:ready` | Planned |
+| `feature` + `p`, open | In progress |
+| `feature` + `p`, closed | Recently shipped (latest 8 by close date) |
+| `enhancement` only, even with `p` | **not rendered** — needs `roadmap` + `status:*` too |
+
+Grouping uses the first `category:*` label (ranked Security → Remote Access →
+Patching → … → Platform); an item with none lands in "Other areas", so every `p`
+item gets at least one `category:`.
+
+Rules while delivering:
+
+- **Tag on register.** When `register_feature` creates the parent, add `p` plus a
+  `category:` if the feature is something a buyer would recognise (a capability,
+  integration, or workflow). Skip it for plumbing: RLS retrofits, redaction
+  contracts, relay alerting, attestation, abuse detectors, CI/infra.
+- **Move, don't duplicate.** `promote_to_feature` leaves the `roadmap` parent open
+  with its own `p`, so the same item shows in Planned and In progress. Remove `p`
+  from the roadmap item when the feature parent takes it. Same when a standalone
+  `enhancement` issue is superseded by a feature.
+- **Wave sub-issues never get `p`.** Only the parent renders.
+- **Standalone issue fixes** that are customer-facing and feature-sized get
+  `p,roadmap,status:considering,category:<area>` when dispatched, and are closed by
+  their PR as usual. Bug fixes and one-line enhancements stay unlabelled.
+- Nothing is live until the marketing site redeploys; no action needed here.
+
+```bash
+gh issue edit <parent#> -R LanternOps/breeze --add-label "p,category:<area>"
+gh issue edit <roadmap#> -R LanternOps/breeze --remove-label p
+```
 
 ## Record
 
@@ -132,4 +177,5 @@ sessions (account health, a new trap), never the procedure.
 | "Two at a time to be careful" | Host cap is ~8 heavy fixers; under-dispatching wastes the day. Read the load. |
 | "I'll use in-session Agent for the waves" | Waves run as `claude-dispatch --bg` issue-fixers in their own worktrees and account profiles; Agent inherits one account and one context. |
 | "The fixer died, dispatch a fresh one" | Its branch and transcript persist. Resume first. |
+| "I'll tag `p` in a batch later" | Batch passes miss shipped items (7 closed features were unlabelled on 09-05 and never appeared in Shipped). Tag at register, move at promote. |
 | "Fixer said done" | Verify branch, PR, review comment, CI on a `main`-targeted PR. Subagents have reported success with uncommitted or off-branch work. |

@@ -1,7 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
+import type { Permission } from '@/stores/auth';
+
+const withScriptsExecute: Permission[] = [{ resource: 'scripts', action: 'execute' }];
 
 function baseExecution(overrides: Partial<ScriptExecution> = {}): ScriptExecution {
   return {
@@ -19,12 +24,16 @@ function baseExecution(overrides: Partial<ScriptExecution> = {}): ScriptExecutio
   };
 }
 
-function renderExecution(overrides: Partial<ScriptExecution> = {}) {
+function renderExecution(
+  overrides: Partial<ScriptExecution> = {},
+  extraProps: Partial<ComponentProps<typeof ExecutionDetails>> = {}
+) {
   return render(
     <ExecutionDetails
       execution={baseExecution(overrides)}
       isOpen={true}
       onClose={() => {}}
+      {...extraProps}
     />
   );
 }
@@ -89,5 +98,131 @@ describe('ExecutionDetails custom-field write summary', () => {
 
     expect(screen.getByTestId('exec-custom-fields-applied')).toHaveTextContent('ram_slot_type');
     expect(screen.queryByTestId('exec-custom-fields-rejected')).not.toBeInTheDocument();
+  });
+});
+
+describe('ExecutionDetails "Run again" (#4885)', () => {
+  it('does not render a Run again button when no handler is supplied', () => {
+    renderExecution();
+
+    expect(screen.queryByTestId('execution-run-again')).not.toBeInTheDocument();
+  });
+
+  it('invokes onRunAgain with the full execution record when clicked', () => {
+    const onRunAgain = vi.fn();
+    const execution = baseExecution({ parameters: { target: 'C:\\Temp' } });
+    renderExecution({ parameters: { target: 'C:\\Temp' } }, { onRunAgain });
+
+    fireEvent.click(screen.getByTestId('execution-run-again'));
+
+    expect(onRunAgain).toHaveBeenCalledTimes(1);
+    expect(onRunAgain).toHaveBeenCalledWith(expect.objectContaining({
+      id: execution.id,
+      scriptId: execution.scriptId,
+      deviceId: execution.deviceId,
+      parameters: { target: 'C:\\Temp' },
+    }));
+  });
+});
+
+describe('ExecutionDetails run context (#4888)', () => {
+  it('names the system context for a run recorded as system', () => {
+    renderExecution({ runAs: 'system' });
+
+    expect(screen.getByTestId('run-context-chip')).toHaveTextContent('System');
+  });
+
+  it('names the target session for a run recorded as user with a session', () => {
+    renderExecution({ runAs: 'user', targetSessionId: 3 });
+
+    expect(screen.getByTestId('run-context-chip')).toHaveTextContent('session 3');
+  });
+
+  it('renders "not recorded" -- never "System" -- for a null runAs', () => {
+    renderExecution({ runAs: null });
+
+    const chip = screen.getByTestId('run-context-chip');
+    expect(chip).toHaveTextContent('Not recorded');
+    // This is the assertion that matters: a null runAs must never be
+    // rendered as a plausible-but-invented "System", since the column is
+    // nullable specifically because pre-#4888 rows genuinely don't know.
+    expect(chip).not.toHaveTextContent('System');
+  });
+});
+
+// The list/detail endpoints never return `duration` -- only startedAt/
+// completedAt are on the wire -- so this panel must derive it, same as
+// ExecutionHistory's table column.
+describe('ExecutionDetails duration (no `duration` field on the wire)', () => {
+  it('computes the Duration field from startedAt/completedAt when `duration` is absent', () => {
+    renderExecution({
+      startedAt: '2026-09-01T10:00:00.000Z',
+      completedAt: '2026-09-01T10:01:00.000Z',
+      duration: undefined,
+    });
+
+    const durationLabel = screen.getByText('Duration');
+    expect(durationLabel.parentElement).toHaveTextContent('1m 0s');
+  });
+
+  it('shows a placeholder rather than "-" for a pending execution with no started/completed timestamps', () => {
+    renderExecution({
+      status: 'pending',
+      startedAt: null,
+      completedAt: undefined,
+      duration: undefined,
+    });
+
+    const durationLabel = screen.getByText('Duration');
+    expect(durationLabel.parentElement).toHaveTextContent('—');
+  });
+});
+
+// #4767 — this mirrors ExecutionHistory's own Stop wiring (same
+// CANCELLABLE_STATUSES/DEFAULT_GRACE_SECONDS constants, deliberately kept
+// local rather than shared — see the file header comment), so it needs its
+// own regression coverage rather than relying on ExecutionHistory's tests to
+// stand in for it.
+describe('ExecutionDetails Stop affordance', () => {
+  it.each(['pending', 'queued', 'running'] as const)('offers Stop on %s', (status) => {
+    renderExecution({ status }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.getByTestId('cancel-execution')).toBeInTheDocument();
+  });
+
+  it.each(['completed', 'failed', 'timeout', 'cancelled'] as const)('has no Stop button on %s', (status) => {
+    renderExecution({ status }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+  });
+
+  it('hides Stop without scripts:execute', () => {
+    renderExecution({ status: 'running' }, { onCancel: vi.fn(), permissions: [] });
+    expect(screen.queryByTestId('cancel-execution')).toBeNull();
+  });
+
+  it('shows a disabled Stopping… button while cancelling', () => {
+    renderExecution({ status: 'cancelling' }, { onCancel: vi.fn(), permissions: withScriptsExecute });
+    expect(screen.getByTestId('cancel-execution')).toBeDisabled();
+  });
+
+  it('Force stop sends graceSeconds 0', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn().mockResolvedValue(undefined);
+    renderExecution({ status: 'running' }, { onCancel, permissions: withScriptsExecute });
+
+    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('confirm-force-stop'));
+
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'exec-1' }), 0);
+  });
+
+  it('the primary Stop confirm sends the default 5s grace', async () => {
+    const user = userEvent.setup();
+    const onCancel = vi.fn().mockResolvedValue(undefined);
+    renderExecution({ status: 'running' }, { onCancel, permissions: withScriptsExecute });
+
+    await user.click(screen.getByTestId('cancel-execution'));
+    await user.click(screen.getByTestId('confirm-stop'));
+
+    expect(onCancel).toHaveBeenCalledWith(expect.objectContaining({ id: 'exec-1' }), 5);
   });
 });

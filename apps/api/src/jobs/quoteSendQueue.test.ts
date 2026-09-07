@@ -261,8 +261,17 @@ describe('quoteSendQueue', () => {
     const jobId = 'quote-send-q-1-fire-uuid';
     const jobData = { quoteId: 'q-1', jobId, actor, emailOpts: { to: ['a@b.co'] } };
 
+    /** #3905 — sendQuote now returns a deferred; the worker runs it post-commit. */
+    function sendResult(delivery: Record<string, unknown> = { emailed: true }) {
+      return {
+        quote: { id: 'q-1', orgId: 'org1', revisionNumber: 1 },
+        acceptUrl: 'http://x/q/t',
+        deliverEmail: vi.fn(async () => ({ quote: { id: 'q-1' }, ...delivery })),
+      };
+    }
+
     it('claims atomically (clears ONLY sendJobId, guarded draft+jobId) then fires sendQuote with the ORIGINAL actor', async () => {
-      sendQuoteMock.mockResolvedValueOnce({ emailed: true });
+      sendQuoteMock.mockResolvedValueOnce(sendResult());
 
       await processQuoteSendJob(jobData);
 
@@ -278,16 +287,54 @@ describe('quoteSendQueue', () => {
       expect(updateCalls).toHaveLength(1);
     });
 
-    it('persists the email-failure reason when the send committed but no email went out', async () => {
-      sendQuoteMock.mockResolvedValueOnce({ emailed: false, emailReason: 'no_billing_contact' });
+    // #3905 — the failure marker is no longer written by this worker: the
+    // deferred owns it (persistQuoteSendOutcome), in its own short context.
+    // That is what this file's own header already demanded of the rollback
+    // marker below — an in-transaction stamp is undone by the very rollback
+    // that made it necessary — and it removes the fourth call site that had to
+    // remember to persist the reason (#3502).
+    it('leaves the failure marker to the deferred rather than writing it in the send transaction', async () => {
+      const result = sendResult({ emailed: false, emailReason: 'no_billing_contact' });
+      sendQuoteMock.mockResolvedValueOnce(result);
+
       await processQuoteSendJob(jobData);
-      expect(updateCalls[1]!.set).toEqual({ sendEmailReason: 'no_billing_contact' });
+
+      expect(result.deliverEmail).toHaveBeenCalledTimes(1);
+      // Only the claim ran inside the transaction — no second update.
+      expect(updateCalls).toHaveLength(1);
     });
 
-    it("falls back to 'send_failed' when emailed:false carries no reason", async () => {
-      sendQuoteMock.mockResolvedValueOnce({ emailed: false });
+    it('runs the deferred AFTER the send transaction has resolved', async () => {
+      const events: string[] = [];
+      withSystemDbAccessContextMock.mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+        const value = await fn();
+        events.push('tx:commit');
+        return value;
+      });
+      sendQuoteMock.mockResolvedValueOnce({
+        quote: { id: 'q-1', orgId: 'org1', revisionNumber: 1 },
+        acceptUrl: 'http://x/q/t',
+        deliverEmail: async () => { events.push('deliverEmail'); return { quote: { id: 'q-1' }, emailed: true }; },
+      });
+
       await processQuoteSendJob(jobData);
-      expect(updateCalls[1]!.set).toEqual({ sendEmailReason: 'send_failed' });
+
+      expect(events).toEqual(['tx:commit', 'deliverEmail']);
+    });
+
+    it('does NOT deliver when the send transaction failed after sendQuote returned', async () => {
+      // `deliverEmail` is captured inside the transaction, so a failure raised
+      // at COMMIT would otherwise mail a proposal for a quote still in draft.
+      const result = sendResult();
+      sendQuoteMock.mockResolvedValueOnce(result);
+      withSystemDbAccessContextMock.mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+        await fn();
+        throw new Error('commit failed');
+      });
+
+      await expect(processQuoteSendJob(jobData)).rejects.toThrow('commit failed');
+
+      expect(result.deliverEmail).not.toHaveBeenCalled();
     });
 
     it('no-ops entirely when the claim loses — must NOT clear sendScheduledAt (it may belong to a newer schedule)', async () => {

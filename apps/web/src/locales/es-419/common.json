@@ -168,6 +168,19 @@
     "optional": "Opcional",
     "required": "Requerido"
   },
+  "runContext": {
+    "label": "Ejecutar como",
+    "scriptDefault": "Predeterminado del script",
+    "scriptDefaultNamed": "Predeterminado del script ({{context}})",
+    "system": "Sistema",
+    "user": "Usuario registrado",
+    "elevated": "Elevado",
+    "unknown": "No registrado",
+    "userInSession": "Usuario registrado (sesión {{session}})",
+    "sessionLabel": "Sesión de destino",
+    "sessionAny": "Cualquier sesión activa",
+    "effectiveLabel": "Contexto de ejecución"
+  },
   "shared": {
     "accessDenied": {
       "title": "Acceso denegado",
@@ -358,6 +371,9 @@
       "criticalPending": "{{count}} parches críticos pendientes",
       "criticalPending_one": "{{count}} parche crítico pendiente",
       "criticalPending_other": "{{count}} parches críticos pendientes",
+      "unratedPending": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
+      "unratedPending_one": "{{count}} parche sin calificar pendiente (no se aprobará automáticamente)",
+      "unratedPending_other": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
       "empty": "Aún no hay datos de parches"
     },
     "vuln": {

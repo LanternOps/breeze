@@ -431,6 +431,8 @@
       "allCategories": "All categories",
       "default": "Default",
       "severityNote": "Severities apply to OS updates only. Third-party app updates are controlled by the toggle below — they are not severity-controlled.",
+      "unratedSeverityNote": "Unrated patches (no severity rating) are excluded from this severity selection and will not auto-approve, even with every severity checked, unless you turn on the toggle below.",
+      "autoApproveUnratedLabel": "Also auto-approve unrated patches",
       "manualDefault": "Every patch in this ring needs manual approval.",
       "manualCategory": "Patches in this category need manual approval.",
       "noOverrides": "All categories follow the default. Add an override to treat one differently."

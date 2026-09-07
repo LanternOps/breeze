@@ -21,6 +21,11 @@ import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import {
+  resolveScriptRunContextForApproval,
+  describeScriptRunContext,
+  type ScriptApprovalRunContext,
+} from './scriptRunContextApproval';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
@@ -31,6 +36,7 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
+import { approvedExecutingDenial } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -933,7 +939,36 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         }
       }
 
-      const description = guardrailCheck.description ?? `Execute ${toolName}`;
+      // #4888 — a script launch is the one approval where the ARGUMENTS decide
+      // a privilege level, so the effective run context is resolved here and
+      // stated on the card rather than left inside the collapsed parameter
+      // JSON. Non-fatal: any failure degrades to no run-context line, never to
+      // a failed approval. Returns null for every non-script tool.
+      let scriptRunContext: ScriptApprovalRunContext | null = null;
+      try {
+        scriptRunContext = await resolveScriptRunContextForApproval(
+          toolName,
+          input as Record<string, unknown>,
+          session.orgId,
+        );
+      } catch (err) {
+        // Reported, not just logged: `resolveScriptRunContextForApproval`
+        // already captures its own (expected) DB failure internally and
+        // degrades, so anything reaching HERE is a bug in the resolver rather
+        // than an outage — and its only symptom is an approval card that
+        // quietly stops naming the run context. That must not be invisible in
+        // Sentry, whatever the surrounding file's console-only convention.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve script run context for approval:', err);
+      }
+
+      const baseDescription = guardrailCheck.description ?? `Execute ${toolName}`;
+      // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
+      // every surface that renders one: the chat card, the durable intent's
+      // stored reason, the /approvals queue, and the mobile push.
+      const description = scriptRunContext
+        ? `${baseDescription}. ${describeScriptRunContext(scriptRunContext)}`
+        : baseDescription;
 
       if (guardrailCheck.tier >= 3) {
         // Hoisted above the try below (unlike `intent`, which stays
@@ -966,6 +1001,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
+          // The guardrail description names the device by an id stub
+          // ("on device 6eae0f70..." — buildApprovalDescription in
+          // aiGuardrails.ts); the approver reads the hostname. Matched on
+          // THIS call's id prefix, literally, so nothing user-supplied that
+          // happens to look like a stub gets rewritten.
+          const deviceStub = deviceId ? `on device ${deviceId.slice(0, 8)}...` : null;
+          const approvalLabel = deviceStub && deviceContext?.hostname
+            ? riskSummary.split(deviceStub).join(`on ${deviceContext.hostname}`)
+            : riskSummary;
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -980,6 +1024,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               input: input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
+              actionLabel: approvalLabel,
               orgId: session.orgId,
             });
           } catch (err) {
@@ -1033,6 +1078,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // (AiApprovalDialog) uses this to decide whether the self-approve
             // button is itself the whole decision or just this user's half of one.
             approvalScope: guardrailCheck.approvalScope,
+            // #4888 — structured twin of the sentence in `description`, so
+            // the card can render a localized, always-visible run-context row
+            // instead of relying on the English prose.
+            scriptRunContext,
             // The intent's real server-side deadline, so the self-approve card's
             // countdown reflects actual expiry (created_at + CHAT_EXPIRY_MS)
             // rather than a mount-relative client constant that can silently drift
@@ -1136,11 +1185,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // (see DURABLE_RELEASE_ONLY_TOOLS). Winning the CAS here and then
           // discovering that would leave the intent claimed by a releaser that
           // must not run it, and the inline path cannot safely un-claim.
+          //
+          // APPROVAL HANDOFF, NOT A FAILURE (#5107): the human approved and
+          // the worker is executing. `allowed: false` here means only "this
+          // session will not run it" — so it carries `handoff`, which makes
+          // aiAgentSdkTools.ts publish the tool result with `isError: false`
+          // and `status: 'approved_executing'`. The COORDINATION INVARIANT is
+          // untouched: this branch still returns BEFORE the
+          // `approved -> executing` CAS below, so the worker's claim remains
+          // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
-            return await failMatchedPlanStep({
-              allowed: false,
-              error: 'This action was approved and is being completed by the approval worker.',
-            });
+            return await failMatchedPlanStep(approvedExecutingDenial());
           }
 
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
@@ -1168,10 +1223,19 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // already claimed this intent for execution. Do NOT run the tool
             // inline — that would double-execute a real side effect. The worker
             // owns the ledger write and the intent's final result/error_code.
-            return await failMatchedPlanStep({
-              allowed: false,
-              error: 'This action is already being completed by the approval worker; it will not run twice.',
-            });
+            //
+            // Same APPROVAL HANDOFF as the durable-release branch above, and
+            // the one that actually fires today (DURABLE_RELEASE_ONLY_TOOLS is
+            // still empty, so a human-approved intent reaches the user as
+            // "FAILED" through THIS exit — #5107's recording). Losing the CAS
+            // is the mutual-exclusion working, not an error: the action is
+            // approved and running under the worker. `handoff` is what stops
+            // the chat painting it deny-red.
+            //
+            // Nothing about the invariant changes: the CAS was attempted and
+            // lost, we still refuse to execute inline, and we still do not
+            // touch the intent (the winner owns every subsequent transition).
+            return await failMatchedPlanStep(approvedExecutingDenial());
           }
 
           // Won the CAS: record the intent id so the outer catch can
@@ -1485,6 +1549,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             input,
             description,
             deviceContext,
+            scriptRunContext,
           });
 
           // Block until user clicks Approve/Reject, the cycle's shared approval
@@ -1613,7 +1678,7 @@ function isScriptApplyTool(toolName: string): boolean {
  * session and publishes tool_result events to the session's event bus.
  */
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs, sealed) => {
+  return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
     // Count this tool call toward the turn's tool_execution_count rollup
     // (consumed by streamingSessionManager's `result` handler) regardless of
     // whether the DB writes below succeed — postToolUse only fires for a tool
@@ -1655,6 +1720,12 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       toolUseId: toolUseId ?? '',
       output: uiOutput,
       isError,
+      // Server-asserted, from the gate's own decision — NOT read back out of
+      // `uiOutput` (#5107). `output.status` carries the same value for the
+      // model and for replayed history rows, but the tool owns that payload,
+      // so a client that trusted the shape alone would let any tool repaint
+      // its own failure as an approved, in-flight action.
+      ...(handoff ? { handoff } : {}),
     });
 
     // 1b. Plan step SSE events (also synchronous, emit before DB writes)
@@ -1912,6 +1983,24 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     }
 
     // 2e. Write audit event (fire-and-forget, non-blocking)
+    //
+    // An approval handoff (#5107) is neither success nor failure: the tool did
+    // not fail here, but it also did not run here — the durable worker owns the
+    // execution and writes the intent's own terminal record.
+    //
+    // `result` defaults to 'success' when omitted (auditEvents.ts), so simply
+    // flipping isError to false would have made anyone auditing "did the
+    // restart happen?" read `ai.tool.manage_services` as SUCCEEDED. Use
+    // 'dispatched' — the enum value that already exists for exactly this
+    // "handed to another execution path, outcome not yet known" case
+    // (AUDIT_RESULTS, and commandQueue.ts's enqueue-time rows). It is the
+    // indexed column real audit queries filter on; `details.toolOutcome`
+    // is the queryable-by-JSON detail, not a substitute for it.
+    //
+    // `handoff` comes from the pre-tool-use gate, NOT from `parsedOutput`:
+    // stamping this off the tool's own JSON would let a tool forge its own
+    // "routine authorized hand-off" audit row.
+    const handoffStatus = handoff;
     if (session.auditSnapshot) {
       writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {
         orgId,
@@ -1921,12 +2010,17 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         actorId: session.auth.user.id,
         actorEmail: session.auth.user.email,
         initiatedBy: 'ai',
-        ...(isError ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) } : {}),
+        ...(isError
+          ? { result: 'failure' as const, errorMessage: typeof parsedOutput.error === 'string' ? parsedOutput.error : safeOutput.slice(0, 500) }
+          : handoffStatus
+            ? { result: 'dispatched' as const }
+            : {}),
         details: {
           sessionId,
           toolInput: input,
           durationMs,
           tier: guardrailCheck.tier,
+          ...(handoffStatus ? { toolOutcome: handoffStatus } : {}),
           // `approved` is true only when this specific call was explicitly
           // decided (human approver / PAM / an approved plan step);
           // `approvalMethod` records the concrete path. Auto-executions

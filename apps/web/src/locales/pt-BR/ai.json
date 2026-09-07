@@ -34,7 +34,15 @@
     "registerDevice": "Registrar este dispositivo",
     "decideFailed": "Falha ao enviar a decisão",
     "approvedToast": "Ação aprovada",
-    "deniedToast": "Ação negada"
+    "approvedToast_one": "{{count}} ação aprovada",
+    "approvedToast_other": "{{count}} ações aprovadas",
+    "deniedToast": "Ação negada",
+    "deniedToast_one": "{{count}} ação negada",
+    "deniedToast_other": "{{count}} ações negadas",
+    "runContextLabel": "Contexto de execução:",
+    "runContextChosenByAssistant": "escolhido pelo assistente",
+    "runContextScriptDefault": "o padrão salvo do script",
+    "runContextOverrides": "escolhido pelo assistente, substituindo o padrão salvo do script ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Aguardando resposta...",
@@ -118,6 +126,7 @@
   },
   "aiToolCallCard": {
     "running": "Executando...",
+    "approvedRunning": "Aprovado · em execução",
     "input": "Entrada:",
     "error": "Erro:",
     "output": "Saída:"

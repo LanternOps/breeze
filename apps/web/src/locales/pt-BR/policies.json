@@ -9,6 +9,8 @@
       "thisPolicyHasNoOrganizationSoAssignment": "Esta política não tem uma organização, portanto os destinos da atribuição não podem ser listados.",
       "failedToAddAssignment": "Falha ao adicionar a atribuição",
       "failedToRemoveAssignment": "Falha ao remover a atribuição",
+      "assignmentAdded": "Atribuição adicionada",
+      "assignmentRemoved": "Atribuição removida",
       "roleFilter": "Filtro de função",
       "optional": "(opcional)",
       "noRestrictionAppliesToAllDeviceRoles": "Sem restrição - aplica-se a todas as funções de dispositivo",
@@ -131,7 +133,10 @@
       "removing": "Removendo...",
       "removeConfiguration": "Remover configuração",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "managedByYourMsp": "Gerenciado pelo seu MSP",
+      "inheritedByPolicies_one": "Herdado por {{count}} política",
+      "inheritedByPolicies_other": "Herdado por {{count}} políticas"
     },
     "configPolicyList": {
       "archived": "Arquivada",
@@ -150,7 +155,8 @@
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
       "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
-      "summary": "{{filtered}} de {{total}} políticas"
+      "summary": "{{filtered}} de {{total}} políticas",
+      "inheritsBadge": "Herda"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -166,7 +172,8 @@
       "areYouSureYouWantToDelete": "Tem certeza de que deseja excluir",
       "thisWillAlsoRemoveAllFeatureLinks": "? Isso também removerá todos os vínculos de recursos e atribuições. Esta ação não pode ser desfeita.",
       "delete": "excluir",
-      "deleting": "Excluindo..."
+      "deleting": "Excluindo...",
+      "deleteBlockedByChildren": "Exclua primeiro as políticas que herdam desta:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Falha ao carregar as atribuições",
@@ -664,6 +671,16 @@
         "configCheck": "config_check",
         "none": "none"
       },
+      "deviceLifecycleTab": {
+        "permanentlyDeleteRemovedDevices": "Excluir permanentemente os dispositivos removidos",
+        "offKeepRemovedDevicesUntilDeletedManually": "Desativado: os dispositivos removidos são mantidos até que alguém os exclua manualmente.",
+        "removedDevicesArePermanentlyDeletedAfterDays": "Os dispositivos removidos são excluídos permanentemente {{days}} dias após a remoção.",
+        "permanentlyDeleteRemovedDevicesAfter": "Excluir permanentemente os dispositivos removidos após",
+        "days": "dias",
+        "enterAWholeNumberOfDaysBetween": "Informe um número inteiro de dias entre 1 e 3650.",
+        "purgeIsIrreversibleAndDestroysHistory": "A exclusão é irreversível e destrói o histórico",
+        "aDailyJobPermanentlyDeletesTheDevice": "Uma tarefa diária exclui permanentemente o registro do dispositivo e tudo o que está vinculado a ele: alertas, scripts, patches, logs e inventário. Dispositivos com uma desinstalação do agente ainda na fila são ignorados até que ela seja concluída. A política mais próxima prevalece, então uma organização pode desativar isto para sair de uma janela definida para todas as organizações."
+      },
       "eventLogTab": {
         "security": "Segurança",
         "hardware": "Hardware",
@@ -926,7 +943,8 @@
         "loadingPolicies": "Carregando políticas...",
         "noExistingPoliciesFound": "Nenhuma política existente encontrada.",
         "selectAPolicy": "Selecionar a política...",
-        "clearSelection": "Limpar seleção"
+        "clearSelection": "Limpar seleção",
+        "allOrgs": "Todas as orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

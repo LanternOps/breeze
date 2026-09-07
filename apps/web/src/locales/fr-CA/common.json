@@ -168,6 +168,19 @@
     "optional": "Optionnel",
     "required": "Obligatoire"
   },
+  "runContext": {
+    "label": "Exécuter en tant que",
+    "scriptDefault": "Valeur par défaut du script",
+    "scriptDefaultNamed": "Valeur par défaut du script ({{context}})",
+    "system": "Système",
+    "user": "Utilisateur connecté",
+    "elevated": "Élevé",
+    "unknown": "Non enregistré",
+    "userInSession": "Utilisateur connecté (session {{session}})",
+    "sessionLabel": "Session cible",
+    "sessionAny": "Toute session active",
+    "effectiveLabel": "Contexte d’exécution"
+  },
   "shared": {
     "accessDenied": {
       "title": "Accès refusé",
@@ -358,6 +371,9 @@
       "criticalPending": "{{count}} correctifs critiques en attente",
       "criticalPending_one": "{{count}} correctif critique en attente",
       "criticalPending_other": "{{count}} correctifs critiques en attente",
+      "unratedPending": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
+      "unratedPending_one": "{{count}} correctif non évalué en attente (ne sera pas approuvé automatiquement)",
+      "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "empty": "Aucune donnée de correctifs pour l'instant"
     },
     "vuln": {

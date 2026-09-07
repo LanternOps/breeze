@@ -43,7 +43,11 @@ const auth = {
   user: { id: 'u-1' },
   partnerId: 'p-1',
   accessibleOrgIds: ['org-1'],
+  scope: 'partner',
 } as any;
+
+/** The same caller under an ORG-scoped principal (a client-portal-ish session). */
+const orgScopedAuth = { ...auth, scope: 'organization' } as any;
 
 const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
 const now = new Date('2026-07-01T00:00:00.000Z');
@@ -173,12 +177,20 @@ describe('manage_invoices', () => {
       ],
       periods: [],
     });
-    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+    const capturedDevices = [
+      { id: 'd1', hostname: 'one', role: 'server', siteId: null },
+      { id: 'd2', hostname: 'two', role: 'server', siteId: null },
+      { id: 'd3', hostname: 'three', role: 'server', siteId: null },
+    ];
+    vi.mocked(contractService.computeContractEstimate).mockImplementationOnce(async (_id, _actor, evidence) => {
+      evidence!.set('contract-line-1', capturedDevices);
+      return {
       currencyCode: 'USD',
       periodTotal: '37.50',
       lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true, counted: 3, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
       uncoveredDevices: null,
       overages: [],
+      };
     });
 
     const out = await getTool().handler(
@@ -198,12 +210,13 @@ describe('manage_invoices', () => {
     );
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', actor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor);
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor, expect.any(Map));
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
       line: expect.objectContaining({ id: 'contract-line-1', catalogItemId: 'catalog-1' }),
       resolved: { counted: 3, billed: 3, included: null, overage: 0, overageMode: null },
+      deviceEvidence: capturedDevices,
       currencyCode: 'USD',
     });
     expect(invoiceService.addContractLine).not.toHaveBeenCalled();
@@ -362,6 +375,45 @@ describe('manage_invoices', () => {
 
     expect(invoiceService.voidPayment).toHaveBeenCalledWith('pay-1', actor);
     expect(JSON.parse(out)).toEqual({ invoice: { id: 'inv-1', status: 'sent' } });
+  });
+
+  it('REFUSES record_payment under an org-scoped principal', async () => {
+    // The payment write reaches accounting_entity_mappings / accounting_connections,
+    // which are PARTNER-axis under RLS: an org-scoped principal sees zero rows
+    // there, so requestPaymentPush would silently no-op and the payment would
+    // never reach QuickBooks with no error anywhere. The HTTP route gates this
+    // with requireScope; the tool layer must too (review wave 2, finding 5).
+    const out = await getTool().handler(
+      {
+        action: 'record_payment',
+        invoiceId: 'inv-1',
+        payment: { amount: 125, method: 'card', receivedAt: '2026-07-01' },
+      },
+      orgScopedAuth,
+    );
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.recordPayment).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES void_payment under an org-scoped principal', async () => {
+    const out = await getTool().handler({ action: 'void_payment', paymentId: 'pay-1' }, orgScopedAuth);
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });
+    expect(invoiceService.voidPayment).not.toHaveBeenCalled();
+  });
+
+  it('still ALLOWS an org-scoped principal the non-payment actions', async () => {
+    // The gate is scoped to the two payment actions; nothing else changes.
+    await getTool().handler({ action: 'issue', invoiceId: 'inv-1' }, orgScopedAuth);
+
+    expect(invoiceService.issueInvoice).toHaveBeenCalled();
+  });
+
+  it('allows both payment actions under a SYSTEM principal', async () => {
+    await getTool().handler({ action: 'void_payment', paymentId: 'pay-1' }, { ...auth, scope: 'system' } as any);
+
+    expect(invoiceService.voidPayment).toHaveBeenCalled();
   });
 
   it('returns a JSON error when a service action rejects with InvoiceServiceError', async () => {

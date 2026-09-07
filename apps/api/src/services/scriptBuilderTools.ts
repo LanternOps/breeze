@@ -16,8 +16,10 @@ import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { normalizeScriptCode } from './scriptCodeNormalize';
+import { aiRunContextInputShape } from './scriptRunRequest';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -113,9 +115,10 @@ function makeExistingHandler(
 
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
+    let verifiedContext: ToolExecutionContext | undefined;
 
     if (onPreToolUse) {
-      let check: { allowed: true } | { allowed: false; error: string };
+      let check: Awaited<ReturnType<PreToolUseCallback>>;
       try {
         check = await onPreToolUse(toolName, args, exposedToolName);
       } catch (err) {
@@ -131,6 +134,12 @@ function makeExistingHandler(
         }
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
+      // Carry the exact script/variable material verified for approval, as
+      // the Fleet AI handler does. Re-reading it would reopen the gap between
+      // verifying the approved digest and dispatching the script.
+      verifiedContext = check.intentId
+        ? { ...check.context, actionIntentId: check.intentId }
+        : check.context;
     }
 
     try {
@@ -152,7 +161,9 @@ function makeExistingHandler(
         runOutsideDbContext(() =>
           withDbAccessContext(
             dbAccessContextFromAuth(auth),
-            () => executeTool(toolName, args, auth),
+            () => verifiedContext
+              ? executeTool(toolName, args, auth, { context: verifiedContext })
+              : executeTool(toolName, args, auth),
           ),
         ),
         TOOL_EXECUTION_TIMEOUT_MS,
@@ -368,6 +379,14 @@ export function buildScriptBuilderTools(
         scriptId: uuid.describe('The saved script ID to execute'),
         deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
         parameters: z.record(z.string(), z.unknown()).optional(),
+        // #4888 — the same run-context pair the `run_script` handler this tool
+        // dispatches to accepts. Adding fields here does NOT disturb the #4883
+        // name split: the tool stays registered as `execute_script_on_device`
+        // (what the model calls and what the session allowlist holds) while
+        // `SCRIPT_BUILDER_HANDLER_BY_MCP_TOOL` still routes it to the
+        // `run_script` handler, whose tier, RBAC and input schema own these
+        // fields.
+        ...aiRunContextInputShape,
       },
       makeExistingHandler('execute_script_on_device', getAuth, onPreToolUse, onPostToolUse)
     ),

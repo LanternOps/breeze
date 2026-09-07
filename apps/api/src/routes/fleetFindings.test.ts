@@ -522,6 +522,71 @@ describe('GET /fleet/findings — resolved-history fetch is bounded', () => {
   });
 });
 
+describe('GET /fleet/findings/counts', () => {
+  it('counts only open findings, grouped by org, excluding resolved (#5139)', async () => {
+    h.selectQueue.push([
+      { id: FINDING_1, orgId: ORG_1 },
+      { id: 'finding-2', orgId: ORG_1 },
+      { id: 'finding-3', orgId: ORG_2 },
+    ]);
+
+    const res = await get(
+      makeAuth({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG_1, ORG_2] }),
+      '/counts'
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ total: 3, byOrg: { [ORG_1]: 2, [ORG_2]: 1 } });
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'eq', column: fleetFindings.status, value: 'open' });
+    expect(where.args).toContainEqual({ op: 'inArray', column: fleetFindings.orgId, values: [ORG_1, ORG_2] });
+  });
+
+  it('a resolved finding never reaches the query — only status=open is fetched', async () => {
+    // The mock DB has already applied the WHERE server-side in reality; here
+    // we assert the route only ever queries the open set, so a resolved
+    // finding sitting in the same org can never be counted even if a future
+    // refactor loosens the WHERE clause upstream.
+    h.selectQueue.push([{ id: FINDING_1, orgId: ORG_1 }]);
+    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/counts');
+    const body = await res.json();
+    expect(body).toEqual({ total: 1, byOrg: { [ORG_1]: 1 } });
+
+    const where = h.capturedWheres[0] as { args: unknown[] };
+    expect(where.args).toContainEqual({ op: 'eq', column: fleetFindings.status, value: 'open' });
+  });
+
+  it('org-scope token with no access sees an empty count, not an error', async () => {
+    h.selectQueue.push([]);
+    const res = await get(makeAuth({ scope: 'organization', orgId: ORG_1 }), '/counts');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ total: 0, byOrg: {} });
+  });
+
+  it('site-restricted caller only counts findings with an in-scope member device', async () => {
+    h.selectQueue.push([
+      { id: FINDING_1, orgId: ORG_1 },
+      { id: 'finding-2', orgId: ORG_1 },
+    ]);
+    // Only FINDING_1 has an in-site member.
+    h.selectQueue.push([{ findingId: FINDING_1 }]);
+
+    const res = await get(makeAuth({ allowedSiteIds: [SITE_1] }), '/counts');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ total: 1, byOrg: { [ORG_1]: 1 } });
+  });
+
+  it('fails closed with an empty allowedSiteIds array (no membership query issued)', async () => {
+    h.selectQueue.push([{ id: FINDING_1, orgId: ORG_1 }]);
+
+    const res = await get(makeAuth({ allowedSiteIds: [] }), '/counts');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ total: 0, byOrg: {} });
+    expect(h.mockSelect).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('GET /fleet/findings/:id', () => {
   it('returns 404 for an unknown id', async () => {
     h.selectQueue.push([]);
@@ -1143,5 +1208,50 @@ describe('POST /fleet/findings/:id/remediate', () => {
       FINDING_1,
       expect.objectContaining({ actionKind: 'script', scriptId, parameters: { foo: 'bar' } })
     );
+  });
+
+  // #4888 — run context for a fleet-wide remediation run. Script branch only:
+  // a `command` run has no script row whose default there would be anything
+  // to override.
+  it('accepts runAs: "user" on the script branch and forwards it to createRemediationRun', async () => {
+    createRemediationRunMock.mockResolvedValue({ runId: 'run-1', targetCount: 1, skipped: [], orgId: ORG_1 });
+
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      runAs: 'user',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(202);
+    expect(createRemediationRunMock).toHaveBeenCalledWith(
+      expect.anything(),
+      FINDING_1,
+      expect.objectContaining({ actionKind: 'script', scriptId: SCRIPT_1, runAs: 'user' })
+    );
+  });
+
+  it('rejects runAs: "elevated" on the script branch (400) — elevation is not a launch-time choice', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'script',
+      scriptId: SCRIPT_1,
+      runAs: 'elevated',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects runAs on the command branch (400) — the branch is .strict() with no such field', async () => {
+    const res = await post(makeAuth(), `/${FINDING_1}/remediate`, {
+      actionKind: 'command',
+      commandType: 'reboot',
+      runAs: 'user',
+      parameters: {},
+    });
+
+    expect(res.status).toBe(400);
+    expect(createRemediationRunMock).not.toHaveBeenCalled();
   });
 });

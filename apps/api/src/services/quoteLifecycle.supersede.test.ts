@@ -14,6 +14,19 @@ const whereCalls: unknown[] = [];
 /** Every `.for(...)` mode and the number of preceding `.where(...)` calls. */
 const forCalls: Array<{ mode: unknown; afterWhereIndex: number }> = [];
 
+// #3905 — the RLS scope sendQuote captures and the deferred email re-enters.
+// vi.hoisted so it exists before the hoisted vi.mock('../db') factory runs.
+const { TEST_DB_CONTEXT } = vi.hoisted(() => ({
+  TEST_DB_CONTEXT: {
+    scope: 'partner' as const,
+    orgId: null,
+    accessibleOrgIds: ['org-1'],
+    accessiblePartnerIds: ['partner-1'],
+    userId: 'user-1',
+    currentPartnerId: 'partner-1',
+  },
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -43,6 +56,12 @@ vi.mock('../db', () => {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // #3905 — sendQuote/resendQuote assert an ambient context and capture its
+    // metadata so the deferred email can re-enter the SAME RLS scope. The stub
+    // context is what the deferred's DB phases are asserted to run under.
+    assertInTransaction: () => {},
+    getCurrentDbAccessContext: () => TEST_DB_CONTEXT,
+    withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
   };
 });
 
@@ -312,7 +331,9 @@ describe('sendQuote — revision supersede', () => {
     queueResult([{ id: 'q1' }]);
     queueAfterClaim();
 
-    await sendQuote('q2', actor);
+    // #3905 — the email is deferred out of the send transaction, so the
+    // envelope only exists once the deferred has been run.
+    await (await sendQuote('q2', actor)).deliverEmail();
 
     expect(capturedEmailArgs?.subject).toBe('Updated proposal Q-2026-0042-R2 from Acme MSP');
   });
@@ -322,7 +343,7 @@ describe('sendQuote — revision supersede', () => {
     queueResult([{ id: 'q1' }]);
     queueAfterClaim();
 
-    await sendQuote('q2', actor, { subject: 'Bespoke subject' });
+    await (await sendQuote('q2', actor, { subject: 'Bespoke subject' })).deliverEmail();
 
     expect(capturedEmailArgs?.subject).toBe('Bespoke subject');
   });

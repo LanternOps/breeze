@@ -38,6 +38,7 @@ import {
 } from './helpers';
 import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
+import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
@@ -50,7 +51,7 @@ import {
   type ManifestTrustKey,
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
-import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
@@ -346,7 +347,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           // UNRESTRICTED. Fall back to the shared constant, never to undefined.
           agent.claimTypeAllowlist ?? DRAIN_CLAIM_TYPE_ALLOWLIST,
         );
-        return decryptClaimedCommandsForDelivery(claimed);
+        return prepareClaimedCommandsForDelivery(claimed);
       }),
     );
 
@@ -767,7 +768,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // the device update at all, so the stored value here is always from an
     // earlier beat.
     return c.json({
-      commands: await decryptClaimedCommandsForDelivery(watchdogCommands, {
+      commands: await prepareClaimedCommandsForDelivery(watchdogCommands, {
         reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
           data.securityCapabilities?.scriptSecretEnvVersion,
         ),
@@ -837,8 +838,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.mainAgentSilentSince = null;
   }
 
-  // Only update deviceRole if agent provides one and current source is 'auto'
-  if (data.deviceRole && device.deviceRoleSource === 'auto') {
+  // Only update deviceRole if agent provides one, current source is 'auto',
+  // and it actually differs. The agent sends deviceRole on EVERY heartbeat and
+  // 'auto' is the fleet-wide default, so without the inequality check every
+  // steady-state heartbeat would look like a filterable change and trigger a
+  // dynamic-group re-evaluation (#4630 review).
+  if (data.deviceRole && device.deviceRoleSource === 'auto' && data.deviceRole !== device.deviceRole) {
     deviceUpdates.deviceRole = data.deviceRole;
   }
 
@@ -1088,6 +1093,28 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         resourceType: 'device',
         resourceId: device.id,
         details: { changes },
+      });
+    }
+
+    // #4630 — dynamic device group membership re-evaluation. Only the fields a
+    // filter can actually key on.
+    //
+    // NOT awaited, and deliberately no DB or Redis work here: this handler runs
+    // inside `withDbAccessContext`, i.e. a real transaction still holding this
+    // request's pooled Postgres connection and the `UPDATE devices` row lock.
+    // The evaluation itself is unbounded (one filter evaluation per dynamic
+    // group in the org, plus a peripheral-policy enqueue per membership flip),
+    // so it belongs on the queue — see jobs/deviceGroupJobs.ts for the full
+    // rationale. `requestDeviceGroupReevaluation` never rejects.
+    const filterableChangedFields = (['hostname', 'osVersion', 'osBuild', 'deviceRole'] as const)
+      .filter((field) => deviceUpdates[field] !== undefined);
+    if (filterableChangedFields.length > 0) {
+      void requestDeviceGroupReevaluation({
+        deviceId: device.id,
+        orgId: device.orgId,
+        eventType: 'device.updated',
+        changedFields: [...filterableChangedFields],
+        reason: 'heartbeat_device_change',
       });
     }
   }
@@ -1624,7 +1651,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // the same value but is guarded on the device not being decommissioned/
   // quarantined, so it can be skipped entirely; trusting the stored value
   // could then deliver a sealed secret to an agent that just reported 0.
-  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands, {
+  const deliverableCommands = await prepareClaimedCommandsForDelivery(commands, {
     reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
       data.securityCapabilities?.scriptSecretEnvVersion,
     ),

@@ -34,7 +34,15 @@
     "registerDevice": "Bu cihazı kaydedin",
     "decideFailed": "Karar gönderilemedi",
     "approvedToast": "İşlem onaylandı",
-    "deniedToast": "İşlem reddedildi"
+    "approvedToast_one": "{{count}} işlem onaylandı",
+    "approvedToast_other": "{{count}} işlem onaylandı",
+    "deniedToast": "İşlem reddedildi",
+    "deniedToast_one": "{{count}} işlem reddedildi",
+    "deniedToast_other": "{{count}} işlem reddedildi",
+    "runContextLabel": "Çalıştırma bağlamı:",
+    "runContextChosenByAssistant": "asistan tarafından seçildi",
+    "runContextScriptDefault": "komut dosyasının kayıtlı varsayılanı",
+    "runContextOverrides": "asistan tarafından seçildi ve komut dosyasının kayıtlı varsayılanını geçersiz kılıyor ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Yanıt bekleniyor...",
@@ -118,6 +126,7 @@
   },
   "aiToolCallCard": {
     "running": "Koşuyor...",
+    "approvedRunning": "Onaylandı · çalışıyor",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"

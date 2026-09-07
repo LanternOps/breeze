@@ -1,0 +1,117 @@
+{
+  "orgRecord": {
+    "documentTitle": "Organización",
+    "header": {
+      "type": {
+        "customer": "Cliente",
+        "internal": "Interno"
+      },
+      "primaryContact": "Contacto principal",
+      "noPrimaryContact": "Sin contacto principal",
+      "sites_one": "{{count}} sitio",
+      "sites_other": "{{count}} sitios",
+      "scopeChip": "Espacio de trabajo: {{orgName}}",
+      "scopeChipHint": "Su espacio de trabajo está configurado en otra organización. Esta página siempre muestra {{orgName}}.",
+      "created": "Cliente desde {{date}}"
+    },
+    "actions": {
+      "workHere": "Trabajar en esta organización",
+      "workHereToast": "Cambiado a {{orgName}}",
+      "settings": "Configuración",
+      "more": "Más acciones",
+      "archive": "Archivar",
+      "merge": "Fusionar",
+      "restore": "Restaurar",
+      "retry": "Intentar de nuevo"
+    },
+    "tabs": {
+      "overview": "Resumen",
+      "contacts": "Contactos",
+      "sites": "Sitios",
+      "devices": "Dispositivos",
+      "tickets": "Tickets",
+      "billing": "Contratos y facturación",
+      "activity": "Actividad"
+    },
+    "comingSoon": {
+      "title": "Disponible pronto",
+      "description": "Esta pestaña llegará en la próxima actualización del registro de la organización."
+    },
+    "overview": {
+      "tiles": {
+        "devices": "Dispositivos",
+        "devicesSub": "{{online}} de {{total}} en línea",
+        "alerts": "Alertas abiertas",
+        "alertsSub": "{{critical}} críticas · {{high}} altas",
+        "tickets": "Tickets abiertos",
+        "ticketsSub": "{{count}} en espera del cliente",
+        "contracts": "Contratos activos",
+        "contractsSub": "Próxima renovación {{date}}",
+        "contractsNoRenewal": "Sin próxima renovación",
+        "invoices": "Pendiente",
+        "invoicesSub": "Próximo vencimiento {{date}}",
+        "invoicesOverdue_one": "{{count}} vencida",
+        "invoicesOverdue_other": "{{count}} vencidas",
+        "invoicesNothingDue": "Nada pendiente",
+        "contacts": "Contactos",
+        "portalUsers": "Usuarios del portal",
+        "sites": "Sitios"
+      },
+      "activity": {
+        "title": "Actividad reciente",
+        "empty": "Aún no hay actividad registrada.",
+        "failed": "No se pudo cargar la actividad reciente.",
+        "viewAll": "Ver toda la actividad"
+      },
+      "criticalAlerts": {
+        "title": "Alertas críticas abiertas",
+        "empty": "No hay alertas críticas abiertas.",
+        "failed": "No se pudieron verificar las alertas críticas abiertas.",
+        "viewAll": "Ver todas las alertas"
+      },
+      "lastActivity": "Última actividad {{date}}",
+      "noSummary": "Los totales de resumen no están disponibles en este momento."
+    },
+    "archived": {
+      "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",
+      "restoreError": "No se pudo restaurar esta organización."
+    },
+    "lifecycle": {
+      "inaccessible": "Esta organización está {{status}}, por lo que sus datos en vivo no están disponibles. Aún puede verla en la lista de organizaciones.",
+      "backToList": "Volver a organizaciones"
+    },
+    "unavailable": {
+      "title": "No disponible en este espacio de trabajo",
+      "description": "Los registros de organización son una vista a nivel de partner. Su inicio de sesión está limitado a una sola organización, por lo que no hay nada para cambiar aquí.",
+      "action": "Ir al panel"
+    },
+    "notFound": {
+      "title": "Organización no encontrada",
+      "description": "Esta organización no existe o ya no tiene acceso a ella.",
+      "action": "Volver a organizaciones"
+    },
+    "error": {
+      "title": "No se pudo cargar esta organización",
+      "description": "Ocurrió un error al obtener el registro. Verifique su conexión e intente de nuevo."
+    },
+    "loading": "Cargando organización…",
+    "tickets": {
+      "tabs": {
+        "open": "Abiertos",
+        "all": "Todos",
+        "closed": "Cerrado"
+      },
+      "newTicket": "Nuevo ticket",
+      "loadFailed": "Los tickets no se pudieron cargar.",
+      "forbidden": "No tiene permiso para ver tickets.",
+      "truncated": "Mostrando {{shown}} de {{total}} tickets."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contratos",
+        "invoices": "Facturas",
+        "quotes": "Cotizaciones"
+      }
+    }
+  }
+}

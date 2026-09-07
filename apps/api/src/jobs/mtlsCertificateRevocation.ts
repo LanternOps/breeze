@@ -39,6 +39,7 @@ import {
   enqueueCertificateRevocationJob,
   type MtlsCertificateRevocationJobData,
 } from '../services/deviceMtlsCertificateLifecycle';
+import { attachWorkerObservability } from './workerObservability';
 
 const { db, runOutsideDbContext, withSystemDbAccessContext } = dbModule;
 
@@ -163,6 +164,7 @@ export function initializeMtlsCertificateRevocationWorker(): void {
       concurrency: 5,
     },
   );
+  attachWorkerObservability(worker, 'mtlsCertificateRevocationWorker');
 
   worker.on('error', (error) => {
     console.error('[MtlsCertificateRevocationWorker] Worker error:', { errorCode: error.name });

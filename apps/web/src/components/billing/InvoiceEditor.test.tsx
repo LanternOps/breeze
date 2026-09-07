@@ -72,6 +72,15 @@ describe('InvoiceEditor', () => {
     expect(screen.getByTestId('invoice-line-desc-line-1')).toHaveValue('Consulting');
   });
 
+  it('links the Bill To name to its organization record (#5075 W03)', async () => {
+    render(<InvoiceEditor detail={draft([manualLine], { orgId: 'org-9', billToName: 'Globex Inc' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
+    const link = screen.getByTestId('org-record-link');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/organizations/org-9');
+    expect(link).toHaveTextContent('Globex Inc');
+  });
+
   it('characterizes a contract overage sibling as editable while a bundle child is read-only (#3205 W04)', async () => {
     const overage = {
       ...manualLine, id: 'over', sourceType: 'contract' as const, parentLineId: null,

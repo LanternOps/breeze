@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -155,13 +158,29 @@ type actuatePayload struct {
 	Password           string `json:"password,omitempty"`
 	TimeoutMs          int    `json:"timeoutMs"`
 	TargetPath         string `json:"targetPath"`
-	CommandLine        string `json:"commandLine"`
+	// TargetHash is the server's echo of elevation_requests.target_executable_hash
+	// (SHA-256, when known) — display-only, for the endpoint event log (#4913).
+	TargetHash  string `json:"targetHash,omitempty"`
+	CommandLine string `json:"commandLine"`
 	// SubjectUsername is the server's echo of the stored
 	// elevation_requests.subject_username — the account that requested this
 	// elevation. Path B resolves it to that user's live session so the elevated
 	// process lands in front of the requester on RDP/multi-session hosts rather
 	// than the physical console. Empty/absent → console fallback. Path A ignores it.
 	SubjectUsername string `json:"subjectUsername,omitempty"`
+
+	// Display-only identity/context fields for the endpoint's local audit
+	// trail — Windows Event Log (Breeze-PAM source) + audit.jsonl (#4913).
+	// Resolved server-side, inside the same tenant-scoped transaction that
+	// queued this command, from elevation_requests + users. Never a user id,
+	// token, or credential — see apps/api/src/routes/devices/actuateElevation.ts.
+	RequestedByName string `json:"requestedByName,omitempty"`
+	ApprovedByName  string `json:"approvedByName,omitempty"`
+	ApprovedByEmail string `json:"approvedByEmail,omitempty"`
+	ApprovedAt      string `json:"approvedAt,omitempty"`
+	RiskTier        *int   `json:"riskTier,omitempty"`
+	MatchedRuleName string `json:"matchedRuleName,omitempty"`
+	WindowEndsAt    string `json:"windowEndsAt,omitempty"`
 }
 
 // pamTarget carries the target executable path + command line into
@@ -171,13 +190,87 @@ type actuatePayload struct {
 // (handleActuateElevation) gets them echoed back from the server's stored
 // elevation_requests row, so the agent holds no cross-request state.
 type pamTarget struct {
-	Path        string
+	Path string
+	// TargetHash is the target executable's SHA-256, when known — display-only,
+	// for the endpoint event log (#4913). Not used for verification here; the
+	// actuator's own target re-validation is a separate concern.
+	TargetHash  string
 	CommandLine string
 	// SubjectUsername is the account that requested the elevation, used by Path
 	// B to place the launched process in that user's live session. Local flow:
 	// from etwlua.Event.SubjectUsername. Remote flow: server-echoed
 	// elevation_requests.subject_username. Empty → console fallback.
 	SubjectUsername string
+
+	// Display-only identity/context fields for the endpoint's local Windows
+	// Event Log + audit.jsonl entries (#4913). Populated by the remote
+	// actuate_elevation path from the server-resolved approver identity
+	// (actuatePayload); zero-valued on the local ETW-driven flow (RunPamFlow),
+	// which has no Breeze approver to name for an auto-approved local decision.
+	// Never a user id, token, or credential — see eventLogFields below.
+	RequestedByName string
+	ApprovedByName  string
+	ApprovedByEmail string
+	ApprovedAt      string
+	RiskTier        string
+	MatchedRuleName string
+	WindowEndsAt    string
+}
+
+// auditPamElevation appends the same display-only identity/context fields
+// written to the Windows Event Log (#4913) to the agent's local audit.jsonl,
+// via the existing tamper-evident audit.Logger — so the trail exists even on
+// platforms/configs where the Windows Event Log write is unavailable or
+// disabled. Safe to call on a nil h or nil h.auditLog (Logger.Log no-ops).
+func (h *Heartbeat) auditPamElevation(requestID string, target pamTarget, outcome string) {
+	if h == nil {
+		return
+	}
+	h.auditLog.Log(audit.EventPrivilegedOp, requestID, map[string]any{
+		"pamStage":        "elevation_actuation",
+		"outcome":         outcome,
+		"targetPath":      target.Path,
+		"targetHash":      target.TargetHash,
+		"subjectUser":     target.SubjectUsername,
+		"requestedByName": target.RequestedByName,
+		"approvedByName":  target.ApprovedByName,
+		"approvedByEmail": target.ApprovedByEmail,
+		"approvedAt":      target.ApprovedAt,
+		"riskTier":        target.RiskTier,
+		"matchedRuleName": target.MatchedRuleName,
+		"windowEndsAt":    target.WindowEndsAt,
+	})
+}
+
+// eventLogFields projects a pamTarget into the display-only field set
+// written to the endpoint's local Windows Event Log / audit.jsonl trail
+// (#4913). requestID and detail are threaded in by the caller since they
+// vary per lifecycle stage rather than per target.
+func (t pamTarget) eventLogFields(requestID, detail string) eventlog.PAMFields {
+	return eventlog.PAMFields{
+		ElevationRequestID: requestID,
+		TargetPath:         t.Path,
+		TargetSHA256:       t.TargetHash,
+		SubjectUser:        t.SubjectUsername,
+		RequestedByName:    t.RequestedByName,
+		ApprovedByName:     t.ApprovedByName,
+		ApprovedByEmail:    t.ApprovedByEmail,
+		ApprovedAt:         t.ApprovedAt,
+		WindowEndsAt:       t.WindowEndsAt,
+		RiskTier:           t.RiskTier,
+		MatchedRuleName:    t.MatchedRuleName,
+		Detail:             detail,
+	}
+}
+
+// riskTierString renders the optional server-supplied risk tier for display
+// in the event log body. nil (absent/null) renders as "" (shown as "-" by
+// PAMFields.message).
+func riskTierString(tier *int) string {
+	if tier == nil {
+		return ""
+	}
+	return strconv.Itoa(*tier)
 }
 
 // actuateResult is the public CommandResult Stdout payload. Mirrors
@@ -196,6 +289,17 @@ var newActuator = pamactuator.NewWithStrategy
 
 // newElevationAccountManager is test-swappable for handler safety tests.
 var newElevationAccountManager = elevaccount.New
+
+// PAM lifecycle event-log writers (#4913), indirected so call-site tests can
+// install a fake and assert exactly which stage fired with which fields —
+// eventlog.Event itself is a no-op on non-Windows, so without this seam
+// these call sites would be untestable outside a Windows CI runner.
+var (
+	writePAMElevationActuated = eventlog.WritePAMElevationActuated
+	writePAMSessionEnded      = eventlog.WritePAMSessionEnded
+	writePAMAccountDemoted    = eventlog.WritePAMAccountDemoted
+	writePAMActuationRefused  = eventlog.WritePAMActuationRefused
+)
 
 func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
@@ -240,7 +344,19 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	defer release()
 
 	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
-		pamTarget{Path: payload.TargetPath, CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername})
+		pamTarget{
+			Path:            payload.TargetPath,
+			TargetHash:      payload.TargetHash,
+			CommandLine:     payload.CommandLine,
+			SubjectUsername: payload.SubjectUsername,
+			RequestedByName: payload.RequestedByName,
+			ApprovedByName:  payload.ApprovedByName,
+			ApprovedByEmail: payload.ApprovedByEmail,
+			ApprovedAt:      payload.ApprovedAt,
+			RiskTier:        riskTierString(payload.RiskTier),
+			MatchedRuleName: payload.MatchedRuleName,
+			WindowEndsAt:    payload.WindowEndsAt,
+		})
 
 	out := actuateResult{
 		ElevationRequestID: payload.ElevationRequestID,
@@ -259,10 +375,13 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 // refusePamActuation builds the fail-closed refusal and logs it at the block
 // site. The remote actuate path folds this into a success-shaped CommandResult
 // and logs nothing agent-side, so without this a PAM-disabled device would
-// leave no local trace of the refusals it is issuing (#2610).
-func refusePamActuation(requestID, why string) pamactuator.Result {
+// leave no local trace of the refusals it is issuing (#2610). Also writes a
+// Windows Event Log entry (#4913) so an auditor reading the endpoint's local
+// log — not just the agent's own logs — can see that Breeze refused to act.
+func refusePamActuation(requestID, why string, target pamTarget) pamactuator.Result {
 	log.Warn("pam: actuation REFUSED — PAM is fail-closed",
 		"elevationRequestId", requestID, "why", why)
+	writePAMActuationRefused(target.eventLogFields(requestID, why))
 	return pamactuator.Result{
 		Success:       false,
 		Reason:        "dismissal_uncertain",
@@ -287,7 +406,9 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	gated := h.pamDismissalUncertain
 	h.pamActuateMu.Unlock()
 	if gated {
-		return refusePamActuation(requestID, "dismissal of a denied consent prompt was never proven")
+		result := refusePamActuation(requestID, "dismissal of a denied consent prompt was never proven", target)
+		h.auditPamElevation(requestID, target, result.Reason)
+		return result
 	}
 
 	h.pamActuateMu.Lock()
@@ -295,17 +416,27 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	// Re-check under the real critical section: the gate may have been engaged
 	// between the fast path and here.
 	if h.pamDismissalUncertain {
-		return refusePamActuation(requestID, "dismissal gate engaged concurrently")
+		result := refusePamActuation(requestID, "dismissal gate engaged concurrently", target)
+		h.auditPamElevation(requestID, target, result.Reason)
+		return result
 	}
+
+	// #4913: mark the start of the actuation on the endpoint's local Windows
+	// Event Log, with the requester/approver identity the server resolved,
+	// before any promote/type/demote work begins.
+	writePAMElevationActuated(target.eventLogFields(requestID, ""))
 
 	manager := newElevationAccountManager()
 	cred, err := manager.Promote(ctx)
 	if err != nil {
-		return pamactuator.Result{
+		result := pamactuator.Result{
 			Success:       false,
 			Reason:        promoteFailureReason(err),
 			DetailMessage: err.Error(),
 		}
+		writePAMSessionEnded(target.eventLogFields(requestID, result.Reason))
+		h.auditPamElevation(requestID, target, result.Reason)
+		return result
 	}
 	defer func() {
 		demoteCtx, demoteCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -315,12 +446,14 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 				"elevationRequestId", requestID,
 				"error", err.Error(),
 			)
+			return
 		}
+		writePAMAccountDemoted(target.eventLogFields(requestID, ""))
 	}()
 	defer zeroCredential(&cred)
 
 	act := newActuator(h.pamActuatorStrategy())
-	return act.Trigger(ctx, pamactuator.Request{
+	result := act.Trigger(ctx, pamactuator.Request{
 		ElevationRequestID: requestID,
 		Username:           cred.Username,
 		Password:           cred.Password,
@@ -329,6 +462,9 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 		CommandLine:        target.CommandLine,
 		SubjectUsername:    target.SubjectUsername,
 	})
+	writePAMSessionEnded(target.eventLogFields(requestID, result.Reason))
+	h.auditPamElevation(requestID, target, result.Reason)
+	return result
 }
 
 // parseActuatePayload validates the incoming payload. Required fields:

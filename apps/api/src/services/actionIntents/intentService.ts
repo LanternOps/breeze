@@ -1,3 +1,4 @@
+import { buildActionLabel } from './actionLabel';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
@@ -122,7 +123,16 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 export interface CreateActionIntentInput {
   toolName: string;
   input: Record<string, unknown>;
+  /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
   reason?: string;
+  /**
+   * Human headline for the approver — "Restart service "Spooler" on KIT".
+   * Distinct from `reason`: callers that pass a justification as `reason`
+   * (agent runs, ticket triage) must not have it surface as the action.
+   * Optional; falls back to the guardrail description, then a label built
+   * from the tool name + recognisable arguments (see actionLabel.ts).
+   */
+  actionLabel?: string;
   /**
    * 'ai_agent' (wave 3b) is valid ONLY for an ai_agent principal — and
    * required for one: createActionIntent enforces the pairing in both
@@ -298,8 +308,68 @@ function firstSentence(text: string): string {
   return (match ? match[0] : text).trim();
 }
 
-/** impact = first sentence of the tool description (or the guardrail description) — resolved decision. */
-function buildImpactSummary(toolName: string, guardrail: GuardrailCheck): string {
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * #5106: the approval "High impact" box used to always show the tool's
+ * catalog description ("List, start, stop, or restart system services on a
+ * device.") — true of every call to the tool, not what THIS call does. These
+ * builders produce a call-specific sentence from the actual arguments for the
+ * common mutating action tools; every other tool (and any call whose
+ * arguments don't give enough to say something specific) keeps the catalog
+ * fallback below.
+ */
+const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) => string | null> = {
+  manage_services: (input) => {
+    const action = nonEmptyString(input.action);
+    const serviceName = nonEmptyString(input.serviceName);
+    if (!serviceName) return null;
+    switch (action) {
+      case 'restart':
+        return `Restarting "${serviceName}" will briefly interrupt it and anything that depends on it.`;
+      case 'stop':
+        return `Stopping "${serviceName}" will make it — and anything that depends on it — unavailable until it is started again.`;
+      case 'start':
+        return `Starting "${serviceName}".`;
+      default:
+        return null;
+    }
+  },
+  run_script: (input) => {
+    const deviceIds = Array.isArray(input.deviceIds) ? input.deviceIds : null;
+    if (!deviceIds || deviceIds.length === 0) return null;
+    const count = deviceIds.length;
+    return `Running a script on ${count} device${count === 1 ? '' : 's'}.`;
+  },
+  manage_processes: (input) => {
+    if (nonEmptyString(input.action) !== 'kill') return null;
+    const processName = nonEmptyString(input.processName);
+    const processId = nonEmptyString(input.processId);
+    if (processName && processId) return `Terminating process "${processName}" (PID ${processId}).`;
+    if (processName) return `Terminating process "${processName}".`;
+    if (processId) return `Terminating process PID ${processId}.`;
+    return null;
+  },
+  // Neither tool exists in the aiTools registry yet — kept here so the impact
+  // map is complete per #5106's spec the moment either ships, rather than
+  // needing a second follow-up PR.
+  reboot: () =>
+    'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
+  shutdown: () =>
+    'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+};
+
+/**
+ * Impact = a call-specific sentence from the actual arguments when the
+ * tool+action allow one (see IMPACT_SUMMARY_BUILDERS above), otherwise the
+ * first sentence of the tool description (or the guardrail description) —
+ * resolved decision.
+ */
+export function buildImpactSummary(toolName: string, input: Record<string, unknown>, guardrail: GuardrailCheck): string {
+  const specific = IMPACT_SUMMARY_BUILDERS[toolName]?.(input);
+  if (specific) return specific;
   const definitionDescription = aiTools.get(toolName)?.definition.description;
   const description = definitionDescription || guardrail.description || `Execute ${toolName}`;
   return firstSentence(description);
@@ -463,6 +533,8 @@ interface HumanFanoutArgs {
   argumentDigest: string;
   requestingClientLabel: string;
   targetSummary: string;
+  /** Human headline for the approval row, push, and bell — never the raw signature. */
+  actionLabel: string;
   riskTier: 'medium' | 'high' | 'critical';
   impactSummary: string;
   expiresAt: Date;
@@ -499,6 +571,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     argumentDigest,
     requestingClientLabel,
     targetSummary,
+    actionLabel,
     riskTier,
     impactSummary,
     expiresAt,
@@ -517,7 +590,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
   const approvalRowFor = (userId: string) => ({
     userId,
     requestingClientLabel,
-    actionLabel: targetSummary,
+    actionLabel,
     actionToolName: toolName,
     actionArguments,
     riskTier,
@@ -623,6 +696,7 @@ interface NotifyFannedOutApproversArgs {
   fanOutUserIds: string[];
   requestingClientLabel: string;
   targetSummary: string;
+  actionLabel: string;
   /** Passed to `withDbAccessContext` for the push-token read only — the
    *  in-app notification always runs system-scoped (see the call below).
    *  `userId` on it may be null (agent-originated fan-out has no requester);
@@ -640,7 +714,7 @@ interface NotifyFannedOutApproversArgs {
  * have, instead of a second, drifting copy of this loop.
  */
 async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Promise<void> {
-  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, targetSummary, dbContext } = args;
+  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, actionLabel, dbContext } = args;
   for (let i = 0; i < approvalRequestIds.length; i++) {
     const approvalId = approvalRequestIds[i];
     const userId = fanOutUserIds[i];
@@ -661,7 +735,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
           type: 'approval',
           priority: 'high',
           title: 'Approval requested',
-          message: `${requestingClientLabel}: ${targetSummary}`,
+          message: `${requestingClientLabel}: ${actionLabel}`,
           link: '/approvals',
           metadata: { approvalId, intentId },
           // Survives outbox/BullMQ redelivery: one approver, one intent, one
@@ -686,7 +760,7 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
       const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
       await dispatchApprovalPushToTokens(tokens, {
         approvalId,
-        actionLabel: targetSummary,
+        actionLabel,
         requestingClientLabel,
       });
     } catch (err) {
@@ -854,6 +928,12 @@ export async function createActionIntent(
   // human-originated intent (agentRun stays null, which already forces
   // human_required on its own).
   let agentRunMode: string | undefined;
+  // #5106: the scoped device's human-readable name, threaded through to
+  // buildActionLabel below so the approval headline reads "on <hostname>"
+  // instead of the raw "on device <id>..." stub. Stays null for every
+  // non-agent (or unscoped) intent — the scopedDevice read only happens in
+  // the ai_agent branch below.
+  let scopedDeviceHostname: string | null = null;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
     // scopeDeviceId/scopeTicketId are the top-level consts above — captured
@@ -897,10 +977,22 @@ export async function createActionIntent(
         // pin it to the intent's org — a scoped device from another tenant
         // must be indistinguishable from a nonexistent one (same rule
         // resolveIntentTargetScope applies to device args).
-        let scopedDevice: { id: string; orgId: string; siteId: string | null } | null = null;
+        let scopedDevice: {
+          id: string;
+          orgId: string;
+          siteId: string | null;
+          hostname: string | null;
+          displayName: string | null;
+        } | null = null;
         if (scopeDeviceId) {
           const [device] = await db
-            .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+            .select({
+              id: devices.id,
+              orgId: devices.orgId,
+              siteId: devices.siteId,
+              hostname: devices.hostname,
+              displayName: devices.displayName
+            })
             .from(devices)
             .where(eq(devices.id, scopeDeviceId))
             .limit(1);
@@ -931,6 +1023,9 @@ export async function createActionIntent(
     }
     agentRun = loaded.run;
     agentRow = loaded.agent;
+    scopedDeviceHostname = loaded.scopedDevice
+      ? (loaded.scopedDevice.displayName ?? loaded.scopedDevice.hostname)
+      : null;
 
     // P2-2 (#4189): an explicit scope must name a device that EXISTS in this
     // intent's org. A missing device and a cross-tenant one hit the same
@@ -1055,7 +1150,17 @@ export async function createActionIntent(
       scopeDeviceId ?? scopeTicketId ?? null,
     );
   const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, guardrail);
+  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // What the approver READS. `targetSummary` stays the audit signature.
+  const actionLabel = buildActionLabel({
+    toolName: input.toolName,
+    input: input.input,
+    reason: input.actionLabel ?? guardrail.description ?? null,
+    // #5106: turns "on device 6eae0f70..." into "on <hostname>" for the
+    // approval headline. Only populated for a scoped (sweep) agent intent —
+    // the one place this function loads a device row before this call.
+    deviceHostname: scopedDeviceHostname,
+  });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
@@ -1428,6 +1533,7 @@ export async function createActionIntent(
             argumentDigest,
             requestingClientLabel,
             targetSummary,
+            actionLabel,
             riskTier,
             impactSummary,
             expiresAt,
@@ -1543,6 +1649,7 @@ export async function createActionIntent(
       fanOutUserIds: creation.fanOutUserIds,
       requestingClientLabel,
       targetSummary,
+      actionLabel,
       dbContext,
     });
   }
@@ -1674,11 +1781,25 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
         .where(eq(aiAgentRuns.id, intent.requestingAgentRunId))
         .limit(1);
       if (!run || run.orgId !== intent.orgId) return null;
-      return { intent, run };
+      // #5106: resolve the intent's target device's hostname (if any) here,
+      // under the same system-scoped read as run/agent above, so the two
+      // buildActionLabel calls below can turn "on device <id>..." into
+      // "on <hostname>" the same way createActionIntent's own call site does.
+      const targetDeviceId = effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run));
+      let deviceHostname: string | null = null;
+      if (targetDeviceId) {
+        const [device] = await db
+          .select({ hostname: devices.hostname, displayName: devices.displayName })
+          .from(devices)
+          .where(eq(devices.id, targetDeviceId))
+          .limit(1);
+        deviceHostname = device ? (device.displayName ?? device.hostname) : null;
+      }
+      return { intent, run, deviceHostname };
     }),
   );
   if (!loaded) return;
-  const { intent, run } = loaded;
+  const { intent, run, deviceHostname } = loaded;
 
   let targetScope: IntentTargetScope;
   try {
@@ -1733,6 +1854,13 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
       argumentDigest: updated.argumentDigest,
       requestingClientLabel: updated.requestingClientLabel ?? 'AI Agent',
       targetSummary: updated.targetSummary,
+      // The guardrail description is not persisted on the intent, so the
+      // deferred path rebuilds a label from the tool + arguments.
+      actionLabel: buildActionLabel({
+        toolName: updated.actionName,
+        input: updated.arguments as Record<string, unknown>,
+        deviceHostname,
+      }),
       riskTier: riskTierLabel(updated.riskTier),
       impactSummary: updated.impactSummary,
       // The SAME deadline creation stamped — not a freshly recomputed one; a
@@ -1785,6 +1913,11 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     fanOutUserIds: fanoutResult.fanOutUserIds,
     requestingClientLabel: intent.requestingClientLabel ?? 'AI Agent',
     targetSummary: intent.targetSummary,
+    actionLabel: buildActionLabel({
+      toolName: intent.actionName,
+      input: intent.arguments as Record<string, unknown>,
+      deviceHostname,
+    }),
     dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
   });
 }

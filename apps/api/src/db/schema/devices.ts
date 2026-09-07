@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
@@ -86,6 +86,16 @@ export const devices = pgTable('devices', {
   // evaluation — but NOT from the status-upkeep path, which the reaper's
   // end-user-stop detection depends on.
   isEphemeral: boolean('is_ephemeral').notNull().default(false),
+  // RMM-QA-176: manual maintenance lease. `maintenance_until > now()` — not
+  // `status` — is the truth of "a technician put this device into maintenance":
+  // the heartbeat overwrites status to 'online' on every beat, so a status read
+  // cannot distinguish entry from extension. started_at / started_by are
+  // IMMUTABLE across extensions (the original actor stays on the row; each
+  // extension's actor is on its audit event). See services/deviceMaintenanceLease.ts.
+  maintenanceStartedAt: timestamp('maintenance_started_at', { withTimezone: true }),
+  maintenanceUntil: timestamp('maintenance_until', { withTimezone: true }),
+  maintenanceReason: varchar('maintenance_reason', { length: 500 }),
+  maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
@@ -214,6 +224,13 @@ export const devices = pgTable('devices', {
   // (collision detection, Task 4) for operator review (Task 7).
   uninstallIntentAt: timestamp('uninstall_intent_at', { withTimezone: true }),
   possibleReplacementOfDeviceId: uuid('possible_replacement_of_device_id'),
+  // #2787 item 4 — WHEN this device was removed (status flipped to
+  // 'decommissioned'). NULL for every device that is not removed, and cleared
+  // again on Restore. `updated_at` cannot stand in for it: it moves on every
+  // unrelated write after removal, so a retention window built on it would
+  // silently extend itself. NULL on a decommissioned row means "removal time
+  // unknown" and the purge job treats that as NEVER PURGE (fail closed).
+  decommissionedAt: timestamp('decommissioned_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
@@ -473,7 +490,27 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   addedAt: timestamp('added_at').defaultNow().notNull(),
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
 }, (table) => ({
-  pk: primaryKey({ columns: [table.deviceId, table.groupId] })
+  pk: primaryKey({ columns: [table.deviceId, table.groupId] }),
+  // #3182 — the row's org_id alone is what RLS gates on, so without these the
+  // group_id and device_id are free to name a DIFFERENT org's group/device.
+  // Together they pin the triangle: group.org_id = membership.org_id =
+  // device.org_id. Created in SQL migration
+  // 2026-10-09-000200-device-group-memberships-composite-tenant-fks.sql, which
+  // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
+  // foreignKey() builder has no deferrable option, so that detail lives in the
+  // migration only) and adds the detach — to breeze_cascade_device_org_id(),
+  // an AFTER trigger — that drops these rows on a cross-org device move.
+  // Declared here for db:check-drift.
+  groupOrgFk: foreignKey({
+    columns: [table.groupId, table.orgId],
+    foreignColumns: [deviceGroups.id, deviceGroups.orgId],
+    name: 'device_group_memberships_group_org_fk',
+  }),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_group_memberships_device_org_fk',
+  }),
 }));
 
 // Audit log for group membership changes
@@ -513,7 +550,16 @@ export const deviceCommands = pgTable('device_commands', {
   // it -- NULL means "no exemption, no widened auth", fail-closed by
   // construction. See 2026-09-10-device-command-uninstall-provenance.sql.
   uninstallReasons: text('uninstall_reasons').array(),
-  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true })
+  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true }),
+  // #5128 -- deadline by which an agent must CLAIM this row (the DELIVERY
+  // clock). NULL = legacy rule (execution timeout measured from created_at).
+  // See services/commandOfflinePolicy.ts and jobs/staleCommandReaper.ts.
+  deliverBy: timestamp('deliver_by', { withTimezone: true }),
+  // #5128 -- the device's org at enqueue. PROVENANCE, not tenancy: compared at
+  // claim time to cancel rows whose device has since moved org. Deliberately
+  // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands
+  // system-scoped (agent WS path, no RLS -- see CLAUDE.md).
+  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' })
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

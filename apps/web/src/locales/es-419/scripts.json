@@ -149,6 +149,7 @@
       "webhookSecret": "Secreto de webhook (opcional)",
       "mode": "Modo",
       "script": "Script",
+      "runAs": "Ejecutar como",
       "notificationChannel": "Canal de notificación",
       "severity": "Gravedad",
       "message": "Mensaje",
@@ -250,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} pasó",
       "failed": "{{count}} falló",
-      "skipped": "{{count}} omitido"
+      "skipped": "{{count}} omitido",
+      "cancelled": "{{count}} cancelado"
     },
     "duration": "Duración: {{duration}}",
     "progress": {
@@ -264,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Ocultar registros",
-      "viewLogs": "Ver registros"
+      "viewLogs": "Ver registros",
+      "cancelRun": "Cancelar ejecución",
+      "partnerScopeTooltip": "Esta ejecución se aplica a todas las organizaciones de su cuenta de socio. Pídale a un administrador de socio completo que la cancele, o detenga ejecuciones individuales en sus propios dispositivos.",
+      "confirmCancelRunTitle": "¿Cancelar esta ejecución?",
+      "confirmCancelRunMessage": "Breeze detendrá cada ejecución de script que esta ejecución aún esté esperando. Las acciones ya en curso pueden finalizar antes de poder detenerse.",
+      "uncancellableActions_one": "{{count}} acción no se pudo detener y puede seguir ejecutándose por su cuenta.",
+      "uncancellableActions_other": "{{count}} acciones no se pudieron detener y pueden seguir ejecutándose por su cuenta.",
+      "cancelRunSuccess_one": "Cancelado: {{count}} ejecución detenida.",
+      "cancelRunSuccess_other": "Cancelado: {{count}} ejecuciones detenidas."
     },
     "timestamps": {
       "started": "Iniciado: {{date}}",
@@ -303,6 +313,9 @@
       "untitled": "Script",
       "awaiting": "Esperando la respuesta del agente…",
       "truncated": "Salida truncada: consulta el historial de scripts del dispositivo para ver el texto completo."
+    },
+    "errors": {
+      "cancelRun": "No se pudo cancelar la ejecución."
     }
   },
   "automationsPage": {
@@ -644,7 +657,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Copiar al portapapeles"
+      "copyToClipboard": "Copiar al portapapeles",
+      "runAgain": "Ejecutar de nuevo"
     },
     "title": "Detalles de ejecución",
     "statusDescription": {
@@ -661,7 +675,8 @@
       "startedAt": "Comenzó en",
       "duration": "Duración",
       "exitCode": "Código de salida",
-      "completedAt": "Completado en"
+      "completedAt": "Completado en",
+      "runAs": "Contexto de ejecución"
     },
     "status": {
       "running": "En ejecución...",
@@ -714,11 +729,19 @@
     },
     "empty": "No se encontraron ejecuciones. Intente ajustar sus filtros.",
     "actions": {
-      "viewDetails": "Ver detalles"
+      "viewDetails": "Ver detalles",
+      "stop": "Detener",
+      "forceStop": "Detener inmediatamente",
+      "confirmStopTitle": "¿Detener esta ejecución?",
+      "confirmStopMessage": "Breeze le pedirá al dispositivo que detenga {{script}}. Esto puede tardar unos segundos. \"Detener inmediatamente\" omite el período de gracia y finaliza el proceso de inmediato."
     },
     "pagination": {
       "showing": "Mostrando {{start}} a {{end}} de {{total}}",
       "page": "Página {{page}} de {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Esta ejecución ya terminó y ya no se puede detener.",
+      "cancelFailed": "No se pudo detener la ejecución."
     }
   },
   "scriptAiInput": {
@@ -804,7 +827,8 @@
     "errors": {
       "fetch": "No se pudo recuperar el script",
       "generic": "Se produjo un error",
-      "save": "No se pudo guardar el script"
+      "save": "No se pudo guardar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "created": "Script creado",
@@ -814,6 +838,7 @@
     "actions": {
       "backToScripts": "Volver a scripts",
       "executionHistory": "Historial de ejecución",
+      "duplicate": "Duplicar",
       "create": "Crear script",
       "saveChanges": "Guardar cambios"
     },
@@ -1124,6 +1149,7 @@
     "actions": {
       "runTitle": "Ejecutar script",
       "editTitle": "Editar script",
+      "duplicateTitle": "Duplicar script",
       "deleteTitle": "Eliminar script"
     },
     "pagination": {
@@ -1244,7 +1270,8 @@
       "delete": "No se pudo eliminar el script",
       "deleteTryAgain": "No se pudo eliminar el script. Inténtelo de nuevo.",
       "alreadyInLibrary": "\"{{name}}\" ya está en su biblioteca",
-      "import": "No se pudo importar el script"
+      "import": "No se pudo importar el script",
+      "duplicate": "No se pudo duplicar el script"
     },
     "toast": {
       "deleting": "Eliminando \"{{name}}\"...",
@@ -1331,6 +1358,8 @@
     "offlineWarning": "El dispositivo seleccionado está desconectado — la ejecución esperará hasta que se reconecte.",
     "exitCode": "salida {{code}}",
     "viewHistory": "Ver historial",
+    "runAgain": "Ejecutar de nuevo",
+    "viewOnDevice": "Ver en el dispositivo",
     "status": {
       "pending": "En cola",
       "running": "En ejecución",

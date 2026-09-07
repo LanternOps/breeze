@@ -149,6 +149,7 @@
       "webhookSecret": "Webhook Sırrı (isteğe bağlı)",
       "mode": "Modu",
       "script": "Komut Dosyası",
+      "runAs": "Farklı Çalıştır",
       "notificationChannel": "Bildirim Kanalı",
       "severity": "Önem",
       "message": "Mesaj",
@@ -250,7 +251,8 @@
     "resultCount": {
       "passed": "{{count}} geçti",
       "failed": "{{count}} başarısız oldu",
-      "skipped": "{{count}} atlandı"
+      "skipped": "{{count}} atlandı",
+      "cancelled": "{{count}} iptal edildi"
     },
     "duration": "Süre: {{duration}}\n__BREEZE_TOKEN_1__ cihazdan ",
     "progress": {
@@ -264,7 +266,15 @@
     },
     "actions": {
       "hideLogs": "Günlükleri Gizle",
-      "viewLogs": "Günlükleri Görüntüle"
+      "viewLogs": "Günlükleri Görüntüle",
+      "cancelRun": "Çalıştırmayı iptal et",
+      "partnerScopeTooltip": "Bu çalıştırma, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir. İptal etmesi için tam yetkili bir iş ortağı yöneticisinden isteyin veya bunun yerine kendi cihazlarınızdaki tek tek yürütmeleri durdurun.",
+      "confirmCancelRunTitle": "Bu çalıştırma iptal edilsin mi?",
+      "confirmCancelRunMessage": "Breeze, bu çalıştırmanın hâlâ beklediği her komut dosyası yürütmesini durduracak. Zaten devam etmekte olan işlemler durdurulmadan önce tamamlanabilir.",
+      "uncancellableActions_one": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "uncancellableActions_other": "{{count}} eylem durdurulamadı ve kendi başına çalışmaya devam ediyor olabilir.",
+      "cancelRunSuccess_one": "İptal edildi — {{count}} yürütme durduruldu.",
+      "cancelRunSuccess_other": "İptal edildi — {{count}} yürütme durduruldu."
     },
     "timestamps": {
       "started": "Başlangıç: {{date}}",
@@ -303,6 +313,9 @@
       "untitled": "Komut Dosyası",
       "awaiting": "Temsilcinin rapor vermesi bekleniyor…",
       "truncated": "Çıktı kesildi — tam metin için cihazın komut dosyası geçmişine bakın."
+    },
+    "errors": {
+      "cancelRun": "Çalıştırma iptal edilemedi."
     }
   },
   "automationsPage": {
@@ -644,7 +657,8 @@
       }
     },
     "actions": {
-      "copyToClipboard": "Panoya kopyala"
+      "copyToClipboard": "Panoya kopyala",
+      "runAgain": "Tekrar çalıştır"
     },
     "title": "Yürütme Ayrıntıları",
     "statusDescription": {
@@ -661,7 +675,8 @@
       "startedAt": "Başlangıç Tarihi",
       "duration": "Süre",
       "exitCode": "Çıkış Kodu",
-      "completedAt": "Tamamlanma Tarihi"
+      "completedAt": "Tamamlanma Tarihi",
+      "runAs": "Çalıştırma Bağlamı"
     },
     "status": {
       "running": "Koşuyor...",
@@ -714,11 +729,19 @@
     },
     "empty": "Hiçbir yürütme bulunamadı. Filtrelerinizi ayarlamayı deneyin.",
     "actions": {
-      "viewDetails": "Ayrıntıları görüntüle"
+      "viewDetails": "Ayrıntıları görüntüle",
+      "stop": "Durdur",
+      "forceStop": "Hemen durdur",
+      "confirmStopTitle": "Bu yürütme durdurulsun mu?",
+      "confirmStopMessage": "Breeze, cihazdan {{script}} işlemini durdurmasını isteyecek. Bu birkaç saniye sürebilir — “Hemen durdur” bekleme süresini atlar ve işlemi anında sonlandırır."
     },
     "pagination": {
       "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
       "page": "Sayfa {{page}} / {{total}}"
+    },
+    "errors": {
+      "noLongerCancellable": "Bu yürütme zaten tamamlandı ve artık durdurulamaz.",
+      "cancelFailed": "Yürütme durdurulamadı."
     }
   },
   "scriptAiInput": {
@@ -804,7 +827,8 @@
     "errors": {
       "fetch": "Komut dosyası getirilemedi",
       "generic": "Bir hata oluştu",
-      "save": "Komut dosyası kaydedilemedi"
+      "save": "Komut dosyası kaydedilemedi",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "created": "Komut dosyası oluşturuldu",
@@ -814,6 +838,7 @@
     "actions": {
       "backToScripts": "Komut Dosyalarına Geri Dön",
       "executionHistory": "Yürütme Geçmişi",
+      "duplicate": "Çoğalt",
       "create": "Komut Dosyası Oluştur",
       "saveChanges": "Değişiklikleri Kaydet"
     },
@@ -1124,6 +1149,7 @@
     "actions": {
       "runTitle": "Komut dosyasını çalıştır",
       "editTitle": "Komut dosyasını düzenle",
+      "duplicateTitle": "Komut dosyasını çoğalt",
       "deleteTitle": "Komut dosyasını sil"
     },
     "pagination": {
@@ -1244,7 +1270,8 @@
       "delete": "Komut dosyası silinemedi",
       "deleteTryAgain": "Komut dosyası silinemedi. Lütfen tekrar deneyin.",
       "alreadyInLibrary": "\"{{name}}\" zaten kitaplığınızda",
-      "import": "Komut dosyası içe aktarılamadı"
+      "import": "Komut dosyası içe aktarılamadı",
+      "duplicate": "Komut dosyası çoğaltılamadı"
     },
     "toast": {
       "deleting": "\"{{name}}\" siliniyor...",
@@ -1330,6 +1357,8 @@
     "offlineWarning": "Seçilen cihaz çevrimdışı — çalıştırma, cihaz yeniden bağlanana kadar bekleyecek.",
     "exitCode": "çıkış {{code}}",
     "viewHistory": "Geçmişi görüntüle",
+    "runAgain": "Tekrar çalıştır",
+    "viewOnDevice": "Cihazda görüntüle",
     "status": {
       "pending": "Kuyrukta",
       "running": "Çalışıyor",

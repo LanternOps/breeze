@@ -5,6 +5,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 import { fetchWithAuth } from './auth';
+import { mintStepUpGrant, StepUpMintError } from '../lib/mfaStepUp';
 import type { AssertionProof } from '@breeze/shared';
 
 /**
@@ -116,40 +117,22 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     return data.registerGrantId;
   }
 
-  let stepUpBody: Record<string, unknown>;
-  if (reauth.method === 'totp') {
-    stepUpBody = { method: 'totp', code: reauth.code, operation: 'register_approver_device' };
-  } else {
-    // Passkey: fetch an authenticated step-up challenge, run the assertion
-    // ceremony, then prove it to /auth/mfa/step-up.
-    const challengeData = await jsonOrThrow(
-      await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' }),
-      'Could not start passkey verification.'
+  // TOTP/passkey both mint through /auth/mfa/step-up, which is now shared with
+  // the device-maintenance dialog (RMM-QA-176 D10) — one ceremony preserving
+  // #4470 proof-error codes and token-refresh behavior. The endpoint names it
+  // stepUpGrantId; the register routes take it as registerGrantId — same
+  // value, different field name.
+  try {
+    return await mintStepUpGrant({ operation: 'register_approver_device', reauth });
+  } catch (err) {
+    // The store's callers branch on RegisterStepError (and read `.status` to
+    // map 401/403/429), so keep that contract across the delegation.
+    throw new RegisterStepError(
+      err instanceof Error ? err.message : 'Verification failed.',
+      err instanceof StepUpMintError ? err.status : undefined,
+      err instanceof StepUpMintError ? err.responseCode : undefined,
     );
-    const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
-      challengeData.options ?? challengeData.optionsJSON ?? challengeData;
-    const credential = await startAuthentication({ optionsJSON });
-    stepUpBody = { method: 'passkey', credential, operation: 'register_approver_device' };
   }
-
-  const data = await jsonOrThrow(
-    await fetchWithAuth('/auth/mfa/step-up', {
-      method: 'POST',
-      body: JSON.stringify(stepUpBody),
-      // #4470: no opt-out here any more. A rejected proof is now 400
-      // `mfa_proof_invalid`, and the handler has no 401 path left at all — so
-      // every 401 from this endpoint comes from `authMiddleware`, BEFORE the
-      // handler runs. The passkey assertion in this body is therefore still
-      // unburned, and refreshing the bearer and replaying it is exactly right.
-      // Keeping the flag would instead have signed the user out for an access
-      // token that simply aged out mid-ceremony.
-    }),
-    'Verification failed.'
-  );
-  if (!data?.stepUpGrantId) throw new RegisterStepError('Verification failed.');
-  // The step-up endpoint names it stepUpGrantId; the register routes take it
-  // as registerGrantId — same value, different field name.
-  return data.stepUpGrantId;
 }
 
 /**

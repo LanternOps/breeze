@@ -277,6 +277,43 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(approvalDialog.props.at(-1)!.selfApprovalRequestId).toBe('ap-2');
   });
 
+  /**
+   * #4888 — the run context reaches the card, or the approver is never warned.
+   *
+   * The dialog renders the row correctly when handed the prop and the store
+   * puts it on `pendingApproval`; this line is the seam between those two
+   * facts. Deleting it would hide "the assistant chose SYSTEM, overriding this
+   * script's default" from the human deciding the approval, with every other
+   * test in the tree still green.
+   */
+  it('forwards the resolved scriptRunContext to the approval card', () => {
+    approvalDialog.props.length = 0;
+    const messages = [{ id: '1', role: 'user', content: 'run the cleanup script' }] as never;
+    const scriptRunContext = {
+      effectiveRunAs: 'system' as const,
+      scriptDefaultRunAs: 'user' as const,
+      chosenByAssistant: true,
+      targetSessionId: null,
+    };
+
+    render(
+      <AiChatMessages
+        {...baseProps}
+        messages={messages}
+        pendingApproval={{
+          executionId: 'e-rc',
+          toolName: 'run_script',
+          input: { scriptId: 's-1', deviceIds: ['d-1'], runAs: 'system' },
+          description: 'Run script s-1 on 1 device(s)',
+          intentBacked: true,
+          scriptRunContext,
+        }}
+      />,
+    );
+
+    expect(approvalDialog.props.at(-1)!.scriptRunContext).toEqual(scriptRunContext);
+  });
+
   it('cancels the pending frame on unmount so it never scrolls a torn-down container', () => {
     const { rerender, unmount } = renderWithMessages([{ id: '1', role: 'user', content: 'hi' }]);
     const el = container(document.body);

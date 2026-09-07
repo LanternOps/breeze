@@ -104,4 +104,21 @@ describe('ContextScopeLine', () => {
     render(<ContextScopeLine />);
     expect(screen.getByTestId('context-scope-line').getAttribute('data-kind')).toBe('fleet');
   });
+
+  it('renders nothing on the organization record, in fleet view or in org view (#5075)', () => {
+    // The record's own header states its org (and flags a mismatched switcher
+    // with a chip). "Showing all organizations" on a page about one named
+    // customer is worse than silent — it contradicts the page.
+    stubPathname('/organizations/org-2');
+    mockStoreState.currentOrgId = null;
+    mockStoreState.allOrgs = true;
+    const fleet = render(<ContextScopeLine />);
+    expect(screen.queryByTestId('context-scope-line')).toBeNull();
+    fleet.unmount();
+
+    mockStoreState.currentOrgId = 'org-1';
+    mockStoreState.allOrgs = false;
+    render(<ContextScopeLine />);
+    expect(screen.queryByTestId('context-scope-line')).toBeNull();
+  });
 });

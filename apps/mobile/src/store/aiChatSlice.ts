@@ -8,6 +8,12 @@ export interface ToolEvent {
   state: 'started' | 'completed';
   output?: unknown;
   isError?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107) — copied straight off the SSE
+   * `tool_result` event, never derived from `output`, which the tool controls.
+   * See `toolIndicatorLogic.toolRowStatus` for why the distinction matters.
+   */
+  handoff?: string;
 }
 
 export type ChatMessage =
@@ -88,6 +94,7 @@ const aiChatSlice = createSlice({
           existing.state = action.payload.event.state;
           if (action.payload.event.output !== undefined) existing.output = action.payload.event.output;
           if (action.payload.event.isError !== undefined) existing.isError = action.payload.event.isError;
+          if (action.payload.event.handoff !== undefined) existing.handoff = action.payload.event.handoff;
         } else {
           msg.toolEvents.push(action.payload.event);
         }
@@ -153,6 +160,34 @@ const aiChatSlice = createSlice({
       state.status = 'idle';
       state.error = null;
     },
+    /**
+     * Replace the transcript with the server's persisted rows for a turn whose
+     * live stream was lost (app suspended, socket dropped during an approval).
+     * The server keeps running the turn and writing rows regardless, so this
+     * is the phone catching up. `complete: false` keeps the streaming pulse
+     * and the RUNNING caption on the last assistant row so the UI reads as
+     * "still working" rather than "silently finished with a stub".
+     */
+    reconcileHistory(
+      state,
+      action: PayloadAction<{ sessionId: string; messages: ChatMessage[]; complete: boolean }>,
+    ) {
+      state.sessionId = action.payload.sessionId;
+      state.messages = action.payload.messages;
+      state.error = null;
+      const last = state.messages[state.messages.length - 1];
+      if (action.payload.complete || !last || last.role !== 'assistant') {
+        state.streamingMessageId = null;
+        state.inFlightTool = null;
+        state.status = action.payload.complete ? 'idle' : 'streaming';
+        return;
+      }
+      last.isStreaming = true;
+      state.streamingMessageId = last.id;
+      const running = last.toolEvents.find((t) => t.state === 'started');
+      state.inFlightTool = running ? { toolUseId: running.toolUseId, toolName: running.toolName } : null;
+      state.status = 'streaming';
+    },
   },
 });
 
@@ -170,6 +205,7 @@ export const {
   clearError,
   resetChat,
   loadHistory,
+  reconcileHistory,
 } = aiChatSlice.actions;
 
 export default aiChatSlice.reducer;

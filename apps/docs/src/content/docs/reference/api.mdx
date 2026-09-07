@@ -81,6 +81,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/devices/:id/move-org` | Relocate a device to a different organization within the same partner. |
 | `POST` | `/devices/:id/commands` | Send command to device. Rejects a duplicate `refresh_inventory` with `409 ALREADY_PENDING`. |
 | `POST` | `/devices/bulk/commands` | Send the same command to many devices. Returns `commands`, `skipped`, and `failed` arrays. |
+| `GET` | `/devices/:id/billing` | Which contract line, if any, bills this device. Requires **partner or system scope** plus both `devices:read` and `contracts:read`. Returns the covering contract and line with how it matched (organization-wide, site, role, or group), or a reason the device is not billable. A device-group evaluation failure is reported as an error rather than as "not covered". |
 | `DELETE` | `/devices/:id` | Decommission device |
 
 `GET /devices` supports a cursor-based paging mode in addition to the legacy `page`/`limit` shape. Pass `cursor`, `sort` (`hostname` / `lastSeen` / `enrolled`), `sortDir`, `limit` (max 1000), and optional filters like `orgIds`, `siteIds`, `groupIds`, `includeDecommissioned`, and `includeTotal`. The response carries `{ devices, nextCursor, limit, total? }`; pass `nextCursor` back as `cursor` to fetch the next page. The list payload also exposes `mainAgentSilentSince` and `watchdogStatus` per device so callers can render the **Agent silent (watchdog OK)** badge described in [Agent Watchdog](/features/watchdog/).
@@ -221,6 +222,17 @@ from the authenticated principal. Writes share the principal's hourly rate
 limit but are additionally capped by a tighter per-principal write budget
 (120/hour), and every write is attributed to the service principal in the
 audit log.
+
+Minting enrollment keys is held to a tighter standard again. The principal must
+carry **both** an expiry and a source-CIDR allowlist — a principal without them
+is refused with `403 partner_provisioning_principal_restrictions_required`,
+because an unrestricted key that can mint enrollment keys is an unrestricted key
+that can enroll devices. Mints are capped at **10 per hour per principal** and
+**100 per hour per partner**, separately from the general write budget. When
+neither `ttlMinutes` nor `expiresAt` is supplied the key gets the same default
+lifetime as one created in the UI (30 days unless
+`ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` says otherwise), clamped by
+`PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` and by the organization's own cap.
 
 ## Alerts
 
@@ -777,6 +789,18 @@ Saved reports schedule via `schedule` (`daily` / `weekly` / `monthly`) plus a `c
 | `POST` | `/webhooks/:id/test` | Test webhook |
 | `POST` | `/webhooks/:id/retry/:deliveryId` | Retry delivery |
 
+### Inbound: QuickBooks Online
+
+`POST /api/v1/webhooks/quickbooks` is an **inbound** endpoint Intuit calls, not one you call. It takes no user token: every request is verified against the app's `intuit-signature` HMAC and is IP rate-limited. A valid notification only wakes the reconcile sweep for the affected company — the sweep, not the webhook, is the authoritative path, so a missed delivery costs latency and nothing else.
+
+| Response | When |
+|---|---|
+| `202` | Accepted and enqueued |
+| `400` | Body could not be parsed |
+| `401` | Missing or invalid Intuit signature |
+| `429` | Rate limited |
+| `503` | `QBO_WEBHOOK_VERIFIER_TOKEN` is not configured, or the notification could not be enqueued. Intuit retries |
+
 ## Plugins
 
 | Method | Path | Description |
@@ -835,8 +859,31 @@ Selected catalog and billing operations. Resource CRUD follows the standard REST
 | `POST` | `/contracts/:id/currency` | Change a **draft** contract's currency (same rules as above) |
 | `POST` | `/contracts/bulk-cancel` | Cancel multiple contracts |
 | `POST` | `/contracts/bulk-delete` | Delete multiple draft contracts |
+| `POST` | `/contracts/:id/lines` | Add a contract line |
+| `PATCH` | `/contracts/:id/lines/:lineId` | Edit a line in place. The line **type** is immutable — remove and re-add to change it |
+| `DELETE` | `/contracts/:id/lines/:lineId` | Remove a line. Returns `404 LINE_NOT_FOUND` when the line does not exist (it used to answer `200` and do nothing) |
+| `GET` | `/contracts/:id/periods/:periodId/outcome` | What a billing period actually billed: snapshot device total, uncovered total (with a per-role breakdown), flagged total, and billed overage total. `404 PERIOD_NOT_FOUND` |
+| `GET` | `/invoices/:id/lines/:lineId/devices` | Per-device evidence for one generated invoice line — hostname, role, and whether the device counted as included, overage, or flagged. Cursor-paginated (`limit` default 100, max 500). Lines from invoices generated before this shipped return `recorded: false`. `404 INVOICE_LINE_NOT_FOUND` |
 
 Bulk endpoints accept a list of IDs and return per-item results, so partial success is possible.
+
+### Contract line validation and errors
+
+Line writes validate their inputs rather than failing at the database. `unitPrice` and `manualQuantity` are money strings (up to 10 digits, at most 2 decimal places), `sortOrder` is a non-negative 32-bit integer, and `catalogItemId` must be a UUID — a violation is a `400`, not a `500`.
+
+| Code | Status | Meaning |
+|---|---|---|
+| `LINE_NOT_FOUND` | 404 | No such line on this contract |
+| `INVALID_LINE_PATCH` | 400 | The patch body has nothing usable in it |
+| `SITE_NOT_IN_ORG` | 400 | The site belongs to a different organization |
+| `GROUP_NOT_IN_ORG` | 400 | The device group belongs to a different organization |
+| `CATALOG_ITEM_NOT_FOUND` | 400 | No such catalog item |
+| `NO_PRICE_FOR_CURRENCY` / `PRICE_NOT_REPRESENTABLE` | 409 | The catalog item has no usable price in the contract's currency |
+| `SITE_DELETED` / `GROUP_DELETED` | 409 | Raised at **invoice generation**, not at line-write time: the line points at a site or group that no longer exists. Generation writes nothing until the line is re-scoped or removed |
+
+Invoice lines generated from a contract are ordered deterministically by `(sortOrder, createdAt, id)`, so a regenerated invoice lists its lines in the same order every time.
+
+`PATCH /quotes/:id/lines/:lineId` validates strictly: an unrecognised key is a `400` rather than a silently ignored no-op. Device-set fields on a quote line (roles, group, site, included quantity, overage mode and price) are patchable; the device-set type itself is not — remove the line and add it again.
 
 ### Distributor Integrations
 

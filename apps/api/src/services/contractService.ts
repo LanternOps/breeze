@@ -573,10 +573,12 @@ type AddedContractInvoiceLine = Awaited<ReturnType<typeof addContractLine>>;
 
 export interface MaterializeContractLineInput {
   invoiceId: string;
-  contract: Pick<typeof contracts.$inferSelect, 'id' | 'currencyCode'>;
+  contract: Pick<typeof contracts.$inferSelect, 'id' | 'orgId' | 'currencyCode'>;
   line: Pick<typeof contractLines.$inferSelect,
     'id' | 'description' | 'unitPrice' | 'taxable' | 'catalogItemId' | 'overageUnitPrice'>;
   resolved: ResolvedQuantity;
+  /** Interactive capture from the same snapshot as resolved; omitted by the period writer. */
+  deviceEvidence?: readonly DeviceSnapshotRow[];
   currencyCode: string;
 }
 
@@ -595,7 +597,7 @@ export interface MaterializedContractLine {
  */
 export async function materializeContractLineOntoInvoice(
   actor: InvoiceActor,
-  { invoiceId, contract, line, resolved, currencyCode }: MaterializeContractLineInput,
+  { invoiceId, contract, line, resolved, deviceEvidence, currencyCode }: MaterializeContractLineInput,
 ): Promise<MaterializedContractLine> {
   // Self-guard like generateDueInvoice: without an ambient context, nested
   // db.transaction() calls would each open their own pooled connection and the
@@ -652,7 +654,22 @@ export async function materializeContractLineOntoInvoice(
         }
       : null;
 
-    return { baseLine, overageLine, overage, pricedFrom };
+    const materialized = { baseLine, overageLine, overage, pricedFrom };
+    if (deviceEvidence !== undefined) {
+      if (deviceEvidence.length !== resolved.counted) {
+        throw new ContractServiceError('Device evidence does not match the resolved count', 500, 'INVALID_STATE');
+      }
+      const evidence = evidenceForLine(deviceEvidence, resolved, materialized);
+      for (const chunk of chunksOf(evidence, EVIDENCE_INSERT_CHUNK)) {
+        await db.insert(invoiceLineDevices).values(
+          chunk.map((row) => ({ ...row, invoiceId, orgId: contract.orgId })),
+        );
+      }
+      // Capture also records a meaningful empty device set. This does not
+      // reconstruct evidence for any older lines already on the draft.
+      await db.update(invoices).set({ evidenceVersion: 1 }).where(eq(invoices.id, invoiceId));
+    }
+    return materialized;
   });
 }
 
@@ -684,7 +701,12 @@ export interface ContractEstimate {
 
 /** Per-line resolved quantities + values + period total for one contract, using
  *  live device/seat counts as of now. Powers the editor sidebar and detail. */
-export async function computeContractEstimate(contractId: string, actor: ContractActor): Promise<ContractEstimate> {
+export async function computeContractEstimate(
+  contractId: string,
+  actor: ContractActor,
+  /** Internal capture for interactive materialization; never part of the public estimate response. */
+  deviceEvidence?: Map<string, readonly DeviceSnapshotRow[]>,
+): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId))
@@ -698,6 +720,11 @@ export async function computeContractEstimate(contractId: string, actor: Contrac
   if (groupIds.length > 0) await orgSnapshot(contract.orgId, dc, groupIds);
   for (const l of lines) {
     const r = await resolveLineQty(contract.orgId, l, dc, sc);
+    if (deviceEvidence && isDeviceLine(l)) {
+      deviceEvidence.set(l.id, r.unresolved ? [] : orderDevicesForEvidence(
+        matchingDevicesForLine(await orgSnapshot(contract.orgId, dc), l),
+      ));
+    }
     const value = multiplyToCurrency(r.billed, l.unitPrice, contract.currencyCode);
     const oValue = overageValue(r, l, contract.currencyCode);
     cents += toCents(value) + toCents(oValue);
@@ -1684,9 +1711,8 @@ export interface PriceBookGap {
 }
 
 /**
- * #3205 W07: one device's row of billing evidence, collected during the line
- * loop and written only after the period claim succeeds (the period id does not
- * exist before then, and a lost claim deletes the draft anyway).
+ * One device's row of billing evidence. The period writer collects these until
+ * its claim succeeds; interactive materialization writes them with its lines.
  */
 interface PendingEvidence {
   invoiceLineId: string;
@@ -1695,6 +1721,27 @@ interface PendingEvidence {
   deviceRole: string;
   siteId: string | null;
   countedAs: InvoiceLineDeviceCountedAs;
+}
+
+/** Shared disposition and stable ordering for automated and interactive lines. */
+function evidenceForLine(
+  devices: readonly DeviceSnapshotRow[],
+  resolved: ResolvedQuantity,
+  materialized: MaterializedContractLine,
+): PendingEvidence[] {
+  const ordered = orderDevicesForEvidence(devices);
+  const cut = resolved.included === null ? ordered.length : Math.min(resolved.included, ordered.length);
+  return ordered.map((row, i) => {
+    const countedAs: InvoiceLineDeviceCountedAs =
+      i < cut ? 'included' : resolved.overageMode === 'bill' ? 'overage' : 'flagged';
+    if (countedAs === 'overage' && materialized.overageLine === null) {
+      throw new ContractServiceError('Overage evidence has no overage invoice line', 500, 'INVALID_STATE');
+    }
+    return {
+      invoiceLineId: countedAs === 'overage' ? materialized.overageLine!.id : materialized.baseLine.id,
+      deviceId: row.id, hostname: row.hostname, deviceRole: row.role, siteId: row.siteId, countedAs,
+    };
+  });
 }
 
 /** 500 rows/statement (#3205 W07 decision 16). One statement for a 5,000-device
@@ -1915,29 +1962,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     }
     if (materialized.overage) overages.push(materialized.overage);
 
-    // Evidence for THIS line, from the one array the quantity came from.
-    // With a fixed allowance above the count, the base line bills the allowance
-    // while only existing devices get rows. Rows past the allowance attach to
-    // the overage sibling in bill mode and to the base in flag mode.
     if (ordered) {
-      const cut = r.included === null ? ordered.length : Math.min(r.included, ordered.length);
-      for (const [i, row] of ordered.entries()) {
-        const countedAs: InvoiceLineDeviceCountedAs =
-          i < cut ? 'included' : r.overageMode === 'bill' ? 'overage' : 'flagged';
-        if (countedAs === 'overage' && materialized.overageLine === null) {
-          throw new ContractServiceError(
-            `Overage evidence for contract line ${l.id} has no overage invoice line`, 500, 'INVALID_STATE',
-          );
-        }
-        pendingEvidence.push({
-          invoiceLineId: countedAs === 'overage' ? materialized.overageLine!.id : materialized.baseLine.id,
-          deviceId: row.id,
-          hostname: row.hostname,
-          deviceRole: row.role,
-          siteId: row.siteId,
-          countedAs,
-        });
-      }
+      for (const row of evidenceForLine(ordered, r, materialized)) pendingEvidence.push(row);
     }
   }
 

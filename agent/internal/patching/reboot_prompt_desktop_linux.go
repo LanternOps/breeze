@@ -147,17 +147,10 @@ func runZenityPrompt(ctx context.Context, s linuxsession.GraphicalSession, title
 		exitCode, stdout.String(), truncateForLog(stderr.String()), elapsed)
 
 	clicked, shown := zenityResult(run, actions)
-	// Logged on EVERY non-clean exit, not only on codes this code does not
-	// recognise. Exit 1 is a recognised code and is also what a display failure
-	// produces, so restricting the log to "unexpected" codes is exactly how the
-	// failure that matters most ends up with no trace at all.
-	if run.exitCode != zenityExitOK || !shown {
-		log.Warn("the reboot dialog did not end in a clean decision",
-			"session", s.ID, "user", s.Username,
-			"exitCode", run.exitCode, "timedOut", run.timedOut,
-			"elapsedMs", elapsed.Milliseconds(), "shown", shown,
-			"stderr", run.stderr)
-	}
+	// Which outcomes deserve a WARN is a decision about the dialog's semantics,
+	// so it lives in the untagged file with the rest of them and is tested on
+	// every platform (#4941). This file only supplies the evidence.
+	logDialogOutcome(s.ID, s.Username, run, actions, shown)
 	return clicked, shown
 }
 

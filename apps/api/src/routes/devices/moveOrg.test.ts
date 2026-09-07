@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   authMiddlewareMock,
@@ -11,10 +12,12 @@ const {
   pamGuardMock,
   captureExceptionMock,
   schedulePeripheralPolicyDeviceMock,
+  propagateCancelledMock,
 } = vi.hoisted(() => ({
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  propagateCancelledMock: vi.fn(),
   schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -66,6 +69,13 @@ vi.mock('../../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+// #5128 — the org flip cancels the device's queued work and must terminalise
+// the OWNING records (script_executions / deployment_results) in the SAME
+// transaction. Mocked at the seam so the route's wiring is assertable.
+vi.mock('../../services/commandCancelPropagation', () => ({
+  propagateCancelledDeviceCommands: propagateCancelledMock,
+}));
+
 // Task 13 (#3776): the locked currency guard is unit-tested on its own
 // (services/ticketMoveCurrencyGuard.test.ts); here it is a mock so the route's
 // sequencing, 409 mapping, and permission gate can be asserted in isolation.
@@ -94,10 +104,12 @@ import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import {
+  ALERT_CHILD_ORG_REWRITE_TABLES,
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
   DEVICE_ORG_FK_CASCADE_TABLES,
@@ -173,6 +185,26 @@ let currentOrgRows: Array<{ id: string; partnerId: string; name?: string; curren
  *  map by design, so the route must guard instead of `!`-asserting. */
 let barrierMissingOrgIds = new Set<string>();
 
+/**
+ * Per-test override for what a `tx.execute()` resolves to, keyed on the
+ * whitespace-collapsed statement text. `null` (the default) keeps the
+ * harness's empty-array answer. Needed by #4867: the alert-child re-stamp
+ * counts its `RETURNING` rows, so a test that asserts those counts has to
+ * hand the route something to count.
+ */
+let executeResultFor: ((stmtText: string) => unknown[] | null) | null = null;
+
+/**
+ * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
+ * cancel-on-move read) resolves to. Empty by default so the existing
+ * lock-order/audit tests are unaffected; the propagation tests set it.
+ */
+let pendingCommandRows: Array<{ id: string; type: string; payload: unknown }> = [];
+
+/** Collapse a captured statement to one line (multi-line `sql` templates keep
+ *  their source newlines in the harness's raw text). */
+const collapseStmt = (s: string) => s.replace(/\s+/g, ' ').trim();
+
 function rigOrgAndSiteSelects(opts: {
   orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
@@ -223,6 +255,13 @@ function rigTransactionSuccess(
   updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
   deviceUpdateError?: unknown,
 ) {
+  // Every `where(...)` predicate handed to a tx.update chain, in call order:
+  // [0] the devices flip, [1] the #5128 cancel-on-move sweep. Captured as the
+  // Drizzle condition object so it can be COMPILED — the only way to prove the
+  // self_uninstall exclusion is actually in the SQL.
+  const updateWheres: unknown[] = [];
+  const commandSelectWheres: unknown[] = [];
+  let txHandle: unknown = null;
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
   // template — Drizzle exposes it as queryChunks[1].value) plus the full
@@ -240,10 +279,13 @@ function rigTransactionSuccess(
         set: vi.fn().mockImplementation((vals: any) => {
           deviceUpdateSets.push(vals);
           return {
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockImplementation(() => deviceUpdateError
-                ? Promise.reject(deviceUpdateError)
-                : Promise.resolve([updatedRow])),
+            where: vi.fn().mockImplementation((cond: any) => {
+              updateWheres.push(cond);
+              return {
+                returning: vi.fn().mockImplementation(() => deviceUpdateError
+                  ? Promise.reject(deviceUpdateError)
+                  : Promise.resolve([updatedRow])),
+              };
             }),
           };
         }),
@@ -254,13 +296,32 @@ function rigTransactionSuccess(
         if (tableChunk && typeof tableChunk.value === 'string') {
           updatedTables.push(tableChunk.value);
         }
-        statements.push(sqlToText(sqlVal));
-        return [];
+        const text = sqlToText(sqlVal);
+        statements.push(text);
+        return executeResultFor?.(collapseStmt(text)) ?? [];
       }),
       // #3776 — the ticket-id lookup feeding the currency guard
       // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
       // position so lock-order assertions can place it against the UPDATEs.
-      select: vi.fn().mockImplementation(() => ({
+      select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+        // #5128 — the org flip now also reads the device's PENDING commands
+        // (id/type/payload) so their owning script_executions /
+        // deployment_results rows can be cancelled in the same transaction.
+        // This recorder is otherwise table-blind, so without this branch that
+        // read would be mis-recorded as the ticket-currency lookup and shift
+        // every lock-order assertion below.
+        if (cols && 'payload' in cols) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation((cond: any) => {
+                commandSelectWheres.push(cond);
+                statements.push(`SELECT device_commands.pending (after ${updatedTables.length} updates)`);
+                return Promise.resolve(pendingCommandRows);
+              }),
+            }),
+          };
+        }
+        return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockImplementation(() => ({
             // Awaited directly => the ticket-id lookup feeding the currency guard.
@@ -281,12 +342,21 @@ function rigTransactionSuccess(
             })),
           })),
         }),
-      })),
+        };
+      }),
     };
+    txHandle = tx;
     await cb(tx);
     return updatedRow;
   });
-  return { updatedTables, statements, deviceUpdateSets };
+  return {
+    updatedTables,
+    statements,
+    deviceUpdateSets,
+    updateWheres,
+    commandSelectWheres,
+    tx: () => txHandle,
+  };
 }
 
 describe('POST /devices/:id/move-org', () => {
@@ -295,6 +365,8 @@ describe('POST /devices/:id/move-org', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     barrierMissingOrgIds = new Set<string>();
+    executeResultFor = null;
+    pendingCommandRows = [];
     guardMock.mockReset();
     guardMock.mockResolvedValue(null);
     pamGuardMock.mockReset();
@@ -314,6 +386,68 @@ describe('POST /devices/:id/move-org', () => {
       expect(registeredPermResources).toContain('devices:write');
       expect(registeredPermResources).toContain('organizations:write');
       expect(registeredMfaCallCount).toBeGreaterThan(0);
+    });
+  });
+
+  // ── #5128 cancel-on-move ───────────────────────────────────────────────
+  describe('cancel-on-move (#5128)', () => {
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      return rigTransactionSuccess();
+    }
+
+    const move = () =>
+      app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+
+    it('both the SELECT and the cancel UPDATE exclude self_uninstall', async () => {
+      // Matches the decommission path in core.ts: the uninstall drain must
+      // still deliver. A device moved out of an org while its removal is queued
+      // still has to lose its agent — cancelling that row leaves a customer's
+      // machine managed by an MSP that no longer owns it.
+      const rig = rigMove();
+      expect((await move()).status).toBe(200);
+
+      const compiled = [rig.commandSelectWheres[0], rig.updateWheres[1]].map((cond) =>
+        new PgDialect().sqlToQuery(cond as never),
+      );
+      for (const { sql: text, params } of compiled) {
+        expect(params).toContain('self_uninstall');
+        // `<>` and not `=`: an equality would cancel ONLY the uninstall.
+        expect(text).toMatch(/"type"\s*<>/);
+        expect(params).toContain('pending');
+      }
+    });
+
+    it('propagates the SELECTED rows to the owning records on the SAME transaction', async () => {
+      pendingCommandRows = [
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ];
+      const rig = rigMove();
+
+      expect((await move()).status).toBe(200);
+
+      expect(propagateCancelledDeviceCommands).toHaveBeenCalledTimes(1);
+      const [subjects, completedAt, executor] = propagateCancelledMock.mock.calls[0]!;
+      expect(subjects).toEqual([
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ]);
+      expect(completedAt).toBeInstanceOf(Date);
+      // The transaction handle, not the ambient db: a rollback of the org flip
+      // must roll the owning records back with it.
+      expect(executor).toBe(rig.tx());
     });
   });
 
@@ -376,15 +510,22 @@ describe('POST /devices/:id/move-org', () => {
       // ticket_email_links — no device_id column, each rewritten via a
       // ticket_id or alert_id join) follow the generic org loop, and this
       // spread is what pins the hand-written statements to that array's
-      // ORDER, which is the cross-axis lock order (#4657, #4743, #4643). The SITE
-      // loop runs last and any table in DEVICE_SITE_DENORMALIZED_TABLES
-      // appears in updatedTables a second time for the site_id rewrite.
+      // ORDER, which is the cross-axis lock order (#4657, #4743, #4643).
+      // ALERT_CHILD_ORG_REWRITE_TABLES (#4867 — the alert-axis children with
+      // no device_id) come next, pinned to their array's order the same way:
+      // group -> member -> verdict, matching the correlation job's own write
+      // order (services/alertCorrelationGroups.ts) so the two writers can't
+      // form an AB-BA, and because each later predicate reads the rows the
+      // group statement just re-stamped. The SITE loop runs last
+      // and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
+      // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
         ...getDeviceOrgDenormalizedTables().filter(
           (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
         ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
+        ...ALERT_CHILD_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
@@ -798,6 +939,268 @@ describe('POST /devices/:id/move-org', () => {
     });
   });
 
+  /**
+   * Alert-axis children with no device_id column (#4867).
+   *
+   * `alerts` IS in getDeviceOrgDenormalizedTables(), so the generic loop
+   * re-stamps it — but `alert_correlation_members`, `alert_correlation_groups`
+   * and `ai_alert_verdicts` denormalize `org_id` WITHOUT a `device_id` column,
+   * so neither that loop nor the DB-side breeze_cascade_device_org_id()
+   * trigger (which discovers tables BY their device_id column) can reach them.
+   * Left behind, they keep the SOURCE org's id while their alert reads the
+   * TARGET's — and every alert-facing reader pins these rows to the alert's
+   * own org (`hideAiNoiseCondition` / `correlationMetadataCondition` in
+   * routes/alerts/alerts.ts, `latestVerdictsForAlerts` /
+   * `latestVerdictForGroup` in services/aiAgents/alertVerdicts.ts), so the
+   * moved alert permanently loses its AI-noise suppression and correlation
+   * badge. Nothing regenerates them: the verdict scheduler is event-driven off
+   * `alert.triggered` and never re-scans existing alerts.
+   *
+   * These are statement-shape assertions against the mocked tx (the repo's
+   * unit-level proxy for "the rewrite happens in the same transaction"); that
+   * the predicates match the right ROWS against a real server is the
+   * integration suite's job.
+   */
+  describe('alert-axis children with no device_id (#4867)', () => {
+    async function moveDevice() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const rigged = rigTransactionSuccess();
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+      return rigged;
+    }
+
+    /** The one statement issued against `table`, collapsed to a single line. */
+    function onlyStatement(statements: string[], table: string): string {
+      const matches = statements.map(collapseStmt).filter((s) => s.startsWith(`UPDATE ${table} `));
+      expect(
+        matches.length,
+        `Expected exactly one ${table} org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toBe(1);
+      return matches[0]!;
+    }
+
+    it('re-stamps alert_correlation_members only for groups that actually moved — a member never travels apart from its group', async () => {
+      const { statements } = await moveDevice();
+
+      // #5005 post-merge review (split-brain): the gate is the GROUP's org_id
+      // after the group statement, NOT the member's own alert.
+      // correlationMetadataCondition (routes/alerts/alerts.ts) joins a member to
+      // its group and pins BOTH org_ids, so a member re-stamped to the target
+      // while its group was held back is visible to NEITHER org. Matching on
+      // `g.org_id = <target>` rather than on the group statement's RETURNING ids
+      // also heals a member the pre-fix code stranded under a group that is
+      // already in the target org.
+      expect(onlyStatement(statements, 'alert_correlation_members')).toBe(collapseStmt(`
+        UPDATE alert_correlation_members m SET org_id = ${TARGET_ORG}::uuid
+        WHERE m.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_groups g
+        WHERE g.id = m.group_id
+        AND g.org_id = ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m2
+        JOIN alerts a ON a.id = m2.alert_id
+        WHERE m2.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid))
+        RETURNING m.id
+      `));
+    });
+
+    it('re-stamps alert_correlation_groups only when EVERY member alert reached the target org and the (org_id, group_key) slot is free', async () => {
+      const { statements } = await moveDevice();
+
+      // Three guards, all load-bearing:
+      //  - `g.org_id IS DISTINCT FROM <target>` — never touch a group that is
+      //    already there (keeps the statement idempotent under a retry);
+      //  - the first EXISTS — the group must actually involve this device, so
+      //    an unrelated source-org group is never dragged along;
+      //  - NOT EXISTS over member alerts still outside the target org — a group
+      //    spanning several devices only travels once its LAST device does, so
+      //    it is never handed to an org that owns just part of it;
+      //  - NOT EXISTS over the target org's (org_id, group_key) — that pair is
+      //    `alert_correlation_groups_org_key_uq`, and the target org can
+      //    already hold the key because the correlation job mints it as
+      //    `root:<rootAlertId>` per org. Skipping beats a 23505 that would roll
+      //    the whole move back over derived state.
+      expect(onlyStatement(statements, 'alert_correlation_groups')).toBe(collapseStmt(`
+        UPDATE alert_correlation_groups g SET org_id = ${TARGET_ORG}::uuid
+        WHERE g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m
+        JOIN alerts a ON a.id = m.alert_id
+        WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid)
+        AND NOT EXISTS (
+        SELECT 1 FROM alert_correlation_members m2
+        JOIN alerts a2 ON a2.id = m2.alert_id
+        WHERE m2.group_id = g.id AND a2.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid)
+        AND NOT EXISTS (
+        SELECT 1 FROM alert_correlation_groups existing
+        WHERE existing.org_id = ${TARGET_ORG}::uuid AND existing.group_key = g.group_key)
+        RETURNING g.id
+      `));
+    });
+
+    it('re-stamps ai_alert_verdicts on BOTH legs — an alert-level verdict follows its alert, a group-level verdict follows its group', async () => {
+      const { statements } = await moveDevice();
+
+      // The OR is the point: a `duplicate_of_group` verdict is persisted with
+      // alert_id NULL and correlation_group_id set, so the alert leg alone
+      // never reaches it and every member alert of a moved group would keep
+      // its noise classification stranded in the source org. The group leg is
+      // narrowed to groups this device's alerts belong to, so it cannot
+      // re-stamp a verdict on some unrelated group that merely sits in the
+      // target org.
+      expect(onlyStatement(statements, 'ai_alert_verdicts')).toBe(collapseStmt(`
+        UPDATE ai_alert_verdicts SET org_id = ${TARGET_ORG}::uuid
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)
+        OR correlation_group_id IN (
+        SELECT g.id FROM alert_correlation_groups g
+        WHERE g.org_id = ${TARGET_ORG}::uuid
+        AND EXISTS (
+        SELECT 1 FROM alert_correlation_members m
+        JOIN alerts a ON a.id = m.alert_id
+        WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid))
+        RETURNING id
+      `));
+    });
+
+    it('takes the GROUP before its MEMBERS (the correlation job\'s lock order), all after the generic alerts re-stamp', async () => {
+      const { statements } = await moveDevice();
+
+      const idx = (prefix: string) => {
+        const found = statements.map(collapseStmt).findIndex((s) => s.startsWith(prefix));
+        expect(found, `no statement starting with "${prefix}"`).toBeGreaterThanOrEqual(0);
+        return found;
+      };
+
+      // Load-bearing: the group guard reads `alerts.org_id` AS RE-STAMPED by
+      // the generic loop, so running earlier would see every moved alert still
+      // in the source org and hold every group back.
+      const alertsRestamp = idx('UPDATE alerts SET org_id');
+      expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(alertsRestamp);
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(alertsRestamp);
+      expect(idx('UPDATE ai_alert_verdicts ')).toBeGreaterThan(alertsRestamp);
+
+      // THE LOCK ORDER (#5005 review). services/alertCorrelationGroups.ts
+      // upserts the GROUP and then its MEMBERS on every correlation pass. A
+      // mover that took members first would be an AB-BA against a concurrent
+      // pass over the same group and lose one side to 40P01 — a 500 on an
+      // admin action. Same discipline as services/ticketOrgMoveLockOrder.ts.
+      expect(idx('UPDATE alert_correlation_members ')).toBeGreaterThan(idx('UPDATE alert_correlation_groups '));
+
+      // Load-bearing: the verdict's group leg selects groups already sitting in
+      // the TARGET org, which is only true of a group this move just re-stamped
+      // once the group statement has run.
+      expect(idx('UPDATE ai_alert_verdicts ')).toBeGreaterThan(idx('UPDATE alert_correlation_groups '));
+
+      // Extends — never reorders — the documented ticket-child lock order
+      // (services/ticketOrgMoveLockOrder.ts): the alert-axis statements all
+      // follow the last ticket-chain table.
+      expect(idx('UPDATE alert_correlation_groups ')).toBeGreaterThan(idx('UPDATE ticket_email_links '));
+    });
+
+    it('counts the groups it held back SPLIT BY CAUSE, and this device\'s memberships that stayed with them', async () => {
+      const { statements } = await moveDevice();
+
+      // A held group is one this device's alerts belong to that is still not in
+      // the target org after the re-stamp. The group UPDATE has already run, so
+      // it failed exactly one of its two skippable guards — it spans two orgs,
+      // or its (org_id, group_key) slot is occupied there. The two have
+      // different operator answers (#5005 review): spanning resolves itself when
+      // the last device moves, a key collision never does.
+      const held = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*) FILTER'));
+      expect(
+        held,
+        `Expected exactly one held-group count.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        collapseStmt(`
+          SELECT
+          count(*) FILTER (WHERE t.spans)::int AS held_spanning,
+          count(*) FILTER (WHERE NOT t.spans)::int AS held_key_collision
+          FROM (
+          SELECT EXISTS (
+          SELECT 1 FROM alert_correlation_members m2
+          JOIN alerts a2 ON a2.id = m2.alert_id
+          WHERE m2.group_id = g.id
+          AND a2.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid) AS spans
+          FROM alert_correlation_groups g
+          WHERE g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+          AND EXISTS (
+          SELECT 1 FROM alert_correlation_members m
+          JOIN alerts a ON a.id = m.alert_id
+          WHERE m.group_id = g.id AND a.device_id = ${DEVICE_ID}::uuid)
+          ) t
+        `),
+      ]);
+
+      // The members that stayed behind WITH a held group — this device's alerts
+      // that moved without their correlation membership.
+      const heldMembers = statements.map(collapseStmt).filter((s) => s.startsWith('SELECT count(*)::int AS held_members'));
+      expect(
+        heldMembers,
+        `Expected exactly one held-member count.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        collapseStmt(`
+          SELECT count(*)::int AS held_members
+          FROM alert_correlation_members m
+          JOIN alerts a ON a.id = m.alert_id
+          JOIN alert_correlation_groups g ON g.id = m.group_id
+          WHERE a.device_id = ${DEVICE_ID}::uuid
+          AND g.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid
+        `),
+      ]);
+    });
+
+    it('records the alert-axis rewrite counts on BOTH audit rows', async () => {
+      executeResultFor = (text) => {
+        if (text.startsWith('UPDATE alert_correlation_members ')) return [{ id: 'm1' }, { id: 'm2' }];
+        if (text.startsWith('UPDATE alert_correlation_groups ')) return [{ id: 'g1' }];
+        if (text.startsWith('UPDATE ai_alert_verdicts ')) return [{ id: 'v1' }, { id: 'v2' }, { id: 'v3' }];
+        if (text.startsWith('SELECT count(*) FILTER')) return [{ held_spanning: 4, held_key_collision: 2 }];
+        if (text.startsWith('SELECT count(*)::int AS held_members')) return [{ held_members: 5 }];
+        return null;
+      };
+      await moveDevice();
+
+      const expected = {
+        correlationGroups: 1,
+        correlationGroupsHeldSpanning: 4,
+        correlationGroupsHeldKeyCollision: 2,
+        correlationMembers: 2,
+        correlationMembersHeld: 5,
+        alertVerdicts: 3,
+      };
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.details.alertChildRewrite).toEqual(expected);
+      }
+      // One row per org, as everywhere else in this route.
+      expect(auditRows.map((row) => row.orgId).sort()).toEqual([SOURCE_ORG, TARGET_ORG].sort());
+    });
+
+    it('omits the alert-axis counts when the device had no alert-axis rows', async () => {
+      await moveDevice();
+
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.details).not.toHaveProperty('alertChildRewrite');
+      }
+    });
+  });
+
   describe('PAM ownership move guard', () => {
     const postMove = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
       method: 'POST',
@@ -836,12 +1239,21 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements[0]).toBe(
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
       );
-      expect(statements.slice(1, 5)).toEqual([
+      expect(statements.slice(1, 4)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
         'SELECT organizations FOR share (after 0 updates)',
         'PAM guard',
-        'UPDATE devices',
       ]);
+      // #3257 W05 — the custom-field re-home sits between the PAM guard and the
+      // device UPDATE, and its position is load-bearing in BOTH directions:
+      // after the org SHARE locks (it takes both orgs' partner-export locks and
+      // must not invert that hierarchy), and strictly BEFORE the org flip, since
+      // the flip's own trigger restamps the value rows and the coherence trigger
+      // would refuse them while they still name the source org's definition.
+      expect(collapseStmt(statements[4]!)).toContain(
+        'breeze_rehome_device_custom_field_values',
+      );
+      expect(statements[5]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

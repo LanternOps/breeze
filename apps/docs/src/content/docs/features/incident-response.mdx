@@ -1,11 +1,11 @@
 ---
 title: Incident Response
-description: Create, investigate, contain, and close security incidents with automated evidence collection and AI-assisted response.
+description: Create, investigate, contain, and close security incidents with evidence tracking and AI-assisted response.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Incident Response provides a structured workflow for handling security incidents — from initial detection through containment, evidence collection, and closure. Every action is recorded in an immutable timeline, and the AI assistant can create incidents, execute containment actions, and generate reports on your behalf.
+Incident Response provides a structured workflow for handling security incidents — from initial detection through containment, evidence tracking, and closure. Every action is recorded in the incident timeline, and the AI assistant can create incidents, dispatch containment actions to the agent, and generate reports on your behalf.
 
 ---
 
@@ -108,7 +108,7 @@ Setting `sourceType` and `sourceRef` together is how a finding is promoted into 
 
 ## Containment Actions
 
-Execute containment actions to isolate threats during an active incident.
+Record a containment action taken against an incident.
 
 ```bash
 POST /incidents/:id/contain
@@ -122,6 +122,8 @@ Content-Type: application/json
 }
 ```
 
+This endpoint is a status/record call: it inserts a containment action row, appends a timeline entry, and (when the reported status counts as success) moves the incident to `contained`. It does not itself reach the device -- use it to log an action you or the AI assistant already took.
+
 ### Action Types
 
 | Action | Description | Requires Approval |
@@ -131,7 +133,7 @@ Content-Type: application/json
 | `account_disable` | Disable a compromised user account | Yes |
 | `usb_block` | Block USB device access | Yes |
 
-All containment actions require an `approvalRef` parameter. Actions are dispatched as agent commands and their results are recorded in the incident timeline.
+All containment actions require an `approvalRef` parameter. Actual on-device dispatch happens through the AI assistant's `execute_containment` tool (see [AI-Assisted Incident Response](#ai-assisted-incident-response)), which queues an agent command. Of the four action types, only `process_kill` is implemented on the agent today -- `network_isolation`, `account_disable`, and `usb_block` return a platform-specific-implementation error.
 
 ### Action Statuses
 
@@ -147,7 +149,7 @@ All containment actions require an `approvalRef` parameter. Actions are dispatch
 
 ## Evidence Collection
 
-Attach forensic evidence to an incident for investigation and compliance.
+Attach forensic evidence to an incident by reference for investigation and compliance. The caller (a person, a script, or the AI assistant) supplies the storage path and a SHA-256 hash; Breeze does not collect the evidence itself.
 
 ```bash
 POST /incidents/:id/evidence
@@ -179,7 +181,7 @@ Evidence integrity is validated using SHA-256 hashes. Storage paths must use app
 
 ## Incident Timeline
 
-Every incident maintains an immutable timeline that records all events:
+Every incident maintains a timeline that records all events:
 
 | Entry Type | Description |
 |------------|-------------|
@@ -248,7 +250,7 @@ The AI assistant provides five tools for incident management:
 The AI can also trigger playbooks as part of incident response. Ask the AI to run a playbook against an affected device, and it will execute the playbook with the incident ID in the execution context for traceability.
 
 <Aside>
-  `execute_containment` is Tier 3 and requires human approval before execution. The AI will create a pending approval request that must be reviewed in the AI Risk Engine dashboard.
+  `execute_containment` is Tier 3 and requires human approval before execution. The AI will create a pending approval request that must be reviewed in the AI Risk Engine dashboard. On approval the tool queues an agent command; today the agent only implements `process_kill` -- `network_isolation`, `account_disable`, and `usb_block` come back as a platform-specific-implementation error.
 </Aside>
 
 ---
@@ -272,8 +274,8 @@ All endpoints require authentication and are scoped to the caller's organization
 
 ## Troubleshooting
 
-**Containment action stuck in pending.**
-Containment actions are dispatched as agent commands. If the target device is offline, the action remains pending until the device reconnects. Check device connectivity.
+**AI-dispatched containment action stuck in pending.**
+The `execute_containment` tool queues an agent command. If the target device is offline, the command remains pending until the device reconnects. Check device connectivity.
 
 **Evidence upload rejected.**
 The storage path must use an approved URI scheme (`s3://`, `gs://`, `r2://`, `azblob://`, `immutable://`, `https://`). Path traversal sequences (`..`) are blocked.

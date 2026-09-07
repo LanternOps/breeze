@@ -46,28 +46,13 @@ export function shouldShowDeviceCount(count: number | undefined): boolean {
   return typeof count === 'number' && Number.isFinite(count);
 }
 
-// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
-export const statusLabelKeys: Record<Organization['status'], string> = {
-  active: 'organizationsPage.status.active',
-  trial: 'organizationsPage.status.trial',
-  suspended: 'organizationsPage.status.suspended',
-  churned: 'organizationsPage.status.churned',
-  offboarding: 'organizationsPage.status.offboarding',
-  merging: 'organizationsPage.status.merging',
-  archived: 'organizationsPage.status.archived',
-  purging: 'organizationsPage.status.purging',
-};
-
-export const statusColors: Record<Organization['status'], string> = {
-  active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  trial: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  suspended: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  churned: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
-  merging: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
-  archived: 'border-gray-500/30 bg-gray-500/10 text-gray-700 dark:text-gray-400',
-  purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
-};
+// The status pill maps moved to lib/ (#5075) so the organization RECORD header
+// can share them without importing this whole page component — the same reason
+// `fetchAllOrganizations` moved. Re-exported here so this page stays the
+// documented home of the status contract and its tests
+// (OrganizationsPage.statusMaps.test.tsx).
+export { statusLabelKeys, statusColors } from '../../lib/orgStatus';
+import { statusColors, statusLabelKeys } from '../../lib/orgStatus';
 
 /**
  * Days remaining until an archived org's scheduled purge, rounded UP so a
@@ -1122,13 +1107,29 @@ export default function OrganizationsPage() {
                         </span>
                       )}
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{org.name}</p>
+                        <a
+                          href={`/organizations/${org.id}`}
+                          data-testid={`org-open-record-${org.id}`}
+                          onClick={e => e.stopPropagation()}
+                          className="truncate text-sm font-medium hover:underline block"
+                        >
+                          {org.name}
+                        </a>
                         <div className="mt-1 flex items-center gap-2">
-                          <span
-                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
-                          >
-                            {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
-                          </span>
+                          {/* Exception-only: an org's status is worth a glance
+                              only when it's NOT the steady state every other
+                              row is in. `active` is the overwhelming majority
+                              of rows, so giving it the same pill as every
+                              other status just added visual noise the eye had
+                              to filter past to spot the rows that actually
+                              need attention (trial/suspended/churned/etc). */}
+                          {org.status !== 'active' && (
+                            <span
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
+                            >
+                              {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
+                            </span>
+                          )}
                           {shouldShowDeviceCount(org.deviceCount) && (
                             <span className="text-xs text-muted-foreground">
                               {t('organizationsPage.deviceCount', { count: org.deviceCount })}
@@ -1138,7 +1139,7 @@ export default function OrganizationsPage() {
                       </div>
 
                       {/* Hover action buttons */}
-                      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
+                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
                         <button
                           type="button"
                           onClick={e => {
@@ -1146,7 +1147,7 @@ export default function OrganizationsPage() {
                             handleEdit(org);
                           }}
                           className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title={t('organizationsPage.actions.editOrganization')}
+                          title={t('organizationsPage.actions.openSettings')}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
@@ -1170,6 +1171,21 @@ export default function OrganizationsPage() {
                           </svg>
                         </button>
                       </div>
+
+                      {/* Row-end chevron — persistent (not hover-only), so the
+                          record page is reachable without discovering the
+                          hover affordances above; same icon-button styling. */}
+                      <a
+                        href={`/organizations/${org.id}`}
+                        aria-label={t('organizationsPage.actions.openRecord')}
+                        title={t('organizationsPage.actions.openRecord')}
+                        onClick={e => e.stopPropagation()}
+                        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m9 18 6-6-6-6" />
+                        </svg>
+                      </a>
                     </div>
                   </li>
                   );
@@ -1332,10 +1348,18 @@ export default function OrganizationsPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
+                        data-testid="org-open-record"
+                        onClick={() => void navigateTo(`/organizations/${selectedOrg.id}`)}
+                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+                      >
+                        {t('organizationsPage.actions.openRecord')}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleEdit(selectedOrg)}
                         className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
                       >
-                        {t('common:actions.edit')}
+                        {t('organizationsPage.actions.openSettings')}
                       </button>
                       <button
                         type="button"

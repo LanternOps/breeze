@@ -127,13 +127,19 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
     expect(await withSystemDbAccessContext(() => groupIncludesDevice(g, f.ephemeralDev))).toBe(false);
   });
 
-  runDb('a membership row forged with another org_id is invisible', async () => {
+  // Was: 'a membership row forged with another org_id is invisible'. Since
+  // #3182 it is refused rather than merely invisible — see the sibling
+  // assertion in groupMembership.resolve.integration.test.ts.
+  runDb('a membership row forged with another org_id is refused, and the device still does not match', async () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'static' });
-    await withSystemDbAccessContext(() => db.execute(sql`
+    const forged = await withSystemDbAccessContext(() => db.execute(sql`
       INSERT INTO device_group_memberships (device_id, group_id, org_id)
       VALUES (${f.otherOrgDev.id}::uuid, ${g.id}::uuid, ${f.orgB}::uuid)
-    `));
+    `)).then(() => null, (err: Error) => err);
+    expect(forged, 'the forged membership must be rejected (#3182)').toBeInstanceOf(Error);
+    expect(JSON.stringify(forged)).toContain('device_group_memberships_group_org_fk');
+
     expect(await withSystemDbAccessContext(() => groupIncludesDevice(g, f.otherOrgDev))).toBe(false);
   });
 

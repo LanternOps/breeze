@@ -122,6 +122,10 @@ x-api-env: &api-env
   PATCH_REPORT_STORAGE_PATH: /data/patch-reports
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
+  # Agent diagnostic log retention (worker role; all optional, see .env.example).
+  AGENT_LOG_RETENTION_DAYS: ${AGENT_LOG_RETENTION_DAYS:-}
+  AGENT_LOG_RETENTION_BATCH_SIZE: ${AGENT_LOG_RETENTION_BATCH_SIZE:-}
+  AGENT_LOG_RETENTION_MAX_BATCHES: ${AGENT_LOG_RETENTION_MAX_BATCHES:-}
   METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
   # Platform-operator abuse alerts (all optional; unset = feature disabled)
   OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
@@ -276,6 +280,9 @@ x-api-env: &api-env
   # apps/api/src/config/envComposeParity.test.ts.
   # Auth / security / session
   ENABLE_2FA: ${ENABLE_2FA:-}
+  # RMM-QA-164 relief valve (see .env.example). Empty when unset → envFlag
+  # default true; mapped so a locked-out self-hoster can actually flip it.
+  MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
   # present only in .env is inert unless it is listed here.
@@ -312,6 +319,12 @@ x-api-env: &api-env
   MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
   MAILGUN_FROM: ${MAILGUN_FROM:-}
   MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+  # #3905 — transport deadlines. Optional: unset falls back to the in-code
+  # defaults (SMTP 30s inactivity, Mailgun 120s whole-request). Mapped here so
+  # an operator can tune them without a code change (compose interpolation only
+  # happens for vars listed in this block).
+  SMTP_TIMEOUT_MS: ${SMTP_TIMEOUT_MS:-}
+  MAILGUN_TIMEOUT_MS: ${MAILGUN_TIMEOUT_MS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
@@ -403,6 +416,14 @@ x-api-env: &api-env
   # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
   EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
   FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
+  # Readiness cache + dependency-probe bounds. Empty === unset, so the
+  # `${VAR:-}` form keeps the clamped code defaults (5000 / 3000 ms). Both
+  # MUST be listed here: compose only interpolates vars named in this block,
+  # so a value set in .env alone is a silent no-op.
+  READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
+  READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
+  # Offline-detector mark-worker concurrency (1-20, code default 5). Empty === unset.
+  OFFLINE_DETECTOR_WORKER_CONCURRENCY: ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}
   # Outbox / anomaly-incident retention (#4210). Read by the three daily
   # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
   # in the worker role — the worker service inherits this same *api-env
@@ -515,6 +536,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # LIVENESS, deliberately not /ready. Compose has one dependency condition —
+    # `service_healthy` — and it is a STARTUP gate, so whatever runs here also
+    # decides whether dependents are allowed to start at all. caddy, web and
+    # portal all declare `depends_on: api: condition: service_healthy`, so
+    # probing /ready here promotes an admission signal into a hard startup
+    # dependency: a required queue consumer that cannot attach on a first boot
+    # or a full recreation leaves the API unhealthy, Compose gives up after the
+    # grace below, and caddy never starts — an internal worker problem becomes
+    # loss of ingress for the whole fleet. /ready belongs on the deploy
+    # admission gate and any external load balancer, which can drain traffic
+    # without preventing a process from starting. See docs/operations/health-probes.md.
     healthcheck:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']

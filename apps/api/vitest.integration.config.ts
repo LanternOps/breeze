@@ -10,6 +10,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/__tests__/integration/**/*.test.ts',
+      'src/db/auditRetentionDefault.integration.test.ts',
       // Co-located real-driver integration test for the inbound email pipeline
       // (placed alongside the code it exercises, per the repo's test-placement
       // convention). It uses the shared integration setup via setupFiles plus an
@@ -114,6 +115,11 @@ export default defineConfig({
       // (and the unit runner's `src/__tests__/integration/**` exclude drops it);
       // named here for discoverability.
       'src/__tests__/integration/staleBackupReaper.integration.test.ts',
+      // Co-located real-DB proof for the backup queue lifecycle guards
+      // (#4923): queued admission vs. the worker's dispatch-time running
+      // marker, starting-promotes-once, late queued pings, terminal rejection.
+      // The mocked unit suite only substring-matches the generated CASE SQL.
+      'src/services/backupProgress.integration.test.ts',
       // Co-located real-DB integration test for the intent stale-execution
       // reaper: proves the COALESCE(execution_started_at, decided_at) < now()
       // - interval predicate the mocked unit suite can't verify against a

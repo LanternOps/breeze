@@ -618,3 +618,279 @@ describe('ScriptTestRunner', () => {
     expect(onTestDeviceChange).not.toHaveBeenCalledWith(null);
   });
 });
+
+// #4885/#4886 — once a test run completes, offer an explicit "Run again" next
+// to the result and a link straight to where the full record lives.
+describe('ScriptTestRunner post-run actions (#4885 / #4886)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  async function runToCompletion(execute: () => void) {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: [
+        onlineDevice,
+        { ...onlineDevice, id: 'second-device', hostname: 'second-box' },
+      ] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        execute();
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({
+          id: EXECUTION_ID,
+          status: 'completed',
+          exitCode: 0,
+          stdout: 'hello from test-box',
+          stderr: '',
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await waitFor(() => expect(screen.getByText('hello from test-box')).toBeInTheDocument(), { timeout: 5000 });
+  }
+
+  it('offers a "Run again" action next to a completed run\'s output, which starts a new execution', async () => {
+    let executeCalls = 0;
+    await runToCompletion(() => { executeCalls += 1; });
+    expect(executeCalls).toBe(1);
+
+    fireEvent.click(screen.getByTestId('test-run-again'));
+
+    await waitFor(() => expect(executeCalls).toBe(2));
+  }, 10000);
+
+  it('links straight to the device\'s Scripts tab for the execution once it has run', async () => {
+    await runToCompletion(() => {});
+
+    const link = screen.getByTestId('test-view-on-device') as HTMLAnchorElement;
+    expect(link).toHaveAttribute('href', `/devices/${DEVICE_ID}#scripts/${EXECUTION_ID}`);
+  }, 10000);
+
+  it('does not render the device link before any run has started', () => {
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    expect(screen.queryByTestId('test-view-on-device')).toBeNull();
+  });
+
+  it('keeps the completed execution link on its original device after changing the next target', async () => {
+    await runToCompletion(() => {});
+
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: 'second-device' } });
+
+    expect(screen.getByTestId('test-device-select')).toHaveValue('second-device');
+    expect(screen.getByTestId('test-view-on-device')).toHaveAttribute(
+      'href', `/devices/${DEVICE_ID}#scripts/${EXECUTION_ID}`
+    );
+  }, 10000);
+});
+
+/**
+ * #4888 — Test Run's run-context control.
+ *
+ * Before this the editor's Test Run posted `{deviceIds, parameters,
+ * triggerType}` and inherited whatever the form's advanced-settings default
+ * was, with nothing on screen naming it. During the OliveTech GCPW debugging
+ * (#4882) the same script ran alternately as SYSTEM and as the user with no
+ * visible control over which, which is a large part of why the failures looked
+ * random.
+ */
+describe('ScriptTestRunner — run context (#4888)', () => {
+  // Local copy of the outer suite's timer flush — the poll loop's 2s interval
+  // is otherwise untestable in wall-clock time.
+  const flush = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  const ON_DEMAND_DEVICE = {
+    id: DEVICE_ID, hostname: 'test-box', osType: 'windows', status: 'online',
+    helperLifecycleMode: 'on-demand',
+  };
+
+  function postBodies(): Array<Record<string, unknown>> {
+    return fetchWithAuthMock.mock.calls
+      .filter(([url, init]) => url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>);
+  }
+
+  function mockRun(device: Record<string, unknown> = onlineDevice, execution: Record<string, unknown> = {}) {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/devices/') && url.endsWith('/sessions/live')) {
+        return jsonResponse({ data: { sessions: [
+          { sessionId: 3, username: 'olive\\tech', state: 'active', sessionType: 'console', helperConnected: true, idleMinutes: 0 },
+        ] } });
+      }
+      if (url.startsWith('/devices')) return jsonResponse({ data: [device] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: EXECUTION_ID }],
+        }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({ id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: '', stderr: '', ...execution });
+      }
+      return jsonResponse({}, 404);
+    });
+  }
+
+  async function selectDeviceAndRun() {
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+  }
+
+  /**
+   * The regression this guards is a SILENT DOWNGRADE, not a missing feature. A
+   * control offering only system/user that always posts a value would turn an
+   * `elevated` script's next test run into a plain system run — quieter and
+   * worse than the gap it replaced. Defaulting to "Script default" and posting
+   * NO `runAs` is what keeps the server's own resolution in charge.
+   */
+  it('posts no runAs at all while "Script default" is selected', async () => {
+    mockRun();
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="elevated"
+      />
+    );
+    await selectDeviceAndRun();
+
+    await waitFor(() => expect(postBodies()).toHaveLength(1));
+    expect(postBodies()[0]).not.toHaveProperty('runAs');
+  });
+
+  it('names the script default in the control so the inherited context is visible before running', async () => {
+    mockRun();
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="user"
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    expect(screen.getByTestId('test-run-context')).toHaveTextContent(/script default \(logged-in user\)/i);
+  });
+
+  it('posts the chosen runAs when the author overrides the default', async () => {
+    mockRun();
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="system"
+      />
+    );
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-run-context'), { target: { value: 'user' } });
+    await selectDeviceAndRun();
+
+    await waitFor(() => expect(postBodies()).toHaveLength(1));
+    expect(postBodies()[0]!.runAs).toBe('user');
+  });
+
+  it('offers a session target only for a user run on an on-demand helper, and posts it', async () => {
+    mockRun(ON_DEMAND_DEVICE);
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="system"
+      />
+    );
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    // Hidden until the context is actually `user` — the API rejects a session
+    // id on any other run, so offering one would be a control that 400s.
+    expect(screen.queryByTestId('test-run-session-target')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('test-run-context'), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.getByTestId('test-run-session-target')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-run-session-target'), { target: { value: '3' } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    await waitFor(() => expect(postBodies()).toHaveLength(1));
+    expect(postBodies()[0]).toMatchObject({ runAs: 'user', targetSessionId: 3 });
+  });
+
+  it('never offers a session target for an always-on helper', async () => {
+    mockRun({ ...onlineDevice, helperLifecycleMode: 'always-on' });
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="system"
+      />
+    );
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.change(screen.getByTestId('test-run-context'), { target: { value: 'user' } });
+
+    expect(screen.queryByTestId('test-run-session-target')).toBeNull();
+  });
+
+  /**
+   * The header reports the SERVER's resolution off the execution row, not an
+   * echo of what the component sent — that is the difference between "we think
+   * it ran as X" and "it ran as X".
+   */
+  it('shows the effective run context the execution row reports, not the local selection', async () => {
+    vi.useFakeTimers();
+    mockRun(onlineDevice, { runAs: 'elevated' });
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true} scriptRunAs="elevated"
+      />
+    );
+    await flush();
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await flush(2500);
+
+    expect(screen.getByTestId('test-run-effective-context')).toHaveTextContent(/elevated/i);
+  });
+
+  it('reports an unrecorded run context honestly rather than assuming System', async () => {
+    vi.useFakeTimers();
+    mockRun(onlineDevice, { runAs: null });
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+    await flush();
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await flush(2500);
+
+    const chip = screen.getByTestId('test-run-effective-context');
+    expect(chip).toHaveTextContent(/not recorded/i);
+    expect(chip).not.toHaveTextContent(/^Run context\s*System$/i);
+  });
+});

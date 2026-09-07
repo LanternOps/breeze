@@ -1357,11 +1357,21 @@ jobs:
       # remote/desktop and no cgo. Its two behavioural tests assert against the
       # real netapi32 and skip loudly, rather than pass, on a host where
       # ~breeze_elev exists or local-account queries are not permitted.
+      # ./internal/executor is the fifth instance of the same gap (#3525):
+      # limits_windows.go's setProcessGroup/hideWindow and the new Job Object
+      # containment are Windows-only, and limits_windows_test.go had never
+      # executed anywhere. Verified like logging/ipc/elevaccount: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 it vets and its test binary
+      # compiles. It differs from those three in one way that matters — its
+      # Windows dependency graph DOES contain remote/desktop, via
+      # privilege -> remote/tools — which is harmless here (CGO_ENABLED=0 is
+      # exactly the configuration remote/desktop's !cgo files are written for)
+      # but is why it must stay out of the race step below.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1386,6 +1396,25 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # The policy-state registry collector decides whether a batch uploads with
+      # `replace: true` — which deletes every prior row for the device. That
+      # "complete vs partial" judgement is Windows-only code (#3529), so it
+      # executes nowhere else in CI: the macOS/Linux jobs compile the !windows
+      # stub instead. Same -run filter + PASS count as the steps around it,
+      # because the package's inherited Windows backlog (#2523) is still red.
+      - name: Run Windows policy registry state completeness tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsCollectRegistryStateCompleteness$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Software inventory has platform-specific registry behavior. Keep this
       # filtered until the inherited Windows package backlog in #2523 is green,
@@ -1441,11 +1470,22 @@ jobs:
           if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
-      # this covers only packages that do not import it (heartbeat and agentapp
-      # do, transitively). Same package set as the step above: sessionbroker is
-      # the concurrency-critical one — session-keyed helper admission, the
-      # lifecycle registry, and Job Object ownership all live there — so it is
-      # the one that most needs the detector on the OS it actually ships to.
+      # this covers only packages that do not import it (heartbeat, agentapp and
+      # executor do, transitively). Same package set as the step above MINUS
+      # those: sessionbroker is the concurrency-critical one — session-keyed
+      # helper admission, the lifecycle registry, and Job Object ownership all
+      # live there — so it is the one that most needs the detector on the OS it
+      # actually ships to.
+      #
+      # ./internal/executor belongs to the CGO_ENABLED=0 step above and NOT
+      # here: it reaches remote/desktop via privilege -> remote/tools (#3525
+      # added the package to the list above and briefly to this one, which went
+      # red). The concrete failure is that dxgi_windows.go and
+      # dxgi_capture_windows.go are `//go:build windows && !cgo`, so with cgo ON
+      # their comVtblFn/dxgiCapturer/procDeleteObject definitions vanish while
+      # the plain-`windows` files that reference them stay. Check the import
+      # graph before adding anything else here:
+      #   GOOS=windows go list -deps ./internal/<pkg> | grep remote/desktop
       - name: Run Windows race tests
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/state ./internal/watchdog ./cmd/breeze-watchdog
@@ -2171,6 +2211,14 @@ jobs:
           # hosted SaaS from self-hosted, gates the email-verification flow on
           # /auth/register-partner. CI runs in self-hosted mode.
           IS_HOSTED=false
+          # RMM-QA-164: fresh installs now seed the system Partner Admin role
+          # with force_mfa=true, so the bootstrap admin would be minted
+          # mfa=false and get 428 mfa_enrollment_required on every
+          # authMiddleware-gated GET below. This sweep is about endpoint
+          # reachability, not the MFA wall (proven by the real-Postgres
+          # suites), so use the documented relief valve. The stored flag is
+          # still asserted with the valve off — see the step after login.
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
           # Required in production by the Wave 3 live-authorization epoch
           # rollout — compat until the fleet drains version-one writers.
           EVENT_PERMISSION_EPOCH_MODE=compat
@@ -2234,7 +2282,30 @@ jobs:
           fi
           echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+          # RMM-QA-164: with MFA_FORCE_FOR_PARTNER_ADMIN=false in this stack's
+          # .env the role-force component must be suppressed end to end
+          # (proves the root compose actually threads the valve, D6).
+          ENROLL=$(echo "${RESPONSE}" | jq -r '.mfaEnrollmentRequired')
+          echo "mfaEnrollmentRequired=${ENROLL} (expected false: relief valve set in .env)"
+          if [ "${ENROLL}" != "false" ]; then
+            echo "ERROR: relief valve MFA_FORCE_FOR_PARTNER_ADMIN=false was not honoured by the api container"
+            exit 1
+          fi
           echo "Login successful."
+
+      - name: Assert seeded Partner Admin stores force_mfa=true (RMM-QA-164)
+        run: |
+          # The finding's headline symptom was "fresh stack stored false".
+          # This reads the seeded global template straight from Postgres,
+          # independent of the relief valve (which only affects enforcement).
+          STORED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml.ci \
+            exec -T postgres psql -U breeze -d breeze -tAc \
+            "SELECT force_mfa FROM roles WHERE name = 'Partner Admin' AND is_system AND partner_id IS NULL")
+          echo "roles.force_mfa for the seeded system Partner Admin template: '${STORED}'"
+          if [ "${STORED}" != "t" ]; then
+            echo "ERROR: fresh-stack seed stored force_mfa='${STORED}' (expected 't')"
+            exit 1
+          fi
 
       - name: Smoke test API endpoints
         env:
@@ -2449,6 +2520,10 @@ jobs:
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
+          jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN_BODY}" >/dev/null || {
+            echo "ERROR: installer smoke role-MFA relief valve did not survive reboot"
+            exit 1
+          }
           TOKEN=$(jq -er '.tokens.accessToken' <<<"${LOGIN_BODY}")
           RESPONSE=$(curl -sk -o /tmp/guided-trust-response -w '%{http_code}' \
             -X POST https://localhost/api/v1/remote/sessions \
@@ -2670,6 +2745,9 @@ jobs:
           # The built-in Workspace extension defaults ON in the dev override; its
           # migrations are pure cost for a portal hydration run, so keep it off.
           BREEZE_WORKSPACE_ENABLED=false
+          # This job tests portal hydration and billing UI, not MFA enrollment.
+          # Keep the stored forced-MFA flag; suppress only its role component.
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
           # Image refs — the base docker-compose.yml requires all of these via
           # `${VAR:?}` before profile filtering, even though the dev override
           # builds api/web/portal from this checkout and stubs binaries-init.
@@ -2710,6 +2788,24 @@ jobs:
 
       - name: Show the stack descriptor
         run: cat .breeze-stack.json
+
+      - name: Verify hydration fixture MFA posture
+        run: |
+          BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -c '.admin' .breeze-stack.json)")
+          jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {
+            echo "ERROR: hydration fixture did not receive the role-MFA relief valve"
+            exit 1
+          }
+          PG_CONTAINER=$(jq -er '.pgContainer' .breeze-stack.json)
+          STORED=$(docker exec "${PG_CONTAINER}" psql -U breeze -d breeze -tAc \
+            "SELECT force_mfa FROM roles WHERE name = 'Partner Admin' AND scope = 'partner' AND is_system AND partner_id IS NULL AND org_id IS NULL")
+          [ "${STORED}" = "t" ] || {
+            echo "ERROR: hydration fixture's system Partner Admin must still store force_mfa=true"
+            exit 1
+          }
 
       # multi-currency.spec.ts is the only `waitForHydration` caller whose flow
       # reaches the portal — its `public-quote-accept` step is the exact

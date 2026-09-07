@@ -68,6 +68,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/catalog/distributors/pax8/import'], // method is case-insensitive
     // PR3 — the three SSO provider routes that run OIDC discovery against a
     // tenant-controlled issuer (10s timeout) inside the handler.
+    // #2787 bulk restore — runBulkIsolated opens one short transaction per
+    // device; the ambient request tx would otherwise pin one pooled connection
+    // (and every devices/device_commands lock it takes) across up to 500 items.
+    ['POST', '/api/v1/devices/bulk/restore'],
+    ['POST', '/api/v1/devices/bulk/restore/'],
+    ['post', '/api/v1/devices/bulk/restore'], // method is case-insensitive
     ['POST', '/api/v1/sso/providers'],
     ['POST', '/api/v1/sso/providers/'],
     ['PATCH', '/api/v1/sso/providers/abc-123'],
@@ -127,9 +133,29 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
     ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
     ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    // #3905 — quote send/re-send render the proposal PDF and run the outbound
+    // mail round-trip in the handler, and sendQuote holds a FOR UPDATE lock on
+    // the quote (and a revision's PARENT) that only the commit releases.
+    ['POST', '/api/v1/quotes/abc-123/send'],
+    ['POST', '/api/v1/quotes/abc-123/send/'],
+    ['post', '/api/v1/quotes/abc-123/send'], // method is case-insensitive
+    ['POST', '/api/v1/quotes/abc-123/resend'],
+    ['POST', '/api/v1/quotes/abc-123/resend/'],
+    ['post', '/api/v1/quotes/abc-123/resend'], // method is case-insensitive
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
+    // #3905 — the /send pattern must not swallow its siblings. Losing the
+    // ambient transaction on a route whose handler does NOT manage its own
+    // contexts means every db call there lands on the bare pool with no RLS
+    // GUC and silently affects 0 rows (#1375).
+    ['POST', '/api/v1/quotes/bulk-send', 'bulk-send is one path segment, and runBulkIsolated already opens a tx per item'],
+    ['POST', '/api/v1/quotes/abc-123/schedule-send', 'schedule-send only enqueues; it keeps the ambient tx'],
+    ['DELETE', '/api/v1/quotes/abc-123/schedule-send', 'undo-send is DB-only'],
+    ['GET', '/api/v1/quotes/abc-123/send', 'send is POST-only'],
+    ['POST', '/api/v1/quotes//send', 'empty id segment must not match'],
+    ['POST', '/api/v1/quotes/abc-123/send/extra', 'extra path segment must not match'],
+    ['GET', '/api/v1/quotes/abc-123/share-link', 'share-link mails nothing and keeps the ambient tx'],
     ['GET', '/api/v1/invoices/abc-123/pay-link', 'wrong method (only POST opts out)'],
     ['GET', '/api/v1/portal/invoices/def-456/pay', 'wrong method'],
     ['POST', '/api/v1/invoices/abc-123', 'invoice route without /pay-link'],
@@ -239,6 +265,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
     ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
+
+    // #2787 — the SINGLE restore does one device in one transaction and must
+    // keep the ambient tx; losing it would put its writes on the bare pool with
+    // no RLS GUC, silently affecting 0 rows (#1375).
+    ['POST', '/api/v1/devices/11111111-1111-4111-8111-111111111111/restore', 'single restore keeps ambient tx'],
+    ['POST', '/api/v1/devices/bulk/restore/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/devices/bulk/restore', 'bulk restore is POST-only'],
+    // Bulk permanent delete only validates and ENQUEUES — no slow work in the
+    // handler, so it keeps the ambient transaction (same call as quotes/bulk-send).
+    ['POST', '/api/v1/devices/bulk/permanent-delete', 'bulk purge only enqueues; the worker does the work'],
 
     // The other catalog mutations are DB-only and MUST keep the ambient tx.
     ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],

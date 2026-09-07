@@ -62,12 +62,28 @@ describe('quote bulk routes', () => {
     expect(data.skippedReasons).toEqual({ NOT_A_DRAFT: 1 });
   });
 
-  it('bulk-send sends each draft', async () => {
-    (sendQuote as any).mockResolvedValue({});
+  it('bulk-send sends each draft, then delivers its email after that item committed', async () => {
+    // #3905 — the per-item deferred is invoked by runBulkIsolated's
+    // afterItemCommit hook, i.e. after the item's own transaction commits.
+    const deliverEmail = vi.fn(async () => ({ quote: { id: A }, emailed: true }));
+    (sendQuote as any).mockResolvedValue({ quote: { id: A, orgId: 'org1' }, acceptUrl: 'http://x/q/t', deliverEmail });
     const res = await post('/bulk-send', { ids: [A] });
     expect(res.status).toBe(200);
     expect((await res.json()).data).toMatchObject({ succeeded: 1 });
     expect(sendQuote).toHaveBeenCalledWith(A, expect.anything());
+    expect(deliverEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a bulk-send item as succeeded even when its deferred email fails', async () => {
+    // Delivery is best-effort and never rejects, so a mail failure must not
+    // turn a COMMITTED send into a reported bulk failure.
+    (sendQuote as any).mockResolvedValue({
+      quote: { id: A, orgId: 'org1' }, acceptUrl: 'http://x/q/t',
+      deliverEmail: vi.fn(async () => ({ quote: { id: A }, emailed: false, emailReason: 'send_failed' })),
+    });
+    const res = await post('/bulk-send', { ids: [A] });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 });
   });
 
   it('rejects an empty id list with 400', async () => {

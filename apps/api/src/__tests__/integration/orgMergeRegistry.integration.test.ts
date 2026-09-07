@@ -185,6 +185,7 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  * silently writes the old value back — equally fatal, and quieter.
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  'offline_transition_effects.offline_effect_source_guard': 'RAISEs iff immutable source org_id changes; historical intents remain with source until erasure',
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
@@ -237,6 +238,30 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // contract can restamp tenancy; every evidence field stays immutable.
   'agent_health_observations.agent_health_observations_immutable_trg': 'org_id-only device-owner restamp',
   'software_inventory_observations.software_inventory_observations_immutable_trg': 'org_id-only device-owner restamp',
+  // Cross-axis field_key namespace guard (#3257 W03,
+  // 2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql). RAISEs P0001
+  // only when the DESTINATION org's partner already owns a partner-wide row
+  // with the same field_key. A merge is same-partner (orgMerge.ts:289,
+  // re-validated against fresh rows inside the merge transaction at :605), so
+  // the repoint never changes which partner namespace the row lives in — the
+  // loser's row already had to clear this exact check to exist. Note this is a
+  // REACHABILITY argument, not inertness: the trigger does fire on the repoint
+  // and would abort it over a pre-existing shadow. Both halves are pinned in
+  // customFieldDefinitionsMerge.integration.test.ts ('merges cleanly while the
+  // partner owns partner-wide definitions' and 'an existing cross-axis shadow
+  // WOULD abort the repoint'). If the same-partner precondition or the
+  // migration's deploy-abort is ever weakened, this moves to BLOCKING.
+  'custom_field_definitions.custom_field_definitions_no_shadow':
+    'cross-axis field_key namespace check against the DESTINATION org\'s partner; a merge is same-partner, so the repoint cannot change the namespace being checked',
+  // BEFORE INSERT/UPDATE coherence check (#3257 W05,
+  // 2026-10-11-160000-device-custom-field-values.sql) carries an explicit merge
+  // fence: it permits the org_id repoint when the value's definition is still
+  // owned by an org that is actively status='merging' under the SAME partner as
+  // the row's new org, so the merge's early devices repoint (which restamps this
+  // table via breeze_cascade_device_org_id's generic loop while the definition
+  // is still loser-owned) does not abort.
+  'device_custom_field_values.device_custom_field_values_coherent':
+    'merge fence: permits the repoint while the definition is still loser-owned, gated on same-partner status=\'merging\'',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',

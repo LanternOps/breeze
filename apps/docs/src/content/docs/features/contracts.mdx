@@ -45,7 +45,7 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 
 Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. A per-device-group line is not site-scoped: make the group itself site-bound instead. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
 
-**Editing a line.** On a draft or active contract you can edit a line in place -- its description, price, tax flag, quantity, site, device roles, device group and catalog link -- from the contract editor. The line keeps its identity, so invoices already generated from it stay linked to it and any allowance you set later is preserved. **The line type cannot be changed**: remove the line and add a new one instead. A catalog-linked line keeps the price it was given when it was added; use **Refresh price from catalog** to re-price it. Clearing a catalog link asks you for a unit price, because nothing re-prices the line afterwards. Edits apply from the next billing period onward; invoices that have already been generated are never rewritten.
+**Editing a line.** On a draft or active contract you can edit a line in place -- its description, price, tax flag, quantity, site, device roles, device group and catalog link -- from the contract editor. The line keeps its identity, so invoices already generated from it stay linked to it and any allowance you set later is preserved. **The line type cannot be changed**: remove the line and add a new one instead. A catalog-linked line keeps the price it was given when it was added; use **Refresh price from catalog** to re-price it. Clearing a catalog link asks you for a unit price, because nothing re-prices the line afterwards. Edits apply from the next billing period onward; invoices that have already been generated are never rewritten. Adding, changing, or removing a line is recorded in the [Audit Trail](/reference/audit-logs/) against the contract — the entry names which fields changed, and the old and new unit price when the price moved. There is no per-line history on the contract page itself.
 
 ### Included quantity and overage
 
@@ -91,7 +91,9 @@ Any one-time charges on the same quote become an invoice instead, not a contract
 
 ### If a site is deleted
 
-A contract line scoped to a site records the site's name as well as its id. If that site is deleted, the line **stops billing and says so**. The contract detail shows "site deleted," and generating an invoice refuses with a named error, instead of quietly falling back to billing every device in the organization. Re-scope the line to another site, or remove it, and generation resumes.
+A contract line scoped to a site records the site's name as well as its id. If that site is deleted, the line **stops billing and says so**. The contract detail shows "site deleted," and generating an invoice refuses instead of quietly falling back to billing every device in the organization. Nothing is written — the whole generation run stops, so you never get a partial invoice. Re-scope the line to another site, or remove it, and generation resumes.
+
+The refusal currently surfaces as the raw message from the server, naming the internal line id and the deleted site — technical-looking, but it tells you exactly which line to fix.
 
 A line whose site was deleted *before* this behavior shipped cannot be recovered because its site name was never recorded. It stays organization-wide until a technician re-scopes it.
 

@@ -374,7 +374,7 @@ export const restoreJobs = pgTable(
     initiatedBy: uuid('initiated_by').references(() => users.id),
     targetConfig: jsonb('target_config'),
     recoveryTokenId: uuid('recovery_token_id'),
-    commandId: uuid('command_id').references(() => deviceCommands.id),
+    commandId: uuid('command_id').references(() => deviceCommands.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
     ...recoveryAuthorizationSubjectColumns(),

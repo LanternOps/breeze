@@ -212,6 +212,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // disposition above). Repointing the graduation row while its evidence
   // stays under the loser shell would split one key's story across two
   // orgs, same reasoning as ai_agent_fix_watches immediately above.
+  offline_transition_effects: { kind: 'leave-for-erasure', note: 'immutable source-owned offline history; pending alerts validate current device ownership and historical events never repoint to destination tenant' },
   ai_agent_graduation: { kind: 'leave-for-erasure', note: 'graduation state is derived from evidence tied to runs that stay with the source org (ai_agent_runs disposition); rows die with the loser shell rather than repoint into a story the evidence cannot follow' },
   ai_agent_impact_daily: { kind: 'leave-for-erasure', note: 'derived per-org daily rollup of runs/verdicts/watches that all themselves stay with the loser org (ai_agent_runs disposition) — repointing would double-count the survivor and nothing can regenerate under it; rows die with the loser shell' },
   // ai_agent_op_evidence (P2-5, #4192): each row is a historical copy of a
@@ -329,6 +330,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ...buildFollowsParentEntries(),
 
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
+  audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
@@ -394,6 +396,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
+  custom_field_definitions: { kind: 'custom', note:
+    'UNIQUE (org_id, field_key) (#3257 W02) makes a plain repoint raise 23505 when both orgs define the same key — for two orgs imported from one Datto tenant, that is every key. '
+    + "Re-homes the loser definition's values onto the survivor's identically-keyed definition, then drops the duplicate. "
+    + 'A blind repoint-dedupe DELETE would cascade-delete those values once device_custom_field_values lands (W05). '
+    + 'The collision predicate is org_id-equality on both sides, so partner-wide definitions (org_id NULL, #2135) are never touched by an org merge.' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
   // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
   // until P2-3 gave it its FIRST collidable unique index,
@@ -493,7 +500,6 @@ const REPOINT_TABLES: readonly string[] = [
   "audit_baseline_apply_approvals",
   "audit_baseline_results",
   "audit_policy_states",
-  "audit_retention_policies",
   "automation_action_results",
   "automation_policies",
   "automation_run_device_results",
@@ -533,7 +539,8 @@ const REPOINT_TABLES: readonly string[] = [
   "contract_template_versions",
   "contract_templates",
   "contracts",
-  "custom_field_definitions",
+  // custom_field_definitions moved to SPECIAL (kind: 'custom') in #3257 W02 —
+  // custom_field_definitions_org_key_uq makes a plain repoint raise 23505.
   "customer_email_domains",
   "deployment_invites",
   "deployments",
@@ -542,8 +549,20 @@ const REPOINT_TABLES: readonly string[] = [
   "device_change_log",
   "device_config_state",
   "device_connections",
+  // device_custom_field_values (#3257 W05): plain repoint. It carries org_id
+  // and device_id, and its only unique index is (device_id, definition_id),
+  // which cannot collide across orgs because a device belongs to one org —
+  // the devices under the loser org repoint with it.
+  "device_custom_field_values",
   "device_disks",
   "device_event_logs",
+  // device_external_links: plain repoint, and the unique key was checked first.
+  // device_external_links_uniq is (partner_id, system, COALESCE(source_instance,
+  // ''), external_id) — PARTNER-scoped, with no org_id in it. An org merge keeps
+  // both orgs under the SAME partner, so two links that would collide after the
+  // merge were already forbidden before it; a repoint cannot manufacture a
+  // 23505. Nothing to dedupe.
+  "device_external_links",
   "device_filesystem_cleanup_runs",
   "device_filesystem_scan_state",
   "device_filesystem_snapshots",

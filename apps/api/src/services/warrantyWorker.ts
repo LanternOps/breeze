@@ -4,6 +4,7 @@ import { getBullMQConnection } from './redis';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { syncWarrantyForDevice, syncWarrantyBatch, getDevicesNeedingWarrantySync } from './warrantySync';
 import { jobSchedule } from '../jobs/scheduleRegistry';
+import { attachWorkerObservability } from '../jobs/workerObservability';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -117,6 +118,7 @@ export async function queueWarrantySyncForDevice(
 export async function initializeWarrantyWorker(): Promise<void> {
   try {
     warrantyWorker = createWarrantyWorker();
+  attachWorkerObservability(warrantyWorker, 'warrantyWorker');
 
     warrantyWorker.on('error', (error) => {
       console.error('[WarrantyWorker] Worker error:', error);
