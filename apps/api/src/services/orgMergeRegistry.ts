@@ -77,11 +77,27 @@ const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
  */
 const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings']);
 
+/**
+ * ASSOCIATED_SYSTEM_SCOPED_TABLES entries a merge never needs to touch at all.
+ *
+ * `partners` (#5075 W04) is there only because org ERASURE must un-wire
+ * `partners.service_management_psa_connection_id` before deleting a bound
+ * `psa_connections` row (ON DELETE RESTRICT). A merge deletes nothing:
+ * `psa_connections` is a plain repoint (REPOINT_TABLES below), so the
+ * connection keeps its id and the partner's binding stays valid with no
+ * write to `partners`. The table has no org_id, is not FK-reachable from the
+ * cascade walk, and lives on the partner axis, so a policy entry here would
+ * be a dead entry that reads as coverage — same reasoning as
+ * POST_PASS_FIXUP_TABLES, minus the fixup.
+ */
+const MERGE_NOOP_PARTNER_AXIS_TABLES = new Set(['partners']);
+
 function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
   const entries: Record<string, OrgMergePolicy> = {};
   for (const { table } of tenantCascadeTestOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     if (FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS.has(table)) continue;
     if (POST_PASS_FIXUP_TABLES.has(table)) continue;
+    if (MERGE_NOOP_PARTNER_AXIS_TABLES.has(table)) continue;
     const note = FOLLOWS_PARENT_NOTES[table];
     if (!note) {
       // tenantCascade.ts gained a new ASSOCIATED_SYSTEM_SCOPED_TABLES entry
