@@ -332,7 +332,11 @@ func TestCollectorCommandInheritedPipeCleanup(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				defer process.Release()
+				defer func() {
+					if err := process.Release(); err != nil {
+						t.Logf("process.Release: %v", err)
+					}
+				}()
 				if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 					t.Error(err)
 				}
