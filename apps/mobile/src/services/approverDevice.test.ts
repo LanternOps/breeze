@@ -19,10 +19,12 @@ vi.mock('./installationId', () => ({
 const secureStore = {
   getItemAsync: vi.fn(),
   setItemAsync: vi.fn(),
+  deleteItemAsync: vi.fn(),
 };
 vi.mock('expo-secure-store', () => ({
   getItemAsync: (...a: unknown[]) => secureStore.getItemAsync(...a),
   setItemAsync: (...a: unknown[]) => secureStore.setItemAsync(...a),
+  deleteItemAsync: (...a: unknown[]) => secureStore.deleteItemAsync(...a),
 }));
 
 // Default getHardwareSigner returns an UNAVAILABLE signer; tests that need a
@@ -74,6 +76,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   secureStore.getItemAsync.mockReset().mockResolvedValue('test-token');
   secureStore.setItemAsync.mockReset().mockResolvedValue(undefined);
+  secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
   (globalThis as unknown as { fetch: typeof fetchMock }).fetch = fetchMock;
   attestingPlatform = 'ios';
   attesting.isAvailable.mockReset().mockResolvedValue(false);
@@ -389,6 +392,13 @@ const expectedTranscriptB64 = createHash('sha256')
   )
   .digest('base64');
 
+/**
+ * `/devices/mobile/verify` 201s whether or not the attestation held; the
+ * verdict is the `platformBoundBasis` on the returned row. Success fixtures
+ * carry it explicitly so a client that stops reading it goes red.
+ */
+const ATTESTED_DEVICE = { device: { id: 'dev-att', platformBoundBasis: 'ios_se_p256_app_attest' } };
+
 function noCredentialYet() {
   secureStore.getItemAsync.mockImplementation(async (k: string) =>
     k === 'breeze_approver_credential_id' ? null : 'test-token',
@@ -413,7 +423,7 @@ describe('ensureApproverDevice — attested path', () => {
 
   it('POSTs challenge then verify, carrying the grant on BOTH calls', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
 
     await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
       status: 'registered',
@@ -449,21 +459,64 @@ describe('ensureApproverDevice — attested path', () => {
     expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_attested', '1');
   });
 
-  it('does NOT mark the device attested when the legacy path ran', async () => {
+  it('CLEARS the attested marker when the legacy path ran, so a stale one cannot pin the wrong signer', async () => {
+    // A marker left over from an earlier attested enrolment (or a crash between
+    // the marker write and the credential write) would make gatherApprovalProof
+    // offer an ES256 signature for an RSA row: every approval rejected, no error.
     attesting.isAvailable.mockResolvedValue(false);
     fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-legacy' } }));
 
-    await ensureApproverDevice(fakeSigner(), 'grant-1');
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'registered',
+      attested: false,
+    });
 
     expect(secureStore.setItemAsync).not.toHaveBeenCalledWith(
       'breeze_approver_attested',
       expect.anything(),
     );
+    expect(secureStore.deleteItemAsync).toHaveBeenCalledWith('breeze_approver_attested');
+    // Marker cleared BEFORE the credential id is written.
+    const del = secureStore.deleteItemAsync.mock.invocationCallOrder[0];
+    const cred = secureStore.setItemAsync.mock.invocationCallOrder[0];
+    expect(del).toBeLessThan(cred);
+  });
+
+  it('reports attested:false with a reason when /verify 201s but the server stored the row as unattested', async () => {
+    // The server never refuses a rejected attestation — it inserts the row with
+    // platformBoundBasis 'unattested' and returns 201. Reading only res.ok would
+    // record L4 on a phone permanently capped at L3, and the on-device gate
+    // would show "registered" while the server row says otherwise.
+    challengeIssued();
+    fetchMock.mockResolvedValueOnce(
+      json({ device: { id: 'dev-att', platformBoundBasis: 'unattested' } }, 201),
+    );
+
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'registered',
+      attested: false,
+      reason: 'attestation_rejected_by_server',
+    });
+    // The row exists and is keyed by the SE key (ES256), so the signer marker
+    // is still set and the credential is stored: no re-registration loop.
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_attested', '1');
+    expect(secureStore.setItemAsync).toHaveBeenCalledWith('breeze_approver_credential_id', 'dev-att');
+  });
+
+  it('treats a 201 with no platformBoundBasis at all as not attested', async () => {
+    challengeIssued();
+    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+
+    await expect(ensureApproverDevice(fakeSigner(), 'grant-1')).resolves.toEqual({
+      status: 'registered',
+      attested: false,
+      reason: 'attestation_rejected_by_server',
+    });
   });
 
   it('signs and attests the transcript derived from the SERVER challenge, not a client-chosen value', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -475,7 +528,7 @@ describe('ensureApproverDevice — attested path', () => {
 
   it('passes the server challenge to key generation so Android can bind it at key-gen time', async () => {
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -491,7 +544,7 @@ describe('ensureApproverDevice — attested path', () => {
       certificateChain: ['leaf', 'root'],
     });
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
 
     await ensureApproverDevice(fakeSigner(), 'grant-1');
 
@@ -572,7 +625,7 @@ describe('ensureApproverDevice — attested path', () => {
     fetchMock.mockResolvedValueOnce(
       json({ attemptId: 'attempt-2', challenge: 'server-challenge-2', expiresAt: 'x' }),
     );
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
     await expect(ensureApproverDevice(fakeSigner(), 'grant-2')).resolves.toEqual({
       status: 'registered',
       attested: true,
@@ -647,7 +700,7 @@ describe('ensureApproverDevice — attested path', () => {
     // A phone with a Secure Enclave but no react-native-biometrics key must not
     // be reported as having no hardware.
     challengeIssued();
-    fetchMock.mockResolvedValueOnce(json({ device: { id: 'dev-att' } }, 201));
+    fetchMock.mockResolvedValueOnce(json(ATTESTED_DEVICE, 201));
 
     await expect(
       ensureApproverDevice(fakeSigner({ isAvailable: vi.fn().mockResolvedValue(false) }), 'grant-1'),
@@ -715,6 +768,19 @@ describe('gatherApprovalProof — signer selection', () => {
     const legacy = fakeSigner();
 
     await expect(gatherApprovalProof('appr-1', legacy, attesting)).resolves.toBeNull();
+    expect(legacy.sign).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates a REJECTED availability probe instead of coercing it to "unavailable"', async () => {
+    // Registration treats a thrown probe as "unknown" and fails closed. The
+    // approval path must not quietly convert the same throw into a null proof:
+    // that is an L1 approval from a phone registered at L4, with no signal.
+    registeredAs(true);
+    attesting.isAvailable.mockRejectedValue(new Error('bridge exploded'));
+    const legacy = fakeSigner();
+
+    await expect(gatherApprovalProof('appr-1', legacy, attesting)).rejects.toThrow(/bridge exploded/);
     expect(legacy.sign).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });

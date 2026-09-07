@@ -116,15 +116,27 @@ public class BreezeAttestationModule: Module {
     }
 
     AsyncFunction("deleteAttestedKey") { () -> Bool in
-      return Self.deleteKey()
+      let status = Self.deleteKey()
+      return status == errSecSuccess || status == errSecItemNotFound
     }
   }
 
   // MARK: - Secure Enclave key
 
   private static func secureEnclaveAvailable() -> Bool {
-    // The only reliable probe is asking for an access control the SE must be
-    // able to honour; simulators and passcode-less devices fail here.
+    // `SecAccessControlCreateWithFlags` only builds a policy object; it does NOT
+    // consult the Secure Enclave, the passcode, or biometric enrolment, so on its
+    // own it says "yes" on a Simulator and on a passcode-less phone. The key we
+    // mint requires `.biometryCurrentSet` under `WhenPasscodeSetThisDeviceOnly`,
+    // so the honest probe is whether biometrics can be evaluated right now
+    // (which implies a passcode). Reporting `true` here and failing in
+    // `createKey` would block the phone from registering at all — the
+    // fail-closed rule in `approverDevice.ts` never falls back to legacy.
+    let context = LAContext()
+    var laError: NSError?
+    guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &laError) else {
+      return false
+    }
     var error: Unmanaged<CFError>?
     let access = SecAccessControlCreateWithFlags(
       nil,
@@ -140,8 +152,14 @@ public class BreezeAttestationModule: Module {
     guard secureEnclaveAvailable() else { throw BreezeAttestationError.secureEnclaveUnavailable }
     // Re-registration must not leave the old key behind: two keys under one tag
     // makes `SecItemCopyMatching` non-deterministic, and the server has already
-    // moved on to the new public key.
-    _ = deleteKey()
+    // moved on to the new public key. A delete that neither succeeded nor found
+    // nothing is fatal — minting over it would leave two keys, and `sign` could
+    // then produce a perfectly valid signature under the key the server
+    // discarded, which no error anywhere would explain.
+    let deleteStatus = deleteKey()
+    guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+      throw BreezeAttestationError.keyGenerationFailed("stale key not removed: OSStatus \(deleteStatus)")
+    }
 
     var accessError: Unmanaged<CFError>?
     guard
@@ -195,12 +213,12 @@ public class BreezeAttestationModule: Module {
     return (Data(p256SpkiHeader) + raw).base64EncodedString()
   }
 
-  private static func deleteKey() -> Bool {
+  private static func deleteKey() -> OSStatus {
     let query: [String: Any] = [
       kSecClass as String: kSecClassKey,
       kSecAttrApplicationTag as String: keyTag,
     ]
-    return SecItemDelete(query as CFDictionary) == errSecSuccess
+    return SecItemDelete(query as CFDictionary)
   }
 
   // MARK: - Signing
@@ -224,10 +242,12 @@ public class BreezeAttestationModule: Module {
     let query: [String: Any] = [
       kSecClass as String: kSecClassKey,
       kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
       kSecAttrApplicationTag as String: keyTag,
       kSecReturnRef as String: true,
+      // The prompt string comes from `context.localizedReason`;
+      // `kSecUseOperationPrompt` is deprecated and would compete with it.
       kSecUseAuthenticationContext as String: context,
-      kSecUseOperationPrompt as String: reason,
     ]
     var item: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &item)

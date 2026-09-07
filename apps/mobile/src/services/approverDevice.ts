@@ -90,7 +90,18 @@ export type ApproverRegistrationOutcome =
    * `attested: false` registration can never reach L4, and W07's banner reads
    * this to say so rather than letting the user find out at approval time.
    */
-  | { status: 'registered'; attested: boolean }
+  | { status: 'registered'; attested: true }
+  /**
+   * `reason: 'attestation_rejected_by_server'` is the one registered-but-not-
+   * attested case that is NOT the legacy path: this phone minted a Secure
+   * Enclave key and ran App Attest, `/devices/mobile/verify` still 201'd (it
+   * always does — a rejected attestation is stored as `unattested`, never
+   * refused), and the row it returned says the attestation did not hold. The
+   * device signs with the attested key but is capped at L3. Surfaced rather
+   * than swallowed so the wrong `appattest-environment` or a stale server is
+   * found on the phone, not weeks later at a refused critical approval.
+   */
+  | { status: 'registered'; attested: false; reason?: 'attestation_rejected_by_server' }
   | { status: 'already_registered' }
   | { status: 'deferred'; reason: 'no_reauth_grant' }
   | { status: 'unsupported'; reason: 'no_hardware' }
@@ -135,10 +146,16 @@ class AttestationFailed extends Error {
  * A 2xx with no device id is a FAILURE, not a success with a missing field:
  * without the id `gatherApprovalProof` can never build a proof, so every later
  * approval would silently drop to L1 with nothing recorded about why.
+ *
+ * `viaAttestedKey` says which KEY this phone registered with, and drives the
+ * signer marker. Whether the registration is *attested* is the SERVER's call:
+ * `/devices/mobile/verify` returns 201 for a rejected attestation too (the row
+ * is stored with `platformBoundBasis: 'unattested'`), so the outcome reads the
+ * basis off the returned device instead of trusting the branch that ran.
  */
 async function persistRegistration(
   res: Response,
-  attested: boolean,
+  viaAttestedKey: boolean,
 ): Promise<ApproverRegistrationOutcome> {
   if (!res.ok) {
     return { status: 'failed', reason: `http_${res.status}` };
@@ -147,15 +164,27 @@ async function persistRegistration(
   if (!device?.id) {
     return { status: 'failed', reason: 'missing_device_id' };
   }
-  // Written BEFORE the credential id: `gatherApprovalProof` gates on the
-  // credential id, so if the process dies between the two writes we would
-  // rather have a stale marker with no credential (inert) than a credential
-  // whose signer we then guess wrong.
-  if (attested) {
+  const basis: unknown = device.platformBoundBasis;
+  const serverAttested = typeof basis === 'string' && basis !== 'unattested';
+  // The marker is written in BOTH directions and BEFORE the credential id.
+  // Both directions: a stale `'1'` left behind by an earlier attested enrolment
+  // would make `gatherApprovalProof` offer an ES256 signature for an RSA row,
+  // i.e. every approval silently rejected. Before the id: if the process dies
+  // between the two writes we would rather have a marker with no credential
+  // (inert — `gatherApprovalProof` gates on the credential id) than a
+  // credential whose signer we then guess wrong.
+  if (viaAttestedKey) {
     await SecureStore.setItemAsync(ATTESTED_KEY, '1');
+  } else {
+    await SecureStore.deleteItemAsync(ATTESTED_KEY);
   }
   await SecureStore.setItemAsync(CRED_ID_KEY, device.id);
-  return { status: 'registered', attested };
+  if (viaAttestedKey && !serverAttested) {
+    return { status: 'registered', attested: false, reason: 'attestation_rejected_by_server' };
+  }
+  return viaAttestedKey && serverAttested
+    ? { status: 'registered', attested: true }
+    : { status: 'registered', attested: false };
 }
 
 /**
@@ -384,7 +413,13 @@ export async function gatherApprovalProof(
     // no longer reach the attested key cannot produce a proof this row accepts;
     // offering an RSA signature instead would only turn a clean "no proof" into
     // a verification failure on the server.
-    if (!(await attesting.isAvailable().catch(() => false))) return null;
+    //
+    // And deliberately NOT catching the probe: a rejected `isAvailable()` is
+    // "unknown", not "no" — the same rule registration applies. Coercing it to
+    // `false` here would turn a bridge error into a silent L1 approval from a
+    // phone that registered at L4; propagating it aborts the approval loudly,
+    // exactly like a cancelled biometric prompt does a few lines down.
+    if (!(await attesting.isAvailable())) return null;
     sign = (payload, reason) => attesting.signPayload(payload, reason);
   } else {
     if (!(await signer.isAvailable())) return null;

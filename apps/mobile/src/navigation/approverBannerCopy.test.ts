@@ -32,6 +32,20 @@ describe('describeApproverReason', () => {
     expect(describeApproverReason('exception:TypeError')).toContain('TypeError');
   });
 
+  it.each([
+    'attestation_failed',
+    'attestation_probe_failed',
+    'attestation_rejected_by_server',
+  ])('says that signing in again will NOT fix %s', (reason) => {
+    // The banner's only action is "Sign out and back in". A fresh grant re-runs
+    // the identical attestation on the identical device, so for these three the
+    // detail must say so or the user is sent in a loop.
+    const detail = describeApproverReason(reason);
+    expect(detail).not.toBe(reason);
+    expect(detail).toMatch(/signing in again will not/i);
+    expect(detail).toMatch(/administrator/i);
+  });
+
   it('passes an unrecognised code through instead of swallowing it', () => {
     expect(describeApproverReason('something_new')).toBe('something_new');
   });
