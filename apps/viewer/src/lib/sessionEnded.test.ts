@@ -165,6 +165,29 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([null, 'v=0 stale-answer'])('surfaces no-display failures once, even with answer %s', async (webrtcAnswer) => {
+    const message = 'no display attached — open the lid or attach an external display';
+    let sessionPolls = 0;
+    const close = vi.spyOn(FakeRTCPeerConnection.prototype, 'close');
+    const setRemoteDescription = vi.spyOn(FakeRTCPeerConnection.prototype, 'setRemoteDescription');
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
+      if (url.includes('/viewer/offer')) return jsonResponse({ ok: true });
+      if (url.includes('/viewer/session')) {
+        sessionPolls += 1;
+        return jsonResponse({ status: 'failed', errorMessage: message, webrtcAnswer });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const error = await createWebRTCSession(baseParams, videoEl).catch((err) => err);
+    expect(error).toBeInstanceOf(AgentSessionError);
+    expect(error.message).toBe(message);
+    expect(sessionPolls).toBe(1);
+    expect(setRemoteDescription).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('throws SessionEndedError when the offer POST returns 401 "Session ended"', async () => {
     stubFetch((url) => {
       if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });

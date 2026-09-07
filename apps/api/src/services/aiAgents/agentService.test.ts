@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   returnedRow: null as Record<string, unknown> | null,
   insertedValues: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
+  assertScriptIdsAuthorizable: vi.fn(async () => undefined),
   selectWhere: undefined as unknown,
   selectFor: undefined as unknown,
   audit: vi.fn(),
@@ -113,6 +114,7 @@ vi.mock('./recipients', () => {
 // is isolated the same way ./recipients is above: a controllable stub whose
 // CONTRACT (called with exactly the keys this write is setting, before
 // anything is written) is what agentService.ts owns and this suite asserts.
+vi.mock('./scriptAuthorization', () => ({ assertScriptIdsAuthorizable: state.assertScriptIdsAuthorizable }));
 vi.mock('../actionIntents/policyDecidable', () => ({
   validateAuthorizationKeys: state.validateAuthorizationKeys,
 }));
@@ -259,6 +261,7 @@ beforeEach(() => {
   state.returnedRow = null;
   state.insertedValues = null;
   state.updatedValues = null;
+  state.assertScriptIdsAuthorizable.mockClear();
   state.selectFor = undefined;
 });
 
@@ -287,6 +290,68 @@ describe('assertAgentWriteAllowed', () => {
       auth({ principal: { kind: 'ai_agent', agentId: 'a', runId: 'r' } }),
       { orgId: 'o1', partnerId: null },
     )).toThrow(AgentAccessDeniedError);
+  });
+});
+
+describe('script authorization wiring (#5065, #5089 review)', () => {
+  const S = '3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b';
+
+  it('createAgent validates EVERY id of the create against the row\'s owner and kind, with the create\'s own allowlist, before writing', async () => {
+    state.returnedRow = storedRow;
+
+    await createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, toolAllowlist: ['run_script'], actAssets: { scriptIds: [S], supervisedActionKeys: [] } } as never,
+    );
+
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      createInput.kind,
+      { existing: [], next: [S], toolAllowlist: ['run_script'] },
+    );
+    const assertOrder = state.assertScriptIdsAuthorizable.mock.invocationCallOrder[0] as number;
+    const insertOrder = vi.mocked(db.insert).mock.invocationCallOrder[0] as number;
+    expect(assertOrder).toBeLessThan(insertOrder);
+  });
+
+  it('updateAgent validates only what the patch sets, against the stored list and the POST-patch allowlist', async () => {
+    state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'], actAssets: { scriptIds: ['old-id'], supervisedActionKeys: [] } };
+    state.returnedRow = state.currentRow;
+
+    await updateAgent(auth(), 'a1', { actAssets: { scriptIds: ['old-id', S] } } as never);
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      { orgId: 'o1', partnerId: null },
+      storedRow.kind,
+      { existing: ['old-id'], next: ['old-id', S], toolAllowlist: ['alerts:list'] },
+    );
+
+    state.assertScriptIdsAuthorizable.mockClear();
+    await updateAgent(auth(), 'a1', { toolAllowlist: ['run_script'], actAssets: { scriptIds: [S] } } as never);
+    expect(state.assertScriptIdsAuthorizable).toHaveBeenCalledWith(
+      expect.anything(),
+      storedRow.kind,
+      expect.objectContaining({ toolAllowlist: ['run_script'] }),
+    );
+
+    state.assertScriptIdsAuthorizable.mockClear();
+    await updateAgent(auth(), 'a1', { name: 'renamed' } as never);
+    expect(state.assertScriptIdsAuthorizable).not.toHaveBeenCalled();
+  });
+
+  it('a rejected id aborts the write — nothing is inserted or updated', async () => {
+    state.assertScriptIdsAuthorizable.mockRejectedValueOnce(new Error('invalid_script_ids'));
+    await expect(createAgent(
+      auth(),
+      { orgId: 'o1', partnerId: null },
+      { ...createInput, toolAllowlist: ['run_script'], actAssets: { scriptIds: [S], supervisedActionKeys: [] } } as never,
+    )).rejects.toThrow('invalid_script_ids');
+    expect(state.insertedValues).toBeNull();
+
+    state.currentRow = storedRow;
+    state.assertScriptIdsAuthorizable.mockRejectedValueOnce(new Error('invalid_script_ids'));
+    await expect(updateAgent(auth(), 'a1', { actAssets: { scriptIds: [S] } } as never)).rejects.toThrow('invalid_script_ids');
+    expect(state.updatedValues).toBeNull();
   });
 });
 

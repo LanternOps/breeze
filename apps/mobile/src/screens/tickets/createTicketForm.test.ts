@@ -22,7 +22,7 @@ describe('buildCreateTicketBody', () => {
     });
   });
 
-  it('refuses without an organisation, before checking the subject', () => {
+  it('refuses without an organization, before checking the subject', () => {
     expect(buildCreateTicketBody({ orgId: null, subject: '', description: '', priority: 'normal' })).toEqual({
       ok: false,
       reason: 'org',
@@ -56,10 +56,10 @@ describe('preselectOrg', () => {
     { id: 'a', name: 'Acme' },
     { id: 'b', name: 'Bolt' },
   ];
-  it('prefers the signed-in user\'s own organisation when it is in the list', () => {
+  it('prefers the signed-in user\'s own organization when it is in the list', () => {
     expect(preselectOrg(orgs, 'b')).toBe('b');
   });
-  it('picks the only organisation when there is exactly one', () => {
+  it('picks the only organization when there is exactly one', () => {
     expect(preselectOrg([orgs[0]], undefined)).toBe('a');
   });
   it('leaves the choice to the user otherwise', () => {

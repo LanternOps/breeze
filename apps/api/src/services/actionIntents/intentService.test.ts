@@ -2500,6 +2500,118 @@ describe('buildImpactSummary (#5106)', () => {
       input: { deviceId: 'd1' },
       expected: 'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
     },
+    // #5173: execute_command's impact box used to always fall back to the
+    // tool's catalog description ("Execute a system command on a device.")
+    // regardless of commandType — these assert a call-specific sentence per
+    // commandType, built from `input.payload` (never validated against a
+    // strict schema, so these builders defensively fall back to the catalog
+    // text — see the last two cases — when the expected field is absent).
+    {
+      name: 'execute_command kill_process names the immediate, unsaved-work-lost effect',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'kill_process', payload: { pid: 2920, processName: 'SupportAssistAgent.exe' } },
+      expected: 'Terminates the process immediately. Unsaved work in it is lost.',
+    },
+    {
+      name: 'execute_command start_service names the service',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'start_service', payload: { name: 'Spooler' } },
+      expected: 'Starting "Spooler".',
+    },
+    {
+      name: 'execute_command stop_service names the service and its blast radius',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'stop_service', payload: { name: 'Spooler' } },
+      expected: 'Stopping "Spooler" will make it — and anything that depends on it — unavailable until it is started again.',
+    },
+    {
+      name: 'execute_command restart_service names the service and its blast radius',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'restart_service', payload: { name: 'Spooler' } },
+      expected: 'Restarting "Spooler" will briefly interrupt it and anything that depends on it.',
+    },
+    {
+      name: 'execute_command file_read names the path and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_read', payload: { path: 'C:\\secrets.txt' } },
+      expected: 'Reads "C:\\secrets.txt"; does not modify it.',
+    },
+    {
+      name: 'execute_command file_read with no path still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_read' },
+      expected: "Reads a file's contents; does not modify it.",
+    },
+    {
+      name: 'execute_command file_list names the path and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_list', payload: { path: 'C:\\Users' } },
+      expected: 'Lists files in "C:\\Users"; does not change anything.',
+    },
+    {
+      name: 'execute_command file_list with no path still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'file_list' },
+      expected: 'Lists files in a directory; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_query names the log and states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_query', payload: { logName: 'Security' } },
+      expected: 'Reads matching entries from the "Security" event log; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_query with no logName still states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_query' },
+      expected: 'Reads matching event log entries; does not change anything.',
+    },
+    {
+      name: 'execute_command event_logs_list states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'event_logs_list' },
+      expected: 'Lists available event logs; does not change anything.',
+    },
+    {
+      name: 'execute_command list_services states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'list_services' },
+      expected: 'Lists services on the device; does not change anything.',
+    },
+    {
+      name: 'execute_command list_processes states it is read-only',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'list_processes' },
+      expected: 'Lists running processes on the device; does not change anything.',
+    },
+    {
+      name: 'execute_command start_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'start_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command stop_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'stop_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command restart_service with no service name falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'restart_service' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
+    {
+      name: 'execute_command with an unrecognized commandType falls back to the catalog text (no regression)',
+      toolName: 'execute_command',
+      input: { deviceId: 'd1', commandType: 'definitely_not_a_command' },
+      guardrailDescription: 'Execute a system command on a device.',
+      expected: 'Execute a system command on a device.',
+    },
     {
       name: 'an unrecognized tool falls back to the guardrail description',
       toolName: 'query_devices',

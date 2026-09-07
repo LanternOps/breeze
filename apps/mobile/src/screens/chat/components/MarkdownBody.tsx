@@ -4,9 +4,15 @@ import Markdown, { type RenderRules } from 'react-native-markdown-display';
 
 import { useApprovalTheme, fontFamily, radii, spacing } from '../../../theme';
 import { parseMarkdownTable, toDisplayRows } from './markdownTable';
+import { sanitizeStreamingMarkdown } from './streamingMarkdown';
 
 interface Props {
   content: string;
+  // True only while this message is still streaming in. An unclosed inline
+  // marker (`**`, `*`, `_`, a single backtick) renders literally until its
+  // close arrives — see `sanitizeStreamingMarkdown` (#5170). A completed
+  // message is always well-formed, so this must never apply there.
+  streaming?: boolean;
 }
 
 // Markdown renderer themed to DESIGN.md tokens.
@@ -16,8 +22,9 @@ interface Props {
 // - Headings: stepped down from Display so they don't compete with the
 //   approval-card register elsewhere in the app.
 // - HR rules suppressed per the brief — they read as visual gunk on small screens.
-export function MarkdownBody({ content }: Props) {
+export function MarkdownBody({ content, streaming }: Props) {
   const theme = useApprovalTheme('dark');
+  const displayContent = streaming ? sanitizeStreamingMarkdown(content) : content;
 
   // The library expects a flat StyleSheet-like object keyed by AST node type.
   const styles = useMemo(
@@ -251,7 +258,7 @@ export function MarkdownBody({ content }: Props) {
       mergeStyle={false}
       onLinkPress={() => true}
     >
-      {content}
+      {displayContent}
     </Markdown>
   );
 }

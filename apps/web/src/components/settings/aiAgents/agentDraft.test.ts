@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   ALERT_SEVERITY_KINDS,
+  allowsRunScript,
+  authorizedScriptCountFor,
   buildAgentSaveBody,
   draftFrom,
   firstFreeKind,
@@ -37,6 +39,7 @@ function baseDraft(overrides: Partial<Draft> = {}): Draft {
     roleIds: ['role-1'],
     instructions: '',
     supervisedActionKeys: [],
+    scriptIds: [],
     ticketAutonomousWrites: false,
     ...overrides,
   };
@@ -116,14 +119,19 @@ describe('buildAgentSaveBody', () => {
       cooldownSeconds: 900,
       recipients: { roleIds: ['role-1'] },
       instructions: null,
-      actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+      actAssets: { supervisedActionKeys: ['manage_services:restart'], scriptIds: [] },
       kind: 'triage',
       ownerScope: 'partner',
     });
   });
 
-  it('pins the ORG draft body: create-only orgId set, actAssets OMITTED entirely (#5049 grant-only)', () => {
-    const draft = baseDraft({ ownerScope: 'organization', mode: 'act', supervisedActionKeys: ['manage_services:restart'] });
+  it('pins the ORG draft body: create-only orgId set, actAssets carries scriptIds only (#5049 grant-only keys, #5065 scripts)', () => {
+    const draft = baseDraft({
+      ownerScope: 'organization',
+      mode: 'act',
+      supervisedActionKeys: ['manage_services:restart'],
+      scriptIds: ['3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b'],
+    });
     const body = buildAgentSaveBody(draft, { isCreate: true, orgId: 'org-1' });
     expect(body).toEqual({
       name: 'Triage bot',
@@ -140,11 +148,13 @@ describe('buildAgentSaveBody', () => {
       cooldownSeconds: 900,
       recipients: { roleIds: ['role-1'] },
       instructions: null,
+      actAssets: { scriptIds: ['3c1f5c8e-2b1d-4c5e-9a1b-2f3d4e5f6a7b'] },
       kind: 'triage',
       ownerScope: 'organization',
       orgId: 'org-1',
     });
-    expect(body).not.toHaveProperty('actAssets');
+    // Never the keys: an org row's supervisedActionKeys are grant-only.
+    expect(body.actAssets).not.toHaveProperty('supervisedActionKeys');
   });
 
   it('a PATCH body (isCreate: false) carries the policy fields only — no kind/ownerScope/orgId', () => {
@@ -165,6 +175,48 @@ describe('buildAgentSaveBody', () => {
   it('sends actAssets.supervisedActionKeys as [] on a partner draft not in act mode, even if the draft holds a stale selection', () => {
     const draft = baseDraft({ ownerScope: 'partner', mode: 'shadow', supervisedActionKeys: ['manage_services:restart'] });
     const body = buildAgentSaveBody(draft, { isCreate: true, orgId: null });
-    expect(body.actAssets).toEqual({ supervisedActionKeys: [] });
+    expect(body.actAssets).toEqual({ supervisedActionKeys: [], scriptIds: [] });
+  });
+
+  it('allowsRunScript recognises the bare entry only, like the server (#5065, #5089 review)', () => {
+    expect(allowsRunScript('manage_services:restart\nrun_script')).toBe(true);
+    // A scoped form never admits run_script server-side (its catalog entry
+    // has no action), so it must not unlock the picker here either.
+    expect(allowsRunScript('run_script:execute')).toBe(false);
+    expect(allowsRunScript('manage_services:restart\nrun_playbook')).toBe(false);
+    expect(allowsRunScript('')).toBe(false);
+  });
+});
+
+describe('authorizedScriptCountFor (#5089 review)', () => {
+  const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const b = 'aaaaaaaa-0000-4000-8000-000000000002';
+  const withRunScript = (scriptIds: string[]) => ({ scriptIds, toolAllowlist: 'manage_services:restart\nrun_script' });
+
+  it('with no ceiling counts each distinct id once', () => {
+    expect(authorizedScriptCountFor(withRunScript([a, a, b]), null)).toBe(2);
+  });
+
+  it('with a ceiling counts only the ids the baseline also lists (partner ∩ org)', () => {
+    expect(authorizedScriptCountFor(withRunScript([a, b]), { toolAllowlist: ['run_script'], supervisedActionKeys: [], scriptIds: [b] })).toBe(1);
+  });
+
+  it('counts nothing when the ceiling bars run_script itself, whatever it lists', () => {
+    expect(authorizedScriptCountFor(withRunScript([a]), { toolAllowlist: ['manage_services'], supervisedActionKeys: [], scriptIds: [a] })).toBe(0);
+  });
+
+  it('counts nothing while the draft\'s OWN allowlist does not admit run_script — unticking the capability must not leave "N scripts authorized" standing', () => {
+    expect(authorizedScriptCountFor({ scriptIds: [a], toolAllowlist: 'manage_services:restart' }, null)).toBe(0);
+    expect(authorizedScriptCountFor({ scriptIds: [a], toolAllowlist: 'run_script:execute' }, null)).toBe(0);
+  });
+});
+
+describe('buildAgentSaveBody scriptIds (#5089 review)', () => {
+  it('sends a cleared list as an explicit [] on both scopes, so a PATCH revokes rather than leaves the stored ids alone', () => {
+    const base = draftFrom(null, { ownerScope: 'partner', kind: 'triage' });
+    const partner = buildAgentSaveBody({ ...base, scriptIds: [] }, { isCreate: false, orgId: null }) as { actAssets: { scriptIds: string[] } };
+    expect(partner.actAssets.scriptIds).toEqual([]);
+    const org = buildAgentSaveBody({ ...base, ownerScope: 'organization', scriptIds: [] }, { isCreate: false, orgId: 'org-1' }) as { actAssets: { scriptIds: string[] } };
+    expect(org.actAssets.scriptIds).toEqual([]);
   });
 });

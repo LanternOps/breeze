@@ -39,6 +39,7 @@ import {
   writeLocalTimer,
 } from '../../services/localTimer';
 import { useNetworkConnected } from '../../lib/useNetworkConnected';
+import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -195,6 +196,7 @@ export function TicketDetailScreen() {
   }, []);
 
   const connected = useNetworkConnected();
+  const keyboardHeight = useKeyboardHeight();
   const running = useAppSelector((state) => state.time.running);
   // Sticky for the session: once the server has refused this account the
   // control is withdrawn rather than re-offered and failing (see timeSlice).
@@ -936,8 +938,21 @@ export function TicketDetailScreen() {
         // Clears the composer's full measured height so "Timer started" /
         // "Timer stopped" never overlaps its mode tabs (#5105) — the
         // component's own default offset assumes a short, fixed-height
-        // screen, not one ending in a composer that can run to 200+px.
-        bottomOffset={toastClearanceOffset(composerHeight, spacing['4'])}
+        // screen, not one ending in a composer that can run to 200+px. Also
+        // clears the keyboard height on iOS (#5171): iOS keeps the window at
+        // full height and relies on `automaticallyAdjustKeyboardInsets`
+        // (above) to shift only the ScrollView's content, so the Toast — a
+        // sibling of that ScrollView, not inside it — is not lifted along
+        // with the composer and needs the keyboard height added explicitly.
+        // Android is intentionally excluded: with no `softwareKeyboardLayoutMode`
+        // override the OS resizes the window itself when the keyboard opens,
+        // so `bottom: 0` already lands just above the keyboard there — adding
+        // `keyboardHeight` again would double-count it and over-clear the toast.
+        bottomOffset={toastClearanceOffset(
+          composerHeight,
+          spacing['4'],
+          Platform.OS === 'ios' ? keyboardHeight : 0
+        )}
       />
     </KeyboardAvoidingView>
   );

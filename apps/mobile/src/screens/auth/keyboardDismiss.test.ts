@@ -58,6 +58,15 @@ function extractCallbackBody(source: string, constName: string): string {
   );
 }
 
+/** `const <name> = async (...) => { ... }` (CreateTicketScreen, plain — no useCallback). */
+function extractArrowBody(source: string, constName: string): string {
+  return extractBraceBody(
+    source,
+    new RegExp(`const\\s+${constName}\\s*=\\s*(?:async\\s+)?\\([^)]*\\)\\s*=>\\s*\\{`),
+    `"const ${constName} = async (...) => {...`
+  );
+}
+
 function assertDismissBeforeDispatch(body: string, dispatchNeedle: string, label: string) {
   const dismissIndex = body.indexOf('Keyboard.dismiss()');
   const dispatchIndex = body.indexOf(dispatchNeedle);
@@ -83,5 +92,13 @@ describe('keyboard dismissed before navigation-triggering dispatch (#5104)', () 
   it('HomeScreen.handleSend dismisses before starting a turn', () => {
     const body = extractCallbackBody(readSource('../chat/HomeScreen.tsx'), 'handleSend');
     assertDismissBeforeDispatch(body, 'cancelTurnWork()', 'handleSend');
+  });
+
+  // #5171: the Create ticket spinner ran with the keyboard still up, then
+  // `navigation.replace('TicketDetail', …)` fired with no `Keyboard.dismiss()`
+  // — same class of bug as #5104 above, one navigator swap later.
+  it('CreateTicketScreen.submit dismisses before creating the ticket', () => {
+    const body = extractArrowBody(readSource('../tickets/CreateTicketScreen.tsx'), 'submit');
+    assertDismissBeforeDispatch(body, 'createTicket(', 'submit');
   });
 });

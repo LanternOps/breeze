@@ -2200,9 +2200,14 @@ export interface MoveTicketOrgOptions {
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
-  actor: TicketActor,
+  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
   opts: MoveTicketOrgOptions = {}
 ): Promise<typeof tickets.$inferSelect> {
+  const isAgent = 'kind' in actor;
+  const userId = isAgent ? null : actor.userId;
+  const auditActor = isAgent
+    ? { actorType: 'ai_agent' as const, actorId: actor.agentId, initiatedBy: 'ai' as const }
+    : { actorId: actor.userId };
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId === targetOrgId) return ticket;
 
@@ -2464,9 +2469,13 @@ export async function moveTicketOrg(
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
-      userId: actor.userId,
+      userId,
       authorName: actor.name ?? null,
-      authorType: 'internal',
+      authorType: isAgent ? 'ai_agent' : 'internal',
+      originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+      // Runs remain in the source org; never link this destination comment
+      // back to a source-org run after the detach above.
+      agentRunId: null,
       commentType: 'system',
       content: `Moved to ${targetOrg.name}` + (strandedCount > 0
         ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`
@@ -2481,7 +2490,7 @@ export async function moveTicketOrg(
     ticketId,
     orgId: targetOrgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    actorUserId: userId,
     payload: { changed: ['orgId'] }
   });
   // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
@@ -2493,8 +2502,8 @@ export async function moveTicketOrg(
     detachedDeviceId: ticket.deviceId ?? null,
     ...(accepted?.accepted ? { currencyMismatchAccepted: accepted } : {})
   };
-  await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
-  await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: ticket.orgId, ...auditActor, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: targetOrgId, ...auditActor, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   return updated;
 }
 

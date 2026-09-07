@@ -178,7 +178,9 @@ export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSch
 // (validateAuthorizationKeys, apps/api/src/services/actionIntents/
 // policyDecidable.ts) and runs at write time, rejecting with a structured 422.
 const actAssetsFields = z.object({
-  scriptIds: z.array(z.string().guid()).max(50),
+  // Deduped on parse (#5089 review): one script is one authorization, and a
+  // repeated id would otherwise inflate every count built on this list.
+  scriptIds: z.array(z.string().guid()).max(50).transform((ids) => [...new Set(ids)]),
   supervisedActionKeys: z.array(z.string().regex(TOOL_REF)).max(50),
 });
 export const aiAgentActAssetsPatchSchema = actAssetsFields.partial();

@@ -2,6 +2,10 @@ name: CI
 
 on:
   workflow_dispatch:
+  # Merge queue: the queue builds a temporary merge ref and needs the same
+  # `CI Success` check as a PR. No path filters here on purpose — the queue is
+  # the last gate before main and always runs the full suite.
+  merge_group:
   push:
     branches: [main]
     paths-ignore:
@@ -86,6 +90,9 @@ jobs:
 
       - name: Test community README automation
         run: pnpm test:community-readme
+
+      - name: Test mobile native CI contract
+        run: node --test .github/scripts/mobile-native-ci.test.mjs
 
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
@@ -544,6 +551,109 @@ jobs:
       - name: Run Mobile type check
         working-directory: apps/mobile
         run: pnpm exec tsc --noEmit
+
+  # Native compilation catches incompatible RN/Expo modules that JS tests miss.
+  # Resolve paths on Linux so unrelated PRs never allocate a macOS runner.
+  mobile-native-changes:
+    name: Detect Mobile Native Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mobile: ${{ github.event_name == 'workflow_dispatch' || steps.changes.outputs.mobile == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect mobile build inputs
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # On main compare the whole push, including multi-commit pushes.
+          base: ${{ github.event_name == 'push' && github.event.before || github.event.repository.default_branch }}
+          filters: |
+            mobile:
+              - 'apps/mobile/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - '.node-version'
+              - '.nvmrc'
+              - 'patches/**'
+              - '.github/workflows/ci.yml'
+              - '.github/scripts/mobile-native-ci.test.mjs'
+
+  build-mobile-ios:
+    name: Build Mobile iOS (Simulator)
+    needs: [mobile-native-changes]
+    if: needs.mobile-native-changes.outputs.mobile == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CI: '1'
+      # Debug simulator compilation needs neither release config nor uploads.
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install mobile dependencies
+        run: pnpm install --filter breeze-mobile... --frozen-lockfile
+
+      - name: Show native toolchain
+        run: |
+          xcodebuild -version
+          pod --version
+
+      - name: Generate iOS project
+        working-directory: apps/mobile
+        run: pnpm exec expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install
+
+      - name: Compile unsigned iOS simulator app
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace BreezeRMM.xcworkspace \
+            -scheme BreezeRMM \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/breeze-ios-derived-data" \
+            -jobs 2 \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/breeze-ios-build.log"
+
+      - name: Upload native build log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mobile-ios-build-log
+          path: ${{ runner.temp }}/breeze-ios-build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-portal:
     name: Test Portal
@@ -1431,6 +1541,19 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # internal/collectors as a whole is not on the list above (it has never
+      # been vetted for Windows reds), but its command runners set WaitDelay so
+      # a descendant that inherits PowerShell's stdout handle cannot hang a
+      # collector forever — and handle inheritance is the one behaviour with no
+      # cross-platform equivalent. Run just the self-exec subprocess tests that
+      # cover capture bounds, cancellation, and inherited pipes on the OS they
+      # were written for.
+      - name: Run Windows collector command-runner tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
@@ -2745,6 +2868,9 @@ jobs:
           # The built-in Workspace extension defaults ON in the dev override; its
           # migrations are pure cost for a portal hydration run, so keep it off.
           BREEZE_WORKSPACE_ENABLED=false
+          # tests/ai-agents.spec.ts (#5048) needs the AI agents page enabled;
+          # the spec skips itself when GET /ai/agents/tool-catalog is not 200.
+          BREEZE_AI_AGENTS_ENABLED=true
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
@@ -2821,7 +2947,7 @@ jobs:
       # exercised at all. It depends on the portal rows in
       # e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts
 
       - name: Upload Playwright report
         if: failure()
@@ -2858,7 +2984,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -2871,6 +2997,9 @@ jobs:
           TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_MOBILE_RESULT: ${{ needs.test-mobile.result }}
+          MOBILE_NATIVE_CHANGES_RESULT: ${{ needs.mobile-native-changes.result }}
+          MOBILE_NATIVE_REQUIRED: ${{ needs.mobile-native-changes.outputs.mobile }}
+          BUILD_MOBILE_IOS_RESULT: ${{ needs.build-mobile-ios.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -2897,6 +3026,11 @@ jobs:
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
+          # Fail closed: only a successful path check may skip native compilation. The
+          # mobile-native-changes/build-mobile-ios checks are folded into this single
+          # unconditional blocking condition (rather than a separate leading if statement)
+          # because the ci-success gating contract test only recognizes one such block and
+          # asserts every required job's result is checked inside it.
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
@@ -2905,6 +3039,10 @@ jobs:
              [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
+             [[ "${MOBILE_NATIVE_CHANGES_RESULT}" != "success" ]] || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "true" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "success" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" != "true" ]] && [[ "${MOBILE_NATIVE_REQUIRED}" != "false" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "false" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \

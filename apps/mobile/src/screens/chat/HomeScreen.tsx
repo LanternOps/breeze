@@ -219,13 +219,18 @@ export function HomeScreen() {
               // collapses — content has resumed.
               dispatch(setInFlightTool(null));
               break;
-            case 'tool_use_start':
-              dispatch(setInFlightTool({ toolUseId: ev.toolUseId, toolName: ev.toolName }));
+            case 'tool_use_start': {
+              const input =
+                ev.input && typeof ev.input === 'object'
+                  ? (ev.input as Record<string, unknown>)
+                  : undefined;
+              dispatch(setInFlightTool({ toolUseId: ev.toolUseId, toolName: ev.toolName, input }));
               dispatch(appendToolEvent({
                 messageId: assistantId,
-                event: { toolUseId: ev.toolUseId, toolName: ev.toolName, state: 'started' },
+                event: { toolUseId: ev.toolUseId, toolName: ev.toolName, state: 'started', input },
               }));
               break;
+            }
             case 'tool_result':
               // The slice merges by toolUseId; the prior `tool_use_start`
               // dispatch already wrote the toolName, so the placeholder

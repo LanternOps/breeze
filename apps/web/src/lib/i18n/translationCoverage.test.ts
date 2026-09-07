@@ -99,7 +99,9 @@ const namespaceDuplicateBaselines = {
     // the same cognate in pt-BR (already accepted above in this namespace).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 122,
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    'settings.json': 123,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -191,7 +193,9 @@ const namespaceDuplicateBaselines = {
     // three places (the list column, the form fieldset and the CSV mapping row).
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 125,
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    'settings.json': 126,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -411,7 +415,9 @@ const namespaceDuplicateBaselines = {
     // locale-invariant (the acronym is never translated).
     // +2: aiAgentsPage.summary.minuteCount_one/_other (#5048 QA) — "{{count}} minute" /
     // "{{count}} minutes" spell identically in French.
-    'settings.json': 174,
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    'settings.json': 175,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -580,7 +586,9 @@ const namespaceDuplicateBaselines = {
     // standard loanwords in it-IT technical UI, and "OK" is locale-invariant.
     // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
     // locale-invariant (the acronym is never translated).
-    'settings.json': 163,
+    // +1: aiAgentsPage.errors.scriptRejected (#5065) — "Script {{id}}: {{reason}}"
+    // spells identically to English here ("script" is the loanword).
+    'settings.json': 164,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

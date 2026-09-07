@@ -321,6 +321,14 @@ describe('aiAgents validators', () => {
       expect(aiAgentActAssetsSchema.safeParse({ scriptIds: Array(51).fill(uuid) }).success).toBe(false);
     });
 
+    it('dedupes a scriptId listed twice, on create and on PATCH (#5089 review)', () => {
+      const uuid = '11111111-1111-4111-8111-111111111111';
+      expect(aiAgentActAssetsSchema.parse({ scriptIds: [uuid, uuid] }).scriptIds).toEqual([uuid]);
+      expect(updateAiAgentSchema.parse({ actAssets: { scriptIds: [uuid, uuid] } })).toEqual({
+        actAssets: { scriptIds: [uuid] },
+      });
+    });
+
     it('a PATCH of actAssets does not invent siblings and update forbids nothing else', () => {
       const uuid = '22222222-2222-4222-8222-222222222222';
       expect(updateAiAgentSchema.parse({ actAssets: { scriptIds: [uuid] } })).toEqual({

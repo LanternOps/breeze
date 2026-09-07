@@ -17,6 +17,7 @@ import {
   syncManagedAutomation,
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
+import { assertScriptIdsAuthorizable } from './scriptAuthorization';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -570,6 +571,15 @@ export async function createAgent(
   // grant-only, refused here regardless of value-validity above.
   assertOrgRowSupervisedKeysGrantOnly(owner, [], input.actAssets.supervisedActionKeys);
 
+  // #5065: every script a create authorizes for unattended run_script must be
+  // one the OWNER can see and — for an org row — one the partner baseline
+  // also lists (scriptAuthorization.ts). A rejected id is never persisted.
+  await assertScriptIdsAuthorizable(owner, input.kind, {
+    existing: [],
+    next: input.actAssets.scriptIds,
+    toolAllowlist: input.toolAllowlist,
+  });
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -667,6 +677,17 @@ export async function updateAgent(
         stored.actAssets.supervisedActionKeys ?? [],
         input.actAssets.supervisedActionKeys,
       );
+    }
+
+    // #5065: validate only the script ids THIS patch ADDS, against the
+    // allowlist the row will have after the patch — removals and untouched
+    // stored ids pass (stored-but-inert if they no longer resolve).
+    if (input.actAssets?.scriptIds !== undefined) {
+      await assertScriptIdsAuthorizable(owner, existing.kind, {
+        existing: stored.actAssets.scriptIds ?? [],
+        next: input.actAssets.scriptIds,
+        toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+      });
     }
 
     // Task 6 (#3826): prerequisites are checked against what the update will

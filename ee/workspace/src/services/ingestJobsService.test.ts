@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceDatabase } from '../hostTypes';
 import {
@@ -56,7 +57,8 @@ function makeDb(results: unknown[][] = []) {
   const db = {
     execute: vi.fn(async (q: unknown) => { calls.push(q); return results[i++] ?? []; }),
   };
-  return { db: db as unknown as WorkspaceDatabase, calls, raw: db };
+  const transactionalDb = { ...db, transaction: vi.fn(async (fn: (tx: typeof db) => Promise<unknown>) => fn(db)) };
+  return { db: transactionalDb as unknown as WorkspaceDatabase, calls, raw: transactionalDb };
 }
 
 describe('ingestJobsService', () => {
@@ -225,6 +227,36 @@ describe('ingestJobsService', () => {
     const res = await createIngestJobsService(h.db).ensureJob(ORG, { trigger: 'manual' });
     expect(res.created).toBe(false);
     expect(res.job.id).toBe(JOB);
+  });
+
+  it.each(['raw', 'wrapped'])('ensureJob recovers a %s unique race after rolling back the insert savepoint', async (shape) => {
+    const h = makeDb([[rawJob({ status: 'running' })]]);
+    const pg = Object.assign(new Error('duplicate job'), { code: '23505' });
+    const error = shape === 'wrapped' ? new DrizzleQueryError('INSERT', [], pg) : pg;
+    h.raw.execute.mockRejectedValueOnce(error);
+    const res = await createIngestJobsService(h.db).ensureJob(ORG, { trigger: 'manual' });
+    expect(res.created).toBe(false);
+    expect(res.job.id).toBe(JOB);
+    expect(h.raw.transaction).toHaveBeenCalledTimes(1);
+    expect(h.raw.execute).toHaveBeenCalledTimes(2);
+    expect(boundValues(h.calls[0])).toContain(ORG);
+  });
+
+  it('ensureJob retries when the winning job disappears before the fallback read', async () => {
+    const h = makeDb([[], [rawJob()]]);
+    h.raw.execute.mockRejectedValueOnce(new DrizzleQueryError('INSERT', [],
+      Object.assign(new Error('duplicate job'), { code: '23505' })));
+    const res = await createIngestJobsService(h.db).ensureJob(ORG, { trigger: 'manual' });
+    expect(res.created).toBe(true);
+    expect(h.raw.transaction).toHaveBeenCalledTimes(2);
+  });
+
+  it('ensureJob propagates other wrapped errors without retrying', async () => {
+    const h = makeDb();
+    const error = new DrizzleQueryError('INSERT', [], Object.assign(new Error('denied'), { code: '42501' }));
+    h.raw.execute.mockRejectedValueOnce(error);
+    await expect(createIngestJobsService(h.db).ensureJob(ORG, { trigger: 'manual' })).rejects.toBe(error);
+    expect(h.raw.execute).toHaveBeenCalledTimes(1);
   });
 
   it('ensureJob force-upgrades a live non-force job', async () => {

@@ -146,7 +146,26 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   "Sync now"), 30 blocked (no Stripe on the stack). Four defects were found and
   fixed on the branch during the walk (the bullets above).
 
-## AI agent builder (#5048 W01–W03, #5064, #5063)
+---
+
+## Network device page + unified device list on by default (#5090)
+
+**Operator-facing (Added / Improved).**
+- The Devices list now shows **network devices** (approved, unlinked discovery assets: switches, firewalls, printers, NAS, phones…) alongside agent endpoints, with an **All / Agent / Network** segment, a Class column, and columns that adapt to what is on screen (a Network-only view drops OS/CPU/RAM/Role; an Agent-only view drops Class/Type).
+- Quick chips, advanced filters and saved views evaluate network rows client-side for the fields a discovered asset has (status, hostname, tags, site, IP, MAC, last seen, asset type for the Servers chip). A filter on an agent-only field hides network rows **and says so** — "N network devices hidden — Needs Patches applies to agent devices only." Segment badges count the rows the list actually renders.
+- Bulk bar states the class composition ("6 selected · 2 agent, 4 network"); agent-only actions (reboot, scripts, software, maintenance, wake, remove) are disabled with a reason on an all-network selection and annotated "2 of 6" on a mixed one. A selection is dropped when its rows leave the visible set.
+- New **network device page** at `/devices/network/:id`: identity (hostname, display name, manufacturer, model, OS fingerprint, first seen, editable type with reset), SNMP data, open ports read as capabilities (service names, an "Unencrypted" flag on telnet/ftp-class ports, per-port **Open Web UI** through an online agent as proxy bridge, HTTPS with a self-signed override), monitoring status, and link/unlink to a managed device (unlink pauses auto-linking until re-linked).
+- Discovery asset list: the "Agent installed" badge is now "Agent". Search in the Devices list matches LAN/WAN IPs. Sortable headers are keyboard-reachable; the table uses the same status word as cards (Online/Offline).
+
+**Self-Hosting / Upgrade Notes.**
+- **Behaviour change (web):** `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` now defaults to **`true`** (was `false`). It is a build-time `PUBLIC_` variable baked into the web image, so the published GHCR `web` image ships with the unified list on; self-hosters who build the web image themselves can pass `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST=false` to keep the agent-only list. Nothing to change in `.env` or compose for the published image.
+- No migrations. No new required environment variables.
+- API additions, additive: `GET /discovery/assets/:id` now returns `siteName` and `suggestedBridgeDeviceId` (the agent that last discovered the asset, used as the default proxy bridge).
+- Not in this release: charts for SNMP metrics / network monitor results on the device page (the Monitoring tab shows enabled/not-configured and links to the discovery view), bulk selection in grid view.
+
+---
+
+## AI agent builder (#5048 W01–W03, #5064, #5063, #5065)
 
 **Operator-facing (Added / Improved).**
 - Settings → AI agents → **New agent** is now a four-step guided flow: Purpose and posture (mode first, kind cards, owner scope) → What it does (triggers + capability picker) → Safety and oversight → Review and create. The review card is evaluated **server-side** (`POST /ai/agents/preview`) with the same guardrail and catalog helpers the run loop uses, so what it says is what enforcement does.
@@ -154,13 +173,14 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 - Truthful act-mode outcomes: **Run a script** stays an approval request until a script is authorized for the agent (`actAssets.scriptIds`); the picker and the review card say so instead of promising an unattended run.
 - Recipient roles with no active members are marked in the form, and the act-mode "recipient" error now says the selected roles have no active members instead of "add a recipient".
 - The edit drawer now lays out an agent the way the create flow does: "When it runs" and Permissions first, then a **Safety and oversight** block with protected services / paths / registry keys, unattended authorization, limits and notification roles. Protected resources moved out of the Permissions section into that block.
+- **Scripts allowed to run unattended** (#5065): a new list on the Safety step and in the edit drawer authorizes the scripts **Run a script** may execute without approval in act mode. A partner-wide agent's list is the ceiling; an organization's agent picks a subset of it (scripts outside the baseline show **Not in partner baseline**). The picker and review card show the outcome live.
 
 **Self-Hosting / Upgrade Notes.**
 - No new env vars, no migrations. The whole feature is still behind `BREEZE_AI_AGENTS_ENABLED` (default `false`); `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` unchanged.
 - API additions, all additive: `GET /ai/agents/tool-catalog`, `GET /ai/agents/ceiling?kind=` (now also carries the baseline's `scriptIds`), `POST /ai/agents/preview`; `GET /roles` gains `activeUserCount` beside `userCount`; catalog operations gain `actRequiresAuthorizedScripts`.
 - Behaviour change (API): a PATCH/POST on an **organization-owned** agent that adds a `supervisedActionKeys` entry the row does not already hold is now refused with `422 supervised_keys_grant_only` — keys reach org rows only through the four-eyes graduation grant. Partner rows are unaffected.
 - Behaviour change (API): the partner ∩ org policy merge is now wildcard-aware for `toolAllowlist` / `supervisedActionKeys` (a bare `manage_services` on the baseline no longer erases an org's `manage_services:restart`).
-- Known gap: there is no UI yet to authorize scripts for unattended act mode (#5065); until it ships, `actAssets.scriptIds` is set through the API.
+- Behaviour change (API): `actAssets.scriptIds` is now validated on every write that adds an id (`422 invalid_script_ids`, one `rejected[]` entry per id with `not_found` / `not_in_partner_baseline` / `run_script_not_allowed`): the script must be visible to the agent's owner, an organization agent may only list scripts its partner baseline lists, and the row must allow **Run a script**. Ids that stop resolving later are tolerated as stored-but-inert. `POST /ai/agents/preview` gains `authorizedScriptCount`.
 
 ---
 

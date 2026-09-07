@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -65,7 +66,7 @@ export function CreateTicketScreen() {
       } catch (err) {
         reportInternalError(err, 'CreateTicketScreen.loadOrgs');
         setOrgs([]);
-        setOrgError('Could not load organisations. Pull to retry.');
+        setOrgError('Could not load organizations. Pull to retry.');
       }
     },
     [user?.organizationId]
@@ -78,6 +79,11 @@ export function CreateTicketScreen() {
   const submit = async () => {
     const built = buildCreateTicketBody({ orgId, subject, description, priority });
     if (!built.ok) return;
+    // #5171: without this, the spinner ran with the keyboard still up, and
+    // `navigation.replace('TicketDetail', …)` below swapped in the next
+    // screen with the keyboard still floating over it and the note field
+    // eligible to inherit focus — same class as the MFA fix (#5104).
+    Keyboard.dismiss();
     setBusy(true);
     try {
       const created = await createTicket(built.body);
@@ -122,7 +128,7 @@ export function CreateTicketScreen() {
         // under a ~300pt keyboard with nowhere to go.
         automaticallyAdjustKeyboardInsets
       >
-        <Text style={styles.label}>ORGANISATION</Text>
+        <Text style={styles.label}>ORGANIZATION</Text>
         {orgs === null ? (
           <ActivityIndicator color={palette.dark.textLo} style={styles.spinner} />
         ) : lockedOrg ? (
@@ -132,7 +138,7 @@ export function CreateTicketScreen() {
             {showSearch ? (
               <TextInput
                 style={styles.input}
-                placeholder="Search organisations"
+                placeholder="Search organizations"
                 placeholderTextColor={palette.dark.textLo}
                 value={orgSearch}
                 onChangeText={(text) => {
@@ -141,7 +147,7 @@ export function CreateTicketScreen() {
                 }}
                 autoCorrect={false}
                 autoCapitalize="none"
-                accessibilityLabel="Search organisations"
+                accessibilityLabel="Search organizations"
               />
             ) : null}
             {orgError ? (
@@ -150,7 +156,7 @@ export function CreateTicketScreen() {
               </Pressable>
             ) : null}
             {orgs.length === 0 && !orgError ? (
-              <Text style={styles.hint}>No organisations match.</Text>
+              <Text style={styles.hint}>No organizations match.</Text>
             ) : null}
             <View style={styles.orgList}>
               {orgs.map((org) => {
@@ -173,7 +179,7 @@ export function CreateTicketScreen() {
             {selectedOrg === null && orgSearch.length > 0 && orgId ? (
               // The chosen org is filtered out of the current search results;
               // say so rather than let the selection look lost.
-              <Text style={styles.hint}>Selected organisation is not in these results.</Text>
+              <Text style={styles.hint}>Selected organization is not in these results.</Text>
             ) : null}
           </>
         )}

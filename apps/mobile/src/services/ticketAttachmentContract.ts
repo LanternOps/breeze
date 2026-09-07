@@ -125,7 +125,7 @@ const ERROR_COPY: Record<AttachmentErrorCode, { message: string; retryable: bool
   EMPTY_ATTACHMENT: { message: 'That file is empty.', retryable: false },
   SHARING_UNAVAILABLE: { message: 'This device cannot open that file.', retryable: false },
   ORG_CONTEXT_REQUIRED: {
-    message: 'Your sign-in has no organisation selected. Sign out and back in.',
+    message: 'Your sign-in has no organization selected. Sign out and back in.',
     retryable: false,
   },
   UPLOAD_FAILED: { message: 'Upload failed. Check your connection and try again.', retryable: true },
