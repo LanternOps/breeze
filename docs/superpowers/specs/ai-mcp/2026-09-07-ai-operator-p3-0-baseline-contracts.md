@@ -1322,7 +1322,7 @@ when P3 waves quote them.
 **C20, the task outbox diverges from the outbox precedent the spec cites, and that is worth stating
 on purpose.** §11.1 points at `intent_outbox_unpublished_idx` as the model for
 `ai_operator_task_outbox`'s partial index, and the index shape does carry over. But `intent_outbox`
-is itself **`INTENTIONAL_UNSCOPED`** — listed alongside `device_commands` at
+is itself **`INTENTIONAL_UNSCOPED`**, listed alongside `device_commands` at
 `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:89` as a "system-scoped
 workers-only queue" whose parent FK cascades from an already-RLS-forced table. §11 nonetheless
 specifies `ai_operator_task_outbox` as shape 1 with `org_id` and full RLS. VERIFIED. That is
