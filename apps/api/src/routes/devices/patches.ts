@@ -509,7 +509,7 @@ patchesRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    const patchRefs = await db
+    const observedPatchRefs = await db
       .select({
         id: patches.id,
         source: patches.source,
@@ -517,8 +517,27 @@ patchesRoutes.post(
         packageId: patches.packageId,
         title: patches.title
       })
-      .from(patches)
-      .where(inArray(patches.id, data.patchIds));
+      .from(devicePatches)
+      .innerJoin(patches, eq(devicePatches.patchId, patches.id))
+      .where(and(
+        eq(devicePatches.deviceId, deviceId),
+        eq(devicePatches.status, 'pending'),
+        inArray(patches.id, data.patchIds)
+      ));
+
+    // `patches.externalId` is the device-observed Windows Update identity: the
+    // agent reports the KB article when Windows exposes one and the raw WUA
+    // UpdateID otherwise (driver and feature updates carry no KBArticleIDs).
+    // `patches.packageId` is global catalog metadata — ingest fills it once
+    // (`fillIfNull`) and never rewrites it — so it can hold a selector supplied
+    // by whichever device created the row first, in any tenant. It must never
+    // choose the update installed on THIS device, whether or not the row is
+    // KB-bearing. Omitting it is also safe for older agents: with no packageId
+    // their existing fallback resolves the observed externalId through WUA,
+    // which matches both a KB article and an exact UpdateID.
+    const patchRefs = observedPatchRefs.map((patch) =>
+      patch.source === 'microsoft' ? { ...patch, packageId: null } : patch
+    );
 
     if (patchRefs.length === 0) {
       return c.json({ error: 'No matching patches found' }, 404);

@@ -6577,6 +6577,21 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	if provider, local, ok := splitPatchID(ref.ID); ok && h.patchMgr.HasProvider(provider) {
 		return provider + ":" + local, nil
 	}
+	// Windows Update identities are device-observed: externalID is what THIS
+	// endpoint's own scan reported — the KB article when Windows exposes one,
+	// and the raw WUA UpdateID when it does not (driver and feature updates
+	// carry no KBArticleIDs). packageID is global catalog metadata that the API
+	// fills once and never rewrites, so it can carry a selector written by a
+	// different device, in a different tenant, for a different revision. Resolve
+	// the observed identity and fall back to packageID only when this device
+	// reported no external identity at all. WUA findUpdate matches both an exact
+	// UpdateID and a KB article against this device's currently applicable
+	// updates, so either form resolves against what is installable here.
+	if strings.EqualFold(strings.TrimSpace(ref.Source), "microsoft") && h.patchMgr.HasProvider("windows-update") {
+		if local := windowsUpdateLocalID(ref.ExternalID); local != "" {
+			return "windows-update:" + local, nil
+		}
+	}
 	if provider, local, ok := splitPatchID(ref.ExternalID); ok {
 		switch provider {
 		case "microsoft", "apple", "linux", "third_party", "custom":
@@ -6608,6 +6623,50 @@ func (h *Heartbeat) resolvePatchInstallID(ref patchCommandRef) (string, error) {
 	}
 
 	return providerID + ":" + localID, nil
+}
+
+// windowsUpdateLocalID normalizes the device-observed Windows Update selector
+// carried in a patch ref's externalID. It returns "" when externalID is empty
+// or is qualified for some other provider (e.g. "chocolatey:googlechrome") so
+// that those refs keep their existing provider routing below.
+func windowsUpdateLocalID(externalID string) string {
+	value := strings.TrimSpace(externalID)
+	if value == "" {
+		return ""
+	}
+	if provider, local, ok := splitPatchID(value); ok {
+		switch strings.ToLower(strings.TrimSpace(provider)) {
+		case "microsoft", "windows-update":
+			// A three-part "source:local:extra" externalID keeps only the local
+			// identity, matching patchLocalID's existing handling of that shape.
+			value = strings.TrimSpace(local)
+			if head, _, found := strings.Cut(value, ":"); found {
+				value = strings.TrimSpace(head)
+			}
+		default:
+			return ""
+		}
+	}
+	if value == "" {
+		return ""
+	}
+	if isWindowsKBID(value) {
+		return strings.ToUpper(value)
+	}
+	return value
+}
+
+func isWindowsKBID(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, "KB") || len(value) == 2 {
+		return false
+	}
+	for _, r := range value[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Heartbeat) providerForPatchRef(ref patchCommandRef) string {
