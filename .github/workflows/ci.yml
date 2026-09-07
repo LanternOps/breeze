@@ -1436,6 +1436,19 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # internal/collectors as a whole is not on the list above (it has never
+      # been vetted for Windows reds), but its command runners set WaitDelay so
+      # a descendant that inherits PowerShell's stdout handle cannot hang a
+      # collector forever — and handle inheritance is the one behaviour with no
+      # cross-platform equivalent. Run just the self-exec subprocess tests that
+      # cover capture bounds, cancellation, and inherited pipes on the OS they
+      # were written for.
+      - name: Run Windows collector command-runner tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
+
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive
