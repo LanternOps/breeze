@@ -7,6 +7,7 @@ import {
   timestamp,
   char,
   boolean,
+  integer,
   uniqueIndex,
   index,
   foreignKey,
@@ -47,6 +48,19 @@ export const accountingConnections = pgTable('accounting_connections', {
   // true so an existing connected realm starts reconciling once the sweep
   // ships, rather than silently opting every partner out.
   pullPayments: boolean('pull_payments').notNull().default(true),
+  // Per-connection Breeze -> QBO payment push switch (Phase D2). Defaults true,
+  // matching pullPayments: a connected realm should push the payments it is
+  // already pulling, rather than silently opting every partner out.
+  pushPayments: boolean('push_payments').notNull().default(true),
+  // The horizon this feature pushes FROM. `push_payments` defaults on, so
+  // without it the invoice fan-out would create QuickBooks Payments for every
+  // pre-existing `invoice_payments` row of a re-pushed invoice — duplicating
+  // receipts a bookkeeper already entered by hand. Stamped `now()` at migration
+  // time for existing rows, at insert for new connections, and again whenever
+  // the operator flips `push_payments` off and back on. NULL means "no horizon"
+  // and is read as "push everything" — only reachable on a row written outside
+  // both writers.
+  pushPaymentsSince: timestamp('push_payments_since', { withTimezone: true }),
   // Stamped only after a CDC reconcile run in which no item failed (Phase D).
   lastReconcileAt: timestamp('last_reconcile_at', { withTimezone: true }),
   status: varchar('status', { length: 20 }).notNull().default('connected'),
@@ -85,6 +99,86 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   remoteDocNumber: varchar('remote_doc_number', { length: 40 }),
   linkStatus: varchar('link_status', { length: 20 }).notNull().default('suggested'),
   syncStatus: varchar('sync_status', { length: 30 }).notNull().default('pending'),
+  // TRUE for every mapping Breeze's own push created (payments here; invoices
+  // by the Task-1 backfill). The CDC pull needs origin LOCALLY because a
+  // deletion notification carries no PrivateNote to read it from.
+  breezeOrigin: boolean('breeze_origin').notNull().default(false),
+  // The operation this row still owes QuickBooks. NULL = nothing owed. Written
+  // in the SAME transaction as the invoice_payments insert/delete, which is what
+  // makes the mapping row the outbox rather than the BullMQ job.
+  //
+  // A `'delete'` row SURVIVES org erasure and the org-merge orphan sweep
+  // (`services/tenantCascade.ts`, `services/orgMerge.ts`). It means Breeze
+  // created a Payment in someone's QuickBooks and still owes its removal;
+  // dropping the row discards that debt silently and strands real money in
+  // their books. The row carries no org-scoped personal data — a remote id, a
+  // SyncToken and a status — and `deletePaymentInAccounting` removes it itself
+  // once QuickBooks confirms (or gives up loudly after
+  // PAYMENT_DELETE_UNRESOLVED_GRACE_MS), so retaining it is safe for erasure
+  // and bounded in time. Both sweeps log the count they left behind.
+  pendingOp: text('pending_op').$type<'push' | 'delete'>(),
+  // When the CURRENT `pending_op` started being owed. Written by every writer
+  // that begins a new debt, left alone by the ones that merely keep an existing
+  // one. It is what the delete worker's PAYMENT_DELETE_UNRESOLVED_GRACE_MS is
+  // measured from: `updated_at` is bumped by the lease CAS on every attempt (so
+  // an age read there never expires) and `created_at` is the age of the MAPPING,
+  // not of the debt — a re-owned or long-synced row is already past the window
+  // on the day its payment is voided. NULL falls back to `created_at`.
+  pendingSince: timestamp('pending_since', { withTimezone: true }),
+  // How many times phase 2 has failed to record a QuickBooks create for this
+  // row (`record_failed`). Its own column because it cannot be inferred from
+  // `last_error`: every other failure path on a still-owed push rewrites that
+  // field, which reset the count and let the create be re-sent past Intuit's
+  // 24-hour requestid replay window. Written only by `noteRecordFailed`,
+  // incremented inside the UPDATE, and reset by a fan-out re-own (a fresh
+  // ownership carries a fresh requestid, so it deserves a fresh budget).
+  recordFailedCount: integer('record_failed_count').notNull().default(0),
+  // WHY this mapping stopped, when it stopped. NULL = still live.
+  //
+  // Three terminal states leave the same row SHAPE — Breeze-origin, no remote
+  // id, nothing owed — and mean completely different things, so the difference
+  // cannot live in `last_error`: that is DISPLAY TEXT, rewritten by every
+  // failure path, and matching against it let one unrelated stamp turn an
+  // orphan back into a re-ownable row.
+  //
+  //   'orphaned'         QuickBooks holds a Payment Breeze could not record and
+  //                      will never create again. NEVER re-ownable — a re-own
+  //                      duplicates real money. Carries the remote id Breeze did
+  //                      learn, so a human can still find the Payment.
+  //   'gave_up'          the push spent PAYMENT_PUSH_MAX_ATTEMPTS. Nothing
+  //                      exists remotely; re-pushing the invoice is the fix, so
+  //                      this row IS re-ownable.
+  //   'removed_remotely' a Breeze-created Payment was deleted in QuickBooks.
+  //                      Re-ownable — that is how the re-push happens.
+  //
+  // `accounting_entity_mappings_terminal_idle_chk` enforces the pairing with
+  // `pending_op`: a row that has ended owes nothing, so every writer that starts
+  // new work clears this in the same UPDATE.
+  terminalReason: text('terminal_reason').$type<'orphaned' | 'gave_up' | 'removed_remotely'>(),
+  // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
+  // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  // Consecutive failed attempts at `pending_op`, incremented by every error
+  // stamp and reset to 0 when the invoice fan-out re-owns the row. The unit is
+  // an ATTEMPT, not a sweep: BullMQ retries a retryable failure five times per
+  // enqueue, so five attempts is roughly one 15-minute sweep. A `push` row that
+  // reaches PAYMENT_PUSH_MAX_ATTEMPTS (100, ~5 h) gives up — `pending_op`
+  // cleared and `terminal_reason = 'gave_up'`. A `delete` row is never capped
+  // and uses the counter only to throttle its Sentry reporting to about once a
+  // day. NOTHING counts a not-connected skip, on either kind of row: the
+  // outage is the operator's to fix and nothing reached QuickBooks. The
+  // `record_failed` path has its own shorter bound on `record_failed_count`
+  // and does not touch this one.
+  syncAttempts: integer('sync_attempts').notNull().default(0),
+  // How many times this mapping has been RE-OWNED for a fresh QuickBooks
+  // create. QuickBooks replays a create's cached response for a repeated
+  // `requestid` for 24 hours, so a re-push after somebody deleted the Payment
+  // by hand must present a NEW requestid or the worker gets the deleted
+  // Payment's id back and stamps the mapping synced against nothing. The
+  // requestid is `<invoice_payments.id>` at generation 0 and
+  // `<invoice_payments.id>:g<n>` above it — per ownership, but stable across
+  // BullMQ retries of that ownership. Payment rows only.
+  pushGeneration: integer('push_generation').notNull().default(0),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   lastError: text('last_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -114,6 +208,22 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
     'accounting_entity_mappings_sync_status_chk',
     sql`${table.syncStatus} IN ('pending', 'synced', 'error', 'synced_with_tax_variance')`,
   ),
+  pendingOpCheck: check(
+    'accounting_entity_mappings_pending_op_chk',
+    sql`${table.pendingOp} IS NULL OR ${table.pendingOp} IN ('push', 'delete')`,
+  ),
+  terminalReasonCheck: check(
+    'accounting_entity_mappings_terminal_reason_chk',
+    sql`${table.terminalReason} IS NULL OR ${table.terminalReason} IN ('orphaned', 'gave_up', 'removed_remotely')`,
+  ),
+  // A row that has ENDED owes nothing.
+  terminalIdleCheck: check(
+    'accounting_entity_mappings_terminal_idle_chk',
+    sql`${table.terminalReason} IS NULL OR ${table.pendingOp} IS NULL`,
+  ),
+  pendingOpIdx: index('accounting_entity_mappings_pending_op_idx')
+    .on(table.partnerId, table.pendingOp)
+    .where(sql`${table.pendingOp} IS NOT NULL`),
   breezeEntityUniq: uniqueIndex('accounting_entity_mappings_breeze_uniq')
     .on(table.integrationId, table.breezeEntityType, table.breezeEntityId),
   remoteEntityUniq: uniqueIndex('accounting_entity_mappings_remote_uniq')

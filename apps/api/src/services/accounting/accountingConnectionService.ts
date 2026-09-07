@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, like } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, like, or, type SQL } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -37,6 +37,8 @@ export interface AccountingConnection {
   realmIdFingerprint: string | null;
   /** Per-connection QBO -> Breeze payment pull-back switch. DB default true. */
   pullPayments: boolean;
+  /** Per-connection Breeze -> QBO payment push switch. DB default true. */
+  pushPayments: boolean;
   /** Stamped only after a CDC run in which no item failed. */
   lastReconcileAt: Date | null;
   /** CDC watermark. Column already existed (2026-06-23 migration); now read/written. */
@@ -59,6 +61,7 @@ export interface UpsertConnectionFields {
   lastError?: string | null;
   connectedBy?: string | null;
   pullPayments?: boolean;
+  pushPayments?: boolean;
 }
 
 export interface AccountingTokenUpdate {
@@ -140,6 +143,7 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     lastError: row.lastError ?? null,
     realmIdFingerprint: row.realmIdFingerprint ?? null,
     pullPayments: row.pullPayments,
+    pushPayments: row.pushPayments,
     lastReconcileAt: row.lastReconcileAt ?? null,
     cdcCursor: row.cdcCursor ?? null,
   };
@@ -187,6 +191,14 @@ export async function upsertConnection(
     // Insert default true: an existing connected realm should start
     // reconciling once the sweep ships, rather than silently opting out.
     pullPayments: fields.pullPayments ?? true,
+    // Same rationale as pullPayments above (Phase D2).
+    pushPayments: fields.pushPayments ?? true,
+    // INSERT ONLY, deliberately absent from `updateSet` below. It is the horizon
+    // this connection pushes payments FROM, so a token-only reconnect (the OAuth
+    // callback) must not move it — that would re-open the whole history the
+    // horizon exists to exclude. The settings route re-stamps it when the
+    // operator turns `push_payments` back on.
+    pushPaymentsSince: now,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -215,6 +227,7 @@ export async function upsertConnection(
     // Same "do not reset settings on a token-only reconnect" rule as pushMode
     // above: only present when the caller explicitly supplies it.
     pullPayments: fields.pullPayments,
+    pushPayments: fields.pushPayments,
     status: fields.status,
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -343,7 +356,16 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
   return { scanned: rows.length, updated, skipped };
 }
 
-/** Connections the 15-minute sweep should reconcile: status 'connected' AND pull_payments. */
+/**
+ * Connections the 15-minute sweep should reconcile: 'connected' AND at least one
+ * direction switched on. Phase D2 (spec decision 6): with pull OFF and push ON
+ * the CDC pass still has to run — it is what adopts a Breeze-created Payment
+ * whose phase 2 never landed, and what notices a Breeze-origin Payment someone
+ * deleted in QuickBooks. In that window it touches Breeze-origin rows ONLY:
+ * every QuickBooks-origin line is suppressed (a new import, an edit of one
+ * already imported, a deletion) and the run holds its CDC cursor, so turning
+ * pull back on can still import the window it was switched off in.
+ */
 export async function listReconcilableConnections(
   dbc: DbExecutor,
   provider: AccountingProviderId,
@@ -354,7 +376,10 @@ export async function listReconcilableConnections(
     .where(and(
       eq(accountingConnections.provider, provider),
       eq(accountingConnections.status, 'connected'),
-      eq(accountingConnections.pullPayments, true),
+      or(
+        eq(accountingConnections.pullPayments, true),
+        eq(accountingConnections.pushPayments, true),
+      ),
     ));
 }
 
@@ -374,6 +399,36 @@ export async function listReconcilableConnections(
  * rather than as a job that retries forever against a connection that no longer
  * matches.
  */
+/**
+ * Record that a reconcile run HAPPENED without moving the CDC watermark.
+ *
+ * `advanceReconcileCursor` is the only other writer of `last_reconcile_at`, and
+ * the pull-off freeze branch deliberately does not call it — so the integration
+ * card's "Last reconciled" froze at the moment `pull_payments` was switched off
+ * and a perfectly healthy connection read as permanently stalled (review wave 3,
+ * finding D4).
+ *
+ * No realm-fingerprint CAS, unlike the cursor write: this claims nothing and
+ * carries no watermark, so a realm that changed mid-run cannot be given a stale
+ * one. Zero rows is tolerated (the connection may have been deleted) — this is
+ * a freshness stamp, never a correctness signal.
+ */
+export async function stampReconcileRunAt(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  reconciledAt: Date,
+): Promise<void> {
+  await dbc
+    .update(accountingConnections)
+    .set({ lastReconcileAt: reconciledAt, updatedAt: new Date() })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+}
+
 export async function advanceReconcileCursor(
   dbc: DbExecutor,
   connectionId: string,
@@ -453,6 +508,67 @@ export async function stampReconcileRunError(
 }
 
 /**
+ * QuickBooks payment deletions this connection still OWES, about to be lost.
+ *
+ * `accounting_entity_mappings_connection_partner_fk` is ON DELETE CASCADE and
+ * `resetConnectionForRealmChange` deletes the mappings outright, so both paths
+ * take every `pending_op = 'delete'` row with them. Each of those means Breeze
+ * created a Payment in the partner's QuickBooks and has not removed it — the
+ * same debt `tenantCascade` and `orgMerge` now preserve. Here it CANNOT be
+ * preserved: the mapping is meaningless without its connection (a realm change
+ * makes the remote ids point at a different company file entirely), and a
+ * disconnect the operator asked for must never be blocked.
+ *
+ * So the debt is reported instead of retained — warning, Sentry, and an audit
+ * entry written by the route — naming the remote ids, which is the only thing
+ * that lets a human find those Payments in QuickBooks afterwards.
+ */
+export interface OwedPaymentDeletes {
+  count: number;
+  /** `<PaymentId>/<InvoiceId>` composites, capped so one pathological
+   *  connection cannot write an unbounded audit detail or Sentry message. */
+  remoteEntityIds: string[];
+}
+
+const OWED_DELETE_REPORT_CAP = 50;
+
+async function collectOwedPaymentDeletes(
+  dbc: DbExecutor,
+  where: SQL | undefined,
+  context: Record<string, unknown>,
+): Promise<OwedPaymentDeletes> {
+  const rows = await dbc
+    .select({
+      id: accountingEntityMappings.id,
+      remoteEntityId: accountingEntityMappings.remoteEntityId,
+    })
+    .from(accountingEntityMappings)
+    .where(where) as Array<{ id: string; remoteEntityId: string | null }>;
+
+  const remoteEntityIds = rows
+    .map((r) => r.remoteEntityId)
+    .filter((v): v is string => typeof v === 'string')
+    .slice(0, OWED_DELETE_REPORT_CAP);
+  const owed: OwedPaymentDeletes = { count: rows.length, remoteEntityIds };
+  if (owed.count === 0) return owed;
+
+  console.warn(
+    '[accountingConnectionService] discarding owed QuickBooks payment delete(s) — '
+    + 'Breeze created these Payments and will no longer remove them',
+    { ...context, count: owed.count, remoteEntityIds },
+  );
+  captureException(
+    new Error(
+      `accountingConnectionService: discarded ${owed.count} owed QuickBooks payment delete(s) — `
+      + 'the Payments Breeze created stay in the customer books and need manual reconciliation',
+    ),
+    undefined,
+    { service: 'accountingConnectionService', accounting_connection_id: String(context.connectionId ?? 'unknown') },
+  );
+  return owed;
+}
+
+/**
  * DISCONNECT SEMANTICS for a reconnect that lands on a DIFFERENT realm
  * (finding C).
  *
@@ -473,7 +589,15 @@ export async function resetConnectionForRealmChange(
   dbc: DbExecutor,
   connectionId: string,
   partnerId: string,
-): Promise<{ mappingsDeleted: number }> {
+): Promise<{ mappingsDeleted: number; owedPaymentDeletes: OwedPaymentDeletes }> {
+  // BEFORE the delete: after it there is nothing left to count.
+  const owedPaymentDeletes = await collectOwedPaymentDeletes(dbc, and(
+    eq(accountingEntityMappings.integrationId, connectionId),
+    eq(accountingEntityMappings.partnerId, partnerId),
+    eq(accountingEntityMappings.breezeEntityType, 'payment'),
+    eq(accountingEntityMappings.pendingOp, 'delete'),
+  ), { connectionId, partnerId, reason: 'realm_changed' });
+
   const deleted = await dbc
     .delete(accountingEntityMappings)
     .where(and(
@@ -491,7 +615,7 @@ export async function resetConnectionForRealmChange(
     ))
     .returning({ id: accountingConnections.id });
 
-  return { mappingsDeleted: deleted.length };
+  return { mappingsDeleted: deleted.length, owedPaymentDeletes };
 }
 
 export async function updateTokens(
@@ -842,12 +966,27 @@ export async function refreshRealmSettings(
   return { homeCurrency: settings.homeCurrency, multiCurrencyEnabled: settings.multiCurrencyEnabled };
 }
 
-/** Returns true if a connection row was deleted, false if none matched. */
+/**
+ * Drop the connection. `removed` is false when no row matched.
+ *
+ * `connectionId` is the id of the row it removed (null when none matched).
+ *
+ * Also reports the QuickBooks payment deletions the cascade is about to discard
+ * — see `OwedPaymentDeletes`. Counted BEFORE the delete (afterwards there is
+ * nothing left to count) and never blocking: a disconnect the operator asked
+ * for must always succeed.
+ */
 export async function deleteConnection(
   db: DbExecutor,
   partnerId: string,
   provider: AccountingProviderId
-): Promise<boolean> {
+): Promise<{ removed: boolean; connectionId: string | null; owedPaymentDeletes: OwedPaymentDeletes }> {
+  const owedPaymentDeletes = await collectOwedPaymentDeletes(db, and(
+    eq(accountingEntityMappings.partnerId, partnerId),
+    eq(accountingEntityMappings.breezeEntityType, 'payment'),
+    eq(accountingEntityMappings.pendingOp, 'delete'),
+  ), { partnerId, provider, reason: 'disconnect' });
+
   const deleted = await db
     .delete(accountingConnections)
     .where(and(
@@ -855,5 +994,12 @@ export async function deleteConnection(
       eq(accountingConnections.provider, provider)
     ))
     .returning({ id: accountingConnections.id });
-  return deleted.length > 0;
+  // The id is returned so the caller can identify the connection in an audit
+  // entry AFTER the row is gone — the disconnect's owed-delete record has to
+  // name the same subject as its realm-change twin (review wave 3, finding D3).
+  return {
+    removed: deleted.length > 0,
+    connectionId: (deleted as Array<{ id: string }>)[0]?.id ?? null,
+    owedPaymentDeletes,
+  };
 }
