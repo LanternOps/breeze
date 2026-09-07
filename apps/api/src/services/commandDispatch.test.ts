@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({
   db: {
@@ -55,6 +56,10 @@ vi.mock('drizzle-orm', async (importOriginal) => {
     notInArray: vi.fn((...args: Parameters<typeof actual.notInArray>) => actual.notInArray(...args)),
     gt: vi.fn((...args: Parameters<typeof actual.gt>) => actual.gt(...args)),
     isNull: vi.fn((...args: Parameters<typeof actual.isNull>) => actual.isNull(...args)),
+    // #5128: spied so the deliver_by predicate's DISJUNCTION is assertable —
+    // `and(...)` in its place would call isNull/gt identically but withhold
+    // every row that has a deadline.
+    or: vi.fn((...args: Parameters<typeof actual.or>) => actual.or(...args)),
   };
 });
 
@@ -66,7 +71,7 @@ vi.mock('./commandClaimEligibility', () => ({
   typeHolds: {},
 }));
 
-import { gt, inArray, isNull, notInArray } from 'drizzle-orm';
+import { gt, inArray, isNull, notInArray, or } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -289,6 +294,16 @@ describe('command dispatch helpers', () => {
 
     expect(vi.mocked(gt)).toHaveBeenCalledWith('deviceCommands.deliverBy', expect.any(Date));
     expect(vi.mocked(isNull)).toHaveBeenCalledWith('deviceCommands.deliverBy');
+
+    // Asserting the two helpers were CALLED is not enough: swapping the `or(...)`
+    // that joins them for an `and(...)` calls both identically while excluding
+    // every row that HAS a deliver_by from delivery. Compile the actual joined
+    // predicate and require the DISJUNCTION.
+    expect(vi.mocked(or)).toHaveBeenCalled();
+    const deadlineArm = vi.mocked(or).mock.results[0]!.value;
+    const { sql: sqlText } = new PgDialect().sqlToQuery(deadlineArm as never);
+    expect(sqlText).toMatch(/is null or /i);
+    expect(sqlText).toMatch(/> \$/);
   });
 
   // #5128 §G: claim-time eligibility can veto rows the pending scan returned

@@ -228,14 +228,56 @@ export async function propagateTimedOutDeviceCommand(params: {
  * W3 adds the `patch_job_results` branch. Anything without a branch is a no-op
  * by design — a generic command has no higher-level record (#5128 §F).
  */
+/**
+ * Anything that can run the propagation UPDATEs: the ambient `db`, or a caller's
+ * open transaction handle.
+ */
+type DbExecutor = Pick<typeof db, 'update'>;
+
+export type DeviceCommandCancelSubject = {
+  id: string;
+  type: string;
+  payload: Record<string, unknown> | null;
+};
+
+/**
+ * Bulk sibling of `propagateCancelledDeviceCommand` for the cancel-on-event
+ * paths (org move, decommission), which cancel every pending row for a device
+ * in one UPDATE. Takes the caller's transaction so the owning records are
+ * terminalised atomically with the cancel itself.
+ */
+export async function propagateCancelledDeviceCommands(
+  rows: readonly DeviceCommandCancelSubject[],
+  completedAt: Date,
+  executor: DbExecutor = db,
+): Promise<void> {
+  for (const row of rows) {
+    await propagateCancelledDeviceCommand({
+      commandId: row.id,
+      type: row.type,
+      payload: row.payload,
+      completedAt,
+      executor,
+    });
+  }
+}
+
 export async function propagateCancelledDeviceCommand(params: {
   commandId: string;
   type: string;
   payload: Record<string, unknown> | null;
   completedAt: Date;
   cancelledBy?: string | null;
+  /**
+   * #5128: the cancel-on-event callers run inside their own transaction (the
+   * org flip / the decommission write) and must terminalise the owning records
+   * in that SAME transaction, or a rollback would leave a cancelled command
+   * with a `script_executions` / `deployment_results` row still `pending`.
+   */
+  executor?: DbExecutor;
 }): Promise<void> {
   const { commandId, type, payload, completedAt } = params;
+  const executor: DbExecutor = params.executor ?? db;
   const errorMessage = 'Cancelled before the device received it';
 
   if (type === 'script') {
@@ -244,7 +286,7 @@ export async function propagateCancelledDeviceCommand(params: {
         ? payload.executionId
         : null;
     if (executionId) {
-      await db
+      await executor
         .update(scriptExecutions)
         .set({ status: 'cancelled', errorMessage, completedAt })
         .where(
@@ -256,7 +298,7 @@ export async function propagateCancelledDeviceCommand(params: {
     }
   }
 
-  await db
+  await executor
     .update(deploymentResults)
     .set({ status: 'cancelled', errorMessage, completedAt })
     .where(
@@ -614,6 +656,28 @@ export async function reapStaleScriptExecutions(): Promise<number> {
     // it by the script's own 300 s execution timeout while the command row was
     // legitimately waiting days for the machine to come back.
     if (exec.status !== 'running' && (cmd?.status === 'pending' || cmd?.status === 'sent')) continue;
+
+    // #5128: a command CANCELLED before delivery (user cancel, org move,
+    // decommission, claim-time ineligibility) already terminalised its
+    // execution through `propagateCancelledDeviceCommand`. If one still reaches
+    // here, reporting "no response from agent" would be a false diagnosis about
+    // an agent that was never asked. Mark it cancelled instead.
+    if (cmd?.status === 'cancelled') {
+      await db
+        .update(scriptExecutions)
+        .set({
+          status: 'cancelled',
+          errorMessage: 'Cancelled before the device received it',
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(scriptExecutions.id, exec.id),
+            inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
+          ),
+        );
+      continue;
+    }
 
     const cmdIsTerminal = cmd?.status === 'completed' || cmd?.status === 'failed';
     const cmdResultStatus = (cmd?.result as Record<string, unknown> | null | undefined)?.status;

@@ -445,7 +445,31 @@ async function dispatchManagerInstalls(
       softwareName: catalogItem.name,
       forceReinstall,
     };
-    const dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    // #5128: the seam refuses (and this throws) for a device that is
+    // decommissioned or trust-denied — checks that did NOT exist on this path
+    // before. Isolate per device: an uncaught throw here would abort the whole
+    // fan-out and leave every device AFTER it with a `pending` deployment_results
+    // row that is never dispatched and never failed, which is precisely the
+    // silent-death bug this feature exists to remove.
+    let dispatch: SoftwareInstallDispatchOutcome;
+    try {
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
+      console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      const failedResult = fanoutDeviceResult(input, device.id, 'failed', null, errorMessage);
+      if (failedResult) deviceResults.push(failedResult);
+      continue;
+    }
     dispatchedDeviceIds.push(device.id);
     const result = fanoutDeviceResult(
       input,
@@ -883,7 +907,31 @@ export async function buildAndDispatchSoftwareInstalls(
       ...(detectionRules ? { detectionRules } : {}),
       forceReinstall,
     };
-    const dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    // #5128: the seam refuses (and this throws) for a device that is
+    // decommissioned or trust-denied — checks that did NOT exist on this path
+    // before. Isolate per device: an uncaught throw here would abort the whole
+    // fan-out and leave every device AFTER it with a `pending` deployment_results
+    // row that is never dispatched and never failed, which is precisely the
+    // silent-death bug this feature exists to remove.
+    let dispatch: SoftwareInstallDispatchOutcome;
+    try {
+      dispatch = await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to dispatch software install';
+      console.error(`[software-deploy] dispatch failed for device ${device.id} in deployment ${deploymentId}:`, err);
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      const failedResult = fanoutDeviceResult(input, device.id, 'failed', null, errorMessage);
+      if (failedResult) deviceResults.push(failedResult);
+      continue;
+    }
     dispatchedDeviceIds.push(device.id);
     const result = fanoutDeviceResult(
       input,

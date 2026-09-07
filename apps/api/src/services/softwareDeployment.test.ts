@@ -244,6 +244,74 @@ describe('createSoftwareDeployment', () => {
     vi.unstubAllEnvs();
   });
 
+
+  it('a dispatch failure on one device does not abort the fan-out for the rest', async () => {
+    // #5128: dispatchSoftwareInstallToDevice now THROWS when the seam refuses
+    // (decommissioned / trust-denied — checks that did not exist on this path
+    // before). Without per-device isolation an uncaught throw aborts the loop
+    // and leaves every device after it with a `pending` deployment_results row
+    // that is never dispatched and never failed: exactly the silent death this
+    // whole feature exists to remove.
+    const versionRecord = {
+      id: 'ver-1',
+      catalogId: 'cat-1',
+      s3Key: 'pkg.key',
+      downloadUrl: null,
+      checksum: null,
+      originalFileName: 'pkg.exe',
+      fileType: 'exe',
+      silentInstallArgs: null,
+      version: '1.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-1', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1' },
+      { id: 'dev-2', agentId: 'agent-2' },
+      { id: 'dev-3', agentId: 'agent-3' },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock
+      .mockReturnValueOnce(insWithReturning([deployment]))
+      .mockReturnValueOnce(ins());
+
+    // dev-2 is refused by the seam; dev-1 and dev-3 must still go out.
+    dispatchDeviceCommandMock.mockImplementation(async ({ deviceId }: { deviceId: string }) => {
+      if (deviceId === 'dev-2') {
+        throw new Error('software_install dispatch refused for device dev-2: Device is decommissioned, cannot execute command');
+      }
+      return {
+        ok: true,
+        command: { id: `cmd-${deviceId}`, deviceId, type: 'software_install', status: 'pending' },
+        delivery: 'delivered',
+        deliverBy: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      };
+    });
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-1',
+      deploymentType: 'install',
+      deviceIds: ['dev-1', 'dev-2', 'dev-3'],
+      scheduleType: 'immediate',
+      createdBy: 'system:automation',
+    });
+
+    // The healthy devices dispatched; the failing one did not abort them.
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-3']);
+
+    // And the failure is REPORTED, not swallowed: dev-2 gets a failed result
+    // carrying the real reason rather than hanging `pending` forever.
+    const dev2 = result.deviceResults.find((r) => r.deviceId === 'dev-2');
+    expect(dev2?.status).toBe('failed');
+    expect(dev2?.message).toContain('decommissioned');
+    expect(result.deviceResults.map((r) => r.deviceId)).toEqual(['dev-1', 'dev-2', 'dev-3']);
+  });
+
   it('creates a deployment + per-device results and dispatches software_install for immediate install', async () => {
     const versionRecord = {
       id: 'ver-1',

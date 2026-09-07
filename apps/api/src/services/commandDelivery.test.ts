@@ -8,6 +8,18 @@ vi.mock('./commandDispatch', () => ({
     releaseClaimedCommandDeliveryMock(...(args as [])),
 }));
 
+// #5128: the SHIPPED software_install refresher calls into S3. Mocked at the
+// module boundary so the real refresher body (the s3Key gate, the TTL, the
+// isS3Configured() check) is exercised rather than replaced by a fake.
+const { getPresignedUrlMock, isS3ConfiguredMock } = vi.hoisted(() => ({
+  getPresignedUrlMock: vi.fn(),
+  isS3ConfiguredMock: vi.fn(() => true),
+}));
+vi.mock('./s3Storage', () => ({
+  getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...(args as [])),
+  isS3Configured: () => isS3ConfiguredMock(),
+}));
+
 const captureExceptionMock = vi.fn();
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
@@ -321,5 +333,59 @@ describe('late-binding delivery preparation (#5128 §D / OD-8)', () => {
 
   it('decryptClaimedCommandsForDelivery is still exported as an alias of the new name', () => {
     expect(decryptClaimedCommandsForDelivery).toBe(prepareClaimedCommandsForDelivery);
+  });
+});
+
+describe('the shipped software_install delivery refresher (#5128 OD-8)', () => {
+  // Exercises the REAL refresher — the other suite replaces it with a fake, so
+  // without this, dropping the isS3Configured() gate, changing the TTL, or
+  // reading the wrong payload key would all ship undetected.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isS3ConfiguredMock.mockReturnValue(true);
+    getPresignedUrlMock.mockResolvedValue('https://fresh.example/installer?sig=new');
+    failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
+  });
+
+  it('re-mints the download URL from the stored s3Key with a one-hour TTL', async () => {
+    const refresher = deliveryRefreshers.software_install!;
+    const out = await refresher({ s3Key: 'installers/app.exe', downloadUrl: 'https://stale.example' });
+
+    expect(getPresignedUrlMock).toHaveBeenCalledWith('installers/app.exe', 3600);
+    expect(out.downloadUrl).toBe('https://fresh.example/installer?sig=new');
+    // The stable reference must survive so the NEXT delivery can re-mint too.
+    expect(out.s3Key).toBe('installers/app.exe');
+  });
+
+  it('leaves the payload alone when there is no s3Key (EDR / stored-URL installers)', async () => {
+    const refresher = deliveryRefreshers.software_install!;
+    const payload = { downloadUrl: 'https://vendor.example/agent.msi' };
+    const out = await refresher(payload);
+
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+    expect(out).toEqual(payload);
+  });
+
+  it('leaves the payload alone when S3 is not configured', async () => {
+    isS3ConfiguredMock.mockReturnValue(false);
+    const refresher = deliveryRefreshers.software_install!;
+    const payload = { s3Key: 'installers/app.exe', downloadUrl: 'https://stale.example' };
+    const out = await refresher(payload);
+
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+    expect(out.downloadUrl).toBe('https://stale.example');
+  });
+
+  it('propagates a presign failure so the caller releases the row rather than delivering a stale URL', async () => {
+    getPresignedUrlMock.mockRejectedValue(new Error('presign down'));
+    const refresher = deliveryRefreshers.software_install!;
+    await expect(refresher({ s3Key: 'installers/app.exe' })).rejects.toThrow('presign down');
+  });
+
+  it('a non-string s3Key is ignored rather than passed to the signer', async () => {
+    const refresher = deliveryRefreshers.software_install!;
+    const out = await refresher({ s3Key: 42, downloadUrl: 'https://stale.example' });
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+    expect(out.downloadUrl).toBe('https://stale.example');
   });
 });

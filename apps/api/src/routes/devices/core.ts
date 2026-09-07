@@ -21,6 +21,7 @@ import {
   users,
 } from '../../db/schema';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommands } from '../../jobs/staleCommandReaper';
 import {
   authMiddleware,
   isInteractiveUserSession,
@@ -1836,11 +1837,29 @@ coreRoutes.delete(
       // Claim-time eligibility refuses to deliver ordinary work to a
       // decommissioned device anyway; this is what stops those rows sitting
       // `pending` until their deadline.
+      // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
+      // keys on `payload.executionId`, which `terminalPayloadErasureSet()` strips.
+      const cancelledOnDecommission = await tx
+        .select({
+          id: deviceCommands.id,
+          type: deviceCommands.type,
+          payload: deviceCommands.payload,
+        })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
+
+      const decommissionCancelledAt = new Date();
       await tx
         .update(deviceCommands)
         .set({
           status: 'cancelled',
-          completedAt: new Date(),
+          completedAt: decommissionCancelledAt,
           result: {
             status: 'cancelled',
             reason: 'device_decommissioned',
@@ -1855,6 +1874,20 @@ coreRoutes.delete(
             ne(deviceCommands.type, 'self_uninstall'),
           ),
         );
+
+      // Terminalise the OWNING records in the same transaction — otherwise a
+      // cancelled command strands its script_executions / deployment_results
+      // row `pending` forever (the command reaper only scans pending/sent
+      // COMMANDS, and this one is already terminal).
+      await propagateCancelledDeviceCommands(
+        cancelledOnDecommission.map((row) => ({
+          id: row.id,
+          type: row.type,
+          payload: row.payload as Record<string, unknown> | null,
+        })),
+        decommissionCancelledAt,
+        tx,
+      );
 
       if (uninstallAgent) {
         const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);

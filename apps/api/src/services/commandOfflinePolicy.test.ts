@@ -3,6 +3,7 @@ import { CommandTypes } from './commandTypes';
 import { createCommandSchema, bulkCommandSchema } from '../routes/devices/schemas';
 import {
   COMMAND_OFFLINE_POLICY_REGISTRY,
+  EXPLICITLY_CLASSIFIED_COMMAND_TYPES,
   REJECT_RACE_GRACE_MS,
   UnregisteredCommandTypeError,
   defaultOfflinePolicy,
@@ -76,6 +77,19 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
       kind: 'queue',
       deliverWithinMs: deliveryTtlMs('power_state'),
     });
+  });
+
+  it('every CommandTypes value is EXPLICITLY classified, never left to the fallback', () => {
+    // The registry's fallback is `standard`, i.e. QUEUEABLE. Deferred delivery
+    // widens the window in which the authorization behind a command can go
+    // stale, so a new command type must not become queueable just because
+    // nobody classified it. This is the fail-closed property that
+    // UnregisteredCommandTypeError does NOT provide (that only fires for a
+    // string absent from CommandTypes entirely).
+    const unclassified = Object.values(CommandTypes).filter(
+      (t) => !EXPLICITLY_CLASSIFIED_COMMAND_TYPES.has(t)
+    );
+    expect(unclassified).toEqual([]);
   });
 
   it('throws for an unregistered type', () => {

@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import type { db } from '../db';
 import { deviceCommands, users } from '../db/schema';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+import { captureException } from './sentry';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -11,8 +12,10 @@ export type ClaimCancelReason =
   | 'device_lifecycle'
   | 'trust_denied'
   | 'requester_inactive'
+  | 'submitter_org_erased'
   | 'held_maintenance_suppression'
-  | 'power_state_barrier';
+  | 'power_state_barrier'
+  | 'eligibility_check_failed';
 
 /**
  * The device facts claim-time eligibility needs. Deliberately NOT carrying a
@@ -72,8 +75,19 @@ export const typeHolds: Record<string, (deviceId: string) => Promise<boolean>> =
  * authorization and targeting facts that were true at request time have to be
  * re-checked at delivery. Cancels are written INSIDE the caller's claim
  * transaction, so a row this function cancels can never be delivered by a
- * concurrent claim — and the device row lock the claim already holds
- * (`FOR UPDATE`) is what serialises an in-flight org move against this check.
+ * concurrent claim.
+ *
+ * KNOWN RESIDUAL — this does NOT serialise against a concurrent org move. The
+ * claim reads `devices` without `FOR UPDATE` (deliberately: taking a row-
+ * exclusive lock on the device on every heartbeat would serialise the hottest
+ * path in the product against every other write to that row). So a move that
+ * commits between this read and the claim's status flip can leave one command
+ * delivered just after the device changed org — the move's own pending-row
+ * sweep then misses it because the row is already `sent`. Closing this needs
+ * the claim to lock `devices` before `device_commands` (matching org-move's
+ * order, since the reverse would deadlock); deferred rather than risking
+ * heartbeat contention here. The window is a few milliseconds and the blast
+ * radius is one command inside the same partner.
  *
  * `held` rows are left `pending` and untouched; `cancelled` rows are terminal
  * with their payload erased.
@@ -95,12 +109,26 @@ export async function partitionClaimable(
   const requesterActive = new Map<string, boolean>();
 
   for (const row of rows) {
-    // Legacy rows predate `submitted_org_id`; a NULL means "no recorded org",
-    // which is not evidence of a move and must not cancel the row. `undefined`
-    // is treated the same way — an absent value is not a mismatch.
     const submittedOrgId = row.submittedOrgId ?? null;
     if (submittedOrgId !== null && submittedOrgId !== device.orgId) {
       cancelled.push({ id: row.id, reason: 'device_moved_org' });
+      continue;
+    }
+    // A NULL `submitted_org_id` means one of two very different things, and the
+    // deadline tells them apart:
+    //
+    //  - `deliver_by IS NULL`  -> a LEGACY row, written before #5128 added the
+    //    column. No recorded org is not evidence of a move; deliver it.
+    //  - `deliver_by IS NOT NULL` -> a post-#5128 row. Every enqueue path stamps
+    //    `submitted_org_id` from the device's org, so a NULL here can only have
+    //    come from the FK's ON DELETE SET NULL — i.e. THE ORIGINATING ORG WAS
+    //    DELETED. That erases the very fact the org check compares against, so
+    //    the check would silently pass. Refuse instead: this is the residual
+    //    the org-merge path leaves behind (the loser org survives as a shell,
+    //    is later erased, and the row's provenance goes NULL underneath a
+    //    device that has since been repointed to the surviving org).
+    if (submittedOrgId === null && row.deliverBy !== null && row.deliverBy !== undefined) {
+      cancelled.push({ id: row.id, reason: 'submitter_org_erased' });
       continue;
     }
 
@@ -116,8 +144,27 @@ export async function partitionClaimable(
         cancelled.push({ id: row.id, reason: 'trust_denied' });
         continue;
       }
-      // A transient failure of the trust check must NOT be read as "allowed".
-      throw e;
+      // A failure of the trust check must NEVER be read as "allowed" — but it
+      // must not take the heartbeat down with it either. This runs inside the
+      // claim transaction of `claimPendingCommandsForDevice`, which the agent
+      // heartbeat awaits; rethrowing aborts that transaction and 500s the
+      // heartbeat, and because the row stays `pending` it is re-selected on
+      // every subsequent heartbeat — turning one deterministic fault into a
+      // device that can never check in again. HOLD the row instead: not
+      // delivered (fail-closed), not cancelled (recoverable), and the rest of
+      // the batch still goes out.
+      console.error(
+        '[commandClaimEligibility] trust check failed; holding the command rather than delivering or cancelling it',
+        {
+          commandId: row.id,
+          deviceId: device.id,
+          type: row.type,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      );
+      captureException(e instanceof Error ? e : new Error(String(e)));
+      held.push({ id: row.id, reason: 'eligibility_check_failed' });
+      continue;
     }
 
     if (row.createdBy) {

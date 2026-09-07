@@ -220,6 +220,41 @@ const EXTRA_ROUTE_TYPES: readonly string[] = [
   'apply_browser_policy',
 ];
 
+/**
+ * Types deliberately reviewed and left on the `standard` (7-day queue) class.
+ * Listing them explicitly is what lets the coverage test below distinguish
+ * "considered and left standard" from "nobody looked at it".
+ */
+const STANDARD_REVIEWED: readonly string[] = [
+  C.SCRIPT,
+  C.SOFTWARE_INSTALL,
+  C.SOFTWARE_UNINSTALL,
+  C.SOFTWARE_UPDATE,
+  C.HOMEBREW_BOOTSTRAP,
+  C.CIS_BENCHMARK,
+  C.APPLY_CIS_REMEDIATION,
+  C.PATCH_SCAN,
+  C.INSTALL_PATCHES,
+  C.ROLLBACK_PATCHES,
+  C.SECURITY_SCAN,
+  C.SECURITY_THREAT_QUARANTINE,
+  C.SECURITY_THREAT_REMOVE,
+  C.SECURITY_THREAT_RESTORE,
+  C.SENSITIVE_DATA_SCAN,
+  C.ENCRYPT_FILE,
+  C.SECURE_DELETE_FILE,
+  C.QUARANTINE_FILE,
+  C.ENCRYPTION_ROTATE_KEY,
+  C.APPLY_AUDIT_POLICY_BASELINE,
+  C.FILESYSTEM_ANALYSIS,
+  C.SELF_UNINSTALL,
+  C.VAULT_SYNC,
+  C.VAULT_CONFIGURE,
+  C.COLLECT_EVIDENCE,
+  C.EXECUTE_CONTAINMENT,
+  C.SYSTEM_STATE_COLLECT,
+];
+
 // Build the registry from CommandTypes so a NEW type cannot be added without
 // also being classified. A type added to CommandTypes but to none of the lists
 // lands in `standard`, the safe default for fire-and-forget work — a type that
@@ -234,6 +269,18 @@ for (const type of POWER_STATE) registry[type] = 'power_state';
 registry.wake = 'live';
 
 export const COMMAND_OFFLINE_POLICY_REGISTRY: Readonly<Record<string, DeliveryTtlClass>> = Object.freeze(registry);
+
+/**
+ * The types that were EXPLICITLY classified above, as opposed to landing on the
+ * `standard` fallback. Exported purely so a test can require every
+ * `CommandTypes` value to appear here: the fallback is `standard` (queueable),
+ * so a new command type that must never be deferred would otherwise become
+ * queueable by silence. Failing in CI is how that stays a decision rather than
+ * an oversight.
+ */
+export const EXPLICITLY_CLASSIFIED_COMMAND_TYPES: ReadonlySet<string> = Object.freeze(
+  new Set<string>([...LIVE, ...BACKUP_AND_RESTORE, ...SHORT, ...POWER_STATE, ...STANDARD_REVIEWED]),
+) as ReadonlySet<string>;
 
 export function defaultOfflinePolicy(type: string): OfflinePolicy {
   const cls = COMMAND_OFFLINE_POLICY_REGISTRY[type];

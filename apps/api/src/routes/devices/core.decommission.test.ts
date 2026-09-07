@@ -183,10 +183,17 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     const set = vi.fn().mockReturnValue({ where: updWhere });
     vi.mocked(db.update).mockReturnValue({ set } as never);
 
-    const tx = { update: vi.fn().mockReturnValue({ set }) };
+    // #5128: the decommission transaction now SELECTs the pending commands
+    // (id/type/payload) before the erasing cancel UPDATE, so their owning
+    // script_executions / deployment_results rows can be terminalised in the
+    // same transaction. Default to no pending rows; individual tests override.
+    const txSelect = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+    });
+    const tx = { update: vi.fn().mockReturnValue({ set }), select: txSelect };
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
 
-    return { set, updWhere, tx };
+    return { set, updWhere, tx, txSelect };
   }
 
   it('calls terminateDeviceRemoteSessions with the decommissioned device id', async () => {

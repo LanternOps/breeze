@@ -275,7 +275,24 @@ function rigTransactionSuccess(
       // #3776 — the ticket-id lookup feeding the currency guard
       // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
       // position so lock-order assertions can place it against the UPDATEs.
-      select: vi.fn().mockImplementation(() => ({
+      select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+        // #5128 — the org flip now also reads the device's PENDING commands
+        // (id/type/payload) so their owning script_executions /
+        // deployment_results rows can be cancelled in the same transaction.
+        // This recorder is otherwise table-blind, so without this branch that
+        // read would be mis-recorded as the ticket-currency lookup and shift
+        // every lock-order assertion below.
+        if (cols && 'payload' in cols) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation(() => {
+                statements.push(`SELECT device_commands.pending (after ${updatedTables.length} updates)`);
+                return Promise.resolve([]);
+              }),
+            }),
+          };
+        }
+        return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockImplementation(() => ({
             // Awaited directly => the ticket-id lookup feeding the currency guard.
@@ -296,7 +313,8 @@ function rigTransactionSuccess(
             })),
           })),
         }),
-      })),
+        };
+      }),
     };
     await cb(tx);
     return updatedRow;

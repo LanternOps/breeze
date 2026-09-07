@@ -3,6 +3,7 @@ import { db } from '../db';
 import { devices } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { refreshPayloadForDelivery } from './commandDelivery';
+import { POWER_STATE_TYPES } from './commandClaimEligibility';
 import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import { deliverByFor, resolveOfflinePolicy, type OfflinePolicy } from './commandOfflinePolicy';
 import { queueCommand, type CommandPayload, type QueuedCommand } from './commandQueue';
@@ -117,6 +118,19 @@ export async function dispatchDeviceCommand(
 
   if (!online) return { ok: true, command, delivery: 'queued_offline', deliverBy };
   if (!device.agentId || input.preferHeartbeat) return { ok: true, command, delivery: 'queued_live', deliverBy };
+
+  // #5128 §E.4 — power-state commands are NEVER pushed from here. The barrier
+  // that stops a reboot landing mid-script lives in `partitionClaimable`, which
+  // only runs on the heartbeat claim; pushing a reboot straight down the socket
+  // would walk right past it. OD-3 accepts a same-second race, not a
+  // deterministic bypass for every reboot issued to an online device.
+  //
+  // This also preserves the pre-#5128 behaviour of the generic device-command
+  // routes exactly: they raw-inserted a pending row and let the next heartbeat
+  // collect it, so a reboot was never socket-pushed on that path either.
+  if (POWER_STATE_TYPES.has(input.type)) {
+    return { ok: true, command, delivery: 'queued_live', deliverBy };
+  }
 
   const claimed = await claimPendingCommandForDelivery(command.id);
   if (!claimed) return { ok: true, command, delivery: 'queued_live', deliverBy };

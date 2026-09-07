@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { assertAllowedMock, userStatusMock, updateMock, setMock, whereMock } = vi.hoisted(() => ({
   assertAllowedMock: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('../db/schema', () => ({
   users: { id: 'users.id', status: 'users.status' },
 }));
 vi.mock('./sensitiveCommandPayload', () => ({ terminalPayloadErasureSet: () => ({ payload: null }) }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { POWER_STATE_TYPES, partitionClaimable, typeHolds } from './commandClaimEligibility';
 
@@ -128,9 +130,23 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([{ id: 'c1', reason: 'trust_denied' }]);
   });
 
-  it('a non-trust error from the trust check propagates (never silently claims)', async () => {
+  it('a non-trust error from the trust check HOLDS the row — never claims it, never poisons the heartbeat', async () => {
+    // This runs inside the heartbeat's claim transaction. Rethrowing would 500
+    // the heartbeat, and since the row stays pending it would be re-selected on
+    // every retry — one deterministic fault would stop the device checking in
+    // at all. Fail-closed (not delivered) without that blast radius.
     assertAllowedMock.mockRejectedValue(new Error('db down'));
-    await expect(partitionClaimable(tx(), device, [row()])).rejects.toThrow('db down');
+    const r = await partitionClaimable(tx(), device, [row()]);
+    expect(r.claimable).toEqual([]);
+    expect(r.cancelled).toEqual([]);
+    expect(r.held).toEqual([{ id: 'c1', reason: 'eligibility_check_failed' }]);
+  });
+
+  it('a trust-check fault on one row does not withhold its healthy siblings', async () => {
+    assertAllowedMock.mockRejectedValueOnce(new Error('db down')).mockResolvedValue(undefined);
+    const r = await partitionClaimable(tx(), device, [row({ id: 'bad' }), row({ id: 'good' })]);
+    expect(r.held).toEqual([{ id: 'bad', reason: 'eligibility_check_failed' }]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['good']);
   });
 
   it('cancels when the requesting user is no longer active', async () => {
@@ -231,11 +247,36 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect([...POWER_STATE_TYPES].sort()).toEqual(['reboot', 'reboot_safe_mode', 'shutdown']);
   });
 
-  it('cancel writes are CAS-guarded on status=pending', async () => {
+  it('cancel writes are CAS-guarded on the id AND status=pending', async () => {
     const t = tx();
     await partitionClaimable(t, device, [row({ submittedOrgId: OTHER_ORG })]);
-    // The where() arg list is what carries the id + status='pending' fence; a
-    // cancel that landed on a row already claimed would be a lost delivery.
     expect(whereMock).toHaveBeenCalledTimes(1);
+
+    // Compile the ACTUAL predicate rather than asserting the spy was called:
+    // the mocked columns are plain strings, so they render as bound params and
+    // the exact fence is checkable. Without this, dropping
+    // `eq(status,'pending')` from the cancel would leave this test green while
+    // production cancelled rows the agent had already claimed — a lost delivery.
+    const { sql: sqlText, params } = new PgDialect().sqlToQuery(whereMock.mock.calls[0]![0] as never);
+    expect(params).toEqual(['dc.id', 'c1', 'dc.status', 'pending']);
+    expect(sqlText).toContain('and');
+  });
+
+  it('a legacy row (deliver_by NULL) with no submitted_org_id is still delivered', async () => {
+    const r = await partitionClaimable(tx(), device, [row({ submittedOrgId: null, deliverBy: null })]);
+    expect(r.claimable).toHaveLength(1);
+    expect(r.cancelled).toEqual([]);
+  });
+
+  it('a post-#5128 row whose submitted_org_id went NULL is refused, not delivered', async () => {
+    // `deliver_by` set means the enqueue path stamped `submitted_org_id`; a NULL
+    // can then only come from the FK's ON DELETE SET NULL, i.e. the originating
+    // org was erased. Delivering it would silently pass the org check by
+    // destroying the fact it compares against (the org-merge-then-erase path).
+    const r = await partitionClaimable(tx(), device, [
+      row({ submittedOrgId: null, deliverBy: new Date(Date.now() + 3600_000) }),
+    ]);
+    expect(r.cancelled).toEqual([{ id: 'c1', reason: 'submitter_org_erased' }]);
+    expect(r.claimable).toEqual([]);
   });
 });

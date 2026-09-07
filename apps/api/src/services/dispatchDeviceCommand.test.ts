@@ -262,6 +262,31 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(res.ok && res.delivery).toBe('queued_offline');
   });
 
+  it('a reboot to an ONLINE device is never socket-pushed — the barrier only runs at claim', async () => {
+    // Pushing straight down the socket would bypass partitionClaimable's
+    // power-state barrier entirely, which is the whole protection against a
+    // queued reboot landing in the middle of a running script.
+    selectReturning(deviceRow('online'));
+    for (const type of ['reboot', 'shutdown', 'reboot_safe_mode']) {
+      vi.clearAllMocks();
+      selectReturning(deviceRow('online'));
+      queueCommandMock.mockResolvedValue({ id: 'cmd-1', type, status: 'pending' });
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type });
+      expect(res.ok && res.delivery).toBe('queued_live');
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(sendMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a non-power-state command to an online device is still pushed immediately', async () => {
+    selectReturning(deviceRow('online'));
+    claimMock.mockResolvedValue({ id: 'cmd-1', executedAt: new Date() });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+    expect(res.ok && res.delivery).toBe('delivered');
+    expect(sendMock).toHaveBeenCalled();
+  });
+
   it('a device in maintenance is treated as not-online and queues', async () => {
     selectReturning(deviceRow('maintenance'));
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'script' });

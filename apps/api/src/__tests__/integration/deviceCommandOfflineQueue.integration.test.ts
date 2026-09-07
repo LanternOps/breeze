@@ -8,7 +8,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices, scriptExecutions, scripts, users } from '../../db/schema';
-import { reapStaleDeviceCommands, reapStaleScriptExecutions } from '../../jobs/staleCommandReaper';
+import {
+  propagateCancelledDeviceCommands,
+  reapStaleDeviceCommands,
+  reapStaleScriptExecutions,
+} from '../../jobs/staleCommandReaper';
 import { commandsRoutes } from '../../routes/devices/commands';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
@@ -562,4 +566,117 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
     // An in-flight command is NOT cancelled — it is already on the machine.
     expect((await commandRow(alreadySent!.id))?.status).toBe('sent');
   });
+
+  it('cancel-on-event terminalises the OWNING script execution, not just the command', async () => {
+    // The regression this pins: the org-move / decommission sweeps cancel the
+    // device_commands row directly. A cancelled command is terminal, so the
+    // command reaper (which scans only pending/sent) never revisits it — if the
+    // sweep does not propagate, the script_executions row hangs `queued`
+    // forever with nothing left to resolve it. That is exactly the silent death
+    // this feature exists to remove.
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const [script] = await getTestDb()
+      .insert(scripts)
+      .values({
+        orgId: env.organization.id,
+        name: 'Cancel Propagation Script',
+        osTypes: ['linux'],
+        language: 'bash',
+        content: 'true',
+        timeoutSeconds: 300,
+      })
+      .returning();
+    const [execution] = await getTestDb()
+      .insert(scriptExecutions)
+      .values({
+        scriptId: script!.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+        status: 'queued',
+      })
+      .returning();
+    const [command] = await getTestDb()
+      .insert(deviceCommands)
+      .values({
+        deviceId: device.id,
+        type: 'script',
+        payload: { timeoutSeconds: 300, executionId: execution!.id },
+        status: 'pending',
+        deliverBy: new Date(Date.now() + HOUR_MS),
+        submittedOrgId: env.organization.id,
+      })
+      .returning();
+
+    const completedAt = new Date();
+    await asSystem(async () => {
+      await getTestDb()
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt,
+          result: { status: 'cancelled', reason: 'device_moved_org' },
+        })
+        .where(and(eq(deviceCommands.deviceId, device.id), eq(deviceCommands.status, 'pending')));
+      await propagateCancelledDeviceCommands(
+        [{ id: command!.id, type: 'script', payload: { executionId: execution!.id } }],
+        completedAt,
+      );
+    });
+
+    const [after] = await getTestDb()
+      .select()
+      .from(scriptExecutions)
+      .where(eq(scriptExecutions.id, execution!.id))
+      .limit(1);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.errorMessage).toContain('Cancelled before the device received it');
+  });
+
+  it('the script reaper reports a cancelled command as cancelled, not as agent silence', async () => {
+    // Downstream of the same defect: without the `cancelled` arm the reaper
+    // stamped "no response from agent" on a command the agent was never asked
+    // to run.
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const [script] = await getTestDb()
+      .insert(scripts)
+      .values({
+        orgId: env.organization.id,
+        name: 'Cancelled Diagnosis Script',
+        osTypes: ['linux'],
+        language: 'bash',
+        content: 'true',
+        timeoutSeconds: 300,
+      })
+      .returning();
+    const [execution] = await getTestDb()
+      .insert(scriptExecutions)
+      .values({
+        scriptId: script!.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+        status: 'queued',
+        createdAt: new Date(Date.now() - 2 * HOUR_MS),
+      })
+      .returning();
+    await getTestDb().insert(deviceCommands).values({
+      deviceId: device.id,
+      type: 'script',
+      payload: { timeoutSeconds: 300, executionId: execution!.id },
+      status: 'cancelled',
+      completedAt: new Date(),
+      createdAt: new Date(Date.now() - 2 * HOUR_MS),
+      submittedOrgId: env.organization.id,
+    });
+
+    await asSystem(() => reapStaleScriptExecutions());
+
+    const [after] = await getTestDb()
+      .select()
+      .from(scriptExecutions)
+      .where(eq(scriptExecutions.id, execution!.id))
+      .limit(1);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.errorMessage).not.toContain('no response from agent');
+  });
+
 });

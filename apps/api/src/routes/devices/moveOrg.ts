@@ -4,6 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceCommands, devices, sites, organizations, tickets } from '../../db/schema';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommands } from '../../jobs/staleCommandReaper';
 import {
   authMiddleware,
   requireMfa,
@@ -323,15 +324,42 @@ moveOrgRoutes.post(
         // than the safety property: it stops the rows sitting `pending` until
         // their deadline and shows the operator the truth immediately. Rows are
         // erased of payload like any other terminal transition.
+        // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
+        // keys on `payload.executionId`, and `terminalPayloadErasureSet()`
+        // strips it (`returning()` reflects post-update values).
+        const cancelledForMove = await tx
+          .select({
+            id: deviceCommands.id,
+            type: deviceCommands.type,
+            payload: deviceCommands.payload,
+          })
+          .from(deviceCommands)
+          .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, 'pending')));
+
+        const moveCancelledAt = new Date();
         await tx
           .update(deviceCommands)
           .set({
             status: 'cancelled',
-            completedAt: new Date(),
+            completedAt: moveCancelledAt,
             result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'device_move_org' },
             ...terminalPayloadErasureSet(),
           })
           .where(and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, 'pending')));
+
+        // Terminalise the OWNING records too, in this same transaction. Without
+        // this a cancelled command leaves its script_executions /
+        // deployment_results row `pending` forever: the command reaper only
+        // scans `pending`/`sent` commands, so nothing would ever revisit it.
+        await propagateCancelledDeviceCommands(
+          cancelledForMove.map((row) => ({
+            id: row.id,
+            type: row.type,
+            payload: row.payload as Record<string, unknown> | null,
+          })),
+          moveCancelledAt,
+          tx,
+        );
 
         // #2138 — if the moved device left a link group with a single lone
         // profile behind — or it was a vm_host group's HOST (#2308), leaving
