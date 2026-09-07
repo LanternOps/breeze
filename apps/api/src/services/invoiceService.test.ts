@@ -100,6 +100,7 @@ vi.mock('../jobs/accountingSyncWorker', () => ({
 vi.mock('./accounting/accountingPaymentPush', () => ({
   requestPaymentPush: vi.fn().mockResolvedValue(null),
   requestPaymentDelete: vi.fn().mockResolvedValue(null),
+  fanOutOwedPayments: vi.fn().mockResolvedValue([]),
 }));
 
 import { SQL } from 'drizzle-orm';
@@ -114,10 +115,11 @@ import {
   enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
   enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
 } from '../jobs/accountingSyncWorker';
-import { requestPaymentPush, requestPaymentDelete } from './accounting/accountingPaymentPush';
+import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
 
 const requestPaymentPushMock = vi.mocked(requestPaymentPush);
 const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
+const fanOutOwedPaymentsMock = vi.mocked(fanOutOwedPayments);
 const enqueuePaymentPushMock = vi.mocked(enqueueAccountingPaymentPush);
 const enqueuePaymentDeleteMock = vi.mocked(enqueueAccountingPaymentDelete);
 
@@ -1774,6 +1776,8 @@ describe('recordPayment -> QuickBooks push hook', () => {
   beforeEach(() => {
     results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks();
     requestPaymentPushMock.mockResolvedValue(null);
+    fanOutOwedPaymentsMock.mockResolvedValue([]);
+    ambientScope = 'partner';
   });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -1829,6 +1833,40 @@ describe('recordPayment -> QuickBooks push hook', () => {
     await record();
 
     expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+    // ...and no fan-out either: a partner-scoped null means "nothing owed", not
+    // "I could not write it".
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+  });
+
+  it('an ORG-SCOPED recording does not throw, and re-runs the push request in a SYSTEM context', async () => {
+    // The org-scoped transaction cannot write the outbox row at all (the
+    // partner-axis tables are invisible to it), so `requestPaymentPush` returns
+    // null and reports the skip. Throwing instead broke quote acceptance, which
+    // takes its deposit in exactly this context (review wave 5). The recovery is
+    // a system-context fan-out — `fanOutOwedPayments`, not a second
+    // `requestPaymentPush`, because it already refuses a payment outside
+    // `push_payments_since` and an invoice whose mapping is not synced.
+    ambientScope = 'organization';
+    requestPaymentPushMock.mockResolvedValue(null);
+    fanOutOwedPaymentsMock.mockResolvedValue(['map-9']);
+    queueRecordPayment();
+
+    await expect(record()).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
+
+    expect(fanOutOwedPaymentsMock).toHaveBeenCalledWith('i1', 'p1', expect.any(Function));
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-9', 'p1');
+  });
+
+  it('a partner-scoped recording never reaches the fan-out fallback', async () => {
+    // The fallback is keyed on the SCOPE, not on the null: a partner-scoped
+    // caller that legitimately owes nothing must not trigger an extra fan-out.
+    ambientScope = 'partner';
+    requestPaymentPushMock.mockResolvedValue(null);
+    queueRecordPayment();
+
+    await record();
+
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
   });
 
   it('never fails a committed payment because Redis is down', async () => {
@@ -1857,12 +1895,21 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     // Only read when the mapping probe says QuickBooks-origin, so the ordinary
     // Breeze-payment path queues nothing extra.
     connectionRows?: Array<Record<string, unknown>>,
+    // The org-scope pre-check, which runs in its own system context BETWEEN the
+    // discovery read and the transaction: mapping, then invoice, then connection
+    // (the last two only when the mapping is QuickBooks-origin).
+    preCheckRows?: Array<Array<Record<string, unknown>>>,
   ) {
     queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
+    for (const rows of preCheckRows ?? []) queueResult(rows);                            // org-scope pre-check
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
     queueResult([payment]);                                                              // payment re-read under lock
-    queueResult(mappingRows);                                                            // payment mapping origin probe
-    if (connectionRows) queueResult(connectionRows);                                     // QuickBooks connection probe
+    // Under org scope the in-transaction origin/connection probes do NOT run —
+    // the pre-check above already answered — so they queue nothing.
+    if (!preCheckRows) {
+      queueResult(mappingRows);                                                          // payment mapping origin probe
+      if (connectionRows) queueResult(connectionRows);                                   // QuickBooks connection probe
+    }
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum
@@ -1928,20 +1975,43 @@ describe('voidPayment -> QuickBooks delete hook', () => {
     await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
   });
 
-  it('FAILS CLOSED when the caller cannot see accounting_entity_mappings at all', async () => {
-    // The origin probe reads a PARTNER-axis table. Under an org-scoped principal
-    // RLS returns zero rows, which is byte-identical to "this payment has no
-    // accounting mapping" — the COMMON case — so a QuickBooks-owned payment
-    // would be voided, and a Breeze-origin one would lose its mapping without
-    // ever asking QuickBooks to remove the Payment (review wave 2, finding 5).
+  it('an ORG-SCOPED void of a QuickBooks-origin payment is still REFUSED, via the system pre-check', async () => {
+    // The in-transaction origin probe reads a PARTNER-axis table, so an
+    // org-scoped principal sees zero rows and the guard would pass a payment it
+    // must refuse. Refusing every org-scoped void was wrong too — they are
+    // legitimate — so the answer comes from a read-only system-context
+    // pre-check taken BEFORE the transaction (review wave 5).
     ambientScope = 'organization';
-    queueVoidPaymentReads(payment(), []);
+    queueVoidPaymentReads(payment(), [], undefined, [
+      [{ breezeOrigin: false }],                        // the mapping: QuickBooks-origin
+      [{ partnerId: 'p1' }],                            // its invoice, for the partner id
+      [{ status: 'connected', pullPayments: true }],    // ...and a realm that WOULD re-import
+    ]);
 
     await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
-      code: 'PARTNER_SCOPE_REQUIRED',
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
     });
     expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
     expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+  });
+
+  it('an ORG-SCOPED void of a BREEZE payment is allowed, and requests the delete after commit', async () => {
+    // The in-transaction `requestPaymentDelete` cannot write from an org context,
+    // so it returns null; the post-commit system-context call is what actually
+    // flips the mapping — and that one works, because the mapping row was
+    // committed long before this transaction.
+    ambientScope = 'organization';
+    queueVoidPaymentReads(payment(), [], undefined, [
+      [{ breezeOrigin: true }], // pre-check: Breeze-origin, so it stops there
+    ]);
+    requestPaymentDeleteMock.mockResolvedValueOnce(null);   // in-tx, org-scoped: skipped
+    requestPaymentDeleteMock.mockResolvedValueOnce('map-1'); // post-commit, system context
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1' });
+    expect(requestPaymentDeleteMock).toHaveBeenCalledTimes(2);
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('map-1', 'p1');
   });
 
   it('REFUSES a QuickBooks-origin payment at the service layer, not just in the UI', async () => {

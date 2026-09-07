@@ -780,7 +780,7 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     ['accounting/accountingMappingService.ts', 5],
     // Phase D2. Paths are resolved against THIS file's directory (services/),
     // so the two worker files reach out of it.
-    ['accounting/accountingPaymentPush.ts', 11], // +2: noteRecordFailed's give-up alarm and its own best-effort catch
+    ['accounting/accountingPaymentPush.ts', 12], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
     ['../jobs/accountingSyncWorker.ts', 2],
     ['../jobs/accountingReconcileWorker.ts', 5],
   ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {

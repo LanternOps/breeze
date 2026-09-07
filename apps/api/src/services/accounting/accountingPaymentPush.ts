@@ -562,36 +562,57 @@ async function lockOwnedInvoice(invoiceId: string, partnerId: string): Promise<I
 // ---------------------------------------------------------------------------
 
 /**
- * Refuse to read a PARTNER-axis accounting table from an org-scoped context.
+ * Can this ambient context SEE the partner-axis accounting tables?
  *
  * `accounting_connections` and `accounting_entity_mappings` are partner-axis
- * under RLS, so an organization-scoped principal — an AI/MCP session, a portal
- * token — sees ZERO rows in them. Every read below then returns "nothing",
- * which is byte-identical to the legitimate answers "this partner has no
- * QuickBooks connection" and "this payment has no accounting mapping", and both
- * of those are ordinary no-ops. So the whole QuickBooks side FAILS OPEN: the
- * push is silently never requested, and the QuickBooks-origin void guard passes
- * a payment it should have refused — with no error anywhere (review wave 2,
- * finding 5).
+ * under RLS, so an organization-scoped principal sees ZERO rows in them. Every
+ * read then returns "nothing", which is byte-identical to the legitimate
+ * answers "this partner has no QuickBooks connection" and "this payment has no
+ * accounting mapping" — both ordinary no-ops. Left unhandled the whole
+ * QuickBooks side fails OPEN and SILENTLY: the push is never requested and
+ * nothing says so.
  *
- * Failing closed is the only safe reading: "I cannot see the answer" must never
- * be reported as "the answer is no". The AI tool layer additionally refuses
- * these actions up front, so this throw is the backstop, not the UX.
+ * IT IS NOT AN ERROR, THOUGH (review wave 5). Org-scoped callers here are
+ * legitimate and customer-facing — quote acceptance takes a deposit inside an
+ * org context — so throwing turned a working payment into a 409. The outbox row
+ * could not be written from that context anyway (the INSERT is invisible to org
+ * RLS), so the honest answer is "nothing was queued", said out loud: the callers
+ * report the skip and then do the work in a SYSTEM context after their
+ * transaction commits (`recordPayment`'s post-commit fan-out,
+ * `voidPayment`'s post-commit delete request).
  *
- * A missing context is NOT a refusal: `withSystemDbAccessContext` and the
- * unit-test harnesses both run without meta scope, and those paths are already
- * covered by `assertNoAmbientDbContext` / the coordinator's own contract.
+ * A missing context is NOT org-scoped: `withSystemDbAccessContext` and the unit
+ * harnesses run without meta scope, and those paths are covered by
+ * `assertNoAmbientDbContext` and the coordinator's own contract.
  */
-function assertPartnerVisibleContext(operation: string): void {
-  const scope = getCurrentDbAccessContext()?.scope;
-  if (scope === 'organization') {
-    throw new AccountingMappingError(
-      'not_connected',
-      409,
-      `${operation} requires a partner-scoped session: QuickBooks connections and payment mappings are `
-      + 'partner-owned and are not visible to an organization-scoped caller',
-    );
-  }
+function isOrgScopedContext(): boolean {
+  return getCurrentDbAccessContext()?.scope === 'organization';
+}
+
+/**
+ * Say, once, that an outbox write could not be made from here.
+ *
+ * Never silent: the caller's post-commit system-context path is what actually
+ * queues the work, and if THAT ever regresses this event is the only thing that
+ * would show it. `event_code` is the required captureMessage discriminator —
+ * `scrubEvent` deletes `message`, so without it the event arrives blank.
+ */
+function noteOutboxSkippedForOrgScope(operation: string, partnerId: string | null, invoiceId: string | null): void {
+  console.warn(
+    '[accountingPaymentPush] payment outbox write skipped — org-scoped context cannot see the partner-axis'
+    + ' accounting tables; the caller queues it in a system context after commit',
+    `operation=${operation}`, `partnerId=${partnerId ?? 'unknown'}`, `invoiceId=${invoiceId ?? 'unknown'}`,
+  );
+  captureException(
+    new Error(`accountingPaymentPush: ${operation} skipped the outbox write under an organization-scoped context`),
+    undefined,
+    {
+      service: 'accountingPaymentPush',
+      event_code: 'accounting_payment_outbox_skipped_org_scope',
+      partner_id: partnerId ?? 'unknown',
+      invoice_id: invoiceId ?? 'unknown',
+    },
+  );
 }
 
 /**
@@ -615,7 +636,12 @@ export async function requestPaymentPush(
   tx: PaymentMappingExecutor,
   params: { invoicePaymentId: string; invoiceId: string; partnerId: string },
 ): Promise<string | null> {
-  assertPartnerVisibleContext('Requesting a QuickBooks payment push');
+  if (isOrgScopedContext()) {
+    // Nothing can be written from here, and nothing is silently lost: the caller
+    // fans this invoice's payments out in a system context after it commits.
+    noteOutboxSkippedForOrgScope('requestPaymentPush', params.partnerId, params.invoiceId);
+    return null;
+  }
   const conn = await loadConnectedConnection(tx, params.partnerId);
   if (!conn || !conn.pushPayments || conn.pushMode !== 'auto') return null;
 
@@ -722,7 +748,12 @@ export async function requestPaymentDelete(
   tx: PaymentMappingExecutor,
   invoicePaymentId: string,
 ): Promise<string | null> {
-  assertPartnerVisibleContext('Settling a QuickBooks payment mapping');
+  if (isOrgScopedContext()) {
+    // Same rule as `requestPaymentPush`, and the same recovery: `voidPayment`
+    // re-runs this under a system runner once its transaction has committed.
+    noteOutboxSkippedForOrgScope('requestPaymentDelete', null, null);
+    return null;
+  }
   const mapping = await loadPaymentMappingByPaymentId(tx, invoicePaymentId);
   if (!mapping) return null;
 

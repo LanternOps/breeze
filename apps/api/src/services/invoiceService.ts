@@ -22,7 +22,8 @@ import {
   enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
 } from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
-import { requestPaymentPush, requestPaymentDelete } from './accounting/accountingPaymentPush';
+import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
+import type { DbContextRunner } from './accounting/dbContextGuard';
 import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
@@ -1436,7 +1437,35 @@ export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor 
   await dbc.update(invoices).set(patch).where(eq(invoices.id, invoiceId));
 }
 
+/**
+ * Queue the QuickBooks work an ORG-SCOPED caller could not queue itself.
+ *
+ * `requestPaymentPush`/`requestPaymentDelete` write to partner-axis tables that
+ * an organization-scoped principal cannot see, so from a customer-facing flow
+ * (quote acceptance taking a deposit, the portal) they report the skip and write
+ * nothing. This runs the same work in a SYSTEM context once the caller's
+ * transaction is done with it.
+ *
+ * `runOutsideDbContext` FIRST is not optional: `withDbAccessContext` is a no-op
+ * when a context is already open (it deliberately keeps the caller's scope), so
+ * without escaping first this would run under the very org scope it exists to
+ * get out of.
+ *
+ * Best-effort throughout. The money is already committed; a QuickBooks push that
+ * could not be queued is recoverable (the next invoice push fans it out) and
+ * must never fail the payment.
+ */
+async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => {
+    const runner: DbContextRunner = (inner) => withSystemDbAccessContext(inner, label);
+    return fn(runner);
+  });
+}
+
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  // Captured BEFORE the transaction: the ambient scope decides whether the
+  // in-transaction outbox write is possible at all.
+  const orgScoped = getCurrentDbAccessContext()?.scope === 'organization';
   // ONE transaction, invoice row lock FIRST (B10 lock order — every payment
   // writer: manual record, manual void, Stripe reconcile). All validation runs
   // against the LOCKED row and the in-tx payment sum; a check-then-insert
@@ -1523,6 +1552,26 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     } catch (err) {
       console.error('[invoiceService] enqueueAccountingPaymentPush failed (payment already committed)', `paymentId=${payment.id}`, err instanceof Error ? err.message : err);
     }
+  } else if (orgScoped) {
+    // The org-scoped caller could not write the outbox row (partner-axis tables
+    // are invisible to it), so do it here in a system context. `fanOutOwedPayments`
+    // is the right tool rather than a second `requestPaymentPush`: it already
+    // refuses a payment recorded before `push_payments_since`, an invoice whose
+    // own mapping is not synced, and a payment that already carries a mapping.
+    try {
+      const mappingIds = await inSystemContext(
+        'invoiceService.recordPayment.orgScopedFanOut',
+        (runner) => fanOutOwedPayments(invoiceId, inv.partnerId, runner),
+      );
+      for (const mappingId of mappingIds) {
+        await enqueueAccountingPaymentPush(mappingId, inv.partnerId);
+      }
+    } catch (err) {
+      console.error(
+        '[invoiceService] org-scoped payment fan-out failed (payment already committed)',
+        `paymentId=${payment.id}`, err instanceof Error ? err.message : err,
+      );
+    }
   }
   // Surface the persisted payment alongside the refreshed invoice so the route
   // can write a durable audit_logs entry for this money-path mutation. The
@@ -1548,6 +1597,44 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   // lock invoice → payment inside one transaction and re-validate both.
   const [pre] = await db.select({ invoiceId: invoicePayments.invoiceId }).from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
   if (!pre) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+
+  // ORG-SCOPED PRE-CHECK. Both reads the QuickBooks-origin guard needs — the
+  // payment's mapping and the connection's `pull_payments` — are partner-axis,
+  // so an org-scoped caller reads ZERO rows and the guard would pass a payment
+  // it must refuse. Done here, BEFORE the transaction, because escalating scope
+  // inside the caller's transaction is not something a void should do. Read-only
+  // and race-free in the way that matters: a payment's ORIGIN never changes.
+  const orgScoped = getCurrentDbAccessContext()?.scope === 'organization';
+  const preCheck = orgScoped
+    ? await inSystemContext('invoiceService.voidPayment.originPreCheck', (runner) => runner(async () => {
+      const [mapping] = await db
+        .select({ breezeOrigin: accountingEntityMappings.breezeOrigin })
+        .from(accountingEntityMappings)
+        .where(and(
+          eq(accountingEntityMappings.breezeEntityType, 'payment'),
+          eq(accountingEntityMappings.breezeEntityId, paymentId),
+        ))
+        .limit(1);
+      if (!mapping || mapping.breezeOrigin) return { mapping: mapping ?? null, quickbooksWillReimport: false };
+      const [inv] = await db
+        .select({ partnerId: invoices.partnerId })
+        .from(invoices).where(eq(invoices.id, pre.invoiceId)).limit(1);
+      if (!inv) return { mapping, quickbooksWillReimport: false };
+      const [conn] = await db
+        .select({ status: accountingConnections.status, pullPayments: accountingConnections.pullPayments })
+        .from(accountingConnections)
+        .where(and(
+          eq(accountingConnections.partnerId, inv.partnerId),
+          eq(accountingConnections.provider, 'quickbooks'),
+        ))
+        .limit(1);
+      return {
+        mapping,
+        quickbooksWillReimport: !!conn && conn.status === 'connected' && conn.pullPayments,
+      };
+    }))
+    : null;
+
   const { inv, audit, deleteMappingId } = await db.transaction(async (tx) => {
     // The payment row carries orgId but not siteId; the parent invoice drives the
     // site-axis guard (a site-restricted caller must not void a payment on an
@@ -1568,22 +1655,14 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     // `requestPaymentDelete` uses so the two can never disagree about which row
     // they are looking at; unscoped by partner on purpose, so a row that somehow
     // belonged to another partner refuses the void instead of slipping past it.
-    // FAIL CLOSED when the caller cannot SEE that table (review wave 2, finding
-    // 5). `accounting_entity_mappings` is partner-axis under RLS, so an
-    // org-scoped principal — an AI/MCP session, a portal token — reads zero rows
-    // and the probe below reports "no accounting mapping": the COMMON case, and
-    // an ordinary no-op. A QuickBooks-owned payment would then be voided, and a
-    // Breeze-origin one would lose its mapping without QuickBooks ever being
-    // asked to remove the Payment. "I cannot see the answer" must never be
-    // reported as "the answer is no".
-    if (getCurrentDbAccessContext()?.scope === 'organization') {
-      throw new InvoiceServiceError(
-        'Voiding a payment requires a partner-scoped session: QuickBooks payment ownership is '
-        + 'partner-owned and is not visible to an organization-scoped caller',
-        409, 'PARTNER_SCOPE_REQUIRED',
-      );
-    }
-    const [existingMapping] = await tx
+    // `accounting_entity_mappings` is partner-axis under RLS, so an org-scoped
+    // principal reads ZERO rows here and this probe would report "no accounting
+    // mapping" — the COMMON case, and an ordinary no-op — letting a
+    // QuickBooks-owned payment be voided (review wave 2, finding 5). Refusing
+    // outright was wrong too: org-scoped voids are legitimate. The answer comes
+    // from the system-context pre-check taken BEFORE this transaction instead;
+    // under partner/system scope nothing changes.
+    const [existingMapping] = orgScoped ? [preCheck!.mapping ?? undefined] : await tx
       .select({ breezeOrigin: accountingEntityMappings.breezeOrigin })
       .from(accountingEntityMappings)
       .where(and(
@@ -1606,7 +1685,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     let quickbooksRecordUntouched = false;
     let untouchedReason: 'pull_disabled' | 'not_connected' | 'no_connection' | null = null;
     if (existingMapping && !existingMapping.breezeOrigin) {
-      const [conn] = await tx
+      const [conn] = orgScoped ? [undefined] : await tx
         .select({
           status: accountingConnections.status,
           pullPayments: accountingConnections.pullPayments,
@@ -1617,14 +1696,19 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
           eq(accountingConnections.provider, 'quickbooks'),
         ))
         .limit(1);
-      if (conn && conn.status === 'connected' && conn.pullPayments) {
+      const willReimport = orgScoped
+        ? preCheck!.quickbooksWillReimport
+        : !!conn && conn.status === 'connected' && conn.pullPayments;
+      if (willReimport) {
         throw new InvoiceServiceError(
           'This payment came from QuickBooks; reverse it in QuickBooks instead',
           409, 'QUICKBOOKS_OWNED_PAYMENT',
         );
       }
       quickbooksRecordUntouched = true;
-      untouchedReason = !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
+      untouchedReason = orgScoped
+        ? 'pull_disabled'
+        : !conn ? 'no_connection' : conn.status !== 'connected' ? 'not_connected' : 'pull_disabled';
     }
 
     // Capture the destroyed row's financial details BEFORE the delete so the voided
@@ -1695,6 +1779,25 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       await enqueueAccountingPaymentDelete(deleteMappingId, inv.partnerId);
     } catch (err) {
       console.error('[invoiceService] enqueueAccountingPaymentDelete failed (void already committed)', `paymentId=${paymentId}`, err instanceof Error ? err.message : err);
+    }
+  } else if (orgScoped) {
+    // The org-scoped transaction could not write the outbox flip, so do it now
+    // in a system context. Unlike the record path's fan-out this genuinely
+    // works from here: the mapping row already EXISTED and was committed long
+    // before this transaction, so a separate connection can see and flip it —
+    // `requestPaymentDelete` reads only the mapping, never the `invoice_payments`
+    // row this void is deleting.
+    try {
+      const mappingId = await inSystemContext(
+        'invoiceService.voidPayment.orgScopedDelete',
+        (runner) => runner(() => requestPaymentDelete(db, paymentId)),
+      );
+      if (mappingId) await enqueueAccountingPaymentDelete(mappingId, inv.partnerId);
+    } catch (err) {
+      console.error(
+        '[invoiceService] org-scoped payment delete request failed (void already committed)',
+        `paymentId=${paymentId}`, err instanceof Error ? err.message : err,
+      );
     }
   }
   return { invoice: inv, audit };

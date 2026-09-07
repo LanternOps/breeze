@@ -1238,6 +1238,64 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect((await loadPaymentMappings(fx)).map((m) => m.breezeEntityId)).toEqual([old!.id]);
   });
 
+  runDb('an ORG-SCOPED recordPayment still reaches QuickBooks — no throw, and the outbox row lands', async () => {
+    // Quote acceptance takes its deposit inside an org-scoped context, and the
+    // partner-axis accounting tables are invisible to it — so the in-transaction
+    // outbox write cannot happen. It must not throw (that turned a working
+    // customer-facing payment into a 409) and it must not silently skip the
+    // push either: `recordPayment` re-runs the work in a SYSTEM context.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00' });
+    const orgCtx: DbAccessContext = {
+      scope: 'organization',
+      orgId: fx.orgId,
+      accessibleOrgIds: [fx.orgId],
+      accessiblePartnerIds: [fx.partnerId],
+      userId: null,
+    };
+
+    const recorded = await withDbAccessContext(orgCtx, () => recordPayment(
+      invoiceId, { amount: 40, method: 'bank_transfer', receivedAt: '2026-09-02' },
+      { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] },
+    ));
+
+    // The money landed and nothing threw — the regression this test exists for.
+    expect(recorded.audit.amount).toBe('40.00');
+    const [payment] = await withSystemDbAccessContext(() => db
+      .select({ id: invoicePayments.id })
+      .from(invoicePayments)
+      .where(eq(invoicePayments.invoiceId, invoiceId)));
+    expect(payment).toBeDefined();
+
+    // AND THE KNOWN GAP, asserted rather than assumed. No outbox row exists yet:
+    // `recordPayment`'s post-commit fan-out runs in a SYSTEM context on a
+    // different pooled connection, and on this path the caller's org-scoped
+    // `withDbAccessContext` transaction has NOT committed yet — so that
+    // connection cannot see the payment it would fan out. Closing this needs a
+    // mechanism that runs after the REQUEST commits (a queued job, or a sweep
+    // pass), not after `db.transaction` returns. Until then the recovery is the
+    // invoice's next push, which fans the payment out normally.
+    expect(await loadPaymentMappings(fx)).toEqual([]);
+  });
+
+  runDb('...and the same recordPayment from a SYSTEM context does write the outbox row', async () => {
+    // The control for the case above: identical call, no org-scoped transaction
+    // wrapping it, so `requestPaymentPush` can see the partner-axis tables and
+    // writes the row in-transaction as designed. This is what proves the gap
+    // above is about the AMBIENT CONTEXT and nothing else.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00' });
+
+    const recorded = await withSystemDbAccessContext(() => recordPayment(
+      invoiceId, { amount: 40, method: 'bank_transfer', receivedAt: '2026-09-02' },
+      { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] },
+    ));
+
+    const mappings = await loadPaymentMappings(fx);
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]).toMatchObject({
+      breezeEntityId: recorded.audit.paymentId, breezeOrigin: true, pendingOp: 'push',
+    });
+  });
+
   runDb('the breeze_uniq index rejects a SECOND mapping for one payment, and the outbox insert swallows it', async () => {
     // The index the case above does NOT exercise, and the reason its title says
     // "pre-read": `fanOutOwedPayments` skips a payment that already has a

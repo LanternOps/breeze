@@ -669,16 +669,32 @@ describe('requestPaymentPush gating (spec decision 10)', () => {
     }))).resolves.toBe('map-new-1');
   });
 
-  it('FAILS CLOSED under an org-scoped DB context instead of silently not pushing', async () => {
+  it('SKIPS LOUDLY under an org-scoped DB context — no throw, no silent drop', async () => {
     // accounting_connections is PARTNER-axis under RLS, so an org-scoped
-    // principal reads ZERO rows here — indistinguishable from "no connection",
-    // which returns null and drops the push on the floor with no error anywhere.
-    // A caller that cannot SEE the connection must not be told there isn't one.
+    // principal reads ZERO rows here, indistinguishable from "no connection".
+    // Throwing was wrong — quote acceptance takes its deposit in an org context,
+    // so a 409 here broke a working customer-facing payment (review wave 5) —
+    // but silence was wrong too. The outbox row cannot be written from here at
+    // all, so the honest answer is "nothing queued", said out loud; the caller
+    // re-runs the work in a system context.
     ambientScope = 'organization';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runCtx(() => requestPaymentPush(db, {
+        invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
+      }))).resolves.toBeNull();
 
-    await expect(runCtx(() => requestPaymentPush(db, {
-      invoicePaymentId: PAYMENT, invoiceId: INVOICE, partnerId: PARTNER,
-    }))).rejects.toThrow(/partner-scoped/i);
+      // Nothing written — not even an attempt.
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalled();
+      expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+        event_code: 'accounting_payment_outbox_skipped_org_scope',
+        partner_id: PARTNER,
+        invoice_id: INVOICE,
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('returns null when there is no connected QuickBooks connection at all', async () => {
@@ -844,15 +860,25 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
     expect(mapping()).toBeNull();
   });
 
-  it('FAILS CLOSED under an org-scoped DB context', async () => {
+  it('SKIPS LOUDLY under an org-scoped DB context, leaving the mapping untouched', async () => {
     // Same trap on the destroyer side: zero visible mapping rows reads as "this
-    // payment has no accounting mapping", which is the COMMON case — so a void
-    // under an org-scoped principal would destroy the Breeze payment and leave
-    // its QuickBooks Payment standing, with the mapping row stranded.
+    // payment has no accounting mapping", the COMMON case. It reports the skip
+    // and writes nothing; `voidPayment` re-runs it in a system context after
+    // commit, which DOES work there because the mapping row was committed long
+    // before this transaction.
     ambientScope = 'organization';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBeNull();
 
-    await expect(runCtx(() => requestPaymentDelete(db, PAYMENT)))
-      .rejects.toThrow(/partner-scoped/i);
+      expect(mapping()).toMatchObject({ pendingOp: 'push' }); // untouched
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+        event_code: 'accounting_payment_outbox_skipped_org_scope',
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('is a no-op for a payment with no mapping at all (the common manual/Stripe case)', async () => {
