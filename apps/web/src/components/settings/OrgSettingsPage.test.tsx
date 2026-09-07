@@ -438,7 +438,7 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     // settings are open, NOT the globally selected one — the two differ
     // whenever an admin opens one tenant while another is selected in the
     // header — and ContactsCard never mounts on this page anymore.
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts'));
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
     expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
   });
 
@@ -448,7 +448,7 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     await screen.findByTestId('org-name-input');
     await userEvent.click(screen.getByRole('link', { name: /^contacts$/i }));
 
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts'));
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
     expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
   });
 

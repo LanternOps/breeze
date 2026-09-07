@@ -32,13 +32,15 @@ function jsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Res
 /** A `makeOrgFetch(RECORD_ORG)`-shaped stub that records every path it's called with. */
 function makeRecordingOrgFetch(handlers: Record<string, () => Response>): { orgFetch: OrgFetch; calls: string[] } {
   const calls: string[] = [];
-  const orgFetch: OrgFetch = async (path) => {
+  // Cast: OrgFetch is branded (ORG_PINNED) so only makeOrgFetch can mint one;
+  // tests stand in for it the same way OrgTicketsTab.test.tsx does.
+  const orgFetch = (async (path: string) => {
     calls.push(path);
     for (const [fragment, make] of Object.entries(handlers)) {
       if (path.includes(fragment)) return make();
     }
     return jsonResponse({ data: [] });
-  };
+  }) as unknown as OrgFetch;
   return { orgFetch, calls };
 }
 
