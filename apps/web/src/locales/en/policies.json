@@ -121,6 +121,9 @@
       "archived2": "Archived",
       "inheritingFrom": "Inheriting from",
       "overrideIndividualTabsToCustomizeSettings": "— Override individual tabs to customize settings",
+      "managedByYourMsp": "Managed by your MSP",
+      "inheritedByPolicies_one": "Inherited by {{count}} policy",
+      "inheritedByPolicies_other": "Inherited by {{count}} policies",
       "isnTAvailableOnPartnerWidePolicies": "isn't available on partner-wide policies",
       "configureThisFeatureOnAnOrganizationScoped": "Configure this feature on an organization-scoped policy.",
       "thisPolicyStillCarriesAnExisting": "This policy still carries an existing",
@@ -138,6 +141,7 @@
     "configPolicyList": {
       "archived": "Archived",
       "configurationPolicies": "Configuration Policies",
+      "inheritsBadge": "Inherits",
       "of": "of",
       "policies": "policies",
       "searchPolicies": "Search policies...",
@@ -157,6 +161,7 @@
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
       "failedToDeletePolicy": "Failed to delete policy",
+      "deleteBlockedByChildren": "Delete the policies that inherit from this one first:",
       "loadingConfigurationPolicies": "Loading configuration policies...",
       "tryAgain": "Try again",
       "configurationPolicies": "Configuration Policies",
@@ -938,7 +943,8 @@
         "loadingPolicies": "Loading policies...",
         "noExistingPoliciesFound": "No existing policies found.",
         "selectAPolicy": "Select a policy...",
-        "clearSelection": "Clear selection"
+        "clearSelection": "Clear selection",
+        "allOrgs": "All orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

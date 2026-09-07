@@ -133,6 +133,18 @@ describe('DeviceLifecycleTab', () => {
     expect((screen.getByTestId('device-lifecycle-tab-days') as HTMLInputElement).value).toBe('45');
   });
 
+  // #5080: `featurePolicyId` means a standalone entity id — Device Lifecycle
+  // is inline settings, so it must never carry the parent CONFIG policy's id.
+  it('sends featurePolicyId: null even when a parent config policy is linked', () => {
+    render(<DeviceLifecycleTab {...baseProps} linkedPolicyId="parent-1" />);
+
+    clickSave();
+
+    expect(saveMock).toHaveBeenCalled();
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { featurePolicyId: string | null }];
+    expect(call[1].featurePolicyId).toBeNull();
+  });
+
   it('warns that the purge is irreversible and that draining uninstalls are skipped', () => {
     render(<DeviceLifecycleTab {...baseProps} />);
 
