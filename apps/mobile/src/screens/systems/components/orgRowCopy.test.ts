@@ -3,6 +3,10 @@ import { describe, it, expect } from 'vitest';
 import { orgRowSubtitle } from './orgRowCopy';
 
 describe('orgRowSubtitle', () => {
+  it('reads "healthy, 0 devices" for an org with no device presence', () => {
+    expect(orgRowSubtitle({ deviceCount: 0, offlineCount: 0, issueCount: 0 })).toBe('0 devices, healthy');
+  });
+
   it('reads "healthy" for a single healthy device with no issues', () => {
     expect(orgRowSubtitle({ deviceCount: 1, offlineCount: 0, issueCount: 0 })).toBe('1 device, healthy');
   });
@@ -15,7 +19,7 @@ describe('orgRowSubtitle', () => {
     expect(orgRowSubtitle({ deviceCount: 7, offlineCount: 2, issueCount: 0 })).toBe('7 devices · 2 offline');
   });
 
-  it('singularizes "offline" is not a thing — the noun stays "offline", only the device count pluralizes', () => {
+  it('pluralizes only the device count when offline — "offline" itself never pluralizes', () => {
     expect(orgRowSubtitle({ deviceCount: 1, offlineCount: 1, issueCount: 0 })).toBe('1 device · 1 offline');
   });
 

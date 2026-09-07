@@ -21,4 +21,12 @@ describe('isBreezeAiRequester', () => {
   it('is false for an empty label', () => {
     expect(isBreezeAiRequester('')).toBe(false);
   });
+
+  it('is case-sensitive — the server always sends the exact literal', () => {
+    // Locks in the exact-match contract documented above: a future casing
+    // drift on either side (server or here) should fail a test, not
+    // silently start showing the wrong avatar for a real AI approval.
+    expect(isBreezeAiRequester('breeze ai')).toBe(false);
+    expect(isBreezeAiRequester('BREEZE AI')).toBe(false);
+  });
 });
