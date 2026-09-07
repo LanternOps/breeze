@@ -108,22 +108,21 @@ export async function propagateCancelledDeviceCommand(params: {
   // here would close that into an import cycle whose `typeHolds` const is still
   // in its temporal dead zone when the hold registers.
   if (type === 'install_patches') {
-    try {
-      const { finalizePatchDeviceForCommand } = await import('./patchJobFinalizer');
-      await finalizePatchDeviceForCommand({
-        commandId,
-        payload,
-        terminal: { kind: 'cancelled', reason: 'cancelled' },
-        completedAt,
-        executor,
-      });
-    } catch (err) {
-      console.error(
-        '[commandCancelPropagation] failed to finalize the patch device for a cancelled install',
-        { commandId, error: err instanceof Error ? err.message : String(err) },
-      );
-      captureException(err instanceof Error ? err : new Error(String(err)));
-    }
+    const { finalizePatchDeviceForCommand } = await import('./patchJobFinalizer');
+    // NOT wrapped in a try/catch, exactly like the `script` branch above.
+    // `executor` is frequently the CALLER'S OPEN TRANSACTION (the heartbeat
+    // claim, the org-move and decommission sweeps): swallowing a failure here
+    // would let that transaction commit a cancelled command alongside a
+    // half-written patch result and unmoved counters, stranding the job
+    // `running` forever with one Sentry event as the only trace. Letting it
+    // propagate rolls the whole cancel back so it can be retried.
+    await finalizePatchDeviceForCommand({
+      commandId,
+      payload,
+      terminal: { kind: 'cancelled', reason: 'cancelled' },
+      completedAt,
+      executor,
+    });
   }
 
   await executor

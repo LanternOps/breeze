@@ -19,12 +19,15 @@
  * path (`recordDeviceExecution`) is just the `kind: 'result'` caller that
  * happens to already know the job context.
  *
- * IDEMPOTENCY IS THE POINT. The rows for `(jobId, deviceId)` are the key: the
- * finalizer applies only while at least one of them is non-terminal (or there
- * are none yet, the synchronous first-write case). A second arrival — a late
- * agent result racing the reaper, a cancel racing a result — returns
- * `{ applied: false }` and touches no counter. Never move a `patch_jobs`
- * counter outside this module.
+ * IDEMPOTENCY IS THE POINT, AT TWO LEVELS. The rows for `(jobId, deviceId)` are
+ * the key: the finalizer applies only while at least one of them is
+ * non-terminal (or there are none yet, the synchronous first-write case). That
+ * read is not enough on its own, because two doors on two processes can both
+ * see the same non-terminal rows before either commits — so the per-row UPDATE
+ * is compare-and-swapped on the row still being non-terminal, and the
+ * `patch_jobs` counter moves ONLY when that CAS actually wrote a row. A second
+ * arrival returns `{ applied: false }` and touches no counter. Never move a
+ * `patch_jobs` counter outside this module.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -59,9 +62,17 @@ function isNonTerminal(status: string): status is NonTerminalResultStatus {
 /** The nil UUID `markDeviceSkipped` uses for a whole-device summary row. */
 export const PATCH_SUMMARY_PATCH_ID = '00000000-0000-0000-0000-000000000000';
 
-/** The agent's install summary, normalised across both result transports. */
+/**
+ * The agent's install summary, normalised across both result transports.
+ *
+ * `status` is deliberately the agent-reported enum from `commandResultSchema`,
+ * NOT the `device_commands` envelope status — those are two different
+ * vocabularies (what the agent claims vs. where the delivery row currently is)
+ * and conflating them under a bare `string` is how a `pending`/`cancelled`
+ * envelope value could reach the success predicate.
+ */
 export type PatchCommandOutcome = {
-  status: string;
+  status: 'completed' | 'failed' | 'timeout';
   exitCode?: number | null;
   stdout?: string | null;
   stderr?: string | null;
@@ -69,8 +80,13 @@ export type PatchCommandOutcome = {
 };
 
 export type PatchDeviceTerminal =
-  /** The agent answered. `commandResult: null` = the command never came back. */
-  | { kind: 'result'; commandResult: PatchCommandOutcome | null }
+  /**
+   * The agent answered. There is deliberately no null arm here: "no result ever
+   * came back" is `kind: 'timeout'`, so the synchronous poll's exhaustion and
+   * the reaper's execution clock produce the same rows and the same log line
+   * instead of two shapes that read differently for the same fact.
+   */
+  | { kind: 'result'; commandResult: PatchCommandOutcome }
   /** Delivery deadline passed undelivered, or the execution clock ran out. */
   | { kind: 'expired' | 'timeout'; message: string }
   /** User cancel, org move, decommission, claim-time ineligibility. */
@@ -94,6 +110,24 @@ export type PatchDeviceContext = {
   rebootPolicy: string;
   approvedPatches: readonly ApprovedPatchRef[];
 };
+
+/**
+ * WHICH DOOR IS CALLING — a discriminant, not an optional field.
+ *
+ * It decides more than where the job context comes from: it decides whether
+ * ZERO existing `patch_job_results` rows is legal. Only the synchronous
+ * executor may write a device's rows for the first time; a deferred door with
+ * no rows is looking at a device whose install is still owned by the running
+ * `pollForPatchCommandResult` task, and counting it would move
+ * `devices_pending` a second time when that poll records the same result.
+ *
+ * Expressed as a union so that invariant is a compile error to violate rather
+ * than a comment a future caller has to notice — this module exists because
+ * double-counted patch counters have been expensive here before.
+ */
+export type PatchFinalizeSource =
+  | { kind: 'synchronous'; context: PatchDeviceContext }
+  | { kind: 'deferred' };
 
 export const SUPERSEDED_ERROR_MESSAGE = 'superseded_by_next_occurrence';
 
@@ -183,17 +217,61 @@ type RowWrite = {
   rebootRequired: boolean;
 };
 
-export async function finalizePatchJobDevice(input: {
+/**
+ * What the post-commit reboot evaluation needs. Carried OUT of the transaction
+ * rather than run inside it: `executeReboot` dispatches a device command of its
+ * own, and holding a pooled connection across that is the #1105 conn-hold that
+ * starved the pool under worker concurrency.
+ */
+type PendingRebootEvaluation = {
+  patchJobId: string;
+  deviceId: string;
+  orgId: string;
+  rebootPolicy: string;
+  approvedPatches: readonly ApprovedPatchRef[];
+  parsed: ParsedAgentSummary | null;
+  overallSuccess: boolean;
+  resultUnparsable: boolean;
+};
+
+export type FinalizePatchJobDeviceInput = {
   patchJobId: string;
   deviceId: string;
   commandId: string;
   terminal: PatchDeviceTerminal;
   completedAt: Date;
-  context?: PatchDeviceContext;
+  /** Which door is calling — see `PatchFinalizeSource`. */
+  source: PatchFinalizeSource;
+  /**
+   * A caller's open transaction. The cancel-on-event sweeps terminalise the
+   * owning records inside the transaction that cancels the command; when it is
+   * absent the finalizer opens its own, so the row writes and the counter move
+   * commit together or not at all.
+   */
   executor?: PatchFinalizerExecutor;
-}): Promise<{ applied: boolean }> {
-  const { patchJobId, deviceId, terminal, completedAt } = input;
-  const executor: PatchFinalizerExecutor = input.executor ?? db;
+};
+
+export async function finalizePatchJobDevice(
+  input: FinalizePatchJobDeviceInput,
+): Promise<{ applied: boolean }> {
+  const outcome = input.executor
+    ? await applyDeviceTransition(input.executor, input)
+    : await db.transaction((tx) => applyDeviceTransition(tx as PatchFinalizerExecutor, input));
+
+  // AFTER the write commits, never inside it (#4228 evaluation, #1105 conn-hold).
+  // A reboot dispatched from inside the transaction would either hold a pooled
+  // connection across a device command, or be rolled back after the agent had
+  // already been told to restart.
+  if (outcome.reboot) await evaluateRebootForResult(outcome.reboot);
+
+  return { applied: outcome.applied };
+}
+
+async function applyDeviceTransition(
+  executor: PatchFinalizerExecutor,
+  input: FinalizePatchJobDeviceInput,
+): Promise<{ applied: boolean; reboot: PendingRebootEvaluation | null }> {
+  const { patchJobId, deviceId, terminal, completedAt, source } = input;
 
   const existing: ExistingResultRow[] = await executor
     .select({
@@ -212,24 +290,14 @@ export async function finalizePatchJobDevice(input: {
   // touching a counter — a second decrement is how `devices_pending` goes
   // negative and the job never finalises.
   if (existing.length > 0 && active.length === 0) {
-    return { applied: false };
+    return { applied: false, reboot: null };
   }
 
-  // THE DEFERRED DOORS ONLY OWN A DEVICE THAT WAS QUEUED.
-  //
-  // A caller that supplies `context` is the synchronous executor: it holds the
-  // approved set, it is the one that writes the device's rows for the first
-  // time, and zero existing rows is its normal state. Every other caller (agent
-  // result, delivery expiry, cancel, supersession) reaches this function with a
-  // command id and nothing else, and can only rebuild the approved set from the
-  // `queued` rows the executor wrote when it deferred the install.
-  //
-  // With no rows AND no context there is nothing to close — and applying anyway
-  // is actively wrong: an ONLINE device's install still belongs to the running
-  // `pollForPatchCommandResult` task, so counting it here would move
-  // `devices_pending` a second time when that poll records the same result.
-  if (!input.context && active.length === 0) {
-    return { applied: false };
+  // A deferred door with no rows is looking at a device whose install is still
+  // owned by the running `pollForPatchCommandResult` task. See
+  // `PatchFinalizeSource`.
+  if (source.kind === 'deferred' && active.length === 0) {
+    return { applied: false, reboot: null };
   }
 
   // Which counter this device is leaving. A `queued` row was moved out of
@@ -237,30 +305,34 @@ export async function finalizePatchJobDevice(input: {
   // come back out of `devices_queued`.
   const wasQueued = active.some((row) => row.status === 'queued');
 
-  const context = input.context ?? (await loadDeviceContext(executor, patchJobId, active, terminal));
+  const context =
+    source.kind === 'synchronous'
+      ? source.context
+      : await loadDeviceContext(executor, patchJobId, active, terminal);
   if (!context) {
     // No job row: the job was hard-deleted under us. Nothing to count.
-    return { applied: false };
+    return { applied: false, reboot: null };
   }
 
   const writes = buildRowWrites(terminal, context, active);
 
-  await applyRowWrites(executor, patchJobId, deviceId, active, writes.rows, completedAt);
+  const written = await applyRowWrites(executor, patchJobId, deviceId, active, writes.rows, completedAt);
 
-  // Reboot evaluation is a property of what actually INSTALLED, so it only runs
-  // when the agent actually reported (#4228). An expired / cancelled /
-  // superseded device installed nothing.
-  if (terminal.kind === 'result') {
-    await evaluateRebootForResult({
-      patchJobId,
-      deviceId,
-      orgId: context.orgId,
-      rebootPolicy: context.rebootPolicy,
-      approvedPatches: context.approvedPatches,
-      parsed: writes.parsed,
-      overallSuccess: writes.countsAsCompleted,
-      resultUnparsable: writes.resultUnparsable,
-    });
+  // THE COUNTER MOVES ONLY IF THIS CALL ACTUALLY WROTE THE ROWS.
+  //
+  // The read above and the write below are two statements, so two doors can
+  // both observe the same non-terminal rows before either commits — a reaper
+  // sweep on the worker process and a reconnecting agent's result on the API
+  // process, say, which `commandAcceptsAgentResultCondition` deliberately
+  // allows to follow a server-side timeout. The per-row UPDATE is fenced on
+  // `status IN (pending, running, queued)`, so under READ COMMITTED the loser
+  // re-evaluates that predicate after the winner commits and matches zero rows.
+  // Gating the counter on that count is what turns the row-level fence into a
+  // counter-level one; without it BOTH callers decremented `devices_queued`,
+  // and a job could reach 0/0 and report `completed` while another device was
+  // still genuinely waiting to reconnect (OD-9).
+  if (writes.rows.length > 0 && written === 0) {
+    return { applied: false, reboot: null };
   }
 
   await executor
@@ -277,7 +349,25 @@ export async function finalizePatchJobDevice(input: {
 
   await checkAndFinalizeJob(patchJobId, executor);
 
-  return { applied: true };
+  return {
+    applied: true,
+    // Reboot evaluation is a property of what actually INSTALLED, so it only
+    // runs when the agent actually reported (#4228). An expired / cancelled /
+    // superseded device installed nothing.
+    reboot:
+      terminal.kind === 'result'
+        ? {
+            patchJobId,
+            deviceId,
+            orgId: context.orgId,
+            rebootPolicy: context.rebootPolicy,
+            approvedPatches: context.approvedPatches,
+            parsed: writes.parsed,
+            overallSuccess: writes.countsAsCompleted,
+            resultUnparsable: writes.resultUnparsable,
+          }
+        : null,
+  };
 }
 
 /**
@@ -352,13 +442,21 @@ function buildRowWrites(
           ? SUPERSEDED_ERROR_MESSAGE
           : terminal.message;
 
+    // Rows the queue path already wrote win, so a queued device's per-patch rows
+    // are updated in place. Otherwise the approved set the synchronous caller
+    // handed us still gives one row per patch — a poll that exhausted without a
+    // result must record the same per-patch rows it always did, not collapse to
+    // a single summary. The summary row is the last resort, matching
+    // markDeviceSkipped for a device with no approved set at all.
     const targets =
       active.length > 0
         ? active.map((row) => ({ patchId: row.patchId, rebootRequired: row.rebootRequired }))
-        : // Nothing recorded yet (the command was still in flight on the
-          // synchronous path) — leave the same one-row summary markDeviceSkipped
-          // writes, so the device is still accounted for.
-          [{ patchId: PATCH_SUMMARY_PATCH_ID, rebootRequired: false }];
+        : context.approvedPatches.length > 0
+          ? context.approvedPatches.map((p) => ({
+              patchId: p.patchId,
+              rebootRequired: p.requiresReboot,
+            }))
+          : [{ patchId: PATCH_SUMMARY_PATCH_ID, rebootRequired: false }];
 
     return {
       rows: targets.map((t) => ({
@@ -455,8 +553,15 @@ function buildRowWrites(
 
 /**
  * Writes each per-patch outcome, updating the row the queue path already wrote
- * when there is one and inserting otherwise. The UPDATE is fenced on the row
- * still being non-terminal so two racing finalisers cannot both write it.
+ * when there is one and inserting otherwise, and returns HOW MANY rows it
+ * actually wrote.
+ *
+ * The count is the caller's counter fence. The UPDATE is compare-and-swapped on
+ * the row still being non-terminal, so a finaliser that lost the race to
+ * another door matches zero rows here — and the caller must not move a
+ * `patch_jobs` counter on the strength of a write that did not happen. This is
+ * the same "increment by the actual count, not by 1" rule
+ * `reapStalePatchJobResults` already follows.
  */
 async function applyRowWrites(
   executor: PatchFinalizerExecutor,
@@ -465,13 +570,14 @@ async function applyRowWrites(
   active: ExistingResultRow[],
   rows: RowWrite[],
   completedAt: Date,
-): Promise<void> {
+): Promise<number> {
   const byPatchId = new Map(active.map((row) => [row.patchId, row]));
+  let written = 0;
 
   for (const write of rows) {
     const existingRow = byPatchId.get(write.patchId);
     if (existingRow) {
-      await executor
+      const updated = await executor
         .update(patchJobResults)
         .set({
           status: write.status,
@@ -486,7 +592,9 @@ async function applyRowWrites(
             eq(patchJobResults.id, existingRow.id),
             inArray(patchJobResults.status, [...NON_TERMINAL_RESULT_STATUSES]),
           ),
-        );
+        )
+        .returning({ id: patchJobResults.id });
+      written += updated.length;
       continue;
     }
 
@@ -502,7 +610,10 @@ async function applyRowWrites(
       errorMessage: write.errorMessage,
       rebootRequired: write.rebootRequired,
     });
+    written += 1;
   }
+
+  return written;
 }
 
 async function evaluateRebootForResult(params: {
@@ -670,6 +781,7 @@ export async function finalizePatchDeviceForCommand(params: {
     commandId: params.commandId,
     terminal: params.terminal,
     completedAt: params.completedAt,
+    source: { kind: 'deferred' },
     executor,
   });
 }
@@ -708,5 +820,6 @@ export const handleInstallPatchesResult: CommandResultHandler = async ({
       },
     },
     completedAt: new Date(),
+    source: { kind: 'deferred' },
   });
 };

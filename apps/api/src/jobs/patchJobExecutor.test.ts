@@ -26,14 +26,17 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, unknown> = {
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
-  },
-  withSystemDbAccessContext: undefined,
-}));
+  };
+  // Both `recordDeviceQueued` and the shared finalizer wrap their writes in a
+  // transaction; run the callback against the same doubles.
+  db.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(db));
+  return { db, withSystemDbAccessContext: undefined };
+});
 
 vi.mock('../db/schema', () => ({
   patchJobs: {
@@ -302,6 +305,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Queued org does not match patch job org',
     });
@@ -330,6 +334,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Device is not targeted by patch job',
     });
@@ -359,6 +364,7 @@ describe('patch job executor queueing', () => {
     });
 
     expect(result).toEqual({
+      kind: 'skipped',
       skipped: true,
       reason: 'Device not found in patch job org',
     });
@@ -410,7 +416,7 @@ describe('patch job executor queueing', () => {
       'org-1',
       expect.objectContaining({ sources: ['third_party'] }),
     );
-    expect(result).toEqual({ skipped: true, reason: 'No approved patches' });
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'No approved patches' });
   });
 
   it('threads well-formed policyAutoApprove and apps to the evaluator', async () => {
@@ -798,7 +804,7 @@ describe('patch job executor queueing', () => {
       },
     });
 
-    expect(result).toEqual({ skipped: true, reason: 'Invalid patch source filter' });
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Invalid patch source filter' });
     expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('malformed patches.sources'),
@@ -1326,7 +1332,13 @@ async function runDeviceExecution(opts: {
     }),
   }) as any);
   vi.mocked(db.update).mockImplementation(() => ({
-    set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    set: vi.fn(() => ({
+      where: vi.fn(() =>
+        Object.assign(Promise.resolve([{ id: 'w0' }]), {
+          returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+        }),
+      ),
+    })),
   }) as any);
 
   vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce(approvedPatches as any);
@@ -2029,7 +2041,13 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
     vi.mocked(db.update).mockImplementation(() => ({
       set: vi.fn((v: any) => {
         updateSets.push(v);
-        return { where: vi.fn(() => Promise.resolve()) };
+        return {
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve([{ id: 'w0' }]), {
+              returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+            }),
+          ),
+        };
       }),
     }) as any);
   });
@@ -2050,7 +2068,7 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
 
     const result: any = await runPrepared();
 
-    expect(result).toMatchObject({ queued: true, commandId: 'cmd-queued', patchCount: 2 });
+    expect(result).toMatchObject({ kind: 'queued', commandId: 'cmd-queued', patchCount: 2 });
     expect(insertedRows).toHaveLength(2);
     expect(insertedRows.every((r) => r.status === 'queued')).toBe(true);
     expect(insertedRows.map((r) => r.patchId).sort()).toEqual(['patch-1', 'patch-2']);
@@ -2077,7 +2095,7 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
       // No timer is advanced: a task that still polled would never settle here.
       const result: any = await runPrepared();
 
-      expect(result.queued).toBe(true);
+      expect(result.kind).toBe('queued');
       // The only db.select calls are the three setup reads — no device_commands poll.
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
     } finally {
@@ -2136,6 +2154,32 @@ describe('offline devices are queued instead of skipped (#5128 W3)', () => {
     });
   });
 
+  it('records a distinct reason when the stamped next occurrence is already past', async () => {
+    vi.mocked(isOfflineQueueEnabled).mockReturnValue(true);
+    primeDeviceExecution({
+      offlineBehavior: 'queue',
+      // Stale stamp — a policy schedule edited under a running job.
+      scheduleNextOccurrenceAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    } as any);
+
+    await runPrepared();
+
+    // Reject rather than queue a row the reaper expires on its next pass...
+    expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].offlinePolicy).toEqual({
+      kind: 'reject',
+    });
+    // ...but NOT recorded as a plain 'device_offline', which is what a
+    // deliberately configured `skip` writes. Support cannot tell a silent
+    // degradation from a configured one if both rows read the same.
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0].errorMessage).toBe('device_offline_deadline_stale');
+  });
+
   it('leaves the policy to the seam while the offline-queue flag is off', async () => {
     vi.mocked(isOfflineQueueEnabled).mockReturnValue(false);
     primeDeviceExecution({ offlineBehavior: 'queue', scheduleNextOccurrenceAt: null });
@@ -2167,7 +2211,13 @@ describe('completion checker keeps a job open while devices are queued (#5128 W3
     vi.mocked(db.update).mockImplementation(() => ({
       set: vi.fn((v: any) => {
         updateSets.push(v);
-        return { where: vi.fn(() => Promise.resolve()) };
+        return {
+          where: vi.fn(() =>
+            Object.assign(Promise.resolve([{ id: 'w0' }]), {
+              returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+            }),
+          ),
+        };
       }),
     }) as any);
   });
@@ -2215,6 +2265,9 @@ describe('completion checker keeps a job open while devices are queued (#5128 W3
     expect(updateSets[0]).not.toHaveProperty('status');
     expect(updateSets[0]).not.toHaveProperty('completedAt');
     expect(updateSets[0].devicesPending).toBe(0);
+    // The pending devices are still force-FAILED — only the job's terminal flip
+    // is withheld. Dropping this write would silently lose three devices.
+    expect(updateSets[0]).toHaveProperty('devicesFailed');
   });
 
   it('still terminalises a job with no queued devices (unchanged behaviour)', async () => {

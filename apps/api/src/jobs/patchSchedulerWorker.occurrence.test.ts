@@ -182,6 +182,19 @@ describe('getNextOccurrenceAt (#5128 W3)', () => {
     expect(local).toBe('03:00');
   });
 
+  it('resolves an ambiguous fall-back hour to the first (pre-transition) occurrence', () => {
+    // US DST ends 2026-11-01: 01:00-01:59 local happens twice (EDT then EST).
+    // The documented rule is "first occurrence", i.e. the EDT one at 05:00Z —
+    // NOT 06:00Z, which is the same wall clock an hour later in EST.
+    const now = new Date('2026-10-31T12:00:00.000Z');
+    const next = getNextOccurrenceAt(
+      make({ scheduleFrequency: 'daily', scheduleTime: '01:30' }),
+      'America/New_York',
+      now,
+    );
+    expect(next?.toISOString()).toBe('2026-11-01T05:30:00.000Z');
+  });
+
   it('returns null for a frequency the due-check would never fire on', () => {
     const next = getNextOccurrenceAt(
       make({ scheduleFrequency: 'hourly' as unknown as 'daily' }),
@@ -241,8 +254,44 @@ describe('supersedePreviousOccurrenceInstalls (#5128 W3)', () => {
         deviceId: 'device-1',
         commandId: 'cmd-a',
         terminal: { kind: 'superseded', byJobId: 'job-new' },
+        // The scheduler holds only a command; it must NOT claim to be the
+        // synchronous executor, or a device with no rows would be counted.
+        source: { kind: 'deferred' },
       }),
     );
+  });
+
+  it('keeps superseding the remaining devices when one of them fails', async () => {
+    selectQueue = [
+      () => whereChain([{ id: 'job-prev' }]),
+      () =>
+        whereChain([
+          { id: 'cmd-a', deviceId: 'device-1', payload: { patchJobId: 'job-prev' } },
+          { id: 'cmd-b', deviceId: 'device-2', payload: { patchJobId: 'job-prev' } },
+        ]),
+    ];
+    updateReturns = [[{ id: 'cmd-a' }], [{ id: 'cmd-b' }]];
+    vi.mocked(finalizePatchJobDevice)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ applied: true });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const count = await supersedePreviousOccurrenceInstalls({
+      configPolicyId: 'policy-1',
+      orgId: 'org-1',
+      newJobId: 'job-new',
+      deviceIds: ['device-1', 'device-2'],
+      now: NOW,
+    });
+
+    // device-2 is not silently stripped of its supersession because device-1
+    // threw — it would then install a second time from a stale approved set.
+    expect(count).toBe(1);
+    expect(finalizePatchJobDevice).toHaveBeenCalledTimes(2);
+    // The log names the row that was left half-cancelled; the caller's outer
+    // catch only knows the config policy.
+    expect(errorSpy.mock.calls[0]![0]).toContain('cmd-a');
+    expect(errorSpy.mock.calls[0]![0]).toContain('device-1');
   });
 
   it('does not finalise a row that lost the pending CAS to a concurrent claim', async () => {

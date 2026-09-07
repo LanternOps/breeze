@@ -353,36 +353,50 @@ async function supersedePreviousOccurrenceInstalls(params: {
     const priorJobId = typeof payload?.patchJobId === 'string' ? payload.patchJobId : null;
     if (!priorJobId || !previousJobIds.has(priorJobId)) continue;
 
-    const [updated] = await runWithSystemDbAccess(() =>
-      db
-        .update(deviceCommands)
-        .set({
-          status: 'cancelled',
-          completedAt: now,
-          result: {
+    // Per-candidate, so one device's failure does not silently strip the
+    // remaining devices of their supersession — and so the log names the rows
+    // that were actually left half-cancelled, which the caller's outer catch
+    // cannot.
+    try {
+      const [updated] = await runWithSystemDbAccess(() =>
+        db
+          .update(deviceCommands)
+          .set({
             status: 'cancelled',
-            reason: 'superseded_by_next_occurrence',
-            cancelledBy: 'patch_scheduler',
-          },
-          ...terminalPayloadErasureSet(),
-        })
-        // CAS on `pending`: a row claimed between the SELECT and here is already
-        // on its way to the device and must not be cancelled out from under it.
-        .where(and(eq(deviceCommands.id, row.id), eq(deviceCommands.status, 'pending')))
-        .returning({ id: deviceCommands.id }),
-    );
-    if (!updated) continue;
+            completedAt: now,
+            result: {
+              status: 'cancelled',
+              reason: 'superseded_by_next_occurrence',
+              cancelledBy: 'patch_scheduler',
+            },
+            ...terminalPayloadErasureSet(),
+          })
+          // CAS on `pending`: a row claimed between the SELECT and here is
+          // already on its way to the device and must not be cancelled out from
+          // under it.
+          .where(and(eq(deviceCommands.id, row.id), eq(deviceCommands.status, 'pending')))
+          .returning({ id: deviceCommands.id }),
+      );
+      if (!updated) continue;
 
-    await runWithSystemDbAccess(() =>
-      finalizePatchJobDevice({
-        patchJobId: priorJobId,
-        deviceId: row.deviceId,
-        commandId: row.id,
-        terminal: { kind: 'superseded', byJobId: newJobId },
-        completedAt: now,
-      }),
-    );
-    superseded += 1;
+      await runWithSystemDbAccess(() =>
+        finalizePatchJobDevice({
+          patchJobId: priorJobId,
+          deviceId: row.deviceId,
+          commandId: row.id,
+          terminal: { kind: 'superseded', byJobId: newJobId },
+          completedAt: now,
+          source: { kind: 'deferred' },
+        }),
+      );
+      superseded += 1;
+    } catch (err) {
+      const message =
+        `[PatchScheduler] failed to supersede install ${row.id} (device ${row.deviceId}, ` +
+        `prior job ${priorJobId}); its command may be cancelled with the patch result still queued`;
+      console.error(`${message}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(message));
+    }
   }
 
   return superseded;

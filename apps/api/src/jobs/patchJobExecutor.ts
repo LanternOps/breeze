@@ -38,6 +38,7 @@ import {
   checkAndFinalizeJob,
   finalizePatchJobDevice,
   type ApprovedPatchRef,
+  type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
@@ -776,6 +777,7 @@ export function createPatchJobDeviceWorker(): Worker<PatchJobDeviceData> {
 }
 
 type PreparedDeviceExecution = {
+  kind: 'prepared';
   commandId: string;
   approvedPatches: Awaited<ReturnType<typeof resolveApprovedPatchesForDevice>>;
   targets: { deployment?: { rebootPolicy?: string } };
@@ -789,21 +791,45 @@ type PreparedDeviceExecution = {
  * task ENDS here rather than sitting on a multi-day poll.
  */
 type QueuedDeviceExecution = {
-  queued: true;
+  kind: 'queued';
   commandId: string;
   deliverBy: string | null;
   patchCount: number;
 };
+
+type SkippedDeviceExecution = { kind: 'skipped'; skipped: true; reason: string };
+type FailedDeviceExecution = { kind: 'error'; error: string };
+
+/**
+ * Deliberately discriminated on `kind` rather than probed with `in`: a
+ * `queued` execution ALSO carries a `commandId`, so an `'commandId' in prep`
+ * check that ran first would route an offline device — whose install was handed
+ * to the delivery clock on purpose — into the 30-minute poll and then into a
+ * second recording of the same result.
+ */
+type DeviceExecutionOutcome =
+  | PreparedDeviceExecution
+  | QueuedDeviceExecution
+  | SkippedDeviceExecution
+  | FailedDeviceExecution;
 
 async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<unknown> {
   // Phased so the up-to-30-min completion poll never holds a pooled connection
   // in an open transaction (#1105 conn-hold). Setup and record each run in their
   // own SHORT system context; the poll runs OUTSIDE any context.
   const prep = await runWithSystemDbAccess(() => prepareDeviceExecution(data));
-  if ('queued' in prep) return prep; // offline: handed to the delivery clock
-  if (!('commandId' in prep)) return prep; // early skip/error result — return as-is
-  const finalCommand = await pollForPatchCommandResult(prep.commandId);
-  return runWithSystemDbAccess(() => recordDeviceExecution(data, prep, finalCommand));
+  switch (prep.kind) {
+    case 'queued':
+    case 'skipped':
+    case 'error':
+      return prep;
+    case 'prepared': {
+      const finalCommand = await pollForPatchCommandResult(prep.commandId);
+      return runWithSystemDbAccess(() => recordDeviceExecution(data, prep, finalCommand));
+    }
+    default:
+      return prep satisfies never;
+  }
 }
 
 /**
@@ -823,9 +849,9 @@ function resolvePatchOfflinePolicy(
   offlineBehavior: string | undefined,
   nextOccurrenceAt: Date | null,
   now: Date,
-): OfflinePolicy | undefined {
-  if (offlineBehavior === 'skip') return { kind: 'reject' };
-  if (!isOfflineQueueEnabled()) return undefined;
+): { policy: OfflinePolicy | undefined; staleDeadline: boolean } {
+  if (offlineBehavior === 'skip') return { policy: { kind: 'reject' }, staleDeadline: false };
+  if (!isOfflineQueueEnabled()) return { policy: undefined, staleDeadline: false };
 
   const ttlMs = deliveryTtlMs('standard');
   const untilNextOccurrence = nextOccurrenceAt
@@ -837,8 +863,15 @@ function resolvePatchOfflinePolicy(
   // edited under a running job). Queueing for a deadline that has passed would
   // create a row the reaper expires on its very next pass, which is worse than
   // today's honest skip.
-  if (!Number.isFinite(deliverWithinMs) || deliverWithinMs <= 0) return { kind: 'reject' };
-  return { kind: 'queue', deliverWithinMs };
+  //
+  // `staleDeadline` is carried back so the recorded reason can say so. Without
+  // it a `queue`-configured org silently degrades to `skip` and the
+  // `patch_job_results` row is byte-identical to a deliberate skip — the exact
+  // "the fallback hides the real problem" shape support cannot diagnose.
+  if (!Number.isFinite(deliverWithinMs) || deliverWithinMs <= 0) {
+    return { policy: { kind: 'reject' }, staleDeadline: true };
+  }
+  return { policy: { kind: 'queue', deliverWithinMs }, staleDeadline: false };
 }
 
 /** `targets.scheduleNextOccurrenceAt`, stamped by the scheduler, or null. */
@@ -852,12 +885,7 @@ function nextOccurrenceFromTargets(targets: unknown): Date | null {
 
 async function prepareDeviceExecution(
   data: ExecutePatchJobDeviceData,
-): Promise<
-  | PreparedDeviceExecution
-  | QueuedDeviceExecution
-  | { skipped: true; reason: string }
-  | { error: string }
-> {
+): Promise<DeviceExecutionOutcome> {
   const { patchJobId, deviceId, orgId } = data;
 
   // Load job to get ring config
@@ -868,14 +896,14 @@ async function prepareDeviceExecution(
     .limit(1);
 
   if (!patchJob || patchJob.status !== 'running') {
-    return { skipped: true, reason: 'Job not running' };
+    return { kind: 'skipped', skipped: true, reason: 'Job not running' };
   }
 
   if (orgId !== patchJob.orgId) {
     console.warn(
       `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: queue org ${orgId} does not match patch job org ${patchJob.orgId}`
     );
-    return { skipped: true, reason: 'Queued org does not match patch job org' };
+    return { kind: 'skipped', skipped: true, reason: 'Queued org does not match patch job org' };
   }
 
   const targetDeviceIds = Array.isArray((patchJob.targets as { deviceIds?: unknown })?.deviceIds)
@@ -885,7 +913,7 @@ async function prepareDeviceExecution(
     console.warn(
       `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: device is not a target`
     );
-    return { skipped: true, reason: 'Device is not targeted by patch job' };
+    return { kind: 'skipped', skipped: true, reason: 'Device is not targeted by patch job' };
   }
 
   const [device] = await db
@@ -898,7 +926,7 @@ async function prepareDeviceExecution(
     console.warn(
       `[PatchJobExecutor] Rejected device job ${patchJobId}/${deviceId}: device is not in patch job org`
     );
-    return { skipped: true, reason: 'Device not found in patch job org' };
+    return { kind: 'skipped', skipped: true, reason: 'Device not found in patch job org' };
   }
 
   // Extract ring config from job's patches JSONB
@@ -936,7 +964,7 @@ async function prepareDeviceExecution(
 
   if (malformedSources) {
     await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_sources');
-    return { skipped: true, reason: 'Invalid patch source filter' };
+    return { kind: 'skipped', skipped: true, reason: 'Invalid patch source filter' };
   }
 
   // Malformed auto-approve config degrades to disabled because silently
@@ -1044,7 +1072,7 @@ async function prepareDeviceExecution(
 
   if (malformedCategoryFilter) {
     await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_categories');
-    return { skipped: true, reason: 'Invalid patch category filter' };
+    return { kind: 'skipped', skipped: true, reason: 'Invalid patch category filter' };
   }
 
   // Category rules were the one snapshot field cast blind while every sibling
@@ -1117,13 +1145,13 @@ async function prepareDeviceExecution(
   } catch (err) {
     console.error(`[PatchJobExecutor] Failed to resolve patches for device ${deviceId}:`, err instanceof Error ? err.message : err);
     await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
-    return { error: 'Failed to resolve patches' };
+    return { kind: 'error', error: 'Failed to resolve patches' };
   }
 
   // 2. No approved patches → skip
   if (approvedPatches.length === 0) {
     await markDeviceSkipped(patchJobId, deviceId, 'no_approved_patches');
-    return { skipped: true, reason: 'No approved patches' };
+    return { kind: 'skipped', skipped: true, reason: 'No approved patches' };
   }
 
   // 3. Send install_patches command
@@ -1146,44 +1174,58 @@ async function prepareDeviceExecution(
   // `patchJobId` is now in the payload: it is what lets a result arriving days
   // later (or the reaper, or a cancel) find the job this command belongs to.
   const now = new Date();
+  const offline = resolvePatchOfflinePolicy(
+    targets?.deployment?.offlineBehavior,
+    nextOccurrenceFromTargets(patchJob.targets),
+    now,
+  );
+  if (offline.staleDeadline) {
+    console.warn(
+      `[PatchJobExecutor] job ${patchJobId} device ${deviceId}: targets.scheduleNextOccurrenceAt is in the past; ` +
+        'falling back to skipping an offline device instead of queueing an install that would expire immediately'
+    );
+  }
   const res = await dispatchDeviceCommand({
     deviceId,
     type: 'install_patches',
     payload: { patchJobId, patchIds, patches: patchRecords },
     previouslyRejected: true,
     expectedOrgId: patchJob.orgId,
-    offlinePolicy: resolvePatchOfflinePolicy(
-      targets?.deployment?.offlineBehavior,
-      nextOccurrenceFromTargets(patchJob.targets),
-      now,
-    ),
+    offlinePolicy: offline.policy,
   });
 
   if (!res.ok) {
     // Unchanged shape: an offline device with `offlineBehavior: 'skip'` (or the
     // flag off) is still recorded skipped, now with the seam's own code as the
-    // reason instead of a blanket 'device_offline'.
-    await markDeviceSkipped(patchJobId, deviceId, res.code);
-    return { error: res.error };
+    // reason instead of a blanket 'device_offline'. A stale-deadline fallback
+    // gets its OWN reason so it is not mistaken for a configured skip.
+    await markDeviceSkipped(
+      patchJobId,
+      deviceId,
+      offline.staleDeadline && res.code === 'device_offline'
+        ? 'device_offline_deadline_stale'
+        : res.code,
+    );
+    return { kind: 'error', error: res.error };
   }
 
   const commandId = res.command?.id;
   if (!commandId) {
     await markDeviceSkipped(patchJobId, deviceId, 'command_creation_failed');
-    return { error: 'Failed to create command' };
+    return { kind: 'error', error: 'Failed to create command' };
   }
 
   if (res.delivery === 'queued_offline') {
     await recordDeviceQueued(patchJobId, deviceId, approvedPatches);
     return {
-      queued: true,
+      kind: 'queued',
       commandId,
       deliverBy: res.deliverBy ? res.deliverBy.toISOString() : null,
       patchCount: approvedPatches.length,
     };
   }
 
-  return { commandId, approvedPatches, targets };
+  return { kind: 'prepared', commandId, approvedPatches, targets };
 }
 
 /**
@@ -1204,25 +1246,34 @@ async function recordDeviceQueued(
   deviceId: string,
   approvedPatches: Awaited<ReturnType<typeof resolveApprovedPatchesForDevice>>,
 ): Promise<void> {
-  for (const patch of approvedPatches) {
-    await db.insert(patchJobResults).values({
-      jobId: patchJobId,
-      deviceId,
-      patchId: patch.patchId,
-      status: 'queued',
-      startedAt: null,
-      completedAt: null,
-      rebootRequired: patch.requiresReboot,
-    });
-  }
+  // ONE TRANSACTION, deliberately. The `install_patches` row is ALREADY
+  // committed and deliverable by the time this runs, so a partial write here is
+  // unrecoverable: with the counter moved but no rows (or some rows and no
+  // counter), the device's later terminal — the agent's result, the reaper's
+  // expiry — finds a shape the finalizer must treat as "not mine", the outcome
+  // is dropped, and the job never reaches devicesPending = devicesQueued = 0.
+  // All-or-nothing means the worst case is a retryable task failure instead.
+  await db.transaction(async (tx) => {
+    for (const patch of approvedPatches) {
+      await tx.insert(patchJobResults).values({
+        jobId: patchJobId,
+        deviceId,
+        patchId: patch.patchId,
+        status: 'queued',
+        startedAt: null,
+        completedAt: null,
+        rebootRequired: patch.requiresReboot,
+      });
+    }
 
-  await db
-    .update(patchJobs)
-    .set({
-      devicesPending: sql`${patchJobs.devicesPending} - 1`,
-      devicesQueued: sql`${patchJobs.devicesQueued} + 1`,
-    })
-    .where(eq(patchJobs.id, patchJobId));
+    await tx
+      .update(patchJobs)
+      .set({
+        devicesPending: sql`${patchJobs.devicesPending} - 1`,
+        devicesQueued: sql`${patchJobs.devicesQueued} + 1`,
+      })
+      .where(eq(patchJobs.id, patchJobId));
+  });
 }
 
 async function pollForPatchCommandResult(commandId: string) {
@@ -1280,33 +1331,43 @@ async function recordDeviceExecution(
     exitCode?: number;
   } | null;
 
+  // The poll exhausted without the command reaching a terminal state. That is
+  // the same fact the reaper's execution clock reports, so it takes the same
+  // terminal — not a `result` carrying nothing, which would run the agent-result
+  // parsing path and log "no patch installed successfully" for a run whose
+  // result never arrived at all.
+  const terminal: PatchDeviceTerminal = finalCommand
+    ? {
+        kind: 'result',
+        commandResult: {
+          status: finalCommand.status === 'completed' ? 'completed' : 'failed',
+          exitCode: commandResult?.exitCode ?? null,
+          stdout: commandResult?.stdout ?? null,
+          stderr: commandResult?.stderr ?? null,
+          error: commandResult?.error ?? null,
+        },
+      }
+    : { kind: 'timeout', message: 'Command timed out' };
+
   const { applied } = await finalizePatchJobDevice({
     patchJobId,
     deviceId,
     commandId: prep.commandId,
     completedAt: new Date(),
-    terminal: {
-      kind: 'result',
-      commandResult: finalCommand
-        ? {
-            status: finalCommand.status,
-            exitCode: commandResult?.exitCode ?? null,
-            stdout: commandResult?.stdout ?? null,
-            stderr: commandResult?.stderr ?? null,
-            error: commandResult?.error ?? null,
-          }
-        : null,
-    },
-    context: {
-      orgId,
-      rebootPolicy: targets?.deployment?.rebootPolicy ?? 'if_required',
-      approvedPatches: approvedPatches.map(
-        (p): ApprovedPatchRef => ({
-          patchId: p.patchId,
-          externalId: p.externalId,
-          requiresReboot: p.requiresReboot,
-        }),
-      ),
+    terminal,
+    source: {
+      kind: 'synchronous',
+      context: {
+        orgId,
+        rebootPolicy: targets?.deployment?.rebootPolicy ?? 'if_required',
+        approvedPatches: approvedPatches.map(
+          (p): ApprovedPatchRef => ({
+            patchId: p.patchId,
+            externalId: p.externalId,
+            requiresReboot: p.requiresReboot,
+          }),
+        ),
+      },
     },
   });
 

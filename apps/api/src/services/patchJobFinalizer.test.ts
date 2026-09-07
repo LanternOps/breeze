@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const db: Record<string, unknown> = {
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
-  },
-}));
+  };
+  // The finalizer wraps its own writes in a transaction when the caller did not
+  // supply one; run the callback against the same doubles.
+  db.transaction = vi.fn((fn: (tx: unknown) => unknown) => fn(db));
+  return { db };
+});
 
 vi.mock('../db/schema', () => ({
   patchJobs: {
@@ -91,6 +95,8 @@ type Recorded = { table: unknown; values: Record<string, unknown> };
 
 let inserts: Recorded[];
 let updates: Recorded[];
+/** Rows the `patch_job_results` CAS reports as affected; 0 = this call lost. */
+let casAffectedRows = 1;
 
 function primeWrites() {
   inserts = [];
@@ -109,7 +115,18 @@ function primeWrites() {
       ({
         set: vi.fn((values: Record<string, unknown>) => {
           updates.push({ table, values });
-          return { where: vi.fn(() => Promise.resolve()) };
+          const where = vi.fn(() => {
+            // `patch_job_results` writes are compare-and-swapped and the caller
+            // gates its counter move on the affected-row count, so the double
+            // must model both: one row by default, or none when the test is
+            // simulating a lost race.
+            const affected = table === patchJobResults ? casAffectedRows : 1;
+            const rows = Array.from({ length: affected }, (_, i) => ({ id: `w${i}` }));
+            return Object.assign(Promise.resolve(rows), {
+              returning: vi.fn(() => Promise.resolve(rows)),
+            });
+          });
+          return { where };
         }),
       }) as any,
   );
@@ -132,7 +149,7 @@ function successResult() {
   return {
     kind: 'result' as const,
     commandResult: {
-      status: 'completed',
+      status: 'completed' as const,
       exitCode: 0,
       stdout: JSON.stringify({
         success: true,
@@ -157,12 +174,54 @@ function queuedRows() {
 }
 
 const jobCounterUpdate = () => updates.find((u) => u.table === patchJobs)?.values;
+
+/**
+ * Flattens a drizzle `sql` fragment to its literal chunks.
+ *
+ * Asserting only that a counter KEY was present is vacuous: flipping `- 1` to
+ * `+ 1`, or `+ 1` to `+ 2`, keeps the key and passes. The mocked schema columns
+ * are plain strings, so neither operand is wrapped in a Param and the operator
+ * text survives in `queryChunks` where a test can read it.
+ */
+function sqlText(fragment: unknown): string {
+  const out: string[] = [];
+  const walk = (node: unknown, seen = new Set<unknown>()): void => {
+    if (typeof node === 'string') {
+      out.push(node);
+      return;
+    }
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, seen);
+      return;
+    }
+    const chunks = (node as { queryChunks?: unknown[]; value?: unknown[] }).queryChunks;
+    if (Array.isArray(chunks)) for (const item of chunks) walk(item, seen);
+    const value = (node as { value?: unknown[] }).value;
+    if (Array.isArray(value)) for (const item of value) walk(item, seen);
+  };
+  walk(fragment);
+  return out.join('').replace(/\s+/g, ' ').trim();
+}
+
+/** Asserts a counter moved by exactly `delta`, operator and literal included. */
+function expectCounterDelta(
+  values: Record<string, unknown> | undefined,
+  key: string,
+  delta: '+ 1' | '- 1',
+): void {
+  expect(values, `expected a counter update carrying ${key}`).toBeDefined();
+  expect(Object.keys(values!)).toContain(key);
+  expect(sqlText(values![key])).toContain(`patchJobs.${key} ${delta}`);
+}
 const resultRowWrites = () => updates.filter((u) => u.table === patchJobResults);
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  casAffectedRows = 1;
   primeWrites();
   vi.mocked(evaluateRebootPolicy).mockResolvedValue({
     shouldReboot: false,
@@ -223,14 +282,14 @@ describe('finalizePatchJobDevice idempotency', () => {
       commandId: COMMAND,
       terminal: successResult(),
       completedAt: new Date('2026-10-14T00:00:00.000Z'),
-      context: CONTEXT,
+      source: { kind: 'synchronous', context: CONTEXT },
     });
 
     expect(result).toEqual({ applied: true });
     expect(inserts).toHaveLength(2);
     expect(inserts.every((i) => i.values.status === 'completed')).toBe(true);
-    expect(jobCounterUpdate()).toHaveProperty('devicesCompleted');
-    expect(jobCounterUpdate()).toHaveProperty('devicesPending');
+    expectCounterDelta(jobCounterUpdate(), 'devicesCompleted', '+ 1');
+    expectCounterDelta(jobCounterUpdate(), 'devicesPending', '- 1');
   });
 
   it('is a no-op the second time — every row is already terminal', async () => {
@@ -248,12 +307,37 @@ describe('finalizePatchJobDevice idempotency', () => {
       commandId: COMMAND,
       terminal: successResult(),
       completedAt: new Date(),
-      context: CONTEXT,
+      source: { kind: 'synchronous', context: CONTEXT },
     });
 
     expect(result).toEqual({ applied: false });
     expect(inserts).toHaveLength(0);
     expect(updates).toHaveLength(0);
+  });
+
+  it('moves no counter when the row CAS lost the race to another door', async () => {
+    // Two doors can both READ the same non-terminal rows before either commits
+    // (the reaper on the worker process, a reconnecting agent's result on the
+    // API process). The row UPDATE is fenced on `status IN (pending, running,
+    // queued)`, so the loser matches zero rows — and must not then decrement
+    // devices_queued anyway, or a job can reach 0/0 and report `completed`
+    // while another device is still genuinely waiting (OD-9).
+    casAffectedRows = 0;
+    vi.mocked(db.select).mockImplementationOnce(() => whereChain(queuedRows()) as any);
+
+    const result = await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: successResult(),
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(result).toEqual({ applied: false });
+    expect(jobCounterUpdate()).toBeUndefined();
+    // The reboot must not fire off the back of a write that did not happen.
+    expect(evaluateRebootPolicy).not.toHaveBeenCalled();
   });
 
   it('takes a queued device out of devicesQueued, not devicesPending', async () => {
@@ -267,11 +351,11 @@ describe('finalizePatchJobDevice idempotency', () => {
       commandId: COMMAND,
       terminal: successResult(),
       completedAt: new Date(),
-      context: CONTEXT,
+      source: { kind: 'synchronous', context: CONTEXT },
     });
 
     const counters = jobCounterUpdate()!;
-    expect(counters).toHaveProperty('devicesQueued');
+    expectCounterDelta(counters, 'devicesQueued', '- 1');
     expect(counters).not.toHaveProperty('devicesPending');
     // The queued rows are UPDATED in place, never duplicated by a second insert.
     expect(inserts).toHaveLength(0);
@@ -293,6 +377,7 @@ describe('finalizePatchJobDevice deferred terminals', () => {
       commandId: COMMAND,
       terminal: { kind: 'expired', message: 'Device did not reconnect before 2026-10-20' },
       completedAt: new Date(),
+      source: { kind: 'deferred' },
     });
 
     expect(result).toEqual({ applied: true });
@@ -302,7 +387,8 @@ describe('finalizePatchJobDevice deferred terminals', () => {
     expect(rowWrites[0]!.values.errorMessage).toBe(
       'Device did not reconnect before 2026-10-20',
     );
-    expect(jobCounterUpdate()).toHaveProperty('devicesFailed');
+    expectCounterDelta(jobCounterUpdate(), 'devicesFailed', '+ 1');
+    expectCounterDelta(jobCounterUpdate(), 'devicesQueued', '- 1');
     // Never evaluated: an expired device installed nothing.
     expect(evaluateRebootPolicy).not.toHaveBeenCalled();
   });
@@ -319,12 +405,14 @@ describe('finalizePatchJobDevice deferred terminals', () => {
       commandId: COMMAND,
       terminal: { kind: 'cancelled', reason: 'cancelled' },
       completedAt: new Date(),
+      source: { kind: 'deferred' },
     });
 
     const rowWrites = resultRowWrites();
     expect(rowWrites.every((u) => u.values.status === 'skipped')).toBe(true);
     expect(rowWrites[0]!.values.errorMessage).toBe('cancelled');
-    expect(jobCounterUpdate()).toHaveProperty('devicesCompleted');
+    expectCounterDelta(jobCounterUpdate(), 'devicesCompleted', '+ 1');
+    expectCounterDelta(jobCounterUpdate(), 'devicesQueued', '- 1');
   });
 
   it('marks a superseded device skipped with the supersession reason', async () => {
@@ -339,12 +427,16 @@ describe('finalizePatchJobDevice deferred terminals', () => {
       commandId: COMMAND,
       terminal: { kind: 'superseded', byJobId: 'job-2' },
       completedAt: new Date(),
+      source: { kind: 'deferred' },
     });
 
     const rowWrites = resultRowWrites();
     expect(rowWrites.every((u) => u.values.status === 'skipped')).toBe(true);
     expect(rowWrites[0]!.values.errorMessage).toBe(SUPERSEDED_ERROR_MESSAGE);
     expect(SUPERSEDED_ERROR_MESSAGE).toBe('superseded_by_next_occurrence');
+    // Skipped counts toward completed, exactly like markDeviceSkipped.
+    expectCounterDelta(jobCounterUpdate(), 'devicesCompleted', '+ 1');
+    expectCounterDelta(jobCounterUpdate(), 'devicesQueued', '- 1');
   });
 
   it('leaves a device with no rows alone — the synchronous poll still owns it', async () => {
@@ -360,6 +452,7 @@ describe('finalizePatchJobDevice deferred terminals', () => {
       commandId: COMMAND,
       terminal: { kind: 'cancelled', reason: 'cancelled' },
       completedAt: new Date(),
+      source: { kind: 'deferred' },
     });
 
     expect(result).toEqual({ applied: false });
@@ -405,6 +498,7 @@ describe('finalizePatchJobDevice deferred terminals', () => {
         },
       },
       completedAt: new Date(),
+      source: { kind: 'deferred' },
     });
 
     const byPatch = Object.fromEntries(
@@ -416,7 +510,37 @@ describe('finalizePatchJobDevice deferred terminals', () => {
     expect(byPatch['patch-2']!.errorMessage).toBe('boom');
     // #4228 — the reboot policy is still evaluated on a partially failed run.
     expect(evaluateRebootPolicy).toHaveBeenCalledWith(DEVICE, 'always', true);
-    expect(jobCounterUpdate()).toHaveProperty('devicesFailed');
+    expectCounterDelta(jobCounterUpdate(), 'devicesFailed', '+ 1');
+  });
+});
+
+describe('finalizePatchJobDevice — the poll exhausted with no result', () => {
+  it("records 'Command timed out' and counts the device failed, without the result path", async () => {
+    // The synchronous poll giving up is the SAME fact the reaper's execution
+    // clock reports, so it takes the same `timeout` terminal — not a `result`
+    // carrying nothing, which would run the agent-result parsing path and log
+    // "no patch installed successfully" for a run that never reported at all.
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    const result = await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: { kind: 'timeout', message: 'Command timed out' },
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(result).toEqual({ applied: true });
+    expect(inserts).toHaveLength(2);
+    expect(inserts.every((i) => i.values.status === 'failed')).toBe(true);
+    expect(inserts.every((i) => i.values.errorMessage === 'Command timed out')).toBe(true);
+    expectCounterDelta(jobCounterUpdate(), 'devicesFailed', '+ 1');
+    expectCounterDelta(jobCounterUpdate(), 'devicesPending', '- 1');
+    // A device that never reported installed nothing.
+    expect(evaluateRebootPolicy).not.toHaveBeenCalled();
   });
 });
 
