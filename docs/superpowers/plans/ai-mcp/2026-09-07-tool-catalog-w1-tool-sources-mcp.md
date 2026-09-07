@@ -37,7 +37,7 @@ wave: W01 (#5216) — Tool sources (MCP): tables, discovery, catalog resolver, c
 - Modify `src/types/index.ts` / `src/validators/index.ts` barrels.
 
 **apps/api — data**
-- Create `migrations/2026-09-28-a-tool-sources.sql` — tables, XOR checks, owner-guard trigger, RLS, grants, permissions rows + role grants.
+- Create `migrations/2026-10-14-100000-tool-sources.sql` — tables, XOR checks, owner-guard trigger, RLS, grants, permissions rows + role grants.
 - Create `src/db/schema/toolSources.ts`; modify `src/db/schema/index.ts`.
 - Modify `src/services/encryptedColumnRegistry.ts`, `src/services/tenantCascade.ts`, `src/services/tenantExportPolicyRegistry.ts`, `src/services/orgMergeRegistry.ts`, `src/services/orgMergeCustomExecutors.ts`, `src/db/seed.ts`, `src/__tests__/integration/rls-coverage.integration.test.ts`.
 
@@ -58,7 +58,7 @@ wave: W01 (#5216) — Tool sources (MCP): tables, discovery, catalog resolver, c
 - `src/services/aiAgentSdk.ts` (`createSessionPreToolUse` tenant branch; `ActiveSession.tenantTools`).
 - `src/routes/mcpServer.ts` (`handleToolsList`, `handleToolsCall` tenant branch).
 - `src/routes/toolSources.ts` (+ `.test.ts`), `src/index.ts` mount, `src/middleware/selfManagedDbContextRoutes.ts` (test-call route).
-- PR B: `migrations/2026-09-28-b-action-intents-external-tool.sql`, `src/db/schema/actionIntents.ts`, `src/services/actionIntents/intentService.ts`, `src/services/actionIntents/revalidateRelease.ts`, `src/services/aiAgentSdk.ts` (Tier 3 tenant branch), export policy.
+- PR B: `migrations/2026-10-14-100100-action-intents-external-tool.sql`, `src/db/schema/actionIntents.ts`, `src/services/actionIntents/intentService.ts`, `src/services/actionIntents/revalidateRelease.ts`, `src/services/aiAgentSdk.ts` (Tier 3 tenant branch), export policy.
 
 **apps/web**
 - `src/pages/settings/tool-sources.astro`, `src/pages/settings/tool-sources/[id].astro`.
