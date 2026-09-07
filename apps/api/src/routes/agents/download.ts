@@ -4,8 +4,8 @@ import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
-import { getPromotedComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 
 export const downloadRoutes = new Hono();
 
@@ -106,20 +106,56 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // is different and throws: serving the env version then would reintroduce
     // the very mismatch this fixes and report a server-side DB fault to the
     // end user as a checksum failure.
+    // #5159: an explicit `?version=` pins the redirect to that exact release
+    // instead of the promoted one. The heartbeat can legitimately target a
+    // pinned/pilot version that is NOT promoted (resolvePinnedUpgradeTarget,
+    // #2124); GET /agent-versions/:version/download hands the agent that
+    // version's checksum and now points here WITH the version, so the bytes
+    // and the checksum come from one release again. Absent the param the
+    // route behaves exactly as before (promoted row, #3499).
+    const requestedVersion = c.req.query('version')?.trim() || undefined;
+
     if (getBinarySource() === 'github') {
       let redirectUrl: string;
       try {
-        const promotedVersion = await getPromotedComponentVersion(
-          config.component,
-          os,
-          arch,
-        );
+        let resolvedVersion: string | null;
+        if (requestedVersion) {
+          resolvedVersion = await getRegisteredComponentVersion(
+            config.component,
+            os,
+            arch,
+            requestedVersion,
+          );
+          if (!resolvedVersion) {
+            // Fail closed. Degrading to the promoted release here would hand
+            // back bytes for a DIFFERENT version than the caller asked for —
+            // exactly the substitution #5159 is about — and these routes are
+            // public, so an unregistered tag must never reach the URL builder.
+            console.warn(
+              `[${config.logTag}] refusing to serve ${filename}: no registered agent_versions row for requested version`,
+              { requestedVersion, os, arch, component: config.component },
+            );
+            return c.json(
+              {
+                error: 'Version not found',
+                message: `${config.entityLabel} for the requested version is not available.`,
+              },
+              404,
+            );
+          }
+        } else {
+          resolvedVersion = await getPromotedComponentVersion(
+            config.component,
+            os,
+            arch,
+          );
+        }
         // Inside the try on purpose: the URL builder ALSO throws — on a
         // malformed release tag, which a promoted row can carry because
         // agent_versions.version has no format constraint. That is the same
         // "we cannot determine a release to serve" condition, so it belongs on
         // the same 503 rather than falling through to a bare 500.
-        redirectUrl = config.githubUrlFor(os, arch, promotedVersion ?? undefined);
+        redirectUrl = config.githubUrlFor(os, arch, resolvedVersion ?? undefined);
       } catch (err) {
         console.error(
           `[${config.logTag}] refusing to serve ${filename}: could not resolve a release to redirect to`,
@@ -136,6 +172,32 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
         );
       }
       return c.redirect(redirectUrl, 302);
+    }
+
+    // Local mode serves ONE unversioned file per (component, os, arch) — the
+    // build baked into the binaries volume, whose version is the env-resolved
+    // one. It cannot honour a pin, so refuse rather than stream bytes for a
+    // version the caller did not ask for (the #5159 failure mode again, just
+    // one layer down). Our own callers only append `?version=` in github mode,
+    // so this is a guard against a hand-crafted or future request, not a path
+    // the agent takes. When the env version is unresolvable ('latest') we
+    // genuinely cannot tell, so serve as before and let the agent's checksum
+    // check be the backstop.
+    if (requestedVersion) {
+      const localVersion = getGithubReleaseVersion();
+      if (localVersion !== 'latest' && localVersion !== requestedVersion) {
+        console.warn(
+          `[${config.logTag}] refusing to serve ${filename}: local mode has only the ${localVersion} build`,
+          { requestedVersion, localVersion },
+        );
+        return c.json(
+          {
+            error: 'Version not available',
+            message: `${config.entityLabel} for the requested version is not available from this server.`,
+          },
+          409,
+        );
+      }
     }
 
     // Local mode: try S3 presigned redirect first (bandwidth offload)

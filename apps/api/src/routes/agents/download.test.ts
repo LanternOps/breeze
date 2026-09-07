@@ -11,6 +11,7 @@ vi.mock('../../services/s3Storage', () => ({
 
 vi.mock('../../services/binarySource', () => ({
   getBinarySource: vi.fn(() => 'local'),
+  getGithubReleaseVersion: vi.fn(() => 'latest'),
   getGithubAgentUrl: vi.fn(),
   getGithubAgentPkgUrl: vi.fn(),
   getGithubHelperUrl: vi.fn(),
@@ -28,6 +29,10 @@ vi.mock('../../services/promotedAgentVersion', () => ({
   // Default: no promoted row, so every pre-existing test keeps exercising the
   // historical env-resolved redirect path unchanged.
   getPromotedComponentVersion: vi.fn(async () => null),
+  // #5159: default "the requested version is not registered here", so any
+  // pre-existing test that stumbles onto the ?version= branch fails closed
+  // rather than silently reusing the promoted row.
+  getRegisteredComponentVersion: vi.fn(async () => null),
 }));
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
@@ -37,9 +42,9 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getPromotedComponentVersion } from '../../services/promotedAgentVersion';
+import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
 describe('public agent binary downloads', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
@@ -408,6 +413,138 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     const badArch = await downloadRoutes.request('/download/linux/sparc');
     expect(badArch.status).toBe(400);
     expect(getPromotedComponentVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe('component downloads honour an explicit ?version= pin (issue #5159)', () => {
+  const ENV_VERSION = '0.108.0';
+  const PROMOTED_VERSION = '0.108.0'; // the globally promoted agent_versions row
+  const PINNED_VERSION = '0.110.0'; // an org agentVersionPins pilot, isLatest=false
+
+  const urlFor =
+    (component: string) =>
+    (os: string, arch: string, version?: string) =>
+      `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-${component}-${os}-${arch}`;
+
+  beforeEach(() => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(getGithubReleaseVersion).mockReturnValue(ENV_VERSION);
+    vi.mocked(getGithubAgentUrl).mockImplementation(urlFor('agent'));
+    vi.mocked(getGithubBackupUrl).mockImplementation(urlFor('backup'));
+    vi.mocked(getGithubWatchdogUrl).mockImplementation(urlFor('watchdog'));
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(PROMOTED_VERSION);
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(PINNED_VERSION);
+  });
+
+  afterEach(() => {
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(getGithubReleaseVersion).mockReset();
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    vi.mocked(getPromotedComponentVersion).mockReset();
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(null);
+    vi.mocked(getRegisteredComponentVersion).mockReset();
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(null);
+  });
+
+  it('redirects to the PINNED release, not the promoted one', async () => {
+    // The reporter's exact state: heartbeat targets the pinned 0.110.0 (allowed
+    // without isLatest per #2124) while agent_versions still promotes 0.108.0.
+    const res = await downloadRoutes.request(
+      `/download/windows/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(302);
+    expect(getRegisteredComponentVersion).toHaveBeenCalledWith(
+      'agent',
+      'windows',
+      'amd64',
+      PINNED_VERSION,
+    );
+    expect(getPromotedComponentVersion).not.toHaveBeenCalled();
+    expect(res.headers.get('location')).toBe(
+      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-agent-windows-amd64`,
+    );
+    // The bug: 0.110.0 checksum, 0.108.0 bytes, forever "Updating".
+    expect(res.headers.get('location')).not.toContain(PROMOTED_VERSION);
+  });
+
+  it('pins the watchdog and backup routes the same way', async () => {
+    const watchdog = await downloadRoutes.request(
+      `/download/watchdog/linux/amd64?version=${PINNED_VERSION}`,
+    );
+    expect(watchdog.headers.get('location')).toBe(
+      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-watchdog-linux-amd64`,
+    );
+
+    const backup = await downloadRoutes.request(
+      `/download/backup/linux/amd64?version=${PINNED_VERSION}`,
+    );
+    expect(backup.headers.get('location')).toBe(
+      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-backup-linux-amd64`,
+    );
+  });
+
+  it('404s an unregistered version instead of substituting the promoted one', async () => {
+    // These routes are public and unauthenticated: an arbitrary caller-supplied
+    // tag must never reach the release-URL builder, and silently serving the
+    // promoted build instead is the very substitution this fix removes.
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(null);
+    vi.mocked(getGithubAgentUrl).mockClear();
+
+    const res = await downloadRoutes.request('/download/linux/amd64?version=9.9.9');
+
+    expect(res.status).toBe(404);
+    expect(getGithubAgentUrl).not.toHaveBeenCalled();
+    const body = await res.text();
+    expect(body).not.toContain('9.9.9');
+  });
+
+  it('503s when the pinned-version lookup faults', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getRegisteredComponentVersion).mockRejectedValue(
+      new Error('connection terminated'),
+    );
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+  });
+
+  it('falls back to the promoted row when no ?version= is given', async () => {
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(302);
+    expect(getRegisteredComponentVersion).not.toHaveBeenCalled();
+    expect(getPromotedComponentVersion).toHaveBeenCalledWith('agent', 'linux', 'amd64');
+  });
+
+  it('409s in local mode when the requested version is not the build on disk', async () => {
+    // Local mode has exactly one build per (component, os, arch); serving it
+    // for a different requested version is the same silent substitution.
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(409);
+  });
+
+  it('serves normally in local mode when the requested version matches the build', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    // No binary staged in this test env, so a 404 (not a 409) proves the
+    // version guard let the request through to the normal disk path.
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${ENV_VERSION}`,
+    );
+
+    expect(res.status).toBe(404);
   });
 });
 

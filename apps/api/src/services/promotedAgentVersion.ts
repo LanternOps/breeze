@@ -200,3 +200,89 @@ export async function getPromotedComponentVersion(
 
   return row.version;
 }
+
+/**
+ * Resolve an EXPLICITLY REQUESTED version for a component/os/arch, for the
+ * `?version=` form of the public component-download routes.
+ *
+ * Issue #5159: `resolvePinnedUpgradeTarget()` may legitimately offer an agent a
+ * version that is NOT the promoted one — an org `agentVersionPins.agent` pilot
+ * (#2124). `GET /agent-versions/:version/download` then hands that agent the
+ * exact pinned row's checksum/size, but the URL it returns pointed at the
+ * versionless download route, which serves the PROMOTED release. Under
+ * `AGENT_AUTO_PROMOTE=false` those are different builds, so the agent
+ * downloaded bytes that could never match the checksum it held and sat in
+ * "Updating" forever. This resolver is how the download route learns which
+ * release the caller's checksum actually came from.
+ *
+ * Returns the version as stored in `agent_versions` (never the caller's raw
+ * string) so the release tag interpolated into a URL always originates from a
+ * row this server registered — the routes are public and unauthenticated, so
+ * an arbitrary caller-supplied tag must never reach the URL builder.
+ *
+ * Returns `null` when no such row exists — the caller should 404 rather than
+ * silently degrade to the promoted release, which is the very substitution
+ * this fix exists to eliminate.
+ *
+ * @throws {PromotedVersionUnavailableError} if the lookup itself fails.
+ */
+export async function getRegisteredComponentVersion(
+  component: PromotedComponent,
+  routeOs: string,
+  arch: string,
+  requestedVersion: string,
+): Promise<string | null> {
+  const platform = ROUTE_OS_TO_DB_PLATFORM[routeOs];
+  if (!platform) {
+    throw new PromotedVersionUnavailableError(
+      component,
+      routeOs,
+      arch,
+      new Error(`Unmapped route OS "${routeOs}"`),
+    );
+  }
+
+  const edition = getBinaryEdition();
+
+  let row: { version: string } | undefined;
+  try {
+    [row] = await db
+      .select({ version: agentVersions.version })
+      .from(agentVersions)
+      .where(
+        and(
+          eq(agentVersions.platform, platform),
+          eq(agentVersions.architecture, arch),
+          eq(agentVersions.component, component),
+          eq(agentVersions.version, requestedVersion),
+          // Same edition scoping as the promoted lookup and
+          // /agent-versions/:version/download, so a caller can never pull a
+          // different edition's build of the same version number (#4072).
+          eq(agentVersions.edition, edition),
+        ),
+      )
+      .limit(1);
+  } catch (err) {
+    console.error(
+      `[promotedAgentVersion] requested-version lookup failed for ${component} ` +
+        `${platform}/${arch} v${requestedVersion} (edition ${edition})`,
+      err,
+    );
+    const unavailable = new PromotedVersionUnavailableError(
+      component,
+      platform,
+      arch,
+      err,
+    );
+    captureException(unavailable);
+    throw unavailable;
+  }
+
+  // Same sentinel handling as the promoted lookup: binarySync stores the
+  // literal "unknown" for locally-registered binaries with no version file,
+  // and "vunknown" is not a release tag. Treat it as unresolvable rather than
+  // building a URL that 404s at GitHub.
+  if (!row || row.version === 'unknown') return null;
+
+  return row.version;
+}
