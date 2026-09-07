@@ -320,6 +320,20 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
   { childTable: 'software_deployments', constraint: 'software_deployments_maintenance_window_id_maintenance_windows_', parentTable: 'maintenance_windows', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'software_deployments', constraint: 'software_deployments_org_id_organizations_id_fk', parentTable: 'organizations', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_connection_id_psa_connections_id_fk', parentTable: 'psa_connections', reason: 'pre-cleared', allColumnsNullable: false },
+  {
+    childTable: 'partners',
+    constraint: 'partners_service_management_psa_connection_id_fkey',
+    parentTable: 'psa_connections',
+    reason: 'pre-cleared',
+    allColumnsNullable: true,
+    note:
+      'ON DELETE RESTRICT, so without the pre-clear this FK ABORTS the erasure rather than '
+      + 'stranding a row. The clearSql un-wires mode and connection id together because '
+      + 'partners_service_management_connection_chk is a biconditional. Expected to match zero '
+      + 'rows in practice: PATCH /orgs/partners/me binds only partner-wide connections '
+      + '(org_id IS NULL), which org erasure never deletes -- but that is an app-layer '
+      + 'guarantee the schema does not enforce.',
+  },
   { childTable: 'report_runs', constraint: 'report_runs_report_id_reports_id_fk', parentTable: 'reports', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'deployment_results', constraint: 'deployment_results_deployment_id_software_deployments_id_fk', parentTable: 'software_deployments', reason: 'pre-cleared', allColumnsNullable: false },

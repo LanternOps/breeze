@@ -580,6 +580,42 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
          OR device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
     `,
   },
+  // partners.service_management_psa_connection_id -> psa_connections.id is
+  // ON DELETE RESTRICT (#5075 W04), and psa_connections IS in the org cascade
+  // list, so an org that owns a bound connection would abort its own GDPR
+  // erasure outright rather than merely stranding a row. `partners` has no
+  // org_id, so neither the cascade list nor the export policy reaches it --
+  // the migration's comment concluded from that that no registration applied,
+  // which is true of the TABLE and false of this FK.
+  //
+  // In practice PATCH /orgs/partners/me only binds partner-wide connections
+  // (`partner_id = caller AND org_id IS NULL`), which org erasure never
+  // deletes, so this clear is expected to match zero rows today. It is kept
+  // because that guarantee is app-layer only -- nothing in the schema stops an
+  // org-owned connection being bound -- and this repo does not accept
+  // app-layer-only tenancy guarantees.
+  //
+  // Both columns must move together: partners_service_management_connection_chk
+  // is a biconditional, so nulling the id while leaving mode='external' fails
+  // the CHECK (23514) and aborts the erasure just as surely as the FK did.
+  // 'native' is the column default and the value getServiceManagementMode
+  // already falls open to, so an un-wired partner lands on Breeze's own service
+  // desk rather than losing ticketing entirely.
+  //
+  // Note this is the one entry whose clearSql UPDATEs rather than DELETEs, so
+  // its row count lands in stats.tablesDeleted['partners'] as an un-wire count,
+  // not a deletion. No partner row is ever removed by an org erasure.
+  {
+    table: 'partners',
+    clearSql: (orgId) => sql`
+      UPDATE partners
+      SET service_management_mode = 'native',
+          service_management_psa_connection_id = NULL
+      WHERE service_management_psa_connection_id IN (
+        SELECT id FROM psa_connections WHERE org_id = ${orgId}
+      )
+    `,
+  },
   // Software deployment chain. None of these three tables is reachable by the
   // main cascade loop's FK-safe ordering, because that toposort only sees FK
   // edges BETWEEN tables that are in the cascade list:

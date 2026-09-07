@@ -10,7 +10,11 @@
 --
 -- Idempotent. No inner BEGIN/COMMIT (autoMigrate wraps each file in its own
 -- transaction). No DML, so no breeze.scope elevation is needed.
--- `partners` has no org_id, so no tenantCascade / export-policy registration applies.
+-- `partners` has no org_id, so it needs no tenantCascade or export-policy entry
+-- of its own. That is true of the TABLE and NOT of the FK below: psa_connections
+-- IS org-cascaded, so this RESTRICT edge would abort a GDPR org erasure. It is
+-- handled by the `partners` pre-clear in services/tenantCascade.ts and pinned in
+-- ORG_CASCADE_FK_PRE_CLEARED.
 
 ALTER TABLE partners
   ADD COLUMN IF NOT EXISTS service_management_mode text NOT NULL DEFAULT 'native',
