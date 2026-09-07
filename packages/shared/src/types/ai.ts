@@ -1,3 +1,5 @@
+import type { AiToolHandoffStatus } from '../utils/aiToolHandoff';
+
 // ============================================
 // AI Approval Modes
 // ============================================
@@ -159,7 +161,21 @@ export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_use_start'; toolName: string; toolUseId: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; toolUseId: string; output: unknown; isError: boolean }
+  /**
+   * `handoff` is set ONLY by the server's own pre-tool-use gate (#5107) — it
+   * is never derived from the tool's returned JSON. `output.status` carries
+   * the same value for the model and for replayed history rows, but a tool
+   * controls its own output, so a client must prefer this field: trusting the
+   * output shape alone would let any tool (including a third-party extension)
+   * paint its own failure as an approved, in-flight action.
+   */
+  | {
+      type: 'tool_result';
+      toolUseId: string;
+      output: unknown;
+      isError: boolean;
+      handoff?: AiToolHandoffStatus;
+    }
   /**
    * The run context an approver is being asked to authorise for a script
    * launch (#4888). Present only for `run_script` /

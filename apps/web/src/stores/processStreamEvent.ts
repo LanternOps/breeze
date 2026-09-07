@@ -9,6 +9,13 @@ export interface AiMessage {
   toolOutput?: unknown;
   toolUseId?: string;
   isError?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107) — copied off the SSE event, never
+   * derived from `toolOutput`, which the tool itself controls. Absent on rows
+   * replayed from history (it is not persisted on the message row), where
+   * AiToolCallCard falls back to the payload shape gated on `!isError`.
+   */
+  handoff?: string;
   isStreaming?: boolean;
   createdAt: Date;
 }
@@ -130,6 +137,7 @@ export function processStreamEvent(
         toolOutput: event.output as Record<string, unknown>,
         toolUseId: event.toolUseId,
         isError: event.isError,
+        handoff: event.handoff,
         createdAt: new Date()
       };
       set((s) => {

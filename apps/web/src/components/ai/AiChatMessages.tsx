@@ -26,6 +26,12 @@ interface Message {
   toolOutput?: unknown;
   toolUseId?: string;
   isError?: boolean;
+  /**
+   * Server-asserted approval handoff (#5107) — set from the SSE event by
+   * processStreamEvent, never derived from `toolOutput`, which the tool
+   * controls. Absent on rows replayed from history.
+   */
+  handoff?: string;
   isStreaming?: boolean;
 }
 
@@ -296,6 +302,7 @@ export default function AiChatMessages({
               toolName={msg.toolName ?? t("aiChatMessages.toolResult")}
               output={msg.toolOutput ?? msg.content}
               isError={msg.isError}
+              handoff={msg.handoff}
             />
           );
         }
