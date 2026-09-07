@@ -962,6 +962,7 @@ describe('reconcileChanges (CDC)', () => {
   });
 
   it('reports overflowed:true when the /query backfill itself fails, keeping the CDC rows', async () => {
+    captureExceptionMock.mockClear();
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       throw new Error('unexpected extra fetch() call — this test only mocks 2 responses');
     });
@@ -975,6 +976,39 @@ describe('reconcileChanges (CDC)', () => {
 
     expect(cs.overflowed).toBe(true);
     expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
+    // #5193: tag keys must be the allowlisted snake_case names (`op` and
+    // `entity` have no allowlisted equivalent and are silently dropped).
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'quickbooksProvider',
+    });
+  });
+
+  it('reports the page-cap error via captureException with allowlisted tags when a /query backfill never resolves', async () => {
+    captureExceptionMock.mockClear();
+    const fullPage = Array.from({ length: 1000 }, (_, i) => qboPayment({ Id: String(3000 + i) }));
+    let queryCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes('/query?query=')) {
+        queryCalls++;
+        return jsonResponse({ QueryResponse: { Payment: fullPage } });
+      }
+      return jsonResponse(
+        cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 100_000 }]),
+      );
+    });
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    // QBO_CDC_QUERY_MAX_PAGES: the loop gives up after this many full pages
+    // without ever seeing a short (final) one.
+    expect(queryCalls).toBe(50);
+    expect(cs.overflowed).toBe(true);
+    // #5193: tag keys must be the allowlisted snake_case names (`op` and
+    // `entity` have no allowlisted equivalent and are silently dropped).
+    const pageCapCall = captureExceptionMock.mock.calls.find(
+      ([err]) => String(err).includes('exceeded'),
+    );
+    expect(pageCapCall?.[2]).toMatchObject({ service: 'quickbooksProvider' });
   });
 
   it('backfills an overflowing Invoice block through /query and keeps the CDC deletion lists', async () => {
@@ -1060,6 +1094,12 @@ describe('reconcileChanges (CDC)', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
     expect(String(captureExceptionMock.mock.calls[0]![0])).toMatch(/30-day/);
+    // #5193: tag keys must be the allowlisted snake_case names (`op` and
+    // `skippedDays` have no allowlisted equivalent and are silently dropped).
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'quickbooksProvider',
+      accounting_connection_id: 'c1',
+    });
     warnSpy.mockRestore();
   });
 
