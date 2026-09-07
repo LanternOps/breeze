@@ -1475,7 +1475,7 @@ mobileRoutes.get(
     if (orgCheck.orgIds !== null) {
       if (orgCheck.orgIds.length === 0) {
         return c.json({
-          devices: { total: 0, online: 0, offline: 0, maintenance: 0 },
+          devices: { total: 0, online: 0, offline: 0, maintenance: 0, decommissioned: 0 },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
       }
@@ -1488,7 +1488,7 @@ mobileRoutes.get(
     if (perms?.allowedSiteIds) {
       if (perms.allowedSiteIds.length === 0) {
         return c.json({
-          devices: { total: 0, online: 0, offline: 0, maintenance: 0 },
+          devices: { total: 0, online: 0, offline: 0, maintenance: 0, decommissioned: 0 },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
       }
@@ -1499,10 +1499,15 @@ mobileRoutes.get(
 
     const deviceStats = await db
       .select({
-        total: sql<number>`count(*)`,
+        // Excludes decommissioned devices so this matches the
+        // online/offline/maintenance/decommissioned buckets below (#5106 —
+        // count(*) previously included decommissioned rows, inflating the
+        // hero total past what the status legend summed to).
+        total: sql<number>`sum(case when ${devices.status} != 'decommissioned' then 1 else 0 end)`,
         online: sql<number>`sum(case when ${devices.status} = 'online' then 1 else 0 end)`,
         offline: sql<number>`sum(case when ${devices.status} = 'offline' then 1 else 0 end)`,
-        maintenance: sql<number>`sum(case when ${devices.status} = 'maintenance' then 1 else 0 end)`
+        maintenance: sql<number>`sum(case when ${devices.status} = 'maintenance' then 1 else 0 end)`,
+        decommissioned: sql<number>`sum(case when ${devices.status} = 'decommissioned' then 1 else 0 end)`
       })
       .from(devices)
       .where(deviceWhere);
@@ -1521,7 +1526,8 @@ mobileRoutes.get(
             total: Number(deviceStats[0]?.total ?? 0),
             online: Number(deviceStats[0]?.online ?? 0),
             offline: Number(deviceStats[0]?.offline ?? 0),
-            maintenance: Number(deviceStats[0]?.maintenance ?? 0)
+            maintenance: Number(deviceStats[0]?.maintenance ?? 0),
+            decommissioned: Number(deviceStats[0]?.decommissioned ?? 0)
           },
           alerts: { total: 0, active: 0, acknowledged: 0, resolved: 0, critical: 0 }
         });
@@ -1546,7 +1552,8 @@ mobileRoutes.get(
         total: Number(deviceStats[0]?.total ?? 0),
         online: Number(deviceStats[0]?.online ?? 0),
         offline: Number(deviceStats[0]?.offline ?? 0),
-        maintenance: Number(deviceStats[0]?.maintenance ?? 0)
+        maintenance: Number(deviceStats[0]?.maintenance ?? 0),
+        decommissioned: Number(deviceStats[0]?.decommissioned ?? 0)
       },
       alerts: {
         total: Number(alertStats[0]?.total ?? 0),
