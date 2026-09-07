@@ -361,8 +361,9 @@ const ALLOWED_TAG_NAMES = new Set([
   // AccountingPaymentPushErrorCode union (never the error's message, which
   // interpolates provider text), `accounting_trigger` is the reconcile job's
   // trigger union (webhook | sweep | manual), `accounting_reconcile_phase` is
-  // two literals in the sweep, and `accounting_audit_action` is the three
-  // `accounting.payment.*` audit actions.
+  // two literals in the sweep, and `accounting_audit_action` is the four
+  // `accounting.payment.*` audit actions (pushed | deleted | delete_unresolved |
+  // orphan_retained).
   'accounting_job_type',
   'accounting_error_code',
   'accounting_trigger',

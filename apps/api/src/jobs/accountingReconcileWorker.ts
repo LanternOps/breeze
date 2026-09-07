@@ -7,8 +7,10 @@
  * Drains one QuickBooks CDC window per connection: `reconcileChanges` (Task 2)
  * reads everything that changed since the connection's `cdc_cursor`, and the
  * appliers in `accountingPaymentPull.ts` (Task 3) land each item. A 15-minute
- * repeatable `sweep` job fans out one `reconcile-connection` job per
- * pull-enabled connection; the QuickBooks webhook route enqueues the same job
+ * repeatable `sweep` job fans out one `reconcile-connection` job per connection
+ * with EITHER direction switch on (`pull_payments OR push_payments` — the push
+ * side needs the CDC pass to adopt its own lost creates and to notice a
+ * Breeze-created Payment deleted in QuickBooks); the QuickBooks webhook route enqueues the same job
  * shape with `trigger: 'webhook'`, and the "Sync now" route with
  * `trigger: 'manual'`.
  *
@@ -47,6 +49,13 @@
  *     re-reads that window. Replay is safe: the appliers are idempotent (the
  *     `(payment, invoice)` mapping claim is at-most-once and a reversal whose
  *     mapping row is already gone is a clean no-op).
+ *   - HELD (cursor stays put, job COMPLETES): every run on a connection with
+ *     `pull_payments` off. The pass ran only because `push_payments` is on and
+ *     it skipped every QuickBooks-origin line, so advancing would make that
+ *     suppression permanent — re-enabling pull would resume from a watermark
+ *     that had already stepped over everything it never imported, and CDC
+ *     cannot ask for a window again. `last_reconcile_at` IS stamped, so a held
+ *     run does not read as a stalled connection.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
@@ -130,7 +139,9 @@ export interface ReconcileRunSummary {
   breezeOriginDiverged: number;
   /** Breeze-origin lines the pull deliberately left to the push/delete job. */
   skippedBreezeOrigin: number;
-  /** New QuickBooks-origin imports suppressed because `pull_payments` is off. */
+  /** QuickBooks-origin lines suppressed because `pull_payments` is off — a new
+   *  import, an edit of one already imported, or a deletion. A run with a
+   *  non-zero count also HOLDS the cursor, so the window stays replayable. */
   skippedPullDisabled: number;
   /** Breeze-created Payments somebody removed in QuickBooks. */
   breezeOriginRemovedRemotely: number;
@@ -545,8 +556,10 @@ export async function processReconcileConnectionJob(
  * Pass 1 enqueues one `reconcile-connection` job per connection with either
  * direction switched on. Pass 2 is the OUTBOX BACKSTOP (spec decision 1): every
  * `accounting_entity_mappings` row that still owes QuickBooks a push or a delete,
- * whose lease has expired and whose last update is older than the grace window,
- * is re-enqueued on the accounting-sync queue. That is what makes a lost
+ * whose lease has expired (PAYMENT_CLAIM_LEASE_MS) and whose last update is
+ * older than PAYMENT_SWEEP_MIN_AGE_MS — the grace window that keeps the sweep
+ * from racing the enqueue the caller just made — is re-enqueued on the
+ * accounting-sync queue. That is what makes a lost
  * enqueue — Redis down, the process dying between COMMIT and `add()`, BullMQ
  * exhausting its attempts — recover with no operator action.
  *

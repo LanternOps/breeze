@@ -117,9 +117,12 @@ export type PaymentPullOutcome =
   // the run's own error accounting (nothing failed), and the worker's
   // compare-and-set on the same fingerprint is what stops the cursor.
   | 'realm_changed'
-  // --- Phase D2 (payment push). ALL FIVE ARE CLEAN FOR THE CDC CURSOR: each is
-  // a recorded, permanent decision, and re-reading the same window would reach
-  // the identical one. ---
+  // --- Phase D2 (payment push). Each is a recorded, permanent decision, so
+  // re-reading the same window would reach the identical one — which is why none
+  // of them holds the cursor. `skipped_pull_disabled` is the exception the
+  // WORKER makes rather than the outcome: it is clean per item, but a run with
+  // `pull_payments` off holds the cursor anyway so re-enabling pull can still
+  // import the window it was switched off in. ---
   // A Payment BREEZE created, whose create response was lost before phase 2
   // recorded the remote id. The note's marker names a pending push mapping, so
   // the pull fills the id in instead of inserting a second payment row.
@@ -132,8 +135,9 @@ export type PaymentPullOutcome =
   // the push or delete job owns this row's outcome, and a pull-side guess would
   // race it.
   | 'skipped_breeze_origin'
-  // `pull_payments` is off. Only NEW QuickBooks-origin imports are suppressed —
-  // adoptions, echoes and remote deletions of Breeze-origin payments still run
+  // `pull_payments` is off. EVERY QuickBooks-origin line is suppressed — a new
+  // import, an EDIT of one already imported, and a DELETION — while Breeze's own
+  // outbound work still runs: adoptions, echoes and the removed-remotely branch
   // (spec decision 6). Counted, and surfaced ONCE PER RUN as
   // `skippedPullDisabled=<n>` on the reconcile worker's run line — which is the
   // #4543 fix for this reason. Deliberately not logged per item: a CDC window
@@ -1003,12 +1007,6 @@ function divergedAudit(
 }
 
 /**
- * Flips ONE mapping row to `sync_status='error'` with an operator-readable
- * reason. Deliberately narrow: it never touches `remote_entity_id` or
- * `link_status`, so the link back to QuickBooks survives the failure and a later
- * push/pull can clear the marker instead of re-creating the remote entity.
- */
-/**
  * Clears a PAYMENT-ORIGINATED error marker off the invoice mapping once a
  * payment lands cleanly (finding G).
  *
@@ -1030,6 +1028,12 @@ async function clearPaymentPullMappingError(conn: AccountingConnection, mappingI
     .returning({ id: accountingEntityMappings.id });
 }
 
+/**
+ * Flips ONE mapping row to `sync_status='error'` with an operator-readable
+ * reason. Deliberately narrow: it never touches `remote_entity_id` or
+ * `link_status`, so the link back to QuickBooks survives the failure and a later
+ * push/pull can clear the marker instead of re-creating the remote entity.
+ */
 async function markInvoiceMappingError(
   conn: AccountingConnection,
   mappingId: string,

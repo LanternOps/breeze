@@ -162,10 +162,13 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // stamp and reset to 0 when the invoice fan-out re-owns the row. The unit is
   // an ATTEMPT, not a sweep: BullMQ retries a retryable failure five times per
   // enqueue, so five attempts is roughly one 15-minute sweep. A `push` row that
-  // reaches PAYMENT_PUSH_MAX_ATTEMPTS (100, ~5 h) gives up (`pending_op`
-  // cleared, `last_error` saying so); a `delete` row is never capped, does not
-  // count not-connected skips, and uses the counter only to throttle its Sentry
-  // reporting to about once a day.
+  // reaches PAYMENT_PUSH_MAX_ATTEMPTS (100, ~5 h) gives up — `pending_op`
+  // cleared and `terminal_reason = 'gave_up'`. A `delete` row is never capped
+  // and uses the counter only to throttle its Sentry reporting to about once a
+  // day. NOTHING counts a not-connected skip, on either kind of row: the
+  // outage is the operator's to fix and nothing reached QuickBooks. The
+  // `record_failed` path has its own shorter bound on `record_failed_count`
+  // and does not touch this one.
   syncAttempts: integer('sync_attempts').notNull().default(0),
   // How many times this mapping has been RE-OWNED for a fresh QuickBooks
   // create. QuickBooks replays a create's cached response for a repeated

@@ -1210,6 +1210,32 @@ describe('voidInvoiceInAccounting', () => {
     expect(mapping.lastError).toBeNull();
   });
 
+  it('KEEPS the stored SyncToken when the void reply carries none', async () => {
+    // The sibling above proves a returned token is persisted. This is the other
+    // half: a reply with `syncToken: null` must not NULL the stored one —
+    // clearing it costs the next write an extra read at best, and on the delete
+    // path an unnecessary round trip that can race a concurrent edit. The
+    // Payment's revision did not become unknown just because the reply omitted
+    // it.
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockResolvedValueOnce({ syncToken: null });
+
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.remoteSyncToken).toBe('3');
+    expect(mapping.syncStatus).toBe('synced');
+  });
+
   it('on provider void failure, marks the mapping error with a sanitized message and rethrows', async () => {
     setup({
       mappings: [

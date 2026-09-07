@@ -41,12 +41,16 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 - Deleting a payment propagates regardless of BOTH `push_mode` and
   `push_payments`: once Breeze created a Payment in QuickBooks it owns its
   removal, so switching the feature off cannot strand money in the books.
-- Migration `2026-10-12-100000-quickbooks-payment-push.sql` adds
-  `accounting_connections.push_payments` and five columns on
-  `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`,
-  `sync_attempts`, `push_generation`), one CHECK constraint and one partial index. It backfills `breeze_origin = true`
-  for existing invoice mappings under `set_config('breeze.scope','system', true)`
-  and logs the row count as a `WARNING`. No new tables, no RLS changes.
+- Migration `2026-10-12-100000-quickbooks-payment-push.sql` adds two columns on
+  `accounting_connections` (`push_payments`, `push_payments_since`) and seven on
+  `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `pending_since`,
+  `claimed_at`, `sync_attempts`, `record_failed_count`, `push_generation`,
+  `terminal_reason`), three CHECK constraints and one partial index. It backfills
+  `breeze_origin = true` for existing invoice mappings, stamps
+  `push_payments_since = now()` on every existing connection, and types
+  `terminal_reason` from the legacy message texts — all under
+  `set_config('breeze.scope','system', true)`, each logging its row count as a
+  `WARNING`. No new tables, no RLS changes.
 - New per-connection setting `push_payments` (default **on**) beside the
   existing `pull_payments` toggle on the QuickBooks integration card, and an
   "In QuickBooks" / "QuickBooks sync failed" / "Syncing…" badge on each payment

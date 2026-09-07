@@ -10,7 +10,12 @@
 --
 -- No RLS changes: both tables are partner-axis and already ENABLE + FORCE with
 -- partner policies (2026-09-28-quickbooks-entity-mappings.sql:150-168). No
--- org_id anywhere, so no tenantCascade / export-policy / orgMerge registration.
+-- org_id anywhere, so no tenantCascade / export-policy / orgMerge REGISTRATION
+-- is required. Those files were still CHANGED by this work, for the opposite
+-- reason: `accounting_entity_mappings` was already reachable from the org
+-- cascade and the merge orphan sweep through an invoices/invoice_payments join,
+-- and both now EXCLUDE `pending_op = 'delete'` so an owed QuickBooks deletion is
+-- not silently discarded (see the retention comments there).
 --
 -- The entity-partner guard trigger fires only on INSERT and
 -- UPDATE OF partner_id, breeze_entity_type, breeze_entity_id, so a row whose

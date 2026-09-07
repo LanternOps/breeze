@@ -461,7 +461,10 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith({
         type: "error",
-        message: "Payment sync is turned off for this connection. Turn on Payment sync to sync now.",
+        // Names BOTH switches: the reconcile pass runs when EITHER is on
+        // (Phase D2 widened the gate), so telling the operator to turn on
+        // "Payment sync" alone described a rule that no longer exists.
+        message: "Payment sync is turned off for this connection — turn on Payment sync or Payment push to sync now.",
       }),
     );
     expect(showToast).not.toHaveBeenCalledWith(

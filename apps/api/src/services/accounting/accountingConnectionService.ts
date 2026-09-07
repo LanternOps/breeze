@@ -361,7 +361,10 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
  * direction switched on. Phase D2 (spec decision 6): with pull OFF and push ON
  * the CDC pass still has to run — it is what adopts a Breeze-created Payment
  * whose phase 2 never landed, and what notices a Breeze-origin Payment someone
- * deleted in QuickBooks. It just suppresses NEW QuickBooks-origin imports.
+ * deleted in QuickBooks. In that window it touches Breeze-origin rows ONLY:
+ * every QuickBooks-origin line is suppressed (a new import, an edit of one
+ * already imported, a deletion) and the run holds its CDC cursor, so turning
+ * pull back on can still import the window it was switched off in.
  */
 export async function listReconcilableConnections(
   dbc: DbExecutor,

@@ -182,10 +182,11 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
       // A payment job's mapping row is the OUTBOX, so returning silently here
       // left it `pending` with an empty `last_error` while the 15-minute sweep
       // re-enqueued it forever against a realm that may have been disconnected
-      // for weeks (finding I2). Record the reason on the row and count the
-      // attempt — which is also what eventually retires a doomed PUSH row
-      // (PAYMENT_PUSH_MAX_ATTEMPTS); a `delete` row keeps waiting, because
-      // Breeze still owes QuickBooks that removal once the realm comes back.
+      // for weeks (finding I2). The reason is recorded on the row — but the skip
+      // is NOT counted against PAYMENT_PUSH_MAX_ATTEMPTS: nothing reached
+      // QuickBooks, and counting it retired every pending push in the partner
+      // after ~25 hours of a disconnected realm, right before the reconnect that
+      // would have completed them (`notePaymentJobSkipped`).
       if (data.type === 'delete-payment'
         && await paymentDeleteAwaitsRemoteRef(data.mappingId, data.partnerId, runInDbContext)) {
         // ...EXCEPT a delete that has no remote id to aim at. That row's whole

@@ -996,6 +996,27 @@ describe('reconcileChanges (CDC)', () => {
     expect(cs.overflowed).toBe(false);
   });
 
+  it('RESURRECTS a payment the truncated CDC list called deleted when /query still returns it', async () => {
+    // The CDC list is truncated, so its DELETION entries are as unreliable as
+    // its change entries — and `/query` never returns a deleted entity, so a row
+    // it DOES return is alive whatever CDC said. Without this arm the pull would
+    // reverse a live Payment: delete the Breeze `invoice_payments` row and
+    // recompute the invoice against money that never stopped existing.
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(cdcResponse([{
+        Payment: [{ Id: '180', status: 'Deleted' }],
+        startPosition: 1, maxResults: 1, totalCount: 2,
+      }])))
+      .mockResolvedValueOnce(jsonResponse({ QueryResponse: { Payment: [qboPayment({ Id: '180' })] } }));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(cs.deletedPayments).toEqual([]); // resurrected
+    expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
+    expect(cs.overflowed).toBe(false);
+  });
+
   it('re-buckets unapplied payments both ways when the /query backfill covers them', async () => {
     const spy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse(cdcResponse([{
@@ -1121,6 +1142,29 @@ function paymentPayload(overrides: Partial<AccountingPaymentPayload> = {}): Acco
 }
 
 describe('createPayment', () => {
+  it.each([
+    ['1234.56', 1234.56],
+    ['0.05', 0.05],
+    ['107.00', 107],
+  ])('sends %s as an exact TotalAmt and Line Amount', async (amount, expected) => {
+    // The wire amount IS the money. A rounding or parsing slip here posts the
+    // wrong cash against a customer's invoice and nothing downstream would
+    // notice — the mapping stamps `synced` either way. `0.05` catches a
+    // minor-unit slip, `1234.56` a float-formatting one.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonResponse({ Payment: { Id: '181', SyncToken: '0' } }));
+
+    await quickbooksProvider.createPayment(conn(), paymentPayload({ amount }));
+
+    const body = JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body));
+    expect(body.TotalAmt).toBe(expected);
+    expect(body.Line).toHaveLength(1);
+    expect(body.Line[0].Amount).toBe(expected);
+    // The two must never disagree: QuickBooks accepts an over-applied Payment
+    // and silently leaves the difference as an unapplied credit.
+    expect(body.Line[0].Amount).toBe(body.TotalAmt);
+  });
+
   it('posts a Payment applied to the invoice, with requestid, PrivateNote and no CurrencyRef', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(jsonResponse({ Payment: { Id: '181', SyncToken: '0' } }));
@@ -1322,6 +1366,52 @@ describe('deletePayment', () => {
     await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
       .resolves.toBe('deleted');
     expect(String(fetchSpy.mock.calls[0]![0])).toContain('payment/181?minorversion=70');
+    // The delete must carry the token the READ returned. Sending anything else
+    // (or nothing) earns a 5010 at best and, on the retry path, a delete of the
+    // wrong revision at worst.
+    expect(JSON.parse(String((fetchSpy.mock.calls[1]![1] as RequestInit).body)))
+      .toEqual({ Id: '181', SyncToken: '2' });
+  });
+
+  it('reports already_absent when the null-token READ says the Payment is gone', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
+    ));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
+      .resolves.toBe('already_absent');
+    // Exactly one call: the read answered, so no delete was ever attempted.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports already_absent when the STALE-PATH re-read says the Payment is gone', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }), { status: 400 },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
+      ));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('already_absent');
+    // Delete, re-read — and NO third call: somebody removed it between the two.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports already_absent when the RETRIED delete says the Payment is gone', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }), { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181', SyncToken: '7' } }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '610', Message: 'Object Not Found' }] } }), { status: 400 },
+      ));
+
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .resolves.toBe('already_absent');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it('throws — rather than reporting already_absent — when a 2xx read carries no SyncToken (no held token)', async () => {

@@ -562,23 +562,6 @@ async function lockOwnedInvoice(invoiceId: string, partnerId: string): Promise<I
 // ---------------------------------------------------------------------------
 
 /**
- * Record that a freshly-inserted Breeze payment owes QuickBooks a create.
- *
- * Called by `invoiceService.recordPayment` and `stripeReconcile.recordStripePayment`
- * inside their locked transaction, immediately after the `invoice_payments`
- * insert. Returns the mapping id the caller must enqueue a `push-payment` job
- * for once its transaction returns, or `null` when nothing is owed.
- *
- * Manual push mode returns null on purpose: the invoice's own manual "Push to
- * QuickBooks" fans its payments out afterwards (`fanOutOwedPayments`), so an
- * operator who has opted out of automatic pushes does not get automatic ones
- * through the payment door instead.
- *
- * Inside a REQUEST context the caller's transaction is a savepoint, so the
- * worker can start before it commits and see no mapping row at all. That is why
- * "mapping not found" is retryable in the coordinator, never terminal.
- */
-/**
  * Refuse to read a PARTNER-axis accounting table from an org-scoped context.
  *
  * `accounting_connections` and `accounting_entity_mappings` are partner-axis
@@ -611,6 +594,23 @@ function assertPartnerVisibleContext(operation: string): void {
   }
 }
 
+/**
+ * Record that a freshly-inserted Breeze payment owes QuickBooks a create.
+ *
+ * Called by `invoiceService.recordPayment` and `stripeReconcile.recordStripePayment`
+ * inside their locked transaction, immediately after the `invoice_payments`
+ * insert. Returns the mapping id the caller must enqueue a `push-payment` job
+ * for once its transaction returns, or `null` when nothing is owed.
+ *
+ * Manual push mode returns null on purpose: the invoice's own manual "Push to
+ * QuickBooks" fans its payments out afterwards (`fanOutOwedPayments`), so an
+ * operator who has opted out of automatic pushes does not get automatic ones
+ * through the payment door instead.
+ *
+ * Inside a REQUEST context the caller's transaction is a savepoint, so the
+ * worker can start before it commits and see no mapping row at all. That is why
+ * "mapping not found" is retryable in the coordinator, never terminal.
+ */
 export async function requestPaymentPush(
   tx: PaymentMappingExecutor,
   params: { invoicePaymentId: string; invoiceId: string; partnerId: string },
@@ -642,12 +642,15 @@ export async function requestPaymentPush(
  * later CDC delivery for the same QuickBooks Payment reads as "already applied"
  * and silently skips.
  *
- * Three cases:
+ * Four cases:
  *  - Breeze-origin that QuickBooks can be told about — it has a remote id, or a
  *    `pending_op` meaning a create is owed or in flight -> keep the row, flip
  *    `pending_op='delete'`. Breeze created that Payment in QuickBooks — or is
  *    creating it right now — so Breeze owns its removal, regardless of
  *    `push_mode` or `push_payments` (spec decision 10).
+ *  - Breeze-origin RETIRED as `terminal_reason = 'orphaned'` -> keep the row and
+ *    audit the retention. Shape-identical to the stranded case below and the
+ *    opposite in meaning; see the fifth-state paragraph.
  *  - Breeze-origin STRANDED — `remote_entity_id IS NULL` AND `pending_op IS
  *    NULL` -> delete the row (see the exception below).
  *  - QuickBooks-origin -> delete the row, as Phase D always did. The pull's
@@ -859,7 +862,11 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
  * transaction, which is why phase 1 RETURNS a recordable refusal instead of
  * throwing it.
  *
- * THE ATTEMPT COUNTER IS THE OUTBOX'S ONLY BOUND (findings I1/I2). `pending_op`
+ * THE ATTEMPT COUNTER IS THE OUTBOX'S GENERAL BOUND (findings I1/I2). It is not
+ * the only one: `record_failed` has its own, much shorter horizon on
+ * `record_failed_count` (see `PAYMENT_RECORD_FAILED_MAX_SWEEPS`), because that
+ * path must stop inside Intuit's 24-hour requestid replay window and this
+ * ceiling is ~25 hours for it. `pending_op`
  * is never cleared on a retryable failure — that is what makes the outbox
  * durable — so nothing else stops the 15-minute sweep re-enqueueing a row
  * forever. `sync_attempts` is incremented IN THE UPDATE (never read-modify-write:
@@ -886,8 +893,8 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
  * disconnected realm inflating it would mean the first genuine failure after the
  * reconnect landed mid-cycle and raised nothing.
  *
- * Returns the row's NEW attempt count (unchanged for a delete row under
- * `push_only`), or null when no row matched. Zero rows is tolerated for the same
+ * Returns the row's NEW attempt count (unchanged under `countAttempt: 'never'`),
+ * or null when no row matched. Zero rows is tolerated for the same
  * reason as `releaseLease` above: this is best-effort annotation of a failure
  * that is being reported anyway, and Sentry already carries the original.
  */
@@ -1703,8 +1710,10 @@ export async function pushPaymentToAccounting(
       const payment = await loadPaymentRow(mapping.breezeEntityId);
       // Two ways to land here: the payment row went away during the round trip,
       // or `requestPaymentDelete` flipped this row to `delete` while we were in
-      // flight. It never deletes a Breeze-origin push row precisely so that this
-      // branch can hand the delete worker an Id and a SyncToken.
+      // flight. The `!payment` half is reachable ONLY through a destroyer that
+      // does not go through that helper (a raw delete, a tenant erasure) — the
+      // helper itself always flips the row first, which is the whole reason it
+      // exists — so this branch is the backstop, not the common path.
       if (mapping.pendingOp === 'delete' || !payment) {
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
           syncStatus: 'pending', linkStatus: 'confirmed', pendingOp: 'delete', lastError: null,

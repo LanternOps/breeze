@@ -138,20 +138,23 @@ export interface AccountingInvoicePayload {
 }
 
 /**
- * A void carries a payload too, so no accounting method sits outside the typed
- * currency contract (multi-currency §11). Deliberately wider arity than the
- * Phase-A sketch, which had `voidInvoice(conn, mapping)`.
- */
-/**
  * What a void tells Breeze. A void BUMPS the Invoice's revision, so the stored
  * SyncToken is stale the moment it returns — persisting the new one is what
  * stops the next write starting with a guaranteed 5010. `null` when the
  * provider's response carried no token; the caller then keeps what it had.
+ *
+ * (The "a void carries a payload too" note that used to sit above this block
+ * documents `AccountingVoidInvoicePayload`, not this type; it has moved there.)
  */
 export interface InvoiceVoidResult {
   syncToken: string | null;
 }
 
+/**
+ * A void carries a payload too, so no accounting method sits outside the typed
+ * currency contract (multi-currency §11). Deliberately wider arity than the
+ * Phase-A sketch, which had `voidInvoice(conn, mapping)`.
+ */
 export interface AccountingVoidInvoicePayload {
   invoiceId: string;
   docNumber: string | null;

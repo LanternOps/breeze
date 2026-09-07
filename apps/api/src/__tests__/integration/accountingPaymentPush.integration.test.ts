@@ -57,6 +57,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import {
+  accountingConnections,
   accountingEntityMappings,
   invoicePayments,
   invoices,
@@ -1146,6 +1147,95 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect(mappings).toHaveLength(2);
     expect(mappings.every((m) => m.pendingOp === 'push' && m.breezeOrigin)).toBe(true);
     expect(new Set(mappings.map((m) => m.id))).toEqual(new Set(first));
+  });
+
+  runDb('the push horizon is an inclusive UTC boundary, whatever the session time zone', async () => {
+    // `invoice_payments.created_at` is `timestamp` (NO time zone) and
+    // `push_payments_since` is `timestamptz`, so a naive comparison casts the
+    // column with the SESSION TimeZone: on a Chicago session the horizon shifts
+    // by five or six hours and payments either side of it are pushed or skipped
+    // wrongly. A compiled-SQL unit assertion cannot see that — only a real
+    // session can. `America/Chicago` is deliberately a NEGATIVE offset, which is
+    // the direction that would wrongly ADMIT pre-horizon payments.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00', pushMode: 'manual' });
+    const since = new Date('2026-09-02T12:00:00.000Z');
+    await withSystemDbAccessContext(() => db
+      .update(accountingConnections)
+      .set({ pushPaymentsSince: since })
+      .where(eq(accountingConnections.id, fx.conn.id))
+      .returning({ id: accountingConnections.id }));
+
+    const at = async (offsetMs: number, amount: string) => {
+      const [row] = await withSystemDbAccessContext(() => db.insert(invoicePayments).values({
+        invoiceId, orgId: fx.orgId, amount, method: 'cash', receivedAt: '2026-09-02', recordedBy: null,
+      }).returning({ id: invoicePayments.id }));
+      await withSystemDbAccessContext(() => db
+        .update(invoicePayments)
+        .set({ createdAt: new Date(since.getTime() + offsetMs) })
+        .where(eq(invoicePayments.id, row!.id))
+        .returning({ id: invoicePayments.id }));
+      return row!.id;
+    };
+    const before = await at(-1, '10.00');
+    const exactly = await at(0, '20.00');
+    const after = await at(1, '30.00');
+
+    const enqueued = await fanOutOwedPayments(invoiceId, fx.partnerId, systemRunner);
+    const mapped = (await loadPaymentMappings(fx)).map((m) => m.breezeEntityId);
+
+    // `>=`, so the instant itself is IN.
+    expect(new Set(mapped)).toEqual(new Set([exactly, after]));
+    expect(mapped).not.toContain(before);
+    expect(enqueued).toHaveLength(2);
+
+    // ...and the CAST is what makes that true on a non-UTC session. The
+    // coordinator runs on its own pooled connection, so a `SET TimeZone` here
+    // would never reach it — the two predicate forms are compared directly
+    // instead, on ONE connection that really is set to Chicago. Without the
+    // cast Postgres resolves `timestamp >= timestamptz` by reading the naive
+    // column in the SESSION zone, which shifts every stored instant five hours
+    // later and admits the pre-horizon payment.
+    const probe = async (predicate: string) => {
+      const rows = await getTestDb().execute(sql.raw(
+        `SELECT id FROM invoice_payments WHERE invoice_id = '${invoiceId}' AND ${predicate}`,
+      )) as unknown as Array<{ id: string }>;
+      return new Set(rows.map((r) => r.id));
+    };
+    await getTestDb().execute(sql.raw("SET TimeZone = 'America/Chicago'"));
+    try {
+      const sinceLiteral = `'${since.toISOString()}'::timestamptz`;
+      expect(await probe(`(created_at AT TIME ZONE 'UTC') >= ${sinceLiteral}`))
+        .toEqual(new Set([exactly, after]));
+      // The naive form is WRONG on this session, which is the whole finding.
+      expect(await probe(`created_at >= ${sinceLiteral}`)).toContain(before);
+    } finally {
+      await getTestDb().execute(sql.raw('SET TimeZone = DEFAULT'));
+    }
+  });
+
+  runDb('a NULL push horizon pushes every payment — the only "no horizon" case', async () => {
+    // Only reachable on a connection row written outside both writers (the
+    // migration stamps every existing row, upsertConnection stamps every new
+    // one), so the fallback has to be the permissive one or such a row would
+    // silently never push at all.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00', pushMode: 'manual' });
+    await withSystemDbAccessContext(() => db
+      .update(accountingConnections)
+      .set({ pushPaymentsSince: null })
+      .where(eq(accountingConnections.id, fx.conn.id))
+      .returning({ id: accountingConnections.id }));
+    const [old] = await withSystemDbAccessContext(() => db.insert(invoicePayments).values({
+      invoiceId, orgId: fx.orgId, amount: '10.00', method: 'cash', receivedAt: '2020-01-01', recordedBy: null,
+    }).returning({ id: invoicePayments.id }));
+    await withSystemDbAccessContext(() => db
+      .update(invoicePayments)
+      .set({ createdAt: new Date('2020-01-01T00:00:00.000Z') })
+      .where(eq(invoicePayments.id, old!.id))
+      .returning({ id: invoicePayments.id }));
+
+    await fanOutOwedPayments(invoiceId, fx.partnerId, systemRunner);
+
+    expect((await loadPaymentMappings(fx)).map((m) => m.breezeEntityId)).toEqual([old!.id]);
   });
 
   runDb('the breeze_uniq index rejects a SECOND mapping for one payment, and the outbox insert swallows it', async () => {

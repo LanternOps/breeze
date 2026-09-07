@@ -793,7 +793,7 @@
     "syncNow": "Jetzt abgleichen",
     "syncNowQueued": "Zahlungsabgleich eingereiht.",
     "syncNowNotQueued": "Der Zahlungsabgleich konnte nicht eingereiht werden. Bitte in Kürze erneut versuchen.",
-    "syncNowPullDisabled": "Der Zahlungsabgleich ist für diese Verbindung deaktiviert. Aktivieren Sie den Zahlungsabgleich, um jetzt zu synchronisieren.",
+    "syncNowPullDisabled": "Der Zahlungsabgleich ist für diese Verbindung deaktiviert – aktivieren Sie Zahlungsabgleich oder Zahlungsübertragung, um jetzt zu synchronisieren.",
     "failedToSyncNow": "Der Zahlungsabgleich konnte nicht gestartet werden."
   },
   "securityIntegration": {

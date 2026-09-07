@@ -893,6 +893,34 @@ describe('accounting routes', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ pushPayments: false });
+      // Asserting the ECHO alone proved only that the route returns what the
+      // mocked UPDATE was told to return — it would pass with the column never
+      // written. Assert what the route actually SET.
+      expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).toMatchObject({ pushPayments: false });
+    });
+
+    it('persists pullPayments too, not just the echo', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: false,
+      }]);
+
+      await patchSettings({ pullPayments: false });
+
+      expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).toMatchObject({ pullPayments: false });
+    });
+
+    it('writes ONLY the keys the body carried, so a partial PATCH cannot reset a sibling switch', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: true,
+      }]);
+
+      await patchSettings({ pullPayments: true });
+
+      const patch = mocks.dbUpdateSet.mock.calls.at(-1)![0] as Record<string, unknown>;
+      expect(patch).not.toHaveProperty('pushPayments');
+      expect(patch).not.toHaveProperty('pushMode');
     });
 
     it('RESTARTS the push horizon when pushPayments is switched back ON', async () => {

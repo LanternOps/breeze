@@ -351,8 +351,29 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
     const cutoff = cutoffFor(text, params, 'updated_at');
     if (!(cutoff !== null && row.updatedAt < cutoff)) return false;
   }
+
+  // A column the condition REFERENCES but this fake does not evaluate would be a
+  // silently ignored filter — the exact shape of a vacuous assertion, and the
+  // way a dropped partner scope or a dropped terminal-state guard would pass
+  // here unnoticed. Fail loudly instead, so adding a predicate forces adding its
+  // evaluation.
+  const referenced = [...text.matchAll(/"accounting_entity_mappings"\."([a-z_]+)"/g)].map((m) => m[1]!);
+  const unhandled = referenced.filter((col) => !HANDLED_MAPPING_COLUMNS.has(col));
+  if (unhandled.length > 0) {
+    throw new Error(
+      `fake DB: the condition references accounting_entity_mappings columns this fake does not evaluate `
+      + `(${[...new Set(unhandled)].join(', ')}) — add them to mappingMatches or the filter passes vacuously`,
+    );
+  }
   return true;
 }
+
+/** Every column `mappingMatches` above actually evaluates. */
+const HANDLED_MAPPING_COLUMNS: ReadonlySet<string> = new Set([
+  'id', 'partner_id', 'integration_id', 'breeze_entity_type', 'breeze_entity_id',
+  'remote_entity_id', 'pending_op', 'breeze_origin', 'terminal_reason',
+  'claimed_at', 'updated_at',
+]);
 
 /** Live row references (so an UPDATE's `Object.assign` sticks). */
 function matchedRows(table: unknown, cond: unknown): unknown[] {
@@ -1737,14 +1758,26 @@ describe('deletePaymentInAccounting', () => {
   });
 
   it('KEEPS the row and stamps when QuickBooks deleted but Breeze could not clear the mapping', async () => {
-    deletePaymentMock.mockImplementationOnce(async () => {
-      // The row vanishes between the QuickBooks delete and the local clear.
-      currentMappings = currentMappings.filter((m) => m.breezeEntityType !== 'payment');
-      return 'deleted';
-    });
+    // The clear FAILS — it must not be simulated by deleting the row, which is
+    // what this test used to do: with no row left, every "KEEPS the row"
+    // assertion was unobservable and the test proved only that an error came
+    // back. Mirrors its `quickbooks_error` sibling below.
+    deleteMock.mockImplementationOnce(() => { throw new Error('pool exhausted'); });
 
     await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
       .rejects.toMatchObject({ code: 'record_failed', status: 502 });
+
+    expect(deletePaymentMock).toHaveBeenCalled(); // QuickBooks DID remove it
+    expect(mapping()).toMatchObject({
+      // Still owed and unleased, so the sweep re-runs the delete — a repeat
+      // against an already-absent Payment answers `already_absent` and clears
+      // the row, which is how this heals itself.
+      pendingOp: 'delete',
+      claimedAt: null,
+      remoteEntityId: '181/145',
+      syncStatus: 'error',
+    });
+    expect(mapping()!.lastError).toContain('could not clear its mapping');
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
@@ -2040,6 +2073,22 @@ describe('fanOutOwedPayments', () => {
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
 
     expect(mapping()).toMatchObject({ pendingOp: 'push', syncAttempts: 0, lastError: null });
+  });
+
+  it('guards the re-own CAS on the terminal state IN SQL, not just in the pre-read', async () => {
+    // The pre-read and the CAS must agree. If only the JS predicate excluded an
+    // orphan, a row retired between the read and the write would still be
+    // re-owned — and a re-own of an orphan creates a second real Payment.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      pendingOp: null, pendingSince: null, remoteEntityId: null,
+      syncStatus: 'error', terminalReason: 'removed_remotely',
+    })];
+
+    await fanOutOwedPayments(INVOICE, PARTNER, runCtx);
+
+    const cas = stmtsOf('update', 'accounting_entity_mappings').at(-1)!;
+    expect(compiledSql(cas.where).toLowerCase())
+      .toContain(`"terminal_reason" is distinct from 'orphaned'`);
   });
 
   it('guards the re-own on the whole removed-remotely state, so a racing stamp wins', async () => {
