@@ -494,6 +494,36 @@ describe('custom_field_definitions partner RLS (#2135 step 6)', () => {
       });
 
     /**
+     * The branch is ADDITIVE, and this is the assertion that proves it. A
+     * migration that accidentally REPLACED `breeze_dual_axis_select` /
+     * `_update` (rather than creating a new policy name) would still satisfy
+     * every partner-wide assertion above while quietly stripping the org of
+     * access to its OWN rows — a total outage for org-scoped custom fields that
+     * no other case in this file would catch.
+     */
+    it('leaves an ORG token\u2019s write access to its OWN row intact (#4944)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const fieldKey = uniqueKey('own_row_still_writable');
+      await seedDefinition({ orgId: org.id, fieldKey });
+
+      const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        db.update(customFieldDefinitions)
+          .set({ name: 'Renamed by owner' })
+          .where(eq(customFieldDefinitions.fieldKey, fieldKey))
+          .returning({ id: customFieldDefinitions.id }),
+      );
+      expect(updated).toHaveLength(1);
+
+      const deleted = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        db.delete(customFieldDefinitions)
+          .where(eq(customFieldDefinitions.fieldKey, fieldKey))
+          .returning({ id: customFieldDefinitions.id }),
+      );
+      expect(deleted).toHaveLength(1);
+    });
+
+    /**
      * INSERT is the one write command that DOES raise: WITH CHECK is evaluated
      * on the proposed row, and no FOR SELECT policy contributes a WITH CHECK, so
      * `breeze_dual_axis_insert` alone decides and denies with 42501. Proving the
