@@ -23,7 +23,7 @@ export async function claimPendingCommandForDelivery(
           eq(deviceCommands.status, 'pending'),
           // #5128: never deliver a row the reaper is about to expire. A row
           // whose deadline has passed stays `pending` for the reaper to
-          // terminalise with `expired / not_delivered_before_deadline`.
+          // terminalise with `reason: not_delivered_before_deadline`.
           or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, executedAt)),
         ),
       )

@@ -5,7 +5,6 @@ import { db } from '../db';
 import {
   deviceCommands,
   scriptExecutions,
-  scriptExecutionBatches,
   scripts,
   patchJobs,
   patchJobResults,
@@ -398,12 +397,14 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       cmd.payload as Record<string, unknown> | null,
     );
 
-    // #5128 — pick the clock this row is on. `expired` (delivery deadline
-    // passed, the agent never claimed it) is deliberately distinct from
-    // `timeout` (delivered, the agent never answered): only the second is
-    // evidence about the agent. The reason is `not_delivered_before_deadline`
-    // rather than "never reconnected", because a protocol-capability exclusion
-    // can leave a row undelivered on a device that is connected.
+    // #5128 — pick the clock this row is on. The DELIVERY clock (deadline
+    // passed, the agent never claimed it) is deliberately distinguished from
+    // the EXECUTION clock (delivered, the agent never answered): only the
+    // second is evidence about the agent. That distinction is carried in
+    // `result.reason`/`result.clock`, NOT in `result.status` — see the comment
+    // on `result` below. The reason is `not_delivered_before_deadline` rather
+    // than "never reconnected", because a protocol-capability exclusion can
+    // leave a row undelivered on a device that is connected.
     let due: boolean;
     let kind: 'expired' | 'timeout';
     let errorMsg: string;

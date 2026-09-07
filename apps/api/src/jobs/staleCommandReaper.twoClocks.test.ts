@@ -152,7 +152,7 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('a pending row past deliver_by is failed with expired / not_delivered_before_deadline', async () => {
+  it('a pending row past deliver_by is failed with the timeout marker + not_delivered_before_deadline', async () => {
     const deliverBy = new Date(NOW - 1000);
     selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy })]));
     const { command: update } = routeUpdates([{ id: 'c1' }]);

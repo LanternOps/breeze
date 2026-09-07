@@ -1041,12 +1041,16 @@ async function dispatchPreparedCommand(
           targetRole,
           // #5128. executeCommand is synchronous by contract (the caller waits
           // via waitForCommandResult), so it stays `reject` — and a `reject`
-          // row gets NO `deliver_by`. Review round 2 (J): stamping the 5-minute
-          // race grace here cut every executeCommand row's pending window from
-          // the legacy 30-minute execution clock to 5 minutes, including
-          // watchdog-targeted and `preferHeartbeat` work (update_agent,
-          // restart_agent, filesystem_analysis) and barrier-held reboots. NULL
+          // row gets NO `deliver_by`. Review round 2 (J): stamping the
+          // 5-minute race grace here cut every executeCommand row's pending
+          // window from the legacy 30-minute execution clock to 5 minutes,
+          // including watchdog-targeted binary/restart work and other
+          // `preferHeartbeat` callers, and it expired a barrier-held reboot
+          // while the power-state barrier was deliberately holding it. NULL
           // keeps the legacy clock, so nothing changes for reject callers.
+          // (Deliberately no literal command-type names here: the #4093 scan in
+          // agentEditionCompat.test.ts greps raw file text, and this hub file
+          // must stay off its allowlist so a real raw insert still trips it.)
           deliverBy: deliverByFor({ kind: 'reject' }),
           submittedOrgId: device.orgId,
         })

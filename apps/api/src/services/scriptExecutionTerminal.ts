@@ -81,6 +81,16 @@ export function batchIdFromPayload(payload: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Increment + completion check. Deliberately NOT wrapped in its own
+ * transaction: callers that need atomicity (the cancel-on-event sweeps, the
+ * heartbeat claim) already pass their own `executor`, and one that cannot open
+ * a nested one would be handed a savepoint for no benefit. The increment is a
+ * single atomic `x = x + 1`, the follow-up SELECT sees it, and the batch's
+ * terminal UPDATE is idempotent — so two racing finalisers can at worst both
+ * write the same terminal row, which the previous inline `db.transaction`
+ * (READ COMMITTED, no row lock) also allowed.
+ */
 async function applyBatchCounter(
   executor: ScriptTerminalExecutor,
   batchId: string,
