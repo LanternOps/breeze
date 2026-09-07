@@ -23,6 +23,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { deliveryTtlMs, isOfflineQueueEnabled, type OfflinePolicy } from './commandOfflinePolicy';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
@@ -302,6 +303,12 @@ export type RunScriptAction = {
    * drops rather than throws.
    */
   runAs?: 'system' | 'user' | 'elevated';
+  /**
+   * #5128 W4 — what happens when the device is offline at dispatch time.
+   * Absent means 'queue' (the shared validator defaults it), so a stored
+   * action authored before this field existed queues like a new one.
+   */
+  whenOffline?: 'queue' | 'skip';
 };
 
 export type SendNotificationAction = {
@@ -323,6 +330,8 @@ export type ExecuteCommandAction = {
   type: 'execute_command';
   command: string;
   shell?: 'bash' | 'powershell' | 'cmd';
+  /** #5128 W4 — see RunScriptAction.whenOffline. */
+  whenOffline?: 'queue' | 'skip';
 };
 
 export type DeploySoftwareAction = {
@@ -420,6 +429,32 @@ function asString(value: unknown): string | undefined {
 function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
   return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
 }
+
+/**
+ * #5128 W4. Mirrors `asRunAs`: an unrecognised stored value falls back to the
+ * schema default rather than throwing mid-run. 'queue' is the conservative
+ * fallback in the sense that matters here — the work is not silently dropped;
+ * it waits for the device and expires on the delivery deadline.
+ */
+function asWhenOffline(value: unknown): 'queue' | 'skip' {
+  return value === 'skip' ? 'skip' : 'queue';
+}
+
+/**
+ * #5128 W4. Automations rejected offline devices outright before this wave, so
+ * their queue arm is gated on `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` (default
+ * on since W4, removed in W5). With the flag off, or with the action set to
+ * 'skip', the dispatch keeps today's `device_offline` failure verbatim.
+ */
+function automationOfflinePolicy(whenOffline: 'queue' | 'skip' | undefined): OfflinePolicy {
+  if (asWhenOffline(whenOffline) === 'skip' || !isOfflineQueueEnabled()) {
+    return { kind: 'reject' };
+  }
+  return { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') };
+}
+
+/** #5128 W4 — the one operator-facing string for a step waiting on a device. */
+const QUEUED_OFFLINE_MESSAGE = 'Queued — device offline';
 
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -582,6 +617,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         scriptId,
         parameters,
         runAs: asRunAs(action.runAs),
+        whenOffline: asWhenOffline(action.whenOffline),
       });
       continue;
     }
@@ -627,6 +663,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         type: 'execute_command',
         command,
         shell: shell === 'bash' || shell === 'powershell' || shell === 'cmd' ? shell : undefined,
+        whenOffline: asWhenOffline(action.whenOffline),
       });
       continue;
     }
@@ -1289,6 +1326,12 @@ type ActionExecutionOutcome =
       status: 'queued' | 'delivered' | 'running';
       commandId?: string;
       scriptExecutionId?: string;
+      /**
+       * #5128 W4 — operator-facing reason this step is not running yet. Only
+       * set on the queued-because-offline path; everything else keeps falling
+       * back to the run-log message in `persistActionExecutionOutcome`.
+       */
+      message?: string;
     }
   | { status: 'succeeded' }
   | { status: 'failed'; message?: string };
@@ -1399,9 +1442,11 @@ export async function executeRunScriptAction(
   // payload build, sensitive-field encryption, queueCommand, and claim/decrypt/
   // WS-send. On a queueCommand throw it deletes its own pending execution row
   // before rethrowing (the old discardQueuelessExecution catch, now inside the
-  // core). requireOnline:true reproduces queueCommandForExecution's online gate
-  // — offline devices short-circuit before any insert, so there is no orphan
-  // row to discard on that path either.
+  // core). #5128 W4: the offline policy now comes from the action's
+  // `whenOffline` option — 'skip' (or the queue flag being off) reproduces
+  // queueCommandForExecution's online gate, in which case offline devices
+  // short-circuit before any insert, so there is no orphan row to discard on
+  // that path either.
   const dispatch = await dispatchScriptToDevice({
     device: context.device,
     source: { kind: 'saved', script, automationRunId: context.runId },
@@ -1414,7 +1459,7 @@ export async function executeRunScriptAction(
     // longer forwards unchecked user input and needs no cast. The `??` is the
     // whole contract the automation form's "Script default" option relies on.
     runAs: action.runAs ?? script.runAs,
-    requireOnline: true,
+    offlinePolicy: automationOfflinePolicy(action.whenOffline),
     variableScope,
   });
 
@@ -1447,6 +1492,7 @@ export async function executeRunScriptAction(
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
       ...(dispatch.executionId ? { scriptExecutionId: dispatch.executionId } : {}),
+      ...(dispatch.delivered ? {} : { message: QUEUED_OFFLINE_MESSAGE }),
     },
     log: logEntry('Queued run_script action', 'info', {
       actionType: action.type,
@@ -1487,7 +1533,7 @@ function chooseShellForDevice(deviceOsType: 'windows' | 'macos' | 'linux', reque
   return 'bash';
 }
 
-async function executeCommandAction(
+export async function executeCommandAction(
   action: ExecuteCommandAction,
   actionIndex: number,
   context: ActionExecutionContext,
@@ -1511,7 +1557,7 @@ async function executeCommandAction(
     timeoutSeconds: 300,
     runAs: 'system',
     createdBy: context.automation.createdBy ?? null,
-    requireOnline: true,
+    offlinePolicy: automationOfflinePolicy(action.whenOffline),
   });
 
   if (!dispatch.ok) {
@@ -1530,6 +1576,7 @@ async function executeCommandAction(
     outcome: {
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
+      ...(dispatch.delivered ? {} : { message: QUEUED_OFFLINE_MESSAGE }),
     },
     log: logEntry('Queued execute_command action', 'info', {
       actionType: action.type,
@@ -1935,7 +1982,7 @@ async function executeAction(
   };
 }
 
-async function persistActionExecutionOutcome(
+export async function persistActionExecutionOutcome(
   runId: string,
   deviceId: string,
   actionIndex: number,
@@ -1951,8 +1998,8 @@ async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
-    message: outcome.status === 'failed'
-      ? outcome.message ?? result.log.message
+    message: 'message' in outcome && outcome.message
+      ? outcome.message
       : result.log.message,
   });
 }
