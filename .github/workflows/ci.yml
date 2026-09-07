@@ -3006,14 +3006,11 @@ jobs:
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
-          # Fail closed: only a successful path check may skip native compilation.
-          if [[ "$MOBILE_NATIVE_CHANGES_RESULT" != "success" ]] ||
-             { [[ "$MOBILE_NATIVE_REQUIRED" == "true" ]] && [[ "$BUILD_MOBILE_IOS_RESULT" != "success" ]]; } ||
-             { [[ "$MOBILE_NATIVE_REQUIRED" != "true" ]] && [[ "$MOBILE_NATIVE_REQUIRED" != "false" ]]; } ||
-             { [[ "$MOBILE_NATIVE_REQUIRED" == "false" ]] && [[ "$BUILD_MOBILE_IOS_RESULT" != "skipped" ]]; }; then
-            echo "Mobile native build failed or did not run when required"
-            exit 1
-          fi
+          # Fail closed: only a successful path check may skip native compilation. The
+          # mobile-native-changes/build-mobile-ios checks are folded into this single
+          # unconditional blocking condition (rather than a separate leading if statement)
+          # because the ci-success gating contract test only recognizes one such block and
+          # asserts every required job's result is checked inside it.
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
@@ -3022,6 +3019,10 @@ jobs:
              [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
+             [[ "${MOBILE_NATIVE_CHANGES_RESULT}" != "success" ]] || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "true" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "success" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" != "true" ]] && [[ "${MOBILE_NATIVE_REQUIRED}" != "false" ]]; } || \
+             { [[ "${MOBILE_NATIVE_REQUIRED}" == "false" ]] && [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
