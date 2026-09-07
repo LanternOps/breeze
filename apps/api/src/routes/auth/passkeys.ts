@@ -23,7 +23,9 @@ import {
   bindIssuedUserSession,
   authBrowserTransitionsEnforced,
   recordAuthTransitionLegacyIssuer,
+  completeAdditionalMfaFactorEnrollment,
   completeInitialMfaEnrollment,
+  completeMfaFactorRemoval,
   generateRecoveryCodes,
   type AuthIssuanceCapability,
   type AuthorizedUserSession,
@@ -38,11 +40,11 @@ import {
   verifyPasskeyAuthentication,
   verifyPasskeyRegistration
 } from '../../services/passkeys';
-import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { carryForwardBinding, readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { captureException } from '../../services/sentry';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { EpochAdvancePreconditionError, type Tx } from '../../services/authLifecycle';
+import { type Tx } from '../../services/authLifecycle';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -87,6 +89,39 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
     return c.json({ error: 'Authentication issuance unavailable' }, 409);
   }
   return null;
+}
+
+/**
+ * POST-COMMIT session install for the factor writes that replace the caller's
+ * session (#5038). The factor write is already committed and every OTHER
+ * session is already dead by the time this runs, so a failure here must NOT be
+ * turned into an error the user retries — a retried passkey registration
+ * duplicates a credential, and a retried delete answers 404. Report it, step
+ * over, and let the caller withhold the tokens it would otherwise return: the
+ * refresh JTI was never bound, so the access token would die at its first
+ * refresh anyway. Same rule /mfa/disable and /mfa/recovery-codes follow.
+ *
+ * Returns whether the replacement is safe to hand back.
+ */
+async function installReplacementSession(
+  c: Context,
+  issued: AuthorizedUserSession,
+  userId: string,
+  factorChange: string,
+): Promise<boolean> {
+  try {
+    await bindIssuedUserSession(issued);
+    installAuthorizedUserSessionCookies(c, issued);
+    return true;
+  } catch (error) {
+    captureException(error, c, { factorChange });
+    console.error('[auth] passkey factor write committed but the replacement session could not be installed', {
+      userId,
+      factorChange,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 // WebAuthn assertion/attestation payloads are large nested objects validated
@@ -318,7 +353,8 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
 
   let mfaEpoch: number;
   let teardownFailed: boolean;
-  let replacement: { recoveryCodes: string[]; issued: AuthorizedUserSession } | null = null;
+  let sessionInstalled = true;
+  let replacement: { recoveryCodes: string[] | null; issued: AuthorizedUserSession | null } | null = null;
   if (!enrollmentState.mfaEnabled) {
     const recoveryCodes = generateRecoveryCodes();
     const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
@@ -371,37 +407,84 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       if (!response) throw error;
       return response;
     }
-    await bindIssuedUserSession(result.issued);
-    installAuthorizedUserSessionCookies(c, result.issued);
+    sessionInstalled = await installReplacementSession(c, result.issued, auth.user.id, 'passkey_register');
     mfaEpoch = result.mfaEpoch;
     teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
-    replacement = { recoveryCodes: result.recoveryCodes, issued: result.issued };
+    // The one-time recovery codes are reported even when the session install
+    // failed — they are already the account's only valid set, and swallowing
+    // them would lock the user out of their own new factor.
+    replacement = { recoveryCodes: result.recoveryCodes, issued: sessionInstalled ? result.issued : null };
   } else {
-    // Secondary-factor addition keeps the existing invalidation behavior and
-    // does not rotate recovery codes or replace the already-assured session.
+    // #5038: a SECONDARY factor addition still advances mfa_epoch and revokes
+    // every refresh family — no other live session may keep an assurance minted
+    // before the account's factor set changed (SR2-07) — but it must not evict
+    // the ACTOR. The old path did exactly that: the caller's access token went
+    // stale on its own bump and the refresh cookie it would retry with belonged
+    // to a family revoked in the same transaction, so the web client
+    // hard-redirected to /login?reason=session-expired the moment the user
+    // added a second passkey. Same road /mfa/disable took in #4934/#5008.
+    // The account's existing recovery-code set is untouched: adding a factor
+    // reveals no new one-time secret, so none is rotated.
+    let capability: AuthIssuanceCapability;
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
     let result;
     try {
-      result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
-        await persistPasskey(tx);
-        const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
+      result = await completeAdditionalMfaFactorEnrollment({
+        userId: auth.user.id,
+        identity: {
+          userId: auth.user.id,
+          email: auth.user.email,
+          roleId: auth.token?.roleId ?? null,
+          orgId: auth.orgId ?? null,
+          partnerId: auth.partnerId ?? null,
+          scope: auth.scope,
+          // Carry the caller's OWN assurance forward, never elevate it: this
+          // endpoint's step-up gate proves an existing factor, not that the
+          // session itself was MFA-assured.
+          mfa: auth.token?.mfa === true,
+          // SR-001: a RE-MINT takes its device binding from the previously
+          // signed `mdid` claim, never the forgeable request header.
+          mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+        },
+        capability,
+        expectedAuthEpoch: auth.token?.aep as number,
+        expectedMfaEpoch: auth.token?.mep as number,
+        revokeReason: 'passkey-register',
+        persistFactor: async (tx) => {
+          await persistPasskey(tx);
+          const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
 
-        await tx
-          .update(users)
-          .set({
-            mfaEnabled: true,
-            ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-            updatedAt: new Date()
-          })
-          .where(eq(users.id, auth.user.id));
-      }, { authEpoch: auth.token?.aep as number, mfaEpoch: auth.token?.mep as number, status: 'active' });
+          const rows = await tx
+            .update(users)
+            .set({
+              mfaEnabled: true,
+              ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+              updatedAt: new Date()
+            })
+            .where(eq(users.id, auth.user.id))
+            .returning({ id: users.id });
+          if (rows.length !== 1) throw new Error('Passkey registration user disappeared');
+          return undefined;
+        },
+      });
     } catch (error) {
-      if (error instanceof EpochAdvancePreconditionError) {
-        return c.json({ error: 'Authentication changed. Please sign in again.' }, 409);
-      }
-      throw error;
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
     }
+
+    sessionInstalled = await installReplacementSession(c, result.issued, auth.user.id, 'passkey_register');
     mfaEpoch = result.mfaEpoch;
-    teardownFailed = result.remoteSessionsTerminated === TEARDOWN_FAILED;
+    teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
+    // No recovery codes: the account already holds its own set.
+    replacement = { recoveryCodes: null, issued: sessionInstalled ? result.issued : null };
   }
 
   if (!inserted) {
@@ -418,19 +501,19 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       method: 'passkey',
       credentialId: fields.credentialId,
       mfaEpoch,
-      teardownFailed
+      teardownFailed,
+      sessionInstalled
     }
   });
 
   return c.json({
     success: true,
     passkey: toPublicPasskey(inserted),
-    ...(replacement
-      ? {
-          recoveryCodes: replacement.recoveryCodes,
-          tokens: toPublicTokens(replacement.issued),
-        }
-      : {}),
+    // Recovery codes appear only on the INITIAL enrollment that minted them.
+    ...(replacement?.recoveryCodes ? { recoveryCodes: replacement.recoveryCodes } : {}),
+    // Withheld when the post-commit install failed: the refresh JTI was never
+    // bound, so the access token would die at its first refresh.
+    ...(replacement?.issued ? { tokens: toPublicTokens(replacement.issued) } : {}),
   });
 });
 
@@ -913,31 +996,79 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
   }
 
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-delete', async (tx) => {
-    await tx
-      .delete(userPasskeys)
-      .where(eq(userPasskeys.id, id));
+  // #5038: removing a factor advances mfa_epoch and revokes every refresh
+  // family so no OTHER live session survives the account's factor set changing
+  // (SR2-07) — but the caller must not be evicted by its own request. The old
+  // path bumped the epoch without re-issuing, so deleting a passkey bounced the
+  // user to /login?reason=session-expired. Same primitive #4934/#5008 gave
+  // /mfa/disable: every other session dies, the actor's is replaced in the same
+  // response.
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeMfaFactorRemoval({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        // Carried forward, never elevated. This route already requires an
+        // MFA-assured caller, and a fresh login after the LAST factor is gone
+        // would mint `mfa` true vacuously anyway.
+        mfa: auth.token?.mfa === true,
+        // SR-001: the binding comes from the previously-signed `mdid` claim,
+        // never the forgeable request header.
+        mobileDeviceId: carryForwardBinding(auth.token ?? {}),
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      revokeReason: 'passkey-delete',
+      persistFactor: async (tx) => {
+        await tx
+          .delete(userPasskeys)
+          .where(eq(userPasskeys.id, id));
 
-    if (remainingFactorCount === 0) {
-      await tx
-        .update(users)
-        .set({
-          mfaEnabled: false,
-          mfaMethod: null,
-          updatedAt: new Date()
-        })
-        .where(eq(users.id, auth.user.id));
-    } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
-      await tx
-        .update(users)
-        .set({
-          mfaEnabled: true,
-          mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
-          updatedAt: new Date()
-        })
-        .where(eq(users.id, auth.user.id));
-    }
-  });
+        if (remainingFactorCount === 0) {
+          await tx
+            .update(users)
+            .set({
+              mfaEnabled: false,
+              mfaMethod: null,
+              updatedAt: new Date()
+            })
+            .where(eq(users.id, auth.user.id));
+        } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
+          await tx
+            .update(users)
+            .set({
+              mfaEnabled: true,
+              mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
+              updatedAt: new Date()
+            })
+            .where(eq(users.id, auth.user.id));
+        }
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+
+  const sessionInstalled = await installReplacementSession(c, result.issued, auth.user.id, 'passkey_delete');
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -949,11 +1080,15 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
       method: 'passkey',
       passkeyId: id,
       mfaEpoch: result.mfaEpoch,
-      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+      teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED,
+      sessionInstalled
     }
   });
 
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
+  });
 });
 
 async function readPendingPasskeyMfa(tempToken: string): Promise<PendingMfaRecord | null> {
