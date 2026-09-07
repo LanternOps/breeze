@@ -12,6 +12,7 @@ import androidx.fragment.app.FragmentActivity
 import com.google.android.play.core.integrity.StandardIntegrityManager
 import com.google.android.play.core.integrity.IntegrityManagerFactory
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.records.Field
@@ -72,9 +73,19 @@ class CreateAttestedKeyOptions : Record {
   var attestationChallengeB64: String? = null
 }
 
-/** Typed failures. Every one is a refusal — never a degraded success. */
+/**
+ * Typed failures. Every one is a refusal — never a degraded success.
+ *
+ * Extends `CodedException`, NOT a bare `Exception`: `expo.modules.kotlin.Promise`
+ * only exposes `reject(CodedException)` and `reject(code, message, cause)` —
+ * there is no `reject(Throwable)` overload on it (that one belongs to the
+ * unrelated React bridge `Promise`), so a plain `Exception` here would not
+ * compile at any `promise.reject(...)` call site in this file. The code is
+ * inferred from the class name as `ERR_BREEZE_ATTESTATION`, which is what
+ * reaches JS as the rejection code.
+ */
 class BreezeAttestationException(message: String, cause: Throwable? = null) :
-  Exception(message, cause)
+  CodedException(message, cause)
 
 class BreezeAttestationModule : Module() {
   companion object {
