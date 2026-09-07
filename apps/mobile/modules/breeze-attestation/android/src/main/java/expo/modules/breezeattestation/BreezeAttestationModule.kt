@@ -16,8 +16,13 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
+import java.security.InvalidAlgorithmParameterException
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.KeyStoreException
+import java.security.NoSuchAlgorithmException
+import java.security.NoSuchProviderException
+import java.security.ProviderException
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import java.util.concurrent.Executor
@@ -126,14 +131,21 @@ class BreezeAttestationModule : Module() {
    *     `FEATURE_HARDWARE_KEYSTORE` and then hand back a one-element,
    *     self-signed chain); minting one is the only honest answer.
    *
-   * Reports FALSE rather than throwing, so a device without attestation takes
-   * the legacy unattested path, which is honest about registering at L2/L3.
-   * A throw here would surface as `attestation_probe_failed` — correct for a
-   * broken bridge, wrong for "this phone simply cannot".
+   * Reports FALSE — rather than throwing — for the exceptions that genuinely
+   * mean "this hardware cannot attest", so such a device takes the legacy
+   * unattested path, which is honest about registering at L2/L3.
+   *
+   * EVERYTHING ELSE PROPAGATES, on purpose. `approverDevice.runAttempt` has a
+   * dedicated fail-closed branch for a probe that throws
+   * (`attestation_probe_failed`), because a probe that failed for a reason
+   * other than missing hardware means "unknown", not "no" — and answering
+   * "no" there would silently register an attestation-capable phone as
+   * unattested, which is the exact harm this wave exists to prevent. A blanket
+   * `catch (Throwable)` here would make that branch dead code on Android.
    */
   private fun isAttestationAvailable(): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
-    return try {
+    try {
       deleteKey(PROBE_ALIAS)
       generateKey(
         alias = PROBE_ALIAS,
@@ -148,10 +160,25 @@ class BreezeAttestationModule : Module() {
       // A genuine attestation chain runs leaf -> intermediates -> Google root.
       // A single self-signed certificate means the platform issued no
       // attestation at all, and the server would reject it.
-      chain != null && chain.size > 1
-    } catch (_: Throwable) {
-      false
+      return chain != null && chain.size > 1
+    } catch (_: UnsupportedOperationException) {
+      // The narrow set below is what a platform WITHOUT key attestation
+      // actually raises: no EC/AndroidKeyStore provider, an attestation
+      // challenge the keymaster rejects, or a keymaster that refuses outright
+      // (ProviderException, which StrongBoxUnavailableException extends).
+      return false
+    } catch (_: NoSuchAlgorithmException) {
+      return false
+    } catch (_: NoSuchProviderException) {
+      return false
+    } catch (_: InvalidAlgorithmParameterException) {
+      return false
+    } catch (_: ProviderException) {
+      return false
+    } catch (_: KeyStoreException) {
+      return false
     } finally {
+      // Cleanup must never change the answer, in either direction.
       runCatching { deleteKey(PROBE_ALIAS) }
     }
   }
@@ -457,15 +484,19 @@ class BreezeAttestationModule : Module() {
   private fun keyStore(): KeyStore =
     KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
-  private fun deleteKey(alias: String): Boolean = try {
+  /**
+   * Delete `alias` if it exists. Returns whether an entry was actually
+   * removed — `false` means "there was nothing there", NOT "the delete
+   * failed". A genuine deletion failure THROWS, because the two are not
+   * interchangeable at either call site: `createAttestedKey` must not mint a
+   * replacement over a key it could not remove, and `deleteAttestedKey`'s
+   * caller must not be told "no key" when one is still sitting in the
+   * keystore.
+   */
+  private fun deleteKey(alias: String): Boolean {
     val ks = keyStore()
-    if (ks.containsAlias(alias)) {
-      ks.deleteEntry(alias)
-      true
-    } else {
-      false
-    }
-  } catch (_: Throwable) {
-    false
+    if (!ks.containsAlias(alias)) return false
+    ks.deleteEntry(alias)
+    return true
   }
 }
