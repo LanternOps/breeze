@@ -34,6 +34,9 @@ export function foldFindingsIntoOrgRollups(
         name: resolved.name,
         deviceCount: 0,
         issueCount: count,
+        // #5115: an org that has open findings but no devices/alerts of its
+        // own has nothing to report as offline either.
+        offlineCount: 0,
         nameUnavailable: resolved.unavailable,
       });
     }

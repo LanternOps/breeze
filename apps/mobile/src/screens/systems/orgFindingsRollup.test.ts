@@ -16,6 +16,7 @@ describe('foldFindingsIntoOrgRollups (#5139)', () => {
       name: 'Acme',
       deviceCount: 3,
       issueCount: 1,
+      offlineCount: 0,
       nameUnavailable: false,
       ...overrides,
     };
@@ -29,7 +30,9 @@ describe('foldFindingsIntoOrgRollups (#5139)', () => {
   it('creates a rollup for an org with open findings but no devices/alerts', () => {
     const result = foldFindingsIntoOrgRollups([], { 'org-2': 4 }, ORGS, false);
     expect(result).toEqual([
-      expect.objectContaining({ id: 'org-2', name: 'Beta Corp', deviceCount: 0, issueCount: 4 }),
+      // offlineCount: 0 — #5115's field, folded in here too since this org
+      // has no device data at all to report as offline.
+      expect.objectContaining({ id: 'org-2', name: 'Beta Corp', deviceCount: 0, issueCount: 4, offlineCount: 0 }),
     ]);
   });
 
