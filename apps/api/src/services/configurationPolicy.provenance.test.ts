@@ -96,7 +96,11 @@ function row(over: Record<string, unknown>) {
 
 describe('resolveEffectiveConfig inheritance provenance', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // mockReset, not clearAllMocks: this harness queues a VARIABLE number of
+    // `mockReturnValueOnce` chains (4 or 5, depending on whether a name lookup
+    // is expected), and a clear does not drain that queue — a leftover chain
+    // would be handed to the next test's first query.
+    vi.mocked(db.select).mockReset();
   });
 
   it('an inherited link keeps sourcePolicyId on the ASSIGNED policy and reports inheritedFrom', async () => {

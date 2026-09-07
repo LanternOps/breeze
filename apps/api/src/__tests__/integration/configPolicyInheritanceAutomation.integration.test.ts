@@ -362,7 +362,7 @@ describe('config policy inheritance — automation execution identity (live DB)'
     const result = await withDbAccessContext(SYSTEM_CTX, () =>
       processTriggerConfigPolicySchedule(triggerJobData(dispatch!)));
 
-    expect(result).toEqual({ skipped: 'config_policy_not_found' });
+    expect(result).toEqual({ skipped: 'config_policy_inactive' });
     expect(recordedJobs.filter((j) => j.name === 'execute-config-policy-run')).toHaveLength(0);
   });
 });

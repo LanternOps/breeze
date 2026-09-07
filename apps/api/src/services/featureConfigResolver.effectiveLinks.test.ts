@@ -17,6 +17,16 @@ import {
   resolveAlertRulesForDevice,
   resolveAutomationsForDeviceWithPolicy,
   resolveAllVulnerabilityEnabledDevices,
+  resolveGoverningAlertRulePolicyForDevice,
+  resolvePatchConfigDetailsForDevice,
+  resolveBackupConfigForDevice,
+  resolveMaintenanceConfigForDevice,
+  resolveComplianceRulesForDevice,
+  resolveSoftwarePolicyForDevice,
+  resolveVulnerabilityEnabledForDevice,
+  resolveDeviceIdsForSoftwarePolicy,
+  resolveBackupProtectionForDevice,
+  resolveAllBackupAssignedDevices,
 } from './featureConfigResolver';
 import { db } from '../db';
 import {
@@ -79,6 +89,13 @@ function queueHierarchy(...rowSets: unknown[][]) {
   queue([DEVICE], [{ partnerId: 'ptr-1' }], [], ...rowSets);
 }
 
+// Some resolvers issue follow-up queries (timezone lookups, settings joins)
+// after the one under test. Queue spare empty chains so an extra call cannot
+// throw on an undefined builder and turn a real assertion into an error.
+function queueSpares(n: number) {
+  queue(...Array.from({ length: n }, () => [] as unknown[]));
+}
+
 function expectReadsEffectiveLinks() {
   expect(rec.joined).toContain(configPolicyEffectiveFeatureLinks);
   expect(rec.joined).not.toContain(configPolicyFeatureLinks);
@@ -119,6 +136,64 @@ describe('featureConfigResolver reads effective feature links', () => {
   it('resolveAllVulnerabilityEnabledDevices joins the effective view', async () => {
     queue([]);
     await resolveAllVulnerabilityEnabledDevices();
+    expectReadsEffectiveLinks();
+  });
+
+  // The remaining hierarchy resolvers. Each one decides what a device gets, so
+  // a missed switch here is the same "child policy delivers nothing" bug — and
+  // a schema-stub rename alone would not catch it, because the stub is renamed
+  // in lockstep with the source. These assert against the REAL schema exports.
+  const deviceResolvers: Array<[string, (id: string) => Promise<unknown>, number]> = [
+    ['resolvePatchConfigDetailsForDevice', resolvePatchConfigDetailsForDevice, 3],
+    ['resolveBackupConfigForDevice', resolveBackupConfigForDevice, 3],
+    ['resolveMaintenanceConfigForDevice', resolveMaintenanceConfigForDevice, 3],
+    ['resolveComplianceRulesForDevice', resolveComplianceRulesForDevice, 3],
+    ['resolveSoftwarePolicyForDevice', resolveSoftwarePolicyForDevice, 3],
+    ['resolveVulnerabilityEnabledForDevice', resolveVulnerabilityEnabledForDevice, 3],
+    ['resolveBackupProtectionForDevice', resolveBackupProtectionForDevice, 3],
+  ];
+
+  for (const [name, call, spares] of deviceResolvers) {
+    it(`${name} joins the effective view`, async () => {
+      queueHierarchy([]);
+      queueSpares(spares);
+      await call('dev-1');
+      expectReadsEffectiveLinks();
+    });
+  }
+
+  it('resolveGoverningAlertRulePolicyForDevice joins the effective view', async () => {
+    // This one short-circuits with `unassigned` before its view query unless the
+    // candidate policy is actually among the assignments — feeding [] here would
+    // make the assertion pass for the wrong reason on the OTHER branch, so the
+    // seed has to reach the second query.
+    queueHierarchy([
+      {
+        configPolicyId: 'p-1',
+        assignmentLevel: 'organization',
+        assignmentPriority: 0,
+        assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+    ]);
+    queueSpares(3);
+
+    const outcome = await resolveGoverningAlertRulePolicyForDevice('dev-1', 'p-1');
+
+    expect(outcome).toEqual({ outcome: 'governs' });
+    expectReadsEffectiveLinks();
+  });
+
+  it('resolveDeviceIdsForSoftwarePolicy joins the effective view (it feeds the compliance worker)', async () => {
+    queue([]);
+    queueSpares(2);
+    await resolveDeviceIdsForSoftwarePolicy('sp-1');
+    expectReadsEffectiveLinks();
+  });
+
+  it('resolveAllBackupAssignedDevices joins the effective view', async () => {
+    queue([{ partnerId: 'ptr-1' }]);
+    queueSpares(3);
+    await resolveAllBackupAssignedDevices('org-1');
     expectReadsEffectiveLinks();
   });
 });

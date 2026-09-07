@@ -813,9 +813,20 @@ async function processTriggerConfigPolicySchedule(
     .limit(1);
 
   // Not found or no longer active: skip. A missing policy is a denial, never
-  // "nothing constrains this run".
-  if (!policyOwner || policyOwner.status !== 'active') {
+  // "nothing constrains this run". The two are reported separately because the
+  // skip reason is the only diagnostic this path produces, and "not found" sent
+  // an operator hunting for a deleted row when the policy was merely archived.
+  if (!policyOwner) {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}: assigned policy ${assignedPolicyId} no longer exists — skipping the run`,
+    );
     return { skipped: 'config_policy_not_found' };
+  }
+  if (policyOwner.status !== 'active') {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}: assigned policy ${assignedPolicyId} is ${policyOwner.status}, not active — skipping the run`,
+    );
+    return { skipped: 'config_policy_inactive' };
   }
 
   // …and the automation must still be EFFECTIVE for that policy: a child that
@@ -831,6 +842,9 @@ async function processTriggerConfigPolicySchedule(
     .limit(1);
 
   if (!effectiveLink) {
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id} is no longer effective for policy ${assignedPolicyId} (the policy overrode the feature after this tick was queued) — skipping the run`,
+    );
     return { skipped: 'automation_not_effective_for_policy' };
   }
 
@@ -893,16 +907,44 @@ async function processTriggerConfigPolicySchedule(
   // same inherited automation. Each dispatch keeps only the devices whose
   // WINNING automation assignment — by the same hierarchy resolution the rest of
   // the product uses — is this dispatch's policy, so exactly one of them runs it.
+  //
+  // Batched rather than a bare sequential `for await`: this runs on top of the
+  // per-device maintenance loop above, so a naive loop would DOUBLE the
+  // sequential round trips on a path a partner-wide automation can point at a
+  // whole MSP fleet, every minute. Same shape as
+  // `resolveAllVulnerabilityEnabledDevices`, which solves the same
+  // "verify each candidate through a full hierarchy resolution" problem.
   const winners: string[] = [];
-  for (const deviceId of eligibleDeviceIds) {
-    // A device whose automations cannot be resolved is skipped, not assumed to
-    // win: an unresolvable device is a denial, not an absence of constraint.
-    const resolved = await resolveAutomationsForDeviceWithPolicy(deviceId);
-    if (!resolved || resolved.configPolicyId !== assignedPolicyId) continue;
-    if (resolved.automations.some((a) => a.id === cpAutomation.id)) winners.push(deviceId);
+  const WINNER_BATCH_SIZE = 50;
+  for (let i = 0; i < eligibleDeviceIds.length; i += WINNER_BATCH_SIZE) {
+    const batch = eligibleDeviceIds.slice(i, i + WINNER_BATCH_SIZE);
+    const resolvedBatch = await Promise.all(
+      batch.map(async (deviceId) => ({
+        deviceId,
+        // A device whose automations cannot be resolved is skipped, not assumed
+        // to win: an unresolvable device is a denial, not an absence of
+        // constraint.
+        resolved: await resolveAutomationsForDeviceWithPolicy(deviceId),
+      })),
+    );
+    for (const { deviceId, resolved } of resolvedBatch) {
+      if (!resolved || resolved.configPolicyId !== assignedPolicyId) continue;
+      if (resolved.automations.some((a) => a.id === cpAutomation.id)) winners.push(deviceId);
+    }
   }
 
   if (winners.length === 0) {
+    // Deliberately a log line and NOT a Sentry event: this is a ROUTINE outcome
+    // of per-policy dispatch. When a parent is assigned at org level and a child
+    // at site level, and every one of the org's devices is at that site, the
+    // parent's dispatch legitimately keeps nobody — the child's dispatch runs
+    // them all. Alerting on it would page on a correct configuration. It is only
+    // suspicious when no overlapping assignment exists, which is why the counts
+    // are in the message: `eligible=N winners=0` with no sibling dispatch in the
+    // same slot is the shape worth investigating.
+    console.warn(
+      `[AutomationWorker] Config-policy automation ${cpAutomation.id}, policy ${assignedPolicyId}, slot ${data.slotKey}: eligible=${eligibleDeviceIds.length} winners=0 — every candidate device resolves to a different policy for this automation, so this dispatch runs nothing`,
+    );
     return { skipped: 'no_winning_devices' };
   }
 
@@ -940,6 +982,13 @@ async function processExecuteConfigPolicyRun(
   // feature link, which now maps to the parent and every child. The scheduler
   // re-enqueues on the next tick with the id present.
   if (!data.configPolicyId) {
+    // Loud, because this DROPS one execution rather than deferring it. Only the
+    // schedule stage re-enqueues, and only on the automation's own cron cadence
+    // — for a weekly or monthly automation a deploy landing in the window costs
+    // a whole cycle, with no automation_runs row to explain the gap.
+    console.warn(
+      `[AutomationWorker] Config-policy run for automation ${data.configPolicyAutomationId} carries no configPolicyId (queued before the #5080 deploy) — dropping this execution rather than guessing an owner; the next scheduled tick re-enqueues it`,
+    );
     return { skipped: 'config_policy_id_missing' };
   }
 
@@ -1103,16 +1152,17 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   try {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
 
-    if (deviceId) {
-      // #5080: the WINNING assignment's policy travels with the automations —
-      // the event-run job needs it for the same reason the scheduled one does,
-      // and `null` (device gone / nothing assigned) means skip, not "run".
-      const resolvedAutomations = await resolveAutomationsForDeviceWithPolicy(deviceId);
-      const cpAutomations = resolvedAutomations?.automations ?? [];
-      const cpAssignedPolicyId = resolvedAutomations?.configPolicyId;
+    // #5080: the WINNING assignment's policy travels with the automations — the
+    // event-run job needs it for the same reason the scheduled one does. A null
+    // resolution (device gone, or nothing assigned) means there is nothing to
+    // run, so the whole block is skipped rather than defaulting the policy id to
+    // something the run stage would have to reject.
+    const resolved = deviceId ? await resolveAutomationsForDeviceWithPolicy(deviceId) : null;
+
+    if (deviceId && resolved) {
+      const { configPolicyId: cpAssignedPolicyId, automations: cpAutomations } = resolved;
 
       for (const cpAutomation of cpAutomations) {
-        if (!cpAssignedPolicyId) continue;
         if (!cpAutomation.enabled) continue;
         if (cpAutomation.triggerType !== 'event') continue;
         if (cpAutomation.eventType !== event.type) continue;
@@ -1211,6 +1261,7 @@ export async function shutdownAutomationWorker(): Promise<void> {
 // not part of the worker's public surface.
 export const __testOnly = {
   resolveDeviceIdsForAssignment,
+  processScanSchedules,
   processTriggerConfigPolicySchedule,
   processTriggerEvent,
   processExecuteRun,

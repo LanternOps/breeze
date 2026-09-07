@@ -85,9 +85,12 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 import { __testOnly, collectDueConfigPolicyScheduleDispatches } from './automationWorker';
 import { db } from '../db';
 import { configPolicyEffectiveFeatureLinks, configurationPolicies } from '../db/schema';
-import { resolveAutomationsForDeviceWithPolicy } from '../services/featureConfigResolver';
+import {
+  resolveAutomationsForDeviceWithPolicy,
+  scanScheduledAutomations,
+} from '../services/featureConfigResolver';
 
-const { processTriggerConfigPolicySchedule } = __testOnly;
+const { processTriggerConfigPolicySchedule, processScanSchedules } = __testOnly;
 
 const AUTOMATION = {
   id: 'cp-auto-1',
@@ -155,6 +158,34 @@ function chain(result: unknown[], extra: Record<string, unknown> = {}) {
   return c;
 }
 
+// Drizzle's `eq`/`and` build a real SQL AST even against string-stub columns:
+// neither operand satisfies isDriverValueEncoder, so both land in `queryChunks`
+// verbatim and are recoverable. That lets a test assert the VALUE a `.where()`
+// was built with, rather than only which table was selected from — asserting
+// the table alone leaves the clamp free to key on the wrong id and stay green,
+// which is precisely the cross-tenant misattribution this wave closes.
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+  }
+  return acc;
+}
+
+function whereLeaves(mockChain: { where: { mock: { calls: unknown[][] } } }): string[] {
+  return collectSqlLeafStrings(mockChain.where.mock.calls[0]?.[0]);
+}
+
 const jobData = {
   type: 'trigger-config-policy-schedule',
   configPolicyAutomationId: 'cp-auto-1',
@@ -194,8 +225,18 @@ describe('processTriggerConfigPolicySchedule — ownership clamp keys on the ASS
     // feature-link table: a link id maps to many policies now.
     expect(ownerChain.from).toHaveBeenCalledWith(configurationPolicies);
     expect(ownerChain.innerJoin).not.toHaveBeenCalled();
-    // Effectiveness is verified through the view, for THIS policy.
+    // …and it clamps on the ASSIGNED POLICY id, not the feature-link id. This is
+    // the assertion that matters: table identity alone would still pass if the
+    // clamp keyed on `cpAutomation.featureLinkId`.
+    const ownerWhere = whereLeaves(ownerChain);
+    expect(ownerWhere).toContain('child-a');
+    expect(ownerWhere).not.toContain('fl-parent');
+
+    // Effectiveness is verified through the view, for THIS policy AND this link.
     expect(effectiveChain.from).toHaveBeenCalledWith(configPolicyEffectiveFeatureLinks);
+    const effectiveWhere = whereLeaves(effectiveChain);
+    expect(effectiveWhere).toContain('fl-parent');
+    expect(effectiveWhere).toContain('child-a');
   });
 
   it("skips when the assigned policy is gone (deny, not 'no constraint applies')", async () => {
@@ -208,13 +249,15 @@ describe('processTriggerConfigPolicySchedule — ownership clamp keys on the ASS
     });
   });
 
-  it('skips when the assigned policy is no longer active', async () => {
+  it('reports an ARCHIVED policy distinctly from a missing one', async () => {
+    // The skip reason is the only diagnostic this path emits, so conflating the
+    // two sends an operator hunting for a deleted row that is merely archived.
     vi.mocked(db.select)
       .mockReturnValueOnce(automationChain())
       .mockReturnValueOnce(chain([{ orgId: 'org-a', partnerId: null, status: 'archived' }]));
 
     expect(await processTriggerConfigPolicySchedule(jobData)).toEqual({
-      skipped: 'config_policy_not_found',
+      skipped: 'config_policy_inactive',
     });
   });
 
@@ -290,5 +333,45 @@ describe('processTriggerConfigPolicySchedule — ownership clamp keys on the ASS
 
     await processTriggerConfigPolicySchedule(legacyJob as any);
     expect(ownerChain.from).toHaveBeenCalledWith(configurationPolicies);
+    // The fallback must reach the same id `configPolicyId` would have carried —
+    // asserting only the table would let the fallback resolve to anything.
+    expect(whereLeaves(ownerChain)).toContain('child-a');
+  });
+});
+
+// The SCHEDULE-stage job id. The run-stage id is covered above and in the
+// integration suite, but this one had no coverage at all — and it is half of
+// the "both BullMQ job ids carry the assigned policy id" requirement. Without
+// the policy in the key, the two children of one inherited automation share a
+// schedule job id and BullMQ drops the second dispatch on every tick.
+describe('processScanSchedules — schedule-stage job identity', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+    queueAdd.mockClear();
+    vi.mocked(scanScheduledAutomations).mockReset();
+    // The standalone-automation scan runs first and must find nothing.
+    vi.mocked(db.select).mockReturnValueOnce(chain([]) as any);
+  });
+
+  it('keys the schedule job on (automation, assigned policy, slot)', async () => {
+    vi.mocked(scanScheduledAutomations).mockResolvedValue([
+      candidate('child-a', 'org-a'),
+      candidate('child-b', 'org-b'),
+    ]);
+
+    await processScanSchedules('2026-01-01T10:00:00.000Z');
+
+    const scheduleJobs = queueAdd.mock.calls.filter(
+      ([name]) => name === 'trigger-config-policy-schedule',
+    );
+    expect(scheduleJobs).toHaveLength(2);
+
+    const jobIds = scheduleJobs.map(([, , opts]) => opts!.jobId);
+    expect(new Set(jobIds).size).toBe(2);
+    for (const [, payload, opts] of scheduleJobs) {
+      const policyId = (payload as any).configPolicyId as string;
+      expect(['child-a', 'child-b']).toContain(policyId);
+      expect(opts!.jobId).toBe(`cp-automation-schedule-cp-auto-1-${policyId}-${(payload as any).slotKey}`);
+    }
   });
 });

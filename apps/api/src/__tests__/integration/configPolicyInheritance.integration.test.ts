@@ -53,6 +53,8 @@ import {
 import { resolveEffectiveConfig } from '../../services/configurationPolicy';
 import { resolveAlertRulesForDevice } from '../../services/featureConfigResolver';
 import { buildEventLogConfigUpdate, EVENT_LOG_DEFAULTS } from '../../routes/agents/helpers';
+import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
+import { getOrgPurgeRemovedAfterDays } from '../../services/deviceLifecyclePolicy';
 import type { AuthContext } from '../../middleware/auth';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
@@ -251,6 +253,21 @@ async function seedEventLogLink(configPolicyId: string, maxEventsPerCycle: numbe
       featureLinkId: link!.id,
       maxEventsPerCycle,
     });
+    return link!.id;
+  });
+}
+
+/** A link whose settings live entirely in the compat inline JSONB. */
+async function seedInlineLink(
+  configPolicyId: string,
+  featureType: 'helper' | 'device_lifecycle',
+  inlineSettings: Record<string, unknown>,
+): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [link] = await db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId, featureType, inlineSettings })
+      .returning({ id: configPolicyFeatureLinks.id });
     return link!.id;
   });
 }
@@ -1128,6 +1145,38 @@ describe('config policy inheritance — resolution reaches devices (live DB)', (
       buildEventLogConfigUpdate(device.id));
 
     expect(update.max_events_per_cycle).toBe(42);
+  });
+
+  it('agent delivery: an inherited HELPER restriction reaches the device under the agent context', async () => {
+    // The security-relevant one: this resolver's fallback is the permissive
+    // 'standard', so a baseline that restricts the helper agent to 'basic' and
+    // fails to resolve does not error — it silently over-permissions.
+    const t = await seedTenancy();
+    const site = await createSite({ orgId: t.a1 });
+    const device = await seedInheritanceDevice(t.a1, site.id);
+
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedInlineLink(parent.id, 'helper', { permissionLevel: 'basic' });
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const level = await withDbAccessContext(agentContext(t.a1, t.p1), () =>
+      resolveHelperPermissionLevelForDevice(device.id));
+
+    expect(level).toBe('basic');
+  });
+
+  it('an inherited device_lifecycle window reaches the org-level resolver', async () => {
+    const t = await seedTenancy();
+    const parent = await seedPolicy({ partnerId: t.p1, name: 'MSP baseline' });
+    const child = await seedPolicy({ orgId: t.a1, name: 'A1 child', parentPolicyId: parent.id });
+    await seedInlineLink(parent.id, 'device_lifecycle', { purgeRemovedAfterDays: 45 });
+    await seedAssignment(child.id, 'organization', t.a1);
+
+    const days = await withDbAccessContext(orgContext(t.a1, t.p1), () =>
+      getOrgPurgeRemovedAfterDays(t.a1));
+
+    expect(days).toBe(45);
   });
 
   it('a device under a policy with no parent is unaffected', async () => {
