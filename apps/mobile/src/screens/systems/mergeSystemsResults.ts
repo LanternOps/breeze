@@ -46,12 +46,13 @@ function take<T>(result: PromiseSettledResult<T>, previous: T): T {
 }
 
 /**
- * Merge the settled results of the five Systems fetches over the previously
+ * Merge the settled results of the six Systems fetches over the previously
  * rendered data.
  *
- * The screen used to issue these through `Promise.all`, so a single rejection
- * discarded ALL FIVE results — a transient failure on, say, the summary call
- * blanked a fleet of devices that had loaded perfectly well, and the user saw an
+ * The screen used to issue these through `Promise.all` (back when there were
+ * five), so a single rejection discarded ALL of them — a transient failure
+ * on, say, the summary call blanked a fleet of devices that had loaded
+ * perfectly well, and the user saw an
  * empty screen with a generic error. Each slice now stands on its own: whatever
  * arrived is rendered, whatever failed keeps its last-known value, and the error
  * line distinguishes "nothing loaded" from "some of this is stale".

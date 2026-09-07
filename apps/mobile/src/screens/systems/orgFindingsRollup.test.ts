@@ -78,4 +78,13 @@ describe('buildFindingsSummary (#5139)', () => {
     const result = buildFindingsSummary({ 'org-3': 1 }, [], true, null);
     expect(result[0].orgName).toBe('Organization unavailable');
   });
+
+  it('labels an org id genuinely absent from a successfully-loaded orgs list as "unknown", not "unavailable"', () => {
+    // orgsFailed=false here — the orgs list loaded fine, it just doesn't
+    // contain this id (visibility/pagination mismatch between the findings
+    // counts response and the orgs list), which is a different case from the
+    // orgsFailed=true test above and must render distinctly.
+    const result = buildFindingsSummary({ 'org-9': 1 }, ORGS, false, null);
+    expect(result[0].orgName).toBe('Unknown organization');
+  });
 });

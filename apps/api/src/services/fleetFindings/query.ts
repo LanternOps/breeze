@@ -220,6 +220,38 @@ function serializeFinding(row: RawFindingRow): FleetFindingRow {
   };
 }
 
+/**
+ * Fetch member deviceIds-in-scope per finding for a site-restricted caller,
+ * shared by `listFleetFindings` and `getFleetFindingCounts` so the two don't
+ * drift (both apply the exact same "member device in an allowed site" test —
+ * see the module doc's warning about dual-map drift between call sites).
+ *
+ * Returns `null` — with NO query issued — when there is nothing to check
+ * (`allowedSiteIds` empty, or no candidate findings): callers must treat that
+ * as "nothing visible" and return their own empty result, matching the
+ * existing fail-closed contract (an empty site allowlist can never match).
+ */
+async function findingDeviceIdsBySite(
+  candidateFindingIds: readonly string[],
+  allowedSiteIds: readonly string[]
+): Promise<Map<string, Set<string>> | null> {
+  if (allowedSiteIds.length === 0 || candidateFindingIds.length === 0) return null;
+
+  const memberRows = await db
+    .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
+    .from(fleetFindingDevices)
+    .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+    .where(and(inArray(fleetFindingDevices.findingId, candidateFindingIds), inArray(devices.siteId, allowedSiteIds)));
+
+  const deviceIdsByFinding = new Map<string, Set<string>>();
+  for (const m of memberRows) {
+    const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
+    set.add(m.deviceId);
+    deviceIdsByFinding.set(m.findingId, set);
+  }
+  return deviceIdsByFinding;
+}
+
 function buildOrgCondition(auth: AuthContext, requestedOrgId: string | undefined): SQL | undefined {
   if (requestedOrgId) {
     return eq(fleetFindings.orgId, requestedOrgId);
@@ -282,24 +314,11 @@ export async function listFleetFindings(
   let scoped = rows;
 
   if (auth.allowedSiteIds !== undefined) {
-    const allowedSiteIds = auth.allowedSiteIds;
     const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsBySite(candidateIds, auth.allowedSiteIds);
 
-    if (allowedSiteIds.length === 0 || candidateIds.length === 0) {
+    if (deviceIdsByFinding === null) {
       return { findings: [], total: 0 };
-    }
-
-    const memberRows = await db
-      .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
-      .from(fleetFindingDevices)
-      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-      .where(and(inArray(fleetFindingDevices.findingId, candidateIds), inArray(devices.siteId, allowedSiteIds)));
-
-    const deviceIdsByFinding = new Map<string, Set<string>>();
-    for (const m of memberRows) {
-      const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
-      set.add(m.deviceId);
-      deviceIdsByFinding.set(m.findingId, set);
     }
 
     scoped = rows
@@ -347,22 +366,14 @@ export async function getFleetFindingCounts(auth: AuthContext): Promise<FleetFin
   let scoped = rows;
 
   if (auth.allowedSiteIds !== undefined) {
-    const allowedSiteIds = auth.allowedSiteIds;
-    if (allowedSiteIds.length === 0 || rows.length === 0) {
+    const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsBySite(candidateIds, auth.allowedSiteIds);
+
+    if (deviceIdsByFinding === null) {
       return { total: 0, byOrg: {} };
     }
 
-    const candidateIds = rows.map((r) => r.id);
-    const memberRows = (await db
-      .select({ findingId: fleetFindingDevices.findingId })
-      .from(fleetFindingDevices)
-      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-      .where(
-        and(inArray(fleetFindingDevices.findingId, candidateIds), inArray(devices.siteId, allowedSiteIds))
-      )) as Array<{ findingId: string }>;
-
-    const visibleFindingIds = new Set(memberRows.map((m) => m.findingId));
-    scoped = rows.filter((r) => visibleFindingIds.has(r.id));
+    scoped = rows.filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0);
   }
 
   const byOrg: Record<string, number> = {};

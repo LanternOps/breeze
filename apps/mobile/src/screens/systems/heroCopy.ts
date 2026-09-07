@@ -38,6 +38,14 @@ export function deriveHeroState(
   // copy ladder but do NOT contribute to the critical/warning bar segments
   // below, which stay alert-severity-driven.
   findingsCount = 0,
+  // Org ids the findings above belong to (fleet-wide only — pass [] when
+  // `orgScope` is set, since `orgCount` is forced to 1 there regardless).
+  // Merged with `activeIssues`' own org ids to compute "across N
+  // organizations": deriving `orgCount` from `activeIssues` alone undercounts
+  // a fleet with open findings but zero active alerts, e.g. 0 alerts + 3
+  // findings across 3 orgs used to render "3 issues." instead of "3 issues
+  // across 3 organizations."
+  findingsOrgIds: readonly string[] = [],
 ): HeroState {
   const deviceCounts = orgScope ? orgScope.devices : summary?.devices ?? null;
   if (!deviceCounts) {
@@ -63,7 +71,7 @@ export function deriveHeroState(
   const issueCount = activeIssues.length + findingsCount;
   // Scoped to a single org by construction — "issues across N organizations"
   // never applies once a filter is active.
-  const orgCount = orgScope ? 1 : uniqueOrgCount(activeIssues);
+  const orgCount = orgScope ? 1 : uniqueOrgCount(activeIssues, findingsOrgIds);
 
   // Bar segments must match the headline. We derive critical / warning
   // from the *unacked* activeIssues (same source the headline counts), not
@@ -140,13 +148,14 @@ export function deriveHeroState(
   };
 }
 
-function uniqueOrgCount(alerts: Alert[]): number {
+function uniqueOrgCount(alerts: Alert[], findingsOrgIds: readonly string[] = []): number {
   const orgs = new Set<string>();
   for (const a of alerts) {
     const orgId = (a.metadata as Record<string, unknown> | undefined)?.orgId;
     if (typeof orgId === 'string') orgs.add(orgId);
   }
-  // Fallback when alerts don't carry orgId metadata: assume single org so
+  for (const orgId of findingsOrgIds) orgs.add(orgId);
+  // Fallback when neither source carries an org id: assume single org so
   // copy reads "{n} issues" rather than "{n} issues across 0 organizations".
   return orgs.size === 0 ? 1 : orgs.size;
 }

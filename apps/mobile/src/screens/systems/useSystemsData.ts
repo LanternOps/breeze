@@ -460,6 +460,18 @@ export function useSystemsData() {
     return data.findings.total;
   }, [data.findings, filterOrgId]);
 
+  // Org ids the fleet-wide findings above belong to, for the hero's "across N
+  // organizations" copy (#5139 follow-up: deriving that from `activeIssues`
+  // alone undercounted a fleet with open findings but zero active alerts).
+  // Empty when a filter is active — `deriveHeroState` forces `orgCount` to 1
+  // in that case regardless, same as it already does for `activeIssues`.
+  const findingsOrgIds = useMemo(() => {
+    if (!data.findings || filterOrgId) return [];
+    return Object.entries(data.findings.byOrg)
+      .filter(([, count]) => count > 0)
+      .map(([orgId]) => orgId);
+  }, [data.findings, filterOrgId]);
+
   // Per-org open-finding summary rows for ACTIVE ISSUES (#5139) — distinct
   // from `activeIssues` (alerts): the findings counts endpoint returns
   // aggregate counts, not individual finding records, so this renders one
@@ -475,6 +487,7 @@ export function useSystemsData() {
     recent,
     orgRollups,
     findingsCount,
+    findingsOrgIds,
     activeFindingsSummary,
     filterOrgId,
     filterOrgName,

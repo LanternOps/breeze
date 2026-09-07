@@ -158,6 +158,7 @@ export function SystemsScreen() {
     recent,
     orgRollups,
     findingsCount,
+    findingsOrgIds,
     activeFindingsSummary,
     filterOrgId,
     filterOrgName,
@@ -209,6 +210,7 @@ export function SystemsScreen() {
         }
       : null,
     findingsCount,
+    findingsOrgIds,
   );
 
   useFocusEffect(
