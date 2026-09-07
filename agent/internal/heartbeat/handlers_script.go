@@ -130,6 +130,16 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	// this site decoded parameters and every user-context script ran without
 	// them.
 	script.Parameters = executor.ParametersFromPayload(cmd.Payload["parameters"])
+	// #5129 — the strict-pattern descriptions an admin acknowledged on the
+	// script record, decided server-side and delivered over the authenticated
+	// command channel. Absent (an older API) means "nothing acknowledged",
+	// which is exactly the pre-#5129 fail-closed behaviour.
+	//
+	// Read here AND in userhelper.Client.executeScript, which rebuilds this
+	// same struct on the far side of the runAs=user IPC hop — see #4882, where
+	// only this site decoded a payload field and every user-context run
+	// silently lost it.
+	script.AcknowledgedSecurityPatterns = tools.GetPayloadStringSlice(cmd.Payload, "acknowledgedSecurityPatterns")
 	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
 	// parameters block: secrets ride the process environment (buildEnvironment)
 	// and must never reach SubstituteParameters or validateScript, which would
