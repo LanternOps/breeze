@@ -115,7 +115,7 @@ export interface ExecutionAdapter {
 | `observe` | `GET /devices/:id/commands/:commandId` (`apps/api/src/routes/devices/commands.ts:960-994`). VERIFIED. | Reads the persisted `device_commands.result` by id under `requireScope`, `requirePermission(DEVICES_READ)`, `getDeviceWithOrgCheck` and `canAccessDeviceSite`. | `device_commands` is deliberately **not** RLS-protected, it is listed in `INTENTIONAL_UNSCOPED` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (VERIFIED via the migration comment in `apps/api/migrations/2026-10-13-100000-device-commands-deliver-by.sql:11-17`). The app-layer device/org/site check **is** the whole authorization boundary. §11.3's "authorized adapter read on every access" is therefore load-bearing, not defence in depth. |
 | `verify` | `actVerify.ts` `verifyServiceRunning` and `verifyActExecution`; `fixWatch.ts` phase 1/2. VERIFIED. | Typed verdicts already exist: `ActVerificationVerdict = 'passed' \| 'failed' \| 'inconclusive' \| 'skipped'` (`packages/shared/src/types/aiAgents.ts:719`) and `ActExecutionVerdict = 'succeeded' \| 'failed' \| 'timeout' \| 'unknown'` (`:710`). The two-axis split §6.5 wants is already the repo's vocabulary. | The two halves of the service criterion run on different clocks and cannot be combined into one call today. See §2.7. |
 | `cancelIfSupported` | `POST /devices/:id/commands/:commandId/cancel` (`apps/api/src/routes/devices/commands.ts:1000-1090`). VERIFIED. | Cancels a command still in `status='pending'` via a CAS; returns 409 `Command is not pending` once claimed. | There is **no** in-flight cancel for a claimed `restart_service`. The adapter must answer `{ cancelled: false }` and the task must record in-flight, which is what §7.3 already requires. |
-| `reconcileUnknown` | `commandAcceptsAgentResultCondition` (`apps/api/src/services/commandResultAcceptance.ts:58-66`). VERIFIED. | The device-command layer **already** treats a server-side timeout as provisional: a row that is `failed` with `result->>'status' = 'timeout'` still accepts a genuine agent result later (`:4-41`). Reconciliation of an unknown device effect is therefore possible from the reference alone. | Nothing propagates that late result back to the intent, which is terminal and immutable by then. The operation row is the only place it can land. This is precisely why §6.3/§6.5 put the result on the operation, not the intent. |
+| `reconcileUnknown` | `commandAcceptsAgentResultCondition` (`apps/api/src/services/commandResultAcceptance.ts:55-66`). VERIFIED. | The device-command layer **already** treats a server-side timeout as provisional: a row that is `failed` with `result->>'status' = 'timeout'` still accepts a genuine agent result later (`:4-41`). Reconciliation of an unknown device effect is therefore possible from the reference alone. | Nothing propagates that late result back to the intent, which is terminal and immutable by then. The operation row is the only place it can land. This is precisely why §6.3/§6.5 put the result on the operation, not the intent. |
 
 **The one contract that must not be weakened.** Every adapter read of an execution reference
 authorizes at read time. `device_commands` has no RLS and `script_executions` is restamped across
@@ -232,7 +232,7 @@ case, not an exceptional one.** A 30-second tool wait against a Windows service 
 waits up to 30 s for `Running` (§2.1) makes this reachable on a healthy device.
 
 Recovery exists at the device layer and must be used: `commandAcceptsAgentResultCondition`
-(`apps/api/src/services/commandResultAcceptance.ts:58-66`) keeps a server-timeout row open to a
+(`apps/api/src/services/commandResultAcceptance.ts:55-66`) keeps a server-timeout row open to a
 genuine late agent result, and its header (`:4-41`) records that narrowing this set once destroyed
 real script output. Every server-side timeout writer stamps `result.status = 'timeout'`
 (`SERVER_TIMEOUT_RESULT_STATUS`, `:47`) so the row stays reconcilable.
@@ -548,7 +548,7 @@ path that has already executed a customer-visible side effect.
 
 **The device layer does not lose the result, only the intent layer does.** A device command
 whose server-side timeout wrote `result.status = 'timeout'` still accepts the genuine agent result
-later (`apps/api/src/services/commandResultAcceptance.ts:58-66`), and double delivery stays safe
+later (`apps/api/src/services/commandResultAcceptance.ts:55-66`), and double delivery stays safe
 because the acceptance predicate is re-evaluated inside the terminal CAS (`:37-41`). VERIFIED.
 
 **Design consequence for P3-1.** The truth about the effect survives at the execution reference and
