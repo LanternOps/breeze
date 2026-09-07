@@ -429,6 +429,14 @@ logsRoutes.post(
       }
 
       // Rules-based path: orgId is required (no pattern provided means broad rule run)
+      // Correlation-rule results are persisted as one org-wide snapshot per rule
+      // and can create alerts. A site-scoped result cannot safely share that state
+      // with the scheduled global runner, so only an unrestricted caller may
+      // initiate this persistent path. A defined empty allowlist is restricted too.
+      if (auth.allowedSiteIds !== undefined) {
+        return c.json({ error: 'Access denied' }, 403);
+      }
+
       const orgId = resolveSingleOrgId(auth, body.orgId);
       if (!orgId) {
         return c.json({ error: 'orgId is required for this scope' }, 400);

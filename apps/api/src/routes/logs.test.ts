@@ -147,6 +147,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { logsRoutes } from './logs';
 import { authMiddleware } from '../middleware/auth';
+import { db } from '../db';
 
 describe('logs routes', () => {
   let app: Hono;
@@ -472,6 +473,110 @@ describe('logs routes', () => {
     expect(runCorrelationRulesMock).toHaveBeenCalledWith(
       expect.objectContaining({ orgId: '11111111-1111-1111-1111-111111111111' }),
     );
+  });
+
+  it.each([
+    {
+      label: 'partner',
+      auth: {
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        partnerId: '33333333-3333-4333-8333-333333333333',
+        user: { id: 'partner-user' },
+      },
+      body: {},
+    },
+    {
+      label: 'system',
+      auth: {
+        scope: 'system',
+        orgId: null,
+        accessibleOrgIds: null,
+        user: { id: 'system-user', isPlatformAdmin: true },
+      },
+      body: { orgId: '11111111-1111-1111-1111-111111111111' },
+    },
+  ])('preserves unrestricted $label rules execution', async ({ auth, body }) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        ...auth,
+        canAccessOrg: () => true,
+        orgCondition: () => undefined,
+      });
+      return next();
+    });
+
+    const res = await app.request('/logs/correlation/detect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runCorrelationRulesMock).toHaveBeenCalledOnce();
+    expect(runCorrelationRulesMock).toHaveBeenCalledWith({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      ruleIds: undefined,
+    });
+  });
+
+  it.each([
+    { label: 'selected-site', allowedSiteIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'] },
+    { label: 'empty-site', allowedSiteIds: [] },
+  ])('denies $label callers before persistent rules execution', async ({ allowedSiteIds }) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: '11111111-1111-1111-1111-111111111111',
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        allowedSiteIds,
+        user: { id: 'user-1' },
+        canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+        orgCondition: () => undefined,
+      });
+      return next();
+    });
+
+    const res = await app.request('/logs/correlation/detect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ruleIds: ['22222222-2222-4222-8222-222222222222'],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access denied' });
+    expect(runCorrelationRulesMock).not.toHaveBeenCalled();
+    expect(detectPatternCorrelationMock).not.toHaveBeenCalled();
+    expect(enqueueAdHocPatternCorrelationDetectionMock).not.toHaveBeenCalled();
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('keeps selected-site ad-hoc pattern detection on the separately scoped path', async () => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: '11111111-1111-1111-1111-111111111111',
+        accessibleOrgIds: ['11111111-1111-1111-1111-111111111111'],
+        allowedSiteIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+        user: { id: 'user-1' },
+        canAccessOrg: (orgId: string) => orgId === '11111111-1111-1111-1111-111111111111',
+        orgCondition: () => undefined,
+      });
+      return next();
+    });
+
+    const res = await app.request('/logs/correlation/detect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pattern: 'connection reset by peer' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(enqueueAdHocPatternCorrelationDetectionMock).toHaveBeenCalledOnce();
+    expect(runCorrelationRulesMock).not.toHaveBeenCalled();
   });
 
   it('GET /logs/queries returns list of saved queries', async () => {

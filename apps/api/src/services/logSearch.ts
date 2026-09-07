@@ -926,10 +926,16 @@ async function runPatternDetection(
       .limit(sampleLimit)
   ]);
 
+  // postgres.js returns values selected through raw aggregate expressions as
+  // strings even when the TypeScript annotation says Date. Normalize at the
+  // service boundary before these timestamps flow into Drizzle date columns.
+  const firstSeen = normalizeCorrelationTimestamp(summaryRows[0]?.firstSeen, 'firstSeen');
+  const lastSeen = normalizeCorrelationTimestamp(summaryRows[0]?.lastSeen, 'lastSeen');
+
   return {
     summary: {
-      firstSeen: summaryRows[0]?.firstSeen ?? null,
-      lastSeen: summaryRows[0]?.lastSeen ?? null,
+      firstSeen,
+      lastSeen,
       occurrences: Number(summaryRows[0]?.occurrences ?? 0),
     },
     affectedDevices: affectedDeviceRows.map((row) => ({
@@ -940,12 +946,28 @@ async function runPatternDetection(
     sampleLogs: sampleRows.map((row) => ({
       id: row.id,
       deviceId: row.deviceId,
-      timestamp: row.timestamp.toISOString(),
+      timestamp: normalizeCorrelationTimestamp(row.timestamp, 'sample log')!.toISOString(),
       level: row.level,
       source: row.source,
       message: row.message,
     }))
   };
+}
+
+export function normalizeCorrelationTimestamp(value: unknown, field: string): Date | null {
+  if (value == null) return null;
+
+  const timestamp = value instanceof Date
+    ? new Date(value.getTime())
+    : typeof value === 'string'
+      ? new Date(value)
+      : null;
+
+  if (!timestamp || !Number.isFinite(timestamp.getTime())) {
+    throw new Error(`Invalid correlation ${field} timestamp`);
+  }
+
+  return timestamp;
 }
 
 export async function detectPatternCorrelation(input: PatternDetectionInput): Promise<PatternDetectionResult | null> {
