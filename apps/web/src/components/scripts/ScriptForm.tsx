@@ -22,6 +22,7 @@ import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES, scriptSecretEn
 import ScriptAiPanel from './ScriptAiPanel';
 import ScriptTestRunner from './ScriptTestRunner';
 import CollapsibleSection from './CollapsibleSection';
+import ScriptSecurityReview from './ScriptSecurityReview';
 import ScriptVariablePicker from './ScriptVariablePicker';
 import TenantVariableMenu from './TenantVariableMenu';
 import { findUnknownVariableKeys, useTenantVariables, type TenantVariableEntry } from '@/lib/tenantVariableTokens';
@@ -849,6 +850,18 @@ export default function ScriptForm({
           scriptRunAs={watch('runAs')}
         />
       </div>
+
+      {/* #5129 — Strict security patterns matched by the content above. Renders
+          nothing unless the script actually matches one, and sits directly
+          under the editor because it is a statement about what was just
+          typed. */}
+      <ScriptSecurityReview
+        content={watchContent ?? ''}
+        value={watch('acknowledgedSecurityPatterns') ?? []}
+        onChange={next =>
+          setValue('acknowledgedSecurityPatterns', next, { shouldDirty: true })
+        }
+      />
 
       {/* Parameters */}
       <CollapsibleSection
