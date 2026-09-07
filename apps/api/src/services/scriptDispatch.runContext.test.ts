@@ -22,7 +22,14 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
-vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
+// #5128: scriptDispatch.ts imports `CommandTypes` from './commandQueue' (a
+// re-export of the leaf module './commandTypes') to look up the default
+// offline policy — pull the real table in via a nested import so it cannot
+// drift from the registry `commandOfflinePolicy.ts` builds against.
+vi.mock('./commandQueue', async () => {
+  const { CommandTypes } = await import('./commandTypes');
+  return { CommandTypes, queueCommand: vi.fn() };
+});
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
   releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
