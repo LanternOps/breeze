@@ -41,11 +41,15 @@
  * its child table joined the cascade set) fails the burn-down test, so a
  * migration that fixes an edge forces the matching line out in the same PR.
  *
- * Two entries are NOT latent shapes but erasure failures that fire today for
- * any tenant with the relevant rows -- `restore_jobs` and `script_categories`,
- * each carrying a note with its SQLSTATE and fix. They
- * are pinned rather than fixed because #4519 is explicitly scoped to making
- * the debt visible; the migrations are follow-up work.
+ * One entry is NOT a latent shape but an erasure failure that fires today for
+ * any tenant with the relevant rows -- `restore_jobs`, carrying a note with its
+ * SQLSTATE and fix. It is pinned rather than fixed because #4519 is explicitly
+ * scoped to making the debt visible; the migration is follow-up work.
+ * `script_categories.parent_id` was the second such entry and came off this
+ * ledger in #4873: `2026-10-13-120000-script-categories-parent-ownership-guard.sql`
+ * gave it `ON DELETE SET NULL` (all referencing columns nullable, so the
+ * classifier now calls it safe on its own) and added the DEFERRABLE
+ * `script_categories_parent_guard` so the offending shape cannot be built.
  *
  * A `note` is not a fix. The two `partner_export_*` entries carry a reviewed
  * argument for why their edge is unreachable in practice, so they are not debt
@@ -150,8 +154,9 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
     reason: 'self-ref-open-row-set',
     allColumnsNullable: true,
     note:
-      'Reviewed, NOT a live failure -- the same shape as script_categories below, but closed where '
-      + 'that one is open. configuration_policies.org_id is nullable (partner-wide policies, epic '
+      'Reviewed, NOT a live failure -- the same shape script_categories.parent_id had before #4873 '
+      + '(fixed there with ON DELETE SET NULL), but closed by a guard rather than by the FK action. '
+      + 'configuration_policies.org_id is nullable (partner-wide policies, epic '
       + '#2135), so the classifier cannot tell that `DELETE ... WHERE org_id = $1` still removes a '
       + 'row set closed under this self-reference. The DEFERRABLE constraint trigger '
       + '`configuration_policies_parent_guard` (2026-10-12-100000-config-policy-inheritance.sql, '
@@ -214,19 +219,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'access_review_items', constraint: 'access_review_items_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'partner_users', constraint: 'partner_users_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'role_permissions', constraint: 'role_permissions_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
-  {
-    childTable: 'script_categories',
-    constraint: 'script_categories_parent_id_script_categories_id_fk',
-    parentTable: 'script_categories',
-    reason: 'self-ref-open-row-set',
-    allColumnsNullable: true,
-    note:
-      'LIVE ERASURE FAILURE. script_categories.org_id is NULLABLE (partner-wide categories, epic '
-      + '#2135), so DELETE ... WHERE org_id = $1 does NOT remove a row set closed under this '
-      + 'self-reference: a surviving partner-wide category whose parent_id points at an org-owned one '
-      + 'raises 23503. Verified empirically against Postgres 16. Fix forward with ON DELETE SET NULL '
-      + 'on parent_id.',
-  },
   { childTable: 'script_to_tags', constraint: 'script_to_tags_tag_id_script_tags_id_fk', parentTable: 'script_tags', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'config_policy_compliance_rules', constraint: 'config_policy_compliance_rules_remediation_script_id_scripts_id', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'patch_policies', constraint: 'patch_policies_post_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },

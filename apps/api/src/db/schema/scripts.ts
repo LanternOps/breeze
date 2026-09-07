@@ -85,7 +85,14 @@ export const scriptCategories = pgTable('script_categories', {
   description: text('description'),
   icon: varchar('icon', { length: 50 }),
   color: varchar('color', { length: 7 }),
-  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id),
+  // ON DELETE SET NULL (2026-10-13-120000-script-categories-parent-ownership-guard.sql,
+  // #4873): org_id is nullable here (partner-wide categories, epic #2135), so a
+  // single `DELETE ... WHERE org_id = $1` during GDPR org erasure does not remove
+  // a row set closed under this self-reference. Letting Postgres clear the edge is
+  // what keeps erasure from aborting with 23503. A DEFERRABLE constraint trigger
+  // (`script_categories_parent_guard`) additionally forbids a child naming a parent
+  // on a different owner axis.
+  parentId: uuid('parent_id').references((): AnyPgColumn => scriptCategories.id, { onDelete: 'set null' }),
   order: integer('order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
