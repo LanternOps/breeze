@@ -46,6 +46,7 @@ import { ChatHeader } from './components/ChatHeader';
 import { ColdOpenChips } from './components/ColdOpenChips';
 import { Composer } from './components/Composer';
 import { ConversationList } from './components/ConversationList';
+import { HomeFleetStrip } from './components/HomeFleetStrip';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
@@ -404,6 +405,7 @@ export function HomeScreen() {
       >
         {isCold ? (
           <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+            <HomeFleetStrip />
             <ColdOpenChips onPick={handleChip} />
           </View>
         ) : (
