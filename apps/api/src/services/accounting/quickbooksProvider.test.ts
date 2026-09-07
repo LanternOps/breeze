@@ -976,8 +976,10 @@ describe('reconcileChanges (CDC)', () => {
 
     expect(cs.overflowed).toBe(true);
     expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
-    // #5193: tag keys must be the allowlisted snake_case names (`op` and
-    // `entity` have no allowlisted equivalent and are silently dropped).
+    // #5193: `op` and `entity` have no allowlisted equivalent and must be
+    // dropped, not just `service` left correct — assert the exact key set so
+    // this fails if either one is reintroduced.
+    expect(Object.keys(captureExceptionMock.mock.calls[0]![2] ?? {})).toEqual(['service']);
     expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
       service: 'quickbooksProvider',
     });
@@ -1003,12 +1005,16 @@ describe('reconcileChanges (CDC)', () => {
     // without ever seeing a short (final) one.
     expect(queryCalls).toBe(50);
     expect(cs.overflowed).toBe(true);
-    // #5193: tag keys must be the allowlisted snake_case names (`op` and
-    // `entity` have no allowlisted equivalent and are silently dropped).
-    const pageCapCall = captureExceptionMock.mock.calls.find(
-      ([err]) => String(err).includes('exceeded'),
-    );
-    expect(pageCapCall?.[2]).toMatchObject({ service: 'quickbooksProvider' });
+    // Exactly one report: no per-page fetch throws in this test, so the only
+    // captureException is the page-cap giveup itself.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    const pageCapCall = captureExceptionMock.mock.calls[0]!;
+    expect(String(pageCapCall[0])).toContain('exceeded');
+    // #5193: `op` and `entity` have no allowlisted equivalent and must be
+    // dropped, not just `service` left correct — assert the exact key set so
+    // this fails if either one is reintroduced.
+    expect(Object.keys(pageCapCall[2] ?? {})).toEqual(['service']);
+    expect(pageCapCall[2]).toMatchObject({ service: 'quickbooksProvider' });
   });
 
   it('backfills an overflowing Invoice block through /query and keeps the CDC deletion lists', async () => {
