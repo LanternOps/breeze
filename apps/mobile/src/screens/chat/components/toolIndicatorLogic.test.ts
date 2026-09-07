@@ -89,9 +89,23 @@ describe('toolRowErrorText (#5170)', () => {
     expect(toolRowErrorText(undefined)).toBeNull();
     expect(toolRowErrorText(null)).toBeNull();
     expect(toolRowErrorText('a bare string output')).toBeNull();
-    expect(toolRowErrorText({ error: 42 })).toBeNull();
     expect(toolRowErrorText({ other: 'field' })).toBeNull();
     expect(toolRowErrorText({ error: '   ' })).toBeNull();
+  });
+
+  it('stringifies a nested error object instead of dropping it (#5170)', () => {
+    // A backend shape like `{ error: { code, message } }` must still produce
+    // SOMETHING tappable — silently falling back to the plain caption here
+    // reproduces the exact bug this feature exists to fix, just for
+    // object-typed errors instead of missing ones.
+    const result = toolRowErrorText({ error: { code: 'E_TIMEOUT', message: 'timed out' } });
+    expect(result).not.toBeNull();
+    expect(result).toContain('E_TIMEOUT');
+    expect(result).toContain('timed out');
+  });
+
+  it('returns null for a non-string, non-object error field (e.g. a bare number)', () => {
+    expect(toolRowErrorText({ error: 42 })).toBeNull();
   });
 
   it('trims to ~400 chars with an ellipsis', () => {
@@ -100,6 +114,15 @@ describe('toolRowErrorText (#5170)', () => {
     expect(result).not.toBeNull();
     expect(result!.length).toBeLessThanOrEqual(401);
     expect(result!.endsWith('…')).toBe(true);
+  });
+
+  it('passes exactly 400 chars through untouched, truncates at 401', () => {
+    const exactly400 = 'a'.repeat(400);
+    expect(toolRowErrorText({ error: exactly400 })).toBe(exactly400);
+
+    const exactly401 = 'a'.repeat(401);
+    const truncated = toolRowErrorText({ error: exactly401 });
+    expect(truncated).toBe(`${'a'.repeat(400)}…`);
   });
 });
 

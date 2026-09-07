@@ -37,17 +37,34 @@ const MAX_TOOL_ROW_ERROR_TEXT_LENGTH = 400;
  * `toolRowStatus` above, written when this row was still unreachable.
  * `output.error` wins over `output.message` since that's the field
  * `errorText()` above already trusts as the tool's own error string.
+ *
+ * A plain number/boolean error field is discarded — there's nothing readable
+ * to show. A nested object (`{ error: { code, message } }`) is stringified
+ * rather than discarded: dropping it silently would reproduce the exact bug
+ * this function exists to fix, just for object-typed errors.
  */
 export function toolRowErrorText(output: unknown): string | null {
   if (!output || typeof output !== 'object') return null;
   const obj = output as { error?: unknown; message?: unknown };
-  const raw =
-    typeof obj.error === 'string' ? obj.error : typeof obj.message === 'string' ? obj.message : null;
+  const field = obj.error !== undefined ? obj.error : obj.message;
+  const raw = stringifyErrorField(field);
   if (raw === null) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
   if (trimmed.length <= MAX_TOOL_ROW_ERROR_TEXT_LENGTH) return trimmed;
   return `${trimmed.slice(0, MAX_TOOL_ROW_ERROR_TEXT_LENGTH)}…`;
+}
+
+function stringifyErrorField(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /**

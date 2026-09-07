@@ -46,4 +46,21 @@ describe('sanitizeStreamingMarkdown (#5170)', () => {
   it('is a no-op on empty content', () => {
     expect(sanitizeStreamingMarkdown('')).toBe('');
   });
+
+  it('strips a dangling double-underscore bold opener', () => {
+    expect(sanitizeStreamingMarkdown('Meeting at __9 PM,')).toBe('Meeting at 9 PM,');
+  });
+
+  it('leaves a balanced double-underscore bold span untouched', () => {
+    expect(sanitizeStreamingMarkdown('This is __bold__ text')).toBe('This is __bold__ text');
+  });
+
+  it('resolves a closed span plus a dangling one of a different marker type together', () => {
+    expect(sanitizeStreamingMarkdown('This is **bold** and *italic')).toBe(
+      'This is **bold** and italic',
+    );
+    expect(sanitizeStreamingMarkdown('Run `kubectl get pods` then **check')).toBe(
+      'Run `kubectl get pods` then check',
+    );
+  });
 });
