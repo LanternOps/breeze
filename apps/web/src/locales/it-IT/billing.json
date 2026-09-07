@@ -1838,6 +1838,7 @@
       "taxVarianceHint": "QuickBooks ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
       "docNumber": "Documento QuickBooks {{docNumber}}",
       "lastSynced": "Ultima sincronizzazione: {{when}}",
+      "syncing": "Sincronizzazione…",
       "push": "Invia a QuickBooks",
       "pushed": "Fattura inviata a QuickBooks.",
       "pushFailed": "Impossibile inviare la fattura a QuickBooks.",
