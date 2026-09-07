@@ -230,6 +230,30 @@ describe('ensureSystemLibraryScripts', () => {
     expect(patch.content).toBe(editionMigration!.content);
   });
 
+  it('leaves the acknowledgement alone on a metadata-only sync (#5129)', async () => {
+    // The sync branch fires on ANY tracked-field diff, not just a content one.
+    // A release that bumps only `timeoutSeconds` leaves the reviewed body
+    // byte-identical, so revoking there would break the script on the next API
+    // boot for no reason. Revocation is keyed to the BODY changing.
+    const metadataOnly = existingRowFor(editionMigration!);
+    metadataOnly.timeoutSeconds = (editionMigration!.timeoutSeconds ?? 300) + 60;
+    metadataOnly.acknowledgedSecurityPatterns = ['PowerShell HKLM modification'];
+    metadataOnly.securityAcknowledgedBy = 'admin-who-approved-this-body';
+    mockExisting([metadataOnly]);
+    const { set } = mockUpdate();
+
+    await ensureSystemLibraryScripts();
+
+    const patch = set.mock.calls[0]![0];
+    // Guards the guard: the sync really did run an update (so this is not a
+    // no-op path), and it really did leave the content alone.
+    expect(patch.timeoutSeconds).toBe(editionMigration!.timeoutSeconds);
+    expect(patch.content).toBe(editionMigration!.content);
+    expect(patch).not.toHaveProperty('acknowledgedSecurityPatterns');
+    expect(patch).not.toHaveProperty('securityAcknowledgedBy');
+    expect(patch).not.toHaveProperty('securityAcknowledgedAt');
+  });
+
   it('never resurrects or edits a soft-deleted system script', async () => {
     const deleted = existingRowFor(editionMigration!);
     deleted.deletedAt = new Date('2026-08-01T00:00:00Z');
