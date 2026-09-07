@@ -998,6 +998,36 @@ describe('scripts routes', () => {
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
+    it('does NOT copy the system script\u2019s security acknowledgements (#5129)', async () => {
+      // The import lands in a different org under a different owner. An
+      // acknowledgement is one named human accepting one risk on one script,
+      // so the copy starts unacknowledged and its first Strict match is
+      // refused until someone signs off on it here. Pinned because this insert
+      // is a hand-maintained column list.
+      mockClonePreamble(
+        systemSource({
+          content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+          acknowledgedSecurityPatterns: ['PowerShell HKLM modification'],
+          securityAcknowledgedBy: 'someone-else'
+        })
+      );
+      let inserted: Record<string, unknown> | undefined;
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+          inserted = vals;
+          return { returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, orgId: ORG_ID }]) };
+        })
+      } as any);
+
+      expect((await clone()).status).toBe(201);
+      expect(inserted).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(inserted).not.toHaveProperty('securityAcknowledgedBy');
+      // Guards the guard: the risky content really was copied, so the
+      // assertions above describe a declined approval rather than a script
+      // that had nothing to acknowledge.
+      expect(inserted!.content).toContain('HKLM');
+    });
+
     it('clones a clean system script unchanged', async () => {
       mockClonePreamble(systemSource());
       vi.mocked(db.insert).mockReturnValue({

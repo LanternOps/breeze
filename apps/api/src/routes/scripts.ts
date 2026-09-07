@@ -576,6 +576,13 @@ scriptRoutes.post(
         runAs: source.runAs,
         isSystem: false,
         version: 1,
+        // #5129 — `acknowledgedSecurityPatterns` is DELIBERATELY not copied.
+        // The column defaults to '{}', so the imported copy starts
+        // unacknowledged and its first Strict match is refused until someone
+        // signs off on it in this org. An acknowledgement is one named human
+        // accepting one risk on one script; importing a library script is not
+        // that person making that decision. Same reasoning as scriptClone.ts —
+        // do not "complete" this copy list by adding it.
         createdBy: auth.user.id,
       })
       .returning();
