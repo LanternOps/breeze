@@ -72,7 +72,7 @@ already exist and are good; what is missing is one authoring object and a naviga
 |---|---|---|
 | D1 | Product boundary | **Alerts stays a separate inbox.** Monitoring (authoring) and Jobs are new nav entries. The community's single "Monitoring & Automation" that swallows Alerts was rejected: the inbox is the most-used page and must stay one click away. |
 | D2 | Recurrence semantics | **Breach episodes**, not response runs or polls. A new episode requires an observed recovery in between. On the Nth episode inside the window: requires-human alert, notify, pause auto-remediation until reset. |
-| D3 | Targeting | **Through configuration-policy attachment** (a `monitor` feature type), reusing assignments, priority and one-level inheritance (#5080). No direct target column on the monitor. The editor offers a "Deploy to…" shortcut that creates or updates the attachment. |
+| D3 | Targeting | **Through configuration-policy attachment** (a `monitors` feature type — plural, because `monitoring` already names the service/process watch tab), reusing assignments, priority and one-level inheritance (#5080). No direct target column on the monitor. The editor offers a "Deploy to…" shortcut that creates or updates the attachment. |
 | D4 | Inheritance for the monitor feature | **Cumulative** across every assigned policy and its parent, with overrides keyed by the stable monitor id (disable or parameter override). Other feature types keep whole-feature replacement. |
 | D5 | Ambition | Existing eleven condition types first, then handler-only additions (antivirus, software presence, backup continuity) and a first-class **script monitor**. Agent-collector types are deferred to separate specs. |
 
@@ -174,13 +174,13 @@ Unique `(coalesce(org_id, partner_id), name)`.
 | column | notes |
 |---|---|
 | id | uuid pk |
-| feature_link_id | → `config_policy_feature_links(id)` ON DELETE CASCADE; the link's `feature_type = 'monitor'` |
+| feature_link_id | → `config_policy_feature_links(id)` ON DELETE CASCADE; the link's `feature_type = 'monitors'` |
 | monitor_id | → `monitor_definitions(id)` ON DELETE CASCADE |
 | enabled | bool; `false` = this policy switches the monitor off for its scope (cumulative override) |
 | overrides | jsonb null; subset of `condition` and `severity` permitted by the kind's `overridableKeys` |
 | sort_order | |
 
-Unique `(feature_link_id, monitor_id)`. The `monitor` value is added to `config_feature_type`.
+Unique `(feature_link_id, monitor_id)`. The `monitors` value is added to `config_feature_type`.
 
 ### `monitor_device_state`
 
@@ -257,7 +257,7 @@ with `monitor_detached`; the escalation alert (if any) is left open for the huma
 
 ## Targeting and inheritance (D3, D4)
 
-A monitor reaches a device through: definition → attachment (in a policy's `monitor` feature
+A monitor reaches a device through: definition → attachment (in a policy's `monitors` feature
 link) → the policy's assignments (`partner | organization | site | device_group | device`, dynamic
 groups included) → the device. Parent policies (#5080, one level) contribute their attachments to
 the child.
@@ -265,7 +265,7 @@ the child.
 Resolution for a device, `resolveMonitorsForDevice(deviceId)`:
 
 1. Collect every policy assigned to the device at any level, plus each policy's parent.
-2. Collect every `config_policy_monitors` row under those policies' `monitor` feature links.
+2. Collect every `config_policy_monitors` row under those policies' `monitors` feature links.
 3. Group by `monitor_id`. For each monitor, the row from the **most specific** source wins
    (device > device_group > site > organization > partner; within one policy, child before
    parent). That row's `enabled` and `overrides` apply.
@@ -277,10 +277,10 @@ This union is deliberately different from every other feature type, which resolv
 winning link (`config_policy_effective_feature_links`). The view is untouched; the monitor resolver
 is a separate function with its own contract test (partner-wide parent + org child + site override:
 the site override disables one monitor and changes one threshold; every other monitor is still
-active). Existing readers of the effective-links view never see `feature_type = 'monitor'` links
+active). Existing readers of the effective-links view never see `feature_type = 'monitors'` links
 because nothing else reads that type.
 
-"Deploy to…" in the editor: pick an existing policy (creates or reuses its `monitor` feature link
+"Deploy to…" in the editor: pick an existing policy (creates or reuses its `monitors` feature link
 and inserts the attachment) or "New policy for <site | group>" (creates a policy assigned at that
 level with the attachment). The editor lists every policy the monitor is attached to.
 
@@ -461,7 +461,7 @@ MCP: `list_monitors`, `get_monitor_activity`, `reset_monitor_escalation` (Tier 2
 | wave | ships | must not break |
 |---|---|---|
 | **W1 — discoverability** (no schema) | Jobs nav entry + `/jobs` pages over existing automations with the trigger tabs; `/automations` redirects; "Network Monitor" nav entry becomes **Monitoring** with a path tab strip (Network, Delivery) | every existing URL (redirects), permissions, the network page's own hash tabs |
-| **W2 — definitions and compile** | `monitor_definitions`, `config_policy_monitors`, `monitor` feature type, kind registry for the eleven existing handler kinds, compiler + managed-row guards + drift contract test, `'monitor'` target resolver, cumulative resolution, escalation lookup on the policy alert path, monitor editor + policy Monitors tab, "Deploy to…", convert-to-monitor. **Prerequisite: #5240 (device-bound event automations).** | alert sweep, correlation, cooldown, routing, escalation policies, partner fan-out, #5080 inheritance, AI verdicts, MCP `manage_automations` (now refuses managed rows) |
+| **W2 — definitions and compile** | `monitor_definitions`, `config_policy_monitors`, `monitors` feature type, kind registry for the eleven existing handler kinds, compiler + managed-row guards + drift contract test, `'monitor'` target resolver, cumulative resolution, escalation lookup on the policy alert path, monitor editor + policy Monitors tab, "Deploy to…", convert-to-monitor. **Prerequisite: #5240 (device-bound event automations).** | alert sweep, correlation, cooldown, routing, escalation policies, partner fan-out, #5080 inheritance, AI verdicts, MCP `manage_automations` (now refuses managed rows) |
 | **W3 — episodes and recurrence** | `monitor_device_state`, `monitor_episodes`, episode open/close in the sweep hook, latch + requires-human alert + pause + reset API, Activity tab, `response_outcome` from terminal run state (fixes queued-as-success), `requires_human` handling in auto-resolve and the verdict subscriber | AI admission and loop guards, delivery dedupe, escalation cancellation |
 | **W4 — coverage** | handler-only kinds (antivirus, software_presence, backup_continuity), script monitor, network_check adapter (after #5241) with partner-wide `networkMonitors`, service/process watch delivery from `resolveMonitorsForDevice` (heartbeat builder reads monitors first, config-policy tab second) | agent config payload shape (`monitoring_settings` unchanged on the wire), local auto-restart |
 | **W5 — retirement decisions** (separate program) | whether the config-policy Alert/Automation/Monitoring tabs become thin pointers; SNMP and agent-acquisition kinds get their own specs | — |
