@@ -143,6 +143,32 @@ describe('manual_assets tenant isolation (#4622)', () => {
     )) as unknown as Array<{ name: string }>;
     expect(stillThere, 'org A must not be able to update or delete org B inventory').toHaveLength(1);
     expect(stillThere[0]!.name).toBe(name);
+
+    // POSITIVE CONTROL for UPDATE and DELETE. Without it the zero-row outcomes
+    // above are equally consistent with a policy that refuses EVERYTHING (a
+    // `USING (false)` typo would pass the assertions above and every static
+    // policy-text contract, while making the table unusable).
+    const ownName = `b-own-${randomUUID()}`;
+    const renamed = `${ownName}-renamed`;
+    await withDbAccessContext(orgContext(orgB.id), async () => {
+      await db.execute(sql`
+        INSERT INTO manual_assets (org_id, site_id, name)
+        VALUES (${orgB.id}::uuid, ${siteB.id}::uuid, ${ownName})
+      `);
+      await db.execute(sql`UPDATE manual_assets SET name = ${renamed} WHERE name = ${ownName}`);
+    });
+    const updated = (await withDbAccessContext(orgContext(orgB.id), () =>
+      db.execute(sql`SELECT name FROM manual_assets WHERE name = ${renamed}`),
+    )) as unknown as Array<{ name: string }>;
+    expect(updated, 'an org must be able to update its OWN manual assets').toHaveLength(1);
+
+    await withDbAccessContext(orgContext(orgB.id), () =>
+      db.execute(sql`DELETE FROM manual_assets WHERE name = ${renamed}`),
+    );
+    const deleted = (await withDbAccessContext(orgContext(orgB.id), () =>
+      db.execute(sql`SELECT name FROM manual_assets WHERE name = ${renamed}`),
+    )) as unknown as Array<{ name: string }>;
+    expect(deleted, 'an org must be able to delete its OWN manual assets').toHaveLength(0);
   });
 
   runDb('refuses a cross-org link and a cross-org site (composite tenant FKs)', async () => {
@@ -211,6 +237,79 @@ describe('manual_assets tenant isolation (#4622)', () => {
     )) as unknown as Array<{ linked_device_id: string }>;
     expect(linked).toHaveLength(1);
     expect(linked[0]!.linked_device_id).toBe(deviceA!.id);
+  });
+
+  runDb('refuses a cross-org contact and a cross-org discovered asset', async () => {
+    const { orgA, orgB, siteA, siteB } = await seedTwoTenants();
+
+    // manual_assets_assigned_contact_org_fk
+    const [contactB] = (await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        INSERT INTO contacts (org_id, name)
+        VALUES (${orgB.id}::uuid, 'Cross Tenant')
+        RETURNING id
+      `),
+    )) as unknown as Array<{ id: string }>;
+    const wrongContact = await causeOf(() =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`
+          INSERT INTO manual_assets (org_id, site_id, name, assigned_contact_id)
+          VALUES (${orgA.id}::uuid, ${siteA.id}::uuid, ${'wrong-contact-' + randomUUID()}, ${contactB!.id}::uuid)
+        `),
+      ),
+    );
+    expect(wrongContact?.code, 'a contact belonging to another org must not be assignable').toBe(
+      '23503',
+    );
+
+    // manual_assets_linked_discovered_asset_org_fk — the FK this wave's new
+    // discovered_assets_id_org_id_uniq index exists to make expressible.
+    const [assetB] = (await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        INSERT INTO discovered_assets (org_id, site_id, ip_address)
+        VALUES (${orgB.id}::uuid, ${siteB.id}::uuid, '10.9.9.9'::inet)
+        RETURNING id
+      `),
+    )) as unknown as Array<{ id: string }>;
+    const wrongAsset = await causeOf(() =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`
+          INSERT INTO manual_assets (org_id, site_id, name, linked_discovered_asset_id)
+          VALUES (${orgA.id}::uuid, ${siteA.id}::uuid, ${'wrong-asset-' + randomUUID()}, ${assetB!.id}::uuid)
+        `),
+      ),
+    );
+    expect(
+      wrongAsset?.code,
+      'a discovered asset belonging to another org must not be linkable',
+    ).toBe('23503');
+
+    // POSITIVE CONTROLS — both links inside one org are accepted, so the two
+    // reds above cannot be a wrong column order or a missing referenced index.
+    const [contactA] = (await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        INSERT INTO contacts (org_id, name)
+        VALUES (${orgA.id}::uuid, 'Same Tenant')
+        RETURNING id
+      `),
+    )) as unknown as Array<{ id: string }>;
+    const [assetA] = (await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        INSERT INTO discovered_assets (org_id, site_id, ip_address)
+        VALUES (${orgA.id}::uuid, ${siteA.id}::uuid, '10.1.1.1'::inet)
+        RETURNING id
+      `),
+    )) as unknown as Array<{ id: string }>;
+    const okName = `both-links-${randomUUID()}`;
+    const ok = await causeOf(() =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`
+          INSERT INTO manual_assets (org_id, site_id, name, assigned_contact_id, linked_discovered_asset_id)
+          VALUES (${orgA.id}::uuid, ${siteA.id}::uuid, ${okName}, ${contactA!.id}::uuid, ${assetA!.id}::uuid)
+        `),
+      ),
+    );
+    expect(ok, `same-org links must be accepted, got ${ok?.code}: ${ok?.message}`).toBeUndefined();
   });
 });
 

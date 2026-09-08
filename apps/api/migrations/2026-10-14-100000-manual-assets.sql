@@ -120,8 +120,11 @@ BEGIN
   END LOOP;
 END $$;
 
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'breeze_app') THEN
-    GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON manual_assets TO breeze_app;
-  END IF;
-END $$;
+-- Unguarded on purpose (the repo default). A `pg_roles` existence guard would
+-- turn a missing breeze_app role into a SILENT success: the migration would be
+-- recorded as applied with RLS forced and zero app-role privileges, and the
+-- failure would resurface much later as scattered 42501s from the API. Bare, it
+-- aborts the migration run loudly with 42704 instead. autoMigrate refuses to
+-- run at all without the role (assertAppRoleBootstrapped), so the guard would
+-- have been dead code on the sanctioned path anyway.
+GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON manual_assets TO breeze_app;

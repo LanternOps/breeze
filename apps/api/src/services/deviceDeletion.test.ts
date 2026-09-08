@@ -340,6 +340,26 @@ describe('deleteDeviceCascade link detach (#3952)', () => {
     const detach = detachStatementFor(statements, 'network_change_events');
     expect(detach).not.toContain('link_source');
   });
+
+  it('detaches manual_assets with linked_device_id alone (#4622)', async () => {
+    // manual_assets joined DEVICE_LINKED_DEVICE_ID_TABLES in #4622. The rows
+    // are hand-entered inventory (serial, asset tag, assigned contact, notes)
+    // that must OUTLIVE the device, so the cascade detaches rather than
+    // deletes — and it declares no link-conditional CHECK constraint, so it
+    // has no DEVICE_LINK_DEPENDENT_COLUMNS entry and nothing else may be
+    // cleared alongside. The loop is data-driven, so this is cheap insurance
+    // that registration actually produces the statement.
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = detachStatementFor(statements, 'manual_assets');
+    expect(detach).not.toContain('link_source');
+    expect(
+      statements.filter((s) => s.includes('manual_assets') && s.includes('delete')),
+      'manual_assets must be DETACHED, never deleted, by a device cascade',
+    ).toHaveLength(0);
+  });
 });
 
 describe('deleteDeviceCascade when the parent lock is not acquired', () => {
