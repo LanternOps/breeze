@@ -24,6 +24,22 @@ test.describe('manual network asset — website target', () => {
     const label = `E2E Shop ${Date.now()}`;
     const url = `https://shop-${Date.now()}.example`;
 
+    // The 'source' column is opt-in (columnVisibility.ts DEFAULT_VISIBLE_COLUMNS
+    // deliberately excludes it — agent rows have no source, so default-on would
+    // show a column of dashes for the common agent-only fleet). The Columns menu
+    // that toggles it carries no data-testid (out of this wave's file-ownership
+    // scope — see the header comment above), so seed the persisted preference
+    // directly instead of driving that menu with a brittle non-testid selector.
+    // A single-entry list still gets every OTHER column its own catalog default
+    // via columnVisibility.ts's merge-on-read, so this only adds 'source' — it
+    // doesn't touch any other column's visibility.
+    await authedPage.addInitScript(() => {
+      window.localStorage.setItem(
+        'breeze.devices.columns',
+        JSON.stringify({ v: 1, columns: [{ id: 'source', visible: true }] }),
+      );
+    });
+
     await authedPage.goto('/devices');
     await authedPage.getByTestId('devices-page-add-menu-trigger').waitFor();
     await authedPage.getByTestId('devices-page-add-menu-trigger').click();
