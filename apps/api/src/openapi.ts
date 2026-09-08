@@ -656,7 +656,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           reasonCode: { type: 'string' },
           executionId: { type: 'string', format: 'uuid' },
           commandId: { type: 'string', format: 'uuid' },
-          batchId: { type: 'string', format: 'uuid' }
+          batchId: { type: 'string', format: 'uuid' },
+          delivery: { type: 'string', enum: ['delivered', 'queued_offline'] }
         }
       },
       ScriptAdmissionResult: {
@@ -1652,10 +1653,25 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
         responses: {
           '200': {
-            description: 'Phone number verified',
+            description:
+              'Phone number verified. When the number REPLACED the one behind an already-active SMS factor, '
+              + 'every session (including the caller\'s) is revoked and `sessionReplaced` is true; `tokens` then '
+              + 'carries the replacement session the client must adopt, and is withheld only if the server could '
+              + 'not install it — in which case the client must re-authenticate.',
             content: {
               'application/json': {
-                schema: { $ref: '#/components/schemas/Success' }
+                schema: {
+                  allOf: [
+                    { $ref: '#/components/schemas/Success' },
+                    {
+                      type: 'object',
+                      properties: {
+                        sessionReplaced: { type: 'boolean' },
+                        tokens: { $ref: '#/components/schemas/Tokens' }
+                      }
+                    }
+                  ]
+                }
               }
             }
           },
@@ -1664,6 +1680,12 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           // an invalid/expired tempToken or bearer.
           '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
+          // #5198: from the shared auth-issuance admission path on the
+          // factor-replacement branch — another issuance is in flight or the
+          // factor set changed concurrently (409), or the client auth binding
+          // must be rotated first (428). Nothing was written in either case.
+          '409': { description: 'Authentication issuance unavailable — nothing was written' },
+          '428': { description: 'Client auth binding must be rotated before this write' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
       }

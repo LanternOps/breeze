@@ -144,6 +144,8 @@ export interface CreateTicketInput {
   subject: string;
   description?: string;
   priority: TicketPriority;
+  /** Omitted (not `null`) for Unassigned — see `buildCreateTicketBody`. */
+  assigneeId?: string;
 }
 
 /**

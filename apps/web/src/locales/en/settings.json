@@ -582,7 +582,18 @@
     "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
     "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
-    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations."
+    "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
+    "modules": {
+      "title": "Modules",
+      "description": "Choose which parts of Breeze this MSP runs. Turning Service Management off hides the service desk and customer billing everywhere and stops new tickets being created.",
+      "nativeLabel": "Breeze service desk & billing",
+      "nativeDescription": "Tickets, timesheets, quotes, invoices and contracts run in Breeze. This is the default.",
+      "offLabel": "Off — RMM only",
+      "offDescription": "Hides the Service Desk and Billing sections and the customer record’s Tickets and Billing tabs. Existing tickets stay readable; no new ones can be created.",
+      "externalNote": "This partner runs an external PSA. Changing that is not available here yet.",
+      "saved": "Modules updated",
+      "saveFailed": "Failed to update modules"
+    }
   },
   "loginBranding": {
     "saved": "Login branding saved",
@@ -3320,6 +3331,7 @@
     "passkeyRenamed": "Passkey renamed",
     "currentPasswordIsRequiredToDeleteAPasskey": "Current password is required to delete a passkey",
     "passkeyDeleted": "Passkey deleted",
+    "signInAgainToContinue": "Sign in again to continue.",
     "failedToLoadPasskeys": "Failed to load passkeys",
     "failedToUpdateProfile": "Failed to update profile",
     "failedToUploadAvatar": "Failed to upload avatar",
@@ -4495,7 +4507,8 @@
       "saveOrder": "Failed to save organization order",
       "saveOrganization": "Failed to save organization",
       "saveSite": "Failed to save site ({{status}})",
-      "deleteSite": "Failed to delete site"
+      "deleteSite": "Failed to delete site",
+      "loadSites": "Couldn't load sites for this organization."
     },
     "status": {
       "active": "Active",

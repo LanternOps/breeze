@@ -82,7 +82,11 @@ describe('ProfilePage passkey management', () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
       .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
-      .mockResolvedValueOnce(makeJsonResponse({ passkey: { id: 'credential-1', name: 'MacBook Touch ID' } }))
+      // #5038: register/verify now always returns a replacement session.
+      .mockResolvedValueOnce(makeJsonResponse({
+        passkey: { id: 'credential-1', name: 'MacBook Touch ID' },
+        tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
+      }))
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }));
@@ -133,7 +137,11 @@ describe('ProfilePage passkey management', () => {
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true }));
+      // #5038: the delete now returns a replacement session too.
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
+      }));
 
     render(
       <ProfilePage
@@ -211,7 +219,11 @@ describe('ProfilePage passkey management', () => {
         if (u === '/auth/mfa/setup') return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
         if (u === '/auth/passkeys/register/options') return makeJsonResponse({ options: REGISTRATION_OPTIONS });
         if (u === '/auth/passkeys/register/verify') {
-          return makeJsonResponse({ passkey: { id: 'credential-1', name: 'YubiKey' } });
+          // #5038: register/verify now always returns a replacement session.
+          return makeJsonResponse({
+            passkey: { id: 'credential-1', name: 'YubiKey' },
+            tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
+          });
         }
         return makeJsonResponse({});
       });

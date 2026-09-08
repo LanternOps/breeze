@@ -1067,8 +1067,8 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// here. The callback is nil-checked at every fire site and inert in helper
 	// mode, so registering it unconditionally on Linux is safe.
 	if (!cfg.IsService && !cfg.IsHeadless) || runtime.GOOS == "linux" {
-		h.desktopMgr.OnSessionStopped = func(sessionID string) {
-			h.sendDesktopDisconnectNotification(sessionID)
+		h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
+			h.sendDesktopDisconnectNotification(sessionID, reason)
 		}
 	}
 
@@ -1246,7 +1246,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			return
 		}
 		h.forgetDesktopOwner(notice.SessionID)
-		go h.sendDesktopDisconnectNotification(notice.SessionID)
+		go h.sendDesktopDisconnectNotification(notice.SessionID, notice.Reason)
 	case backupipc.TypeBackupResult:
 		// NOTE: do NOT early-return when wsClient is nil. The outbox needs no
 		// live WS client, and a terminal backup result that arrives during
@@ -1375,10 +1375,45 @@ func (h *Heartbeat) takeDesktopTarget(sessionID string) string {
 	return t
 }
 
+// desktopStopReasonMaxBytes bounds the reason text sent to the API in the
+// disconnect notification (#5300). Session.StopWithReason already caps at
+// this same size, but the value crosses a process boundary here (helper ->
+// service -> API over IPC/WS) — including a future notice.Reason from an
+// older or third-party helper build — so it's capped again defensively
+// rather than trusting the sender.
+const desktopStopReasonMaxBytes = 300
+
+// desktopDisconnectResultPayload builds the `result` object of the
+// desk-disconnect command_result sent to the API. Split out from
+// sendDesktopDisconnectNotification (which requires a live *websocket.Client)
+// so the shape of the outbound message — in particular, that a non-empty
+// reason lands in `stopReason` and is bounded — is unit-testable on its own.
+func desktopDisconnectResultPayload(sessionID, reason string) map[string]any {
+	if len(reason) > desktopStopReasonMaxBytes {
+		reason = reason[:desktopStopReasonMaxBytes]
+	}
+	payload := map[string]any{
+		"sessionId": sessionID,
+		"event":     "peer_disconnected",
+	}
+	if reason != "" {
+		payload["stopReason"] = reason
+	}
+	return payload
+}
+
 // sendDesktopDisconnectNotification tells the API that a WebRTC peer
 // connection dropped so it can mark the session as disconnected and allow
 // the viewer to reconnect.
-func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
+//
+// reason (#5300) is the session's LastStopReason() — e.g. the Win32 error
+// the no-video watchdog's capturer swallowed — or "" for every other
+// disconnect path (peer-connection grace timeout, lifetime policy, operator
+// stop, darwin handoff). The API stores a non-empty reason in
+// remote_sessions.errorMessage only when that column is still empty, so it
+// never overwrites a startup-probe failure text (#5284/#5295) that got there
+// first.
+func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID, reason string) {
 	// Fire the end-of-session UX (banner hide + ended notice) for any session
 	// that carried a consent/notify prompt. Runs on every disconnect path
 	// (direct OnSessionStopped, IPC peer-disconnect, darwin handoff) and is a
@@ -1406,10 +1441,7 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID string) {
 		Type:      "command_result",
 		CommandID: "desk-disconnect-" + sessionID,
 		Status:    "completed",
-		Result: map[string]any{
-			"sessionId": sessionID,
-			"event":     "peer_disconnected",
-		},
+		Result:    desktopDisconnectResultPayload(sessionID, reason),
 	}
 	if err := h.wsClient.SendResult(result); err != nil {
 		log.Warn("failed to send desktop disconnect notification", "session", sessionID, "error", err.Error())

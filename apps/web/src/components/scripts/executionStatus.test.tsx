@@ -55,4 +55,13 @@ describe('every execution status resolves in both status maps', () => {
   it.each(CANCEL_STATES)('every cancel state resolves a label against a terminal status: %s', (cancelState) => {
     expect(resolveExecutionStatusLabel('completed', cancelState)).toBeTruthy();
   });
+
+  // #5128 W2 — the bare "Queued" label was ambiguous about WHY nothing has
+  // happened yet; both status maps now key `queued` on the offline-aware
+  // label so the row/detail views render "Queued — device offline".
+  it('queued resolves to the offline-aware label in both status maps', () => {
+    expect(executionRowStatusConfig.queued.label).toBe('status.queuedOffline');
+    expect(executionDetailStatusConfig.queued.label).toBe('status.queuedOffline');
+    expect(resolveExecutionStatusLabel('queued', null)).toBe('status.queuedOffline');
+  });
 });

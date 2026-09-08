@@ -278,11 +278,14 @@ moveOrgRoutes.post(
         // audit rather than losing data silently.
         //
         // The work is a DB function, not inline SQL, for two reasons it cannot
-        // do from here: it reads custom_field_definitions across the org/partner
-        // axis (an org-scoped request context cannot see partner-wide rows,
-        // #4944), and it must pre-acquire BOTH orgs' partner-export locks in
-        // ascending UUID order before the projection trigger requests one — the
-        // same reason breeze_cascade_device_org_id pre-acquires them.
+        // do from here: it reads custom_field_definitions for BOTH the source
+        // and target orgs across the org/partner axis — and a request context
+        // sees only its own org's rows plus, since #4944
+        // (custom_field_definitions_partner_wide_select), its own partner's
+        // partner-wide ones, never the other org's — and it must pre-acquire
+        // BOTH orgs' partner-export locks in ascending UUID order before the
+        // projection trigger requests one — the same reason
+        // breeze_cascade_device_org_id pre-acquires them.
         // Values under PARTNER-WIDE definitions need no re-home while the move
         // stays inside one partner; a cross-partner move (system scope only)
         // loses that visibility too and drops them by the same rule.
@@ -295,6 +298,39 @@ moveOrgRoutes.post(
           rehomed: Number(customFieldMove?.rehomed ?? 0),
           dropped: Number(customFieldMove?.dropped ?? 0),
         };
+
+        // #4622 — a manual asset is org-scoped hand-entered inventory bound to
+        // this device by the composite FK (linked_device_id, org_id) ->
+        // devices(id, org_id). Once the device leaves the org that link is not
+        // merely stale but unrepresentable, so null it. The ROW survives: it
+        // carries serial, asset tag, assigned contact and notes that belong to
+        // the SOURCE org and must outlive the link.
+        //
+        // Placement is load-bearing and stricter than the
+        // device_group_memberships detach further down:
+        // manual_assets_linked_device_org_fk is DEFERRABLE INITIALLY IMMEDIATE
+        // (the CLAUDE.md default for a composite FK referencing an org_id
+        // column), so its referential check fires at the end of the `UPDATE
+        // devices SET org_id` statement immediately below. A detach placed
+        // after that flip — or left to breeze_cascade_device_org_id(), which
+        // shares the same after-row queue as the RI check and is ordered
+        // against it only by trigger name — would arrive too late and abort the
+        // move with 23503.
+        //
+        // manual_assets has no device_id column, so the generic re-stamp loop
+        // cannot reach it, and it is deliberately absent from
+        // getDeviceOrgDenormalizedTables(): a link-only table is not
+        // device-managed and moveOrg.coverage.test.ts reports a listed one as
+        // an orphan.
+        //
+        // An org MERGE never reaches this route and must not detach: it runs
+        // SET CONSTRAINTS ALL DEFERRED and re-points manual_assets wholesale
+        // (services/orgMergeRegistry.ts REPOINT_TABLES), keeping the link valid
+        // inside the survivor org.
+        await tx.execute(
+          sql`UPDATE manual_assets SET linked_device_id = NULL
+              WHERE linked_device_id = ${deviceId}::uuid`,
+        );
 
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
@@ -399,6 +435,42 @@ moveOrgRoutes.post(
         await tx.execute(
           sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // AI Operator task history stays with the SOURCE org too (#5205 W03,
+        // #5208), for the same reason agent runs do — and with one addition
+        // the runs statement above does not need: a task is LIVE work, not a
+        // finished record. A task still queued/running/waiting/paused holds a
+        // lease and a next_wake_at, so leaving it alone would let the
+        // coordinator keep acting on a device that now belongs to a different
+        // tenant. Sever the pointer, record WHY (the frozen target_label is
+        // retained, so the evidence still says what it was pointed at), and
+        // fence the task to `stopping` — spec §6.1's "cancel, expiry, handoff,
+        // authority loss" edge. `stopping` is deliberately NOT terminal: an
+        // in-flight device command may still return, and its result must land
+        // on the operation row before the reconciler settles the task (§6.3).
+        //
+        // This normally matches NOTHING, exactly like the ai_agent_runs
+        // statement above and UNLIKE the load-bearing invoice_line_devices one
+        // below: the devices row was already flipped earlier in this same
+        // transaction, which fired breeze_cascade_device_org_id(), and that
+        // trigger carries an identical statement (the migration's section 8).
+        // It is kept as a route-local mirror so the detach is visible where
+        // the move is read, and so the route still detaches if the trigger is
+        // ever dropped. The trigger copy is the one that also covers a DIRECT
+        // devices.org_id UPDATE that bypasses this route entirely — which is
+        // why the integration coverage drives that path.
+        //
+        // Both copies are convergent (COALESCE on the detach stamp, CASE on
+        // the state), so whichever runs first wins and the other is a no-op.
+        await tx.execute(
+          sql`UPDATE ai_operator_tasks
+                 SET device_id = NULL,
+                     target_detached_at = COALESCE(target_detached_at, now()),
+                     target_detached_reason = COALESCE(target_detached_reason, 'device_moved'),
+                     state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
         );
 
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice

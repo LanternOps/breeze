@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura de la flota",
     "dashboard": "Panel",
@@ -76,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Resumen",
     "aiRisk": "Riesgo de IA",
-    "deviceBackup": "Respaldo de dispositivos"
+    "deviceBackup": "Respaldo de dispositivos",
+    "sectionServiceDesk": "Mesa de servicio",
+    "serviceManagement": "Gestión de servicios"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -2042,7 +2046,8 @@
           "notMember": "Ya no está afectado por este hallazgo",
           "decommissioned": "El dispositivo está quitado",
           "timeout": "Se agotó el tiempo tras 30 minutos",
-          "dispatchEnqueueFailed": "Nunca se envió: falló el encolado"
+          "dispatchEnqueueFailed": "Nunca se envió: falló el encolado",
+          "maintenanceWindow": "El dispositivo está en una ventana de mantenimiento"
         },
         "viewProgress": "Ver progreso",
         "errors": {

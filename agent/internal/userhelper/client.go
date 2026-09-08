@@ -150,9 +150,11 @@ func (c *Client) Run() error {
 	}
 
 	// Notify the service when a WebRTC peer connection drops so it can relay
-	// the disconnect to the API and allow the viewer to reconnect.
-	c.desktopMgr.mgr.OnSessionStopped = func(sessionID string) {
-		notice := ipc.DesktopPeerDisconnectedNotice{SessionID: sessionID}
+	// the disconnect to the API and allow the viewer to reconnect. reason
+	// (#5300) carries the no-video watchdog's swallowed capture error, when
+	// one was recorded, across the helper->service IPC boundary.
+	c.desktopMgr.mgr.OnSessionStopped = func(sessionID, reason string) {
+		notice := ipc.DesktopPeerDisconnectedNotice{SessionID: sessionID, Reason: reason}
 		if err := c.conn.SendTyped("desk-disc-"+sessionID, ipc.TypeDesktopPeerDisconnected, notice); err != nil {
 			log.Warn("failed to send desktop peer disconnect via IPC", "session", sessionID, "error", err)
 		}
@@ -795,13 +797,18 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	//   - RunAs. This process IS the target user, so the execution is already
 	//     in the right context; forwarding runAs="user" would make
 	//     executor.configureRunAs reject its own delivery.
+	//   - AcknowledgedSecurityPatterns IS forwarded (#5129). The helper runs
+	//     the same executor and therefore the same security validator, so
+	//     omitting it would make an acknowledged script run in SYSTEM context
+	//     and refuse in user context — exactly the #4882 asymmetry.
 	script := executor.ScriptExecution{
-		ID:         cmd.CommandID,
-		ScriptID:   getStringOrDefault(payload, "scriptId", ""),
-		ScriptType: getStringOrDefault(payload, "language", "bash"),
-		Script:     getStringOrDefault(payload, "content", ""),
-		Parameters: executor.ParametersFromPayload(payload["parameters"]),
-		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
+		ID:                           cmd.CommandID,
+		ScriptID:                     getStringOrDefault(payload, "scriptId", ""),
+		ScriptType:                   getStringOrDefault(payload, "language", "bash"),
+		Script:                       getStringOrDefault(payload, "content", ""),
+		Parameters:                   executor.ParametersFromPayload(payload["parameters"]),
+		Timeout:                      getIntOrDefault(payload, "timeoutSeconds", 300),
+		AcknowledgedSecurityPatterns: tools.GetPayloadStringSlice(payload, "acknowledgedSecurityPatterns"),
 	}
 
 	result, err := c.executor.Execute(script)

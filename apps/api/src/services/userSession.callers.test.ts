@@ -42,7 +42,9 @@ const expectedGuardedCookieInstallerFiles = new Map([
   // installs a replacement too).
   ['routes/auth/mfa.ts', 6],
   ['routes/auth/passkeys.ts', 3],
-  ['routes/auth/phone.ts', 1],
+  // Initial verification plus the #5198 replacement branch, which installs a
+  // replacement session so a phone-number swap doesn't evict its own caller.
+  ['routes/auth/phone.ts', 2],
   ['routes/sso.ts', 1],
 ]);
 const expectedLegacyCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);

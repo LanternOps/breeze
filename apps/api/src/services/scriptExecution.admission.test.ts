@@ -142,12 +142,35 @@ describe('executeScriptOnDevices admission contract', () => {
       requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
       status: 'queued',
       targets: [
-        { requestedDeviceId: 'A', admission: 'admitted', executionId: 'execution-A', commandId: 'command-A', batchId: 'batch-default' },
-        { requestedDeviceId: 'B', admission: 'admitted', executionId: 'execution-B', commandId: 'command-B', batchId: 'batch-default' },
-        { requestedDeviceId: 'C', admission: 'admitted', executionId: 'execution-C', commandId: 'command-C', batchId: 'batch-default' },
+        { requestedDeviceId: 'A', admission: 'admitted', executionId: 'execution-A', commandId: 'command-A', batchId: 'batch-default', delivery: 'queued_offline' },
+        { requestedDeviceId: 'B', admission: 'admitted', executionId: 'execution-B', commandId: 'command-B', batchId: 'batch-default', delivery: 'queued_offline' },
+        { requestedDeviceId: 'C', admission: 'admitted', executionId: 'execution-C', commandId: 'command-C', batchId: 'batch-default', delivery: 'queued_offline' },
       ],
     });
     expect(vi.mocked(dispatchScriptToDevice).mock.calls.map(([call]) => call.device.id)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('reports delivery per admitted target from the dispatch outcome (#5128 W2)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelect([script()]) as never)
+      .mockReturnValueOnce(deviceSelect([device('online'), device('offline')]) as never);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ...dispatched('online'), delivered: true, deliveryOutcome: 'sent' })
+      .mockResolvedValueOnce({ ...dispatched('offline'), delivered: false, deliveryOutcome: 'no_agent' });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['online', 'offline'],
+      auth,
+      permissions,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets).toEqual([
+      { requestedDeviceId: 'online', admission: 'admitted', executionId: 'execution-online', commandId: 'command-online', batchId: 'batch-default', delivery: 'delivered' },
+      { requestedDeviceId: 'offline', admission: 'admitted', executionId: 'execution-offline', commandId: 'command-offline', batchId: 'batch-default', delivery: 'queued_offline' },
+    ]);
   });
 
   it('keeps every distinct requested ID and applies oracle-safe gates without side effects', async () => {
@@ -190,10 +213,69 @@ describe('executeScriptOnDevices admission contract', () => {
       { requestedDeviceId: 'os', admission: 'excluded', reasonCode: 'os_incompatible' },
       { requestedDeviceId: 'decommissioned', admission: 'excluded', reasonCode: 'device_decommissioned' },
       { requestedDeviceId: 'maintenance', admission: 'suppressed', reasonCode: 'maintenance_suppressed' },
-      { requestedDeviceId: 'ok', admission: 'admitted', executionId: 'execution-ok', commandId: 'command-ok' },
+      { requestedDeviceId: 'ok', admission: 'admitted', executionId: 'execution-ok', commandId: 'command-ok', delivery: 'queued_offline' },
     ]);
     expect(vi.mocked(dispatchScriptToDevice).mock.calls.map(([call]) => call.device.id)).toEqual(['ok']);
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #4919 — the pre-check above and the dispatch seam BOTH gate on the
+   * maintenance window now. A window that opens between the two is a real
+   * race, and scriptExecution.ts documents where it lands: the generic
+   * per-device failure branch, with the SAME `maintenance_suppressed` reason
+   * token the pre-check emits (so the operator sees one reason either way) and
+   * a failed execution row that keeps the batch counters balanced. Before this
+   * PR `dispatchScriptToDevice` could never return that code, so this branch
+   * was unreachable and untested.
+   */
+  it('records a window that opens mid-fan-out (pre-check passed, dispatch refused) with the same reason code', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelect([script()]) as never)
+      .mockReturnValueOnce(deviceSelect([device('raced'), device('ok')]) as never);
+    // Pre-check clears both devices (default mock), then the seam refuses one.
+    vi.mocked(dispatchScriptToDevice).mockImplementation(async ({ device: target }) =>
+      target.id === 'raced'
+        ? { ok: false, code: 'maintenance_suppressed', error: 'Device is in a maintenance window that suppresses script execution' }
+        : dispatched(target.id));
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['raced', 'ok'],
+      auth,
+      permissions,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets).toContainEqual(
+      expect.objectContaining({
+        requestedDeviceId: 'raced',
+        admission: 'excluded',
+        reasonCode: 'maintenance_suppressed',
+      }),
+    );
+    // The failure row the batch accounting depends on was actually written —
+    // asserted on the inserted VALUES, not merely on db.insert having been
+    // called (the per-org batch insert would satisfy that on its own).
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value as {
+      values: { mock: { calls: [Record<string, unknown>][] } };
+    };
+    const insertedRows = insertChain.values.mock.calls.map(([row]) => row);
+    expect(insertedRows).toContainEqual(
+      expect.objectContaining({
+        deviceId: 'raced',
+        status: 'failed',
+        errorMessage: expect.stringContaining('maintenance window'),
+      }),
+    );
+    expect(insertedRows).not.toContainEqual(
+      expect.objectContaining({ deviceId: 'ok', status: 'failed' }),
+    );
+    // The other device was unaffected.
+    expect(result.admission.targets).toContainEqual(
+      expect.objectContaining({ requestedDeviceId: 'ok', admission: 'admitted' }),
+    );
   });
 
   it('returns a valid typed rejection rather than an HTTP failure when no target is admitted', async () => {
@@ -244,7 +326,7 @@ describe('executeScriptOnDevices admission contract', () => {
     expect(result.admission.targets).toEqual([
       { requestedDeviceId: 'recorded', admission: 'excluded', reasonCode: 'agent_upgrade_required_recorded', batchId: 'batch-1' },
       { requestedDeviceId: 'race', admission: 'excluded', reasonCode: 'os_incompatible', batchId: 'batch-1' },
-      { requestedDeviceId: 'ok', admission: 'admitted', executionId: 'execution-ok', commandId: 'command-ok', batchId: 'batch-1' },
+      { requestedDeviceId: 'ok', admission: 'admitted', executionId: 'execution-ok', commandId: 'command-ok', batchId: 'batch-1', delivery: 'queued_offline' },
     ]);
     const insertChain = vi.mocked(db.insert).mock.results[0]!.value as ReturnType<typeof insertReturning>;
     expect(insertChain.values).toHaveBeenCalledTimes(2);

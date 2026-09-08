@@ -172,7 +172,7 @@ gh api graphql -f query='mutation($id:ID!,$body:String!){addDiscussionComment(in
 
 ### 5. Closing — rules differ by type
 
-- **PRs:** admin-squash-merge is the repo-owner workflow — `gh pr merge <N> --repo LanternOps/breeze --squash --admin` (merge commits disabled; branch protection bypassed when CI green, per CLAUDE.md).
+- **PRs:** `main` is behind the merge queue (since 2026-09-07) — a bare `gh pr merge <N> --repo LanternOps/breeze` enqueues; the queue squashes and lands it serially after the full `CI Success` gate. Never `--admin` (bypasses the queue and rebuilds every entry behind it), per CLAUDE.md "PR Merge Process".
 - **Discussions:** I *can* close my own. Comment first, then close with a reason:
   ```bash
   gh api graphql -f query='mutation($id:ID!){closeDiscussion(input:{discussionId:$id,reason:RESOLVED}){discussion{number closed}}}' -f id="$DID"
@@ -220,8 +220,8 @@ gh issue view <N> --repo LanternOps/breeze --comments --json title,body,comments
 # Author history
 gh search prs --author <handle> --repo LanternOps/breeze --limit 20
 
-# Merge (admin bypass — repo owner workflow)
-gh pr merge <N> --repo LanternOps/breeze --squash --admin
+# Merge (enqueue — the merge queue owns the squash; never --admin)
+gh pr merge <N> --repo LanternOps/breeze
 ```
 
 ## Defers to (not duplicated here)

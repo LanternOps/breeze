@@ -166,6 +166,12 @@ All `service` commands require the terminal to be running as **Administrator** b
     - Start automatically when Windows boots
     - Restart automatically on failure (after 5 s on the first failure, 10 s on the second, 30 s on the third)
     - Reset the failure count after 24 hours of stable operation
+
+    Safe to re-run on a host where the service already exists: it stops the running service, replaces the binary, repoints the registration at it, and then **starts the service again** if it was running beforehand or the host is already enrolled. A fresh, un-enrolled host is left stopped deliberately — enroll first, then start. If the service is meant to come back and fails to start, the command exits non-zero and says so rather than reporting success.
+
+    <Aside type="caution">
+      **v0.110.0 and earlier:** `service install` did **not** start the service, and re-running it on a host that already had the service failed with "service already exists". After installing or upgrading on those versions, run `breeze-agent.exe service start` yourself.
+    </Aside>
   </TabItem>
   <TabItem label="Uninstall">
     ```cmd
@@ -200,6 +206,8 @@ breeze-agent.exe service install
 breeze-agent.exe service start
 ```
 
+`service install` already starts the service on an enrolled host, so the explicit `service start` is only needed on a fresh host that has not enrolled yet (and on agents at v0.110.0 or earlier, where install never started anything).
+
 **Stop and uninstall:**
 
 ```cmd
@@ -230,8 +238,8 @@ The command must be run from an **Administrator** command prompt or PowerShell s
 
 **`service install` fails with "service already exists"**
 
-The `BreezeAgent` service is already registered. Run `breeze-agent.exe service uninstall` first if you need to re-install, or use `breeze-agent.exe service start` if the service is simply stopped.
+Only on **v0.110.0 and earlier**, where `service install` could not upgrade an existing registration. Run `breeze-agent.exe service uninstall` first if you need to re-install, or `breeze-agent.exe service start` if the service is simply stopped. Newer agents upgrade the existing service in place instead of failing.
 
 **`service start` fails after install**
 
-Ensure the agent binary path has not moved since installation. The SCM stores the absolute path at install time. If the binary was relocated, uninstall and reinstall the service.
+The SCM stores the absolute path to the binary. On current agents, re-running `breeze-agent.exe service install` repoints the registration at the binary's real location; on **v0.110.0 and earlier** you have to uninstall and reinstall the service instead. If the start still fails, check **Event Viewer → Windows Logs → Application** for the service's own start error.

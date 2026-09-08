@@ -259,16 +259,31 @@ describe('password reset eligibility (#719)', () => {
 
     it('enqueues for a known and an unknown address indistinguishably (structural + duration)', async () => {
       const ITER = 40;
-      const timeMany = async (email: string): Promise<number> => {
-        const start = performance.now();
-        for (let i = 0; i < ITER; i++) {
-          // eslint-disable-next-line no-await-in-loop
-          await postForgot({ email });
-        }
-        return performance.now() - start;
-      };
-      const knownMs = await timeMany('admin@msp.com');
-      const unknownMs = await timeMany('nobody@nowhere.test');
+      const KNOWN = 'admin@msp.com';
+      const UNKNOWN = 'nobody@nowhere.test';
+
+      // Untimed warm-up so neither timed batch pays JIT/module/mock start-up.
+      // Without it the FIRST batch ran ~6x slower than the second on a loaded
+      // CI runner and tripped the ratio bound below (merge-group run for
+      // #5302), which is an oracle for warm-up, not for address existence.
+      await postForgot({ email: KNOWN });
+      await postForgot({ email: UNKNOWN });
+      vi.mocked(enqueuePasswordResetRequest).mockClear();
+
+      // Interleave the two addresses so any drift during the run (GC, runner
+      // load) lands on both equally instead of on whichever batch went first.
+      let knownMs = 0;
+      let unknownMs = 0;
+      for (let i = 0; i < ITER; i++) {
+        let start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: KNOWN });
+        knownMs += performance.now() - start;
+        start = performance.now();
+        // eslint-disable-next-line no-await-in-loop
+        await postForgot({ email: UNKNOWN });
+        unknownMs += performance.now() - start;
+      }
 
       // Structural indistinguishability: identical enqueue count, and NONE of
       // the existence-dependent calls fired for either address.

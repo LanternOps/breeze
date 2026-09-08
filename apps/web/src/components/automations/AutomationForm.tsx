@@ -71,6 +71,11 @@ const createAutomationSchema = (t: ScriptsT) => {
     // stripped by the schema on the way through — RunContextSelect renders it
     // as a disabled option.
     runAs: z.enum(['system', 'user', 'elevated']).optional(),
+    // #5128 W4 — offline behaviour for run_script / execute_command.
+    // Optional here so an action loaded from a pre-#5128 automation keeps a
+    // byte-identical payload until the operator actually touches the control;
+    // the API defaults an absent value to 'queue'.
+    whenOffline: z.enum(['queue', 'skip']).optional(),
     notificationChannelId: z.string().optional(),
     alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     alertMessage: z.string().optional(),
@@ -715,6 +720,32 @@ export default function AutomationForm({
                           id={`action-${index}-run-as`}
                           testId={`action-${index}-run-as-select`}
                         />
+
+                        <label
+                          htmlFor={`action-${index}-when-offline`}
+                          className="text-xs font-medium text-muted-foreground"
+                        >
+                          {t('automationForm.fields.whenOffline')}
+                        </label>
+                        <select
+                          id={`action-${index}-when-offline`}
+                          data-testid={`action-${index}-when-offline-select`}
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                          value={watchActions?.[index]?.whenOffline ?? 'queue'}
+                          onChange={event =>
+                            setValue(
+                              `actions.${index}.whenOffline`,
+                              event.target.value as 'queue' | 'skip',
+                              { shouldDirty: true },
+                            )
+                          }
+                        >
+                          <option value="queue">{t('automationForm.options.whenOffline.queue')}</option>
+                          <option value="skip">{t('automationForm.options.whenOffline.skip')}</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                          {t('automationForm.hints.whenOffline')}
+                        </p>
                       </div>
                     )}
 
@@ -771,6 +802,32 @@ export default function AutomationForm({
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
                           {...register(`actions.${index}.command`)}
                         />
+
+                        <label
+                          htmlFor={`action-${index}-when-offline`}
+                          className="text-xs font-medium text-muted-foreground"
+                        >
+                          {t('automationForm.fields.whenOffline')}
+                        </label>
+                        <select
+                          id={`action-${index}-when-offline`}
+                          data-testid={`action-${index}-when-offline-select`}
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                          value={watchActions?.[index]?.whenOffline ?? 'queue'}
+                          onChange={event =>
+                            setValue(
+                              `actions.${index}.whenOffline`,
+                              event.target.value as 'queue' | 'skip',
+                              { shouldDirty: true },
+                            )
+                          }
+                        >
+                          <option value="queue">{t('automationForm.options.whenOffline.queue')}</option>
+                          <option value="skip">{t('automationForm.options.whenOffline.skip')}</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">
+                          {t('automationForm.hints.whenOffline')}
+                        </p>
                       </div>
                     )}
 

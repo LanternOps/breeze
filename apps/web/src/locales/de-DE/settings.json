@@ -582,7 +582,18 @@
     "selfSaving": "Dieser Abschnitt speichert seine eigenen Änderungen.",
     "saveSettings": "Einstellungen speichern",
     "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
-    "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen."
+    "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
+    "modules": {
+      "title": "Module",
+      "description": "Wählen Sie, welche Teile von Breeze dieser MSP nutzt. Wenn Service-Management deaktiviert ist, werden Service-Desk und Kundenabrechnung überall ausgeblendet und es können keine neuen Tickets erstellt werden.",
+      "nativeLabel": "Breeze Service-Desk & Abrechnung",
+      "nativeDescription": "Tickets, Zeiterfassung, Angebote, Rechnungen und Verträge laufen in Breeze. Dies ist die Standardeinstellung.",
+      "offLabel": "Aus – nur RMM",
+      "offDescription": "Blendet die Bereiche Service-Desk und Abrechnung sowie die Registerkarten Tickets und Abrechnung im Kundendatensatz aus. Vorhandene Tickets bleiben lesbar; neue können nicht erstellt werden.",
+      "externalNote": "Dieser Partner nutzt ein externes PSA. Eine Änderung ist hier noch nicht möglich.",
+      "saved": "Module aktualisiert",
+      "saveFailed": "Module konnten nicht aktualisiert werden"
+    }
   },
   "loginBranding": {
     "saved": "Login-Branding gespeichert",
@@ -3320,6 +3331,7 @@
     "passkeyRenamed": "Passkey umbenannt",
     "currentPasswordIsRequiredToDeleteAPasskey": "Zum Löschen eines Passkeys ist das aktuelle Passwort erforderlich",
     "passkeyDeleted": "Passkey gelöscht",
+    "signInAgainToContinue": "Melden Sie sich erneut an, um fortzufahren.",
     "failedToLoadPasskeys": "Passkeys konnten nicht geladen werden",
     "failedToUpdateProfile": "Profil konnte nicht aktualisiert werden",
     "failedToUploadAvatar": "Avatar konnte nicht hochgeladen werden",
@@ -4442,7 +4454,8 @@
       "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
       "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
       "saveSite": "Standort konnte nicht gespeichert werden ({{status}})",
-      "deleteSite": "Die Standort konnte nicht gelöscht werden"
+      "deleteSite": "Die Standort konnte nicht gelöscht werden",
+      "loadSites": "Die Standorte dieser Organisation konnten nicht geladen werden."
     },
     "status": {
       "active": "Aktiv",

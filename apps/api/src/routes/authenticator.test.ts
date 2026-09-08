@@ -76,6 +76,7 @@ const {
       issueRegistrationAttempt: vi.fn(),
       consumeRegistrationAttempt: vi.fn(),
       registrationTranscript: vi.fn(),
+      androidKeyGenChallenge: vi.fn(),
       verifyPlatformAttestation: vi.fn(),
     },
     // The per-user rate limiter is mocked as a REAL counter keyed exactly as the
@@ -1119,6 +1120,7 @@ describe('attested mobile registration (#1374 W02)', () => {
     attestationMocks.issueRegistrationAttempt.mockResolvedValue(ATTEMPT);
     attestationMocks.consumeRegistrationAttempt.mockResolvedValue(ATTEMPT);
     attestationMocks.registrationTranscript.mockReturnValue(Buffer.alloc(32, 9));
+    attestationMocks.androidKeyGenChallenge.mockReturnValue(Buffer.alloc(32, 5));
     attestationMocks.verifyPlatformAttestation.mockResolvedValue({
       basis: 'unattested',
       verifiedAt: null,
@@ -1280,6 +1282,24 @@ describe('attested mobile registration (#1374 W02)', () => {
         signatureB64: 'pop-sig',
         alg: 'ES256',
       });
+    });
+
+    it('hands the verifier the SERVER-derived keygen challenge alongside the transcript', async () => {
+      // Android's KeyStore challenge is fixed at key generation, before the
+      // SPKI exists, so it is a separate digest from the transcript — and like
+      // the transcript it is built from the CONSUMED attempt, never the body.
+      await post('/devices/mobile/verify', validBody);
+      expect(attestationMocks.androidKeyGenChallenge).toHaveBeenCalledWith({
+        attemptId: 'attempt-1',
+        challenge: 'challenge-abc',
+        publicKeyAlg: 'ES256',
+      });
+      expect(attestationMocks.verifyPlatformAttestation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transcript: Buffer.alloc(32, 9),
+          keyGenChallenge: Buffer.alloc(32, 5),
+        }),
+      );
     });
 
     it('403s when the grant is rejected AFTER a valid PoP — nothing is inserted', async () => {

@@ -122,7 +122,8 @@ func (h *Heartbeat) reconcileDarwinDesktopOwners(reason string) {
 		switch {
 		case owner == nil:
 			h.forgetDesktopOwner(desktopSessionID)
-			go h.sendDesktopDisconnectNotification(desktopSessionID)
+			// Handoff disconnect, not a capture failure — no #5300 reason.
+			go h.sendDesktopDisconnectNotification(desktopSessionID, "")
 		case preferred == nil:
 			h.disconnectDarwinDesktopOwner(desktopSessionID, owner, reason)
 		case preferred.SessionID != owner.SessionID:
@@ -165,5 +166,6 @@ func (h *Heartbeat) disconnectDarwinDesktopOwner(desktopSessionID string, owner 
 	}
 
 	h.forgetDesktopOwner(desktopSessionID)
-	go h.sendDesktopDisconnectNotification(desktopSessionID)
+	// Handoff disconnect, not a capture failure — no #5300 reason.
+	go h.sendDesktopDisconnectNotification(desktopSessionID, "")
 }

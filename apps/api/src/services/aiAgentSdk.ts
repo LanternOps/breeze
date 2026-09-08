@@ -33,7 +33,13 @@ import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
-import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
+import {
+  createActionIntent,
+  waitForIntentDecision,
+  transitionIntent,
+  type ActionIntentTransitionPatch,
+} from './actionIntents/intentService';
+import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import { approvedExecutingDenial } from './aiToolHandoff';
@@ -479,6 +485,42 @@ export async function runPreFlightChecks(
   }
 
   return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, resolved };
+}
+
+/**
+ * #5205 W05 (#5210), spec §6.3: wraps a `transitionIntent` CAS to a terminal
+ * status with its `intent_outbox` publication in ONE atomic system-scoped
+ * transaction — `transitionIntent` opens its own `withSystemDbAccessContext`,
+ * which JOINS this already-open one (db/index.ts's "refuses to nest"), so
+ * both writes commit together. Only fires when the CAS actually wins,
+ * matching every other terminal writer's posture (a lost race means some
+ * other writer already terminalized this intent and owns its outbox row).
+ *
+ * `taskId` is always `null` here by construction: every intent this file
+ * transitions was created by THIS session's own
+ * `createActionIntent(session.auth, {...})` call above, which never threads a
+ * `task` context through — task-linked admission is a durable-worker-only
+ * path in the thin slice (spec P3-1: "supervised mode only... no direct
+ * act"). `publishIntentTerminalOutbox` is still the call site (not a bare
+ * `intentOutbox` insert) because it is the ONE helper every terminal writer
+ * in baseline §3.2's inventory uses, and the contract test enumerates that
+ * inventory by call site, not by whether task-linkage happens to be reachable
+ * today.
+ */
+async function transitionIntentAndPublish(
+  intentId: string,
+  to: 'completed' | 'failed',
+  patch: ActionIntentTransitionPatch,
+  orgId: string,
+  event: 'intent_completed' | 'intent_failed',
+): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const won = await transitionIntent(intentId, 'executing', to, patch);
+    if (won) {
+      await publishIntentTerminalOutbox(db, { id: intentId, orgId, taskId: null }, event);
+    }
+    return won;
+  });
 }
 
 // ============================================
@@ -1276,7 +1318,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
-            await transitionIntent(intent.id, 'executing', 'failed', { errorCode: revalidation.errorCode });
+            await transitionIntentAndPublish(
+              intent.id,
+              'failed',
+              { errorCode: revalidation.errorCode },
+              session.orgId,
+              'intent_failed',
+            );
             console.error(
               `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
             );
@@ -1321,9 +1369,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {
-              await transitionIntent(intent.id, 'executing', 'failed', {
-                errorCode: 'content_changed',
-              });
+              await transitionIntentAndPublish(
+                intent.id,
+                'failed',
+                { errorCode: 'content_changed' },
+                session.orgId,
+                'intent_failed',
+              );
               console.error(
                 `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
               );
@@ -1384,13 +1436,26 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // original error being handled.
           if (wonIntentId) {
             try {
-              await transitionIntent(wonIntentId, 'executing', 'failed', { errorCode: 'execution_error' });
+              await transitionIntentAndPublish(
+                wonIntentId,
+                'failed',
+                { errorCode: 'execution_error' },
+                session.orgId,
+                'intent_failed',
+              );
             } catch (transitionErr) {
+              // #5205 W05 (#5210): transitionIntentAndPublish now couples the
+              // CAS to a constraint-guarded intentOutbox insert in the SAME
+              // transaction — a failure here rolls back the self-heal CAS
+              // too, exactly the case this code exists to prevent (a stranded
+              // `executing` row). Must not be console-only: this is the same
+              // "silent for weeks" risk class as the wiring-error check above.
               console.error(
                 '[AI-SDK] Failed to CAS action intent to failed after unexpected tier-3 error:',
                 wonIntentId,
                 transitionErr,
               );
+              captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
             }
           }
           return await failMatchedPlanStep({
@@ -1900,32 +1965,53 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           captureException(err instanceof Error ? err : new Error(String(err)));
           plaintextGuardTripped = true;
           try {
-            await transitionIntent(pendingIntentId, 'executing', 'failed', {
-              executedAt: new Date(),
-              errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE,
-            });
+            await transitionIntentAndPublish(
+              pendingIntentId,
+              'failed',
+              { executedAt: new Date(), errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE },
+              session.orgId,
+              'intent_failed',
+            );
           } catch (transitionErr) {
+            // #5205 W05 (#5210): the CAS is now coupled to a constraint-
+            // guarded intentOutbox insert in the SAME transaction — a
+            // failure here rolls the CAS back too, stranding the intent
+            // `executing`. Report, don't just log.
             console.error(
               `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
               pendingIntentId,
               transitionErr,
             );
+            captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
           }
         }
 
         if (!plaintextGuardTripped) {
           try {
-            await transitionIntent(pendingIntentId, 'executing', isError ? 'failed' : 'completed', {
-              executedAt: new Date(),
-              // error_code is always the stable short code (matches the
-              // release worker's vocabulary); the raw tool error text is
-              // unbounded free-form and belongs in `result`, not `error_code`.
-              ...(isError
-                ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
-                : { result: sizedResult }),
-            });
+            await transitionIntentAndPublish(
+              pendingIntentId,
+              isError ? 'failed' : 'completed',
+              {
+                executedAt: new Date(),
+                // error_code is always the stable short code (matches the
+                // release worker's vocabulary); the raw tool error text is
+                // unbounded free-form and belongs in `result`, not `error_code`.
+                ...(isError
+                  ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                  : { result: sizedResult }),
+              },
+              session.orgId,
+              isError ? 'intent_failed' : 'intent_completed',
+            );
           } catch (err) {
+            // #5205 W05 (#5210): this is the primary inline-execution
+            // completion write — every non-durable-release tier-3 tool call
+            // ends here. The CAS is now coupled to a constraint-guarded
+            // intentOutbox insert in the SAME transaction, so a failure here
+            // rolls the CAS back too and would otherwise strand the intent
+            // `executing` with no signal beyond a console line.
             console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
           }
         }
       }

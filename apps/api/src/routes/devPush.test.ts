@@ -42,13 +42,20 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!c.req.header('x-test-drop-perms')) c.set('permissions', {});
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: vi.fn((c: any, next: any) => {
-    c.set('apiKey', { orgId: '11111111-1111-1111-1111-111111111111', scopes: ['devices:write'] });
+    c.set('apiKey', {
+      orgId: '11111111-1111-1111-1111-111111111111', scopes: ['devices:execute'],
+      allowedSiteIds: c.req.header('x-test-sites') === undefined
+        ? undefined : c.req.header('x-test-sites').split(',').filter(Boolean),
+    });
     return next();
   }),
   requireApiKeyScope: vi.fn(() => async (_c: any, next: any) => next()),
@@ -91,6 +98,8 @@ vi.mock('fs', () => ({
   }),
 }));
 
+import { mkdir } from 'fs/promises';
+import { createWriteStream } from 'fs';
 import { authMiddleware } from '../middleware/auth';
 import { devPushRoutes } from './devPush';
 
@@ -125,6 +134,44 @@ describe('devPush routes', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+  });
+
+  it.each(['allowed-other-site', ''])('denies a restricted key before file/download/command side effects (%s)', async (sites) => {
+    process.env.NODE_ENV = 'production';
+    process.env.DEV_PUSH_ENABLED = 'true';
+    mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, siteId: 'denied-site' });
+    const form = new FormData();
+    form.append('agentId', AGENT_ID);
+    form.append('binary', new File(['inert-test-content'], 'fixture.bin'));
+    const mapSet = vi.spyOn(Map.prototype, 'set');
+    try {
+      const res = await app.request('/dev/push', {
+        method: 'POST', body: form, headers: { 'X-API-Key': 'test-key', 'x-test-sites': sites },
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(createWriteStream).not.toHaveBeenCalled();
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+      expect(mapSet.mock.calls.filter(([, value]) => value && typeof value === 'object'
+        && 'filePath' in value && 'agentId' in value)).toEqual([]);
+    } finally {
+      mapSet.mockRestore();
+    }
+  });
+
+  it('fails closed when a session reaches device authorization without permissions', async () => {
+    mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, siteId: 'site' });
+    const form = new FormData();
+    form.append('agentId', AGENT_ID);
+    form.append('binary', new File(['inert-test-content'], 'fixture.bin'));
+    const res = await app.request('/dev/push', {
+      method: 'POST', body: form, headers: { Authorization: 'Bearer token', 'x-test-drop-perms': 'true' },
+    });
+    expect(res.status).toBe(403);
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(createWriteStream).not.toHaveBeenCalled();
+    expect(mockSendCommandToAgent).not.toHaveBeenCalled();
   });
 
   // ------------------------------------------------------------------

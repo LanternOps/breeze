@@ -266,6 +266,35 @@ describe('monitoring routes', () => {
       expect(body.snmpDevice.privPassword).toBe('********');
     });
 
+    // #5213 — discovered_assets.ip_address is nullable now (manual website /
+    // DNS-only assets). snmp_devices.ip_address is varchar NOT NULL, so the old
+    // `?? ''` fallback satisfied the constraint and aimed the poller at ''.
+    it('returns 400 when SNMP is enabled on an asset with no IP', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: ASSET_ID,
+              orgId: ORG_ID,
+              hostname: 'status.example.com',
+              ipAddress: null,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ snmpVersion: 'v2c', community: 'public' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/no IP address/i);
+      // Nothing may be written for an un-pollable target.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('returns 404 for nonexistent asset', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

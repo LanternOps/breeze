@@ -9,6 +9,7 @@ import {
 } from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { AccountingPaymentPayload } from './types';
+import { isQboPaymentLinkedRefusal } from './quickbooksFault';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
   return {
@@ -534,6 +535,50 @@ describe('voidInvoice', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  // #5180 — the seam that makes the whole terminal-classification chain work.
+  // Everything downstream (the coordinator's catch, the worker's TERMINAL_CODES)
+  // keys off the fields `qboRequest` attaches HERE. If that attachment regresses
+  // — wrong property name, inverted condition — every hand-built-error test
+  // downstream stays green while the feature never fires against real
+  // QuickBooks, which is exactly the "five identical refusals, no signal"
+  // failure this issue was about. So this test starts from a real fetch reply.
+  it('attaches the payment-linked classification off the FULL fault body, so the coordinator can call the void terminal', async () => {
+    const detail = 'Business Validation Error: You cannot void this invoice because it has payments applied to it.'
+      // Padding so the reason sits PAST the 500-character truncation point that
+      // `body` storage applies — the classification must survive that.
+      + ` ${'x'.repeat(600)}`;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6000', Message: 'Business Validation Error', Detail: detail }] } }),
+      { status: 400 },
+    ));
+
+    const err = await quickbooksProvider
+      .voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' })
+      .catch((e: unknown) => e) as Error & { body?: string; qboPaymentLinked?: boolean };
+
+    // Not a 5010, so the provider does NOT re-read and retry — it propagates.
+    expect(err.message).toMatch(/failed with 400/);
+    expect(err.qboPaymentLinked).toBe(true);
+    expect(isQboPaymentLinkedRefusal(err)).toBe(true);
+    // The truncated copy stored for forensics still never carries Intuit's
+    // Detail past 500 characters, and the flag did not depend on it.
+    expect(err.body!.length).toBeLessThanOrEqual(500);
+  });
+
+  it('does NOT flag an ordinary 400 fault as payment-linked — an unrelated rejection keeps its retries', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6140', Message: 'Duplicate Document Number Error', Detail: 'DocNumber INV-1 already exists.' }] } }),
+      { status: 400 },
+    ));
+
+    const err = await quickbooksProvider
+      .voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' })
+      .catch((e: unknown) => e) as Error & { qboPaymentLinked?: boolean };
+
+    expect(err.qboPaymentLinked).toBeUndefined();
+    expect(isQboPaymentLinkedRefusal(err)).toBe(false);
+  });
+
   it('reads the live SyncToken FIRST when the mapping has none, instead of refusing the void', async () => {
     // An adopted or re-owned invoice mapping can legitimately carry no token,
     // and refusing left the only route to a QuickBooks void as doing it by hand.
@@ -962,6 +1007,7 @@ describe('reconcileChanges (CDC)', () => {
   });
 
   it('reports overflowed:true when the /query backfill itself fails, keeping the CDC rows', async () => {
+    captureExceptionMock.mockClear();
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       throw new Error('unexpected extra fetch() call — this test only mocks 2 responses');
     });
@@ -975,6 +1021,45 @@ describe('reconcileChanges (CDC)', () => {
 
     expect(cs.overflowed).toBe(true);
     expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
+    // #5193: `op` and `entity` have no allowlisted equivalent and must be
+    // dropped, not just `service` left correct — assert the exact key set so
+    // this fails if either one is reintroduced.
+    expect(Object.keys(captureExceptionMock.mock.calls[0]![2] ?? {})).toEqual(['service']);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'quickbooksProvider',
+    });
+  });
+
+  it('reports the page-cap error via captureException with allowlisted tags when a /query backfill never resolves', async () => {
+    captureExceptionMock.mockClear();
+    const fullPage = Array.from({ length: 1000 }, (_, i) => qboPayment({ Id: String(3000 + i) }));
+    let queryCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes('/query?query=')) {
+        queryCalls++;
+        return jsonResponse({ QueryResponse: { Payment: fullPage } });
+      }
+      return jsonResponse(
+        cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 100_000 }]),
+      );
+    });
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    // QBO_CDC_QUERY_MAX_PAGES: the loop gives up after this many full pages
+    // without ever seeing a short (final) one.
+    expect(queryCalls).toBe(50);
+    expect(cs.overflowed).toBe(true);
+    // Exactly one report: no per-page fetch throws in this test, so the only
+    // captureException is the page-cap giveup itself.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    const pageCapCall = captureExceptionMock.mock.calls[0]!;
+    expect(String(pageCapCall[0])).toContain('exceeded');
+    // #5193: `op` and `entity` have no allowlisted equivalent and must be
+    // dropped, not just `service` left correct — assert the exact key set so
+    // this fails if either one is reintroduced.
+    expect(Object.keys(pageCapCall[2] ?? {})).toEqual(['service']);
+    expect(pageCapCall[2]).toMatchObject({ service: 'quickbooksProvider' });
   });
 
   it('backfills an overflowing Invoice block through /query and keeps the CDC deletion lists', async () => {
@@ -1060,6 +1145,12 @@ describe('reconcileChanges (CDC)', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
     expect(String(captureExceptionMock.mock.calls[0]![0])).toMatch(/30-day/);
+    // #5193: tag keys must be the allowlisted snake_case names (`op` and
+    // `skippedDays` have no allowlisted equivalent and are silently dropped).
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'quickbooksProvider',
+      accounting_connection_id: 'c1',
+    });
     warnSpy.mockRestore();
   });
 

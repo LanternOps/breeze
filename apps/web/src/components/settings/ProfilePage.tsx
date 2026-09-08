@@ -685,6 +685,20 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
+  /**
+   * #5038: these factor writes revoke every refresh family and hand the caller a
+   * REPLACEMENT session in the same response. The API withholds `tokens` only
+   * when its own post-commit install failed — the families are already gone, so
+   * THIS tab's session is dead even though the write succeeded. Say so with the
+   * success message rather than letting the user discover it as a disconnected
+   * /login?reason=session-expired on some later screen.
+   *
+   * A REFUSED commit is different and needs no notice: the store refuses only on
+   * a stale generation, which means a logout already moved the session on.
+   */
+  const withReauthNotice = (message: string, replacementAdopted: boolean) =>
+    (replacementAdopted ? message : `${message}. ${t('profilePage.signInAgainToContinue')}`);
+
   const handleMfaDisable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
@@ -714,12 +728,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // /login?reason=session-expired by the very action they just took.
       // A refused commit (a logout raced the request) is not an error: MFA is
       // already off, so the success message still has to be shown.
-      if (data.tokens?.accessToken) {
+      const disableReplacementAdopted = Boolean(data.tokens?.accessToken);
+      if (disableReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
       }
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
-      setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
+      setMfaSuccess(withReauthNotice(t('profilePage.multiFactorAuthenticationDisabled'), disableReplacementAdopted));
       return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
@@ -808,6 +823,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // (the server calls resolveEnrollmentStepUp there with
       // `passwordAlreadyProven`), so re-sending the plaintext password would be
       // a second exposure buying nothing.
+      // Captured before the requests so a logout that races them is detectable
+      // when the replacement session comes back (#5038).
+      const generation = useAuthStore.getState().sessionGeneration;
       const optionsProof = isPasswordless
         ? { ssoReauthGrantId }
         : { currentPassword: passkeyPassword };
@@ -842,6 +860,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         );
       }
 
+      // #5038: registering a passkey rotates the SESSION too — the API advances
+      // mfa_epoch and revokes every refresh family so no OTHER session survives
+      // the account's factor set changing, and hands this caller a replacement
+      // in the same response. Adopt it (the refresh/CSRF cookies came with it);
+      // keeping the pre-registration token means the next request 401s on the
+      // stale `mep`, its refresh fails against a revoked family, and the user is
+      // bounced to /login?reason=session-expired by the very action they just
+      // took. A refused commit (a logout raced the request) is not an error —
+      // the passkey is already registered, so success still has to be shown.
+      const registerReplacementAdopted = Boolean(verifyData.tokens?.accessToken);
+      if (registerReplacementAdopted) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
+      }
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
@@ -853,7 +884,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
-      setPasskeySuccess(t('profilePage.passkeyAdded'));
+      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyAdded'), registerReplacementAdopted));
       await loadPasskeys();
     } catch (error) {
       if (error instanceof Error && error.name === 'NotAllowedError') {
@@ -902,6 +933,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
       return;
     }
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMutatingPasskeyId(passkeyId);
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
@@ -912,9 +945,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (!response.ok) {
         throw new Error(data.error ?? data.message ?? t('profilePage.failedToDeletePasskeyHttp', { status: response.status }));
       }
+      // #5038: same contract as registration above — deleting a factor rotates
+      // the caller's session rather than evicting it.
+      const deleteReplacementAdopted = Boolean(data.tokens?.accessToken);
+      if (deleteReplacementAdopted) {
+        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
+      }
       setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
-      setPasskeySuccess(t('profilePage.passkeyDeleted'));
+      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteReplacementAdopted));
     } catch (error) {
       setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
     } finally {

@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { enterMock, bulkMock, mintMock, fetchMock } = vi.hoisted(() => ({
@@ -110,6 +110,22 @@ describe('MaintenanceModeDialog (RMM-QA-176 D10)', () => {
     await waitFor(() =>
       expect(onCompleted).toHaveBeenCalledWith({ success: true, action: 'enable' }),
     );
+  });
+
+  it('does not dispatch captured maintenance targets after cancellation during step-up', async () => {
+    enterMock.mockRejectedValueOnce(stepUpDenial);
+    let finish!: (grant: string) => void;
+    mintMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const { unmount } = renderDialog();
+    await userEvent.type(screen.getByTestId('maintenance-reason'), 'scheduled patching');
+    await userEvent.click(screen.getByTestId('maintenance-submit'));
+    await userEvent.type(await screen.findByTestId('maintenance-stepup-code'), '123456');
+    await userEvent.click(screen.getByTestId('maintenance-submit'));
+    await waitFor(() => expect(mintMock).toHaveBeenCalledOnce());
+    unmount();
+    await act(async () => finish('late-grant'));
+    expect(enterMock).toHaveBeenCalledTimes(1);
+    expect(bulkMock).not.toHaveBeenCalled();
   });
 
   it('shows the MFA copy, not the factor step, on 403 MFA_REQUIRED', async () => {

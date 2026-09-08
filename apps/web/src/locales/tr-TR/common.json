@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
@@ -76,7 +78,9 @@
     "software": "Yazılım",
     "securityOverview": "Genel Bakış",
     "aiRisk": "Yapay Zeka Riski",
-    "deviceBackup": "Cihaz Yedekleme"
+    "deviceBackup": "Cihaz Yedekleme",
+    "sectionServiceDesk": "Servis masası",
+    "serviceManagement": "Servis yönetimi"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -2042,7 +2046,8 @@
           "notMember": "Artık bu bulgudan etkilenmiyor",
           "decommissioned": "Cihaz çıkarıldı",
           "timeout": "30 dakika sonra zaman aşımına uğradı",
-          "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu"
+          "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu",
+          "maintenanceWindow": "Cihaz bir bakım penceresinde"
         },
         "viewProgress": "İlerlemeyi görüntüle",
         "errors": {

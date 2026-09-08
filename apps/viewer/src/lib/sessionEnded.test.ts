@@ -8,6 +8,7 @@ import {
   nextAnswerPollInterval,
   parseRetryAfterMs,
   SessionEndedError,
+  SESSION_ENDED_DEFAULT_MESSAGE,
   AgentSessionError,
   type AuthenticatedConnectionParams,
 } from './webrtc';
@@ -199,6 +200,46 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     await expect(createWebRTCSession(baseParams, videoEl)).rejects.toBeInstanceOf(
       SessionEndedError,
     );
+  });
+
+  // #5300: the no-video watchdog's swallowed capture error reaches
+  // remote_sessions.errorMessage on a 'disconnected' session (agentWs.ts,
+  // agentWs.desktop.peerDisconnected). When a reconnect's offer POST 401s
+  // because that session was already revoked, one diagnostic read of
+  // /viewer/session (the same failure-diagnostics exception #5295 uses for a
+  // failed start, extended to 'disconnected' in desktopWs.ts) should surface
+  // that reason on the thrown SessionEndedError instead of the generic text.
+  it('carries the recorded stop reason on SessionEndedError when the offer POST 401s (#5300)', async () => {
+    const reason = 'GetDIBits failed: Win32 error 87 (0x57)';
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
+      if (url.includes('/viewer/offer')) return jsonResponse('Session ended', 401);
+      if (url.includes('/viewer/session')) {
+        return jsonResponse({ status: 'disconnected', errorMessage: reason });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    const error = await createWebRTCSession(baseParams, videoEl).catch((err) => err);
+    expect(error).toBeInstanceOf(SessionEndedError);
+    expect(error.message).toBe(reason);
+  });
+
+  // Every routine disconnect (grace timeout, lifetime policy, operator stop,
+  // or simply a session diagnostics can't read back — e.g. still revoked with
+  // no recorded reason) must fall back to the generic text exactly as before
+  // #5300, not surface something derived from a 401/404 diagnostic response.
+  it('falls back to the generic message when the diagnostic read finds no reason', async () => {
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
+      if (url.includes('/viewer/offer')) return jsonResponse('Session ended', 401);
+      if (url.includes('/viewer/session')) return jsonResponse('Session closed', 401);
+      return jsonResponse({}, 404);
+    });
+
+    const error = await createWebRTCSession(baseParams, videoEl).catch((err) => err);
+    expect(error).toBeInstanceOf(SessionEndedError);
+    expect(error.message).toBe(SESSION_ENDED_DEFAULT_MESSAGE);
   });
 
   it('throws SessionEndedError when the answer poll returns 401', async () => {

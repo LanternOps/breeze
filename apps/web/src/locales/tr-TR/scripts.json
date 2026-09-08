@@ -154,8 +154,18 @@
       "severity": "Önem",
       "message": "Mesaj",
       "command": "Komut",
+      "whenOffline": "Cihaz çevrimdışıysa",
       "software": "Yazılım",
       "failureNotificationChannel": "Arıza Bildirim Kanalı"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Kuyruğa al (varsayılan)",
+        "skip": "Atla"
+      }
+    },
+    "hints": {
+      "whenOffline": "Kuyruğa alınan iş cihazı bekler ve bir sonraki bağlantısında çalışır ya da 7 gün sonra sona erer. Atla adımı hemen başarısız kılar."
     },
     "placeholders": {
       "name": "Günlük bakım kontrolü",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
       "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
       "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
-      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı",
+      "queuedOffline": "Sırada — cihaz çevrimdışı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır"
     }
   },
   "secretParameters": {
@@ -1047,6 +1062,14 @@
       "notSecretRow": "Gizli değil — \"Bir değişkenden\" kullanın",
       "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
+    },
+    "securityReview": {
+      "title": "Güvenlik incelemesi",
+      "blockedHint_one": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği 1 desenle eşleşiyor.",
+      "blockedHint_other": "Bu komut dosyası, aracının onay olmadan çalıştırmayı reddettiği {{count}} desenle eşleşiyor. Kabul etmek istediğiniz her birini onaylayın.",
+      "clearedHint": "Algılanan tüm desenler onaylandı.",
+      "willBlock": "Onaylanmadı — aracı bu komut dosyasını çalıştırmayı reddedecek.",
+      "footnote": "Bir onay yalnızca bu komut dosyası için geçerlidir ve yalnızca burada listelenen desenleri kapsar. Daha sonra farklı riskli bir işlem eklerseniz, onu da onaylayana kadar engellenir."
     },
     "parameterSources": {
       "runtime": "Çalışma anında sorulur",

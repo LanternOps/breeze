@@ -800,6 +800,10 @@ export async function compareBaselineScan(input: CompareBaselineInput): Promise<
         );
 
       for (const row of discoveredRows) {
+        // #5213: ip_address is nullable now (manual website / DNS-only assets).
+        // This map is keyed by the scanned IP, so an IP-less row has nothing to
+        // key on — and the inArray() filter above can never have matched one.
+        if (!row.ipAddress) continue;
         discoveredByIp.set(row.ipAddress, {
           linkedDeviceId: row.linkedDeviceId,
           macAddress: row.macAddress,

@@ -26,11 +26,13 @@
  * that request transaction) and RLS all behave exactly as they do in
  * production. Only the token exchange is skipped.
  *
- * The importer's snapshot READ runs in a system context by design (the table
- * has no partner-wide RLS SELECT branch — `PARTNER_WIDE_SELECT_BRANCH_EXEMPT`,
- * TODO #4944), so RLS is NOT the control on it. Test (d) is therefore an
- * app-layer assertion by necessity, and asserting it here — under a real
- * system-context read — is the only place it can be proven at all.
+ * The importer's snapshot READ runs in a system context by design — a
+ * partner-scoped import spans many of that partner's organizations, and no one
+ * request context can see another org's rows (#4944 added a partner-wide SELECT
+ * branch to this table, which closes the org-token-can't-see-partner-wide half
+ * but not the cross-org half). RLS is therefore NOT the control on that read.
+ * Test (d) is an app-layer assertion by necessity, and asserting it here —
+ * under a real system-context read — is the only place it can be proven at all.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -140,10 +142,10 @@ async function orgAuth(partnerId: string, orgId: string): Promise<FakeAuth> {
 /**
  * Built with the CANONICAL helper, not by hand. `buildDbAccessContext` derives
  * `accessiblePartnerIds` from scope+partnerId and sets `currentPartnerId` —
- * a hand-rolled copy would drift from the request path (and `currentPartnerId`
- * becomes load-bearing for this table the day #4944 adds its partner-wide
- * SELECT branch, at which point a harness that omitted it would quietly stop
- * proving anything about that path).
+ * a hand-rolled copy would drift from the request path. `currentPartnerId` is
+ * load-bearing for this table since #4944 added
+ * `custom_field_definitions_partner_wide_select`, which keys on it, so a
+ * harness that omitted it would quietly stop proving anything about that path.
  */
 function dbContextFor(auth: FakeAuth): DbAccessContext {
   return buildDbAccessContext({

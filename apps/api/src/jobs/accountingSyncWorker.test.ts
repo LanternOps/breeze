@@ -162,6 +162,10 @@ describe('processAccountingSyncJob', () => {
     ['not_connected', 404],
     ['reauth_required', 409],
     ['record_failed', 502],
+    // #5180: QuickBooks refusing to void an invoice a Payment settles is a
+    // RULE, not an outage — five retries got five identical refusals and five
+    // Sentry alerts in production.
+    ['void_blocked_by_payments', 409],
   ];
 
   it.each(terminalCodes)('is terminal for code=%s (%d) — logs and does NOT rethrow', async (code, status) => {
@@ -206,6 +210,24 @@ describe('processAccountingSyncJob', () => {
     await expect(
       processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
     ).rejects.toBe(err);
+  });
+
+  it('does NOT rethrow a void_blocked_by_payments void failure — no retry ladder on a QuickBooks rule (#5180)', async () => {
+    // The sibling table above proves the code is terminal on the PUSH path.
+    // This is the path the production incident actually took: the void job.
+    getConnectionMock.mockResolvedValue(connectionRow());
+    voidInvoiceMock.mockRejectedValue(new AccountingInvoicePushError(
+      'void_blocked_by_payments', 409,
+      'QuickBooks will not void this invoice because a payment is applied to it there',
+    ));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).resolves.toBeUndefined();
+
+    expect(voidInvoiceMock).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
   });
 
   it('a terminal void failure is also swallowed, not rethrown', async () => {

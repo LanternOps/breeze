@@ -1,25 +1,28 @@
 name: CI
 
 on:
+  # Emergency lane. `main` is behind the merge queue, so every landing has
+  # already run this whole suite on its merge-group ref; a `push` trigger on
+  # main would only rerun the same suite and cancel itself on the next landing
+  # (observed 2026-09-07: 59 of 80 main runs cancelled). The one way untested
+  # code reaches main is an admin bypass merge — whoever does that MUST run
+  # `gh workflow run CI --ref main` so main-red-alert can evaluate it.
   workflow_dispatch:
   # Merge queue: the queue builds a temporary merge ref and needs the same
   # `CI Success` check as a PR. No path filters here on purpose — the queue is
   # the last gate before main and always runs the full suite.
   merge_group:
-  push:
-    branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'apps/docs/**'
-      - '**/*.md'
-      - '**/*.mdx'
+  # No `paths-ignore` here on purpose. The merge queue requires `CI Success`
+  # on every PR, including docs-only ones, and a path-filtered workflow simply
+  # never reports for a PR outside its paths. The old answer was other
+  # workflows (`ci-docs-only.yml`, `docs-ci.yml`) reporting their own
+  # `CI Success`, but several workflows sharing one check name is a race: a
+  # mixed docs+code PR got all of them, and whichever finished last won the
+  # required-check slot. Now this workflow runs on every PR, the `changes` job
+  # classifies the diff, code jobs are skipped on a docs-only PR, and
+  # `ci-success` is the only reporter.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'apps/docs/**'
-      - '**/*.md'
-      - '**/*.mdx'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,9 +38,101 @@ permissions:
   contents: read
 
 jobs:
+  # ─── Docs-only detection ─────────────────────────────────────────────
+  # Classifies the PR diff so a docs-only PR (docs/**, apps/docs/**, *.md,
+  # *.mdx — the set `ci-docs-only.yml` and `docs-ci.yml` used to own) skips
+  # every code job, runs only `docs-check`, and still gets a `CI Success`,
+  # which the merge queue requires before it will enqueue anything. Only
+  # `pull_request` is classified: a merge-group ref and a manual dispatch run
+  # everything, exactly as before.
+  #
+  # Fail-closed by construction: `ci-success` only honours the bypass when this
+  # output is the literal string `false`. If this job fails, is skipped, or
+  # emits nothing, the code jobs are skipped (their `if:` sees an empty output)
+  # AND `ci-success` still asserts on them — so the PR goes red, never green.
+  changes:
+    name: Detect Code Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      docs: ${{ steps.classify.outputs.docs }}
+    steps:
+      - name: Checkout (classifier script only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Classify changed files
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "Event ${EVENT_NAME}: not a PR, running the full suite."
+            echo "code=true" >> "${GITHUB_OUTPUT}"
+            echo "docs=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          # The PR files API needs no checkout and sees renames/deletes too.
+          # Any failure here aborts the job (set -e), which fails closed above.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+            | bash .github/scripts/classify-pr-paths.sh \
+            | tee -a "${GITHUB_OUTPUT}"
+
+  # ─── Docs check ─────────────────────────────────────────────────────
+  # Was `docs-ci.yml`, whose job was ALSO named `CI Success` — the third
+  # reporter of that check name. It is now a plain job here, gated on the
+  # classifier's `docs` output and asserted by ci-success, which also means it
+  # finally runs in the merge queue (docs-ci.yml had no merge_group trigger).
+  # `docs-automation-retirement.test.mjs` pins the deterministic steps.
+  docs-check:
+    name: Docs Check
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docs == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Also runs in `lint`, but lint is skipped on a docs-only PR.
+      - name: Guard retired AI documentation automation
+        run: pnpm test:docs-automation
+
+      - name: Check documentation
+        run: pnpm --filter @breeze/docs check
+
+      - name: Build documentation
+        run: pnpm --filter @breeze/docs build
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -94,6 +189,9 @@ jobs:
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
 
+      - name: Test docs-only CI contract
+        run: node --test .github/scripts/classify-pr-paths.test.mjs
+
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
@@ -117,6 +215,8 @@ jobs:
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     env:
       # tsc on the full apps/api project (dense Drizzle types) + astro check
       # exceed Node's default heap on the type-heaviest branches. Give the
@@ -152,6 +252,8 @@ jobs:
   test-api:
     name: Test API
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -266,6 +368,8 @@ jobs:
   test-m365-graph-read-executor:
     name: Test M365 Graph Read Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -292,6 +396,8 @@ jobs:
   test-m365-graph-actions-executor:
     name: Test M365 Graph Actions Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -318,6 +424,8 @@ jobs:
   test-m365-communications-executor:
     name: Test M365 Communications Executor
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -365,6 +473,8 @@ jobs:
   check-migrations:
     name: Check Migrations
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16
@@ -438,6 +548,8 @@ jobs:
   check-migrations-nonsuperuser:
     name: Check Migrations (non-superuser)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     services:
       postgres:
         image: postgres:16
@@ -497,6 +609,8 @@ jobs:
   test-web:
     name: Test Web
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -525,6 +639,8 @@ jobs:
   test-mobile:
     name: Test Mobile
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -557,6 +673,8 @@ jobs:
   mobile-native-changes:
     name: Detect Mobile Native Changes
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     permissions:
       contents: read
       pull-requests: read
@@ -572,8 +690,9 @@ jobs:
         id: changes
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
-          # On main compare the whole push, including multi-commit pushes.
-          base: ${{ github.event_name == 'push' && github.event.before || github.event.repository.default_branch }}
+          # PRs and merge groups compare against main; a manual dispatch on main
+          # has no `before`, so it falls through to the default branch (mobile: true).
+          base: ${{ github.event.repository.default_branch }}
           filters: |
             mobile:
               - 'apps/mobile/**'
@@ -591,6 +710,9 @@ jobs:
   build-mobile-ios:
     name: Build Mobile iOS (Simulator)
     needs: [mobile-native-changes]
+    # Docs-only gating is inherited: when `changes` reports no code change,
+    # `mobile-native-changes` is skipped, its output is empty, and this
+    # condition is false. `mobile-native-ci.test.mjs` pins these two lines.
     if: needs.mobile-native-changes.outputs.mobile == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
@@ -658,6 +780,8 @@ jobs:
   test-portal:
     name: Test Portal
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -690,6 +814,8 @@ jobs:
   test-viewer:
     name: Test Viewer
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -720,6 +846,8 @@ jobs:
   test-office-addin-core:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -749,6 +877,8 @@ jobs:
   test-excel-addin:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -775,6 +905,8 @@ jobs:
   test-word-addin:
     name: Test Word Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -804,6 +936,8 @@ jobs:
   test-powerpoint-addin:
     name: Test PowerPoint Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -842,6 +976,8 @@ jobs:
   test-outlook-addin:
     name: Test Outlook Add-in
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -871,6 +1007,8 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -964,7 +1102,8 @@ jobs:
   build-api:
     name: Build API
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1008,7 +1147,8 @@ jobs:
   build-m365-graph-read-executor:
     name: Build M365 Graph Read Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1041,7 +1181,8 @@ jobs:
   build-m365-graph-actions-executor:
     name: Build M365 Graph Actions Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1076,7 +1217,8 @@ jobs:
   build-m365-communications-executor:
     name: Build M365 Communications Executor
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1111,7 +1253,8 @@ jobs:
   build-web:
     name: Build Web
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1153,7 +1296,8 @@ jobs:
   build-portal:
     name: Build Portal
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1191,7 +1335,8 @@ jobs:
   build-agent:
     name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ${{ matrix.runner }}
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1304,6 +1449,8 @@ jobs:
   agent-windows-manifest-guard:
     name: Agent Windows manifest guard
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1338,6 +1485,8 @@ jobs:
   test-agent:
     name: Test Agent
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1371,7 +1520,8 @@ jobs:
   test-agent-windows:
     name: Test Agent (Windows)
     runs-on: windows-latest
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -1477,11 +1627,25 @@ jobs:
       # privilege -> remote/tools — which is harmless here (CGO_ENABLED=0 is
       # exactly the configuration remote/desktop's !cgo files are written for)
       # but is why it must stay out of the race step below.
+      # ./internal/winsvcinstall is the SCM half of `service install` for both the
+      # agent and the watchdog, extracted in #5299. Its package IS listed here
+      # rather than relying on internal/agentapp, which is NOT on this list (its
+      # inherited Windows reds are tracked in #2523) — a //go:build windows test
+      # left next to the installer would therefore have run on no job at all,
+      # which is the exact vacuous-gate failure the steps below guard against.
+      # Most of the package is deliberately untagged so the install sequence
+      # (sample before stop, stop before staging the binary, confirm RUNNING
+      # before claiming it) also executes in the Linux `test-agent` job; the
+      # windows-tagged half is the mgr adapter plus its command-line quoting and
+      # SCM-state mapping tests, which can only run here. Verified like logging
+      # and ipc: with GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets,
+      # its test binary compiles, and its Windows dependency graph contains no
+      # remote/desktop, no cgo, and no other first-party package.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -1622,6 +1786,8 @@ jobs:
   lint-agent:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     # CGO off (matches test-agent): the agent's only cgo files are the linux
     # X11/pcap capture backends, whose C headers are not on the runner. vet +
     # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
@@ -1663,6 +1829,8 @@ jobs:
   test-agent-race:
     name: Test Agent (race)
     runs-on: macos-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -1712,7 +1880,8 @@ jobs:
   windows-runtime-smoke:
     name: Windows Runtime Smoke
     runs-on: windows-latest
-    needs: [lint]
+    needs: [lint, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -1858,6 +2027,8 @@ jobs:
   rust-check:
     name: Rust Check (Tauri apps)
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 35
 
     steps:
@@ -1982,6 +2153,8 @@ jobs:
   rust-check-windows:
     name: Rust Check (Windows)
     runs-on: windows-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 30
     permissions:
       contents: read
@@ -2047,7 +2220,8 @@ jobs:
   integration-test:
     name: Integration Tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     strategy:
       # Report every shard's result — a red shard must not cancel the others
       # (same rationale as the no-bail rule inside the suite: masking stacked
@@ -2275,7 +2449,8 @@ jobs:
   smoke-test:
     name: Smoke Test
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 15
 
@@ -2571,7 +2746,8 @@ jobs:
   guided-setup-smoke:
     name: Guided Setup Smoke (self-host installer)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 30
 
@@ -2675,7 +2851,8 @@ jobs:
   auth-browser-transition-browser-contract:
     name: Auth Browser Transition (Chromium)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 20
     services:
       postgres:
@@ -2801,7 +2978,8 @@ jobs:
   portal-dev-e2e:
     name: Portal Dev E2E (hydration, non-blocking)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, changes]
+    if: needs.changes.outputs.code == 'true'
     continue-on-error: true
     timeout-minutes: 45
 
@@ -2984,11 +3162,15 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
+          DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
@@ -3031,7 +3213,16 @@ jobs:
           # unconditional blocking condition (rather than a separate leading if statement)
           # because the ci-success gating contract test only recognizes one such block and
           # asserts every required job's result is checked inside it.
-          if [[ "${LINT_RESULT}" != "success" ]] || \
+          # Docs-only bypass, fail-closed: the code-job assertions are skipped ONLY
+          # when the classifier succeeded AND reported the literal `false`. An
+          # empty output (classifier failed, skipped, or printed nothing) falls
+          # through to the assertions, where every skipped code job fails them.
+          # docs-check is the mirror image: required unless `docs` is literally
+          # `false`, so an empty output demands a docs-check that never ran.
+          if [[ "${CHANGES_RESULT}" != "success" ]] || \
+             { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
+             { [[ "${CODE_CHANGED}" != "false" ]] && { \
+             [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
@@ -3064,9 +3255,13 @@ jobs:
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
              [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
-             [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
+             [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; }; then
             echo "One or more required jobs failed"
             exit 1
+          fi
+          if [[ "${CODE_CHANGED}" == "false" ]]; then
+            echo "Docs-only PR: code jobs skipped, docs-check passed; the merge queue runs the full suite before merge."
+            exit 0
           fi
           # Smoke test: non-blocking on PRs, required on main
           if [[ "${IS_PR}" != "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
@@ -3091,7 +3286,9 @@ jobs:
     name: Main Red Alert
     runs-on: ubuntu-latest
     needs: [ci-success]
-    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Fires on the emergency lane only (manual dispatch on main after an admin
+    # bypass merge). Queue landings were evaluated before they merged.
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     permissions:
       issues: write
     steps:
