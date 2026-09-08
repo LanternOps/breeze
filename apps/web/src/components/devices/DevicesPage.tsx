@@ -15,6 +15,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import ManualAssetModal from './ManualAssetModal';
 import AddNetworkAssetModal from './AddNetworkAssetModal';
 import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
@@ -32,8 +33,9 @@ import {
   writeDeviceClassToHash,
   type DeviceClassFilter,
 } from './deviceClassFilter';
-import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
+import { runAction } from '../../lib/runAction';
+import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
@@ -51,7 +53,7 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
-import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNetworkDevices, VPN_FACET_FIELD } from './mergedListFilter';
+import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
 import { FILTER_FIELDS } from '../filters/filterFields';
 import { asList } from '@/lib/asList';
@@ -85,6 +87,9 @@ type Org = {
 type Site = {
   id: string;
   name: string;
+  /** Present on every `/orgs/sites` row; declared so the manual-asset modal
+   *  (#4622 W04) can filter to the selected org's sites. */
+  orgId?: string;
 };
 
 type DeviceGroup = {
@@ -125,20 +130,137 @@ function summarizeFailedDevices(names: string[]): string {
 // irreversible operation on one click — and unlike `decommission` there is no
 // Restore afterwards. The 5s undo toast is not a substitute for a gate: it
 // starts a countdown the operator has to NOTICE to stop.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete']);
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission', 'permanent-delete', 'delete-manual']);
 
 // ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
 // caution-triangle), so the grading has to match the detail page rather than
 // drift from it: DeviceActions.tsx marks shutdown and decommission
-// `destructive` and every other confirm `warning`.
-const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete']);
+// `destructive` and every other confirm `warning`. A manual-asset delete
+// (#4622 W04) is a hard delete with no undo, so it's graded the same as
+// permanent-delete.
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission', 'permanent-delete', 'delete-manual']);
 
 // The command name is snake_case / kebab-case; the locale keys are camelCase.
 const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
   reboot_safe_mode: 'rebootSafeMode',
   'permanent-delete': 'permanentDelete',
+  'delete-manual': 'deleteManual',
 };
 const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
+
+/**
+ * The Devices page's "Add" control (#4622 W04). What was a single "Install
+ * agent" button (opens AddDeviceModal — enrollment, creates no row) is now a
+ * split menu: *Install agent…* (unchanged) and *Add asset manually…* (new,
+ * opens ManualAssetModal). Used in both the header and the empty-state
+ * duplicate so the two never drift.
+ *
+ * The THIRD item — *Add network asset…* (#5213 W02, hand-entered
+ * discovered_assets rows, opens AddNetworkAssetModal) — landed on `main` in
+ * parallel as its own inline split menu; this merge folds it into this shared
+ * component so there is exactly ONE Add control on the page, and so the two
+ * instances no longer share a single open/closed flag (main's did, which made
+ * the header and empty-state menus open together).
+ */
+function AddAssetMenu({
+  onInstallAgent,
+  onAddManualAsset,
+  onAddNetworkAsset,
+  variant,
+  testIdPrefix,
+}: {
+  onInstallAgent: () => void;
+  onAddManualAsset: () => void;
+  onAddNetworkAsset: () => void;
+  variant: 'primary' | 'secondary';
+  /** Distinguishes the header instance from the empty-state duplicate for testids. */
+  testIdPrefix: string;
+}) {
+  const { t } = useTranslation('devices');
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        data-testid={`${testIdPrefix}-trigger`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={
+          variant === 'primary'
+            ? 'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90'
+            : 'flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted'
+        }
+      >
+        <Plus className="h-4 w-4" />
+        {t('devicesPage.addMenu.trigger')}
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          data-testid={testIdPrefix}
+          className="absolute right-0 z-20 mt-1 w-56 rounded-md border bg-card shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            data-testid={`${testIdPrefix}-install-agent`}
+            onClick={() => {
+              setOpen(false);
+              onInstallAgent();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+          >
+            {t('devicesPage.addMenu.installAgent')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid={`${testIdPrefix}-add-manual-asset`}
+            onClick={() => {
+              setOpen(false);
+              onAddManualAsset();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+          >
+            {t('devicesPage.addMenu.addManualAsset')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid={`${testIdPrefix}-network-asset`}
+            onClick={() => {
+              setOpen(false);
+              onAddNetworkAsset();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+          >
+            {t('devicesPage.addMenu.addNetworkAsset')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
@@ -190,14 +312,18 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
-  // Manual network asset (#5213 W02) — the second item of the header "Add"
-  // split menu below. Built as its own hash entry (not nested under
-  // showAddDevice) so a future third item (#4622's "Add asset manually…")
-  // slots in the same way without restructuring this state.
+  // Manual asset add/edit modal (#4622 W04). Add is hash-seeded like every
+  // other modal on this page; editing an EXISTING asset carries the full row
+  // (needed for the form fields) so it is plain component state, not hash —
+  // the hash only needs to say "the add flow is open", never which asset.
+  const [showAddManualAsset, setShowAddManualAsset] = useHashState<boolean>(false, (h) => (h === 'add-manual-asset' ? true : undefined));
+  const [editingManualAsset, setEditingManualAsset] = useState<Device | null>(null);
+  // Manual network asset (#5213 W02) — the third item of the shared
+  // AddAssetMenu below. Its own hash entry (not nested under showAddDevice),
+  // same shape as the manual-asset flow above.
   const [showAddNetworkAsset, setShowAddNetworkAsset] = useHashState<boolean>(false, (h) =>
     h === 'add-network-asset' ? true : undefined,
   );
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
   // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
   // (#import-definitions / #import-values) internally, so this only tracks
   // whether either of those hashes means the wizard is open at all.
@@ -232,6 +358,10 @@ export default function DevicesPage() {
   // #3987: bulk Remove asks the agent question ONCE for the whole selection,
   // then runBulkRemove runs the per-device DELETE loop with that one answer.
   const [pendingBulkRemove, setPendingBulkRemove] = useState<Device[] | null>(null);
+  // Manual asset bulk delete (#4622 W04): hard delete, no undo, so it asks
+  // once for the whole (already manual-only) selection before the per-item
+  // DELETE loop in runBulkDeleteManual.
+  const [pendingBulkDeleteManual, setPendingBulkDeleteManual] = useState<Device[] | null>(null);
   // #2787: bulk Delete permanently. The dialog asks for the count to be typed;
   // runBulkPurge then starts the async job and polls it.
   const [pendingBulkPurge, setPendingBulkPurge] = useState<Device[] | null>(null);
@@ -404,13 +534,14 @@ export default function DevicesPage() {
     () => filterDevicesByClass(devices, deviceClassFilter),
     [devices, deviceClassFilter]
   );
-  // Network rows the active filters hide only because they ask about agent-only
-  // things (filter fields like patches/alerts/metrics, or the VPN facet).
-  // Scoped to the chosen class so the notice matches what the tech is looking
-  // at; rows already hidden by search or the decommissioned rule are not
-  // counted (see summarizeHiddenNetworkDevices).
+  // Non-agent rows (network OR manual, #4622) the active filters hide only
+  // because they ask about agent-only things (filter fields like
+  // patches/alerts/metrics, or the VPN facet). Scoped to the chosen class so
+  // the notice matches what the tech is looking at; rows already hidden by
+  // search or the decommissioned rule are not counted (see
+  // summarizeHiddenNonAgentDevices).
   const hiddenNetwork = useMemo(
-    () => summarizeHiddenNetworkDevices(classFilteredDevices, listFilterContext),
+    () => summarizeHiddenNonAgentDevices(classFilteredDevices, listFilterContext),
     [classFilteredDevices, listFilterContext]
   );
   const hiddenNetworkFieldLabels = useMemo(
@@ -420,6 +551,15 @@ export default function DevicesPage() {
         .join(', '),
     [hiddenNetwork.fields]
   );
+  // Which non-agent class(es) contributed to the count above, so the notice
+  // can say "3 manual assets hidden" instead of defaulting every non-agent
+  // row to "network devices" (#4622 W04).
+  const hiddenNonAgentClassLabel = useMemo(() => {
+    if (hiddenNetwork.classes.length === 1) {
+      return t(/* i18n-dynamic */ `devicesPage.hiddenNonAgentClassLabel.${hiddenNetwork.classes[0]}`);
+    }
+    return t('devicesPage.hiddenNonAgentClassLabel.mixed');
+  }, [hiddenNetwork.classes, t]);
   // Rows the filters admit, before the hidden-by-default decommissioned rule —
   // the removed-hint counts come from this set so they only promise rows
   // "show" can actually reveal (#2251/#5023). Same shared predicate as the
@@ -469,7 +609,7 @@ export default function DevicesPage() {
       // `signal` is wired by the mount useEffect's AbortController so a
       // navigate-away mid-walk stops the next page request and prevents
       // setState on an unmounted component (#778 review).
-      const [devicesResult, networkResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
+      const [devicesResult, networkResult, manualResult, orgsResponse, sitesResponse, groupsResponse] = await Promise.all([
         fetchAllDevices({
           includeDecommissioned: true,
           signal,
@@ -503,6 +643,18 @@ export default function DevicesPage() {
               return { data: [], total: 0, pagesWalked: 0 };
             })
           : Promise.resolve({ data: [], total: 0, pagesWalked: 0 }),
+        // Manual arm of the unified list (#4622 W04) — hand-entered inventory
+        // rows with no network identity. Carries NO feature flag: fetched
+        // unconditionally, independent of ENABLE_NETWORK_DEVICES_IN_LIST, so
+        // an org's manual assets show up even with the network arm off. Same
+        // best-effort degrade-to-empty semantics as the network arm above; a
+        // 401 is a real auth failure and is re-thrown, never masked.
+        fetchAllManualAssets({ signal }).catch((err) => {
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (err instanceof Response && err.status === 401) throw err;
+          console.warn('Failed to fetch manual assets:', err);
+          return { data: [], total: 0, pagesWalked: 0 };
+        }),
         fetchWithAuth('/orgs', { signal }),
         fetchWithAuth('/orgs/sites', { signal }),
         fetchWithAuth('/device-groups?includeMemberships=true', { signal }).catch((err) => {
@@ -651,7 +803,45 @@ export default function DevicesPage() {
         url: typeof d.url === 'string' ? d.url : null,
       }));
 
-      const allTransformed = [...transformedDevices, ...transformedNetworkDevices];
+      // Manual arm (#4622 W04): normalize manual_assets rows into the same
+      // Device shape. No network identity, no reachability — the API already
+      // sends status: 'unknown', never a fabricated 'offline'.
+      const transformedManualAssets: Device[] = manualResult.data.map((d: Record<string, unknown>) => ({
+        id: d.id as string,
+        deviceClass: 'manual' as const,
+        assetType: (d.assetType as DeviceRole | undefined) ?? 'unknown',
+        hostname: (d.hostname ?? t('devicesPage.unknownDevice')) as string,
+        displayName: typeof d.displayName === 'string' ? d.displayName : undefined,
+        os: '' as OSType,
+        osVersion: '',
+        status: (d.status as DeviceStatus | undefined) ?? 'unknown',
+        cpuPercent: 0,
+        ramPercent: 0,
+        lastSeen: (d.lastSeenAt ?? '') as string,
+        orgId: (d.orgId ?? '') as string,
+        orgName: '',
+        siteId: (d.siteId ?? '') as string,
+        siteName: '',
+        agentVersion: '',
+        watchdogVersion: null,
+        wanIp: null,
+        lanIp: null,
+        macAddress: null,
+        tags: (d.tags ?? []) as string[],
+        manufacturer: (d.manufacturer ?? null) as string | null,
+        model: (d.model ?? null) as string | null,
+        serialNumber: (d.serialNumber ?? null) as string | null,
+        assetTag: (d.assetTag ?? null) as string | null,
+        location: (d.location ?? null) as string | null,
+        assignedContactId: (d.assignedContactId ?? null) as string | null,
+        linkedDeviceId: (d.linkedDeviceId ?? null) as string | null,
+        linkedDiscoveredAssetId: (d.linkedDiscoveredAssetId ?? null) as string | null,
+        notes: (d.notes ?? null) as string | null,
+        monitoringEnabled: false,
+        enrolledAt: d.enrolledAt as string | undefined,
+      }));
+
+      const allTransformed = [...transformedDevices, ...transformedNetworkDevices, ...transformedManualAssets];
 
       // Fetch orgs for org name lookup
       let orgsList: Org[] = [];
@@ -831,6 +1021,13 @@ export default function DevicesPage() {
   }, [advancedFilter, filtersV2]);
 
   const handleSelectDevice = (device: Device) => {
+    // A manual asset has no detail page in v1 (#4622 W04 — #1424 owns the
+    // full three-class detail-page story); it edits in the same modal it was
+    // created from.
+    if ((device.deviceClass ?? 'agent') === 'manual') {
+      setEditingManualAsset(device);
+      return;
+    }
     // Network-discovered assets get a native, read-only detail/overview page in
     // the Devices section (#1424 slice 2) instead of bouncing out to Discovery.
     if ((device.deviceClass ?? 'agent') === 'network') {
@@ -907,13 +1104,21 @@ export default function DevicesPage() {
     // row and 404s. handleBulkAction has filtered these out since #1322.
     //
     // Stated as an invariant rather than as a claim about today's UI: this
-    // funnel must refuse network rows on its own, because nothing guarantees
-    // that every present and future caller hides the actions first. #4014 was
-    // exactly that failure — DeviceList hid them, DeviceCard did not, and the
-    // handler trusted its callers. A guard here cannot be re-opened by adding
-    // a third surface.
+    // funnel must refuse network AND manual rows on its own, because nothing
+    // guarantees that every present and future caller hides the actions
+    // first. #4014 was exactly that failure — DeviceList hid them, DeviceCard
+    // did not, and the handler trusted its callers. A guard here cannot be
+    // re-opened by adding a third surface — which is precisely what adding
+    // the manual class did, so the guard is widened alongside it. A manual
+    // asset's `id` is a `manual_assets.id`, same foreign-id problem as
+    // network. `delete-manual` is the one manual-eligible action and is
+    // carved out explicitly rather than by omission.
     if ((device.deviceClass ?? 'agent') === 'network') {
       showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+      return;
+    }
+    if ((device.deviceClass ?? 'agent') === 'manual' && action !== 'delete-manual') {
+      showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyActionManual') });
       return;
     }
     if (CONFIRM_REQUIRED_ACTIONS.has(action)) {
@@ -1121,6 +1326,28 @@ export default function DevicesPage() {
           break;
         }
 
+        // Manual asset delete (#4622 W04) — hard delete, no undo (the API's
+        // own contract; unlike permanent-delete's device-purge flow, there is
+        // no soft-decommission step in between for a manual row). The route
+        // carries `requireMfa()` like every manual-asset mutator, so the
+        // MFA_REQUIRED 403 gets the same friendly copy other MFA-gated device
+        // mutations use (ArchiveOrgModal/MergeOrgModal precedent).
+        case 'delete-manual': {
+          try {
+            await runAction({
+              request: () => fetchWithAuth(`/devices/manual/${device.id}`, { method: 'DELETE' }),
+              errorFallback: t('devicesPage.toasts.deleteManualFailed', { hostname: device.hostname }),
+              friendly: (code) => (code === 'MFA_REQUIRED' ? t('devicesPage.toasts.mfaRequired') : undefined),
+              onUnauthorized: handleSessionExpired,
+              successMessage: t('devicesPage.toasts.manualDeleted', { hostname: device.hostname }),
+            });
+            await refreshDevices();
+          } catch {
+            // runAction already toasted (or handled the 401 redirect).
+          }
+          break;
+        }
+
         default:
           showToast({ type: 'error', message: t('devicesPage.toasts.unknownAction', { action }) });
       }
@@ -1209,6 +1436,25 @@ export default function DevicesPage() {
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
     if (actionInProgress || allSelectedDevices.length === 0) return;
 
+    // Manual asset delete (#4622 W04) is the mirror image of every action
+    // below: it is MANUAL-only, so it must be handled BEFORE the agent-only
+    // allowlist a few lines down strips every manual row out. Skipped
+    // (non-manual) rows are reported the same "N of M eligible" way the
+    // agent-only actions already do, never silently.
+    if (action === 'delete-manual') {
+      const manualOnly = allSelectedDevices.filter(d => (d.deviceClass ?? 'agent') === 'manual');
+      const skippedCount = allSelectedDevices.length - manualOnly.length;
+      if (manualOnly.length === 0) {
+        showToast({ type: 'error', message: t('devicesPage.toasts.manualOnlyAction') });
+        return;
+      }
+      if (skippedCount > 0) {
+        showToast({ type: 'warning', message: t('devicesPage.toasts.manualSkipped', { count: skippedCount }) });
+      }
+      setPendingBulkDeleteManual(manualOnly);
+      return;
+    }
+
     // Every bulk action below talks to an enrolled agent (reboot/shutdown/lock,
     // maintenance, decommission, wake, run-script, deploy-software). A network
     // row's `id` is a `discovered_assets.id`, NOT a `devices.id` — feeding it
@@ -1216,8 +1462,14 @@ export default function DevicesPage() {
     // and an unhandled throw mid-loop would silently skip every real device
     // after it. So drop network rows up front for these actions and tell the
     // user, rather than letting them flow into the per-device loops (#1322).
+    // Explicit agent-only allowlist (#4622 W04): `=== 'agent'` already drops
+    // BOTH network and manual rows correctly (the class union now has three
+    // members) — the toast wording below is what needs to stay honest, since
+    // "N network devices skipped" would mislabel a skipped manual asset.
     const selectedDevices = allSelectedDevices.filter(d => (d.deviceClass ?? 'agent') === 'agent');
-    const skippedNetworkCount = allSelectedDevices.length - selectedDevices.length;
+    const skippedManualCount = allSelectedDevices.filter(d => (d.deviceClass ?? 'agent') === 'manual').length;
+    const skippedNonAgentCount = allSelectedDevices.length - selectedDevices.length;
+    const skippedNetworkCount = skippedNonAgentCount - skippedManualCount;
     if (selectedDevices.length === 0) {
       showToast({
         type: 'error',
@@ -1225,10 +1477,12 @@ export default function DevicesPage() {
       });
       return;
     }
-    if (skippedNetworkCount > 0) {
+    if (skippedNonAgentCount > 0) {
       showToast({
         type: 'warning',
-        message: t('devicesPage.toasts.networkSkipped', { count: skippedNetworkCount }),
+        message: skippedManualCount > 0
+          ? t('devicesPage.toasts.nonAgentSkipped', { count: skippedNonAgentCount })
+          : t('devicesPage.toasts.networkSkipped', { count: skippedNetworkCount }),
       });
     }
 
@@ -1675,6 +1929,68 @@ export default function DevicesPage() {
     }
   };
 
+  // Manual asset bulk delete (#4622 W04). No bulk API route exists for this —
+  // a per-item DELETE loop, same shape as maintenance-off above: one item's
+  // failure must not abort the batch or silently skip everything after it.
+  // Each mutator carries requireMfa(), so a session missing MFA fails every
+  // item with the same MFA_REQUIRED code — collected once into its own
+  // friendly toast rather than repeated per-device.
+  const runBulkDeleteManual = async (selectedDevices: Device[]) => {
+    if (selectedDevices.length === 0) return;
+    setActionInProgress(true);
+    let mfaBlocked = false;
+    const failed: string[] = [];
+    try {
+      for (const device of selectedDevices) {
+        try {
+          const resp = await fetchWithAuth(`/devices/manual/${device.id}`, { method: 'DELETE' });
+          if (resp.status === 401) {
+            handleSessionExpired();
+            return;
+          }
+          if (!resp.ok) {
+            const body = await resp.json().catch(() => null);
+            if (resp.status === 403 && body && (body as { code?: string }).code === 'MFA_REQUIRED') {
+              mfaBlocked = true;
+            }
+            failed.push(device.hostname || device.id);
+          }
+        } catch (err) {
+          // Logged (not silent) — MFA detection above only inspects the
+          // response shape, so a network failure or a non-JSON error body
+          // would otherwise be invisible beyond "one of N failed".
+          console.warn(`[DevicesPage] delete-manual failed for ${device.id}:`, err);
+          failed.push(device.hostname || device.id);
+        }
+      }
+      const succeeded = selectedDevices.length - failed.length;
+      if (mfaBlocked) {
+        showToast({ type: 'error', message: t('devicesPage.toasts.mfaRequired') });
+      } else if (failed.length === 0) {
+        showToast({ type: 'success', message: t('devicesPage.toasts.bulkManualDeleted', { count: succeeded }) });
+      } else if (succeeded === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkManualDeleteAllFailed', { count: failed.length, devices: summarizeFailedDevices(failed) }),
+        });
+      } else {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkManualDeleteSomeFailed', { succeeded, failed: failed.length, devices: summarizeFailedDevices(failed) }),
+        });
+      }
+      await refreshDevices();
+    } catch (err) {
+      // Mirrors runBulkAction/runBulkPurge/runBulkRemove above: anything that
+      // throws AFTER the per-item loop (t(), summarizeFailedDevices(),
+      // refreshDevices()) must still surface a toast, or a hard, no-undo
+      // delete of several assets reports nothing at all to the operator.
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'delete-manual' }) });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
   // The org context itself failed to load (#4147 review). Falling through would
   // fetch with no orgId, and the API reads an absent orgId as "every accessible
   // org" — so a transient /orgs/organizations failure would quietly render a
@@ -1757,7 +2073,7 @@ export default function DevicesPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('devicesPage.title')}</h1>
+          <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">{t('devicesPage.title')}</h1>
           <p className="text-muted-foreground">
             {t('devicesPage.subtitle')}
           </p>
@@ -1798,52 +2114,16 @@ export default function DevicesPage() {
           >
             {t('devicesPage.importFromRmm')}
           </button>
-          {/* Add split menu (#5213 W02): "Install agent…" is the pre-existing
-              AddDeviceModal flow; "Add network asset…" is new. Built as a
-              menu (not a single button) so a third item — #4622's "Add asset
-              manually…" — slots in later without restructuring this block. */}
-          <div className="relative">
-            <button
-              type="button"
-              data-testid="devices-page-add-menu-trigger"
-              onClick={() => setAddMenuOpen((open) => !open)}
-              className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-            >
-              <Plus className="h-4 w-4" />
-              {t('devicesPage.addMenu.trigger')}
-              <ChevronDown className="h-4 w-4" />
-            </button>
-            {addMenuOpen && (
-              <div
-                data-testid="devices-page-add-menu"
-                className="absolute right-0 top-full z-10 mt-1 w-56 rounded-md border bg-card shadow-lg"
-              >
-                <button
-                  type="button"
-                  data-testid="devices-page-add-menu-install-agent"
-                  onClick={() => {
-                    setAddMenuOpen(false);
-                    setShowAddDevice(true);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                >
-                  {t('devicesPage.addMenu.installAgent')}
-                </button>
-                <button
-                  type="button"
-                  data-testid="devices-page-add-menu-network-asset"
-                  onClick={() => {
-                    setAddMenuOpen(false);
-                    window.location.hash = 'add-network-asset';
-                    setShowAddNetworkAsset(true);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                >
-                  {t('devicesPage.addMenu.addNetworkAsset')}
-                </button>
-              </div>
-            )}
-          </div>
+          <AddAssetMenu
+            variant="primary"
+            testIdPrefix="devices-page-add-menu"
+            onInstallAgent={() => setShowAddDevice(true)}
+            onAddManualAsset={() => setShowAddManualAsset(true)}
+            onAddNetworkAsset={() => {
+              window.location.hash = 'add-network-asset';
+              setShowAddNetworkAsset(true);
+            }}
+          />
         </div>
       </div>
 
@@ -1869,11 +2149,16 @@ export default function DevicesPage() {
         />
       )}
 
-      {/* Class segment (#1424) — only meaningful when the merged list carries
-          both arms; hidden entirely in the agent-only (flag-off) view. Narrows
-          both views: the table via classFilteredDevices, the grid via
+      {/* Class segment (#1424, #4622) — only meaningful when the merged list
+          carries more than the agent arm; hidden entirely in the pure
+          agent-only view. The manual arm carries NO feature flag (independent
+          of ENABLE_NETWORK_DEVICES_IN_LIST by design), so this must show
+          whenever EITHER the network flag is on OR a manual asset exists —
+          gating on the network flag alone would hide the Manual segment (and
+          its count) on an org that has manual assets but the network arm off.
+          Narrows both views: the table via classFilteredDevices, the grid via
           gridDevices (same class rule over the filtered fleet). */}
-      {ENABLE_NETWORK_DEVICES_IN_LIST && (
+      {(ENABLE_NETWORK_DEVICES_IN_LIST || deviceClassCounts.manual > 0) && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <DeviceClassSegment
             value={deviceClassFilter}
@@ -1882,7 +2167,11 @@ export default function DevicesPage() {
           />
           {hiddenNetwork.count > 0 && (
             <p role="status" data-testid="hidden-network-notice" className="text-sm text-muted-foreground">
-              {t('devicesPage.hiddenNetworkNotice', { count: hiddenNetwork.count, fields: hiddenNetworkFieldLabels })}
+              {t('devicesPage.hiddenNonAgentNotice', {
+                count: hiddenNetwork.count,
+                class: hiddenNonAgentClassLabel,
+                fields: hiddenNetworkFieldLabels,
+              })}
             </p>
           )}
         </div>
@@ -1906,46 +2195,16 @@ export default function DevicesPage() {
               {t('devicesPage.emptyDescription')}
             </p>
             <div className="flex gap-3">
-              <div className="relative">
-                <button
-                  type="button"
-                  data-testid="devices-page-empty-add-menu-trigger"
-                  onClick={() => setAddMenuOpen((open) => !open)}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-                >
-                  <Plus className="h-4 w-4" />
-                  {t('devicesPage.addMenu.trigger')}
-                  <ChevronDown className="h-4 w-4" />
-                </button>
-                {addMenuOpen && (
-                  <div
-                    data-testid="devices-page-empty-add-menu"
-                    className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border bg-card shadow-lg"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        setShowAddDevice(true);
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                    >
-                      {t('devicesPage.addMenu.installAgent')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        window.location.hash = 'add-network-asset';
-                        setShowAddNetworkAsset(true);
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
-                    >
-                      {t('devicesPage.addMenu.addNetworkAsset')}
-                    </button>
-                  </div>
-                )}
-              </div>
+              <AddAssetMenu
+                variant="primary"
+                testIdPrefix="devices-page-empty-add-menu"
+                onInstallAgent={() => setShowAddDevice(true)}
+                onAddManualAsset={() => setShowAddManualAsset(true)}
+                onAddNetworkAsset={() => {
+                  window.location.hash = 'add-network-asset';
+                  setShowAddNetworkAsset(true);
+                }}
+              />
               <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
                 {t('devicesPage.viewInstallationGuide')}
               </a>
@@ -2033,6 +2292,21 @@ export default function DevicesPage() {
           setShowAddNetworkAsset(false);
         }}
         onCreated={() => { void refreshDevices(); }}
+      />
+
+      <ManualAssetModal
+        isOpen={showAddManualAsset || editingManualAsset != null}
+        onClose={() => {
+          setShowAddManualAsset(false);
+          setEditingManualAsset(null);
+          if (window.location.hash === '#add-manual-asset') window.location.hash = '';
+        }}
+        onSaved={refreshDevices}
+        organizationId={orgScope.status === 'resolved' && orgScope.scope !== 'all' ? orgScope.orgId : null}
+        orgs={orgs}
+        sites={sites}
+        existing={editingManualAsset}
+        linkableDevices={devices.filter((d) => (d.deviceClass ?? 'agent') !== 'manual')}
       />
 
       {showRmmImport && (
@@ -2212,6 +2486,24 @@ export default function DevicesPage() {
           }}
           isLoading={actionInProgress}
           confirmTestId="confirm-bulk-remove"
+        />
+      )}
+
+      {pendingBulkDeleteManual && (
+        <ConfirmDialog
+          open
+          onClose={() => setPendingBulkDeleteManual(null)}
+          onConfirm={() => {
+            const targets = pendingBulkDeleteManual;
+            setPendingBulkDeleteManual(null);
+            void runBulkDeleteManual(targets);
+          }}
+          title={t('deviceActions.confirm.bulkDeleteManual.title', { count: pendingBulkDeleteManual.length })}
+          message={t('deviceActions.confirm.bulkDeleteManual.message', { count: pendingBulkDeleteManual.length })}
+          confirmLabel={t('deviceActions.confirm.bulkDeleteManual.confirm')}
+          variant="destructive"
+          isLoading={actionInProgress}
+          confirmTestId="confirm-bulk-delete-manual"
         />
       )}
 

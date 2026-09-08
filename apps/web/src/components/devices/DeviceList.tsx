@@ -19,6 +19,7 @@ import {
   Zap,
   Columns3,
   Network,
+  Package,
   Cpu,
   Battery,
   BatteryCharging,
@@ -114,20 +115,29 @@ export type DeviceStatus =
   | "quarantined"
   | "updating"
   | "pending"
-  // #5213 — a manual network asset that no scan has ever reached. Distinct
-  // from 'offline': that is a reachability claim (a probe failed); this one
-  // makes no claim at all, because no probe has ever run.
+  /**
+   * No reachability claim at all. Produced two ways: a manual asset (#4622
+   * W04) that was hand-typed and never probed, and a manual network asset
+   * (#5213) that no scan has ever reached. Distinct from 'offline', which is
+   * a reachability claim (a probe ran and failed). Rendered as its own
+   * neutral "Unknown" chip; claiming "offline" for a printer that was never
+   * online is the kind of small lie that makes an inventory list
+   * untrustworthy.
+   */
   | "unknown";
 export type OSType = "windows" | "macos" | "linux";
 
 /**
- * Presentation-level discriminator for the unified Devices list (#1322).
+ * Presentation-level discriminator for the unified Devices list (#1322, #4622).
  * `agent` = an enrolled endpoint running the Go agent (devices table).
  * `network` = a discovered network device (printer/router/switch/…) from
  * discovered_assets that is approved and not linked to an agent. Agent-only
  * columns (CPU/RAM, agent version, OS build) render blank for `network` rows.
+ * `manual` = a hand-entered, non-networked inventory row (manual_assets) — a
+ * spare laptop, a desk phone, a non-networked printer. Carries no network
+ * identity and no reachability at all (see the `unknown` DeviceStatus above).
  */
-export type DeviceClass = "agent" | "network";
+export type DeviceClass = "agent" | "network" | "manual";
 
 export type Device = {
   id: string;
@@ -141,6 +151,28 @@ export type Device = {
   responseTimeMs?: number | null;
   /** Whether SNMP/network monitoring is configured for a network device. */
   monitoringEnabled?: boolean;
+  /**
+   * Manual-asset-only fields (#4622 W04) — null/undefined for agent and
+   * network rows. `serialNumber` doubles as the warranty key and is also
+   * surfaced (read-only) for agent rows via `hardware` in a future column;
+   * `assetTag` and `location` are manual-only.
+   */
+  serialNumber?: string | null;
+  assetTag?: string | null;
+  location?: string | null;
+  /** An org `contacts` row id — the person holding this manual asset. */
+  assignedContactId?: string | null;
+  /**
+   * Reversible promotion links (#4622 W04, manual assets only): set when an
+   * agent was later installed on this physical asset, or a scan later found
+   * it. A linked manual asset drops out of `GET /devices/manual`, so these
+   * never appear on a manual row rendered from the list fetch — only on the
+   * row passed into the edit modal, which fetches the asset directly.
+   */
+  linkedDeviceId?: string | null;
+  linkedDiscoveredAssetId?: string | null;
+  /** Free-text notes (manual assets only, #4622 W04). */
+  notes?: string | null;
   hostname: string;
   os: OSType;
   osVersion: string;
@@ -271,6 +303,12 @@ export type Device = {
     cpuCores?: number;
     ramTotalMb?: number;
     diskTotalGb?: number;
+    /**
+     * device_hardware.serial_number, when the API sends it. Read by the
+     * opt-in Serial column (#4622 W04) so an agent row's serial can sit
+     * beside a manual asset's `serialNumber` in the same column.
+     */
+    serialNumber?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -328,13 +366,31 @@ export type Device = {
   url?: string | null;
 };
 
-// Columns that only make sense for the network arm (#1322); hidden unless
-// networkDevicesEnabled. Module-level so it isn't reallocated each render.
-const NETWORK_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
+// Columns that only make sense for a non-agent row (#1322, #4622): the class
+// discriminator itself and its asset type. Hidden entirely when the network
+// arm's flag is off AND no manual asset is present — the manual arm has no
+// flag (it's independent of PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST), so these
+// columns must not stay gated on the network-only flag once a manual row
+// exists. Module-level so it isn't reallocated each render.
+const NON_AGENT_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "class",
   "type",
   // #5213 — provenance (scan | unifi | manual). Agent rows have no source.
   "source",
+]);
+// Columns meaningful only for a hand-entered manual asset (#4622 W04) — no
+// analogue on an agent or a discovered network device.
+const MANUAL_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
+  "assetTag",
+  "location",
+]);
+// `serial` is opt-in for BOTH agent (device_hardware.serial_number) and
+// manual rows, but meaningless for a discovered network device (discovered_assets
+// has no serial column by design — see the design spec). It steps aside only
+// when the visible fleet is purely network, mirroring AGENT_ONLY_COLUMNS'
+// dash-avoidance rule below rather than joining either fixed set.
+const NETWORK_EXCLUDED_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
+  "serial",
 ]);
 // Columns that only ever carry data for agent-managed endpoints. When the rows
 // on screen are all network devices (Network facet, or a network-only fleet)
@@ -548,10 +604,11 @@ const statusSortRank: Record<DeviceStatus, number> = {
   maintenance: 3,
   quarantined: 4,
   offline: 5,
-  // #5213 — "no probe has run yet" ranks alongside decommissioned: neither
-  // is an operationally live state worth surfacing above offline/quarantined.
-  unknown: 6,
-  decommissioned: 7,
+  decommissioned: 6,
+  // "No probe has ever run" is not a worse operational state than offline —
+  // it's a different axis entirely (#4622 W04, #5213). Sorts last, after
+  // decommissioned.
+  unknown: 7,
 };
 
 // Single shared collator for every string sort in this list. `numeric` keeps
@@ -582,16 +639,21 @@ function serverHost(raw: string | null | undefined): string | null {
 // numeric collation (host-2 < host-10, agent 0.9.x < 0.10.x).
 const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   hostname: (d) => d.displayName || d.hostname,
-  // Unified-list columns (#1322): sort by the same value the cell renders so
-  // header sort stays consistent with every other column (#1284 invariant).
-  class: (d) =>
-    (d.deviceClass ?? "agent") === "network" ? "Network" : "Agent",
-  // Type renders only for network rows now (#1386); agent rows show a dash, so
-  // they sort as blanks-last (null) to match the cell — the #1284 invariant.
+  // Unified-list columns (#1322, #4622): sort by the same value the cell
+  // renders so header sort stays consistent with every other column (#1284
+  // invariant). Three-way now — a two-branch ternary here would silently
+  // fold manual rows into whichever branch is the `else`.
+  class: (d) => {
+    const cls = d.deviceClass ?? "agent";
+    return cls === "manual" ? "Manual" : cls === "network" ? "Network" : "Agent";
+  },
+  // Type renders for any non-agent row (network or manual, #1386, #4622);
+  // agent rows show a dash, so they sort as blanks-last (null) to match the
+  // cell — the #1284 invariant.
   type: (d) =>
-    (d.deviceClass ?? "agent") === "network"
-      ? getDeviceRoleLabel(d.assetType ?? "unknown")
-      : null,
+    (d.deviceClass ?? "agent") === "agent"
+      ? null
+      : getDeviceRoleLabel(d.assetType ?? "unknown"),
   organization: (d) => d.orgName || null,
   site: (d) => d.siteName || null,
   // A network row has no OS (the cell renders a dash), so it must sort as a
@@ -600,10 +662,12 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   osVersion: (d) => formatDeviceOsVersion(d.os, d.osVersion) || null,
   osBuild: (d) => d.osBuild || null,
   architecture: (d) => d.architecture || null,
-  // Role renders only for agent rows now (#1386); network rows show a dash and
-  // sort blanks-last (null) to match the cell — the #1284 invariant.
+  // Role renders only for agent rows now (#1386, #4622); network AND manual
+  // rows show a dash and sort blanks-last (null) to match the cell — the
+  // #1284 invariant. `!== "agent"`, not `=== "network"`: a two-branch ternary
+  // here would silently fold manual into the "has a role" branch.
   role: (d) =>
-    (d.deviceClass ?? "agent") === "network"
+    (d.deviceClass ?? "agent") !== "agent"
       ? null
       : getDeviceRoleLabel(d.deviceRole ?? "unknown"),
   isHeadless: (d) =>
@@ -612,16 +676,16 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // false/absent renders as a dash (see the cell), so it maps to null like
   // isHeadless — keeping the blanks-last invariant consistent for booleans.
   pendingReboot: (d) => (d.pendingReboot ? 1 : null),
-  // Network rows carry a placeholder 0 but render a dash — sort them as
-  // blanks so a CPU/RAM sort actually moves the agent rows.
+  // Network/manual rows carry a placeholder 0 but render a dash — sort them
+  // as blanks so a CPU/RAM sort actually moves the agent rows.
   cpu: (d) =>
-    (d.deviceClass ?? "agent") === "network"
+    (d.deviceClass ?? "agent") !== "agent"
       ? null
       : d.status === "online"
         ? d.cpuPercent
         : null,
   ram: (d) =>
-    (d.deviceClass ?? "agent") === "network"
+    (d.deviceClass ?? "agent") !== "agent"
       ? null
       : d.status === "online"
         ? d.ramPercent
@@ -668,6 +732,13 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     const vpns = vpnList(d.activeVpns);
     return vpns.length > 0 ? getVpnProviderLabel(vpns[0].provider) : null;
   },
+  // Manual-asset inventory columns (#4622 W04); mirrors the cells above.
+  serial: (d) => {
+    const cls = d.deviceClass ?? "agent";
+    return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
+  },
+  assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
+  location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
   source: (d) =>
     (d.deviceClass ?? "agent") === "network" ? (d.source ?? null) : null,
@@ -1083,19 +1154,43 @@ export default function DeviceList({
     () => selectedDevices.filter((d) => (d.deviceClass ?? "agent") === "agent").length,
     [selectedDevices],
   );
-  const selectedNetworkCount = selectedDevices.length - selectedAgentCount;
+  // Per-class tally (#4622 W04) so the composition line below can say "N
+  // agent, N network, N manual" honestly instead of folding manual selections
+  // into a "network" bucket that no longer means only network.
+  const selectedNetworkCount = useMemo(
+    () => selectedDevices.filter((d) => (d.deviceClass ?? "agent") === "network").length,
+    [selectedDevices],
+  );
+  const selectedManualCount = useMemo(
+    () => selectedDevices.filter((d) => (d.deviceClass ?? "agent") === "manual").length,
+    [selectedDevices],
+  );
+  const selectedNonAgentCount = selectedNetworkCount + selectedManualCount;
   // Agent-only bulk actions: disabled outright when no agent is selected,
   // annotated with the eligible count on a mixed selection — the request
-  // funnel in DevicesPage still refuses network rows, this just says so
-  // before the click instead of after.
+  // funnel in DevicesPage still refuses network/manual rows, this just says
+  // so before the click instead of after.
   const agentOnlyDisabled = selectedAgentCount === 0;
   const agentOnlyTitle = agentOnlyDisabled
     ? t("deviceList.agentOnlyBulkAction")
     : undefined;
   const agentOnlySuffix =
-    selectedNetworkCount > 0 && selectedAgentCount > 0 ? (
+    selectedNonAgentCount > 0 && selectedAgentCount > 0 ? (
       <span className="ml-1 text-xs text-muted-foreground">
         ({t("deviceList.eligibleOfSelected", { count: selectedAgentCount, total: selectedIds.size })})
+      </span>
+    ) : null;
+  // Manual-only bulk action (Delete, #4622 W04): the mirror image of the
+  // agent-only gating above — disabled with zero manual rows selected,
+  // annotated with the eligible count on a mixed selection.
+  const manualOnlyDisabled = selectedManualCount === 0;
+  const manualOnlyTitle = manualOnlyDisabled
+    ? t("deviceList.manualOnlyBulkAction")
+    : undefined;
+  const manualOnlySuffix =
+    selectedManualCount > 0 && selectedManualCount < selectedIds.size ? (
+      <span className="ml-1 text-xs text-muted-foreground">
+        ({t("deviceList.eligibleOfSelected", { count: selectedManualCount, total: selectedIds.size })})
       </span>
     ) : null;
 
@@ -1153,18 +1248,14 @@ export default function DeviceList({
   const fleetFromStore = useOrgStore((s) => !s.currentOrgId && s.allOrgs);
   const isFleetView = !forceSingleOrg && fleetFromStore;
 
-  // The Class/Type columns belong to the network arm (#1322); hide them
-  // entirely when the feature flag is off so the list is the agent-only view.
-  const isColumnAvailable = (id: ColumnId) =>
-    (networkDevicesEnabled || !NETWORK_ONLY_COLUMNS.has(id)) &&
-    (id !== "organization" || isFleetView);
-
   // Which classes are actually on screen — drives the class-adaptive column
   // set below (a Network-only view has no use for OS/CPU/RAM; an agent-only
-  // view has no use for Class/Type).
+  // view has no use for Class/Type). The manual arm carries no feature flag
+  // (independent of PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST), so `hasManualRows`
+  // is never gated on `networkDevicesEnabled`.
   const hasAgentRows = useMemo(
     () =>
-      !networkDevicesEnabled ||
+      (!networkDevicesEnabled && !devices.some((d) => (d.deviceClass ?? "agent") === "manual")) ||
       devices.some((d) => (d.deviceClass ?? "agent") === "agent"),
     [networkDevicesEnabled, devices],
   );
@@ -1174,6 +1265,18 @@ export default function DeviceList({
       devices.some((d) => (d.deviceClass ?? "agent") === "network"),
     [networkDevicesEnabled, devices],
   );
+  const hasManualRows = useMemo(
+    () => devices.some((d) => (d.deviceClass ?? "agent") === "manual"),
+    [devices],
+  );
+
+  // The Class/Type columns belong to the non-agent arms (#1322, #4622); hide
+  // them entirely only when NEITHER the network flag is on NOR a manual row
+  // exists, so the list can be a pure agent-only view.
+  const isColumnAvailable = (id: ColumnId) =>
+    (networkDevicesEnabled || hasManualRows || !NON_AGENT_COLUMNS.has(id)) &&
+    (id !== "organization" || isFleetView);
+
   // The VPN facet is agent-only; never leave it narrowing an all-network view
   // after its control has gone (the critique's "unmounted filter" dead end).
   useEffect(() => {
@@ -1182,7 +1285,9 @@ export default function DeviceList({
 
   const classAllowsColumn = (id: ColumnId) =>
     (hasAgentRows || !AGENT_ONLY_COLUMNS.has(id)) &&
-    (hasNetworkRows || !NETWORK_ONLY_COLUMNS.has(id));
+    (hasNetworkRows || hasManualRows || !NON_AGENT_COLUMNS.has(id)) &&
+    (hasManualRows || !MANUAL_ONLY_COLUMNS.has(id)) &&
+    (hasAgentRows || hasManualRows || !NETWORK_EXCLUDED_COLUMNS.has(id));
 
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.
@@ -1347,10 +1452,11 @@ export default function DeviceList({
       <span className="sr-only">{t("deviceList.notApplicable")}</span>
     </>
   );
-  // Agent-only columns render "—" for network devices (#1322): the
-  // attribute doesn't exist for a printer/router, so don't imply 0/blank.
+  // Agent-only columns render "—" for network AND manual rows (#1322, #4622):
+  // the attribute doesn't exist for a printer/router or a hand-entered asset,
+  // so don't imply 0/blank.
   const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
-    (device.deviceClass ?? "agent") === "network" ? dash : node;
+    (device.deviceClass ?? "agent") !== "agent" ? dash : node;
   const columnDefs: Record<
     ColumnId,
     { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }
@@ -1385,27 +1491,33 @@ export default function DeviceList({
       cell: (device) => {
         const deviceClass = device.deviceClass ?? "agent";
         const isNetwork = deviceClass === "network";
+        const isManual = deviceClass === "manual";
+        const badgeClass = isManual
+          ? "bg-warning/15 text-warning border-warning/30"
+          : isNetwork
+            ? "bg-info/15 text-info border-info/30"
+            : "bg-primary/10 text-primary border-primary/30";
+        const title = isManual
+          ? t("deviceList.manualAsset")
+          : isNetwork
+            ? t("deviceList.networkDiscoveredDevice")
+            : t("deviceList.agentManagedEndpoint");
+        const label = isManual ? t("deviceList.manual") : isNetwork ? t("deviceList.network") : t("deviceList.agent");
         return (
           <td key="class" className="px-3 py-3 text-sm">
             <span
               data-testid={`device-${device.id}-class-badge`}
-              title={
-                isNetwork
-                  ? t("deviceList.networkDiscoveredDevice")
-                  : t("deviceList.agentManagedEndpoint")
-              }
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-                isNetwork
-                  ? "bg-info/15 text-info border-info/30"
-                  : "bg-primary/10 text-primary border-primary/30"
-              }`}
+              title={title}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${badgeClass}`}
             >
-              {isNetwork ? (
+              {isManual ? (
+                <Package className="h-3 w-3" />
+              ) : isNetwork ? (
                 <Network className="h-3 w-3" />
               ) : (
                 <Cpu className="h-3 w-3" />
               )}
-              {isNetwork ? t("deviceList.network") : t("deviceList.agent")}
+              {label}
             </span>
           </td>
         );
@@ -1414,12 +1526,13 @@ export default function DeviceList({
     type: {
       header: () => sortHeader("type", t("deviceList.tableColumns.type"), t("deviceList.sortBy.type")),
       cell: (device) => {
-        // Type is the asset_type of a *network-discovered* device (printer,
-        // switch, NAS…). For agent rows the equivalent question — what kind of
+        // Type is the asset_type of a *non-agent* row (printer, switch, NAS…
+        // for network; the same discovered_asset_type enum for a manual
+        // asset). For agent rows the equivalent question — what kind of
         // endpoint is this — is answered by the Role column, so Type renders a
         // dash rather than echoing deviceRole and duplicating Role side by
         // side (#1386). Role and Type are complementary axes, one per class.
-        if ((device.deviceClass ?? "agent") !== "network") {
+        if ((device.deviceClass ?? "agent") === "agent") {
           return (
             <td key="type" className="px-3 py-3 text-sm whitespace-nowrap">
               {dash}
@@ -2106,6 +2219,43 @@ export default function DeviceList({
         );
       },
     },
+    // Manual-asset inventory columns (#4622 W04). `serial` is shared with
+    // agent rows (device_hardware.serial_number, once the API sends it);
+    // `assetTag`/`location` exist only for a manual asset.
+    serial: {
+      header: () => sortHeader("serial", t("deviceList.tableColumns.serial"), t("deviceList.sortBy.serial")),
+      cell: (device) => {
+        const cls = device.deviceClass ?? "agent";
+        const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
+        return (
+          <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    assetTag: {
+      header: () => sortHeader("assetTag", t("deviceList.tableColumns.assetTag"), t("deviceList.sortBy.assetTag")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "manual" ? device.assetTag : null;
+        return (
+          <td key="assetTag" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-asset-tag`}>
+            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    location: {
+      header: () => sortHeader("location", t("deviceList.tableColumns.location"), t("deviceList.sortBy.location")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "manual" ? device.location : null;
+        return (
+          <td key="location" className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-location`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
   };
 
   // Bulk-menu Compare item. DeviceCompare accepts at most COMPARE_MAX_DEVICES,
@@ -2325,10 +2475,16 @@ export default function DeviceList({
         <div className="mt-4 flex items-center gap-3 rounded-md border bg-muted/40 px-4 py-2">
           <span className="text-sm font-medium" data-testid="bulk-selection-summary">
             {selectedIds.size} {t("deviceList.selected")}
-            {selectedNetworkCount > 0 && (
+            {selectedNonAgentCount > 0 && (
               <span className="font-normal text-muted-foreground">
                 {" · "}
-                {t("deviceList.selectedComposition", { agent: selectedAgentCount, network: selectedNetworkCount })}
+                {selectedManualCount > 0
+                  ? t("deviceList.selectedCompositionManual", {
+                      agent: selectedAgentCount,
+                      network: selectedNetworkCount,
+                      manual: selectedManualCount,
+                    })
+                  : t("deviceList.selectedComposition", { agent: selectedAgentCount, network: selectedNetworkCount })}
               </span>
             )}
           </span>
@@ -2444,6 +2600,21 @@ export default function DeviceList({
                 >
                   {t("deviceList.decommissionSelected")}
                   {agentOnlySuffix}
+                </button>
+                {/* Manual assets (#4622 W04): Delete is the ONLY bulk action
+                    they're eligible for in v1. Disabled outright with no
+                    manual row selected; annotated on a mixed selection so a
+                    non-manual row is visibly skipped, never silently. */}
+                <button
+                  type="button"
+                  data-testid="bulk-delete-manual"
+                  onClick={() => handleBulkAction("delete-manual")}
+                  disabled={manualOnlyDisabled}
+                  title={manualOnlyTitle}
+                  className="w-full px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("deviceList.deleteManualSelected")}
+                  {manualOnlySuffix}
                 </button>
                   </>
                 )}
@@ -2622,7 +2793,37 @@ export default function DeviceList({
                       className="px-3 py-3 text-sm"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {(device.deviceClass ?? "agent") === "network" ? (
+                      {(device.deviceClass ?? "agent") === "manual" ? (
+                        // A manual asset has no agent and no detail page in v1
+                        // (spec: per-asset detail pages are #1424's territory).
+                        // Edit opens the same add/edit modal via onSelect;
+                        // Delete is the one bulk-eligible action for this
+                        // class, offered per-row too.
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            data-testid={`device-${device.id}-edit-manual`}
+                            aria-label={t("deviceList.editManualAsset", {
+                              name: device.displayName || device.hostname,
+                            })}
+                            onClick={() => onSelect?.(device)}
+                            className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            {t("deviceList.edit")}
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`device-${device.id}-delete-manual`}
+                            aria-label={t("deviceList.deleteManualAsset", {
+                              name: device.displayName || device.hostname,
+                            })}
+                            onClick={() => onAction?.("delete-manual", device)}
+                            className="rounded-md border px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            {t("deviceList.delete")}
+                          </button>
+                        </div>
+                      ) : (device.deviceClass ?? "agent") === "network" ? (
                         // Network devices have no agent — none of the remote
                         // actions (desktop/terminal/scripts/reboot) apply.
                         // View opens the network device page (/devices/network/:id).

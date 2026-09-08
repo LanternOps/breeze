@@ -116,38 +116,6 @@
     "mfaRequiredSsoInstallers": "Per generare i programmi di installazione è richiesta l'autenticazione a più fattori. La tua organizzazione ti fa accedere tramite un provider di identità: chiedi all'amministratore di abilitare l'attendibilità MFA per quel provider oppure registra un fattore nelle impostazioni del profilo.",
     "mfaRequiredSsoTokens": "Per generare i token di installazione è richiesta l'autenticazione a più fattori. La tua organizzazione ti fa accedere tramite un provider di identità: chiedi all'amministratore di abilitare l'attendibilità MFA per quel provider oppure registra un fattore nelle impostazioni del profilo."
   },
-  "addNetworkAssetModal": {
-    "title": "Aggiungi asset di rete",
-    "submit": "Aggiungi asset",
-    "identityHint": "Fornisci almeno uno tra: indirizzo IP, hostname o URL.",
-    "urlRequiredHint": "Gli asset di tipo sito web o servizio richiedono un URL.",
-    "postCreate": {
-      "monitorPrompt": "Monitorare questo asset con un controllo HTTP?",
-      "actions": {
-        "addHttpCheck": "Aggiungi un controllo HTTP"
-      }
-    },
-    "fields": {
-      "label": "Nome",
-      "ipAddress": "Indirizzo IP",
-      "hostname": "Hostname",
-      "url": "URL",
-      "macAddress": "Indirizzo MAC",
-      "manufacturer": "Produttore",
-      "model": "Modello",
-      "tags": "Tag",
-      "notes": "Note"
-    },
-    "placeholders": {
-      "label": "es. Stampante magazzino",
-      "selectSite": "Seleziona una sede",
-      "tags": "Separati da virgola, es. ingresso, piano-2"
-    },
-    "toasts": {
-      "created": "Asset di rete creato",
-      "createFailed": "Impossibile creare l’asset di rete"
-    }
-  },
   "changeSiteModal": {
     "failedToLoadSites": "Impossibile caricare i siti",
     "failedToChangeSite": "Impossibile cambiare sito",
@@ -239,6 +207,16 @@
         "title": "Installa Homebrew",
         "message": "Installa Homebrew con l'utente attualmente connesso, usando una copia fissata e verificata tramite checksum del programma di installazione ufficiale. Richiede una sessione console con privilegi di amministratore e una credenziale sudo attiva o senza password; in caso contrario l'installazione non riesce e l'errore viene segnalato.",
         "confirm": "Installa Homebrew"
+      },
+      "bulkDeleteManual": {
+        "title": "Eliminare {{count}} risorse manuali?",
+        "message": "Questa operazione elimina definitivamente le risorse manuali selezionate. Non può essere annullata.",
+        "confirm": "Elimina"
+      },
+      "deleteManual": {
+        "title": "Eliminare {{hostname}}?",
+        "message": "Questa operazione elimina definitivamente questa risorsa manuale. Non può essere annullata.",
+        "confirm": "Elimina"
       }
     },
     "removeDialog": {
@@ -429,7 +407,8 @@
     "segments": {
       "all": "Tutti",
       "agent": "Agente",
-      "network": "Rete"
+      "network": "Rete",
+      "manual": "Manuale"
     },
     "filterByDeviceClass": "Filtra per classe di dispositivo"
   },
@@ -606,8 +585,6 @@
     "metricAnomalySignalsForThisDevice": "Segnali di anomalie delle metriche per questo dispositivo",
     "tickets": "Ticket",
     "ticketsLinkedToThisDevice": "Ticket collegati a questo dispositivo",
-    "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
     "eventLog": "Registro eventi",
     "windowsMacosSystemEventLogs": "Log eventi di sistema Windows/macOS",
     "monitoring": "Monitoraggio",
@@ -666,7 +643,9 @@
     "rail": "rail",
     "strip": "striscia",
     "networkAsset": "Asset di rete",
-    "networkAssets": "Asset di rete (elenco)"
+    "networkAssets": "Asset di rete (elenco)",
+    "operatorTasks": "Attività dell'operatore",
+    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -1092,6 +1071,9 @@
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Ultimo contatto",
+      "serial": "Seriale",
+      "assetTag": "Tag risorsa",
+      "location": "Posizione",
       "source": "Origine"
     },
     "sortBy": {
@@ -1106,6 +1088,9 @@
       "cpu": "Ordina per utilizzo CPU",
       "ram": "Ordina per utilizzo RAM",
       "lastSeen": "Ordina per ultimo rilevamento",
+      "serial": "Ordina per numero di serie",
+      "assetTag": "Ordina per tag risorsa",
+      "location": "Ordina per posizione",
       "source": "Ordina per origine"
     },
     "statuses": {
@@ -1227,6 +1212,15 @@
     "page": "Pagina",
     "possibleDuplicate": "Possibile duplicato",
     "possibleDuplicateTitle": "Questo dispositivo potrebbe sostituire una scheda precedente con lo stesso nome host. Aprila per controllare.",
+    "manualOnlyBulkAction": "Seleziona una risorsa manuale per usare questa azione.",
+    "manualAsset": "Risorsa manuale",
+    "manual": "Manuale",
+    "selectedCompositionManual": "{{agent}} agente, {{network}} rete, {{manual}} manuale",
+    "deleteManualSelected": "Elimina risorse manuali",
+    "editManualAsset": "Modifica {{name}}",
+    "deleteManualAsset": "Elimina {{name}}",
+    "edit": "Modifica",
+    "delete": "Elimina",
     "source": {
       "scan": "Scansione",
       "unifi": "UniFi",
@@ -1894,13 +1888,11 @@
     "selectedOrganization": "l'organizzazione selezionata",
     "subtitle": "Gestisci e monitora la tua flotta.",
     "title": "Dispositivi",
-    "hiddenNetworkNotice_one": "1 dispositivo di rete nascosto — {{fields}} si applica solo ai dispositivi con agente.",
-    "hiddenNetworkNotice_other": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
-    "hiddenNetworkNotice": "{{count}} dispositivi di rete nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",
       "agentOnlyAction": "Questa azione si applica solo ai dispositivi con agente. I dispositivi di rete non hanno un agente e sono stati ignorati.",
+      "agentOnlyActionManual": "Questa azione si applica solo ai dispositivi con agente. Le risorse manuali non hanno un agente.",
       "alreadyPendingTail": "Già in sospeso",
       "bulkActionFailed": "Azione in blocco non riuscita",
       "bulkAllDecommissioned": "Tutti i {{total}} dispositivi selezionati sono già rimossi.",
@@ -1959,7 +1951,16 @@
       "wakeTimeout": "Timeout della riattivazione",
       "queuedOfflineTail": ", {{count}} in coda per dispositivi offline",
       "runsWhenOnline": "Viene eseguito quando il dispositivo è online — scade il {{date}}",
-      "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online"
+      "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online",
+      "deleteManualFailed": "Impossibile eliminare {{hostname}}.",
+      "mfaRequired": "Questa azione richiede l'autenticazione a più fattori. Accedi di nuovo.",
+      "manualDeleted": "{{hostname}} eliminato.",
+      "manualOnlyAction": "Seleziona una risorsa manuale per usare questa azione.",
+      "manualSkipped": "{{count}} dispositivi non manuali ignorati — questa azione si applica solo alle risorse manuali.",
+      "nonAgentSkipped": "{{count}} dispositivi senza agente ignorati — questa azione si applica solo ai dispositivi con agente.",
+      "bulkManualDeleted": "Eliminate {{count}} risorse manuali.",
+      "bulkManualDeleteAllFailed": "Impossibile eliminare tutte le {{count}} risorse manuali: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "Eliminate {{succeeded}}; {{failed}} non riuscite: {{devices}}."
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",
@@ -1967,10 +1968,17 @@
     "unknownSite": "Sito sconosciuto",
     "viewInstallationGuide": "Visualizza la guida di installazione",
     "importFromRmm": "Importa da un altro RMM",
+    "hiddenNonAgentNotice": "{{count}} {{class}} nascosti — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNonAgentClassLabel": {
+      "network": "dispositivi di rete",
+      "manual": "risorse manuali",
+      "mixed": "dispositivi"
+    },
     "addMenu": {
       "trigger": "Aggiungi",
       "installAgent": "Installa agente…",
-      "addNetworkAsset": "Aggiungi asset di rete…"
+      "addNetworkAsset": "Aggiungi asset di rete…",
+      "addManualAsset": "Aggiungi risorsa manualmente…"
     }
   },
   "filterAddDropdown": {
@@ -2720,5 +2728,85 @@
     "cancelFailed": "Impossibile annullare l'azione in coda",
     "loadFailed": "Impossibile caricare le azioni in coda.",
     "empty": "Nessuna azione in coda"
+  },
+  "manualAssetModal": {
+    "addTitle": "Aggiungi risorsa manuale",
+    "editTitle": "Modifica risorsa manuale",
+    "cancel": "Annulla",
+    "create": "Crea",
+    "save": "Salva",
+    "unlink": "Scollega",
+    "linkSectionTitle": "Collega a un dispositivo o una risorsa di rete esistente",
+    "linkDevicePlaceholder": "Seleziona un dispositivo…",
+    "linkAssetPlaceholder": "Seleziona una risorsa di rete…",
+    "linkToDevice": "Collega",
+    "linkToAsset": "Collega",
+    "linkedTo": "Collegato a {{name}}",
+    "linkedUnknown": "un dispositivo sconosciuto",
+    "errors": {
+      "mfaRequired": "Questa azione richiede l'autenticazione a più fattori. Accedi di nuovo.",
+      "createFailed": "Impossibile creare la risorsa manuale.",
+      "updateFailed": "Impossibile aggiornare la risorsa manuale.",
+      "linkFailed": "Impossibile collegare la risorsa.",
+      "unlinkFailed": "Impossibile scollegare la risorsa."
+    },
+    "toasts": {
+      "created": "Risorsa manuale creata.",
+      "updated": "Risorsa manuale aggiornata.",
+      "linked": "Risorsa collegata.",
+      "unlinked": "Risorsa scollegata."
+    },
+    "fields": {
+      "organization": "Organizzazione",
+      "selectOrganization": "Seleziona un'organizzazione…",
+      "site": "Sede",
+      "selectSite": "Seleziona una sede…",
+      "name": "Nome",
+      "namePlaceholder": "es. laptop di scorta, telefono reception",
+      "assetType": "Tipo di risorsa",
+      "manufacturer": "Produttore",
+      "model": "Modello",
+      "serialNumber": "Numero di serie",
+      "assetTag": "Tag risorsa",
+      "location": "Posizione",
+      "locationPlaceholder": "es. armadio B, scaffale 2",
+      "assignedContact": "Assegnato a",
+      "assignedContactPlaceholder": "Cerca contatti…",
+      "tags": "Tag",
+      "tagsPlaceholder": "Separati da virgole",
+      "notes": "Note"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Aggiungi asset di rete",
+    "submit": "Aggiungi asset",
+    "identityHint": "Fornisci almeno uno tra: indirizzo IP, hostname o URL.",
+    "urlRequiredHint": "Gli asset di tipo sito web o servizio richiedono un URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitorare questo asset con un controllo HTTP?",
+      "actions": {
+        "addHttpCheck": "Aggiungi un controllo HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nome",
+      "ipAddress": "Indirizzo IP",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "Indirizzo MAC",
+      "manufacturer": "Produttore",
+      "model": "Modello",
+      "tags": "Tag",
+      "notes": "Note"
+    },
+    "placeholders": {
+      "label": "es. Stampante magazzino",
+      "selectSite": "Seleziona una sede",
+      "tags": "Separati da virgola, es. ingresso, piano-2"
+    },
+    "toasts": {
+      "created": "Asset di rete creato",
+      "createFailed": "Impossibile creare l’asset di rete"
+    }
   }
 }

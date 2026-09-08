@@ -199,9 +199,10 @@ export const notOnlineTitleKeys: Record<Exclude<DeviceStatus, 'online'>, string>
   quarantined: 'deviceActions.unavailable.quarantined',
   updating: 'deviceActions.unavailable.updating',
   pending: 'deviceActions.unavailable.pending',
-  // #5213 — a manual network asset never probed. Live-session actions are
-  // agent-only anyway (gated on deviceClass elsewhere), but this keeps the
-  // Record exhaustive rather than silently falling back to a generic tooltip.
+  // A manual asset (#4622 W04) or an unprobed manual network asset (#5213)
+  // never reaches a live-session gate — neither has an agent, so these actions
+  // aren't offered for them at all (see DeviceList's manual Actions cell).
+  // Kept exhaustive rather than silently falling back to a generic tooltip.
   unknown: 'deviceActions.unavailable.unknown',
 };
 
