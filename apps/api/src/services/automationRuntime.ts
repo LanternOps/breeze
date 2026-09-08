@@ -453,8 +453,27 @@ function automationOfflinePolicy(whenOffline: 'queue' | 'skip' | undefined): Off
   return { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') };
 }
 
-/** #5128 W4 — the one operator-facing string for a step waiting on a device. */
+/** #5128 W4 — the operator-facing string for a step waiting on an OFFLINE device. */
 const QUEUED_OFFLINE_MESSAGE = 'Queued — device offline';
+
+/**
+ * #5128 W4 — the same, for a device we DID have a socket to and still failed to
+ * reach ('claim_lost' / 'decrypt_failed' / 'send_failed'). The command is
+ * queued either way, but telling a tech "device offline" about a device that is
+ * plainly online sends them chasing a connectivity problem that does not exist.
+ * `scriptDispatch`'s `deliveryOutcome` is the only thing that distinguishes the
+ * two, so the message has to be derived from it rather than from `delivered`.
+ */
+const QUEUED_UNDELIVERED_MESSAGE = 'Queued — delivery to the agent failed; will retry on its next check-in';
+
+function queuedMessageFor(deliveryOutcome: string | undefined): string {
+  // `undefined` is treated as the offline case: it is what the pre-W4 result
+  // shape carried, and 'no_agent' is overwhelmingly the reason a dispatch is
+  // undelivered.
+  return deliveryOutcome === undefined || deliveryOutcome === 'no_agent'
+    ? QUEUED_OFFLINE_MESSAGE
+    : QUEUED_UNDELIVERED_MESSAGE;
+}
 
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -1492,7 +1511,7 @@ export async function executeRunScriptAction(
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
       ...(dispatch.executionId ? { scriptExecutionId: dispatch.executionId } : {}),
-      ...(dispatch.delivered ? {} : { message: QUEUED_OFFLINE_MESSAGE }),
+      ...(dispatch.delivered ? {} : { message: queuedMessageFor(dispatch.deliveryOutcome) }),
     },
     log: logEntry('Queued run_script action', 'info', {
       actionType: action.type,
@@ -1576,7 +1595,7 @@ export async function executeCommandAction(
     outcome: {
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
-      ...(dispatch.delivered ? {} : { message: QUEUED_OFFLINE_MESSAGE }),
+      ...(dispatch.delivered ? {} : { message: queuedMessageFor(dispatch.deliveryOutcome) }),
     },
     log: logEntry('Queued execute_command action', 'info', {
       actionType: action.type,

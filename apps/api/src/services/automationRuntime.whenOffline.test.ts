@@ -223,6 +223,28 @@ describe('executeRunScriptAction — offline policy', () => {
     });
   });
 
+  // A device we HAD a socket to and still failed to reach is queued too, but it
+  // is not offline. Reporting "device offline" for it sends a tech chasing a
+  // connectivity problem that does not exist.
+  it.each(['claim_lost', 'decrypt_failed', 'send_failed'] as const)(
+    'does not claim "device offline" when delivery failed with %s on a reachable agent',
+    async (deliveryOutcome) => {
+      vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
+      dispatchMock.mockResolvedValue({ ...queuedDispatch(), deliveryOutcome });
+
+      const result = await executeRunScriptAction(
+        { type: 'run_script', scriptId: 'script-1' },
+        0,
+        buildContext(),
+      );
+
+      expect(result.outcome.status).toBe('queued');
+      const message = (result.outcome as { message?: string }).message;
+      expect(message).not.toContain('offline');
+      expect(message).toBe('Queued — delivery to the agent failed; will retry on its next check-in');
+    },
+  );
+
   it("skip reproduces today's failure message byte-for-byte", async () => {
     vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
     dispatchMock.mockResolvedValue({
