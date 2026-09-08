@@ -109,7 +109,7 @@ export interface FleetFindingDetail extends FleetFinding {
 export type RemediationCommandType = 'restart_service' | 'reboot';
 
 /** Mirrors `RemediationSkipReason` (dispatch.ts). */
-export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned';
+export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned' | 'maintenance_window';
 
 export type FleetTargetStatus = 'pending' | 'queued' | 'succeeded' | 'failed' | 'skipped';
 

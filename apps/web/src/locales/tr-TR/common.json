@@ -2046,7 +2046,8 @@
           "notMember": "Artık bu bulgudan etkilenmiyor",
           "decommissioned": "Cihaz çıkarıldı",
           "timeout": "30 dakika sonra zaman aşımına uğradı",
-          "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu"
+          "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu",
+          "maintenanceWindow": "Cihaz bir bakım penceresinde"
         },
         "viewProgress": "İlerlemeyi görüntüle",
         "errors": {

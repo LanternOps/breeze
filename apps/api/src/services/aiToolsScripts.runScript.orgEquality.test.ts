@@ -368,6 +368,61 @@ describe('run_script surfaces dispatch failures without calling waitForCommandRe
     expect(out.results[DEVICE_B].error).toBe('Device is offline, cannot execute command');
     expect(waitForCommandResult).not.toHaveBeenCalled();
   });
+
+  /**
+   * #4919 — a maintenance window is the operator saying "not now", not a
+   * failure. Reporting it in the `error` field is what makes an assistant
+   * retry it, escalate it, or tell the user their script broke, so it gets a
+   * distinct suppressed shape with NO `error` key at all.
+   */
+  it('reports a maintenance-window suppression as suppressed, not as an error', async () => {
+    mockDb(
+      { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' },
+      { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' },
+    );
+    dispatchScriptToDevice.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    });
+
+    const out = JSON.parse(
+      await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth()),
+    );
+
+    expect(out.results[DEVICE_B]).toEqual({
+      status: 'suppressed',
+      suppressedBy: 'maintenance_window',
+      message: 'Device is in a maintenance window that suppresses script execution',
+    });
+    expect(out.results[DEVICE_B].error).toBeUndefined();
+    expect(waitForCommandResult).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An unevaluatable maintenance check is a fault, not a deferral. It must
+   * keep the plain `error` shape so the assistant does not tell the user the
+   * device is on a maintenance schedule that may not exist.
+   */
+  it('reports an unevaluatable maintenance check as an error, not as suppressed', async () => {
+    mockDb(
+      { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' },
+      { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' },
+    );
+    dispatchScriptToDevice.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    });
+
+    const out = JSON.parse(
+      await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth()),
+    );
+
+    expect(out.results[DEVICE_B].error).toContain('fail-closed');
+    expect(out.results[DEVICE_B].status).toBeUndefined();
+    expect(out.results[DEVICE_B].suppressedBy).toBeUndefined();
+  });
 });
 
 describe('run_script keeps per-device failures isolated in the shared results accumulator', () => {

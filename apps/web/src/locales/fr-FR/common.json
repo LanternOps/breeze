@@ -2046,7 +2046,8 @@
           "notMember": "N'est plus concerné par ce constat",
           "decommissioned": "L’appareil est retiré",
           "timeout": "Expiré après 30 minutes",
-          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
+          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué",
+          "maintenanceWindow": "Appareil dans une fenêtre de maintenance"
         },
         "viewProgress": "Voir la progression",
         "errors": {

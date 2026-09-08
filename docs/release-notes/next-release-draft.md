@@ -184,6 +184,25 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 
 ---
 
+## Maintenance windows now suppress every script path (#4919)
+
+**Behaviour change.** A device inside a maintenance window with **Suppress
+scripts** set is now skipped by *every* way a script can reach it — the AI
+assistant's `run_script`, automation `run_script` / `execute_command` actions,
+fleet-fix remediation runs, and agent edition auto-migration — not just the
+manual Run Script route. The check moved into the shared dispatch seam and is
+fail-closed: a maintenance window that cannot be evaluated refuses the run
+rather than allowing it. Each path records an open window as a **skip**, not a
+failure — the assistant is told the device is suppressed, automation action
+results read `skipped` (the run stays green and trailing actions still run),
+and fleet-fix targets get the new `maintenance_window` skip reason. A window
+that **cannot be evaluated** is deliberately the opposite: it keeps the
+ordinary failure treatment (reddened run, on-failure notifications, Sentry), so
+an outage of the maintenance config can never render as a fleet of green runs.
+No env vars, no migrations.
+
+---
+
 ## Passkey register/delete keeps the caller signed in (#5038)
 
 **Self-Hosting / Upgrade Notes.**

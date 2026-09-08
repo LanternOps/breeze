@@ -150,6 +150,21 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     targetById.set(requestedDeviceId, target);
   }
 
+  // #4919 — this pre-check STAYS even though `dispatchScriptToDevice` now
+  // runs the same gate for every caller. It is not duplication for its own
+  // sake: only a check that runs HERE can classify the device as
+  // `admission: 'suppressed'` (its own admission state, distinct from a
+  // failure) and keep it out of `devicesTargeted` and the per-org batch
+  // sizing below — a device suppressed inside dispatch has already been
+  // counted as targeted and can only be reported as an excluded failure.
+  //
+  // The dispatch-side gate is therefore the backstop for the narrow race
+  // where a window opens between this loop and the dispatch loop; that
+  // outcome lands in the generic per-device failure branch further down with
+  // `reasonCode: 'maintenance_suppressed'` (the same token this loop emits —
+  // `normalizeDispatchReasonCode` passes it through), so the operator sees
+  // the same reason either way, just with a failed execution row that keeps
+  // the batch counters balanced.
   const maintenanceEligibleDevices = [...executableDevices];
   executableDevices.length = 0;
   for (const device of maintenanceEligibleDevices) {

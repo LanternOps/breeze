@@ -2046,7 +2046,8 @@
           "notMember": "Non più interessato da questo rilievo",
           "decommissioned": "Il dispositivo è rimosso",
           "timeout": "Scaduto dopo 30 minuti",
-          "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito"
+          "dispatchEnqueueFailed": "Mai inviato: accodamento non riuscito",
+          "maintenanceWindow": "Il dispositivo è in una finestra di manutenzione"
         },
         "viewProgress": "Vedi avanzamento",
         "errors": {

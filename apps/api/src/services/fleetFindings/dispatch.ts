@@ -48,6 +48,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from '../commandQueue';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { captureException } from '../sentry';
+import { checkScriptMaintenanceSuppression } from '../scriptMaintenanceGate';
 import { hasTenantVariableBoundParameters } from '../sourcedParameters';
 import { getFleetFinding } from './query';
 
@@ -124,7 +125,17 @@ export type RemediateRequest =
     })
   | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
-export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned' | 'unreachable';
+export type RemediationSkipReason =
+  | 'site_denied'
+  | 'not_member'
+  | 'decommissioned'
+  | 'unreachable'
+  // #4919 — the device is inside a maintenance window that suppresses
+  // scripts (or one we could not evaluate, which fails closed). Written
+  // at DISPATCH time only: a window that is open now may well be shut by
+  // the time a queued run reaches this chunk, so classifying at run
+  // creation would skip devices that were perfectly runnable.
+  | 'maintenance_window';
 
 export interface RemediationSkippedTarget {
   deviceId: string;
@@ -673,6 +684,31 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
     if (deviceStatus !== 'online') {
       await markTargetSkipped(runId, target.targetDeviceUuid, 'unreachable');
       continue;
+    }
+
+    // #4919 — fleet remediation is the one script path that does NOT go
+    // through `dispatchScriptToDevice`, so it does not inherit that seam's
+    // maintenance gate and has to call the shared gate itself. Scoped to
+    // `actionKind === 'script'` on purpose: `suppressScripts` is a statement
+    // about running scripts, and the command kinds this path also dispatches
+    // (reboot, restart_service) are governed by their own policies rather
+    // than by that flag. Checked BEFORE the atomic claim so a suppressed
+    // target is never flipped to `queued` and walked back — same discipline
+    // as the liveness check above.
+    if (run.actionKind === 'script') {
+      const maintenance = await checkScriptMaintenanceSuppression(target.targetDeviceUuid);
+      if (maintenance.suppressed) {
+        if (maintenance.reason === 'check_failed') {
+          // A fault in the safety check, not the operator's schedule. Recording
+          // it as a `skipped` target would bury a maintenance-config outage
+          // inside a status operators read as "nothing to see here" — this run
+          // never verified it was safe to run, and that is a failure.
+          await markTargetFailed(runId, target.targetDeviceUuid, maintenance.message);
+          continue;
+        }
+        await markTargetSkipped(runId, target.targetDeviceUuid, 'maintenance_window');
+        continue;
+      }
     }
 
     // Claim the target atomically BEFORE dispatching: a plain SELECT-then-

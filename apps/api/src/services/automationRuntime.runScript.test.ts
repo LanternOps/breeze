@@ -432,3 +432,69 @@ describe('run_script run-context override (#4888)', () => {
     expect((dropped as Record<string, unknown>).runAs).toBeUndefined();
   });
 });
+
+/**
+ * #4919 — the dispatch seam now refuses a device inside a maintenance window
+ * that suppresses scripts. The automation runtime must record that as a SKIP,
+ * not a failure: a failure would mark the run red, fire on-failure
+ * notifications, and skip every trailing action for that device — all on the
+ * strength of the operator's own maintenance schedule.
+ */
+describe('run_script honours a device maintenance window (#4919)', () => {
+  it('records a skip (not a failure) when dispatch reports maintenance_suppressed', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('skipped');
+    expect((result.outcome as { message?: string }).message).toContain('maintenance window');
+    expect(result.log.message).toContain('maintenance window');
+  });
+
+  /**
+   * The whole reason `maintenance_check_failed` is a separate code: a fault in
+   * the safety check is NOT the operator's schedule. It must keep the failure
+   * treatment (run reddened, on-failure notifications, `onFailure: 'stop'`
+   * honoured), or a fleet-wide maintenance-config outage renders as green runs.
+   */
+  it('treats an UNEVALUATABLE maintenance check as a failure, not a skip', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'maintenance_check_failed',
+      error: 'Maintenance window could not be evaluated for this device; refusing to run the script (fail-closed)',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome.status).not.toBe('skipped');
+  });
+
+  it('still reports an ordinary dispatch refusal as a failure', async () => {
+    dispatchMock.mockResolvedValueOnce({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('failed');
+  });
+});

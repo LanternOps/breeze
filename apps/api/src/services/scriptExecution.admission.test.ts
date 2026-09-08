@@ -219,6 +219,65 @@ describe('executeScriptOnDevices admission contract', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  /**
+   * #4919 — the pre-check above and the dispatch seam BOTH gate on the
+   * maintenance window now. A window that opens between the two is a real
+   * race, and scriptExecution.ts documents where it lands: the generic
+   * per-device failure branch, with the SAME `maintenance_suppressed` reason
+   * token the pre-check emits (so the operator sees one reason either way) and
+   * a failed execution row that keeps the batch counters balanced. Before this
+   * PR `dispatchScriptToDevice` could never return that code, so this branch
+   * was unreachable and untested.
+   */
+  it('records a window that opens mid-fan-out (pre-check passed, dispatch refused) with the same reason code', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelect([script()]) as never)
+      .mockReturnValueOnce(deviceSelect([device('raced'), device('ok')]) as never);
+    // Pre-check clears both devices (default mock), then the seam refuses one.
+    vi.mocked(dispatchScriptToDevice).mockImplementation(async ({ device: target }) =>
+      target.id === 'raced'
+        ? { ok: false, code: 'maintenance_suppressed', error: 'Device is in a maintenance window that suppresses script execution' }
+        : dispatched(target.id));
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['raced', 'ok'],
+      auth,
+      permissions,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.admission.targets).toContainEqual(
+      expect.objectContaining({
+        requestedDeviceId: 'raced',
+        admission: 'excluded',
+        reasonCode: 'maintenance_suppressed',
+      }),
+    );
+    // The failure row the batch accounting depends on was actually written —
+    // asserted on the inserted VALUES, not merely on db.insert having been
+    // called (the per-org batch insert would satisfy that on its own).
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value as {
+      values: { mock: { calls: [Record<string, unknown>][] } };
+    };
+    const insertedRows = insertChain.values.mock.calls.map(([row]) => row);
+    expect(insertedRows).toContainEqual(
+      expect.objectContaining({
+        deviceId: 'raced',
+        status: 'failed',
+        errorMessage: expect.stringContaining('maintenance window'),
+      }),
+    );
+    expect(insertedRows).not.toContainEqual(
+      expect.objectContaining({ deviceId: 'ok', status: 'failed' }),
+    );
+    // The other device was unaffected.
+    expect(result.admission.targets).toContainEqual(
+      expect.objectContaining({ requestedDeviceId: 'ok', admission: 'admitted' }),
+    );
+  });
+
   it('returns a valid typed rejection rather than an HTTP failure when no target is admitted', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(scriptSelect([script()]) as never)

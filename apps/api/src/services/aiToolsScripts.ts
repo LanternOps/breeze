@@ -273,7 +273,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'run_script',
-      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval.',
+      description: 'Execute a script on one or more devices. Existing scripts can be referenced by ID; inline scripts require approval. A device inside a maintenance window that suppresses scripts is skipped, not failed: that device\'s result carries status "suppressed" with a message — report it as deferred and do not retry it now.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -497,6 +497,21 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             })
           );
           if (!dispatch.ok) {
+            if (dispatch.code === 'maintenance_suppressed') {
+              // #4919 — NOT an error. A maintenance window is the operator's
+              // deliberate "not now", and reporting it as a failure is how an
+              // assistant ends up retrying, escalating, or telling the user
+              // the script broke. `status: 'suppressed'` keeps it out of the
+              // error shape every other branch here uses; the message carries
+              // the distinction between an open window and a window we could
+              // not evaluate (fail-closed), so the assistant can say which.
+              results[deviceId] = {
+                status: 'suppressed',
+                suppressedBy: 'maintenance_window',
+                message: dispatch.error,
+              };
+              continue;
+            }
             results[deviceId] = { error: dispatch.error };
             continue;
           }

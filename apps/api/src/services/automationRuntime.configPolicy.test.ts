@@ -657,6 +657,86 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
   });
 
+  /**
+   * #4919 — a maintenance window suppressing an `execute_command` action is
+   * the operator's own schedule, not an automation defect. The whole point of
+   * classifying it as `skipped` rather than `failed` is visible here: with
+   * `onFailure: 'stop'` a failure would abort the device's remaining actions
+   * and redden the run. A skip must do neither.
+   */
+  it('records a maintenance-suppressed execute_command as skipped, keeps the run green, and still runs the next action', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [
+        { type: 'execute_command', command: 'echo one' },
+        { type: 'execute_command', command: 'echo two' },
+      ],
+      onFailure: 'stop',
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { id: 'dev-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online' },
+            ]),
+          }),
+        } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as any;
+    });
+
+    const run = { id: 'run-1', automationId: null, status: 'running', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false,
+      code: 'maintenance_suppressed',
+      error: 'Device is in a maintenance window that suppresses script execution',
+    } as any);
+
+    const result = await executeConfigPolicyAutomationRun(automation, 'cp-1', ['dev-1'], 'scheduler');
+
+    expect(result.status).not.toBe('failed');
+    expect(result.devicesFailed).toBe(0);
+    // Both actions were attempted — the first skip did not abort the device.
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(2);
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'skipped',
+    }));
+    // The skip REASON is persisted on the action result, not just the status —
+    // `persistActionExecutionOutcome` had to learn to take `outcome.message`
+    // for 'skipped' as well as 'failed', or the row records the generic log
+    // line and the operator cannot tell a maintenance skip from any other.
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 1, status: 'skipped',
+      message: expect.stringContaining('maintenance window'),
+    }));
+  });
+
   it('does not dispatch a later command after an earlier software refusal with stop', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [

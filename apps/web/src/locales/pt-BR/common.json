@@ -2046,7 +2046,8 @@
           "notMember": "Não é mais afetado por esta constatação",
           "decommissioned": "O dispositivo foi removido",
           "timeout": "Expirou após 30 minutos",
-          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar"
+          "dispatchEnqueueFailed": "Nunca despachado — falha ao enfileirar",
+          "maintenanceWindow": "Dispositivo em uma janela de manutenção"
         },
         "viewProgress": "Ver progresso",
         "errors": {
