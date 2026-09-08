@@ -63,7 +63,12 @@ const namespaceDuplicateBaselines = {
     // product names, never translated) and dateFormat.iso's "ISO
     // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
     // literal format token/example key, not wording.
-    'devices.json': 165,
+    // +4 W04 (#4622 manual assets): deviceList.manual / deviceClassSegment.
+    // segments.manual — "Manual" is spelled identically in pt-BR (same
+    // cognate already accepted for updateRingList.badges.manual above); the
+    // manual-asset modal's "Site" and "Tags" fields are the same loanwords
+    // already accepted elsewhere in this catalog.
+    'devices.json': 169,
     'discovery.json': 17,
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -159,7 +164,9 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
     // format tokens, not wording.
-    'devices.json': 120,
+    // +2 W04 (#4622 manual assets): deviceList.manual / deviceClassSegment.
+    // segments.manual — "Manual" is spelled identically in es-419.
+    'devices.json': 122,
     'discovery.json': 17,
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -261,7 +268,9 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    'devices.json': 146,
+    // +2 W04 (#4622 manual assets): the modal's "Site" and "Notes" field
+    // labels are identical in fr-FR.
+    'devices.json': 148,
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
@@ -368,7 +377,9 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    'devices.json': 146,
+    // +2 W04 (#4622 manual assets): the modal's "Site" and "Notes" field
+    // labels are identical in fr-CA.
+    'devices.json': 148,
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
@@ -484,7 +495,9 @@ const namespaceDuplicateBaselines = {
     // unified-device-list branch; re-measured after merging main.
     // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
     // in German.
-    'devices.json': 156,
+    // +2 W04 (#4622 manual assets): manualAssetModal.fields.name / .tags —
+    // "Name" and "Tags" are identical loanwords in German.
+    'devices.json': 158,
     'discovery.json': 26,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
@@ -630,7 +643,9 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 83,
+    // +2 W04 (#4622 manual assets): manualAssetModal.fields.site / .model —
+    // "Site" and "Model" are identical loanwords in Turkish.
+    'devices.json': 85,
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"

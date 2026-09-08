@@ -145,6 +145,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning/15 text-warning border-warning/30",
   updating: "bg-info/15 text-info border-info/30",
   pending: "bg-muted text-muted-foreground border-border",
+  unknown: "bg-muted text-muted-foreground border-border",
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -155,6 +156,9 @@ const statusLabels: Record<DeviceStatus, string> = {
   quarantined: "Quarantined",
   updating: "Updating",
   pending: "Pending",
+  // No detail page exists for a manual asset in v1 (#4622 W04 spec), so this
+  // never renders today — kept for the shared DeviceStatus exhaustiveness.
+  unknown: "Unknown",
 };
 
 function formatLastSeen(dateString: string, timezone?: string): string {
@@ -935,7 +939,10 @@ export default function DeviceDetails({
       {activeTab === "backup" && (
         <DeviceBackupTab
           deviceId={device.id}
-          deviceStatus={device.status}
+          // DeviceBackupTab predates the manual-asset `unknown` status
+          // (#4622 W04) and has no detail page to reach anyway — degrade to
+          // "status not known" rather than widening its own literal union.
+          deviceStatus={device.status === "unknown" ? undefined : device.status}
           timezone={effectiveTimezone}
         />
       )}

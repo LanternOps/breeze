@@ -1,27 +1,39 @@
-// Class-aware filtering for the merged (agent + network) device list.
+// Class-aware filtering for the merged (agent + network + manual) device list.
 //
 // `POST /filters/preview` resolves an advanced filter against the agent
-// `devices` table only, so its id set can never contain a network row (whose
-// id is a `discovered_assets.id`). Network rows are therefore evaluated here,
-// client-side, against the same condition group — for the fields a discovered
-// asset actually has. A condition on an agent-only field (patches, alerts,
-// metrics, OS, software…) can never be true for a network row; instead of
-// silently dropping the row we report the field so the page can tell the
-// tech "N network devices hidden — X applies to agent devices only".
+// `devices` table only, so its id set can never contain a network or manual
+// row (whose id is a `discovered_assets.id` / `manual_assets.id`). Those rows
+// are therefore evaluated here, client-side, against the same condition group
+// — for the fields the row's class actually has. A condition on a field the
+// class doesn't answer (patches, alerts, metrics, OS, software… for network;
+// all of that plus status/network.*/lastSeenAt for manual) can never be true
+// for that row; instead of silently dropping the row we report the field so
+// the page can tell the tech "N network devices hidden — X applies to agent
+// devices only" (or "N manual assets hidden…").
 import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
 import { activeVpnList } from '@/lib/vpnProviders';
-import type { Device } from './DeviceList';
+import type { Device, DeviceClass } from './DeviceList';
 
 export type NetworkFilterVerdict = {
   matches: boolean;
-  // Agent-only fields that stood between this row and a match. Empty when the
-  // row matched, or when it failed on a field it does have (e.g. status).
+  // Fields the row's class cannot answer that stood between it and a match.
+  // Empty when the row matched, or when it failed on a field it does have
+  // (e.g. status for a network row).
   inapplicableFields: string[];
 };
 
 type Scalar = string | number | boolean | Date | null | undefined;
 
-const isNetwork = (d: Device) => (d.deviceClass ?? 'agent') === 'network';
+/** Non-agent classes — every arm of the merged list this module evaluates
+ *  client-side instead of trusting the server's agent-only id set. */
+export type NonAgentClass = Exclude<DeviceClass, 'agent'>;
+
+const classOf = (d: Device): DeviceClass => d.deviceClass ?? 'agent';
+const isManual = (d: Device) => classOf(d) === 'manual';
+const nonAgentClassOf = (d: Device): NonAgentClass | null => {
+  const c = classOf(d);
+  return c === 'agent' ? null : c;
+};
 
 const DAY_MS = 86_400_000;
 
@@ -63,6 +75,40 @@ function networkFieldValue(field: string, d: Device): { applicable: boolean; val
       const t = Date.parse(d.lastSeen);
       return { applicable: true, value: Number.isNaN(t) ? null : new Date(t) };
     }
+    default:
+      return { applicable: false, value: undefined };
+  }
+}
+
+// Resolves a filter field to a manual asset's own value, or `undefined` when
+// the field is an agent/network concept a hand-entered row cannot answer.
+// `status` is deliberately inapplicable here (unlike network, where it IS
+// applicable): a manual asset has no reachability, so a `status` condition
+// must blame the field rather than reject the row on a fabricated 'unknown'.
+function manualFieldValue(field: string, d: Device): { applicable: boolean; value: Scalar | string[] } {
+  switch (field) {
+    case 'hostname':
+      return { applicable: true, value: d.hostname };
+    case 'displayName':
+      return { applicable: true, value: d.displayName ?? null };
+    case 'tags':
+      return { applicable: true, value: d.tags ?? [] };
+    // A manual asset has no agent role; its asset type answers the same
+    // question, same as the network arm above.
+    case 'deviceRole':
+      return { applicable: true, value: d.assetType ?? 'unknown' };
+    case 'orgId':
+      return { applicable: true, value: d.orgId };
+    case 'siteId':
+      return { applicable: true, value: d.siteId };
+    case 'hardware.manufacturer':
+      return { applicable: true, value: d.manufacturer ?? null };
+    case 'hardware.model':
+      return { applicable: true, value: d.model ?? null };
+    case 'hardware.serialNumber':
+      return { applicable: true, value: d.serialNumber ?? null };
+    // status, network.*, daysSinceLastSeen, lastSeenAt, os*, agentVersion and
+    // every metric are agent/network concepts a hand-entered row cannot answer.
     default:
       return { applicable: false, value: undefined };
   }
@@ -223,7 +269,7 @@ function compareScalar(operator: FilterOperator, actual: Scalar | string[], expe
 }
 
 function evaluateCondition(c: FilterCondition, d: Device): NetworkFilterVerdict {
-  const { applicable, value } = networkFieldValue(c.field, d);
+  const { applicable, value } = isManual(d) ? manualFieldValue(c.field, d) : networkFieldValue(c.field, d);
   if (!applicable) return { matches: false, inapplicableFields: [c.field] };
   return { matches: compareScalar(c.operator, value, c.value), inapplicableFields: [] };
 }
@@ -264,7 +310,9 @@ export const VPN_FACET_FIELD = 'vpn';
 
 function matchesVpnFacet(d: Device, vpn: string): boolean {
   if (vpn === 'all') return true;
-  if (isNetwork(d)) return false;
+  // VPN presence is an agent-only concept — neither a discovered network
+  // device nor a hand-entered manual asset runs a VPN client.
+  if (nonAgentClassOf(d) !== null) return false;
   const active = activeVpnList(d.activeVpns);
   return vpn === 'any' ? active.length > 0 : active.some((v) => v.provider === vpn);
 }
@@ -275,7 +323,9 @@ export function matchesSearchQuery(d: Device, query: string): boolean {
     d.hostname.toLowerCase().includes(query) ||
     (d.displayName?.toLowerCase().includes(query) ?? false) ||
     (d.lanIp?.includes(query) ?? false) ||
-    (d.wanIp?.includes(query) ?? false)
+    (d.wanIp?.includes(query) ?? false) ||
+    (d.serialNumber?.toLowerCase().includes(query) ?? false) ||
+    (d.assetTag?.toLowerCase().includes(query) ?? false)
   );
 }
 
@@ -285,7 +335,7 @@ export function matchesMergedListFilters(d: Device, ctx: MergedListFilterContext
   if (!ctx.includeDecommissioned && d.status === 'decommissioned') return false;
   if (!matchesVpnFacet(d, ctx.vpn ?? 'all')) return false;
   if (ctx.serverFilterIds !== null) {
-    if (isNetwork(d) && ctx.advancedFilter !== undefined) {
+    if (nonAgentClassOf(d) !== null && ctx.advancedFilter !== undefined) {
       if (!evaluateNetworkAssetFilter(ctx.advancedFilter, d).matches) return false;
     } else if (!ctx.serverFilterIds.has(d.id)) {
       return false;
@@ -294,22 +344,27 @@ export function matchesMergedListFilters(d: Device, ctx: MergedListFilterContext
   return matchesSearchQuery(d, ctx.query.trim().toLowerCase());
 }
 
-// Network rows the active filters drop purely because they ask about agent-only
-// things (agent-only filter fields, or the VPN facet) — the ones the page owes
-// the tech an explanation for. Rows already hidden for an ordinary reason
-// (search, decommissioned, an applicable condition) are not counted, so the
-// notice never promises rows that clearing the agent-only part wouldn't show.
-export function summarizeHiddenNetworkDevices(
+// Non-agent rows (network or manual) the active filters drop purely because
+// they ask about agent-only things (agent-only filter fields, or the VPN
+// facet) — the ones the page owes the tech an explanation for. Rows already
+// hidden for an ordinary reason (search, decommissioned, an applicable
+// condition) are not counted, so the notice never promises rows that clearing
+// the agent-only part wouldn't show. `classes` names which non-agent class(es)
+// contributed to `count`, so the page can say "3 manual assets hidden" instead
+// of defaulting every non-agent row to "network devices".
+export function summarizeHiddenNonAgentDevices(
   devices: readonly Device[],
   ctx: MergedListFilterContext,
-): { count: number; fields: string[] } {
+): { count: number; fields: string[]; classes: NonAgentClass[] } {
   const vpn = ctx.vpn ?? 'all';
-  if (!ctx.advancedFilter && vpn === 'all') return { count: 0, fields: [] };
+  if (!ctx.advancedFilter && vpn === 'all') return { count: 0, fields: [], classes: [] };
   const query = ctx.query.trim().toLowerCase();
   let count = 0;
   const fields = new Set<string>();
+  const classes = new Set<NonAgentClass>();
   for (const d of devices) {
-    if (!isNetwork(d)) continue;
+    const cls = nonAgentClassOf(d);
+    if (cls === null) continue;
     if (!ctx.includeDecommissioned && d.status === 'decommissioned') continue;
     if (!matchesSearchQuery(d, query)) continue;
     const v = evaluateNetworkAssetFilter(ctx.advancedFilter, d);
@@ -318,9 +373,10 @@ export function summarizeHiddenNetworkDevices(
     if (vpn !== 'all') blame.push(VPN_FACET_FIELD);
     if (blame.length === 0) continue;
     count += 1;
+    classes.add(cls);
     blame.forEach((f) => fields.add(f));
   }
-  return { count, fields: Array.from(fields) };
+  return { count, fields: Array.from(fields), classes: Array.from(classes) };
 }
 
 const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });

@@ -42,6 +42,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning",
   updating: "bg-info",
   pending: "bg-muted-foreground",
+  unknown: "bg-muted-foreground",
 };
 
 // Canonical status values stay untouched; only their presentation keys vary.
@@ -55,6 +56,7 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
   quarantined: "deviceList.statuses.full.quarantined",
   updating: "deviceList.statuses.full.updating",
   pending: "deviceList.statuses.full.pending",
+  unknown: "deviceList.statuses.full.unknown",
 };
 
 const osIcons: Record<OSType, React.ReactNode> = {

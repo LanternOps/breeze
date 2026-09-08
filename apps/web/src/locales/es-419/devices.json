@@ -210,6 +210,16 @@
         "title": "Instalar Homebrew",
         "message": "Instala Homebrew como el usuario que tiene la sesión iniciada, usando una copia fija y verificada por suma de comprobación del instalador oficial. Requiere una sesión de consola con permisos de administrador y una credencial de sudo activa o sin contraseña; de lo contrario, la instalación falla y el error se informa de vuelta.",
         "confirm": "Instalar Homebrew"
+      },
+      "bulkDeleteManual": {
+        "title": "¿Eliminar {{count}} activos manuales?",
+        "message": "Esto elimina permanentemente los activos manuales seleccionados. No se puede deshacer.",
+        "confirm": "Eliminar"
+      },
+      "deleteManual": {
+        "title": "¿Eliminar {{hostname}}?",
+        "message": "Esto elimina permanentemente este activo manual. No se puede deshacer.",
+        "confirm": "Eliminar"
       }
     },
     "removeDialog": {
@@ -396,7 +406,8 @@
     "segments": {
       "all": "Todo",
       "agent": "Agente",
-      "network": "Red"
+      "network": "Red",
+      "manual": "Manual"
     },
     "filterByDeviceClass": "Filtrar por clase de dispositivo"
   },
@@ -488,7 +499,8 @@
       "decommissioned": "Quitado",
       "quarantined": "En cuarentena",
       "updating": "Actualizando",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "unknown": "Desconocido"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1067,10 @@
       "status": "Estado",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Visto por última vez"
+      "lastSeen": "Visto por última vez",
+      "serial": "N.º de serie",
+      "assetTag": "Etiqueta de activo",
+      "location": "Ubicación"
     },
     "sortBy": {
       "class": "Ordenar por clase",
@@ -1068,7 +1083,10 @@
       "status": "Ordenar por estado",
       "cpu": "Ordenar por uso de CPU",
       "ram": "Ordenar por uso de RAM",
-      "lastSeen": "Ordenar por última hora vista"
+      "lastSeen": "Ordenar por última hora vista",
+      "serial": "Ordenar por número de serie",
+      "assetTag": "Ordenar por etiqueta de activo",
+      "location": "Ordenar por ubicación"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1105,8 @@
         "decommissioned": "Quitado",
         "quarantined": "En cuarentena",
         "updating": "Actualizando",
-        "pending": "Pendiente"
+        "pending": "Pendiente",
+        "unknown": "Desconocido"
       }
     },
     "roles": {
@@ -1187,7 +1206,16 @@
     "devicesPerPage": "Dispositivos por página",
     "page": "Página",
     "possibleDuplicate": "Posible duplicado",
-    "possibleDuplicateTitle": "Este dispositivo podría reemplazar a un registro anterior con el mismo nombre de host. Ábrelo para revisarlo."
+    "possibleDuplicateTitle": "Este dispositivo podría reemplazar a un registro anterior con el mismo nombre de host. Ábrelo para revisarlo.",
+    "manualOnlyBulkAction": "Selecciona un activo manual para usar esta acción.",
+    "manualAsset": "Activo manual",
+    "manual": "Manual",
+    "selectedCompositionManual": "{{agent}} agente, {{network}} red, {{manual}} manual",
+    "deleteManualSelected": "Eliminar activos manuales",
+    "editManualAsset": "Editar {{name}}",
+    "deleteManualAsset": "Eliminar {{name}}",
+    "edit": "Editar",
+    "delete": "Eliminar"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -1911,7 +1939,16 @@
       "wakeTimeout": "Tiempo de espera para despertar",
       "queuedOfflineTail": ", {{count}} en cola para dispositivos sin conexión",
       "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea — vence el {{date}}",
-      "runsWhenOnlineNoExpiry": "Se ejecutará cuando el dispositivo esté en línea"
+      "runsWhenOnlineNoExpiry": "Se ejecutará cuando el dispositivo esté en línea",
+      "deleteManualFailed": "No se pudo eliminar {{hostname}}.",
+      "mfaRequired": "Esta acción requiere autenticación multifactor. Vuelve a iniciar sesión.",
+      "manualDeleted": "{{hostname}} eliminado.",
+      "manualOnlyAction": "Selecciona un activo manual para usar esta acción.",
+      "manualSkipped": "{{count}} dispositivos no manuales omitidos — esta acción solo se aplica a activos manuales.",
+      "nonAgentSkipped": "{{count}} dispositivos sin agente omitidos — esta acción solo se aplica a dispositivos con agente.",
+      "bulkManualDeleted": "Se eliminaron {{count}} activos manuales.",
+      "bulkManualDeleteAllFailed": "No se pudieron eliminar los {{count}} activos manuales: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "Se eliminaron {{succeeded}}; {{failed}} fallaron: {{devices}}."
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
@@ -1922,7 +1959,16 @@
       "message": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{eligible}} dispositivo(s) restantes? Los que estén sin conexión lo ejecutarán en su próximo registro.",
       "title": "Algunos dispositivos seleccionados están quitados"
     },
-    "importFromRmm": "Importar desde otro RMM"
+    "importFromRmm": "Importar desde otro RMM",
+    "addAsset": "Agregar",
+    "installAgent": "Instalar agente…",
+    "addManualAssetAction": "Agregar activo manualmente…",
+    "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
+    "hiddenNonAgentClassLabel": {
+      "network": "dispositivos de red",
+      "manual": "activos manuales",
+      "mixed": "dispositivos"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Agregar filtro",
@@ -2671,5 +2717,53 @@
     "cancelFailed": "No se pudo cancelar la acción en cola",
     "loadFailed": "No se pudieron cargar las acciones en cola.",
     "empty": "No hay acciones en cola"
+  },
+  "manualAssetModal": {
+    "addTitle": "Agregar activo manual",
+    "editTitle": "Editar activo manual",
+    "cancel": "Cancelar",
+    "create": "Crear",
+    "save": "Guardar",
+    "unlink": "Desvincular",
+    "linkSectionTitle": "Vincular a un dispositivo o activo de red existente",
+    "linkDevicePlaceholder": "Selecciona un dispositivo…",
+    "linkAssetPlaceholder": "Selecciona un activo de red…",
+    "linkToDevice": "Vincular",
+    "linkToAsset": "Vincular",
+    "linkedTo": "Vinculado a {{name}}",
+    "linkedUnknown": "un dispositivo desconocido",
+    "errors": {
+      "mfaRequired": "Esta acción requiere autenticación multifactor. Vuelve a iniciar sesión.",
+      "createFailed": "No se pudo crear el activo manual.",
+      "updateFailed": "No se pudo actualizar el activo manual.",
+      "linkFailed": "No se pudo vincular el activo.",
+      "unlinkFailed": "No se pudo desvincular el activo."
+    },
+    "toasts": {
+      "created": "Activo manual creado.",
+      "updated": "Activo manual actualizado.",
+      "linked": "Activo vinculado.",
+      "unlinked": "Activo desvinculado."
+    },
+    "fields": {
+      "organization": "Organización",
+      "selectOrganization": "Selecciona una organización…",
+      "site": "Sitio",
+      "selectSite": "Selecciona un sitio…",
+      "name": "Nombre",
+      "namePlaceholder": "p. ej., laptop de repuesto, teléfono de recepción",
+      "assetType": "Tipo de activo",
+      "manufacturer": "Fabricante",
+      "model": "Modelo",
+      "serialNumber": "Número de serie",
+      "assetTag": "Etiqueta de activo",
+      "location": "Ubicación",
+      "locationPlaceholder": "p. ej., armario B, estante 2",
+      "assignedContact": "Asignado a",
+      "assignedContactPlaceholder": "Buscar contactos…",
+      "tags": "Etiquetas",
+      "tagsPlaceholder": "Separadas por comas",
+      "notes": "Notas"
+    }
   }
 }

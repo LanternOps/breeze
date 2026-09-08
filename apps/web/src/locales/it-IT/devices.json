@@ -206,6 +206,16 @@
         "title": "Installa Homebrew",
         "message": "Installa Homebrew con l'utente attualmente connesso, usando una copia fissata e verificata tramite checksum del programma di installazione ufficiale. Richiede una sessione console con privilegi di amministratore e una credenziale sudo attiva o senza password; in caso contrario l'installazione non riesce e l'errore viene segnalato.",
         "confirm": "Installa Homebrew"
+      },
+      "bulkDeleteManual": {
+        "title": "Eliminare {{count}} risorse manuali?",
+        "message": "Questa operazione elimina definitivamente le risorse manuali selezionate. Non può essere annullata.",
+        "confirm": "Elimina"
+      },
+      "deleteManual": {
+        "title": "Eliminare {{hostname}}?",
+        "message": "Questa operazione elimina definitivamente questa risorsa manuale. Non può essere annullata.",
+        "confirm": "Elimina"
       }
     },
     "removeDialog": {
@@ -396,7 +406,8 @@
     "segments": {
       "all": "Tutti",
       "agent": "Agente",
-      "network": "Rete"
+      "network": "Rete",
+      "manual": "Manuale"
     },
     "filterByDeviceClass": "Filtra per classe di dispositivo"
   },
@@ -488,7 +499,8 @@
       "decommissioned": "Rimosso",
       "quarantined": "In quarantena",
       "updating": "Aggiornamento in corso",
-      "pending": "In attesa"
+      "pending": "In attesa",
+      "unknown": "Sconosciuto"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1067,10 @@
       "status": "Stato",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Ultimo contatto"
+      "lastSeen": "Ultimo contatto",
+      "serial": "Seriale",
+      "assetTag": "Tag risorsa",
+      "location": "Posizione"
     },
     "sortBy": {
       "class": "Ordina per classe",
@@ -1068,7 +1083,10 @@
       "status": "Ordina per stato",
       "cpu": "Ordina per utilizzo CPU",
       "ram": "Ordina per utilizzo RAM",
-      "lastSeen": "Ordina per ultimo rilevamento"
+      "lastSeen": "Ordina per ultimo rilevamento",
+      "serial": "Ordina per numero di serie",
+      "assetTag": "Ordina per tag risorsa",
+      "location": "Ordina per posizione"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1105,8 @@
         "decommissioned": "Rimosso",
         "quarantined": "In quarantena",
         "updating": "Aggiornamento",
-        "pending": "In sospeso"
+        "pending": "In sospeso",
+        "unknown": "Sconosciuto"
       }
     },
     "roles": {
@@ -1187,7 +1206,16 @@
     "devicesPerPage": "Dispositivi per pagina",
     "page": "Pagina",
     "possibleDuplicate": "Possibile duplicato",
-    "possibleDuplicateTitle": "Questo dispositivo potrebbe sostituire una scheda precedente con lo stesso nome host. Aprila per controllare."
+    "possibleDuplicateTitle": "Questo dispositivo potrebbe sostituire una scheda precedente con lo stesso nome host. Aprila per controllare.",
+    "manualOnlyBulkAction": "Seleziona una risorsa manuale per usare questa azione.",
+    "manualAsset": "Risorsa manuale",
+    "manual": "Manuale",
+    "selectedCompositionManual": "{{agent}} agente, {{network}} rete, {{manual}} manuale",
+    "deleteManualSelected": "Elimina risorse manuali",
+    "editManualAsset": "Modifica {{name}}",
+    "deleteManualAsset": "Elimina {{name}}",
+    "edit": "Modifica",
+    "delete": "Elimina"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -1915,14 +1943,32 @@
       "wakeTimeout": "Timeout della riattivazione",
       "queuedOfflineTail": ", {{count}} in coda per dispositivi offline",
       "runsWhenOnline": "Viene eseguito quando il dispositivo è online — scade il {{date}}",
-      "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online"
+      "runsWhenOnlineNoExpiry": "Viene eseguito quando il dispositivo è online",
+      "deleteManualFailed": "Impossibile eliminare {{hostname}}.",
+      "mfaRequired": "Questa azione richiede l'autenticazione a più fattori. Accedi di nuovo.",
+      "manualDeleted": "{{hostname}} eliminato.",
+      "manualOnlyAction": "Seleziona una risorsa manuale per usare questa azione.",
+      "manualSkipped": "{{count}} dispositivi non manuali ignorati — questa azione si applica solo alle risorse manuali.",
+      "nonAgentSkipped": "{{count}} dispositivi senza agente ignorati — questa azione si applica solo ai dispositivi con agente.",
+      "bulkManualDeleted": "Eliminate {{count}} risorse manuali.",
+      "bulkManualDeleteAllFailed": "Impossibile eliminare tutte le {{count}} risorse manuali: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "Eliminate {{succeeded}}; {{failed}} non riuscite: {{devices}}."
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",
     "unknownOrg": "Organizzazione sconosciuta",
     "unknownSite": "Sito sconosciuto",
     "viewInstallationGuide": "Visualizza la guida di installazione",
-    "importFromRmm": "Importa da un altro RMM"
+    "importFromRmm": "Importa da un altro RMM",
+    "addAsset": "Aggiungi",
+    "installAgent": "Installa agente…",
+    "addManualAssetAction": "Aggiungi risorsa manualmente…",
+    "hiddenNonAgentNotice": "{{count}} {{class}} nascosti — {{fields}} si applica solo ai dispositivi con agente.",
+    "hiddenNonAgentClassLabel": {
+      "network": "dispositivi di rete",
+      "manual": "risorse manuali",
+      "mixed": "dispositivi"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Aggiungi filtro",
@@ -2671,5 +2717,53 @@
     "cancelFailed": "Impossibile annullare l'azione in coda",
     "loadFailed": "Impossibile caricare le azioni in coda.",
     "empty": "Nessuna azione in coda"
+  },
+  "manualAssetModal": {
+    "addTitle": "Aggiungi risorsa manuale",
+    "editTitle": "Modifica risorsa manuale",
+    "cancel": "Annulla",
+    "create": "Crea",
+    "save": "Salva",
+    "unlink": "Scollega",
+    "linkSectionTitle": "Collega a un dispositivo o una risorsa di rete esistente",
+    "linkDevicePlaceholder": "Seleziona un dispositivo…",
+    "linkAssetPlaceholder": "Seleziona una risorsa di rete…",
+    "linkToDevice": "Collega",
+    "linkToAsset": "Collega",
+    "linkedTo": "Collegato a {{name}}",
+    "linkedUnknown": "un dispositivo sconosciuto",
+    "errors": {
+      "mfaRequired": "Questa azione richiede l'autenticazione a più fattori. Accedi di nuovo.",
+      "createFailed": "Impossibile creare la risorsa manuale.",
+      "updateFailed": "Impossibile aggiornare la risorsa manuale.",
+      "linkFailed": "Impossibile collegare la risorsa.",
+      "unlinkFailed": "Impossibile scollegare la risorsa."
+    },
+    "toasts": {
+      "created": "Risorsa manuale creata.",
+      "updated": "Risorsa manuale aggiornata.",
+      "linked": "Risorsa collegata.",
+      "unlinked": "Risorsa scollegata."
+    },
+    "fields": {
+      "organization": "Organizzazione",
+      "selectOrganization": "Seleziona un'organizzazione…",
+      "site": "Sede",
+      "selectSite": "Seleziona una sede…",
+      "name": "Nome",
+      "namePlaceholder": "es. laptop di scorta, telefono reception",
+      "assetType": "Tipo di risorsa",
+      "manufacturer": "Produttore",
+      "model": "Modello",
+      "serialNumber": "Numero di serie",
+      "assetTag": "Tag risorsa",
+      "location": "Posizione",
+      "locationPlaceholder": "es. armadio B, scaffale 2",
+      "assignedContact": "Assegnato a",
+      "assignedContactPlaceholder": "Cerca contatti…",
+      "tags": "Tag",
+      "tagsPlaceholder": "Separati da virgole",
+      "notes": "Note"
+    }
   }
 }

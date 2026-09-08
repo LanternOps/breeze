@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { navigateTo } from '@/lib/navigation';
 
 // Feature flags are evaluated at module load, so expose a mutable holder we can
@@ -24,11 +24,16 @@ vi.mock('@/lib/featureFlags', () => flagState);
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn(),
 }));
 
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
   fetchAllNetworkDevices: vi.fn(),
+  // Manual arm (#4622 W04) — carries no feature flag, so it's fetched on
+  // every render; defaults to empty so existing agent/network assertions are
+  // unaffected.
+  fetchAllManualAssets: vi.fn(),
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
@@ -342,6 +347,8 @@ beforeEach(() => {
   // Network arm (#1322) defaults to empty so existing assertions over the
   // agent fleet are unaffected.
   vi.mocked(fetchAllNetworkDevices).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
+  // Manual arm (#4622 W04) defaults to empty for the same reason.
+  vi.mocked(fetchAllManualAssets).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
 
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/filters/preview')) {
