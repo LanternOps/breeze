@@ -89,7 +89,7 @@
       "reserved": "Reservada",
       "dispatched": "Enviada",
       "dispatchFailed": "Error al enviar",
-      "cancelled": "Cancelled",
+      "cancelled": "Cancelado",
       "abandoned": "Abandonada"
     },
     "resultState": {
