@@ -18,6 +18,7 @@ import {
   recordOperationResult,
   type OperationResultState,
 } from '../services/aiOperator/operationService';
+import { publishIntentTerminalOutbox } from '../services/aiOperator/taskOutbox';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { createNotification } from '../services/userNotifications';
@@ -340,7 +341,13 @@ export function isSessionRequiredForRelease(toolName: string): boolean {
  * Narrower than the full patch on purpose: `decided*` / `executionStartedAt`
  * belong to the decide and claim transitions, not to terminalization.
  */
-type TerminalPatch = Pick<ActionIntentTransitionPatch, 'executedAt' | 'errorCode' | 'result'>;
+// Exported (test-only consumer today) so aiOperatorTerminalWriters.integration.test.ts
+// (#5205 W05, #5210) can drive the CAS + evidence + terminal-outbox publish
+// path directly, without standing up the full `releaseApprovedIntent` tool
+// dispatch — the writer contract test's whole point is the outbox
+// publication, not re-proving release/dispatch, which dispatchClaim's own
+// integration suite already covers.
+export type TerminalPatch = Pick<ActionIntentTransitionPatch, 'executedAt' | 'errorCode' | 'result'>;
 
 /**
  * True iff this terminal write represents an ATTEMPTED operation — the one
@@ -626,7 +633,7 @@ async function watchReleasedIntent(
  * won, and receives whatever that insert resolved (the effective agent, the
  * triggering alert, the op key) so it needs no second read of its own.
  */
-async function terminalizeIntent(
+export async function terminalizeIntent(
   intent: ActionIntent,
   to: 'completed' | 'failed',
   patch: TerminalPatch,
@@ -640,6 +647,17 @@ async function terminalizeIntent(
   const won = await withSystemDbAccessContext(async () => {
     const casWon = await transitionIntent(intent.id, 'executing', to, patch);
     if (!casWon) return false;
+    // #5205 W05 (#5210), spec §6.3: the durable "this effect finished" wake —
+    // the ONLY writer that publishes nothing today. `transitionIntent` opens
+    // its own `withSystemDbAccessContext`, which JOINS this already-open one
+    // (db/index.ts's "refuses to nest"), so this insert commits atomically
+    // with the CAS above. `intent.taskId` is read from the pre-CAS row, which
+    // is safe because task linkage is immutable (action_intents_immutable_trg).
+    await publishIntentTerminalOutbox(
+      db,
+      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId },
+      to === 'completed' ? 'intent_completed' : 'intent_failed',
+    );
     let anchor: IntentEvidenceAnchor | null = null;
     if (isAttemptedTerminal(patch)) {
       anchor = await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');

@@ -38,17 +38,21 @@ describe('actionIntentSourceEnum', () => {
 });
 
 describe('intentOutboxEventEnum', () => {
-  it('has exactly the six outbox events', () => {
+  it('has exactly the eight outbox events', () => {
     // Widened in wave 2 (#3823): intent_rejected and intent_expired exist so a
     // requester can be told an outcome their chat turn did not wait for. A
     // denied intent previously wrote no outbox row at all. Widened again for
-    // #4798: intent_cancelled closes the same gap for cancellation.
+    // #4798: intent_cancelled closes the same gap for cancellation. Widened
+    // again for #5205 W05 (#5210): intent_completed/intent_failed — there was
+    // no way to say a task-linked intent's EXECUTION finished.
     expect(intentOutboxEventEnum).toEqual([
       'intent_created',
       'intent_approved',
       'intent_rejected',
       'intent_expired',
       'intent_cancelled',
+      'intent_completed',
+      'intent_failed',
       'pam.desired_state_changed',
     ]);
   });
@@ -62,12 +66,12 @@ describe('intentOutboxEventEnum', () => {
     // Points at whichever migration shipped the CONSTRAINT's most recent
     // DROP+re-ADD (a CHECK constraint has one name and is replaced wholesale,
     // not appended to — the SQL file is the widest set only if it's the LAST
-    // one to touch this constraint). #4798 moved that to
-    // 2026-10-08-100300-intent-cancelled-outbox-event.sql; update this path
-    // again the next time the constraint is widened, same as the approval-
-    // scope CHECK test below does for its own migration.
+    // one to touch this constraint). #5205 W05 (#5210) moved that to
+    // 2026-10-14-100300-ai-operator-intent-terminal-events.sql; update this
+    // path again the next time the constraint is widened, same as the
+    // approval-scope CHECK test below does for its own migration.
     const migration = readFileSync(
-      join(__dirname, '../../../migrations/2026-10-08-100300-intent-cancelled-outbox-event.sql'),
+      join(__dirname, '../../../migrations/2026-10-14-100300-ai-operator-intent-terminal-events.sql'),
       'utf8',
     );
     const check = migration.slice(migration.indexOf('intent_outbox_event_type_check'));

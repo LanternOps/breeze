@@ -88,13 +88,20 @@ export type ActionIntentOriginPrincipalKind =
 // told the outcome. Pinned by a CHECK in SQL — see
 // 2026-09-04-ai-agent-notifications.sql. Widened again for #4798: a
 // CANCELLED intent had the same gap — see
-// 2026-10-08-100300-intent-cancelled-outbox-event.sql.
+// 2026-10-08-100300-intent-cancelled-outbox-event.sql. Widened again for
+// #5205 W05 (#5210, baseline §3.3): there was no way to say a task-linked
+// intent COMPLETED or FAILED — the release worker's `terminalizeIntent` and
+// the stale-executing reaper both published nothing at all, which would
+// strand a task in `waiting` until its deadline. See
+// 2026-10-14-100300-ai-operator-intent-terminal-events.sql.
 export const intentOutboxEventEnum = [
   'intent_created',
   'intent_approved',
   'intent_rejected',
   'intent_expired',
   'intent_cancelled',
+  'intent_completed',
+  'intent_failed',
   'pam.desired_state_changed',
 ] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
