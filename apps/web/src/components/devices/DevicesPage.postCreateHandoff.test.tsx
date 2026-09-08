@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 
 // #5265 — regression for "post-create HTTP-check hand-off panel never
 // renders". Root cause: AddNetworkAssetModal.onCreated triggers
@@ -36,6 +36,7 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
   fetchAllNetworkDevices: vi.fn(),
+  fetchAllManualAssets: vi.fn(),
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
@@ -104,6 +105,7 @@ vi.mock('./filterUrl', () => ({
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
+vi.mock('./ManualAssetModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
@@ -169,6 +171,8 @@ beforeEach(() => {
   window.location.hash = '';
 
   vi.mocked(fetchAllNetworkDevices).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
+  // W04 (#4622) added the manual arm; without this the page's Promise.all rejects into the error branch.
+  vi.mocked(fetchAllManualAssets).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
   vi.mocked(fetchWithAuth).mockImplementation(async () => jsonResponse({ data: [] }));
 });
 
