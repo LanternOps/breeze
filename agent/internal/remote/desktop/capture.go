@@ -153,3 +153,44 @@ var ErrDisplayNotFound = fmt.Errorf("display not found")
 // ErrNoActiveSession is returned when CaptureScreenshot is called but no
 // WebRTC desktop session is currently active.
 var ErrNoActiveSession = fmt.Errorf("no active desktop session")
+
+// lastCaptureErrorReporter is implemented by capturers that deliberately report
+// a failed frame as (nil, nil) — "no frame yet" — instead of as an error, so a
+// transient outage does not tear down a live session. The Windows GDI fallback
+// does this for secure-desktop transitions (capture_windows_nocgo.go).
+//
+// Swallowing the error costs nothing while frames eventually arrive. It costs a
+// great deal when they never do: the startup probe gives up, and the only text
+// left is probeCapture's generic "produced no frame after N attempts", which
+// says a desktop could not be captured but not why. That is exactly how #5284
+// presented — a Winlogon console failing every single frame inside GetDIBits
+// reached the technician as "This remote session has ended", with the Win32
+// failure visible only in the endpoint's own helper log.
+type lastCaptureErrorReporter interface {
+	// LastCaptureError returns the most recent error the capturer reported as a
+	// nil frame, or nil if it has not swallowed one.
+	LastCaptureError() error
+}
+
+// describeCaptureFailure augments a probe failure with the last error the
+// capturer swallowed, when it kept one.
+//
+// The text this produces is not just for the log. The agent returns it over IPC
+// as the desktop-start failure, the API stores it in remote_sessions.errorMessage,
+// and the viewer renders it to the technician verbatim — so it is written to be
+// short and to name the failing Win32 call and its error code, and to carry no
+// handle values, which would mean nothing to the reader.
+func describeCaptureFailure(capturer ScreenCapturer, probeErr error) error {
+	if probeErr == nil {
+		return nil
+	}
+	reporter, ok := capturer.(lastCaptureErrorReporter)
+	if !ok {
+		return probeErr
+	}
+	last := reporter.LastCaptureError()
+	if last == nil {
+		return probeErr
+	}
+	return fmt.Errorf("%w (last capture error: %w)", probeErr, last)
+}

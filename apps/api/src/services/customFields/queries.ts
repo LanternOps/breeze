@@ -43,16 +43,29 @@ export async function loadDeviceForWriteBack(deviceId: string): Promise<WriteBac
 }
 
 /**
- * SYSTEM context, deliberately.
+ * SYSTEM context, deliberately — and, since #4944, REDUNDANT rather than
+ * load-bearing. Left in place on purpose; removing it is a separate follow-up.
  *
  * `custom_field_definitions` is dual-axis (org OR partner). Every caller of
  * this function — the script write-back path's `runWithAgentOrgDbAccess`
  * context, and the two device-PATCH write paths' ordinary org-scoped request
- * context — sets accessiblePartnerIds: [] and currentPartnerId: null, so
- * `breeze_has_partner_access(partner_id)` is false and every partner-wide
- * definition (org_id IS NULL) is INVISIBLE from there. A partner that defines
- * one field for all its orgs would silently have no fields visible from any
- * of these paths. See CLAUDE.md, Partner-Wide First §3.
+ * context — sets accessiblePartnerIds: [], so
+ * `breeze_has_partner_access(partner_id)` is false. Until
+ * `2026-10-13-110000-custom-field-definitions-partner-wide-select.sql` that
+ * made every partner-wide definition (org_id IS NULL) INVISIBLE from these
+ * paths, and a partner that defined one field for all its orgs would silently
+ * have no fields visible from any of them (CLAUDE.md, Partner-Wide First §3).
+ *
+ * That branch — `org_id IS NULL AND partner_id =
+ * public.breeze_current_partner_id()`, SELECT only — now covers exactly these
+ * callers: `buildDbAccessContext` populates `currentPartnerId` for org scope,
+ * and `middleware/agentAuth.ts` sets it to `device.partnerId` for the agent
+ * path (#4673 W02). The escalation below therefore buys nothing an ordinary
+ * request-context read would not already return, and it costs a SECOND pooled
+ * connection held under the request's own transaction (#1105). It is kept only
+ * so that removing it is a deliberate, separately-verified change rather than a
+ * side effect of the migration; do not treat this comment as a claim that RLS
+ * still hides these rows.
  *
  * `runOutsideDbContext(() => withSystemDbAccessContext(...))` is the only form
  * that genuinely opens a second context — a bare nested

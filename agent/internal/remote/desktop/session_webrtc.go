@@ -276,9 +276,20 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if probeErr != nil {
 		// The display is inaccessible (disconnected Windows session, no input
 		// desktop, GDI handle churn). Abort instead of returning a WebRTC
-		// answer that will stream zero frames. The defer at line 80 calls
-		// StopSession which closes the capturer.
-		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w", probeErr)
+		// answer that will stream zero frames. StartSession's own deferred
+		// cleanup calls StopSession, which closes the capturer.
+		//
+		// describeCaptureFailure appends the last error the capturer swallowed
+		// as a nil frame, which is the only place a GDI-fallback failure is
+		// recorded. Without it the technician sees probeCapture's generic "no
+		// frame after N attempts" and nothing else: #5284 spent an entire
+		// investigation on a Winlogon console whose actual failure — a Win32
+		// error inside GetDIBits, every single frame — reached the dashboard as
+		// "This remote session has ended" and was legible only in the endpoint's
+		// own helper log. This error string is what the API stores in
+		// remote_sessions.errorMessage and the viewer shows verbatim.
+		return "", fmt.Errorf("screen capture failed (display may be unavailable): %w",
+			describeCaptureFailure(capturer, probeErr))
 	}
 	pw, ph := probeImg.Rect.Dx(), probeImg.Rect.Dy()
 	if pw != w || ph != h {

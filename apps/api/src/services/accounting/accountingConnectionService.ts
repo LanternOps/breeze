@@ -343,9 +343,14 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
       if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
         skipped++;
         captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-          module: 'accountingConnectionService',
-          op: 'backfillRealmFingerprints',
-          connectionId: row.id,
+          // #5193: `module` and `op` have no allowlisted equivalent (no
+          // existing tag distinguishes a backfill step within a service), so
+          // dropped rather than inventing new allowlist entries — `service`
+          // already identifies the file, and `accounting_connection_id`
+          // (this backfill's own connection id) is what actually triages a
+          // fingerprint collision.
+          service: 'accountingConnectionService',
+          accounting_connection_id: row.id,
         });
         continue;
       }

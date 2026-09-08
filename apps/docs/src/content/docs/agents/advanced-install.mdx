@@ -213,7 +213,11 @@ The agent refuses to enroll with an empty hostname — if your provisioning pipe
 | `--no-watchdog` | all | Skip auto-fetching and registering the watchdog. Use for air-gapped hosts where the agent cannot reach GitHub releases. |
 | `--with-user-helper` | Linux, macOS | Also install the per-user desktop helper unit (systemd user unit / LaunchAgent). Not needed on Windows — the helper is spawned per-session by the service. |
 
-`service install` is safe to re-run — it overwrites the binary at the install path, restarts the agent service, and registers any missing watchdog. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
+`service install` is safe to re-run — it overwrites the binary at the install path, records whether the agent service was running beforehand, and rewrites and re-enables the unit. It starts the service again if it was running before the install or the host is already enrolled; a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions rather than exiting successfully. It also registers any missing watchdog, which is always restarted so a newly staged binary takes over. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
+
+<Aside type="note">
+On agent v0.110.0 and earlier, `service install` stopped the service and did not start it again. On those versions, follow it with `sudo systemctl restart breeze-agent breeze-watchdog` (Linux), or prefer the in-band auto-update instead.
+</Aside>
 
 `service uninstall` stops and removes both the agent and the watchdog services, but does **not** remove `agent.yaml` or `secrets.yaml` — wipe `/etc/breeze`, `/Library/Application Support/Breeze`, or `C:\ProgramData\Breeze` manually if you want a clean uninstall.
 

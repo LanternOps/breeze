@@ -57,15 +57,44 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 	if c.gdiNoFrameCount >= 15 && now.Sub(c.lastGDIRepair) >= 500*time.Millisecond {
 		c.lastGDIRepair = now
 		_ = c.switchToInputDesktop()
+		// Carry the swallowed capture error onto the replacement. Recreating the
+		// fallback otherwise resets it to nil, and LastCaptureError is the only
+		// channel by which a GDI failure reaches the technician (#5284) — a
+		// repair that discards the diagnosis hands StartSession an error-less
+		// capturer and puts the generic "no frame after N attempts" message
+		// back. Today the startup probe gives up long before this threshold, so
+		// this is guarding the invariant rather than a live bug; keeping it here
+		// means the two thresholds can be tuned independently without silently
+		// re-breaking the diagnostic.
+		var carried error
 		if c.gdiFallback != nil {
+			carried = c.gdiFallback.LastCaptureError()
 			_ = c.gdiFallback.Close()
 		}
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.gdiFallback = &gdiCapturer{config: c.config, lastCaptureErr: carried}
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
 	}
 
 	return nil, nil
+}
+
+// LastCaptureError implements lastCaptureErrorReporter by delegating to the
+// GDI fallback, which is the only capturer here that reports a failed frame as
+// (nil, nil). DXGI itself returns real errors, so there is nothing to recover
+// on that path.
+//
+// This is what carries a secure-desktop capture failure out to the technician:
+// StartSession calls describeCaptureFailure with session.capturer, which is
+// this object, not the fallback (#5284).
+func (c *dxgiCapturer) LastCaptureError() error {
+	c.mu.Lock()
+	fallback := c.gdiFallback
+	c.mu.Unlock()
+	if fallback == nil {
+		return nil
+	}
+	return fallback.LastCaptureError()
 }
 
 // Capture acquires the next desktop frame via DXGI.
@@ -574,3 +603,5 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 	defer c.mu.Unlock()
 	return c.context
 }
+
+var _ lastCaptureErrorReporter = (*dxgiCapturer)(nil)

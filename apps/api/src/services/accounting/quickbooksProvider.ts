@@ -1026,11 +1026,18 @@ export class QuickbooksProvider implements AccountingProvider {
       );
       captureException(
         new Error(
-          `QuickBooks CDC cursor predates the 30-day lookback floor by ~${skippedDays} day(s); `
+          `QuickBooks CDC cursor predates the 30-day lookback floor by ~${skippedDays} day(s) — `
           + 'changes in that range cannot be reconciled',
         ),
         undefined,
-        { service: 'quickbooksProvider', op: 'reconcileChanges', connectionId: conn.id, skippedDays: String(skippedDays) },
+        {
+          // #5193: `op` and `skippedDays` have no allowlisted equivalent, so
+          // dropped rather than inventing new allowlist entries —
+          // `accounting_connection_id` is what actually finds this
+          // connection for triage.
+          service: 'quickbooksProvider',
+          accounting_connection_id: conn.id,
+        },
       );
     }
 
@@ -1155,8 +1162,12 @@ export class QuickbooksProvider implements AccountingProvider {
           `entity=${entity}`,
           err instanceof Error ? err.message : err,
         );
+        // #5193: `op` and `entity` have no allowlisted equivalent (the CDC
+        // entity kind isn't one of the existing closed-set tags), so dropped
+        // rather than inventing new allowlist entries — `service` alone still
+        // identifies the failing backfill path.
         captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-          service: 'quickbooksProvider', op: 'backfillOverflowedEntity', entity,
+          service: 'quickbooksProvider',
         });
         return null;
       }
@@ -1173,7 +1184,12 @@ export class QuickbooksProvider implements AccountingProvider {
     captureException(
       new Error(`QuickBooks ${entity} change backfill exceeded ${QBO_CDC_QUERY_MAX_PAGES} pages`),
       undefined,
-      { service: 'quickbooksProvider', op: 'backfillOverflowedEntity', entity },
+      {
+        // #5193: `op` and `entity` have no allowlisted equivalent — dropped
+        // rather than inventing new allowlist entries; `service` alone
+        // still identifies the failing backfill path.
+        service: 'quickbooksProvider',
+      },
     );
     return null;
   }

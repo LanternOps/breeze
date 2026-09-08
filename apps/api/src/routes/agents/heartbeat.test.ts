@@ -4445,6 +4445,196 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
   });
 });
 
+// ---------------------------------------------------------------------
+// #5250 — desktopAccess change publishes device.updated so pages holding the
+// event stream open (Remote Tools' Connect Desktop button) can refresh
+// without a remount. Was previously written to devices + audited (finding
+// #10 above) but never pushed as a live event, unlike agentVersion.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — desktopAccess change publishes device.updated (#5250)', () => {
+  const baselineDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'macos',
+    osVersion: '14.5',
+    osBuild: null,
+    architecture: 'arm64',
+    agentVersion: '0.65.10',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    status: 'online',
+    desktopAccess: { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, checkedAt: '2026-09-01T00:00:00.000Z' },
+    mainAgentSilentSince: null,
+  };
+
+  function arrange(deviceOverrides: Record<string, unknown> = {}) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...baselineDevice, ...deviceOverrides }]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('desktopAccess recovering from unavailable → available publishes device.updated with fields:[desktopAccess]', async () => {
+    arrange(); // baseline: mode 'unavailable'
+    const recovered = {
+      mode: 'user_session',
+      loginUiReachable: true,
+      virtualDisplayReady: true,
+      checkedAt: '2026-09-08T12:00:00.000Z',
+    };
+
+    const resp = await beat({ ...minimalHeartbeatBody, desktopAccess: recovered });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-1',
+      expect.objectContaining({
+        deviceId: 'device-1',
+        fields: ['desktopAccess'],
+        desktopAccess: recovered,
+      }),
+      'heartbeat',
+      expect.objectContaining({ siteId: 'site-1' }),
+    );
+  });
+
+  it('desktopAccess dropping from user_session → unavailable publishes device.updated (degrading transition)', async () => {
+    arrange({
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+    const dropped = {
+      mode: 'unavailable',
+      loginUiReachable: false,
+      virtualDisplayReady: false,
+      reason: 'helper_not_connected',
+      checkedAt: '2026-09-08T12:00:00.000Z',
+    };
+
+    const resp = await beat({ ...minimalHeartbeatBody, desktopAccess: dropped });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-1',
+      expect.objectContaining({ deviceId: 'device-1', fields: ['desktopAccess'], desktopAccess: dropped }),
+      'heartbeat',
+      expect.objectContaining({ siteId: 'site-1' }),
+    );
+  });
+
+  // #5250 review — the agent recomputes `checkedAt` fresh on EVERY heartbeat
+  // regardless of whether access actually changed (it calls time.Now().UTC()
+  // unconditionally on mac/Linux). A test that reuses an IDENTICAL
+  // checkedAt for baseline and report (as a naive re-report test would) can
+  // never catch a raw JSON.stringify diff spamming device.updated on every
+  // heartbeat — production heartbeats never repeat a timestamp. This is the
+  // realistic steady-state case: same mode/reachability, DIFFERENT
+  // checkedAt, must still NOT publish.
+  it('steady-state desktopAccess re-report with only checkedAt differing does NOT publish device.updated', async () => {
+    arrange({
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+
+    const resp = await beat({
+      ...minimalHeartbeatBody,
+      // Same mode/reachability as baseline; only the timestamp moved, as a
+      // real re-report from the agent always does.
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T12:00:00.000Z' },
+    });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('heartbeat with no desktopAccess reported does NOT publish device.updated for desktopAccess', async () => {
+    arrange(); // baseline desktopAccess 'unavailable'
+
+    const resp = await beat({ ...minimalHeartbeatBody }); // no desktopAccess field at all
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
+describe('desktopAccessMeaningfullyChanged (#5250)', () => {
+  it('is false when both are null/undefined', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(desktopAccessMeaningfullyChanged(null, undefined)).toBe(false);
+  });
+
+  it('is false when only checkedAt differs', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(false);
+  });
+
+  it('is true when mode differs', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is true when reason differs (mode unchanged)', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    expect(
+      desktopAccessMeaningfullyChanged(
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, reason: 'helper_not_connected', checkedAt: '2026-09-01T00:00:00.000Z' },
+        { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, reason: 'missing_permission', checkedAt: '2026-09-08T00:00:00.000Z' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is true when transitioning from null to a value and vice versa', async () => {
+    const { desktopAccessMeaningfullyChanged } = await import('./heartbeat');
+    const state = { mode: 'user_session' as const, loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' };
+    expect(desktopAccessMeaningfullyChanged(null, state)).toBe(true);
+    expect(desktopAccessMeaningfullyChanged(state, null)).toBe(true);
+  });
+});
+
 describe('POST /agents/:id/heartbeat — agentRuntime gauges (#2389)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

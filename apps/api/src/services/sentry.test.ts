@@ -788,6 +788,13 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     // (action, resourceId, remotePaymentId, invoiceId) with no allowlisted
     // equivalent, silently dropped by buildSafeTags/pickAllowedTags.
     ['accounting/accountingPaymentPull.ts', 3],
+    // #5193: the same #4828/Phase D2 defect in two more accounting files
+    // found during #5192's review — every captureException in
+    // accountingConnectionService.ts and quickbooksProvider.ts tagged
+    // camelCase keys (module, op, connectionId, entity, skippedDays) with no
+    // allowlisted equivalent, silently dropped by buildSafeTags/pickAllowedTags.
+    ['accounting/accountingConnectionService.ts', 2],
+    ['accounting/quickbooksProvider.ts', 3],
   ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
     const source = readFileSync(
       fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),

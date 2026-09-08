@@ -3,6 +3,7 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiConfirmPhone,
   apiEnableSmsMfa,
   apiEnableTotpMfa,
   apiEnrollPasskey,
@@ -2441,6 +2442,52 @@ describe('MFA enrollment session adoption', () => {
     })).toBe(false);
     expect(useAuthStore.getState().tokens).toEqual(newerTokens);
     expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
+  });
+});
+
+// #5198: confirming a number that REPLACES the one behind a live SMS factor
+// revokes every refresh family. The caller used to be revoked along with them
+// and got no replacement back, so changing your own phone number bounced you to
+// /login?reason=session-expired. The store must now adopt the replacement the
+// response carries — and say so honestly when there is none to adopt.
+describe('apiConfirmPhone — SMS-factor replacement keeps the caller signed in (#5198)', () => {
+  it('adopts the replacement session on a factor replacement', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement-phone', expiresInSeconds: 900 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true, tokens,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: false });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+    // Adopting a replacement is not a new session.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('reports reauthRequired when the server revoked everything but withheld the tokens', async () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified', sessionReplaced: true,
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true, reauthRequired: true });
+    // The stale token is left in place rather than silently swapped for nothing;
+    // the caller is told to re-authenticate instead.
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('leaves the session alone on an initial verification, which replaces nothing', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true, message: 'Phone number verified',
+    })));
+
+    await expect(apiConfirmPhone('+15555550100', '123456', 'password'))
+      .resolves.toEqual({ success: true });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
   });
 });
 

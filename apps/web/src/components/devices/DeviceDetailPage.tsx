@@ -231,6 +231,21 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
               : prev,
           );
         }
+        // #5250 — the heartbeat now also publishes this event when
+        // desktopAccess changes (was previously only agentVersion), so
+        // Overview picks up a helper recovering/dropping live instead of
+        // only on the next full remount/refetch.
+        if (fields?.includes("desktopAccess")) {
+          setDevice((prev) => {
+            if (!prev) return prev;
+            // `?? prev.desktopAccess` would treat an explicit `null` the
+            // same as "not present", silently discarding a legitimate
+            // cleared state — mirror RemoteToolsPage's `!== undefined`
+            // check instead so only a genuinely missing field falls back.
+            const next = payload.desktopAccess as Device["desktopAccess"] | undefined;
+            return next !== undefined ? { ...prev, desktopAccess: next } : prev;
+          });
+        }
       } else if (type === "device.decommissioned") {
         fetchDevice();
       }

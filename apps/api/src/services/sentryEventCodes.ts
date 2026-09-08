@@ -35,6 +35,16 @@ export const SENTRY_EVENT_CODES = [
   /** A mobile caller's device id resolved to no `mobile_devices` row. */
   'mobile_device_unresolved',
 
+  // --- background workers -----------------------------------------------
+  /**
+   * A metric-anomaly detection stage has been skipped (advisory-lock contention
+   * or a `lock_timeout`/`statement_timeout` trip) on N consecutive ticks for the
+   * same org. One skip is expected and self-healing; a run of them is a silent,
+   * indefinite detection outage for that org, which is exactly the shape of the
+   * incident #5283 fixed — invisible until Postgres was inspected by hand.
+   */
+  'metric_anomaly_stage_stalled',
+
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */
   'db_pool_health_degraded',

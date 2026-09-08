@@ -1,0 +1,90 @@
+-- Partner-wide READ branch on custom_field_definitions (#4944).
+--
+-- Follow-up of epic #4673. Design, rationale and scope behaviour are inherited
+-- from the template this file copies:
+-- 2026-10-05-110000-config-policy-partner-wide-select.sql — read its header
+-- before changing anything here. The AI-table sibling that shipped the same
+-- shape is 2026-10-11-150000-ai-partner-wide-select.sql (#4942/#4943/#4945).
+--
+-- SHORT VERSION
+-- A partner-wide custom field is `org_id NULL, partner_id = P` (the shape
+-- routes/customFields.ts writes whenever a partner-scoped user supplies no
+-- orgId; see 2026-06-11-i-custom-fields-dual-axis-rls.sql). An ORG-scoped
+-- session could not see it: `breeze_has_org_access(NULL)` is false, and
+-- `breeze_has_partner_access(P)` is false because org scope carries an empty
+-- `accessible_partner_ids` (that GUC governs partner-axis WRITES; an org token
+-- never holds it). Readers therefore had to escalate through the #1105 pattern,
+-- `runOutsideDbContext(() => withSystemDbAccessContext(...))`, which acquires a
+-- SECOND pooled connection while the request's own transaction still holds the
+-- first (a hang at concurrency >= pool size, not just contention) and bypasses
+-- RLS entirely, so every escalated query has to self-tenant or it becomes a
+-- cross-tenant hole (#2417 shipped exactly that class in an adjacent path).
+--
+-- The fix is a SELECT-only own-partner branch keyed on
+-- `public.breeze_current_partner_id()` — the caller's OWN partner, read from the
+-- `breeze.current_partner_id` GUC that `buildDbAccessContext` populates for
+-- EVERY scope including org tokens. No extra connection, no RLS bypass, and
+-- writes are untouched.
+--
+-- WHY A SEPARATE POLICY, NEVER AN EDIT TO THE EXISTING ONES
+-- The table carries a per-command split (`breeze_dual_axis_select` /
+-- `_insert` / `_update` / `_delete`, all
+-- `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)`).
+-- Even with a per-command split, appending the branch to the existing SELECT
+-- policy would edit a shipped predicate for no gain; and on the FOR ALL tables
+-- this template also covers, appending would ALSO widen UPDATE/DELETE row
+-- targeting. Postgres never consults FOR SELECT policies when computing
+-- UPDATE/DELETE target rows, so a separate permissive FOR SELECT policy ORs
+-- into reads and nothing else. The four existing policies are left
+-- byte-identical; this file only CREATEs a new name.
+--
+-- custom_field_definitions carries `org_id` and `partner_id` directly on the row
+-- with an XOR CHECK (`custom_field_definitions_one_owner_chk`,
+-- 2026-10-10-100300-custom-field-definition-integrity.sql), so it takes the
+-- direct-column form — no EXISTS-join to a parent is needed.
+--
+-- SCOPE BEHAVIOUR
+--   org scope     — GUC set to the token's own partner: branch fires for that
+--                   partner's partner-wide rows only.
+--   partner scope — already covered by `breeze_has_partner_access`; the branch
+--                   is redundant but harmless (permissive policies OR).
+--   system scope  — already short-circuited by the existing policies.
+--   agent scope   — WIDENED, deliberately. `middleware/agentAuth.ts` sets
+--                   `currentPartnerId: device.partnerId` (#4673 W02,
+--                   agentAuth.ts:959), so a device token's
+--                   `breeze_current_partner_id()` is its org's owning MSP and
+--                   this branch DOES fire for it. A device can therefore now
+--                   SELECT its own partner's partner-wide
+--                   `custom_field_definitions` rows (key, name, type, options).
+--                   This is the same widening every other Wave-1 branch already
+--                   took (config-policy chain, catalog, cis_baselines,
+--                   tenant_variables) and the same one the AI sibling
+--                   (#4942/#4943/#4945) accepted. It is SELECT only:
+--                   `accessiblePartnerIds` stays `[]` on the agent path, so
+--                   `breeze_has_partner_access` is still false and no agent
+--                   INSERT/UPDATE/DELETE can touch a partner-wide row.
+--                   Definition metadata is not secret — it is the schema a
+--                   device already writes values against via the script
+--                   custom-field write-back path
+--                   (2026-10-06-100000-script-custom-field-writeback.sql), which
+--                   resolves partner-wide definitions on the device's behalf
+--                   today. The widening is latent read reach; no route ships new
+--                   columns to a device as a result of this migration.
+--                   A FOREIGN partner's rows stay invisible: the predicate uses
+--                   `=`, not `IS NOT DISTINCT FROM`, so a NULL GUC (any caller
+--                   that sets none) never matches partner-wide rows either.
+--
+-- Idempotent: DROP POLICY IF EXISTS then CREATE, so re-applying is a no-op.
+-- No inner BEGIN/COMMIT — autoMigrate wraps each file in a transaction.
+-- Writes no rows, so it needs no `breeze.scope` elevation (#4518).
+--
+-- Rollback: a new migration issuing the matching
+-- `DROP POLICY IF EXISTS custom_field_definitions_partner_wide_select`. The
+-- policy is purely additive, so dropping it restores exact pre-migration
+-- behaviour.
+
+DROP POLICY IF EXISTS custom_field_definitions_partner_wide_select ON public.custom_field_definitions;
+CREATE POLICY custom_field_definitions_partner_wide_select
+  ON public.custom_field_definitions
+  FOR SELECT
+  USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id());

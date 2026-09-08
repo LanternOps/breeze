@@ -42,13 +42,15 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
    * `recoveryCodeHashes` (which is what actually lands in the row). REQUIRED
    * and non-empty on this shape: a supplied set is the account's only valid
    * one from this commit on, so an empty or missing pair would be a silent
-   * lockout. The two writes that install NO codes — a factor REMOVAL (#4934
-   * `/mfa/disable`, #5038 passkey delete) and a SECONDARY factor ADDITION on an
-   * account that already holds a code set (#5038 passkey register) — go through
-   * `completeMfaFactorRemoval` / `completeAdditionalMfaFactorEnrollment`, which
-   * omit these fields by TYPE rather than by convention — the #5008 review
-   * found that an optional pair here let a rotation caller forget it and
-   * persist `[]` unnoticed.
+   * lockout. The writes that install NO codes — a factor REMOVAL (#4934
+   * `/mfa/disable`, #5038 passkey delete), a SECONDARY factor ADDITION on an
+   * account that already holds a code set (#5038 passkey register), and a
+   * factor REPLACEMENT on an account that already holds a code set (#5198
+   * phone swap) — must go through `completeMfaFactorRemoval` /
+   * `completeAdditionalMfaFactorEnrollment` / `completeMfaFactorReplacement`,
+   * which omit these fields by TYPE rather than by convention — the #5008
+   * review found that an optional pair here let a rotation caller forget it
+   * and persist `[]` unnoticed.
    */
   recoveryCodes: readonly string[];
   recoveryCodeHashes: readonly string[];
@@ -78,10 +80,20 @@ export type CompleteMfaFactorRemovalInput<T> = Omit<
  */
 export type CompleteAdditionalMfaFactorEnrollmentInput<T> = CompleteMfaFactorRemovalInput<T>;
 
+/**
+ * FACTOR-REPLACEMENT shape (#5198 `/auth/phone/confirm` swapping the number
+ * behind an already-active SMS factor): the account stays protected across the
+ * write and the recovery-code set it already holds stays valid, so — exactly as
+ * for a removal — no code pair accompanies the write and none is revealed.
+ * Structurally identical to `CompleteMfaFactorRemovalInput`; aliased rather
+ * than re-declared so the two cannot drift apart.
+ */
+export type CompleteMfaFactorReplacementInput<T> = CompleteMfaFactorRemovalInput<T>;
+
 /** Internal: the union every public entry point funnels into. */
 type MfaFactorWriteCoreInput<T> =
   | (ReplaceSessionOnMfaFactorWriteInput<T> & { factorWrite: 'install' | 'rotate' })
-  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' | 'add' });
+  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' | 'replace' | 'add' });
 
 export interface MfaFactorSessionReplacement<T> {
   value: T;
@@ -102,16 +114,18 @@ export interface MfaFactorSessionReplacement<T> {
  * when the response body carries a one-time secret the user has to read
  * (recovery codes, #4480): a caller signed out by its own request never sees it.
  *
- * Four shapes exist, differing only in `expectedMfaEnabled` and whether a code
+ * Five shapes exist, differing only in `expectedMfaEnabled` and whether a code
  * set accompanies the write, and each has its own entry point: this function
  * is ROTATION on a protected account (factor must still exist, codes required);
  * `completeInitialMfaEnrollment` is INSTALL (factor must not exist yet, codes
  * required); `completeMfaFactorRemoval` is REMOVAL (factor must still exist, no
  * codes — a self-disable that evicted its own caller bounced the user to
- * /login?reason=session-expired the moment they turned MFA off, #4934); and
+ * /login?reason=session-expired the moment they turned MFA off, #4934);
  * `completeAdditionalMfaFactorEnrollment` is a SECONDARY ADDITION (factor must
- * still exist, no codes — the account's existing set stays valid, #5038). All
- * four funnel into the same private core.
+ * still exist, no codes — the account's existing set stays valid, #5038); and
+ * `completeMfaFactorReplacement` is a REPLACEMENT of the material behind a live
+ * factor (factor must still exist, no codes — the account's existing set stays
+ * valid, #5198). All five funnel into the same private core.
  *
  * Expensive recovery-code generation and hashing belong before this call; every
  * authority-bearing write happens inside finishAuthIssuance's supplied
@@ -171,26 +185,54 @@ export async function completeMfaFactorRemoval<T>(
   return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: true, factorWrite: 'remove' });
 }
 
+/**
+ * Factor-REPLACEMENT specialization (#5198 `/auth/phone/confirm` on an account
+ * whose ACTIVE factor is SMS): swapping the number behind a live factor is a
+ * security-relevant factor change — the old number must stop receiving codes
+ * for sessions that predate the swap — so the epoch bump and the refresh-family
+ * revocation still evict every OTHER live session (SR2-07). What it must not do
+ * is evict the ACTOR: the old path advanced `mfa_epoch` without re-issuing, so
+ * the caller's next request 401'd on a stale `mep` and the web client
+ * hard-redirected to /login?reason=session-expired by the very action the user
+ * had just authenticated for. Same road /mfa/disable took in #4934/#5008.
+ *
+ * The account keeps the recovery-code set it already holds — a phone swap
+ * reveals no new one-time secret — so, as for a removal, the pair is absent
+ * from the type entirely, and `expectedMfaEnabled` is fixed at `true`: a
+ * replacement predicated on a factor that is no longer there is a precondition
+ * failure, not a no-op.
+ */
+export async function completeMfaFactorReplacement<T>(
+  input: CompleteMfaFactorReplacementInput<T>,
+): Promise<MfaFactorSessionReplacement<T>> {
+  if ('recoveryCodes' in input || 'recoveryCodeHashes' in input) {
+    throw new Error(
+      'A factor replacement installs no recovery codes; use replaceSessionOnMfaFactorWrite to rotate them',
+    );
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: true, factorWrite: 'replace' });
+}
+
 async function replaceSessionOnMfaFactorWriteCore<T>(
   input: MfaFactorWriteCoreInput<T>,
 ): Promise<MfaFactorSessionReplacement<T>> {
   if (input.identity.userId !== input.userId) {
     throw new Error('Factor-write identity does not match the target user');
   }
-  // Only INSTALL and ROTATE carry a code pair; REMOVE and ADD leave the
-  // account's own set (empty or existing) exactly as it was.
-  const codePair = input.factorWrite === 'install' || input.factorWrite === 'rotate'
-    ? { codes: input.recoveryCodes, hashes: input.recoveryCodeHashes }
-    : null;
-  const recoveryCodes = codePair?.codes ?? [];
-  const recoveryCodeHashes = codePair?.hashes ?? [];
+  // The factor writes that carry a recovery-code pair. INSTALL mints the
+  // account's first set and ROTATE replaces it; REMOVE, REPLACE, and ADD leave
+  // whatever set the account already holds (empty or not) exactly as it was.
+  // Kept inline rather than behind a helper so it still narrows the union.
+  const carriesCodes = input.factorWrite === 'install' || input.factorWrite === 'rotate';
+  const recoveryCodes = carriesCodes ? input.recoveryCodes : [];
+  const recoveryCodeHashes = carriesCodes ? input.recoveryCodeHashes : [];
   if (
     !Number.isInteger(input.expectedAuthEpoch)
     || input.expectedAuthEpoch < 0
     || !Number.isInteger(input.expectedMfaEpoch)
     || input.expectedMfaEpoch < 0
     || recoveryCodes.length !== recoveryCodeHashes.length
-    || (codePair !== null && recoveryCodes.length === 0)
+    || (carriesCodes && recoveryCodes.length === 0)
   ) {
     throw new Error('Expected auth/MFA epochs and recovery-code counts must be valid');
   }
