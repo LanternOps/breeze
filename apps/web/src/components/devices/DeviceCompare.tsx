@@ -668,6 +668,9 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     quarantined: t("deviceCompare.status.quarantined"),
     updating: t("deviceCompare.status.updating"),
     pending: t("deviceCompare.status.pending"),
+    // No compare entry point exists for a manual asset (#4622 W04) and the
+    // `unknown` status is only produced for unprobed network rows (#5213) —
+    // kept for the shared DeviceStatus exhaustiveness.
     unknown: t("deviceCompare.status.unknown"),
   };
   const osLabels: Record<OSType, string> = {

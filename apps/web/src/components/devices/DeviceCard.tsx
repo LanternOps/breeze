@@ -3,6 +3,7 @@ import {
   Monitor,
   MoreVertical,
   Network,
+  Package,
   Terminal,
   RotateCcw,
   FileCode,
@@ -162,12 +163,21 @@ export default function DeviceCard({
   // row and 404s. The list row already collapses to a single "View"
   // (DeviceList.tsx); the grid card mirrors that treatment exactly, reusing the
   // same `deviceList.view` copy and `-open-network` test id.
-  const isNetwork = (device.deviceClass ?? "agent") === "network";
+  //
+  // #4622 W04: a manual asset's `id` is a `manual_assets.id`, the same foreign-
+  // id problem as network — the fix here mirrors DeviceList.tsx's manual row
+  // Actions cell (Edit + Delete instead of the agent kebab) rather than the
+  // network arm's single "View", since a manual asset IS editable, just not
+  // through the agent action funnel.
+  const deviceClass = device.deviceClass ?? "agent";
+  const isNetwork = deviceClass === "network";
+  const isManual = deviceClass === "manual";
 
   useEffect(() => {
-    // A discovered asset has no agent and no metric history; firing the request
-    // anyway is a guaranteed 404 on every card mount.
-    if (isNetwork) return;
+    // A discovered asset or a manual asset has no agent and no metric
+    // history; firing the request anyway is a guaranteed 404 on every card
+    // mount.
+    if (isNetwork || isManual) return;
 
     let isCancelled = false;
 
@@ -205,7 +215,7 @@ export default function DeviceCard({
     return () => {
       isCancelled = true;
     };
-  }, [device.id, isNetwork]);
+  }, [device.id, isNetwork, isManual]);
 
   const cpuHistory =
     historyState === "ready" ? metricHistory.map((point) => point.cpu) : [];
@@ -245,6 +255,9 @@ export default function DeviceCard({
               // to the generic monitor glyph — the same one a workstation gets.
               // The list uses a Network glyph on these rows; match it.
               <Network className="h-5 w-5" />
+            ) : isManual ? (
+              // Same Package glyph DeviceList's class badge uses for manual rows.
+              <Package className="h-5 w-5" />
             ) : (
               osIcons[device.os] || <Monitor className="h-5 w-5" />
             )}
@@ -273,12 +286,56 @@ export default function DeviceCard({
                 <Network className="h-3 w-3" />
                 {t("deviceList.network")}
               </span>
+            ) : isManual ? (
+              <span
+                data-testid={`device-${device.id}-class-badge`}
+                title={t("deviceList.manualAsset")}
+                className="mt-0.5 inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/15 px-2 py-0.5 text-[10px] font-medium text-warning"
+              >
+                <Package className="h-3 w-3" />
+                {t("deviceList.manual")}
+              </span>
             ) : (
               <p className="text-xs text-muted-foreground">{device.osVersion}</p>
             )}
           </div>
         </div>
-        {isNetwork ? (
+        {isManual ? (
+          // Mirrors DeviceList.tsx's manual row Actions cell: Edit (opens the
+          // add/edit modal via onClick, same as the list) and Delete (routes
+          // through onAction("delete-manual", ...) into the same confirm-
+          // gated funnel as the list row and the bulk bar).
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              data-testid={`device-${device.id}-edit-manual`}
+              aria-label={t("deviceList.editManualAsset", {
+                name: device.displayName || device.hostname,
+              })}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClick?.(device);
+              }}
+              className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+            >
+              {t("deviceList.edit")}
+            </button>
+            <button
+              type="button"
+              data-testid={`device-${device.id}-delete-manual`}
+              aria-label={t("deviceList.deleteManualAsset", {
+                name: device.displayName || device.hostname,
+              })}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAction?.("delete-manual", device);
+              }}
+              className="rounded-md border px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+            >
+              {t("deviceList.delete")}
+            </button>
+          </div>
+        ) : isNetwork ? (
           // Mirrors DeviceList.tsx's network row: the whole action surface
           // collapses to one "View", which opens the read-only network detail
           // page (DevicesPage.handleSelectDevice routes `network` there).
@@ -431,11 +488,12 @@ export default function DeviceCard({
         )}
       </div>
 
-      {isNetwork ? (
-        // A discovered asset reports no CPU/RAM — DevicesPage fills those
-        // fields with a placeholder 0, which would render as a confident
-        // "0%" reading for a printer. The list already shows "—" in those
-        // columns for exactly this reason (DeviceList.tsx agentCell).
+      {isNetwork || isManual ? (
+        // A discovered asset or a manual asset reports no CPU/RAM —
+        // DevicesPage fills those fields with a placeholder 0, which would
+        // render as a confident "0%" reading for a printer or a spare laptop.
+        // The list already shows "—" in those columns for exactly this reason
+        // (DeviceList.tsx agentCell).
         <div className="mt-4 grid grid-cols-2 gap-4">
           {(["CPU", "RAM"] as const).map((label) => (
             <div

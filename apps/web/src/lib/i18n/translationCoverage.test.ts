@@ -66,9 +66,8 @@ const namespaceDuplicateBaselines = {
     // product names, never translated) and dateFormat.iso's "ISO
     // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
     // literal format token/example key, not wording.
-    // #5213 W02: +5 — "URL", "UniFi", "Tags", "Model"/"Modelo" and other short
-    // cognates spelled identically in pt-BR.
-    'devices.json': 170,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
+    'devices.json': 174,
     'discovery.json': 17,
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -167,10 +166,8 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
     // format tokens, not wording.
-    // #5213 W02: +3 — "URL", "UniFi", "Modelo"/… acronym/brand-name leaves
-    // that are spelled identically in es-419 (addNetworkAssetModal.fields.url,
-    // deviceList.source.unifi, and one field label).
-    'devices.json': 123,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
+    'devices.json': 125,
     'discovery.json': 17,
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -275,9 +272,8 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    // #5213 W02: +4 — "URL", "UniFi" and short cognates spelled identically
-    // in fr-FR (addNetworkAssetModal.fields.url, deviceList.source.unifi, +2).
-    'devices.json': 150,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
@@ -387,9 +383,8 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    // #5213 W02: +4 — "URL", "UniFi" and short cognates spelled identically
-    // in fr-CA (addNetworkAssetModal.fields.url, deviceList.source.unifi, +2).
-    'devices.json': 150,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
@@ -508,9 +503,8 @@ const namespaceDuplicateBaselines = {
     // unified-device-list branch; re-measured after merging main.
     // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
     // in German.
-    // #5213 W02: +6 — "URL", "UniFi", "Modell"/"Model", "Tags", "Notizen"/… and
-    // other short cognates spelled identically in de-DE.
-    'devices.json': 162,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
+    'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
     'integrations.json': 43,
@@ -661,8 +655,8 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    // #5213 W02: +3 — "URL", "UniFi", "Model" spelled identically in tr-TR.
-    'devices.json': 86,
+    // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
+    'devices.json': 88,
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
