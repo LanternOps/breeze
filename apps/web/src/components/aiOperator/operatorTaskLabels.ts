@@ -12,17 +12,17 @@ type Translator = (key: string) => string;
  */
 export function taskStateLabel(t: Translator, state: AiOperatorTaskState): string {
   switch (state) {
-    case 'queued': return t('taskState.queued');
-    case 'running': return t('taskState.running');
-    case 'waiting': return t('taskState.waiting');
-    case 'paused': return t('taskState.paused');
-    case 'stopping': return t('taskState.stopping');
-    case 'completed': return t('taskState.completed');
-    case 'partial': return t('taskState.partial');
-    case 'handed_off': return t('taskState.handedOff');
-    case 'cancelled': return t('taskState.cancelled');
-    case 'failed': return t('taskState.failed');
-    case 'expired': return t('taskState.expired');
+    case 'queued': return t('aiOperator:taskState.queued');
+    case 'running': return t('aiOperator:taskState.running');
+    case 'waiting': return t('aiOperator:taskState.waiting');
+    case 'paused': return t('aiOperator:taskState.paused');
+    case 'stopping': return t('aiOperator:taskState.stopping');
+    case 'completed': return t('aiOperator:taskState.completed');
+    case 'partial': return t('aiOperator:taskState.partial');
+    case 'handed_off': return t('aiOperator:taskState.handedOff');
+    case 'cancelled': return t('aiOperator:taskState.cancelled');
+    case 'failed': return t('aiOperator:taskState.failed');
+    case 'expired': return t('aiOperator:taskState.expired');
     default: return state;
   }
 }
