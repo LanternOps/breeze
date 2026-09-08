@@ -51,4 +51,28 @@ describe('MonitoringPage', () => {
     expect(window.location.hash).toBe('#templates');
     expect(screen.getByText('Templates list')).toBeInTheDocument();
   });
+
+  // #5213 W02 — the second "Add network asset" entry point.
+  describe('add network asset entry point (#5213)', () => {
+    it('shows the button only on the Assets tab', () => {
+      window.history.pushState({}, '', '/monitoring');
+      render(<MonitoringPage />);
+
+      expect(screen.getByTestId('monitoring-page-add-network-asset')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Network Checks' }));
+      expect(screen.queryByTestId('monitoring-page-add-network-asset')).toBeNull();
+    });
+
+    it('sets the hash and opens the modal on click', () => {
+      window.history.pushState({}, '', '/monitoring');
+      render(<MonitoringPage />);
+
+      fireEvent.click(screen.getByTestId('monitoring-page-add-network-asset'));
+
+      expect(window.location.hash).toBe('#add-network-asset');
+      // The real AddNetworkAssetModal (not stubbed in this file) is now open.
+      expect(screen.getByTestId('asset-label')).toBeInTheDocument();
+    });
+  });
 });

@@ -116,6 +116,31 @@
     "mfaRequiredSsoInstallers": "Multi-factor authentication is required to generate installers. Your organization signs you in through an identity provider — ask your administrator to enable MFA trust for it, or enroll a factor in your profile settings.",
     "mfaRequiredSsoTokens": "Multi-factor authentication is required to generate installation tokens. Your organization signs you in through an identity provider — ask your administrator to enable MFA trust for it, or enroll a factor in your profile settings."
   },
+  "addNetworkAssetModal": {
+    "title": "Add network asset",
+    "submit": "Add asset",
+    "identityHint": "Provide at least one of: IP address, hostname, or URL.",
+    "fields": {
+      "label": "Name",
+      "ipAddress": "IP address",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "MAC address",
+      "manufacturer": "Manufacturer",
+      "model": "Model",
+      "tags": "Tags",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "e.g. Warehouse printer",
+      "selectSite": "Select a site",
+      "tags": "Comma-separated, e.g. lobby, floor-2"
+    },
+    "toasts": {
+      "created": "Network asset created",
+      "createFailed": "Failed to create network asset"
+    }
+  },
   "changeSiteModal": {
     "failedToLoadSites": "Failed to load sites",
     "failedToChangeSite": "Failed to change site",
@@ -159,6 +184,7 @@
       "quarantined": "Device is quarantined",
       "updating": "Device is updating",
       "pending": "Device is pending enrollment",
+      "unknown": "Device has not been probed yet",
       "notOnline": "Device is not online"
     },
     "gateHint": {
@@ -488,7 +514,8 @@
       "decommissioned": "Removed",
       "quarantined": "Quarantined",
       "updating": "Updating",
-      "pending": "Pending"
+      "pending": "Pending",
+      "unknown": "Unknown"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1082,8 @@
       "status": "Status",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Last Seen"
+      "lastSeen": "Last Seen",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Sort by class",
@@ -1068,7 +1096,13 @@
       "status": "Sort by status",
       "cpu": "Sort by CPU usage",
       "ram": "Sort by RAM usage",
-      "lastSeen": "Sort by last seen time"
+      "lastSeen": "Sort by last seen time",
+      "source": "Sort by source"
+    },
+    "source": {
+      "scan": "Scan",
+      "unifi": "UniFi",
+      "manual": "Manual"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1121,8 @@
         "decommissioned": "Removed",
         "quarantined": "Quarantined",
         "updating": "Updating",
-        "pending": "Pending"
+        "pending": "Pending",
+        "unknown": "Unknown"
       }
     },
     "roles": {
@@ -1822,6 +1857,11 @@
     },
     "addDevice": "Add Device",
     "importFromRmm": "Import from another RMM",
+    "addMenu": {
+      "trigger": "Add",
+      "installAgent": "Install agent…",
+      "addNetworkAsset": "Add network asset…"
+    },
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",

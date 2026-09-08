@@ -116,6 +116,31 @@
     "mfaRequiredSsoInstallers": "L'authentification multifacteur est requise pour générer des programmes d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil.",
     "mfaRequiredSsoTokens": "L'authentification multifacteur est requise pour générer des jetons d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil."
   },
+  "addNetworkAssetModal": {
+    "title": "Ajouter un actif réseau",
+    "submit": "Ajouter l'actif",
+    "identityHint": "Fournissez au moins un des éléments suivants : adresse IP, nom d'hôte ou URL.",
+    "fields": {
+      "label": "Nom",
+      "ipAddress": "Adresse IP",
+      "hostname": "Nom d'hôte",
+      "url": "URL",
+      "macAddress": "Adresse MAC",
+      "manufacturer": "Fabricant",
+      "model": "Modèle",
+      "tags": "Étiquettes",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "p. ex. Imprimante entrepôt",
+      "selectSite": "Sélectionner un site",
+      "tags": "Séparées par des virgules, p. ex. hall, étage-2"
+    },
+    "toasts": {
+      "created": "Actif réseau créé",
+      "createFailed": "Échec de la création de l'actif réseau"
+    }
+  },
   "changeSiteModal": {
     "failedToLoadSites": "Impossible de charger les sites",
     "failedToChangeSite": "Impossible de changer de site",
@@ -159,7 +184,8 @@
       "quarantined": "L’appareil est mis en quarantaine",
       "updating": "L’appareil se met à jour",
       "pending": "L’appareil est en attente d’inscription",
-      "notOnline": "L’appareil n’est pas en ligne"
+      "notOnline": "L’appareil n’est pas en ligne",
+      "unknown": "L'appareil n'a pas encore été sondé"
     },
     "confirm": {
       "reboot": {
@@ -488,7 +514,8 @@
       "decommissioned": "Retiré",
       "quarantined": "En quarantaine",
       "updating": "Mise à jour",
-      "pending": "En attente"
+      "pending": "En attente",
+      "unknown": "Inconnu"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1082,8 @@
       "status": "Statut",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Dernière apparition"
+      "lastSeen": "Dernière apparition",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Trier par classe",
@@ -1068,7 +1096,8 @@
       "status": "Trier par statut",
       "cpu": "Trier par CPU utilisation",
       "ram": "Trier par RAM utilisation",
-      "lastSeen": "Trier par dernière heure vue"
+      "lastSeen": "Trier par dernière heure vue",
+      "source": "Trier par source"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1116,8 @@
         "decommissioned": "Retiré",
         "quarantined": "En quarantaine",
         "updating": "Mise à jour",
-        "pending": "En attente"
+        "pending": "En attente",
+        "unknown": "Inconnu"
       }
     },
     "roles": {
@@ -1187,7 +1217,12 @@
     "devicesPerPage": "Appareils par page",
     "page": "Page",
     "possibleDuplicate": "Doublon possible",
-    "possibleDuplicateTitle": "Cet appareil remplace peut-être une fiche antérieure portant le même nom d’hôte. Ouvrez-la pour vérifier."
+    "possibleDuplicateTitle": "Cet appareil remplace peut-être une fiche antérieure portant le même nom d’hôte. Ouvrez-la pour vérifier.",
+    "source": {
+      "scan": "Analyse",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -1922,7 +1957,12 @@
       "message": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "title": "Certains appareils sélectionnés sont retirés"
     },
-    "importFromRmm": "Importer depuis un autre RMM"
+    "importFromRmm": "Importer depuis un autre RMM",
+    "addMenu": {
+      "trigger": "Ajouter",
+      "installAgent": "Installer l'agent…",
+      "addNetworkAsset": "Ajouter un actif réseau…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",

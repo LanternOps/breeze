@@ -145,6 +145,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning/15 text-warning border-warning/30",
   updating: "bg-info/15 text-info border-info/30",
   pending: "bg-muted text-muted-foreground border-border",
+  unknown: "bg-muted text-muted-foreground border-border",
 };
 
 const statusLabels: Record<DeviceStatus, string> = {
@@ -155,6 +156,7 @@ const statusLabels: Record<DeviceStatus, string> = {
   quarantined: "Quarantined",
   updating: "Updating",
   pending: "Pending",
+  unknown: "Unknown",
 };
 
 function formatLastSeen(dateString: string, timezone?: string): string {
@@ -935,7 +937,12 @@ export default function DeviceDetails({
       {activeTab === "backup" && (
         <DeviceBackupTab
           deviceId={device.id}
-          deviceStatus={device.status}
+          // 'unknown' (#5213) exists only for network-discovered rows, which
+          // never reach this agent-only detail page's backup tab in
+          // practice; DeviceBackupTab's status prop predates that value, so
+          // treat it as "not provided" rather than widening a backup-module
+          // type for a status it can never actually see.
+          deviceStatus={device.status === "unknown" ? undefined : device.status}
           timezone={effectiveTimezone}
         />
       )}

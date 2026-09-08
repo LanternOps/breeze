@@ -270,6 +270,10 @@ const TARGET_GLOBS = [
   'src/components/devices/RmmCustomFieldImport.tsx',
   'src/components/devices/CustomFieldDefinitionImportStep.tsx',
   'src/components/devices/CustomFieldValueImportStep.tsx',
+  // #5213 W02 — the manual-network-asset create form. Its POST /devices/network
+  // is a brand-new mutation surface; a bare fetchWithAuth here would silently
+  // no-op the operator's "Add network asset" submit.
+  'src/components/devices/AddNetworkAssetModal.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -589,7 +593,8 @@ describe('no silent mutations in targeted set', () => {
     // (AutomationRunHistory.tsx), so the count was 119. Task 13 (#5051) adds
     // 1 more (AgentCreateFlow.tsx), so the count is now 120 — bump it
     // deliberately on every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(123);
+    // #5213 W02 adds 1 more (AddNetworkAssetModal.tsx), so the count is now 124.
+    expect(absoluteFiles.length).toBe(124);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -116,6 +116,31 @@
     "mfaRequiredSsoInstallers": "Yükleyici oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin.",
     "mfaRequiredSsoTokens": "Kurulum belirteci oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin."
   },
+  "addNetworkAssetModal": {
+    "title": "Ağ varlığı ekle",
+    "submit": "Varlık ekle",
+    "identityHint": "En az birini belirtin: IP adresi, ana bilgisayar adı veya URL.",
+    "fields": {
+      "label": "Ad",
+      "ipAddress": "IP adresi",
+      "hostname": "Ana bilgisayar adı",
+      "url": "URL",
+      "macAddress": "MAC adresi",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "tags": "Etiketler",
+      "notes": "Notlar"
+    },
+    "placeholders": {
+      "label": "örn. Depo yazıcısı",
+      "selectSite": "Bir konum seçin",
+      "tags": "Virgülle ayrılmış, örn. lobi, kat-2"
+    },
+    "toasts": {
+      "created": "Ağ varlığı oluşturuldu",
+      "createFailed": "Ağ varlığı oluşturulamadı"
+    }
+  },
   "changeSiteModal": {
     "failedToLoadSites": "Siteler yüklenemedi",
     "failedToChangeSite": "Site değiştirilemedi",
@@ -159,7 +184,8 @@
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
-      "notOnline": "Cihaz çevrimiçi değil"
+      "notOnline": "Cihaz çevrimiçi değil",
+      "unknown": "Cihaz henüz test edilmedi"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Uzak Terminalin bağlı bir aracıya ihtiyacı var. Sıraya alınan komutlar yeniden bağlanıldığında çalışmaya devam eder.",
@@ -488,7 +514,8 @@
       "decommissioned": "Çıkarıldı",
       "quarantined": "Karantinaya alındı",
       "updating": "Güncelleniyor",
-      "pending": "Beklemede"
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1082,8 @@
       "status": "Durum",
       "cpu": "CPU %'si",
       "ram": "RAM %'si",
-      "lastSeen": "Son Görülme"
+      "lastSeen": "Son Görülme",
+      "source": "Kaynak"
     },
     "sortBy": {
       "class": "Sınıfa göre sırala",
@@ -1068,7 +1096,8 @@
       "status": "Duruma göre sırala",
       "cpu": "CPU kullanımına göre sırala",
       "ram": "RAM kullanımına göre sırala",
-      "lastSeen": "Son görülme zamanına göre sırala"
+      "lastSeen": "Son görülme zamanına göre sırala",
+      "source": "Kaynağa göre sırala"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1116,8 @@
         "decommissioned": "Çıkarıldı",
         "quarantined": "Karantinaya alındı",
         "updating": "Güncelleniyor",
-        "pending": "Beklemede"
+        "pending": "Beklemede",
+        "unknown": "Bilinmiyor"
       }
     },
     "roles": {
@@ -1187,7 +1217,12 @@
     "devicesPerPage": "Sayfa başına cihaz sayısı",
     "page": "Sayfa",
     "possibleDuplicate": "Olası kopya",
-    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın."
+    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın.",
+    "source": {
+      "scan": "Tarama",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -1922,7 +1957,12 @@
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
-    "importFromRmm": "Başka bir RMM'den içe aktar"
+    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "addMenu": {
+      "trigger": "Ekle",
+      "installAgent": "Aracı yükle…",
+      "addNetworkAsset": "Ağ varlığı ekle…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",

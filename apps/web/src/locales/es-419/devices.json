@@ -116,6 +116,31 @@
     "mfaRequiredSsoInstallers": "Se requiere autenticación multifactor para generar instaladores. Tu organización te inicia sesión mediante un proveedor de identidad: pide a tu administrador que habilite la confianza de MFA para él o inscribe un factor en la configuración de tu perfil.",
     "mfaRequiredSsoTokens": "Se requiere autenticación multifactor para generar tokens de instalación. Tu organización te inicia sesión mediante un proveedor de identidad: pide a tu administrador que habilite la confianza de MFA para él o inscribe un factor en la configuración de tu perfil."
   },
+  "addNetworkAssetModal": {
+    "title": "Agregar activo de red",
+    "submit": "Agregar activo",
+    "identityHint": "Proporcione al menos uno: dirección IP, nombre de host o URL.",
+    "fields": {
+      "label": "Nombre",
+      "ipAddress": "Dirección IP",
+      "hostname": "Nombre de host",
+      "url": "URL",
+      "macAddress": "Dirección MAC",
+      "manufacturer": "Fabricante",
+      "model": "Modelo",
+      "tags": "Etiquetas",
+      "notes": "Notas"
+    },
+    "placeholders": {
+      "label": "p. ej., Impresora del almacén",
+      "selectSite": "Seleccionar un sitio",
+      "tags": "Separadas por comas, p. ej., lobby, piso-2"
+    },
+    "toasts": {
+      "created": "Activo de red creado",
+      "createFailed": "No se pudo crear el activo de red"
+    }
+  },
   "changeSiteModal": {
     "failedToLoadSites": "No se pudieron cargar los sitios",
     "failedToChangeSite": "No se pudo cambiar el sitio",
@@ -159,7 +184,8 @@
       "quarantined": "El dispositivo está en cuarentena",
       "updating": "El dispositivo se está actualizando",
       "pending": "El dispositivo está pendiente de inscripción",
-      "notOnline": "El dispositivo no está en línea"
+      "notOnline": "El dispositivo no está en línea",
+      "unknown": "El dispositivo aún no ha sido probado"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — la Terminal remota necesita un agente conectado. Los comandos en cola se ejecutan al reconectar.",
@@ -488,7 +514,8 @@
       "decommissioned": "Quitado",
       "quarantined": "En cuarentena",
       "updating": "Actualizando",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "unknown": "Desconocido"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1082,8 @@
       "status": "Estado",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Visto por última vez"
+      "lastSeen": "Visto por última vez",
+      "source": "Origen"
     },
     "sortBy": {
       "class": "Ordenar por clase",
@@ -1068,7 +1096,8 @@
       "status": "Ordenar por estado",
       "cpu": "Ordenar por uso de CPU",
       "ram": "Ordenar por uso de RAM",
-      "lastSeen": "Ordenar por última hora vista"
+      "lastSeen": "Ordenar por última hora vista",
+      "source": "Ordenar por origen"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1116,8 @@
         "decommissioned": "Quitado",
         "quarantined": "En cuarentena",
         "updating": "Actualizando",
-        "pending": "Pendiente"
+        "pending": "Pendiente",
+        "unknown": "Desconocido"
       }
     },
     "roles": {
@@ -1187,7 +1217,12 @@
     "devicesPerPage": "Dispositivos por página",
     "page": "Página",
     "possibleDuplicate": "Posible duplicado",
-    "possibleDuplicateTitle": "Este dispositivo podría reemplazar a un registro anterior con el mismo nombre de host. Ábrelo para revisarlo."
+    "possibleDuplicateTitle": "Este dispositivo podría reemplazar a un registro anterior con el mismo nombre de host. Ábrelo para revisarlo.",
+    "source": {
+      "scan": "Escaneo",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -1922,7 +1957,12 @@
       "message": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{eligible}} dispositivo(s) restantes? Los que estén sin conexión lo ejecutarán en su próximo registro.",
       "title": "Algunos dispositivos seleccionados están quitados"
     },
-    "importFromRmm": "Importar desde otro RMM"
+    "importFromRmm": "Importar desde otro RMM",
+    "addMenu": {
+      "trigger": "Agregar",
+      "installAgent": "Instalar agente…",
+      "addNetworkAsset": "Agregar activo de red…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Agregar filtro",

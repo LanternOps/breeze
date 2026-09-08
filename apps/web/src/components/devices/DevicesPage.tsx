@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
-import { List, Grid, Plus, AlertCircle } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle, ChevronDown } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { FilterConditionGroup } from '@breeze/shared';
@@ -15,6 +15,7 @@ import DeviceSettingsModal from './DeviceSettingsModal';
 import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
+import AddNetworkAssetModal from './AddNetworkAssetModal';
 import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
@@ -189,6 +190,14 @@ export default function DevicesPage() {
   // The three hash-seeded states below adopt the hash post-mount via
   // useHashState so the first client render matches the SSR markup (#2421).
   const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
+  // Manual network asset (#5213 W02) — the second item of the header "Add"
+  // split menu below. Built as its own hash entry (not nested under
+  // showAddDevice) so a future third item (#4622's "Add asset manually…")
+  // slots in the same way without restructuring this state.
+  const [showAddNetworkAsset, setShowAddNetworkAsset] = useHashState<boolean>(false, (h) =>
+    h === 'add-network-asset' ? true : undefined,
+  );
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
   // (#import-definitions / #import-values) internally, so this only tracks
   // whether either of those hashes means the wizard is open at all.
@@ -632,6 +641,14 @@ export default function DevicesPage() {
         responseTimeMs: typeof d.responseTimeMs === 'number' ? d.responseTimeMs : null,
         monitoringEnabled: d.monitoringEnabled === true,
         enrolledAt: d.enrolledAt as string | undefined,
+        // #5213 — provenance (scan | unifi | manual) and the website/service
+        // identity. Anything else degrades to null rather than leaking an
+        // unexpected API value through the type.
+        source:
+          d.source === 'scan' || d.source === 'unifi' || d.source === 'manual'
+            ? d.source
+            : null,
+        url: typeof d.url === 'string' ? d.url : null,
       }));
 
       const allTransformed = [...transformedDevices, ...transformedNetworkDevices];
@@ -1781,14 +1798,52 @@ export default function DevicesPage() {
           >
             {t('devicesPage.importFromRmm')}
           </button>
-          <button
-            type="button"
-            onClick={() => setShowAddDevice(true)}
-            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" />
-            {t('devicesPage.addDevice')}
-          </button>
+          {/* Add split menu (#5213 W02): "Install agent…" is the pre-existing
+              AddDeviceModal flow; "Add network asset…" is new. Built as a
+              menu (not a single button) so a third item — #4622's "Add asset
+              manually…" — slots in later without restructuring this block. */}
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="devices-page-add-menu-trigger"
+              onClick={() => setAddMenuOpen((open) => !open)}
+              className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" />
+              {t('devicesPage.addMenu.trigger')}
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {addMenuOpen && (
+              <div
+                data-testid="devices-page-add-menu"
+                className="absolute right-0 top-full z-10 mt-1 w-56 rounded-md border bg-card shadow-lg"
+              >
+                <button
+                  type="button"
+                  data-testid="devices-page-add-menu-install-agent"
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    setShowAddDevice(true);
+                  }}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  {t('devicesPage.addMenu.installAgent')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="devices-page-add-menu-network-asset"
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    window.location.hash = 'add-network-asset';
+                    setShowAddNetworkAsset(true);
+                  }}
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  {t('devicesPage.addMenu.addNetworkAsset')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1851,14 +1906,46 @@ export default function DevicesPage() {
               {t('devicesPage.emptyDescription')}
             </p>
             <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => setShowAddDevice(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                {t('devicesPage.addDevice')}
-              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  data-testid="devices-page-empty-add-menu-trigger"
+                  onClick={() => setAddMenuOpen((open) => !open)}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t('devicesPage.addMenu.trigger')}
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+                {addMenuOpen && (
+                  <div
+                    data-testid="devices-page-empty-add-menu"
+                    className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border bg-card shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setShowAddDevice(true);
+                      }}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                    >
+                      {t('devicesPage.addMenu.installAgent')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        window.location.hash = 'add-network-asset';
+                        setShowAddNetworkAsset(true);
+                      }}
+                      className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                    >
+                      {t('devicesPage.addMenu.addNetworkAsset')}
+                    </button>
+                  </div>
+                )}
+              </div>
               <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
                 {t('devicesPage.viewInstallationGuide')}
               </a>
@@ -1939,6 +2026,14 @@ export default function DevicesPage() {
       )}
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
+      <AddNetworkAssetModal
+        isOpen={showAddNetworkAsset}
+        onClose={() => {
+          window.location.hash = '';
+          setShowAddNetworkAsset(false);
+        }}
+        onCreated={() => { void refreshDevices(); }}
+      />
 
       {showRmmImport && (
         <RmmCustomFieldImport

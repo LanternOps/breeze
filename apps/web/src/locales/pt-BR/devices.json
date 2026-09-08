@@ -116,6 +116,31 @@
     "mfaRequiredSsoInstallers": "A autenticação multifator é necessária para gerar instaladores. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil.",
     "mfaRequiredSsoTokens": "A autenticação multifator é necessária para gerar tokens de instalação. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil."
   },
+  "addNetworkAssetModal": {
+    "title": "Adicionar ativo de rede",
+    "submit": "Adicionar ativo",
+    "identityHint": "Forneça pelo menos um: endereço IP, hostname ou URL.",
+    "fields": {
+      "label": "Nome",
+      "ipAddress": "Endereço IP",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "Endereço MAC",
+      "manufacturer": "Fabricante",
+      "model": "Modelo",
+      "tags": "Tags",
+      "notes": "Notas"
+    },
+    "placeholders": {
+      "label": "ex.: Impressora do depósito",
+      "selectSite": "Selecionar um site",
+      "tags": "Separadas por vírgula, ex.: recepção, andar-2"
+    },
+    "toasts": {
+      "created": "Ativo de rede criado",
+      "createFailed": "Falha ao criar o ativo de rede"
+    }
+  },
   "changeSiteModal": {
     "failedToLoadSites": "Falha ao carregar os sites",
     "failedToChangeSite": "Falha ao alterar o site",
@@ -159,7 +184,8 @@
       "quarantined": "O dispositivo está em quarentena",
       "updating": "O dispositivo está sendo atualizado",
       "pending": "O dispositivo está aguardando inscrição",
-      "notOnline": "O dispositivo não está online"
+      "notOnline": "O dispositivo não está online",
+      "unknown": "O dispositivo ainda não foi verificado"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — o Terminal remoto precisa de um agente conectado. Comandos na fila são executados na reconexão.",
@@ -488,7 +514,8 @@
       "decommissioned": "Removido",
       "quarantined": "Em quarentena",
       "updating": "Atualizando",
-      "pending": "Pendente"
+      "pending": "Pendente",
+      "unknown": "Desconhecido"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -1055,7 +1082,8 @@
       "status": "Status",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Visto por último"
+      "lastSeen": "Visto por último",
+      "source": "Origem"
     },
     "sortBy": {
       "class": "Ordenar por classe",
@@ -1068,7 +1096,8 @@
       "status": "Ordenar por status",
       "cpu": "Ordenar por uso da CPU",
       "ram": "Ordenar por uso da RAM",
-      "lastSeen": "Ordenar pela última vez em que foi visto"
+      "lastSeen": "Ordenar pela última vez em que foi visto",
+      "source": "Ordenar por origem"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1116,8 @@
         "decommissioned": "Removido",
         "quarantined": "Em quarentena",
         "updating": "Atualizando",
-        "pending": "Pendente"
+        "pending": "Pendente",
+        "unknown": "Desconhecido"
       }
     },
     "roles": {
@@ -1187,7 +1217,12 @@
     "devicesPerPage": "Dispositivos por página",
     "page": "Página",
     "possibleDuplicate": "Possível duplicata",
-    "possibleDuplicateTitle": "Este dispositivo pode substituir um registro anterior com o mesmo nome de host. Abra-o para revisar."
+    "possibleDuplicateTitle": "Este dispositivo pode substituir um registro anterior com o mesmo nome de host. Abra-o para revisar.",
+    "source": {
+      "scan": "Varredura",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -1922,7 +1957,12 @@
     "unknownOrg": "Organização desconhecida",
     "unknownSite": "Site desconhecido",
     "viewInstallationGuide": "Ver guia de instalação",
-    "importFromRmm": "Importar de outro RMM"
+    "importFromRmm": "Importar de outro RMM",
+    "addMenu": {
+      "trigger": "Adicionar",
+      "installAgent": "Instalar agente…",
+      "addNetworkAsset": "Adicionar ativo de rede…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Adicionar filtro",

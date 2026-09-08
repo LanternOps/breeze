@@ -76,6 +76,7 @@ const statusColors: Record<DeviceStatus, string> = {
   quarantined: "bg-warning/15 text-warning border-warning/30",
   updating: "bg-info/15 text-info border-info/30",
   pending: "bg-muted text-muted-foreground border-border",
+  unknown: "bg-muted text-muted-foreground border-border",
 };
 
 const metricColors = ["#3b82f6", "#22c55e", "#f97316", "#a855f7"];
@@ -667,6 +668,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     quarantined: t("deviceCompare.status.quarantined"),
     updating: t("deviceCompare.status.updating"),
     pending: t("deviceCompare.status.pending"),
+    unknown: t("deviceCompare.status.unknown"),
   };
   const osLabels: Record<OSType, string> = {
     windows: t("deviceCompare.operatingSystems.windows"),
