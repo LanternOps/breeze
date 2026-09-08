@@ -1444,11 +1444,18 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 'intent_failed',
               );
             } catch (transitionErr) {
+              // #5205 W05 (#5210): transitionIntentAndPublish now couples the
+              // CAS to a constraint-guarded intentOutbox insert in the SAME
+              // transaction — a failure here rolls back the self-heal CAS
+              // too, exactly the case this code exists to prevent (a stranded
+              // `executing` row). Must not be console-only: this is the same
+              // "silent for weeks" risk class as the wiring-error check above.
               console.error(
                 '[AI-SDK] Failed to CAS action intent to failed after unexpected tier-3 error:',
                 wonIntentId,
                 transitionErr,
               );
+              captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
             }
           }
           return await failMatchedPlanStep({
@@ -1966,11 +1973,16 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               'intent_failed',
             );
           } catch (transitionErr) {
+            // #5205 W05 (#5210): the CAS is now coupled to a constraint-
+            // guarded intentOutbox insert in the SAME transaction — a
+            // failure here rolls the CAS back too, stranding the intent
+            // `executing`. Report, don't just log.
             console.error(
               `[AI-SDK] Failed to CAS action intent to failed after plaintext-secret guard for ${toolName}:`,
               pendingIntentId,
               transitionErr,
             );
+            captureException(transitionErr instanceof Error ? transitionErr : new Error(String(transitionErr)));
           }
         }
 
@@ -1992,7 +2004,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               isError ? 'intent_failed' : 'intent_completed',
             );
           } catch (err) {
+            // #5205 W05 (#5210): this is the primary inline-execution
+            // completion write — every non-durable-release tier-3 tool call
+            // ends here. The CAS is now coupled to a constraint-guarded
+            // intentOutbox insert in the SAME transaction, so a failure here
+            // rolls the CAS back too and would otherwise strand the intent
+            // `executing` with no signal beyond a console line.
             console.error(`[AI-SDK] Failed to CAS action intent to ${isError ? 'failed' : 'completed'} for ${toolName}:`, pendingIntentId, err);
+            captureException(err instanceof Error ? err : new Error(String(err)));
           }
         }
       }

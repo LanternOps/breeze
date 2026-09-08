@@ -182,4 +182,33 @@ describe('aiOperatorTaskOutboxPublisher.publishAiOperatorTaskOutbox', () => {
     expect(sawContextDuringEnqueue).toBe(false);
     expect(dbModule.hasDbAccessContext()).toBe(false);
   });
+
+  // Mixed-batch partial failure: row A enqueues successfully, row B's
+  // queue.add() rejects. Only row A's id may end up in the mark-published
+  // UPDATE — row B must keep published_at NULL (its attempt was already
+  // counted in the claim UPDATE, so it retries next tick).
+  it('marks only the successfully-enqueued row published when one row in the batch fails to enqueue', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [{ unpublished_count: 2, oldest_age_seconds: 9 }] });
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        { id: 10, org_id: 'org-1', task_id: 'task-10', source_kind: 'intent', source_id: 'intent-10', transition_seq: 1 },
+        { id: 11, org_id: 'org-1', task_id: 'task-11', source_kind: 'intent', source_id: 'intent-11', transition_seq: 2 },
+      ],
+    });
+    const chain = makeUpdateChain();
+    updateMock.mockReturnValue({ set: chain.set });
+
+    addMock
+      .mockResolvedValueOnce({ id: 'bullmq-job-10' }) // row 10 succeeds
+      .mockRejectedValueOnce(new Error('redis unavailable')); // row 11 fails
+
+    const result = await publishAiOperatorTaskOutbox();
+
+    expect(result).toEqual({ published: 1 });
+    expect(addMock).toHaveBeenCalledTimes(2);
+    // Exactly one mark-published pass, covering only the succeeded row.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(chain.where).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
 });
