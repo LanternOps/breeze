@@ -43,11 +43,14 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
    * and non-empty on this shape: a supplied set is the account's only valid
    * one from this commit on, so an empty or missing pair would be a silent
    * lockout. The writes that install NO codes — a factor REMOVAL (#4934
-   * `/mfa/disable`) and a factor REPLACEMENT on an account that already holds a
-   * code set (#5198 phone swap) — must go through `completeMfaFactorRemoval` /
-   * `completeMfaFactorReplacement`, which omit these fields by
-   * TYPE rather than by convention — the #5008 review found that an optional
-   * pair here let a rotation caller forget it and persist `[]` unnoticed.
+   * `/mfa/disable`, #5038 passkey delete), a SECONDARY factor ADDITION on an
+   * account that already holds a code set (#5038 passkey register), and a
+   * factor REPLACEMENT on an account that already holds a code set (#5198
+   * phone swap) — must go through `completeMfaFactorRemoval` /
+   * `completeAdditionalMfaFactorEnrollment` / `completeMfaFactorReplacement`,
+   * which omit these fields by TYPE rather than by convention — the #5008
+   * review found that an optional pair here let a rotation caller forget it
+   * and persist `[]` unnoticed.
    */
   recoveryCodes: readonly string[];
   recoveryCodeHashes: readonly string[];
@@ -69,6 +72,15 @@ export type CompleteMfaFactorRemovalInput<T> = Omit<
 >;
 
 /**
+ * SECONDARY-factor addition shape (#5038 passkey register on an account that is
+ * already protected): the account keeps the recovery-code set it already holds,
+ * so this write installs none and reveals none. `expectedMfaEnabled` is fixed at
+ * `true` — an account with no factor yet is INITIAL enrollment, which must mint
+ * a code set and therefore goes through `completeInitialMfaEnrollment`.
+ */
+export type CompleteAdditionalMfaFactorEnrollmentInput<T> = CompleteMfaFactorRemovalInput<T>;
+
+/**
  * FACTOR-REPLACEMENT shape (#5198 `/auth/phone/confirm` swapping the number
  * behind an already-active SMS factor): the account stays protected across the
  * write and the recovery-code set it already holds stays valid, so — exactly as
@@ -81,8 +93,7 @@ export type CompleteMfaFactorReplacementInput<T> = CompleteMfaFactorRemovalInput
 /** Internal: the union every public entry point funnels into. */
 type MfaFactorWriteCoreInput<T> =
   | (ReplaceSessionOnMfaFactorWriteInput<T> & { factorWrite: 'install' | 'rotate' })
-  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' | 'replace' });
-
+  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' | 'replace' | 'add' });
 
 export interface MfaFactorSessionReplacement<T> {
   value: T;
@@ -103,16 +114,18 @@ export interface MfaFactorSessionReplacement<T> {
  * when the response body carries a one-time secret the user has to read
  * (recovery codes, #4480): a caller signed out by its own request never sees it.
  *
- * Four shapes exist, differing only in `expectedMfaEnabled` and whether a code
+ * Five shapes exist, differing only in `expectedMfaEnabled` and whether a code
  * set accompanies the write, and each has its own entry point: this function
  * is ROTATION on a protected account (factor must still exist, codes required);
  * `completeInitialMfaEnrollment` is INSTALL (factor must not exist yet, codes
  * required); `completeMfaFactorRemoval` is REMOVAL (factor must still exist, no
  * codes — a self-disable that evicted its own caller bounced the user to
- * /login?reason=session-expired the moment they turned MFA off, #4934); and
+ * /login?reason=session-expired the moment they turned MFA off, #4934);
+ * `completeAdditionalMfaFactorEnrollment` is a SECONDARY ADDITION (factor must
+ * still exist, no codes — the account's existing set stays valid, #5038); and
  * `completeMfaFactorReplacement` is a REPLACEMENT of the material behind a live
  * factor (factor must still exist, no codes — the account's existing set stays
- * valid, #5198). All four funnel into the same private core.
+ * valid, #5198). All five funnel into the same private core.
  *
  * Expensive recovery-code generation and hashing belong before this call; every
  * authority-bearing write happens inside finishAuthIssuance's supplied
@@ -139,7 +152,26 @@ export async function replaceSessionOnMfaFactorWrite<T>(
 }
 
 /**
- * Factor-removal specialization (#4934 `/mfa/disable`): the account must still
+ * Secondary-factor-addition specialization (#5038 passkey register on an
+ * already-protected account): the account must still be protected when the bump
+ * lands, the recovery-code set it already holds is untouched, and the caller's
+ * own assurance is carried forward. Adding a factor still evicts every OTHER
+ * live session (SR2-07) — what it must not do is evict the actor.
+ */
+export async function completeAdditionalMfaFactorEnrollment<T>(
+  input: CompleteAdditionalMfaFactorEnrollmentInput<T>,
+): Promise<MfaFactorSessionReplacement<T>> {
+  if ('recoveryCodes' in input || 'recoveryCodeHashes' in input) {
+    throw new Error(
+      'A secondary factor addition installs no recovery codes; use replaceSessionOnMfaFactorWrite to rotate them',
+    );
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: true, factorWrite: 'add' });
+}
+
+/**
+ * Factor-removal specialization (#4934 `/mfa/disable`, #5038 passkey delete):
+ * the account must still
  * be protected when the bump lands, no code set is installed, and the caller's
  * own assurance is carried forward. The only sanctioned way to call the
  * primitive without recovery codes.
@@ -188,7 +220,7 @@ async function replaceSessionOnMfaFactorWriteCore<T>(
     throw new Error('Factor-write identity does not match the target user');
   }
   // The factor writes that carry a recovery-code pair. INSTALL mints the
-  // account's first set and ROTATE replaces it; REMOVE and REPLACE leave
+  // account's first set and ROTATE replaces it; REMOVE, REPLACE, and ADD leave
   // whatever set the account already holds (empty or not) exactly as it was.
   // Kept inline rather than behind a helper so it still narrows the union.
   const carriesCodes = input.factorWrite === 'install' || input.factorWrite === 'rotate';

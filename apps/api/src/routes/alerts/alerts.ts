@@ -35,7 +35,7 @@ import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
-import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
+import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { withAlertActorNames } from './actorNames';
 import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -57,6 +57,7 @@ export const alertsRoutes = new Hono();
 // forced the mobile client into a per-alert queue that loses work when the app
 // is backgrounded mid-flush.
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
 
 const alertIdParamSchema = z.object({ id: z.string().guid() });
@@ -168,7 +169,7 @@ const AI_NOISE_VERDICT_CLASSIFICATIONS = ['transient_self_healed', 'recurring_pa
  * the group row (`alert_id IS NULL`), so without the second branch it never
  * matched any member alert here.
  */
-export function hideAiNoiseCondition(): SQL {
+export function hideAiNoiseCondition(includeGroupVerdicts = true): SQL {
   return notExists(
     db.select({ one: sql`1` }).from(aiAlertVerdicts).where(and(
       // #4446 — pin the verdict row to the OUTER alert's own org rather than
@@ -186,7 +187,7 @@ export function hideAiNoiseCondition(): SQL {
       eq(aiAlertVerdicts.orgId, alerts.orgId),
       or(
         eq(aiAlertVerdicts.alertId, alerts.id),
-        inArray(
+        includeGroupVerdicts ? inArray(
           aiAlertVerdicts.correlationGroupId,
           db.select({ groupId: alertCorrelationMembers.groupId })
             .from(alertCorrelationMembers)
@@ -197,7 +198,7 @@ export function hideAiNoiseCondition(): SQL {
               eq(alertCorrelationMembers.orgId, alerts.orgId),
               eq(alertCorrelationMembers.alertId, alerts.id),
             )),
-        ),
+        ) : undefined,
       )!,
       isNull(aiAlertVerdicts.supersededBy),
       inArray(aiAlertVerdicts.classification, AI_NOISE_VERDICT_CLASSIFICATIONS),
@@ -312,11 +313,7 @@ alertsRoutes.get(
       // alongside in-scope device alerts (the leftJoin makes a device-less alert's
       // siteId null, which inArray would otherwise drop). A caller restricted to
       // zero sites still sees org-wide alerts — only device-bound alerts are hidden.
-      conditions.push(
-        perms.allowedSiteIds.length === 0
-          ? isNull(alerts.deviceId)
-          : or(isNull(alerts.deviceId), inArray(devices.siteId, perms.allowedSiteIds))!
-      );
+      conditions.push(alertSiteScopeCondition(perms.allowedSiteIds)!);
     }
 
     if (query.startDate) {
@@ -331,7 +328,7 @@ alertsRoutes.get(
     // EXISTS, applied here alongside every other filter so pagination
     // (computed from the SAME `conditions`, below) stays correct.
     if (query.hideAiNoise === 'true') {
-      conditions.push(hideAiNoiseCondition());
+      conditions.push(hideAiNoiseCondition(perms?.allowedSiteIds === undefined));
     }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -387,7 +384,9 @@ alertsRoutes.get(
     // see alerts spanning MULTIPLE orgs on one page, and a system-scope caller
     // gets no app-layer org condition on the outer query at all (#4446).
     const orgIdsForPage = [...new Set(alertsList.map((alert) => alert.orgId))];
-    const correlationRows = alertIds.length > 0
+    // Group aggregates describe all members, potentially across denied sites.
+    // Do not attach that broader metadata to a site-restricted reader's rows.
+    const correlationRows = alertIds.length > 0 && perms?.allowedSiteIds === undefined
       ? await db
         .select({
           alertId: alertCorrelationMembers.alertId,
@@ -414,6 +413,11 @@ alertsRoutes.get(
     // issuing one query per org — see that function's own docstring for why
     // this was the smaller change.
     const verdictMap = await latestVerdictsForAlerts(orgIdsForPage, alertIds);
+    if (perms?.allowedSiteIds !== undefined) {
+      for (const [id, verdict] of verdictMap) {
+        if (verdict.correlationGroupId) verdictMap.delete(id);
+      }
+    }
 
     // #4445 — resolve each live verdict's feedbackBy to a display name (same
     // actor-name pattern as acknowledgedBy/resolvedBy above, #3966) so the
@@ -452,6 +456,7 @@ alertsRoutes.get(
 alertsRoutes.get(
   '/summary',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   async (c) => {
     const auth = c.get('auth');
     const { orgId } = c.req.query();
@@ -486,6 +491,8 @@ alertsRoutes.get(
       orgFilter = eq(alerts.orgId, orgId);
     }
 
+    const visibleFilter = and(orgFilter, alertSiteScopeCondition(c.get('permissions').allowedSiteIds));
+
     // Get counts by severity (only active alerts)
     const severityCounts = await db
       .select({
@@ -493,11 +500,8 @@ alertsRoutes.get(
         count: sql<number>`count(*)`
       })
       .from(alerts)
-      .where(
-        orgFilter
-          ? and(orgFilter, eq(alerts.status, 'active'))
-          : eq(alerts.status, 'active')
-      )
+      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(and(visibleFilter, eq(alerts.status, 'active')))
       .groupBy(alerts.severity);
 
     // Get counts by status
@@ -507,14 +511,16 @@ alertsRoutes.get(
         count: sql<number>`count(*)`
       })
       .from(alerts)
-      .where(orgFilter)
+      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(visibleFilter)
       .groupBy(alerts.status);
 
     // Get total count
     const totalResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(alerts)
-      .where(orgFilter);
+      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(visibleFilter);
 
     // Format response
     const bySeverity = {
@@ -1292,6 +1298,7 @@ alertsRoutes.post(
 alertsRoutes.get(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  requireAlertRead,
   zValidator('param', alertIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1302,7 +1309,9 @@ alertsRoutes.get(
       return c.notFound();
     }
 
-    const alert = await getAlertWithOrgCheck(alertId, auth);
+    const alert = await getAlertWithOrgCheck(alertId, {
+      ...auth, allowedSiteIds: c.get('permissions').allowedSiteIds,
+    });
     if (!alert) {
       return c.json({ error: 'Alert not found' }, 404);
     }
@@ -1350,7 +1359,10 @@ alertsRoutes.get(
     // verdict, if any. A detail lookup is always single-org (`alert.orgId`,
     // from `getAlertWithOrgCheck`'s already access-checked row).
     const verdictMap = await latestVerdictsForAlerts(alert.orgId, [alertId]);
-    const verdict = verdictMap.get(alertId);
+    const candidateVerdict = verdictMap.get(alertId);
+    // Group rationale can describe members in sites the reader cannot see.
+    const verdict = c.get('permissions').allowedSiteIds !== undefined && candidateVerdict?.correlationGroupId
+      ? undefined : candidateVerdict;
 
     // #4445 — same feedbackBy -> feedbackByName resolution as the list route
     // above, scoped to the single verdict (if any) this alert carries.
@@ -1434,12 +1446,15 @@ alertsRoutes.get(
   '/:id/tickets',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  requireAlertRead,
   zValidator('param', alertIdParamSchema),
   async (c) => {
     const { id } = c.req.valid('param');
     const auth = c.get('auth');
 
-    const alert = await getAlertWithOrgCheck(id, auth);
+    const alert = await getAlertWithOrgCheck(id, {
+      ...auth, allowedSiteIds: c.get('permissions').allowedSiteIds,
+    });
     if (!alert) {
       return c.json({ error: 'Alert not found' }, 404);
     }

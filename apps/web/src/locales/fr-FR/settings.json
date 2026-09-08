@@ -582,7 +582,18 @@
     "selfSaving": "Cette section conserve ses propres modifications.",
     "saveSettings": "Enregistrer les paramètres",
     "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
-    "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations."
+    "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
+    "modules": {
+      "title": "Modules du produit",
+      "description": "Choisissez les parties de Breeze utilisées par ce MSP. Désactiver la gestion des services masque partout le centre de services et la facturation client et empêche la création de nouveaux tickets.",
+      "nativeLabel": "Centre de services et facturation Breeze",
+      "nativeDescription": "Les tickets, les feuilles de temps, les devis, les factures et les contrats sont gérés dans Breeze. C’est l’option par défaut.",
+      "offLabel": "Désactivé — RMM uniquement",
+      "offDescription": "Masque les sections Centre de services et Facturation ainsi que les onglets Tickets et Facturation de la fiche client. Les tickets existants restent consultables ; aucun nouveau ne peut être créé.",
+      "externalNote": "Ce partenaire utilise un PSA externe. Ce choix ne peut pas encore être modifié ici.",
+      "saved": "Modules mis à jour",
+      "saveFailed": "Échec de la mise à jour des modules"
+    }
   },
   "loginBranding": {
     "saved": "Enregistrement de la marque enregistrée",
@@ -3320,6 +3331,7 @@
     "passkeyRenamed": "Passkey renommé",
     "currentPasswordIsRequiredToDeleteAPasskey": "Un mot de passe actuel est nécessaire pour supprimer une clé d’accès",
     "passkeyDeleted": "Clé d’accès supprimée",
+    "signInAgainToContinue": "Reconnectez-vous pour continuer.",
     "failedToLoadPasskeys": "Impossible de charger les clés d’accès",
     "failedToUpdateProfile": "Impossible de mettre à jour le profil",
     "failedToUploadAvatar": "Impossible de télécharger l’avatar",
@@ -4442,7 +4454,8 @@
       "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
       "saveOrganization": "Impossible d’enregistrer l’organisation",
       "saveSite": "Impossible d’enregistrer le site ({{status}})",
-      "deleteSite": "Impossible de supprimer le site"
+      "deleteSite": "Impossible de supprimer le site",
+      "loadSites": "Impossible de charger les sites de cette organisation."
     },
     "status": {
       "active": "Active",

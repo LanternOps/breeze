@@ -42,6 +42,7 @@ vi.mock('./remoteSessionTeardown', () => ({
 }));
 
 import {
+  completeAdditionalMfaFactorEnrollment,
   completeInitialMfaEnrollment,
   completeMfaFactorRemoval,
   completeMfaFactorReplacement,
@@ -558,6 +559,124 @@ describe('replaceSessionOnMfaFactorWrite — factor removal with no recovery cod
     } as never)).rejects.toThrow(/recovery-code/i);
 
     expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+});
+// #5038: a SECONDARY factor ADDITION is the fourth shape. Like a removal it
+// carries no code pair — the account keeps the recovery-code set it already
+// holds, and nothing one-time is revealed — but unlike an initial enrollment it
+// is predicated on the factor set ALREADY existing. Adding a passkey used to
+// bump the epoch without re-issuing the actor, so the user was bounced to
+// /login?reason=session-expired by their own request.
+describe('completeAdditionalMfaFactorEnrollment — secondary factor with no recovery codes (#5038)', () => {
+  const tx = { marker: 'transaction' } as never;
+  const capability = { marker: 'capability' } as unknown as AuthIssuanceCapability;
+  const identity: UserSessionIdentity = {
+    userId: 'user-123',
+    email: 'user@example.com',
+    roleId: 'role-123',
+    orgId: 'org-123',
+    partnerId: 'partner-123',
+    scope: 'organization',
+    mfa: true,
+  };
+  const issued = {
+    accessToken: 'access',
+    refreshToken: 'refresh',
+    refreshJti: 'refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'family-new',
+    transitionId: 'transition-123',
+    generation: 4,
+  } as unknown as AuthorizedUserSession;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    finishAuthIssuanceMock.mockImplementation(
+      async (_capability: unknown, callback: (value: unknown) => Promise<unknown>) => callback(tx),
+    );
+    advanceUserEpochsMock.mockResolvedValue({
+      authEpoch: 3,
+      mfaEpoch: 8,
+      emailEpoch: 1,
+      passwordResetEpoch: 1,
+    });
+    revokeAllRefreshFamiliesMock.mockResolvedValue(undefined);
+    issueUserSessionMock.mockResolvedValue(issued);
+    runPostCommitCleanupMock.mockResolvedValue({ redisOk: true, permissionCacheOk: true, oauthOk: true });
+    terminateUserRemoteSessionsMock.mockResolvedValue(0);
+  });
+
+  it('revokes every family and re-issues the caller while installing no codes', async () => {
+    const persistFactor = vi.fn(async (suppliedTx: unknown, hashes: readonly string[]) => {
+      expect(suppliedTx).toBe(tx);
+      expect(hashes).toEqual([]);
+      return 'passkey-row';
+    });
+
+    const result = await completeAdditionalMfaFactorEnrollment({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'passkey-register',
+      persistFactor,
+    });
+
+    expect(persistFactor).toHaveBeenCalledTimes(1);
+    // The wrapper, not the caller, fixes the precondition: an account with NO
+    // factor yet is initial enrollment (which must mint a code set), so this
+    // shape is pinned to mfaEnabled: true and a concurrent disable loses.
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(
+      tx,
+      identity.userId,
+      { mfa: true },
+      { authEpoch: 3, mfaEpoch: 7, mfaEnabled: true, status: 'active' },
+    );
+    expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(tx, identity.userId, 'passkey-register');
+    expect(issueUserSessionMock).toHaveBeenCalledWith(identity, {
+      tx,
+      capability,
+      expectedEpochs: { authEpoch: 3, mfaEpoch: 8 },
+    });
+    expect(result.value).toBe('passkey-row');
+    // No set is revealed: the account's existing codes are untouched.
+    expect(result.recoveryCodes).toEqual([]);
+    expect(result.issued).toBe(issued);
+    // The replacement token must survive its own post-commit revocation cutoff.
+    expect(runPostCommitCleanupMock).toHaveBeenCalledTimes(1);
+    expect(runPostCommitCleanupMock.mock.calls[0]?.[1]?.preserveTokensIssuedAtOrAfter)
+      .toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+
+  it('refuses a code pair — installing one here would wipe the set the account already holds', async () => {
+    await expect(completeAdditionalMfaFactorEnrollment({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'passkey-register',
+      recoveryCodes: ['code-1'],
+      recoveryCodeHashes: ['hash-1'],
+      persistFactor: vi.fn(),
+    } as never)).rejects.toThrow(/recovery codes/i);
+
+    expect(finishAuthIssuanceMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a lost precondition race as an issuance conflict', async () => {
+    advanceUserEpochsMock.mockRejectedValueOnce(new EpochAdvancePreconditionError());
+
+    await expect(completeAdditionalMfaFactorEnrollment({
+      userId: identity.userId,
+      identity,
+      capability,
+      expectedAuthEpoch: 3,
+      expectedMfaEpoch: 7,
+      revokeReason: 'passkey-register',
+      persistFactor: vi.fn(),
+    })).rejects.toMatchObject({ name: 'AuthIssuanceConflictError' });
   });
 });
 

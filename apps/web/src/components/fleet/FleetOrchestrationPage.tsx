@@ -51,7 +51,7 @@ interface FleetStats {
   policies: PolicySummary;
   deployments: DeploymentSummary;
   patches: PatchSummary;
-  alerts: AlertSummary;
+  alerts: AlertSummary | null;
   automationCount: number;
   // null when the per-org maintenance endpoint is skipped in fleet view — the
   // count isn't zero, it's unknown, so the card reads "—" rather than a
@@ -175,7 +175,7 @@ async function fetchFleetStats(): Promise<{ stats: FleetStats; failedEndpoints: 
       failedPatches: toNum(patchSummary.failed),
       missingPatches: toNum(patchSummary.missing),
     },
-    alerts: {
+    alerts: alerts === null ? null : {
       critical: toNum(alertBySeverity.critical),
       high: toNum(alertBySeverity.high),
       medium: toNum(alertBySeverity.medium),
@@ -251,8 +251,7 @@ export default function FleetOrchestrationPage() {
           activeDeployments: data.deployments.active,
           pendingPatches: data.patches.pendingPatches,
           failedPatches: data.patches.failedPatches,
-          activeAlerts: data.alerts.total,
-          criticalAlerts: data.alerts.critical,
+          ...(data.alerts ? { activeAlerts: data.alerts.total, criticalAlerts: data.alerts.critical } : {}),
           automationCount: data.automationCount,
           // Omit entirely in fleet view (null) so the assistant doesn't assert a
           // fabricated "0 active maintenance windows" across the fleet.
@@ -369,8 +368,8 @@ export default function FleetOrchestrationPage() {
             title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
             testId="alerts"
             icon={Bell}
-            value={s.alerts.total}
-            accent={s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
+            value={s.alerts?.total ?? '—'}
+            accent={!s.alerts ? 'gray' : s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
             onClick={() => handleQuickAction('Give me a summary of active alerts by severity')}
           />
           <StatChip
@@ -485,7 +484,7 @@ export default function FleetOrchestrationPage() {
         </div>
 
         {/* Alert Breakdown */}
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
+        {s.alerts && <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
             <Bell className="h-4 w-4" />
             {t('longTail.fleet.FleetOrchestrationPage.alertBreakdown')}
@@ -496,7 +495,7 @@ export default function FleetOrchestrationPage() {
             <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.medium')} value={s.alerts.medium} total={s.alerts.total} color="bg-yellow-500" />
             <StatusBar label={t('longTail.fleet.FleetOrchestrationPage.severity.low')} value={s.alerts.low} total={s.alerts.total} color="bg-blue-500" />
           </div>
-        </div>
+        </div>}
 
         {/* Patch Posture */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">

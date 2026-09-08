@@ -4,6 +4,8 @@ tracking_issue: LanternOps/breeze#4187
 
 # AI Agents Phase 2 — Intelligence Layer: Program Design
 
+**Continuation proposal (2026-09-07):** [AI Operator completion](2026-09-07-ai-operator-completion-design.md) maps the deferred roadmap below into Phase 3 (durable tasks, approval continuation, verification), Phase 4 (bounded fleet and patch execution), and five parallel, individually gated tracks (tickets, memory, measurement, approval access, automatic promotion). See its [delivery plan](../../plans/ai-mcp/2026-09-07-ai-operator-completion.md) for wave scope and acceptance gates. Both are drafts; this link does not change Phase 2's historical decisions.
+
 **Date:** 2026-08-28
 **Status:** Approved in dialogue (Todd, 2026-08-28). Codex `xhigh` quorum run 2026-08-28 — 2 agree, 1 disagree (accepted), 5 gaps (all verified against code, all incorporated; see §9 and the **Amendment** call-outs). Awaiting written-spec review.
 **Tracking:** LanternOps/breeze#4187 (waves #4188–#4193, registered 2026-08-28). Phase 1 is LanternOps/breeze#3821, which closes after wave 6.3 (ticket shadow) lands; "anomaly sources" from the wave-6 title is folded into P2-1 here (decision A, 2026-08-28).

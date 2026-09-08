@@ -13,6 +13,7 @@ import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -53,7 +54,12 @@ export type TicketServiceErrorCode =
   | 'INVALID_INPUT'
   // W08 #3902: one or more attachmentIds were not pending, not this user's,
   // or not on this ticket. The comment transaction is rolled back.
-  | 'ATTACHMENT_NOT_CLAIMABLE';
+  | 'ATTACHMENT_NOT_CLAIMABLE'
+  // #5075 W04 — the partner has Service Management switched off; no new
+  // tickets. Lowercase to match the wire code the web/AI surfaces branch on
+  // (`ServiceManagementOffError.code`), unlike the UPPER_SNAKE codes above,
+  // which are internal to the ticket service.
+  | 'service_management_off';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -497,6 +503,22 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     .limit(1);
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
+
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation for the
+  // whole partner. This is the ONE gate: every native creation surface (the
+  // alert dialog, the manage_tickets AI tool, the portal, the Office add-in,
+  // email-to-ticket) routes through createTicket, so no per-route mode check is
+  // needed — nor wanted, since a second check could drift from this one.
+  // Placed after the org resolve (it needs org.partnerId) but before any
+  // ticket-number allocation, so a refused create burns no counter value.
+  try {
+    await assertTicketCreationAllowed(org.partnerId);
+  } catch (err) {
+    if (err instanceof ServiceManagementOffError) {
+      throw new TicketServiceError(err.message, 409, 'service_management_off');
+    }
+    throw err;
+  }
 
   // Intake form (spec 2026-07-10): resolve + validate first so the composed
   // category feeds the existing assertCategoryInPartner guard below.

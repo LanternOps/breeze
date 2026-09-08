@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
@@ -18,25 +18,29 @@ import { palette, radii, spacing, type } from '../../theme';
 import { useAppSelector } from '../../store';
 import { createTicket, type TicketPriority } from '../../services/tickets';
 import { listOrganizations } from '../../services/organizations';
+import { listAssignableUsers } from '../../services/users';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
 import { Toast } from '../../components/Toast';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel } from './ticketCopy';
 import {
+  assigneeOptions,
   buildCreateTicketBody,
   canSubmitTicket,
+  defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
+  isExpectedAssigneeLoadFailure,
   preselectOrg,
   SUBJECT_MAX_LENGTH,
   TICKET_PRIORITY_OPTIONS,
+  type AssigneeUser,
   type OrgOption,
 } from './createTicketForm';
+import { OrgPickerSheet } from './components/OrgPickerSheet';
+import { AssigneePickerSheet } from './components/AssigneePickerSheet';
 
 type Nav = NativeStackNavigationProp<TicketsStackParamList, 'CreateTicket'>;
-
-/** Above this many orgs the picker gets a search box (server-side search). */
-const SEARCH_THRESHOLD = 8;
 
 export function CreateTicketScreen() {
   const navigation = useNavigation<Nav>();
@@ -47,6 +51,12 @@ export function CreateTicketScreen() {
   const [orgSearch, setOrgSearch] = useState('');
   const [orgError, setOrgError] = useState<string | null>(null);
   const [orgId, setOrgId] = useState<string | null>(null);
+  const [orgSheetVisible, setOrgSheetVisible] = useState(false);
+
+  const [staff, setStaff] = useState<AssigneeUser[]>([]);
+  const [assigneeId, setAssigneeId] = useState<string | null>(() => defaultAssigneeId(user));
+  const [assigneeSheetVisible, setAssigneeSheetVisible] = useState(false);
+
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TicketPriority>(DEFAULT_TICKET_PRIORITY);
@@ -76,8 +86,32 @@ export function CreateTicketScreen() {
     void loadOrgs('');
   }, [loadOrgs]);
 
+  // #5188: assignable staff for the picker. Degrades silently to
+  // Unassigned + "(you)" on failure — `assigneeOptions` already handles an
+  // empty list, so there is no error state or toast here. A 403 (tech without
+  // `users:read`) is the permission model working and is not reported at all;
+  // anything else goes to Sentry via reportInternalError.
+  useEffect(() => {
+    let cancelled = false;
+    listAssignableUsers()
+      .then((users) => {
+        if (!cancelled) setStaff(users);
+      })
+      .catch((err) => {
+        if (isExpectedAssigneeLoadFailure(err)) return;
+        reportInternalError(err, 'CreateTicketScreen.loadAssignableUsers');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const me: AssigneeUser | null = user ? { id: user.id, name: user.name, email: user.email } : null;
+  const assigneeChoices = useMemo(() => assigneeOptions(staff, me), [staff, me]);
+  const assigneeLabel = assigneeChoices.find((o) => o.id === assigneeId)?.label ?? 'Unassigned';
+
   const submit = async () => {
-    const built = buildCreateTicketBody({ orgId, subject, description, priority });
+    const built = buildCreateTicketBody({ orgId, subject, description, priority, assigneeId });
     if (!built.ok) return;
     // #5171: without this, the spinner ran with the keyboard still up, and
     // `navigation.replace('TicketDetail', …)` below swapped in the next
@@ -99,7 +133,6 @@ export function CreateTicketScreen() {
   };
 
   const sendable = canSubmitTicket({ orgId, subject, busy });
-  const showSearch = orgTotal > SEARCH_THRESHOLD || orgSearch.length > 0;
   const selectedOrg = orgs?.find((o) => o.id === orgId) ?? null;
   // The user's own org is the only one an org-scoped technician can see, so
   // the picker is noise for them; show the name and move on.
@@ -135,51 +168,28 @@ export function CreateTicketScreen() {
           <Text style={styles.lockedOrg}>{orgs[0].name}</Text>
         ) : (
           <>
-            {showSearch ? (
-              <TextInput
-                style={styles.input}
-                placeholder="Search organizations"
-                placeholderTextColor={palette.dark.textLo}
-                value={orgSearch}
-                onChangeText={(text) => {
-                  setOrgSearch(text);
-                  void loadOrgs(text);
-                }}
-                autoCorrect={false}
-                autoCapitalize="none"
-                accessibilityLabel="Search organizations"
-              />
-            ) : null}
+            {/*
+              #5188: was every org rendered as a full-width row (15+ on a
+              5-org MSP plus test orgs), pushing Subject/Description off the
+              fold — now a single row that opens the search + list in a sheet.
+            */}
+            <Pressable
+              onPress={() => setOrgSheetVisible(true)}
+              accessibilityRole="button"
+              style={styles.selectorRow}
+            >
+              <Text
+                style={[styles.selectorText, !selectedOrg && styles.selectorPlaceholder]}
+                numberOfLines={1}
+              >
+                {selectedOrg ? selectedOrg.name : 'Choose organization'}
+              </Text>
+              <Text style={styles.chevron}>{'›'}</Text>
+            </Pressable>
             {orgError ? (
               <Pressable onPress={() => void loadOrgs(orgSearch)} accessibilityRole="button">
                 <Text style={styles.error}>{orgError}</Text>
               </Pressable>
-            ) : null}
-            {orgs.length === 0 && !orgError ? (
-              <Text style={styles.hint}>No organizations match.</Text>
-            ) : null}
-            <View style={styles.orgList}>
-              {orgs.map((org) => {
-                const active = org.id === orgId;
-                return (
-                  <Pressable
-                    key={org.id}
-                    onPress={() => setOrgId(org.id)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: active }}
-                    style={[styles.orgRow, active && styles.orgRowActive]}
-                  >
-                    <Text style={[styles.orgName, active && styles.orgNameActive]} numberOfLines={1}>
-                      {org.name}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            {selectedOrg === null && orgSearch.length > 0 && orgId ? (
-              // The chosen org is filtered out of the current search results;
-              // say so rather than let the selection look lost.
-              <Text style={styles.hint}>Selected organization is not in these results.</Text>
             ) : null}
           </>
         )}
@@ -226,6 +236,18 @@ export function CreateTicketScreen() {
           })}
         </View>
 
+        <Text style={styles.label}>ASSIGNEE</Text>
+        <Pressable
+          onPress={() => setAssigneeSheetVisible(true)}
+          accessibilityRole="button"
+          style={styles.selectorRow}
+        >
+          <Text style={styles.selectorText} numberOfLines={1}>
+            {assigneeLabel}
+          </Text>
+          <Text style={styles.chevron}>{'›'}</Text>
+        </Pressable>
+
         <Pressable
           onPress={() => void submit()}
           disabled={!sendable}
@@ -245,6 +267,34 @@ export function CreateTicketScreen() {
         text={toast?.text ?? ''}
         kind={toast?.kind ?? 'error'}
         onHidden={() => setToast(null)}
+      />
+      <OrgPickerSheet
+        visible={orgSheetVisible}
+        orgs={orgs}
+        orgTotal={orgTotal}
+        orgSearch={orgSearch}
+        orgError={orgError}
+        selectedOrgId={orgId}
+        onSearchChange={(text) => {
+          setOrgSearch(text);
+          void loadOrgs(text);
+        }}
+        onRetry={() => void loadOrgs(orgSearch)}
+        onSelect={(id) => {
+          setOrgId(id);
+          setOrgSheetVisible(false);
+        }}
+        onCancel={() => setOrgSheetVisible(false)}
+      />
+      <AssigneePickerSheet
+        visible={assigneeSheetVisible}
+        options={assigneeChoices}
+        selectedId={assigneeId}
+        onSelect={(id) => {
+          setAssigneeId(id);
+          setAssigneeSheetVisible(false);
+        }}
+        onCancel={() => setAssigneeSheetVisible(false)}
       />
     </KeyboardAvoidingView>
   );
@@ -271,19 +321,21 @@ const styles = StyleSheet.create({
     marginTop: spacing['2'],
   },
   multiline: { minHeight: 112, textAlignVertical: 'top' },
-  orgList: { marginTop: spacing['2'], gap: spacing['1'] },
-  orgRow: {
+  selectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: spacing['3'],
     paddingVertical: spacing['3'],
     borderRadius: radii.md,
     borderWidth: 1,
     borderColor: palette.dark.border,
     backgroundColor: palette.dark.bg1,
+    marginTop: spacing['2'],
   },
-  orgRowActive: { borderColor: palette.brand.base, backgroundColor: palette.dark.bg2 },
-  orgName: { ...type.body, color: palette.dark.textMd },
-  orgNameActive: { color: palette.dark.textHi },
-  hint: { ...type.meta, color: palette.dark.textLo, marginTop: spacing['2'] },
+  selectorText: { ...type.body, color: palette.dark.textHi, flex: 1, marginRight: spacing['2'] },
+  selectorPlaceholder: { color: palette.dark.textLo },
+  chevron: { ...type.body, color: palette.dark.textLo },
   error: { ...type.meta, color: palette.deny.base, marginTop: spacing['2'] },
   priorityRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing['2'], marginTop: spacing['2'] },
   chip: {

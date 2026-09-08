@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import OperatorTaskDetail from '../../../components/aiOperator/OperatorTaskDetail';
+
+const { taskId } = Astro.params;
+---
+
+<DashboardLayout title="Operator Task">
+  <OperatorTaskDetail taskId={taskId!} client:load />
+</DashboardLayout>

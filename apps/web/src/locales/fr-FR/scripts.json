@@ -154,8 +154,18 @@
       "severity": "Gravité",
       "message": "Message",
       "command": "Commande",
+      "whenOffline": "Si l'appareil est hors ligne",
       "software": "Logiciel",
       "failureNotificationChannel": "Canal de notification d’échec"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Mettre en file d'attente (par défaut)",
+        "skip": "Ignorer"
+      }
+    },
+    "hints": {
+      "whenOffline": "Le travail en file d'attente attend l'appareil et s'exécute à sa prochaine connexion, ou expire après 7 jours. Ignorer fait échouer l'étape immédiatement."
     },
     "placeholders": {
       "name": "Contrôle de maintenance quotidien",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Terminée — votre demande d'arrêt est arrivée trop tard",
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
-      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus"
+      "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
+      "queuedOffline": "En file d'attente — appareil hors ligne"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "S'exécute quand l'appareil est en ligne"
     }
   },
   "secretParameters": {
@@ -1111,6 +1126,14 @@
       "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
       "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
+    },
+    "securityReview": {
+      "title": "Revue de sécurité",
+      "blockedHint_one": "Ce script correspond à 1 motif que l'agent refuse d'exécuter sans confirmation.",
+      "blockedHint_other": "Ce script correspond à {{count}} motifs que l'agent refuse d'exécuter sans confirmation. Confirmez chacun de ceux que vous souhaitez autoriser.",
+      "clearedHint": "Tous les motifs détectés ont été confirmés.",
+      "willBlock": "Non confirmé — l'agent refusera d'exécuter ce script.",
+      "footnote": "Une confirmation s'applique uniquement à ce script et ne couvre que les motifs listés ici. Si vous ajoutez plus tard une autre opération à risque, elle sera bloquée jusqu'à ce que vous la confirmiez aussi."
     }
   },
   "scriptList": {

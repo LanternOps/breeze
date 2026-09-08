@@ -36,6 +36,7 @@ import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../permissions';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
+import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import type { RiskTier, ApprovalProof } from '@breeze/shared';
 
 /**
@@ -1023,13 +1024,23 @@ export async function decideApprovalRequest(
               // requester whose chat turn had already ended could never be told
               // what happened to it. In the same transaction as the status
               // change, so the record cannot disagree with the decision.
-              if (status === 'approved' || status === 'denied') {
+              if (status === 'approved') {
                 await tx.insert(intentOutbox).values({
                   intentId,
-                  eventType: status === 'approved' ? 'intent_approved' : 'intent_rejected',
+                  eventType: 'intent_approved',
                   // Ids only, no argument content (spec §3.2).
                   payload: { intentId, orgId: linkedIntent.orgId },
                 });
+              } else {
+                // #5205 W05 (#5210): same intentOutbox row this always wrote,
+                // plus (when task-linked) the task_outbox leg —
+                // `linkedIntent.taskId` is the pre-transaction snapshot,
+                // which is safe because task linkage is immutable.
+                await publishIntentTerminalOutbox(
+                  tx,
+                  { id: intentId, orgId: linkedIntent.orgId, taskId: linkedIntent.taskId },
+                  'intent_rejected',
+                );
               }
             }
           }

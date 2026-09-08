@@ -241,6 +241,24 @@ describe('alert state-change authz (Finding #6)', () => {
     expect(res.status).toBe(403);
   });
 
+  it.each(['/alerts/summary', `/alerts/${ALERT_ID}`, `/alerts/${ALERT_ID}/tickets`])(
+    'denies %s without alert read before querying or enriching alerts', async (path) => {
+      grantedRef.current.add('tickets:read');
+      const res = await makeApp().request(path);
+      expect(res.status).toBe(403);
+      expect(dbMock.select).not.toHaveBeenCalled();
+      expect(getAlertWithOrgCheck).not.toHaveBeenCalled();
+      expect(dbMock.update).not.toHaveBeenCalled();
+    }
+  );
+
+  it('linked tickets still require ticket read when alert read is granted', async () => {
+    grantedRef.current.add('alerts:read');
+    const res = await makeApp().request(`/alerts/${ALERT_ID}/tickets`);
+    expect(res.status).toBe(403);
+    expect(getAlertWithOrgCheck).not.toHaveBeenCalled();
+  });
+
   it('403 on POST /alerts/:id/resolve without ALERTS_WRITE', async () => {
     const res = await makeApp().request(`/alerts/${ALERT_ID}/resolve`, {
       method: 'POST',

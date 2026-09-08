@@ -88,6 +88,10 @@ const POLICY_ID = '5d4c3b2a-1111-4222-8333-444455556666';
 const ALERTS_WRITE = 'alerts:write';
 
 describe('escalation policies authz (Finding #6)', () => {
+  it('denies policy reads without alerts:read', async () => {
+    const response = await makeApp().request('/alerts/policies');
+    expect(response.status).toBe(403);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     grantedRef.current = new Set<string>();

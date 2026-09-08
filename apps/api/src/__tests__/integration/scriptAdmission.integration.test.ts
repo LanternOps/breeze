@@ -122,6 +122,8 @@ describe('POST /scripts/:id/execute — real PostgreSQL admission isolation', ()
         admission: 'admitted',
         executionId: expect.any(String),
         commandId: expect.any(String),
+        // Device fixtures have no live socket, so admission-time delivery is always queued_offline here (W02, #5133).
+        delivery: 'queued_offline',
       }, {
         requestedDeviceId: siteDeniedDevice.id,
         admission: 'denied',

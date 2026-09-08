@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -32,6 +32,14 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
       withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
     },
     matchContactMock: vi.fn(),
+    // #5075 W04 — Service Management gate. `getServiceManagementMode` (called
+    // by `assertTicketCreationAllowed`) issues its OWN db.select() call, which
+    // would otherwise consume a slot in the `dbMocks.selectResult` sequence
+    // every other createTicket test queues up (org lookup, then
+    // device/assignee/category lookups, in order) — breaking every test with
+    // 2+ queued selects. Mocked at the module boundary instead, defaulting to
+    // "allowed" so the gate is a no-op for every test that doesn't opt in.
+    assertTicketCreationAllowedMock: vi.fn().mockResolvedValue(undefined),
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -78,6 +86,14 @@ vi.mock('./ticketFormService', async () => {
 vi.mock('./contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('./contacts/crud')>('./contacts/crud');
   return { ...actual, matchContactByEmail: matchContactMock };
+});
+
+// #5075 W04 — mock only `assertTicketCreationAllowed`; keep every other export
+// (notably `ServiceManagementOffError`, which `createTicket` checks with
+// `instanceof`) real, so mocked-rejection tests can throw the ACTUAL class.
+vi.mock('./serviceManagement', async () => {
+  const actual = await vi.importActual<typeof import('./serviceManagement')>('./serviceManagement');
+  return { ...actual, assertTicketCreationAllowed: assertTicketCreationAllowedMock };
 });
 
 vi.mock('../db', () => ({
@@ -250,6 +266,7 @@ import {
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { ServiceManagementOffError } from './serviceManagement';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
@@ -267,6 +284,41 @@ describe('createTicket', () => {
     valuesMock.mockClear();
     setMock.mockClear();
     allocateMock.mockResolvedValue('T-2026-0042');
+    assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation. This is
+  // the ONE gate every creation surface routes through; ticketService.ts
+  // translates the thrown ServiceManagementOffError into a TicketServiceError so
+  // every existing `instanceof TicketServiceError` handler picks it up unchanged.
+  describe('Service Management gate (#5075 W04)', () => {
+    it('translates a ServiceManagementOffError into a 409 TicketServiceError', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      assertTicketCreationAllowedMock.mockRejectedValueOnce(new ServiceManagementOffError());
+
+      const err = await createTicket(
+        { orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor
+      ).catch(e => e);
+
+      expect(err).toBeInstanceOf(TicketServiceError);
+      expect(err.status).toBe(409);
+      expect(err.code).toBe('service_management_off');
+      expect(err.message).toBe('Service Management is turned off for this partner');
+      // Refused before number allocation and before any insert.
+      expect(allocateMock).not.toHaveBeenCalled();
+      expect(valuesMock).not.toHaveBeenCalled();
+    });
+
+    it('checks the gate with the RESOLVED org partnerId, and proceeds to create when it resolves', async () => {
+      dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+      dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+      assertTicketCreationAllowedMock.mockResolvedValueOnce(undefined);
+
+      const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+
+      expect(assertTicketCreationAllowedMock).toHaveBeenCalledWith('p-1');
+      expect(t.internalNumber).toBe('T-2026-0042');
+    });
   });
 
   it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {

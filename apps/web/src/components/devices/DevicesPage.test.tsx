@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { navigateTo } from '@/lib/navigation';
 
 // Feature flags are evaluated at module load, so expose a mutable holder we can
@@ -24,11 +24,16 @@ vi.mock('@/lib/featureFlags', () => flagState);
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn(),
 }));
 
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
   fetchAllNetworkDevices: vi.fn(),
+  // Manual arm (#4622 W04) — carries no feature flag, so it's fetched on
+  // every render; defaults to empty so existing agent/network assertions are
+  // unaffected.
+  fetchAllManualAssets: vi.fn(),
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
@@ -149,6 +154,7 @@ vi.mock('./ScriptPickerModal', () => ({
 // this component was invoked at all (#4014).
 vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
+vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
@@ -342,6 +348,8 @@ beforeEach(() => {
   // Network arm (#1322) defaults to empty so existing assertions over the
   // agent fleet are unaffected.
   vi.mocked(fetchAllNetworkDevices).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
+  // Manual arm (#4622 W04) defaults to empty for the same reason.
+  vi.mocked(fetchAllManualAssets).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
 
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/filters/preview')) {
@@ -1357,6 +1365,50 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
   });
 
+  // #5128 W2 — the bulk toast reads `queuedOffline` off the W1 response
+  // shape and appends the count via `queuedOfflineTail`. Untested until now:
+  // a wrong field name, an off-by-one, or a broken interpolation key would
+  // ship silently, and bulk reboot of a partly-offline fleet is a core flow.
+  it('bulk toast reports how many of the sent commands were queued for offline devices', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendBulkCommand).mockResolvedValue({
+      commands: [{}, {}, {}],
+      failed: [],
+      skipped: [],
+      queuedOffline: [DEV_2, DEV_3],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /2 queued for offline devices/i.test(m))).toBe(true);
+    });
+  });
+
+  it('bulk toast omits the queued-offline clause when nothing was queued', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendBulkCommand).mockResolvedValue({
+      commands: [{}, {}, {}],
+      failed: [],
+      skipped: [],
+      queuedOffline: [],
+    } as never);
+
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /queued for offline devices/i.test(m))).toBe(false);
+    });
+  });
+
   it('refuses outright when EVERY selected device is decommissioned', async () => {
     const { sendBulkCommand } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
@@ -1492,10 +1544,41 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // notifying the user. A flat "sent" toast would therefore be a false success,
   // so the copy must name the queue.
   describe('single-device command toast tells the truth about delivery (#2630)', () => {
-    async function rebootDeviceWithStatus(status: string) {
+    // #5128 W2 — the toast now reads the dispatch core's own `delivery`
+    // outcome (and `deliverBy` for the expiry clause) off the response,
+    // rather than inferring from the pre-request device.status snapshot.
+    // `delivered` defaults to the device's status ONLY as a realistic stand-in
+    // for what the real API would answer; a case can override it to exercise
+    // the response independent of status (e.g. a device that came online
+    // between page load and click).
+    async function rebootDeviceWithStatus(
+      status: string,
+      opts: {
+        delivered?: boolean;
+        deliverBy?: string | null;
+        // Raw override for the 'queued_live' outcome — the device IS online,
+        // only the immediate socket push missed (no live session,
+        // preferHeartbeat); distinct from both 'delivered' and
+        // 'queued_offline'. Takes precedence over `delivered` when set.
+        delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+      } = {},
+    ) {
       const { sendDeviceCommand } = await import('../../services/deviceActions');
       const { showToast } = await import('../shared/Toast');
-      vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+      const delivered = opts.delivered ?? status === 'online';
+      // `?? ` would treat an explicit `deliverBy: null` override the same as
+      // "not provided" (both are nullish) — check membership instead so the
+      // no-expiry test case actually gets null through.
+      const deliverBy = delivered ? null : ('deliverBy' in opts ? opts.deliverBy! : '2026-09-08T00:00:00.000Z');
+      vi.mocked(sendDeviceCommand).mockResolvedValue({
+        id: 'cmd-1',
+        deviceId: DEV_1,
+        type: 'reboot',
+        status: 'pending',
+        createdAt: '2026-09-01T00:00:00.000Z',
+        delivery: opts.delivery ?? (delivered ? 'delivered' : 'queued_offline'),
+        deliverBy,
+      } as never);
 
       vi.mocked(fetchAllDevices).mockResolvedValue({
         data: [{ ...rawDevice(DEV_1, 'host-alpha'), status }],
@@ -1554,19 +1637,48 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       const toasts = await rebootDeviceWithStatus('online');
       const success = toasts.find(c => c.type === 'success');
       expect(success?.message).toMatch(/sent to host-alpha/i);
-      expect(success?.message).not.toMatch(/queued/i);
+      expect(success?.message).not.toMatch(/runs when the device is online/i);
     });
 
     it.each(['offline', 'maintenance', 'quarantined', 'updating', 'pending'])(
-      '%s device: says QUEUED and names the reconnect condition, never a bare success',
+      '%s device: reports the runs-when-online copy with its expiry, never a bare "sent"',
       async (status) => {
         const toasts = await rebootDeviceWithStatus(status);
         const success = toasts.find(c => c.type === 'success');
-        expect(success?.message).toMatch(/queued/i);
-        expect(success?.message).toMatch(/host-alpha/);
-        expect(success?.message).toMatch(/reconnect/i);
+        expect(success?.message).toMatch(/runs when the device is online/i);
+        expect(success?.message).not.toMatch(/sent to/i);
       },
     );
+
+    // #5128 W2 regression: 'queued_live' means the device IS online — only
+    // the immediate socket push missed (no live session, preferHeartbeat),
+    // so the next heartbeat (seconds away) claims it. A `!== 'delivered'`
+    // check would misreport this as "runs when the device is online",
+    // telling the operator an online device is offline.
+    it('a queued_live result (device online, immediate push missed) reports "sent", not "runs when online"', async () => {
+      const toasts = await rebootDeviceWithStatus('online', { delivery: 'queued_live', deliverBy: null });
+      const success = toasts.find(c => c.type === 'success');
+      expect(success?.message).toMatch(/sent to host-alpha/i);
+      expect(success?.message).not.toMatch(/runs when the device is online/i);
+    });
+
+    // #5128 W2 — a queued command that carries no deliverBy (a legacy row,
+    // or a policy that never sets a TTL) falls back to the no-expiry copy
+    // rather than rendering a literal "undefined" date.
+    it('a queued command with no deliverBy omits the expiry clause', async () => {
+      const toasts = await rebootDeviceWithStatus('offline', { deliverBy: null });
+      const success = toasts.find(c => c.type === 'success');
+      expect(success?.message).toBe('Runs when the device is online');
+    });
+
+    // `delivery` is the dispatch core's own outcome, not a re-derivation of
+    // device.status — a device that reconnected between page load and click
+    // must still report "sent", even though the row's cached status is stale.
+    it('trusts the response delivery outcome over a stale device.status snapshot', async () => {
+      const toasts = await rebootDeviceWithStatus('offline', { delivered: true });
+      const success = toasts.find(c => c.type === 'success');
+      expect(success?.message).toMatch(/sent to host-alpha/i);
+    });
   });
 
   // Every non-decommissioned status is queueable, so ALL of them must survive the
@@ -2870,5 +2982,41 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
     expect(notice.textContent).toMatch(/2 network devices hidden/);
     expect(notice.textContent).toMatch(/Needs Patches/);
     await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
+  });
+});
+
+// #5213 W02 — the header "Add" split menu. AddDeviceModal/AddNetworkAssetModal
+// are stubbed to `() => null` above, so this only exercises the menu's own
+// open/close/hash wiring, not the modals' internal behavior (covered by
+// AddDeviceModal.test.tsx / AddNetworkAssetModal.test.tsx respectively).
+describe('DevicesPage — header "Add" split menu (#5213)', () => {
+  beforeEach(() => {
+    window.location.hash = '';
+  });
+
+  it('opens the menu and selecting "Add network asset…" sets the hash and closes the menu', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    expect(screen.getByTestId('devices-page-add-menu')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-network-asset'));
+
+    expect(window.location.hash).toBe('#add-network-asset');
+    // The menu itself closes on selection — it is not the same UI as the modal.
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+  });
+
+  it('selecting "Install agent…" closes the menu without touching the hash', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-install-agent'));
+
+    expect(window.location.hash).toBe('');
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
   });
 });

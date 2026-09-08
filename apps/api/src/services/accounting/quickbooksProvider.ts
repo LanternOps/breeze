@@ -821,10 +821,19 @@ export class QuickbooksProvider implements AccountingProvider {
    * QuickBooks bumps an Invoice's revision every time a Payment is applied to
    * it, so voiding a PAID invoice from Breeze always failed with a 400 on the
    * stored token and left the invoice mapping in error after five job
-   * attempts. QuickBooks *does* permit voiding an invoice that has a payment
-   * applied — it just wants the live revision — so a 5010 is re-read and
-   * retried EXACTLY ONCE. A second stale fault escapes as the retryable error
-   * it is, rather than spinning against somebody editing the invoice in a loop.
+   * attempts. A 5010 is therefore re-read and retried EXACTLY ONCE. A second
+   * stale fault escapes as the retryable error it is, rather than spinning
+   * against somebody editing the invoice in a loop.
+   *
+   * A STALE TOKEN WAS NOT THE ONLY REASON A PAID INVOICE FAILED TO VOID
+   * (#5180). An earlier revision of this comment claimed QuickBooks "does
+   * permit voiding an invoice that has a payment applied — it just wants the
+   * live revision". Production disproved that on 2026-09-06: with a live
+   * revision QuickBooks still refused, because the invoice was settled by a
+   * QuickBooks Payment. That refusal is a business RULE, so it is classified
+   * terminal by the coordinator (`isQboPaymentLinkedRefusal`) rather than
+   * retried; this method deliberately does not translate it, so the fault
+   * fields reach `voidInvoiceInAccounting` intact.
    *
    * A NULL stored token is likewise not a refusal any more. An adopted or
    * re-owned invoice mapping can legitimately carry none, and throwing left an
@@ -1213,6 +1222,10 @@ export class QuickbooksProvider implements AccountingProvider {
         body: text.slice(0, 500),
         qboFaultCode: fault.code ?? undefined,
         qboFaultMessage: fault.message ?? undefined,
+        // Boolean only — derived from the FULL text for the same reason the
+        // code is, since Intuit states this reason in the `Detail` that
+        // truncation drops. The Detail text itself is never carried (#5180).
+        qboPaymentLinked: fault.paymentLinked === true ? true : undefined,
       });
       // Server log only — `body` can carry Intuit's `Detail`, which names the
       // offending customer/amount. It never reaches Sentry (scrubbed) or a

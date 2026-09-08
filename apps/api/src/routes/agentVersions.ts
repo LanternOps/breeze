@@ -470,10 +470,18 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 // is distinct from `helper` (the Tauri Helper app). It has its own route; it
 // was omitted here originally, so the agent fell back to the github URL and the
 // host check rejected the user-helper auto-update (#1878, sibling of #646).
+//
+// `version` (#5159) pins the redirect to one exact release instead of the
+// promoted one. Without it the response's checksum (read from the requested
+// agent_versions row) and the route's bytes (the promoted row) can be
+// different builds — which is precisely what happens to an org running a
+// pinned pilot version under AGENT_AUTO_PROMOTE=false, leaving every device
+// stuck in "Updating" on an unfixable size/checksum mismatch.
 function buildServerRelativeAgentDownloadUrl(
   dbPlatform: string,
   architecture: string,
   component: string,
+  version?: string,
 ): string | null {
   if (
     component !== "agent" &&
@@ -489,19 +497,34 @@ function buildServerRelativeAgentDownloadUrl(
     return null;
   }
   const os = dbPlatformToRouteOs(dbPlatform);
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
   if (component === "helper") {
-    return `${origin}/api/v1/agents/download/helper/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/helper/${os}/${architecture}${query}`;
   }
   if (component === "user-helper") {
-    return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/user-helper/${os}/${architecture}${query}`;
   }
   if (component === "watchdog") {
-    return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}${query}`;
   }
   if (component === "backup") {
-    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}`;
+    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}${query}`;
   }
-  return `${origin}/api/v1/agents/download/${os}/${architecture}`;
+  return `${origin}/api/v1/agents/download/${os}/${architecture}${query}`;
+}
+
+// Which version (if any) to pin the server-relative download URL to.
+//
+// Only BINARY_SOURCE=github can honour a pin: that branch of the download
+// route builds a per-tag GitHub asset URL. Local mode streams the single
+// build baked into the binaries volume and has nothing to select from, so
+// passing a version there would only turn a working download into a 409.
+// The "unknown" sentinel (binarySync's locally-registered rows with no
+// version file) is not a release tag either — see getRegisteredComponentVersion.
+function downloadUrlVersionPin(version: string): string | undefined {
+  if (getBinarySource() !== "github") return undefined;
+  if (version === "unknown") return undefined;
+  return version;
 }
 
 export async function validateReleaseManifest(args: {
@@ -710,6 +733,11 @@ agentVersionRoutes.get(
       platform,
       arch,
       component,
+      // Pin to the exact row this checksum came from. The promoted row IS what
+      // the versionless route resolves, so this is normally the same release —
+      // but pinning removes the last way the two can select different rows
+      // (a duplicate isLatest row breaking the ORDER BY tiebreak).
+      downloadUrlVersionPin(latestVersion.version),
     );
 
     return c.json({
@@ -799,38 +827,33 @@ agentVersionRoutes.get(
       );
     }
 
+    // #5159: pin the server-relative URL to the version that was actually
+    // requested, so the bytes the download route redirects to are the same
+    // release as the checksum/manifest returned below. Before this, the URL
+    // was versionless and the route served the PROMOTED release — fine while
+    // the pin and the promotion agreed, and an unfixable checksum mismatch
+    // whenever they did not (an org agentVersionPins pilot under
+    // AGENT_AUTO_PROMOTE=false, which resolvePinnedUpgradeTarget deliberately
+    // allows, #2124).
+    const versionPin = downloadUrlVersionPin(versionInfo.version);
+
     // breeze-backup is version-slaved to the agent but requested by EXACT
     // version (unlike agent/helper/watchdog, which always want "latest").
-    // The versionless /download/backup/:os/:arch route can only ever serve ONE
-    // release, so rewriting a NON-servable backup version to it would hand an
-    // agent healing to an older pinned version different bytes than it asked
-    // for; the updater verifies checksum+manifest against the pinned version
-    // and fails safe, but can never actually heal. So for component=backup
-    // only, rewrite exclusively when this row IS the one that route serves.
+    // When the URL carries no version pin, the versionless route can only ever
+    // serve ONE release, so rewriting a NON-servable backup version to it
+    // would hand an agent healing to an older pinned version different bytes
+    // than it asked for; the updater verifies checksum+manifest against the
+    // pinned version and fails safe, but can never actually heal. So for
+    // component=backup only, and only when the URL cannot be pinned, rewrite
+    // exclusively when this row IS the one that route serves.
     //
-    // WHICH row that is changed in #3499, so rather than restate the route's
-    // rule here and let the two drift, ask the route's OWN resolver what it
-    // will serve and compare. Restating it is what made this guard subtly
-    // wrong twice: it used to hardcode "the env version", correct only while
-    // the route resolved BINARY_VERSION/BREEZE_VERSION; a plain `isLatest`
-    // test would be equally wrong for a never-synced deployment, where no row
-    // is promoted and the route legitimately falls back to the env version.
-    // Deriving it keeps both cases right by construction.
-    //
-    // A resolver fault throws rather than guessing, and this endpoint is
-    // already DB-dependent (it just read versionInfo), so it surfaces as a 5xx
-    // instead of a rewrite that might not match. Every other component keeps
-    // the unconditional rewrite.
+    // A version pin makes the question moot: the route then resolves that
+    // exact row (getRegisteredComponentVersion) rather than the promoted one.
+    // What remains is local mode, where the route streams the single build in
+    // the binaries volume — the env-resolved version, which is what this guard
+    // has always compared against there.
     let backupVersionIsServableByVersionlessRoute = true;
-    if (versionInfo.component === "backup") {
-      // Mirror the route's own BINARY_SOURCE branch. Only the github branch
-      // resolves the promoted row; in local mode the route streams ONE
-      // unversioned file from disk/S3 whose version is the binaries-volume
-      // build — i.e. the env version, which is what this guard has always
-      // compared against there. Deriving the promoted row in local mode would
-      // withhold the rewrite (and cost a query) whenever the promoted row and
-      // the disk build differ, e.g. AGENT_AUTO_PROMOTE=false or after a
-      // rollback via POST /agent-versions/promote.
+    if (!versionPin && versionInfo.component === "backup") {
       const versionlessRouteServes =
         getBinarySource() === "github"
           ? ((await getPromotedComponentVersion(
@@ -848,6 +871,7 @@ agentVersionRoutes.get(
           versionInfo.platform,
           versionInfo.architecture,
           versionInfo.component,
+          versionPin,
         )
       : null;
 

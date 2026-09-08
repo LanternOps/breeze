@@ -6,13 +6,33 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
+import type { ServiceManagementMode } from './orgRecordTabs';
 
 export interface OrgOverviewTabProps {
   orgId: string;
   orgFetch: OrgFetch;
   summary: OrgSummary | null;
   summaryFailed: boolean;
+  /**
+   * The partner's Service Management mode (#5075 W04). Anything but `native`
+   * withdraws the three tiles the module owns.
+   *
+   * Deliberately COARSER than the tab gate in `orgRecordTabs.ts`, which keeps
+   * the Tickets tab under `external` because it lists the shadow rows Breeze
+   * still writes. A summary COUNT is the part that misleads under `external`:
+   * it would read as the customer's ticket position while the real numbers live
+   * in the PSA. The tab, which links out to those rows, does not have that
+   * problem. `off` hides all three for the plainer reason that none of them
+   * exist.
+   *
+   * Defaults to `native` so a caller that has not wired the store yet (and any
+   * existing test) keeps today's behaviour.
+   */
+  mode?: ServiceManagementMode;
 }
+
+/** Tiles owned by the Service Management module; hidden unless mode is `native`. */
+const SERVICE_MANAGEMENT_TILE_KEYS: ReadonlySet<string> = new Set(['tickets', 'contracts', 'invoices']);
 
 interface Tile {
   key: string;
@@ -67,7 +87,7 @@ async function loadFeed<T>(
  * would be a confident lie about a customer's fleet. The two feeds below hold
  * the same line: a failed load says so, rather than rendering the empty state.
  */
-export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed }: OrgOverviewTabProps) {
+export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed, mode = 'native' }: OrgOverviewTabProps) {
   const { t } = useTranslation('organizations');
   const formatAuditAction = useAuditActionFormatter();
   const [activity, setActivity] = useState<FeedState<AuditLogEntry>>(null);
@@ -183,6 +203,11 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
     });
   }
 
+  // Filtered once, after every push, rather than guarding each push: a tile
+  // added later cannot slip past the module gate by forgetting the condition —
+  // it only has to be named in SERVICE_MANAGEMENT_TILE_KEYS to be covered.
+  const visibleTiles = mode === 'native' ? tiles : tiles.filter((tile) => !SERVICE_MANAGEMENT_TILE_KEYS.has(tile.key));
+
   return (
     <div data-testid="org-overview-tab" className="space-y-6">
       {summaryFailed && (
@@ -191,9 +216,9 @@ export default function OrgOverviewTab({ orgId, orgFetch, summary, summaryFailed
         </p>
       )}
 
-      {tiles.length > 0 && (
+      {visibleTiles.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {tiles.map((tile) => (
+          {visibleTiles.map((tile) => (
             <div
               key={tile.key}
               data-testid={`org-overview-tile-${tile.key}`}

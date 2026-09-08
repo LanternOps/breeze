@@ -159,7 +159,8 @@
       "quarantined": "L’appareil est mis en quarantaine",
       "updating": "L’appareil se met à jour",
       "pending": "L’appareil est en attente d’inscription",
-      "notOnline": "L’appareil n’est pas en ligne"
+      "notOnline": "L’appareil n’est pas en ligne",
+      "unknown": "L'appareil n'a pas encore été sondé"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — le Terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent à la reconnexion.",
@@ -210,6 +211,16 @@
         "title": "Installer Homebrew",
         "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur et une autorisation sudo active ou sans mot de passe; sinon, l’installation échoue et l’erreur est rapportée.",
         "confirm": "Installer Homebrew"
+      },
+      "bulkDeleteManual": {
+        "title": "Supprimer {{count}} actifs manuels ?",
+        "message": "Cette action supprime définitivement les actifs manuels sélectionnés. Cette opération est irréversible.",
+        "confirm": "Supprimer"
+      },
+      "deleteManual": {
+        "title": "Supprimer {{hostname}} ?",
+        "message": "Cette action supprime définitivement cet actif manuel. Cette opération est irréversible.",
+        "confirm": "Supprimer"
       }
     },
     "removeDialog": {
@@ -396,7 +407,8 @@
     "segments": {
       "all": "Tous",
       "agent": "Agent",
-      "network": "Réseau"
+      "network": "Réseau",
+      "manual": "Manuel"
     },
     "filterByDeviceClass": "Filtrer par classe de dispositif"
   },
@@ -488,7 +500,8 @@
       "decommissioned": "Retiré",
       "quarantined": "En quarantaine",
       "updating": "Mise à jour",
-      "pending": "En attente"
+      "pending": "En attente",
+      "unknown": "Inconnu"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -630,7 +643,9 @@
     "rail": "Chemin de fer",
     "strip": "Strip",
     "networkAsset": "Actif réseau",
-    "networkAssets": "Actifs réseau"
+    "networkAssets": "Actifs réseau",
+    "operatorTasks": "Tâches de l'opérateur",
+    "operatorTasksForThisDevice": "Tâches de l'opérateur IA pour cet appareil"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -1055,7 +1070,11 @@
       "status": "Statut",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Dernière apparition"
+      "lastSeen": "Dernière apparition",
+      "serial": "N° de série",
+      "assetTag": "Étiquette d'actif",
+      "location": "Emplacement",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Trier par classe",
@@ -1068,7 +1087,11 @@
       "status": "Trier par statut",
       "cpu": "Trier par CPU utilisation",
       "ram": "Trier par RAM utilisation",
-      "lastSeen": "Trier par dernière heure vue"
+      "lastSeen": "Trier par dernière heure vue",
+      "serial": "Trier par numéro de série",
+      "assetTag": "Trier par étiquette d'actif",
+      "location": "Trier par emplacement",
+      "source": "Trier par source"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1110,8 @@
         "decommissioned": "Retiré",
         "quarantined": "En quarantaine",
         "updating": "Mise à jour",
-        "pending": "En attente"
+        "pending": "En attente",
+        "unknown": "Inconnu"
       }
     },
     "roles": {
@@ -1187,7 +1211,21 @@
     "devicesPerPage": "Appareils par page",
     "page": "Page",
     "possibleDuplicate": "Doublon possible",
-    "possibleDuplicateTitle": "Cet appareil remplace peut-être une fiche antérieure portant le même nom d’hôte. Ouvrez-la pour vérifier."
+    "possibleDuplicateTitle": "Cet appareil remplace peut-être une fiche antérieure portant le même nom d’hôte. Ouvrez-la pour vérifier.",
+    "manualOnlyBulkAction": "Sélectionnez un actif manuel pour utiliser cette action.",
+    "manualAsset": "Actif manuel",
+    "manual": "Manuel",
+    "selectedCompositionManual": "{{agent}} agent, {{network}} réseau, {{manual}} manuel",
+    "deleteManualSelected": "Supprimer les actifs manuels",
+    "editManualAsset": "Modifier {{name}}",
+    "deleteManualAsset": "Supprimer {{name}}",
+    "edit": "Modifier",
+    "delete": "Supprimer",
+    "source": {
+      "scan": "Analyse",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -1846,18 +1884,16 @@
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
-    "hiddenNetworkNotice_one": "1 appareil réseau masqué — {{fields}} s’applique uniquement aux appareils avec agent.",
-    "hiddenNetworkNotice_other": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
-    "hiddenNetworkNotice": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
     "toasts": {
       "actionFailed": "Échec de {{action}} sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
+      "agentOnlyActionManual": "Cette action s’applique uniquement aux dispositifs agents. Les actifs manuels n’ont pas d’agent.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
       "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés.",
-      "bulkCommandPartialFailed": "Commandement de masse partiellement échoué",
-      "bulkCommandSent": "Commandement en vrac envoyé",
+      "bulkCommandPartialFailed": "{{action}} envoyé à {{count}} appareil(s){{queuedTail}}{{skippedTail}} ; {{failed}} en échec : {{failureSummary}}",
+      "bulkCommandSent": "{{action}} envoyé à {{count}} appareil(s){{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Échec du retrait des {{count}} appareil(s) : {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} appareil(s) retiré(s) ; {{failed}} échoué(s) : {{devices}}",
       "bulkDecommissioned": "{{count}} appareil(s) retiré(s)",
@@ -1896,7 +1932,6 @@
       "networkSkipped_one": "1 appareil réseau ignoré — cette action s’applique uniquement aux appareils avec agent.",
       "networkSkipped_other": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
       "networkSkipped": "{{count}} appareils réseau ignorés — cette action s’applique uniquement aux appareils avec agent.",
-      "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "permanentDeleteCancelled": "Suppression permanente annulée",
       "permanentDeleting": "Suppression permanente de {{hostname}} en cours…",
       "permanentlyDeleted": "{{hostname}} supprimé définitivement",
@@ -1909,7 +1944,19 @@
       "unknownAction": "Action inconnue",
       "unknownBulkAction": "Action en vrac inconnue",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
-      "wakeTimeout": "Temps d’arrêt du réveil"
+      "wakeTimeout": "Temps d’arrêt du réveil",
+      "queuedOfflineTail": ", {{count}} en file d'attente pour des appareils hors ligne",
+      "runsWhenOnline": "S'exécute quand l'appareil est en ligne — expire le {{date}}",
+      "runsWhenOnlineNoExpiry": "S'exécute quand l'appareil est en ligne",
+      "deleteManualFailed": "Échec de la suppression de {{hostname}}.",
+      "mfaRequired": "Cette action nécessite l'authentification multifacteur. Veuillez vous reconnecter.",
+      "manualDeleted": "{{hostname}} supprimé.",
+      "manualOnlyAction": "Sélectionnez un actif manuel pour utiliser cette action.",
+      "manualSkipped": "{{count}} appareils non manuels ignorés — cette action s'applique uniquement aux actifs manuels.",
+      "nonAgentSkipped": "{{count}} appareils sans agent ignorés — cette action s'applique uniquement aux appareils avec agent.",
+      "bulkManualDeleted": "{{count}} actifs manuels supprimés.",
+      "bulkManualDeleteAllFailed": "Échec de la suppression des {{count}} actifs manuels : {{devices}}.",
+      "bulkManualDeleteSomeFailed": "{{succeeded}} supprimés ; {{failed}} échoués : {{devices}}."
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",
@@ -1920,7 +1967,19 @@
       "message": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "title": "Certains appareils sélectionnés sont retirés"
     },
-    "importFromRmm": "Importer depuis un autre RMM"
+    "importFromRmm": "Importer depuis un autre RMM",
+    "hiddenNonAgentNotice": "{{count}} {{class}} masqués — {{fields}} s'applique uniquement aux appareils avec agent.",
+    "hiddenNonAgentClassLabel": {
+      "network": "appareils réseau",
+      "manual": "actifs manuels",
+      "mixed": "appareils"
+    },
+    "addMenu": {
+      "trigger": "Ajouter",
+      "installAgent": "Installer l'agent…",
+      "addNetworkAsset": "Ajouter un actif réseau…",
+      "addManualAsset": "Ajouter un actif manuellement…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",
@@ -2657,5 +2716,97 @@
       "manufacturer": "Fabricant"
     },
     "identityConflictNote": "Les identifiants de cette ligne pointent vers des appareils différents et ne peuvent pas être importés tels quels — corrigez le fichier et relancez l'aperçu. Les candidats ci-dessous sont indiqués à titre de référence uniquement."
+  },
+  "queuedActions": {
+    "title": "Actions en file d'attente",
+    "system": "Système",
+    "aUser": "un utilisateur",
+    "requestedBy": "Demandé par {{who}}",
+    "expires": "Expire le {{date}}",
+    "cancel": "Annuler",
+    "cancelled": "Action en file d'attente annulée",
+    "cancelFailed": "Échec de l'annulation de l'action en file d'attente",
+    "loadFailed": "Impossible de charger les actions en file d'attente.",
+    "empty": "Aucune action en file d'attente"
+  },
+  "manualAssetModal": {
+    "addTitle": "Ajouter un actif manuel",
+    "editTitle": "Modifier l'actif manuel",
+    "cancel": "Annuler",
+    "create": "Créer",
+    "save": "Enregistrer",
+    "unlink": "Dissocier",
+    "linkSectionTitle": "Lier à un appareil ou un actif réseau existant",
+    "linkDevicePlaceholder": "Sélectionnez un appareil…",
+    "linkAssetPlaceholder": "Sélectionnez un actif réseau…",
+    "linkToDevice": "Lier",
+    "linkToAsset": "Lier",
+    "linkedTo": "Lié à {{name}}",
+    "linkedUnknown": "un appareil inconnu",
+    "errors": {
+      "mfaRequired": "Cette action nécessite l'authentification multifacteur. Veuillez vous reconnecter.",
+      "createFailed": "Échec de la création de l'actif manuel.",
+      "updateFailed": "Échec de la mise à jour de l'actif manuel.",
+      "linkFailed": "Échec de la liaison de l'actif.",
+      "unlinkFailed": "Échec de la dissociation de l'actif."
+    },
+    "toasts": {
+      "created": "Actif manuel créé.",
+      "updated": "Actif manuel mis à jour.",
+      "linked": "Actif lié.",
+      "unlinked": "Actif dissocié."
+    },
+    "fields": {
+      "organization": "Organisation",
+      "selectOrganization": "Sélectionnez une organisation…",
+      "site": "Site",
+      "selectSite": "Sélectionnez un site…",
+      "name": "Nom",
+      "namePlaceholder": "p. ex., ordinateur portable de rechange, téléphone de l'accueil",
+      "assetType": "Type d'actif",
+      "manufacturer": "Fabricant",
+      "model": "Modèle",
+      "serialNumber": "Numéro de série",
+      "assetTag": "Étiquette d'actif",
+      "location": "Emplacement",
+      "locationPlaceholder": "p. ex., placard B, étagère 2",
+      "assignedContact": "Assigné à",
+      "assignedContactPlaceholder": "Rechercher des contacts…",
+      "tags": "Étiquettes",
+      "tagsPlaceholder": "Séparées par des virgules",
+      "notes": "Notes"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Ajouter un actif réseau",
+    "submit": "Ajouter l'actif",
+    "identityHint": "Indiquez au moins un des éléments suivants : adresse IP, nom d'hôte ou URL.",
+    "urlRequiredHint": "Les actifs de type site Web ou service nécessitent une URL.",
+    "postCreate": {
+      "monitorPrompt": "Surveiller cet actif avec une vérification HTTP ?",
+      "actions": {
+        "addHttpCheck": "Ajouter une vérification HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nom",
+      "ipAddress": "Adresse IP",
+      "hostname": "Nom d'hôte",
+      "url": "URL",
+      "macAddress": "Adresse MAC",
+      "manufacturer": "Fabricant",
+      "model": "Modèle",
+      "tags": "Étiquettes",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "ex. Imprimante entrepôt",
+      "selectSite": "Sélectionner un site",
+      "tags": "Séparées par des virgules, ex. hall, étage-2"
+    },
+    "toasts": {
+      "created": "Actif réseau créé",
+      "createFailed": "Échec de la création de l'actif réseau"
+    }
   }
 }

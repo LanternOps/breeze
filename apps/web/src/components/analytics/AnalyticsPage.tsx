@@ -463,6 +463,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [performanceUnavailable, setPerformanceUnavailable] = useState(false);
   const [osDistribution, setOsDistribution] = useState<OsDistributionPoint[]>([]);
   const [alertRows, setAlertRows] = useState<AlertRow[]>([]);
+  const [alertsAvailable, setAlertsAvailable] = useState(false);
   const [complianceStats, setComplianceStats] = useState<ComplianceStats>({ complianceRate: 0 });
   const [capacityForecast, setCapacityForecast] = useState<CapacityState>({ currentValue: 0, data: [] });
   const [slaSummary, setSlaSummary] = useState<SlaSummary | null>(null);
@@ -507,6 +508,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const fetchAnalyticsData = useCallback(async () => {
     setError(undefined);
     setLoading(true);
+    setAlertsAvailable(false);
+    setAlertRows([]);
 
     const errors: string[] = [];
     const params = new URLSearchParams();
@@ -602,6 +605,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             const alertData = await fetchJson(withQuery('/alerts/summary'));
             const { rows, summary } = buildAlertStats(alertData);
             setAlertRows(rows);
+            setAlertsAvailable(true);
             alertSummary = summary;
           } catch (err) {
             errors.push('alerts');
@@ -795,14 +799,14 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     {
       key: 'critical',
       label: t('analytics.executiveSummary.critical'),
-      value: formatNumber(fleetSummary.criticalAlerts),
+      value: alertsAvailable ? formatNumber(fleetSummary.criticalAlerts) : '—',
       icon: AlertTriangle,
-      iconTone: fleetSummary.criticalAlerts > 0 ? 'text-destructive' : 'text-muted-foreground',
-      href: '/alerts',
-      sub: `${formatNumber(fleetSummary.warningAlerts)} ${t('analytics.executiveSummary.warnings')}`,
-      subTone: fleetSummary.warningAlerts > 0 ? 'warning' : 'muted'
+      iconTone: alertsAvailable && fleetSummary.criticalAlerts > 0 ? 'text-destructive' : 'text-muted-foreground',
+      href: alertsAvailable ? '/alerts' : undefined,
+      sub: alertsAvailable ? `${formatNumber(fleetSummary.warningAlerts)} ${t('analytics.executiveSummary.warnings')}` : undefined,
+      subTone: alertsAvailable && fleetSummary.warningAlerts > 0 ? 'warning' : 'muted'
     }
-  ], [fleetSummary, summaryMetrics, t]);
+  ], [fleetSummary, summaryMetrics, alertsAvailable, t]);
 
   // Top slices by share; the rest collapse into "Other" so the palette never
   // has to repeat a color to cover a long tail of OS builds.

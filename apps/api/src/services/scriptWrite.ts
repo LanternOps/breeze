@@ -16,6 +16,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE
 } from './partnerWideAccess';
+import { resolveScriptSecurityAcknowledgement } from './scriptSecurityAcknowledgement';
 
 export type ScriptWriteAuth = Pick<
   AuthContext,
@@ -180,6 +181,12 @@ export type ScriptInsertInput = {
   timeoutSeconds: number;
   runAs: 'system' | 'user' | 'elevated';
   exitCodeSeverityMapping?: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info' | null> | null;
+  // #5129 — agent STRICT-pattern descriptions the author acknowledged. Clamped
+  // here to the patterns `content` actually matches (see insertScriptRow), so
+  // no intake can store an approval for a risk the script does not contain.
+  // Omitted by the bundle importer, which therefore imports every script with
+  // nothing acknowledged — fail closed, deliberately.
+  acknowledgedSecurityPatterns?: readonly string[] | null;
 };
 
 /**
@@ -199,6 +206,16 @@ export async function insertScriptRow(
 ) {
   const isSystem = auth.scope === 'system' ? (opts.requestedIsSystem ?? false) : false;
 
+  // Clamped at the chokepoint for the same reason `isSystem` is (#5129): both
+  // intakes — POST /scripts and the bundle importer — go through here, so
+  // neither can persist an acknowledgement for a pattern the content does not
+  // contain, whatever it asked for. The route re-runs the same resolution to
+  // decide the 400 and the audit entry; this is the write-side guard.
+  const acknowledgement = resolveScriptSecurityAcknowledgement({
+    content: input.content,
+    submitted: input.acknowledgedSecurityPatterns,
+  });
+
   const [script] = await db
     .insert(scripts)
     .values({
@@ -216,6 +233,11 @@ export async function insertScriptRow(
       isSystem,
       version: 1,
       exitCodeSeverityMapping: input.exitCodeSeverityMapping ?? null,
+      acknowledgedSecurityPatterns: acknowledgement.acknowledged,
+      // Only stamp attribution when something was actually acknowledged; an
+      // ordinary script with no risky pattern must not look risk-approved.
+      securityAcknowledgedBy: acknowledgement.acknowledged.length > 0 ? auth.user.id : null,
+      securityAcknowledgedAt: acknowledgement.acknowledged.length > 0 ? new Date() : null,
       createdBy: auth.user.id
     })
     .returning();

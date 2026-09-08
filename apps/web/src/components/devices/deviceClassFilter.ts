@@ -1,14 +1,15 @@
-// Device-class segment filter for the unified Devices list (#1424). The merged
-// list carries `deviceClass` ('agent' | 'network') on every row; this module
-// holds the pure filter/count logic plus the URL-hash persistence so a chosen
-// segment is shareable. Hash state (never query params) per CLAUDE.md; a
-// distinct `deviceClass=` key that cooperates with the `filtersV2=` writer in
-// filterUrl.ts — each writer preserves the other's fragments.
+// Device-class segment filter for the unified Devices list (#1424, #4622). The
+// merged list carries `deviceClass` ('agent' | 'network' | 'manual') on every
+// row; this module holds the pure filter/count logic plus the URL-hash
+// persistence so a chosen segment is shareable. Hash state (never query
+// params) per CLAUDE.md; a distinct `deviceClass=` key that cooperates with
+// the `filtersV2=` writer in filterUrl.ts — each writer preserves the other's
+// fragments.
 import type { DeviceClass } from './DeviceList';
 
-export type DeviceClassFilter = 'all' | 'agent' | 'network';
+export type DeviceClassFilter = 'all' | 'agent' | 'network' | 'manual';
 
-const VALID: readonly DeviceClassFilter[] = ['all', 'agent', 'network'];
+const VALID: readonly DeviceClassFilter[] = ['all', 'agent', 'network', 'manual'];
 const HASH_KEY = 'deviceClass';
 
 // A row with no explicit deviceClass is an agent (the default arm of the list).
@@ -26,14 +27,17 @@ export function filterDevicesByClass<T extends { deviceClass?: DeviceClass }>(
 
 export function countDevicesByClass(
   devices: Array<{ deviceClass?: DeviceClass }>,
-): { all: number; agent: number; network: number } {
+): { all: number; agent: number; network: number; manual: number } {
   let agent = 0;
   let network = 0;
+  let manual = 0;
   for (const d of devices) {
-    if (classOf(d) === 'network') network += 1;
+    const cls = classOf(d);
+    if (cls === 'network') network += 1;
+    else if (cls === 'manual') manual += 1;
     else agent += 1;
   }
-  return { all: devices.length, agent, network };
+  return { all: devices.length, agent, network, manual };
 }
 
 export function readDeviceClassFromHash(hash: string): DeviceClassFilter {

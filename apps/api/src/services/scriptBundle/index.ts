@@ -34,6 +34,7 @@ import {
   type ScriptScopeError,
   type ScriptWriteAuth
 } from '../scriptWrite';
+import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAcknowledgement';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   SCRIPT_BUNDLE_VERSION,
@@ -795,6 +796,15 @@ export async function importBundle(
             timeoutSeconds: entry.timeoutSeconds,
             runAs: entry.runAs,
             exitCodeSeverityMapping: entry.exitCodeSeverityMapping ?? existing.exitCodeSeverityMapping,
+            // #5129 — this replaces `content` WHOLESALE with unreviewed text
+            // from the bundle, so any acknowledgement the target row carried
+            // is revoked. Carrying it forward (what the interactive PUT does)
+            // would let an entry named after an approved script inherit that
+            // approval for a body no human ever looked at — the same "a later
+            // edit inherits the acknowledgement" failure the description-set
+            // design exists to prevent, through a different door. Whoever
+            // imported it must re-acknowledge in the script editor.
+            ...clearedScriptSecurityAcknowledgementColumns(),
             version: existing.version + 1,
             updatedAt: new Date()
           })

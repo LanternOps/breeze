@@ -795,13 +795,18 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	//   - RunAs. This process IS the target user, so the execution is already
 	//     in the right context; forwarding runAs="user" would make
 	//     executor.configureRunAs reject its own delivery.
+	//   - AcknowledgedSecurityPatterns IS forwarded (#5129). The helper runs
+	//     the same executor and therefore the same security validator, so
+	//     omitting it would make an acknowledged script run in SYSTEM context
+	//     and refuse in user context — exactly the #4882 asymmetry.
 	script := executor.ScriptExecution{
-		ID:         cmd.CommandID,
-		ScriptID:   getStringOrDefault(payload, "scriptId", ""),
-		ScriptType: getStringOrDefault(payload, "language", "bash"),
-		Script:     getStringOrDefault(payload, "content", ""),
-		Parameters: executor.ParametersFromPayload(payload["parameters"]),
-		Timeout:    getIntOrDefault(payload, "timeoutSeconds", 300),
+		ID:                           cmd.CommandID,
+		ScriptID:                     getStringOrDefault(payload, "scriptId", ""),
+		ScriptType:                   getStringOrDefault(payload, "language", "bash"),
+		Script:                       getStringOrDefault(payload, "content", ""),
+		Parameters:                   executor.ParametersFromPayload(payload["parameters"]),
+		Timeout:                      getIntOrDefault(payload, "timeoutSeconds", 300),
+		AcknowledgedSecurityPatterns: tools.GetPayloadStringSlice(payload, "acknowledgedSecurityPatterns"),
 	}
 
 	result, err := c.executor.Execute(script)

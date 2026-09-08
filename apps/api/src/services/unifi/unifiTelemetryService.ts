@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
 import { upsertControllerSites } from './unifiControllerSiteService';
+import { normalizeMac, canonicalMac, canonicalAssetMac } from './unifiMac';
 
 // Fields the wire schema marks optional are `T | null | undefined` here, matching
 // what the zod validator infers (the agent omits zero-value fields via omitempty).
@@ -30,27 +31,9 @@ export interface TelemetryPayload {
 }
 export interface ReconcileResult { devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number; }
 
-// Canonical MAC form for cross-source matching: lowercase, colon-separated.
-// discovered_assets stores colon-lowercase; UniFi may report uppercase/hyphenated,
-// so we normalize both sides before comparing (and store the canonical form).
-function normalizeMac(mac: string): string {
-  return mac.trim().toLowerCase().replace(/-/g, ':');
-}
-
-// Nullable variant for the device path, where mac is optional on the wire.
-// An empty/whitespace mac must collapse to null, not to '', so it never matches
-// a blank macAddress row.
-function canonicalMac(mac: string | null | undefined): string | null {
-  if (!mac) return null;
-  const normalized = normalizeMac(mac);
-  return normalized.length > 0 ? normalized : null;
-}
-
-// Both sides of a MAC comparison must be canonicalised. discovered_assets rows
-// are written by several producers (agent discovery, UniFi sync, this service),
-// and only the app layer enforces the format — there is no DB CHECK — so a row
-// stored uppercase or hyphenated is possible and must still match.
-const canonicalAssetMac = sql`lower(replace(${discoveredAssets.macAddress}, '-', ':'))`;
+// normalizeMac / canonicalMac / canonicalAssetMac now live in ./unifiMac —
+// shared with unifiSyncService.ts (#5096, #5102) so every UniFi producer
+// canonicalises discovered_assets.mac_address matches identically.
 
 // Extract IP from a telemetry device's raw payload.
 // UniFi device JSON uses `ipAddress`; guard against other field names too.
@@ -111,8 +94,16 @@ async function linkTelemetryDeviceToAsset(
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
   const inserted = await db.insert(discoveredAssets)
-    .values({ orgId, siteId, ipAddress: ip, ...enrich })
-    .onConflictDoUpdate({ target: [discoveredAssets.orgId, discoveredAssets.ipAddress], set: enrich })
+    // #5213 — `source` is insert-side only: the conflict branch must never
+    // relabel an existing (possibly manual) row.
+    .values({ orgId, siteId, ipAddress: ip, source: 'unifi', ...enrich })
+    .onConflictDoUpdate({
+      target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
+      // The index is PARTIAL as of #5213; Postgres only infers a partial unique
+      // index when the statement repeats its predicate (else 42P10 at runtime).
+      targetWhere: sql`${discoveredAssets.ipAddress} is not null`,
+      set: enrich,
+    })
     .returning({ id: discoveredAssets.id });
   return inserted[0]?.id ?? null;
 }

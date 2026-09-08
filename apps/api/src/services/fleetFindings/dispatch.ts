@@ -613,7 +613,13 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   // 500-target run cannot produce 500 identical issues.
   let reportedUnexpected = false;
 
-  let scriptPayload: { language: string; content: string; timeoutSeconds: number; runAs: string } | null = null;
+  let scriptPayload: {
+    language: string;
+    content: string;
+    timeoutSeconds: number;
+    runAs: string;
+    acknowledgedSecurityPatterns: string[];
+  } | null = null;
   // Why the reason is a variable: a script that GAINED a bound parameter since
   // run creation is unavailable to this path for a different reason than one
   // that was deleted or re-tenanted, and "Script no longer available" would
@@ -634,6 +640,11 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
         timeoutSeconds: scripts.timeoutSeconds,
         runAs: scripts.runAs,
         parameters: scripts.parameters,
+        // #5129 — re-read at dispatch time, not snapshotted at run creation:
+        // the script row can be edited in between (same reason this whole
+        // re-fetch exists), and an acknowledgement revoked since then must not
+        // keep authorising runs.
+        acknowledgedSecurityPatterns: scripts.acknowledgedSecurityPatterns,
       })
       .from(scripts)
       .where(and(eq(scripts.id, run.scriptId), isNull(scripts.deletedAt)))
@@ -718,6 +729,13 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
           // pre-#4888 run (run_as NULL) behaving identically.
           runAs: run.runAs ?? scriptPayload.runAs,
           parameters: run.parameterSnapshot ?? {},
+          // #5129 — this is the FOURTH script-dispatch path and the only one
+          // that does not go through `dispatchScriptToDevice` (see the file
+          // docblock), so it has to list the field itself. Omitted when empty
+          // so the wire is unchanged for scripts that acknowledge nothing.
+          ...((scriptPayload.acknowledgedSecurityPatterns ?? []).length > 0
+            ? { acknowledgedSecurityPatterns: scriptPayload.acknowledgedSecurityPatterns }
+            : {}),
         };
       } else {
         const commandType = run.commandType as RemediationCommandType | null;

@@ -37,6 +37,21 @@
       "title": "Demnächst verfügbar",
       "description": "Dieser Tab wird im nächsten Update des Organisationsdatensatzes verfügbar sein."
     },
+    "devices": {
+      "loadError": "Die Geräte dieser Organisation konnten nicht geladen werden.",
+      "searchPlaceholder": "Geräte suchen",
+      "allStatuses": "Alle Status",
+      "allSites": "Alle Standorte",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Wartung",
+        "decommissioned": "Entfernt",
+        "quarantined": "Unter Quarantäne gestellt",
+        "updating": "Aktualisierung",
+        "pending": "Ausstehend"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Geräte",

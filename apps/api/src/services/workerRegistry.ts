@@ -980,6 +980,42 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #5205 W05 (#5210): drains ai_operator_task_outbox into the
+    // ai-operator-coordinator queue W06's coordinator will consume. Same
+    // placement/precedent as intentOutboxPublisher above.
+    name: 'aiOperatorTaskOutboxPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskOutboxPublisher');
+      return {
+        init: m.initializeAiOperatorTaskOutboxPublisher,
+        shutdown: m.shutdownAiOperatorTaskOutboxPublisher,
+      };
+    },
+  },
+  {
+    // #5205 W06 (#5211): consumes the `ai-operator-coordinator` queue the W05
+    // publisher feeds, plus its own 15s reconciler tick.
+    name: 'aiOperatorTaskWorker',
+    // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
+    // below, and for the same reason. The coordinator's verification step
+    // issues a real `list_services` device read (`actVerify.ts`), so its
+    // runtime import closure reaches `routes/agentWs.ts` via
+    // `services/agentCommandAwait.ts`. On a non-socket-owner process that
+    // reach fails SILENTLY rather than loudly, which would quietly turn every
+    // criterion evaluation `inconclusive` and hand off tasks that had in fact
+    // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
+    // is exactly what that contract exists for (#4086).
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskWorker');
+      return {
+        init: m.initializeAiOperatorTaskWorker,
+        shutdown: m.shutdownAiOperatorTaskWorker,
+      };
+    },
+  },
+  {
     name: 'pamActuationWorker',
     placement: 'global',
     load: async () => {

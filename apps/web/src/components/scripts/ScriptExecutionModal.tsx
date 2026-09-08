@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Play, Loader2, Clock, AlertCircle, Filter } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
@@ -291,6 +292,14 @@ export default function ScriptExecutionModal({
           : 'rejected';
       setExecutionState(presentationState);
       setShowConfirm(false);
+      // #5128 W2 — an admitted target isn't necessarily running yet: a
+      // target dispatched while its device was offline is `queued_offline`,
+      // and the inline admission panel alone doesn't say so. `deliverBy` isn't
+      // on the admission contract yet, so this is always the no-expiry copy
+      // for now.
+      if (result.targets.some(target => target.delivery === 'queued_offline')) {
+        showToast({ type: 'success', message: t('scriptExecutionModal.toasts.runsWhenOnline') });
+      }
       if (presentationState === 'admitted') {
         setTimeout(() => {
           onClose();
