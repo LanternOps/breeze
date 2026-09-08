@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -38,6 +40,8 @@ let allowedSiteIds: string[] | undefined = undefined;
 // authMiddleware never ran. This means the suite will fail with a 401 the
 // moment `networkRoutes.use('*', authMiddleware)` is removed again, closing
 // the blind spot where the old mock injected auth itself (#1322 review).
+let mfaSatisfied = true;
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     // Stand-in for the real middleware establishing the request auth context.
@@ -49,7 +53,7 @@ vi.mock('../../middleware/auth', () => ({
       accessibleOrgIds,
       canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId),
       orgCondition: () => undefined,
-      token: { mfa: false },
+      token: { mfa: mfaSatisfied },
     });
     c.set('permissions', {
       permissions: [
@@ -74,7 +78,12 @@ vi.mock('../../middleware/auth', () => ({
     if (!c.get('auth')) return c.json({ error: 'Not authenticated' }, 401);
     return next();
   }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirrors middleware/auth.ts requireMfa: a session without the `mfa` claim
+  // is refused with the coded 403 body, so the tests can prove the gate.
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (!c.get('auth')?.token?.mfa) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    return next();
+  }),
 }));
 
 import { networkRoutes } from './network';
@@ -792,5 +801,37 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
     });
 
     expect(res.status).toBe(400);
+  });
+
+  describe('MFA gate (matches the discovery.ts asset mutators)', () => {
+    beforeEach(() => {
+      mfaSatisfied = false;
+    });
+    afterEach(() => {
+      mfaSatisfied = true;
+    });
+
+    it('POST /devices/network is refused with MFA_REQUIRED without a completed-MFA session', async () => {
+      const res = await app.request('/devices/network', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ orgId: 'org-1', siteId: 'site-1', label: 'x', ipAddress: '10.0.0.9' }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    });
+
+    it('GET /devices/network still answers (reads are not step-up gated)', async () => {
+      const res = await app.request('/devices/network?orgId=org-1');
+      expect(res.status).not.toBe(403);
+    });
+
+    it('the POST chain carries requireMfa() and the GET chain does not', () => {
+      const src = readFileSync(join(__dirname, 'network.ts'), 'utf8');
+      const postBlock = src.slice(src.indexOf('networkRoutes.post('));
+      expect(postBlock.slice(0, postBlock.indexOf('async (c)'))).toMatch(/^\s*requireMfa\(\),$/m);
+      const getBlock = src.slice(src.indexOf('networkRoutes.get('), src.indexOf('networkRoutes.post('));
+      expect(getBlock).not.toMatch(/requireMfa/);
+    });
   });
 });

@@ -8,7 +8,7 @@ import {
   networkMonitors,
   sites,
 } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { listNetworkDevicesSchema, createNetworkAssetSchema } from './schemas';
 
@@ -340,6 +340,7 @@ networkRoutes.post(
   '/network',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', createNetworkAssetSchema),
   async (c) => {
     const auth = c.get('auth');
