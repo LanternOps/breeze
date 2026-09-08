@@ -233,6 +233,14 @@ export const aiOperatorTasks = pgTable(
     deviceIdx: index('ai_operator_tasks_device_idx')
       .on(table.deviceId)
       .where(sql`device_id IS NOT NULL`),
+    // W06 (#5211): the reconciler's "queued past admission wake" scan
+    // (spec §6.3). `wakeIdx` above is partial on `state = 'waiting'` and
+    // cannot serve it, and `orgStateUpdatedIdx` leads with `org_id`, which a
+    // cross-org sweep does not have. Migration
+    // 2026-10-14-100400-ai-operator-coordinator-indexes.sql.
+    queuedWakeIdx: index('ai_operator_tasks_queued_wake_idx')
+      .on(table.nextWakeAt)
+      .where(sql`state = 'queued'`),
   }),
 );
 
@@ -328,6 +336,14 @@ export const aiOperatorOperations = pgTable(
       .where(sql`intent_id IS NOT NULL`),
     execRefIdx: index('ai_operator_operations_exec_ref_idx')
       .on(table.executionRefKind, table.executionRefId),
+    // W06 (#5211): the reconciler's "terminal task with an unsettled
+    // operation" scan (spec §6.3), driven from THIS table rather than from a
+    // per-terminal-task EXISTS. `orgTaskResultIdx` leads with `org_id` and
+    // cannot serve a cross-org sweep. Migration
+    // 2026-10-14-100400-ai-operator-coordinator-indexes.sql.
+    unsettledIdx: index('ai_operator_operations_unsettled_idx')
+      .on(table.updatedAt)
+      .where(sql`result_state IN ('pending', 'unknown') AND execution_ref_id IS NOT NULL`),
   }),
 );
 
