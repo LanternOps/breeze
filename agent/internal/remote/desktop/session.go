@@ -54,10 +54,16 @@ type Session struct {
 	mu              sync.RWMutex
 	isActive        bool
 	fps             int
-	cleanupOnce     sync.Once
-	stopOnce        sync.Once
-	startOnce       sync.Once
-	wg              sync.WaitGroup
+	// stopReason is the short, technician-facing text describing why teardown
+	// happened, set by StopWithReason (#5300). Empty for a plain Stop() call
+	// (operator-initiated stop, lifetime policy, peer disconnect) — callers
+	// fall back to the generic ended-session text in that case, same as the
+	// startup probe path does when describeCaptureFailure has nothing to add.
+	stopReason  string
+	cleanupOnce sync.Once
+	stopOnce    sync.Once
+	startOnce   sync.Once
+	wg          sync.WaitGroup
 
 	// Optimized pipeline components (shared with WS path)
 	differ   *frameDiffer
@@ -406,7 +412,36 @@ func (m *SessionManager) StopAllSessions() {
 	}
 }
 
+// maxStopReasonBytes bounds the text StopWithReason records. Every source we
+// feed it (gdiCallError's Win32 text, describeCaptureFailure's wrapping) is
+// already short by construction, but the bound is enforced here — not left to
+// callers — so a future caller cannot regress it. Mirrors the ~400-byte bar
+// describeCaptureFailure is held to on the startup path (#5284/#5295).
+const maxStopReasonBytes = 300
+
+// Stop tears down the session with no specific reason recorded. Existing
+// call sites (operator-initiated stop, lifetime-policy expiry, peer
+// disconnect) are unaffected — LastStopReason() reads back empty, and callers
+// fall back to the generic ended-session text.
 func (s *Session) Stop() {
+	s.StopWithReason("")
+}
+
+// StopWithReason tears down the session, recording reason as the short,
+// technician-facing explanation for why it ended.
+//
+// This exists for #5300: the no-video watchdog (session_capture.go) used to
+// call Stop() with nothing, so a mid-session capture failure left the viewer
+// with the same generic "This remote session has ended" text regardless of
+// cause — while the startup probe path (#5284/#5295) already attaches the
+// real Win32 error via describeCaptureFailure. StopWithReason gives teardown
+// the same channel: pass the swallowed capture error (see noVideoStopReason)
+// when one is known, or "" to fall back to the generic text, same as the
+// probe path does when describeCaptureFailure has nothing to add.
+//
+// reason should already be short and free of OS handle values — the same bar
+// gdiCallError's text is held to — but it is truncated defensively regardless.
+func (s *Session) StopWithReason(reason string) {
 	s.stopOnce.Do(func() {
 		s.mu.Lock()
 		if !s.isActive {
@@ -414,6 +449,10 @@ func (s *Session) Stop() {
 			return
 		}
 		s.isActive = false
+		if len(reason) > maxStopReasonBytes {
+			reason = reason[:maxStopReasonBytes]
+		}
+		s.stopReason = reason
 		s.mu.Unlock()
 
 		close(s.done)
@@ -435,6 +474,7 @@ func (s *Session) Stop() {
 			"totalSent", snap.FramesSent,
 			"totalSkipped", snap.FramesSkipped,
 			"uptime", snap.Uptime.Round(time.Second),
+			"reason", reason,
 		)
 
 		// Desktop sessions allocate large buffers (DXGI textures, NV12
@@ -442,6 +482,15 @@ func (s *Session) Stop() {
 		// than waiting for the next GC cycle.
 		debug.FreeOSMemory()
 	})
+}
+
+// LastStopReason returns the reason the most recent StopWithReason call
+// recorded, or "" when the session hasn't stopped yet or was stopped via the
+// plain zero-arg Stop(). Safe to call before, during, or after teardown.
+func (s *Session) LastStopReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stopReason
 }
 
 func (s *Session) doCleanup() {
