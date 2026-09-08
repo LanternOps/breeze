@@ -63,6 +63,7 @@ export function useAdvancedFilterIds(
         });
         if (controller.signal.aborted) return;
         if (!response.ok) {
+          if (response.status !== 401) console.error('Filter preview failed:', response.status);
           setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: response.status !== 401 } });
           return;
         }
@@ -76,8 +77,9 @@ export function useAdvancedFilterIds(
           throw new Error('Invalid complete filter response');
         }
         setResolved({ key, result: { state: 'ready', ids: new Set(result.deviceIds), loading: false, error: false } });
-      } catch {
+      } catch (err) {
         if (!controller.signal.aborted) {
+          console.error('Filter preview failed:', err);
           setResolved({ key, result: { state: 'error', ids: EMPTY_IDS, loading: false, error: true } });
         }
       }
