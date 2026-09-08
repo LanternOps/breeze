@@ -133,7 +133,10 @@
       "removing": "Kaldırılıyor...",
       "removeConfiguration": "Yapılandırmayı kaldır",
       "complianceStatus2": "compliance_status",
-      "assignments2": "ödevler"
+      "assignments2": "ödevler",
+      "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
+      "inheritedByPolicies_one": "{{count}} politika bundan devralıyor",
+      "inheritedByPolicies_other": "{{count}} politika bundan devralıyor"
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -152,7 +155,8 @@
       "of2": "arasında",
       "itsOwningOrganization": "kendi sahibi kuruluş",
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
-      "summary": "{{filtered}} / {{total}} politikaları"
+      "summary": "{{filtered}} / {{total}} politikaları",
+      "inheritsBadge": "Devralıyor"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "Silmek istediğinizden emin misiniz?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Bu aynı zamanda tüm özellik bağlantılarını ve atamalarını da kaldıracaktır. Bu eylem geri alınamaz.",
       "delete": "sil",
-      "deleting": "Siliniyor..."
+      "deleting": "Siliniyor...",
+      "deleteBlockedByChildren": "Önce bundan devralan politikaları silin:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Ödevler yüklenemedi",
@@ -895,6 +900,11 @@
         "time": "Zaman",
         "dayOfWeek": "Haftanın günü",
         "dayOfMonth": "Ayın günü",
+        "offlineDevices": "Çevrimdışı cihazlar",
+        "offlineBehaviorQueue": "Çevrimdışı cihazlar için kuyruğa al",
+        "offlineBehaviorQueueDescription": "Bir sonraki bağlantıda, planlanan sonraki çalıştırmadan önce çalışır.",
+        "offlineBehaviorSkip": "Çevrimdışı cihazları atla",
+        "offlineBehaviorSkipDescription": "İş çalıştığında çevrimdışı olan cihazlar atlandı olarak kaydedilir.",
         "rebootPolicy": "Yeniden Başlatma Politikası",
         "rebootDelayMinutes": "Yeniden başlatma gecikmesi (dakika)",
         "rebootDelayMinutesDescription": "Oturum açmış kullanıcının yama sonrası yeniden başlatmadan önce ne kadar süreyle uyarılacağı.",
@@ -938,7 +948,8 @@
         "loadingPolicies": "Politikalar yükleniyor...",
         "noExistingPoliciesFound": "Mevcut politika bulunamadı.",
         "selectAPolicy": "Bir politika seçin...",
-        "clearSelection": "Seçimi temizle"
+        "clearSelection": "Seçimi temizle",
+        "allOrgs": "Tüm kuruluşlar"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

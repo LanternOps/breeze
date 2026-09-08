@@ -37,6 +37,21 @@
       "title": "Bientôt disponible",
       "description": "Cet onglet sera ajouté dans la prochaine mise à jour du dossier de l'organisation."
     },
+    "devices": {
+      "loadError": "Impossible de charger les appareils de cette organisation.",
+      "searchPlaceholder": "Rechercher des appareils",
+      "allStatuses": "Tous les statuts",
+      "allSites": "Tous les sites",
+      "status": {
+        "online": "En ligne",
+        "offline": "Hors ligne",
+        "maintenance": "Maintenance",
+        "decommissioned": "Retiré",
+        "quarantined": "En quarantaine",
+        "updating": "Mise à jour",
+        "pending": "En attente"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Appareils",
@@ -94,6 +109,24 @@
       "title": "Impossible de charger cette organisation",
       "description": "Une erreur s'est produite lors de la récupération du dossier. Vérifiez votre connexion et réessayez."
     },
-    "loading": "Chargement de l'organisation…"
+    "loading": "Chargement de l'organisation…",
+    "tickets": {
+      "tabs": {
+        "open": "Ouverts",
+        "all": "Tous",
+        "closed": "Fermé"
+      },
+      "newTicket": "Nouveau billet",
+      "loadFailed": "Les billets n’ont pas été chargés.",
+      "forbidden": "Vous n'avez pas l'autorisation de consulter les billets.",
+      "truncated": "Affichage de {{shown}} billets sur {{total}}."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contrats",
+        "invoices": "Factures",
+        "quotes": "Devis"
+      }
+    }
   }
 }

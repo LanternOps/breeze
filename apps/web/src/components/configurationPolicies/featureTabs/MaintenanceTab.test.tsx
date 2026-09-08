@@ -266,4 +266,18 @@ describe('MaintenanceTab — timezone picker', () => {
     );
     expect(screen.getByTestId('maintenance-timezone-trigger').textContent).toContain('Africa/Nairobi');
   });
+
+  // #5080: `featurePolicyId` means a standalone entity id — Maintenance
+  // windows are inline settings, so it must never carry the parent CONFIG
+  // policy's own id.
+  it('sends featurePolicyId: null even when a parent config policy is linked', async () => {
+    render(
+      <MaintenanceTab policyId="policy-1" existingLink={undefined} linkedPolicyId="parent-1" onLinkChanged={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const [, payload] = saveMock.mock.calls[0] as [string | null, { featurePolicyId: string | null }];
+    expect(payload.featurePolicyId).toBeNull();
+  });
 });

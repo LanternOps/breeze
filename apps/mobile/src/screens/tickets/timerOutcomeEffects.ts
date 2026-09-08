@@ -75,6 +75,14 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
         id: outcome.entry.id,
         localId: null,
         ticketId: outcome.entry.ticketId,
+        // The server joins these onto every entry (see RunningTimer's own
+        // doc comment) specifically so a row can be labelled without a
+        // round trip through the phone's own ticket list. Dropping them here
+        // left `running` without a resolved label for one render, and
+        // TimerBar's fallback literal "Ticket" showed before a later
+        // reconciliation pass filled them in and the label visibly flipped.
+        ticketNumber: outcome.entry.ticketNumber ?? null,
+        ticketSubject: outcome.entry.ticketSubject ?? null,
         startedAt: outcome.entry.startedAt,
         description: outcome.entry.description,
       },
@@ -87,6 +95,11 @@ export function startOutcomeEffects(outcome: StartOutcome): TimerEffects {
     // timer in the store, no surface offered Stop, so a timer started offline
     // could never be stopped offline — and the span the whole offline design
     // exists to record was lost.
+    //
+    // No ticketNumber/ticketSubject here: this timer only exists on-device, so
+    // there is no server-joined entry to read them from yet. TimerBar's label
+    // falls back to its own ticket-list lookup for this case (unchanged by
+    // #5105 — only the online-start path above needed the fix).
     return {
       ...base(),
       startRunning: {

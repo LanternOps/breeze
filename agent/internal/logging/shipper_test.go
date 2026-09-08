@@ -679,3 +679,84 @@ func TestShipBatchURLFormat(t *testing.T) {
 		t.Fatalf("unexpected URL path: %s", receivedPath)
 	}
 }
+
+// TestShipLoopFullBatchClearPreservesEntries drives shipLoop through the
+// in-loop full-batch flush (defaultMaxBatchSize entries) so the clear(batch)
+// reset runs, and asserts every shipped entry still carries its own message
+// and Fields map. Guards against clearing slots before shipBatch has consumed
+// them: LogEntry.Fields is a reference type, so a misplaced clear would ship
+// zeroed entries with no error anywhere.
+func TestShipLoopFullBatchClearPreservesEntries(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		received []LogEntry
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		logs := decodeShippedLogs(t, body)
+		mu.Lock()
+		received = append(received, logs...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	s := NewShipper(ShipperConfig{
+		ServerURL:    func() string { return server.URL },
+		AgentID:      "test-agent",
+		AuthToken:    testToken("tok"),
+		AgentVersion: "1.0.0",
+		MinLevel:     "debug",
+		HTTPClient:   server.Client(),
+	})
+
+	s.Start()
+	defer s.Stop()
+	for i := 0; i < defaultMaxBatchSize; i++ {
+		s.Enqueue(LogEntry{
+			Timestamp: time.Now(),
+			Level:     "INFO",
+			Component: "test",
+			Message:   fmt.Sprintf("entry-%d", i),
+			Fields:    map[string]any{"seq": float64(i)},
+		})
+	}
+	if s.droppedCount.Load() != 0 {
+		t.Fatalf("buffer overflowed: dropped %d", s.droppedCount.Load())
+	}
+	// Wait for the size-threshold flush while the loop is still running, so the
+	// batch goes through the main-loop reset rather than the shutdown drain.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= defaultMaxBatchSize {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("full batch never shipped: %d/%d received", n, defaultMaxBatchSize)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != defaultMaxBatchSize {
+		t.Fatalf("expected %d shipped entries, got %d", defaultMaxBatchSize, len(received))
+	}
+	seen := make(map[int]bool, len(received))
+	for _, e := range received {
+		seq, ok := e.Fields["seq"].(float64)
+		if !ok {
+			t.Fatalf("entry lost its Fields map: %+v", e)
+		}
+		if e.Message != fmt.Sprintf("entry-%d", int(seq)) || e.Component != "test" {
+			t.Fatalf("entry %d shipped with wrong content: %+v", int(seq), e)
+		}
+		if seen[int(seq)] {
+			t.Fatalf("entry %d shipped twice", int(seq))
+		}
+		seen[int(seq)] = true
+	}
+}

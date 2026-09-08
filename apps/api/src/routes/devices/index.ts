@@ -26,6 +26,7 @@ import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
 import { networkRoutes } from './network';
+import { manualRoutes } from './manual';
 import { customFieldValuesRoutes } from './customFieldValues';
 import { customFieldImportRoutes } from './customFieldImport';
 import { linksRoutes } from './links';
@@ -85,6 +86,12 @@ deviceRoutes.route('/', moveOrgRoutes);
 // routes — `GET /network` is a static path that must not be eaten by the
 // `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', networkRoutes);
+
+// Mount the manual arm of the unified Devices list (#4622 W02) BEFORE core
+// routes — `GET /manual` (and its `/manual/:id/*` children) are static/
+// static-prefixed paths that must not be eaten by the `/:id` matcher in
+// coreRoutes.
+deviceRoutes.route('/', manualRoutes);
 
 // Mount linked-device-profile routes (#2138) BEFORE core — the static
 // `/link-groups` paths must not be eaten by the `/:id` matcher in coreRoutes.

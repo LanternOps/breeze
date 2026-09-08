@@ -2736,6 +2736,42 @@
       "docs": [
         "deploy/environment.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/configurationPolicies/crud.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/configurationPolicy.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/configPolicyOwnership.ts",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigPolicyCreatePage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigPolicyDetailPage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/configurationPolicies/ConfigurationPoliciesPage.tsx",
+      "docs": [
+        "features/configuration-policies.mdx"
+      ]
     }
   ]
 }

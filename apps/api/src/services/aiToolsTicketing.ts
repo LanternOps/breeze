@@ -484,18 +484,31 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
         // deviceId is centrally gated via the deviceArgs field on the tool
         // registration (aiTools.ts device gate) — no additional check needed here.
-        const ticket = await createTicket(
-          {
-            orgId: String(input.orgId),
-            subject: String(input.subject),
-            description: input.description ? String(input.description) : undefined,
-            deviceId: input.deviceId ? String(input.deviceId) : undefined,
-            priority: input.priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
-            source: 'ai'
-          },
-          actor
-        );
-        return JSON.stringify({ ticket });
+        try {
+          const ticket = await createTicket(
+            {
+              orgId: String(input.orgId),
+              subject: String(input.subject),
+              description: input.description ? String(input.description) : undefined,
+              deviceId: input.deviceId ? String(input.deviceId) : undefined,
+              priority: input.priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
+              source: 'ai'
+            },
+            actor
+          );
+          return JSON.stringify({ ticket });
+        } catch (err) {
+          // #5075 W04 — Service Management 'off' refuses new-ticket creation with
+          // a TicketServiceError(409, 'service_management_off'). Every other
+          // mutating action in this file converts a thrown TicketServiceError to
+          // JSON via serviceErrorToJson instead of letting it escape as an
+          // unhandled rejection; create previously did not, which meant the AI's
+          // tool-call loop received a raw thrown error instead of a message it
+          // could relay to the user.
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
       }
 
       // ── comment ───────────────────────────────────────────────────────────
@@ -755,7 +768,10 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           // here) go through. The tombstone previously done here covered
           // neither ticket_drafts nor terminal-status intents; both were
           // fixed at the source instead of patched here.
-          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
+          const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId),
+            auth.principal.kind === 'ai_agent'
+              ? { kind: 'ai_agent', agentId: auth.principal.agentId, name: auth.user.name }
+              : actor);
           return JSON.stringify({ ticket });
         } catch (err) {
           const json = serviceErrorToJson(err);

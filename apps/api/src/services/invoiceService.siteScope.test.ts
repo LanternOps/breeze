@@ -30,7 +30,10 @@ vi.mock('../db', () => {
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: (fn: () => unknown) => fn()
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // Phase D2: the payment outbox reads the ambient scope to decide whether
+    // an org-scoped caller can write the partner-axis mapping row.
+    getCurrentDbAccessContext: () => undefined
   };
 });
 

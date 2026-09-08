@@ -33,10 +33,22 @@ import {
   type NarrativeOutcome,
   type SweepFindingsOutcome,
   type TicketTriageProposal,
+  type SubmitTaskStepPayload,
 } from '@breeze/shared';
+import {
+  SUBMIT_TASK_STEP_DESCRIPTION,
+  SUBMIT_TASK_STEP_SHAPE,
+  SUBMIT_TASK_STEP_TOOL_NAME,
+  validateSubmitTaskStep,
+} from './tools/submitTaskStep';
 
 export const OUTCOME_TOOL_NAMES = [
   'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative', 'submit_ticket_proposal',
+  // #5205 W06. Unlike the four above, this one is NOT selected by run profile
+  // — a task-linked run uses the `full` profile (spec §6.2) and
+  // `outcomeToolsForProfile('full')` is deliberately `[]`. It is selected by
+  // `outcomeToolsForRun` on the run's task linkage instead.
+  'submit_task_step',
 ] as const;
 export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // `ReturnType<typeof tool>` does not resolve usefully here: `tool` is generic
@@ -48,6 +60,7 @@ export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 export type SdkTool = SdkMcpToolDefinition<any>;
 
 export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
+  submit_task_step: 'mcp__breeze__submit_task_step',
   submit_alert_verdict: 'mcp__breeze__submit_alert_verdict',
   submit_sweep_findings: 'mcp__breeze__submit_sweep_findings',
   submit_narrative: 'mcp__breeze__submit_narrative',
@@ -56,6 +69,30 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
 
 export function isOutcomeTool(toolName: string): toolName is OutcomeToolName {
   return (OUTCOME_TOOL_NAMES as readonly string[]).includes(toolName);
+}
+
+/**
+ * Which outcome tools THIS RUN may see — the profile's set, plus
+ * `submit_task_step` when the run advances an AI Operator task (#5205 W06).
+ *
+ * This is the single function every call site uses, so exposure (the SDK tool
+ * list), authorization (the pre-hook's allow test) and capture (the post-hook)
+ * cannot disagree about what a run owns. That co-ordination is the whole
+ * reason `outcomeToolsForProfile` was a single function to begin with; adding
+ * a second selector without folding it in here would reintroduce exactly the
+ * drift that comment warns about.
+ *
+ * A task-linked run keeps its profile's own tools. In the thin slice that set
+ * is always empty (task runs are `full`), but a later wave that runs a task
+ * step under, say, the `verdict` profile should get BOTH, not a silent
+ * replacement.
+ */
+export function outcomeToolsForRun(run: {
+  profile: AiAgentRunProfile;
+  taskId?: string | null;
+}): OutcomeToolName[] {
+  const base = outcomeToolsForProfile(run.profile);
+  return run.taskId ? [...base, 'submit_task_step'] : base;
 }
 
 /**
@@ -117,17 +154,27 @@ export function validateOutcomeToolInput(toolName: 'submit_narrative', input: un
  * `finishRun` (task A8), never here — this module never touches the database.
  */
 export function validateOutcomeToolInput(toolName: 'submit_ticket_proposal', input: unknown): TicketTriageProposal;
+/**
+ * #5205 W06 — `submit_task_step`'s validated outcome IS the raw tool input.
+ * The proposal it carries is a REQUEST: `recipes/serviceRecovery.ts`'s
+ * `validateNextStep` decides whether the named step is reachable and whether
+ * its inputs parse, and `taskCoordinator.ts` is what executes anything. This
+ * module, as ever, touches no database.
+ */
+export function validateOutcomeToolInput(toolName: 'submit_task_step', input: unknown): SubmitTaskStepPayload;
 // The union overload the run loop's hooks call through: `toolName` there is
 // the `OutcomeToolName` the SDK handed them, not a literal, so none of the
 // narrow overloads above would apply. Callers that need the concrete type
 // narrow on the name first (see the post-hook's switch).
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal;
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal {
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload {
   switch (toolName) {
+    case 'submit_task_step':
+      return validateSubmitTaskStep(input);
     case 'submit_alert_verdict':
       return alertVerdictOutcomeSchema.parse(input);
     case 'submit_sweep_findings':
@@ -347,6 +394,21 @@ const SUBMIT_TICKET_PROPOSAL_SHAPE = {
 export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool[] {
   return names.map((name) => {
     switch (name) {
+      case 'submit_task_step':
+        // Same construction-site cast as the four below, same reason. And the
+        // same posture: validate-only, static ack, no DB, no execution. A
+        // model that submits `{ nextStep: { kind: 'step', key: 'verify' } }`
+        // gets `{status:'recorded'}` here and a classified run failure from
+        // `validateNextStep` afterwards — naming a step never runs it.
+        return tool(
+          SUBMIT_TASK_STEP_TOOL_NAME,
+          SUBMIT_TASK_STEP_DESCRIPTION,
+          SUBMIT_TASK_STEP_SHAPE,
+          async (input) => {
+            validateSubmitTaskStep(input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
       case 'submit_alert_verdict':
         // Cast at construction: `tool()` returns `SdkMcpToolDefinition<Shape>` for
         // the CONCRETE shape above, which TypeScript's contravariant handler-arg

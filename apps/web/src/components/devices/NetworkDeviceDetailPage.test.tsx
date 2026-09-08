@@ -1475,7 +1475,14 @@ describe('NetworkDeviceDetailPage', () => {
       fireEvent.click(screen.getByTestId('proxy-popover-connect'));
 
       await waitFor(() => expect(mutationCount).toBeGreaterThan(0));
-      expect(screen.getByTestId('network-detail-live').textContent).toBe('Web UI opened in a new tab');
+      // announce() clears the region synchronously and re-sets the message on
+      // a 0ms timer, so the first observed mutation is the CLEAR. Reading the
+      // text synchronously here raced that timer and read '' under CI load
+      // (reddened a main run on 2026-09-08) — wait for the re-set instead.
+      await waitFor(() => expect(liveRegion.textContent).toBe('Web UI opened in a new tab'));
+      // Two mutations = clear + re-set: proves the repeat was a real DOM change,
+      // not a bailed-out no-op state update.
+      expect(mutationCount).toBeGreaterThanOrEqual(2);
 
       observer.disconnect();
       openSpy.mockRestore();

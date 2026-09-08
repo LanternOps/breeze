@@ -45,6 +45,7 @@ import {
   evaluateFilter,
   evaluateFilterWithPreview,
   deviceMatchesFilter,
+  FilterQueryTimeoutError,
 } from './filterEngine';
 
 describe('filterEngine input hardening (#1044)', () => {
@@ -383,6 +384,43 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     await expect(evaluateFilter(matchesFilter, { orgId: 'org-1' })).rejects.toThrow('query failed');
 
     expectTimeoutWrappedQuery();
+  });
+
+  /**
+   * #5181 / BREEZE-2C. The bound firing is the guard working, but it reached
+   * Sentry as an anonymous error-level `PostgresError` and the caller as a 500.
+   * Converting it here (rather than in each route) is what lets the two preview
+   * routes answer 422 without either of them re-deriving "is 57014 ours?".
+   */
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(matchesFilter, { orgId: 'org-1' })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(matchesFilter, { orgId: 'org-1', previewLimit: 5 })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', matchesFilter)],
+  ] as const)('%s converts a 57014 cancellation into FilterQueryTimeoutError, keeping the cause', async (_name, run) => {
+    const canceled = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    dbMock.queryError = canceled;
+
+    const thrown = await run().then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(FilterQueryTimeoutError);
+    expect((thrown as FilterQueryTimeoutError).errorCode).toBe('filter_query_timeout');
+    // Must NOT be `code`: that field is duck-typed by `pgErrorCode`, which reads
+    // the outer error before the cause, and would mislabel the pg_code tag.
+    expect((thrown as { code?: unknown }).code).toBeUndefined();
+    expect((thrown as Error).cause).toBe(canceled);
+    // The timeout must still be restored on the way out.
+    expectTimeoutWrappedQuery();
+  });
+
+  it('leaves any other SQLSTATE untranslated so it keeps its existing 500 path', async () => {
+    const undefinedTable = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    dbMock.queryError = undefinedTable;
+
+    const thrown = await evaluateFilter(matchesFilter, { orgId: 'org-1' })
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(thrown).toBe(undefinedTable);
+    expect(thrown).not.toBeInstanceOf(FilterQueryTimeoutError);
   });
 });
 

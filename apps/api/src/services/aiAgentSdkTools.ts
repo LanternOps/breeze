@@ -18,6 +18,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { buildToolHandoffResult, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
@@ -110,7 +111,20 @@ export type PreToolUseCallback = (
   mcpToolName?: string,
 ) => Promise<
   | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-  | { allowed: false; error: string }
+  /**
+   * Not run by THIS session. Two different things wear this shape:
+   *
+   *  - a real denial/failure (`handoff` absent) — published as `isError: true`
+   *    with `{ error }`, as it always was; and
+   *  - an approval HANDOFF (`handoff` set) — the human approved and the action
+   *    is executing under the durable release worker, so this session declines
+   *    to run it. Published as `isError: false` with `{ status, message }`.
+   *
+   * `error` carries the model-facing text in both cases; when `handoff` is set
+   * it is a status message, not a failure, and it never reaches an `error`
+   * field on the wire. See services/aiToolHandoff.ts (#5107).
+   */
+  | { allowed: false; error: string; handoff?: ToolHandoffStatus }
 >;
 
 /**
@@ -128,6 +142,14 @@ export type PostToolUseCallback = (
    *  the blob destined for action_intents.result, which must never appear in
    *  `output`. */
   sealed?: { intentId: string; sealedResult: Record<string, unknown> },
+  /**
+   * Set ONLY when the pre-tool-use gate itself reported an approval handoff
+   * (#5107) — never inferred from `output`. The same value also appears as
+   * `output.status`, but a tool controls its own output: without this trusted
+   * channel, any tool could stamp its own audit row and repaint its own
+   * failure as an approved, in-flight action.
+   */
+  handoff?: ToolHandoffStatus,
 ) => Promise<void>;
 
 // ============================================
@@ -329,6 +351,32 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  * The postToolUse callback already emits SSE events synchronously before DB writes,
  * so even on timeout the UI receives the tool_result event.
  */
+/**
+ * Turns a `allowed: false` pre-tool-use decision into the SDK result shape,
+ * and says whether it is a failure.
+ *
+ * The ONE place that decides `isError` for a blocked call. Three call sites
+ * (registry handler, session-aware handler, extra-tool wrapper) previously
+ * hard-coded `true` at each, which is how the approval handoff (#5107) reached
+ * the phone as `MANAGE_SERVICES · FAILED` right after the user approved it: an
+ * approved action executing under the durable worker is not an error. The
+ * handoff payload carries `status` (machine-readable, what the clients switch
+ * on) and never an `error` field, so nothing downstream can mistake it for a
+ * failure by shape either.
+ */
+function preToolUseDenialResult(
+  toolName: string,
+  check: { error: string; handoff?: ToolHandoffStatus },
+): { text: string; isError: boolean } {
+  const payload = check.handoff
+    ? buildToolHandoffResult(check.handoff, check.error)
+    : { error: check.error };
+  return {
+    text: compactToolResultForChat(toolName, JSON.stringify(payload)),
+    isError: !check.handoff,
+  };
+}
+
 async function safePostToolUse(
   onPostToolUse: PostToolUseCallback | undefined,
   toolName: string,
@@ -337,11 +385,12 @@ async function safePostToolUse(
   isError: boolean,
   durationMs: number,
   sealed?: { intentId: string; sealedResult: Record<string, unknown> },
+  handoff?: ToolHandoffStatus,
 ): Promise<void> {
   if (!onPostToolUse) return;
   try {
     await withToolTimeout(
-      onPostToolUse(toolName, args, output, isError, durationMs, sealed),
+      onPostToolUse(toolName, args, output, isError, durationMs, sealed, handoff),
       POST_TOOL_USE_TIMEOUT_MS,
       `postToolUse:${toolName}`,
     );
@@ -415,7 +464,7 @@ function makeHandler(
     if (onPreToolUse) {
       let check:
         | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-        | { allowed: false; error: string };
+        | { allowed: false; error: string; handoff?: ToolHandoffStatus };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -440,11 +489,11 @@ function makeHandler(
           : check.context;
       }
       if (!check.allowed) {
-        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
-        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
+        const denial = preToolUseDenialResult(toolName, check);
+        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
-          content: [{ type: 'text' as const, text: safeError }],
-          isError: true,
+          content: [{ type: 'text' as const, text: denial.text }],
+          isError: denial.isError,
         };
       }
     }
@@ -614,7 +663,9 @@ function makeSessionAwareHandler(
     // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
     let intentId: string | undefined;
     if (onPreToolUse) {
-      let check: { allowed: true; intentId?: string } | { allowed: false; error: string };
+      let check:
+        | { allowed: true; intentId?: string }
+        | { allowed: false; error: string; handoff?: ToolHandoffStatus };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -625,11 +676,11 @@ function makeSessionAwareHandler(
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
       if (!check.allowed) {
-        const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
-        await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
+        const denial = preToolUseDenialResult(toolName, check);
+        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
-          content: [{ type: 'text' as const, text: safeError }],
-          isError: true,
+          content: [{ type: 'text' as const, text: denial.text }],
+          isError: denial.isError,
         };
       }
       intentId = check.intentId;
@@ -1041,7 +1092,9 @@ export function wrapExtraToolWithHooks(
       return runOutsideDbContext(async (): Promise<SdkToolResult> => {
       const startTime = Date.now();
       if (onPreToolUse) {
-        let check: { allowed: true; context?: ToolExecutionContext } | { allowed: false; error: string };
+        let check:
+          | { allowed: true; context?: ToolExecutionContext }
+          | { allowed: false; error: string; handoff?: ToolHandoffStatus };
         try {
           check = await onPreToolUse(name, args);
         } catch (err) {
@@ -1049,9 +1102,9 @@ export function wrapExtraToolWithHooks(
           check = { allowed: false, error: `Guardrails check failed: ${reason}` };
         }
         if (!check.allowed) {
-          const safeError = compactToolResultForChat(name, JSON.stringify({ error: check.error }));
-          await safePostToolUse(onPostToolUse, name, args, safeError, true, 0);
-          return { content: [{ type: 'text' as const, text: safeError }], isError: true };
+          const denial = preToolUseDenialResult(name, check);
+          await safePostToolUse(onPostToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
+          return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
       }
       try {

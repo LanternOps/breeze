@@ -65,7 +65,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   configurationPolicies: { id: 'cp.id', name: 'cp.name', orgId: 'cp.orgId', status: 'cp.status' },
-  configPolicyFeatureLinks: { id: 'fl.id', configPolicyId: 'fl.cpId', featureType: 'fl.type' },
+  configPolicyEffectiveFeatureLinks: { id: 'fl.id', configPolicyId: 'fl.cpId', featureType: 'fl.type' },
   configPolicyAssignments: { configPolicyId: 'a.cpId', level: 'a.level', targetId: 'a.targetId' },
   patchJobs: { id: 'pj.id', configPolicyId: 'pj.cpId', orgId: 'pj.orgId', createdAt: 'pj.createdAt' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
@@ -103,6 +103,10 @@ vi.mock('./patchJobExecutor', () => ({
 }));
 
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/patchJobFinalizer', () => ({ finalizePatchJobDevice: vi.fn() }));
+vi.mock('../services/sensitiveCommandPayload', () => ({
+  terminalPayloadErasureSet: vi.fn(() => ({ payload: null })),
+}));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/patchJobSnapshot', () => ({ buildPatchesSnapshot: vi.fn(() => ({})) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));

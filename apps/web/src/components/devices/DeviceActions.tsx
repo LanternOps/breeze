@@ -21,6 +21,7 @@ import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -518,6 +519,19 @@ export default function DeviceActions({
           <Play className="h-4 w-4" />
           {t("deviceActions.runScript")}{" "}
         </button>
+        {/* W08 of #5205 (#5246). Renders nothing unless the AI Operator flags
+            are on, so this row is unchanged for every deployment that has not
+            enabled the feature (decision D2: internal/test orgs only). No
+            `online` gate: a task is durable work with its own deadline, not an
+            immediate command — the coordinator waits for the device rather
+            than the technician having to. */}
+        <DelegateToOperatorButton
+          orgId={device.orgId}
+          deviceId={device.id}
+          deviceLabel={device.displayName || device.hostname}
+          orgLabel={device.orgName}
+          source={{ kind: "device", id: device.id }}
+        />
         <ConnectDesktopButton
           deviceId={device.id}
           disabled={!online}

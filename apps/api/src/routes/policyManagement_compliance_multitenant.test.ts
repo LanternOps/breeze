@@ -78,6 +78,12 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     configPolicyId: 'configPolicyId'
   },
+  configPolicyEffectiveFeatureLinks: {
+    id: 'id',
+    configPolicyId: 'configPolicyId',
+    sourcePolicyId: 'sourcePolicyId',
+    inherited: 'inherited'
+  },
   configPolicyComplianceRules: {
     id: 'id',
     featureLinkId: 'featureLinkId',

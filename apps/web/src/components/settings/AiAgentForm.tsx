@@ -27,12 +27,7 @@ import { useAgentFormLists } from './aiAgents/useAgentFormLists';
 import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './aiAgents/agentErrors';
 import WhatItDoesStep from './aiAgents/steps/WhatItDoesStep';
 import SafetyStep from './aiAgents/steps/SafetyStep';
-import {
-  ALERT_SEVERITY_KINDS,
-  buildAgentSaveBody,
-  draftFrom,
-  type Draft,
-} from './aiAgents/agentDraft';
+import { ALERT_SEVERITY_KINDS, authorizedScriptCountFor, buildAgentSaveBody, type Draft, draftFrom } from './aiAgents/agentDraft';
 
 export type { AiAgentDto };
 export type { Draft } from './aiAgents/agentDraft';
@@ -171,9 +166,10 @@ export default function AiAgentForm({
   // organization-owned draft — see the hook's own doc). Neither fetch ever
   // blocks this form: a failed/absent catalog falls back to the old
   // textarea below (see the Permissions section).
-  const { catalog: fetchedCatalog, ceiling, ceilingResolved, loading: catalogLoading } = useAgentToolCatalog({
+  const { catalog: fetchedCatalog, ceiling, ceilingResolved, ceilingFailed, loading: catalogLoading } = useAgentToolCatalog({
     kind: draft.kind,
     ownerScope: draft.ownerScope,
+    orgId: agent.orgId ?? null,
   });
   // Defensive, same reasoning as the policy-decidable-keys row filter above:
   // this catalog is server-owned, so a shape the picker cannot use must
@@ -304,16 +300,16 @@ export default function AiAgentForm({
     />
   );
 
-  // The row's own scriptIds, narrowed by the partner ceiling the way
-  // effectivePolicy.ts computes the effective list (partner ∩ org) — a
-  // script only the org row lists is never dispatched unattended. Until an
-  // org row's ceiling has actually resolved, nothing counts as authorized:
-  // `ceiling === null` would otherwise read as "no ceiling" while the fetch
-  // is still in flight (or failed) and badge run_script as unattended
-  // (#5063 review).
-  const authorizedScriptCount = !ceilingResolved
+  // The DRAFT's scriptIds (#5065 — live as the operator ticks scripts on
+  // the Safety step below), narrowed the way effectivePolicy.ts computes the
+  // effective list (`authorizedScriptCountFor`: partner ∩ org, and nothing
+  // at all when the baseline bars run_script). Until an org row's ceiling
+  // is actually KNOWN, nothing counts as authorized: `ceiling === null`
+  // would otherwise read as "no ceiling" while the fetch is still in flight
+  // or has failed, and badge run_script as unattended (#5063, #5089 review).
+  const authorizedScriptCount = !ceilingResolved || ceilingFailed
     ? 0
-    : (agent.actAssets?.scriptIds ?? []).filter((id) => !ceiling || ceiling.scriptIds.includes(id)).length;
+    : authorizedScriptCountFor(draft, ceiling);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
@@ -448,6 +444,10 @@ export default function AiAgentForm({
             <SafetyStep
               draft={draft}
               patch={patch}
+              ceiling={ceiling}
+              ceilingFailed={ceilingFailed}
+              ceilingResolved={ceilingResolved}
+              ownerOrgId={agent.orgId ?? null}
               editing
               roles={roles}
               rolesFailed={rolesFailed}

@@ -9,7 +9,7 @@ export interface OrganizationSummary {
 const PAGE_LIMIT = 100;
 
 /**
- * One page of the organisations the caller can see, for pickers. A partner
+ * One page of the organizations the caller can see, for pickers. A partner
  * with more than 100 customers narrows with `search` (server-side, so the
  * cap is on the result, not the universe). `total` says whether that was
  * needed.

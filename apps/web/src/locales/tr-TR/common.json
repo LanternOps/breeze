@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",
@@ -76,7 +78,9 @@
     "software": "Yazılım",
     "securityOverview": "Genel Bakış",
     "aiRisk": "Yapay Zeka Riski",
-    "deviceBackup": "Cihaz Yedekleme"
+    "deviceBackup": "Cihaz Yedekleme",
+    "sectionServiceDesk": "Servis masası",
+    "serviceManagement": "Servis yönetimi"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

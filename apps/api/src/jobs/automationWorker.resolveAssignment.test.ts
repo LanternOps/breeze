@@ -19,7 +19,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   automations: {},
   configPolicyAutomations: {},
-  configPolicyFeatureLinks: {},
+  configPolicyEffectiveFeatureLinks: {},
   configurationPolicies: {},
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   deviceGroupMemberships: {
@@ -299,17 +299,21 @@ describe('processTriggerConfigPolicySchedule — run-time policy-owner load (#22
     type: 'trigger-config-policy-schedule',
     configPolicyAutomationId: 'cp-auto-1',
     slotKey: '2026-01-01T10:00',
+    // #5080: the assigned policy travels with the dispatch; the run-time clamp
+    // reads ownership by THIS id instead of reverse-mapping the feature link.
+    configPolicyId: 'policy-x',
+    policyId: 'policy-x',
     assignmentTargets: [{ level: 'organization', targetId: 'org-x' }],
   } as any;
 
-  it("skips with 'config_policy_not_found' when the featureLink→policy join resolves nothing", async () => {
+  it("skips with 'config_policy_not_found' when the assigned policy resolves nothing", async () => {
     // Chain 1: cpAutomation lookup — found and enabled.
     const cpChain: any = {
       from: vi.fn(() => cpChain),
       where: vi.fn(() => cpChain),
       limit: vi.fn(() => Promise.resolve([{ id: 'cp-auto-1', featureLinkId: 'fl-1' }])),
     };
-    // Chain 2: policy-owner join — empty (policy/feature link deleted between
+    // Chain 2: policy-owner load by assigned id — empty (policy deleted between
     // enqueue and run; race window only, given FK cascades).
     const ownerChain: any = {
       from: vi.fn(() => ownerChain),
@@ -339,11 +343,17 @@ describe('processTriggerConfigPolicySchedule — run-time policy-owner load (#22
     // Partner-owned library policy: orgId null, partnerId set.
     const ownerChain: any = {
       from: vi.fn(() => ownerChain),
-      innerJoin: vi.fn(() => ownerChain),
       where: vi.fn(() => ownerChain),
-      limit: vi.fn(() => Promise.resolve([{ orgId: null, partnerId: 'partner-123' }])),
+      limit: vi.fn(() => Promise.resolve([{ orgId: null, partnerId: 'partner-123', status: 'active' }])),
     };
-    // Chain 3: the resolver's clamped organization branch. Resolves no devices
+    // Chain 3: the effectiveness check — the automation's link is still
+    // effective for the assigned policy (#5080).
+    const effectiveChain: any = {
+      from: vi.fn(() => effectiveChain),
+      where: vi.fn(() => effectiveChain),
+      limit: vi.fn(() => Promise.resolve([{ id: 'fl-1' }])),
+    };
+    // Chain 4: the resolver's clamped organization branch. Resolves no devices
     // so the handler stops at 'no_target_devices' — before the maintenance
     // filter and BullMQ enqueue, which are irrelevant to this seam.
     const resolveChain: any = {
@@ -354,6 +364,7 @@ describe('processTriggerConfigPolicySchedule — run-time policy-owner load (#22
     vi.mocked(db.select)
       .mockReturnValueOnce(cpChain)
       .mockReturnValueOnce(ownerChain)
+      .mockReturnValueOnce(effectiveChain)
       .mockReturnValueOnce(resolveChain);
 
     const result = await processTriggerConfigPolicySchedule(jobData);

@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, invoices } from '../../db/schema';
 import {
@@ -101,6 +101,10 @@ const settingsSchema = z.object({
   // not a captured external fact (unlike homeCurrency/multiCurrencyEnabled
   // below, which PATCH must never accept).
   pullPayments: z.boolean().optional(),
+  // Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for this
+  // connection. Same tier as pushMode/pullPayments: a plain connection setting,
+  // not a captured external fact.
+  pushPayments: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -225,21 +229,23 @@ const requireInvoicePush = partnerScopedPermission(
  * Finding D. `PATCH /:provider/settings` was gated on partner scope + MFA only,
  * so any partner admin without `invoices:write` could switch the payment
  * pull-back off — silently stopping every QuickBooks payment from reaching
- * Breeze — or flip `pushMode` to `manual` and stop invoices going out. Both are
- * the same authority the manual/bulk push routes require, so the settings
- * handler now demands it too WHEN THE BODY CARRIES ONE OF THOSE TWO FIELDS.
+ * Breeze — or flip `pushMode` to `manual` and stop invoices going out, or flip
+ * `pushPayments` off and silently stop every Breeze payment from reaching the
+ * books. All three are the same authority the manual/bulk push routes
+ * require, so the settings handler now demands it too WHEN THE BODY CARRIES
+ * ONE OF THOSE FIELDS.
  *
  * The account-ref settings stay ungated: they are plumbing for a push someone
  * else performs, not a switch over whether money syncs at all.
  */
-type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean };
+type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean; pushPayments?: boolean };
 const requireInvoicePushForSyncSwitches: MiddlewareHandler<
   Env,
   string,
   { in: { json: SettingsWriteJsonInput }; out: { json: SettingsWriteJsonInput } }
 > = async (c, next) => {
   const body = c.req.valid('json');
-  if (!('pushMode' in body) && !('pullPayments' in body)) return next();
+  if (!('pushMode' in body) && !('pullPayments' in body) && !('pushPayments' in body)) return next();
   return requireInvoicePush(c, next);
 };
 
@@ -475,9 +481,29 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   const realmChanged = priorRealmKnown && priorRealmId !== null && priorRealmId !== tokens.realmId;
   if (realmChanged) {
     try {
-      const { mappingsDeleted } = await withSystemDbAccessContext(
+      const { mappingsDeleted, owedPaymentDeletes } = await withSystemDbAccessContext(
         () => resetConnectionForRealmChange(db, connection.id, state.partnerId),
       );
+      // Same rule as the disconnect route below: the reset cannot be blocked
+      // (the new grant is already live), and the remote ids of the payment
+      // deletes it discards are all a human has left to reconcile with. They
+      // name Payments in the OLD company file, which is exactly why they cannot
+      // simply be retained.
+      if (owedPaymentDeletes.count > 0) {
+        writeRouteAudit(c, {
+          orgId: null,
+          action: 'accounting.connection.owed_deletes_discarded',
+          resourceType: 'accounting_connection',
+          resourceId: connection.id,
+          result: 'failure',
+          details: {
+            provider,
+            reason: 'realm_changed',
+            count: owedPaymentDeletes.count,
+            remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+          },
+        });
+      }
       console.warn('[accounting] QuickBooks realm changed on reconnect; mappings and CDC cursor cleared', {
         partnerId: state.partnerId, provider, mappingsDeleted,
       });
@@ -583,8 +609,30 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   const { provider } = c.req.valid('param');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
-  const removed = await deleteConnection(db, partner.partnerId, provider);
+  const { removed, connectionId, owedPaymentDeletes } = await deleteConnection(db, partner.partnerId, provider);
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
+  // The disconnect is never blocked, but a QuickBooks payment deletion Breeze
+  // still owed dies with the mapping (ON DELETE CASCADE). Record the remote ids
+  // — the only thing that lets a human find those Payments afterwards (review
+  // wave 2, finding 3). The service already warned and raised Sentry.
+  if (owedPaymentDeletes.count > 0) {
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.connection.owed_deletes_discarded',
+      resourceType: 'accounting_connection',
+      // The CONNECTION id, matching the realm-change twin above: an audit trail
+      // that identifies the same subject two different ways cannot be joined.
+      // Non-null whenever `removed` is true, which the 404 above has established.
+      resourceId: connectionId ?? partner.partnerId,
+      result: 'failure',
+      details: {
+        provider,
+        reason: 'disconnect',
+        count: owedPaymentDeletes.count,
+        remoteEntityIds: owedPaymentDeletes.remoteEntityIds,
+      },
+    });
+  }
   return c.json({ disconnected: true });
 });
 
@@ -607,6 +655,9 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       // the column's own `.default(true)` (accountingConnectionService.ts).
       pullPayments: true,
       lastReconcileAt: null,
+      // Phase D2 — same story as pullPayments: `true` matches the
+      // push_payments column's own `.default(true)`.
+      pushPayments: true,
     });
   }
   return c.json({
@@ -627,6 +678,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     // card can render whether pull is on and when it last ran.
     pullPayments: connection.pullPayments,
     lastReconcileAt: connection.lastReconcileAt,
+    // Phase D2 — whether Breeze pushes its own payments into QuickBooks.
+    pushPayments: connection.pushPayments,
   });
 });
 
@@ -698,6 +751,18 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
+      ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
+      // Turning the switch back ON restarts the horizon, so a deliberate pause
+      // never later flushes a backlog of payments the operator recorded while it
+      // was off (review wave 2, finding 2). Decided IN the UPDATE: the SET list
+      // sees the row's OLD `push_payments`, so the flip is detected atomically
+      // without a read-modify-write, and turning it ON when it was already on
+      // leaves the horizon exactly where it was.
+      ...(body.pushPayments === true
+        ? {
+          pushPaymentsSince: sql`CASE WHEN ${accountingConnections.pushPayments} = false THEN now() ELSE ${accountingConnections.pushPaymentsSince} END`,
+        }
+        : {}),
       updatedAt: new Date(),
     })
     .where(and(
@@ -712,6 +777,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
       lastError: accountingConnections.lastError,
       pullPayments: accountingConnections.pullPayments,
+      pushPayments: accountingConnections.pushPayments,
     });
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
@@ -785,15 +851,20 @@ accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, req
   if (!connection) return c.json({ error: 'Accounting connection not found' }, 404);
 
   // Issue #4543: refuse rather than answer `{ enqueued: true }` honestly-but-
-  // uselessly. Before this check, a connection with pull_payments off still
-  // got a 200/queued response — the reconcile worker then silently no-oped
-  // (accountingReconcileWorker.ts's `pull_disabled` short-circuit) and the
+  // uselessly. Before this check, a switched-off connection still got a
+  // 200/queued response — the reconcile worker then silently no-oped
+  // (accountingReconcileWorker.ts's `both_switches_off` short-circuit) and the
   // operator had no way to tell "switch is off" apart from "it's syncing".
   // 409 + a stable `code`, matching the `{ error, code }` shape
   // AccountingConnectionError/AccountingMappingError already use elsewhere in
   // this file, rather than adding a new response shape.
-  if (!connection.pullPayments) {
-    return c.json({ error: 'Payment pull is disabled for this connection', code: 'pull_disabled' }, 409);
+  //
+  // Phase D2 (spec decision 6): the gate is pull OR push, mirroring the
+  // worker. With pull off and push on the CDC pass still has work — it adopts
+  // Breeze-created Payments whose phase 2 never landed and notices
+  // Breeze-origin Payments deleted in QuickBooks — so "Sync now" must run.
+  if (!connection.pullPayments && !connection.pushPayments) {
+    return c.json({ error: 'Payment sync is disabled for this connection', code: 'payment_sync_disabled' }, 409);
   }
 
   const enqueued = await enqueueAccountingReconcile(connection.id, partner.partnerId, 'manual');

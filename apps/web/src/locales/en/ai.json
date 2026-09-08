@@ -126,6 +126,7 @@
   },
   "aiToolCallCard": {
     "running": "Running...",
+    "approvedRunning": "Approved · running",
     "input": "Input:",
     "error": "Error:",
     "output": "Output:"

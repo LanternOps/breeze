@@ -729,3 +729,50 @@ describe('blocks-merge refusal', () => {
     expect(verdict).toBe('blocked');
   });
 });
+
+describe('runPostPassFixups: the QuickBooks payment outbox', () => {
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.failExecuteMatching = null;
+  });
+
+  const paymentSweep = (): string =>
+    mockState.executedSql.find((t) => t.includes('accounting_entity_mappings') && t.includes("'payment'"))!;
+
+  it('never sweeps a payment mapping that still owes QuickBooks a delete', async () => {
+    await orgMergeModule.runPostPassFixups('loser-org', 'survivor-org', 'partner-1');
+
+    // Phase D2 made the `payment` mapping row an OUTBOX. A row that owes a
+    // delete is orphaned BY CONSTRUCTION (the void deleted its invoice_payments
+    // row in the same transaction), so an unqualified sweep discarded every
+    // in-flight owed delete for the whole PARTNER — not just this merge's.
+    expect(paymentSweep()).toMatch(/pending_op\s+IS DISTINCT FROM\s+'delete'/i);
+  });
+
+  it('warns with the count of owed deletes it left behind', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Every mocked execute answers `[{ n: 2 }]`, so the scalar count reads 2
+      // wherever the statement falls in the sequence.
+      mockState.executeResponses = Array.from({ length: 12 }, () => [{ n: 2 }]);
+
+      await orgMergeModule.runPostPassFixups('loser-org', 'survivor-org', 'partner-1');
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('still owe QuickBooks a payment delete'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('kept 2 accounting_entity_mappings'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when nothing is owed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await orgMergeModule.runPostPassFixups('loser-org', 'survivor-org', 'partner-1');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

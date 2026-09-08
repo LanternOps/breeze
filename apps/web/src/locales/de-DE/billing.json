@@ -1788,6 +1788,9 @@
       "viaStripe": "über Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "über QuickBooks",
+      "inQuickbooks": "In QuickBooks vorhanden",
+      "syncingToQuickbooks": "Wird synchronisiert…",
+      "quickbooksSyncFailed": "QuickBooks-Synchronisierung fehlgeschlagen",
       "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "requestPayment": {
@@ -1838,6 +1841,7 @@
       "taxVarianceHint": "QuickBooks hat eine abweichende Steuersumme berechnet. Vergleichen Sie beide Datensätze, bevor Sie die Periode abschließen.",
       "docNumber": "QuickBooks-Beleg {{docNumber}}",
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
+      "syncing": "Wird übertragen…",
       "push": "An QuickBooks übertragen",
       "pushed": "Rechnung an QuickBooks übertragen.",
       "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",

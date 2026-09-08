@@ -21,14 +21,26 @@ const SYSTEM_INITIATED_EXCEPTIONS: Record<string, readonly string[]> = {
 };
 
 // `CommandTypes.NAME` references resolve through this map, built once from the
-// real `export const CommandTypes = { ... } as const` object in commandQueue.ts
-// so a renamed/added constant is picked up automatically.
+// real `export const CommandTypes = { ... } as const` object so a renamed/added
+// constant is picked up automatically.
+//
+// #5128 moved the table out of `commandQueue.ts` into the leaf module
+// `commandTypes.ts` (commandQueue re-exports it, so every import site is
+// unchanged). This scan reads the DEFINITION, so it follows the move —
+// commandQueue.ts is kept as a fallback only so the scan keeps working if the
+// table is ever folded back.
 function loadCommandTypesByName(): Map<string, string> {
-  const commandQueuePath = resolve(import.meta.dirname, './commandQueue.ts');
-  const source = readFileSync(commandQueuePath, 'utf8');
-  const block = source.match(/export const CommandTypes\s*=\s*\{([\s\S]*?)\}\s*as const/);
+  const candidates = ['./commandTypes.ts', './commandQueue.ts'];
+  let block: RegExpMatchArray | null = null;
+  for (const candidate of candidates) {
+    const source = readFileSync(resolve(import.meta.dirname, candidate), 'utf8');
+    block = source.match(/export const CommandTypes\s*=\s*\{([\s\S]*?)\}\s*as const/);
+    if (block) break;
+  }
   if (!block) {
-    throw new Error('CommandTypes constants object must remain discoverable in commandQueue.ts');
+    throw new Error(
+      `CommandTypes constants object must remain discoverable in one of: ${candidates.join(', ')}`,
+    );
   }
   const byName = new Map<string, string>();
   for (const match of block[1]!.matchAll(/\b([A-Z][A-Z0-9_]*)\s*:\s*'([^']+)'/g)) {

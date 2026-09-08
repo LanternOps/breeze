@@ -570,7 +570,7 @@ export default function AlertRuleTab({
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "alert_rule",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "alert_rule");
@@ -584,7 +584,7 @@ export default function AlertRuleTab({
     clearError();
     const result = await save(null, {
       featureType: "alert_rule",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: { items },
     });
     if (result) onLinkChanged(result, "alert_rule");

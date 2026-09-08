@@ -52,6 +52,7 @@ import {
   ATTEMPT_TTL_SECONDS,
   consumeRegistrationAttempt,
   issueRegistrationAttempt,
+  androidKeyGenChallenge,
   registrationTranscript,
   verifyPlatformAttestation,
 } from './authenticatorAttestation';
@@ -62,6 +63,42 @@ beforeEach(() => {
   vi.clearAllMocks();
   redisStore.clear();
   getRedisMock.mockReturnValue(redisMock as never);
+});
+
+describe('androidKeyGenChallenge', () => {
+  const base = { attemptId: 'a1', challenge: 'c1', publicKeyAlg: 'ES256' as const };
+
+  it('matches the exact documented pre-image — W06 Kotlin passes this to setAttestationChallenge', () => {
+    // The KeyStore attestation challenge is fixed at KEY GENERATION, before the
+    // SPKI exists, so it cannot be the registration transcript (which embeds the
+    // SPKI). This digest is what the leaf certificate carries; the key itself is
+    // bound to the registration by the attested-leaf-key == registered-SPKI
+    // check in verifyAndroid.
+    expect(androidKeyGenChallenge(base)).toEqual(
+      crypto
+        .createHash('sha256')
+        .update(['breeze.authenticator.mobile-register.keygen.v1', 'a1', 'c1', 'ES256'].join('\n'), 'utf8')
+        .digest(),
+    );
+  });
+
+  it('is 32 bytes (Android caps the attestation challenge at 128)', () => {
+    expect(androidKeyGenChallenge(base)).toHaveLength(32);
+  });
+
+  it('is domain-separated from the registration transcript', () => {
+    expect(androidKeyGenChallenge(base)).not.toEqual(
+      registrationTranscript({ ...base, publicKeySpkiB64: '' }),
+    );
+  });
+
+  it.each([
+    ['attemptId', { attemptId: 'a2' }],
+    ['challenge', { challenge: 'c2' }],
+    ['publicKeyAlg', { publicKeyAlg: 'RS256' as const }],
+  ])('changes when %s changes', (_name, patch) => {
+    expect(androidKeyGenChallenge({ ...base, ...patch })).not.toEqual(androidKeyGenChallenge(base));
+  });
 });
 
 describe('registrationTranscript', () => {
@@ -198,6 +235,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -212,6 +250,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'RS256',
     });
@@ -227,6 +266,7 @@ describe('verifyPlatformAttestation', () => {
     await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -253,6 +293,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -278,6 +319,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -308,6 +350,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -331,6 +374,7 @@ describe('verifyPlatformAttestation', () => {
         typeof verifyPlatformAttestation
       >[0]['attestation'],
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -347,6 +391,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'android', certificateChain: ['a', 'b'] },
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -359,6 +404,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -369,6 +415,7 @@ describe('verifyPlatformAttestation', () => {
     const result = await verifyPlatformAttestation({
       attestation: { platform: 'android', certificateChain: ['a', 'b'] },
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -384,6 +431,7 @@ describe('verifyPlatformAttestation', () => {
     const first = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });
@@ -391,6 +439,7 @@ describe('verifyPlatformAttestation', () => {
     const second = await verifyPlatformAttestation({
       attestation: iosAttestation,
       transcript,
+      keyGenChallenge: transcript,
       publicKeySpkiB64: 'spki',
       publicKeyAlg: 'ES256',
     });

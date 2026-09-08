@@ -80,6 +80,7 @@ vi.mock('../db/schema', () => ({
 // Import under test — AFTER all mocks are installed.
 import {
   getPromotedComponentVersion,
+  getRegisteredComponentVersion,
   PromotedVersionUnavailableError,
   __resetPromotedVersionCaptureCacheForTests,
 } from './promotedAgentVersion';
@@ -252,5 +253,91 @@ describe('getPromotedComponentVersion', () => {
       getPromotedComponentVersion('agent', 'solaris', 'amd64'),
     ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
     expect(dbMock.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('getRegisteredComponentVersion (issue #5159)', () => {
+  const OLD_EDITION = process.env.BINARY_EDITION;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._reset();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    if (OLD_EDITION === undefined) delete process.env.BINARY_EDITION;
+    else process.env.BINARY_EDITION = OLD_EDITION;
+    vi.restoreAllMocks();
+  });
+
+  it('returns the version AS STORED, never the caller-supplied string', async () => {
+    // The download routes are public and unauthenticated, and the returned
+    // value is interpolated into a GitHub release-tag path. It must originate
+    // from a row this server registered, not from the query string.
+    dbMock._setResult([{ version: '0.110.0' }]);
+
+    await expect(
+      getRegisteredComponentVersion('agent', 'windows', 'amd64', '0.110.0'),
+    ).resolves.toBe('0.110.0');
+  });
+
+  it('matches on the requested version and does NOT filter on isLatest', async () => {
+    // The whole point: an org agentVersionPins pilot is deliberately allowed
+    // to be un-promoted (#2124). Requiring isLatest here would re-break it.
+    dbMock._setResult([{ version: '0.110.0' }]);
+
+    await getRegisteredComponentVersion('agent', 'darwin', 'arm64', '0.110.0');
+
+    expect(boundValueFor('av.version')).toBe('0.110.0');
+    expect(boundValueFor('av.platform')).toBe('macos');
+    const { sql, params } = compiledWhere();
+    expect(params).not.toContain('av.is_latest');
+    expect(sql).not.toMatch(/\bor\b/i);
+    expect(sql).not.toContain('<>');
+    // version, platform, architecture, component, edition — five equalities.
+    expect(sql.match(/=/g)).toHaveLength(5);
+  });
+
+  it('scopes to this server edition', async () => {
+    process.env.BINARY_EDITION = 'hosted';
+    dbMock._setResult([{ version: '0.110.0' }]);
+
+    await getRegisteredComponentVersion('backup', 'linux', 'amd64', '0.110.0');
+
+    expect(boundValueFor('av.edition')).toBe('hosted');
+  });
+
+  it('returns null when no row matches, so the route can fail closed', async () => {
+    dbMock._setResult([]);
+
+    await expect(
+      getRegisteredComponentVersion('agent', 'linux', 'amd64', '9.9.9'),
+    ).resolves.toBeNull();
+  });
+
+  it('treats the "unknown" sentinel as unresolvable', async () => {
+    // binarySync stores the literal "unknown" for locally-registered binaries
+    // with no version file; "vunknown" is not a release tag.
+    dbMock._setResult([{ version: 'unknown' }]);
+
+    await expect(
+      getRegisteredComponentVersion('agent', 'linux', 'amd64', 'unknown'),
+    ).resolves.toBeNull();
+  });
+
+  it('throws PromotedVersionUnavailableError on a lookup fault', async () => {
+    dbMock._setError(new Error('connection terminated'));
+
+    await expect(
+      getRegisteredComponentVersion('agent', 'linux', 'amd64', '0.110.0'),
+    ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('throws on an unmapped route OS rather than matching no row', async () => {
+    await expect(
+      getRegisteredComponentVersion('agent', 'solaris', 'amd64', '0.110.0'),
+    ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
   });
 });

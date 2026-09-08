@@ -220,6 +220,38 @@ function serializeFinding(row: RawFindingRow): FleetFindingRow {
   };
 }
 
+/**
+ * Fetch member deviceIds-in-scope per finding for a site-restricted caller,
+ * shared by `listFleetFindings` and `getFleetFindingCounts` so the two don't
+ * drift (both apply the exact same "member device in an allowed site" test —
+ * see the module doc's warning about dual-map drift between call sites).
+ *
+ * Returns `null` — with NO query issued — when there is nothing to check
+ * (`allowedSiteIds` empty, or no candidate findings): callers must treat that
+ * as "nothing visible" and return their own empty result, matching the
+ * existing fail-closed contract (an empty site allowlist can never match).
+ */
+async function findingDeviceIdsBySite(
+  candidateFindingIds: readonly string[],
+  allowedSiteIds: readonly string[]
+): Promise<Map<string, Set<string>> | null> {
+  if (allowedSiteIds.length === 0 || candidateFindingIds.length === 0) return null;
+
+  const memberRows = await db
+    .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
+    .from(fleetFindingDevices)
+    .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+    .where(and(inArray(fleetFindingDevices.findingId, candidateFindingIds), inArray(devices.siteId, allowedSiteIds)));
+
+  const deviceIdsByFinding = new Map<string, Set<string>>();
+  for (const m of memberRows) {
+    const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
+    set.add(m.deviceId);
+    deviceIdsByFinding.set(m.findingId, set);
+  }
+  return deviceIdsByFinding;
+}
+
 function buildOrgCondition(auth: AuthContext, requestedOrgId: string | undefined): SQL | undefined {
   if (requestedOrgId) {
     return eq(fleetFindings.orgId, requestedOrgId);
@@ -282,24 +314,11 @@ export async function listFleetFindings(
   let scoped = rows;
 
   if (auth.allowedSiteIds !== undefined) {
-    const allowedSiteIds = auth.allowedSiteIds;
     const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsBySite(candidateIds, auth.allowedSiteIds);
 
-    if (allowedSiteIds.length === 0 || candidateIds.length === 0) {
+    if (deviceIdsByFinding === null) {
       return { findings: [], total: 0 };
-    }
-
-    const memberRows = await db
-      .select({ findingId: fleetFindingDevices.findingId, deviceId: fleetFindingDevices.deviceId })
-      .from(fleetFindingDevices)
-      .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
-      .where(and(inArray(fleetFindingDevices.findingId, candidateIds), inArray(devices.siteId, allowedSiteIds)));
-
-    const deviceIdsByFinding = new Map<string, Set<string>>();
-    for (const m of memberRows) {
-      const set = deviceIdsByFinding.get(m.findingId) ?? new Set<string>();
-      set.add(m.deviceId);
-      deviceIdsByFinding.set(m.findingId, set);
     }
 
     scoped = rows
@@ -311,6 +330,58 @@ export async function listFleetFindings(
   const page = scoped.slice(filters.offset, filters.offset + filters.limit);
 
   return { findings: page.map(serializeFinding), total };
+}
+
+export interface FleetFindingCounts {
+  total: number;
+  byOrg: Record<string, number>;
+}
+
+/**
+ * Open-finding counts per org (+ fleet total), for the mobile Systems tab
+ * (#5139 / #5117 decision 1): folds fleet-hygiene findings into the same
+ * "issue count" the AI's `get_fleet_findings` tool already reports, so a
+ * technician opening Systems sees the same picture.
+ *
+ * Only `status = 'open'` counts — acknowledged/dismissed/resolved findings
+ * are already being worked or closed out and must not inflate the count a
+ * technician is triaging against.
+ *
+ * Scoping mirrors `listFleetFindings`: `auth.orgCondition` narrows the SQL
+ * fetch, and a site-restricted caller (`auth.allowedSiteIds` set) gets the
+ * result narrowed further to findings with at least one member device in an
+ * allowed site — same fail-closed semantics (a finding with zero in-scope
+ * members must not inflate a count the caller cannot otherwise see).
+ */
+export async function getFleetFindingCounts(auth: AuthContext): Promise<FleetFindingCounts> {
+  const conditions: SQL[] = [eq(fleetFindings.status, 'open')];
+  const orgCondition = auth.orgCondition(fleetFindings.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+
+  const rows = (await db
+    .select({ id: fleetFindings.id, orgId: fleetFindings.orgId })
+    .from(fleetFindings)
+    .where(and(...conditions))) as Array<{ id: string; orgId: string }>;
+
+  let scoped = rows;
+
+  if (auth.allowedSiteIds !== undefined) {
+    const candidateIds = rows.map((r) => r.id);
+    const deviceIdsByFinding = await findingDeviceIdsBySite(candidateIds, auth.allowedSiteIds);
+
+    if (deviceIdsByFinding === null) {
+      return { total: 0, byOrg: {} };
+    }
+
+    scoped = rows.filter((r) => (deviceIdsByFinding.get(r.id)?.size ?? 0) > 0);
+  }
+
+  const byOrg: Record<string, number> = {};
+  for (const r of scoped) {
+    byOrg[r.orgId] = (byOrg[r.orgId] ?? 0) + 1;
+  }
+
+  return { total: scoped.length, byOrg };
 }
 
 /**

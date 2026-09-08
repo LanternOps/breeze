@@ -85,7 +85,8 @@ func (c *EventLogCollector) collectUnifiedLogEvents(since time.Time, securityEna
 
 	// runCollectorBoundedOutput streams stdout through an io.LimitReader so the
 	// 4 MiB cap is enforced before the bytes are buffered (the old
-	// runCollectorOutput buffered everything first and checked post-hoc).
+	// runCollectorOutput previously buffered everything first and checked post-hoc;
+	// it is now memory-bounded too but still runs the command to completion).
 	output, err := runCollectorBoundedOutput(collectorLongCommandTimeout, "log", "show",
 		"--predicate", predicate,
 		"--style", "json",

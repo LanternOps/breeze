@@ -77,11 +77,27 @@ const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
  */
 const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings']);
 
+/**
+ * ASSOCIATED_SYSTEM_SCOPED_TABLES entries a merge never needs to touch at all.
+ *
+ * `partners` (#5075 W04) is there only because org ERASURE must un-wire
+ * `partners.service_management_psa_connection_id` before deleting a bound
+ * `psa_connections` row (ON DELETE RESTRICT). A merge deletes nothing:
+ * `psa_connections` is a plain repoint (REPOINT_TABLES below), so the
+ * connection keeps its id and the partner's binding stays valid with no
+ * write to `partners`. The table has no org_id, is not FK-reachable from the
+ * cascade walk, and lives on the partner axis, so a policy entry here would
+ * be a dead entry that reads as coverage — same reasoning as
+ * POST_PASS_FIXUP_TABLES, minus the fixup.
+ */
+const MERGE_NOOP_PARTNER_AXIS_TABLES = new Set(['partners']);
+
 function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
   const entries: Record<string, OrgMergePolicy> = {};
   for (const { table } of tenantCascadeTestOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     if (FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS.has(table)) continue;
     if (POST_PASS_FIXUP_TABLES.has(table)) continue;
+    if (MERGE_NOOP_PARTNER_AXIS_TABLES.has(table)) continue;
     const note = FOLLOWS_PARENT_NOTES[table];
     if (!note) {
       // tenantCascade.ts gained a new ASSOCIATED_SYSTEM_SCOPED_TABLES entry
@@ -191,6 +207,24 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // ai_alert_verdicts (Phase 2 wave P2-1, #4187): hangs off a run that
   // itself stays with the source org (ai_agent_runs disposition above) —
   // same reasoning, not a separate immutability trigger.
+  // AI Operator thin slice (#5205 W03, #5208). Task/operation/outbox history
+  // is immutable, source-org history for exactly the reason ai_agent_runs is:
+  // a task's evidence (its runs, its intents, its device command) all stays
+  // with the loser, so repointing the task alone would split one remediation's
+  // story across two orgs. `ai_operator_tasks.org_id` is also the anchor of
+  // four composite (x, org_id) FKs, so a bare repoint would 23503 anyway.
+  //
+  // `ai_operator_tasks` is `custom`, not plain `leave-for-erasure`, because
+  // leaving it alone is not sufficient: `mergeAiAgents` REPOINTS every
+  // loser-org ai_agents row to the survivor, so a task still in a live state
+  // would keep coordinating under a dead tenant against an agent that now
+  // belongs to someone else. The executor fences those tasks first (see
+  // fenceAiOperatorTasks in orgMergeCustomExecutors.ts). It moves and drops
+  // nothing — the fence IS the whole disposition, and the rows are then
+  // erased with the loser shell like their siblings below.
+  ai_operator_tasks: { kind: 'custom', note: 'live tasks are fenced to state=stopping BEFORE ai_agents repoints (resolve phase), then left for erasure with the loser shell — task history never follows a merge, same rule as ai_agent_runs' },
+  ai_operator_operations: { kind: 'leave-for-erasure', note: 'operations hang off a task that stays with the source org (ai_operator_tasks disposition) via a composite (task_id, org_id) FK; they are erased with it' },
+  ai_operator_task_outbox: { kind: 'leave-for-erasure', note: 'coordinator wake rows for a task that stays with the source org; a fenced task has nothing left to wake, and the rows cascade with the task on erasure' },
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
   // ai_agent_schedules (Phase 2 wave P2-2, #4189): dual-owner (org_id XOR
   // partner_id) config, same "not a normal org_id table" shape as ai_agents
@@ -627,6 +661,11 @@ const REPOINT_TABLES: readonly string[] = [
   "log_search_queries",
   "m365_consent_sessions",
   "maintenance_windows",
+  // #4622 — plain repoint, NOT repoint-dedupe: there is no org-unique key on
+  // manual_assets by design (serial is deliberately non-unique), so merging two
+  // orgs that each hold the same physical asset yields two rows. That is the
+  // honest outcome and is resolvable by hand.
+  "manual_assets",
   "metric_anomalies",
   "metric_anomaly_candidates",
   "metric_anomaly_incidents",

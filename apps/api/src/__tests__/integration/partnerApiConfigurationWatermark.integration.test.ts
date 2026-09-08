@@ -518,7 +518,8 @@ describe('partner desired-configuration material watermarks', () => {
       autoApproveDeferralDays: 7,
       apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
       scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
-      scheduleDayOfMonth: 1, rebootPolicy: 'if_required', rebootDelayMinutes: 15,
+      scheduleDayOfMonth: 1, offlineBehavior: 'queue',
+      rebootPolicy: 'if_required', rebootDelayMinutes: 15,
       // #3207. This assertion is SUPPOSED to red on a new patch column: the
       // canonical export is a hand-enumerated jsonb_build_object, so it is the
       // only structural coverage the export has.

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   authMiddlewareMock,
@@ -11,10 +12,12 @@ const {
   pamGuardMock,
   captureExceptionMock,
   schedulePeripheralPolicyDeviceMock,
+  propagateCancelledMock,
 } = vi.hoisted(() => ({
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  propagateCancelledMock: vi.fn(),
   schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
@@ -66,6 +69,13 @@ vi.mock('../../services/sentry', () => ({
   captureException: captureExceptionMock,
 }));
 
+// #5128 — the org flip cancels the device's queued work and must terminalise
+// the OWNING records (script_executions / deployment_results) in the SAME
+// transaction. Mocked at the seam so the route's wiring is assertable.
+vi.mock('../../services/commandCancelPropagation', () => ({
+  propagateCancelledDeviceCommands: propagateCancelledMock,
+}));
+
 // Task 13 (#3776): the locked currency guard is unit-tested on its own
 // (services/ticketMoveCurrencyGuard.test.ts); here it is a mock so the route's
 // sequencing, 409 mapping, and permission gate can be asserted in isolation.
@@ -94,6 +104,7 @@ import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
 import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
@@ -183,6 +194,13 @@ let barrierMissingOrgIds = new Set<string>();
  */
 let executeResultFor: ((stmtText: string) => unknown[] | null) | null = null;
 
+/**
+ * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
+ * cancel-on-move read) resolves to. Empty by default so the existing
+ * lock-order/audit tests are unaffected; the propagation tests set it.
+ */
+let pendingCommandRows: Array<{ id: string; type: string; payload: unknown }> = [];
+
 /** Collapse a captured statement to one line (multi-line `sql` templates keep
  *  their source newlines in the harness's raw text). */
 const collapseStmt = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -237,6 +255,13 @@ function rigTransactionSuccess(
   updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
   deviceUpdateError?: unknown,
 ) {
+  // Every `where(...)` predicate handed to a tx.update chain, in call order:
+  // [0] the devices flip, [1] the #5128 cancel-on-move sweep. Captured as the
+  // Drizzle condition object so it can be COMPILED — the only way to prove the
+  // self_uninstall exclusion is actually in the SQL.
+  const updateWheres: unknown[] = [];
+  const commandSelectWheres: unknown[] = [];
+  let txHandle: unknown = null;
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
   // template — Drizzle exposes it as queryChunks[1].value) plus the full
@@ -254,10 +279,13 @@ function rigTransactionSuccess(
         set: vi.fn().mockImplementation((vals: any) => {
           deviceUpdateSets.push(vals);
           return {
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockImplementation(() => deviceUpdateError
-                ? Promise.reject(deviceUpdateError)
-                : Promise.resolve([updatedRow])),
+            where: vi.fn().mockImplementation((cond: any) => {
+              updateWheres.push(cond);
+              return {
+                returning: vi.fn().mockImplementation(() => deviceUpdateError
+                  ? Promise.reject(deviceUpdateError)
+                  : Promise.resolve([updatedRow])),
+              };
             }),
           };
         }),
@@ -275,7 +303,25 @@ function rigTransactionSuccess(
       // #3776 — the ticket-id lookup feeding the currency guard
       // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
       // position so lock-order assertions can place it against the UPDATEs.
-      select: vi.fn().mockImplementation(() => ({
+      select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+        // #5128 — the org flip now also reads the device's PENDING commands
+        // (id/type/payload) so their owning script_executions /
+        // deployment_results rows can be cancelled in the same transaction.
+        // This recorder is otherwise table-blind, so without this branch that
+        // read would be mis-recorded as the ticket-currency lookup and shift
+        // every lock-order assertion below.
+        if (cols && 'payload' in cols) {
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockImplementation((cond: any) => {
+                commandSelectWheres.push(cond);
+                statements.push(`SELECT device_commands.pending (after ${updatedTables.length} updates)`);
+                return Promise.resolve(pendingCommandRows);
+              }),
+            }),
+          };
+        }
+        return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockImplementation(() => ({
             // Awaited directly => the ticket-id lookup feeding the currency guard.
@@ -296,12 +342,21 @@ function rigTransactionSuccess(
             })),
           })),
         }),
-      })),
+        };
+      }),
     };
+    txHandle = tx;
     await cb(tx);
     return updatedRow;
   });
-  return { updatedTables, statements, deviceUpdateSets };
+  return {
+    updatedTables,
+    statements,
+    deviceUpdateSets,
+    updateWheres,
+    commandSelectWheres,
+    tx: () => txHandle,
+  };
 }
 
 describe('POST /devices/:id/move-org', () => {
@@ -311,6 +366,7 @@ describe('POST /devices/:id/move-org', () => {
     vi.clearAllMocks();
     barrierMissingOrgIds = new Set<string>();
     executeResultFor = null;
+    pendingCommandRows = [];
     guardMock.mockReset();
     guardMock.mockResolvedValue(null);
     pamGuardMock.mockReset();
@@ -330,6 +386,68 @@ describe('POST /devices/:id/move-org', () => {
       expect(registeredPermResources).toContain('devices:write');
       expect(registeredPermResources).toContain('organizations:write');
       expect(registeredMfaCallCount).toBeGreaterThan(0);
+    });
+  });
+
+  // ── #5128 cancel-on-move ───────────────────────────────────────────────
+  describe('cancel-on-move (#5128)', () => {
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      return rigTransactionSuccess();
+    }
+
+    const move = () =>
+      app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+
+    it('both the SELECT and the cancel UPDATE exclude self_uninstall', async () => {
+      // Matches the decommission path in core.ts: the uninstall drain must
+      // still deliver. A device moved out of an org while its removal is queued
+      // still has to lose its agent — cancelling that row leaves a customer's
+      // machine managed by an MSP that no longer owns it.
+      const rig = rigMove();
+      expect((await move()).status).toBe(200);
+
+      const compiled = [rig.commandSelectWheres[0], rig.updateWheres[1]].map((cond) =>
+        new PgDialect().sqlToQuery(cond as never),
+      );
+      for (const { sql: text, params } of compiled) {
+        expect(params).toContain('self_uninstall');
+        // `<>` and not `=`: an equality would cancel ONLY the uninstall.
+        expect(text).toMatch(/"type"\s*<>/);
+        expect(params).toContain('pending');
+      }
+    });
+
+    it('propagates the SELECTED rows to the owning records on the SAME transaction', async () => {
+      pendingCommandRows = [
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ];
+      const rig = rigMove();
+
+      expect((await move()).status).toBe(200);
+
+      expect(propagateCancelledDeviceCommands).toHaveBeenCalledTimes(1);
+      const [subjects, completedAt, executor] = propagateCancelledMock.mock.calls[0]!;
+      expect(subjects).toEqual([
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ]);
+      expect(completedAt).toBeInstanceOf(Date);
+      // The transaction handle, not the ambient db: a rollback of the org flip
+      // must roll the owning records back with it.
+      expect(executor).toBe(rig.tx());
     });
   });
 
@@ -1135,7 +1253,19 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[4]!)).toContain(
         'breeze_rehome_device_custom_field_values',
       );
-      expect(statements[5]).toBe('UPDATE devices');
+      // #4622 — the manual-asset detach sits between the custom-field re-home
+      // and the device UPDATE, and that position is load-bearing:
+      // manual_assets_linked_device_org_fk ((linked_device_id, org_id) ->
+      // devices(id, org_id)) is DEFERRABLE INITIALLY IMMEDIATE, so its check
+      // fires at the end of the `UPDATE devices SET org_id` statement below. A
+      // detach placed after the flip — or left to
+      // breeze_cascade_device_org_id(), which shares the after-row queue with
+      // that check and is ordered against it only by trigger name — arrives too
+      // late and the move aborts with 23503.
+      expect(collapseStmt(statements[5]!)).toContain(
+        'UPDATE manual_assets SET linked_device_id = NULL',
+      );
+      expect(statements[6]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

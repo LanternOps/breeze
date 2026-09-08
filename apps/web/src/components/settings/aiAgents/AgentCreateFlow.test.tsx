@@ -92,11 +92,15 @@ function mockEndpoints(overrides: {
   preview?: unknown;
   createStatus?: number;
   createBody?: unknown;
+  ceilingStatus?: number;
 } = {}): void {
-  const { registry = [], roles = [{ id: 'r-1', name: 'Org Admin' }], rolesStatus = 200, preview, createStatus = 201, createBody } = overrides;
+  const { registry = [], roles = [{ id: 'r-1', name: 'Org Admin' }], rolesStatus = 200, preview, createStatus = 201, createBody, ceilingStatus = 200 } = overrides;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     if (url === '/ai/agents/tool-catalog') return Promise.resolve(json({ data: CATALOG }));
-    if (url.startsWith('/ai/agents/ceiling')) return Promise.resolve(json({ data: null }));
+    if (url.startsWith('/ai/agents/ceiling')) {
+      return Promise.resolve(ceilingStatus === 200 ? json({ data: null }) : json({ error: 'boom' }, false, ceilingStatus));
+    }
+    if (url.startsWith('/scripts')) return Promise.resolve(json({ data: [], pagination: { total: 0 } }));
     if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: registry }));
     if (url === '/roles') return Promise.resolve(json(rolesStatus === 200 ? { data: roles } : { error: 'nope' }, rolesStatus === 200, rolesStatus));
     if (url === '/ai/agents/preview') {
@@ -119,7 +123,7 @@ function buildFakePreview() {
   return {
     mode: 'shadow',
     kind: 'triage',
-    readOnlyToolCount: 3,
+    readOnlyToolCount: 3, authorizedScriptCount: 0,
     operations: [],
     unrecognised: [],
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true, ticketAutonomousWrites: false },
@@ -492,6 +496,24 @@ describe('AgentCreateFlow — Safety step (moved from AiAgentsPage.test.tsx)', (
 
     expect(screen.queryByTestId('ai-agent-policy-decide')).toBeNull();
     expect(screen.queryByTestId('ai-agent-supervised-keys-grant-only-hint')).toBeNull();
+    // Scripts are NOT grant-only (#5065): an org act-mode draft authorizes
+    // them right here on the create flow (#5089 review).
+    expect(screen.getByTestId('ai-agent-scripts')).toBeInTheDocument();
+  });
+
+  it('locks the script picker and says why when an org draft\'s ceiling cannot be loaded, instead of offering an unrestricted choice (#5089 review)', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    mockEndpoints({ ceilingStatus: 500 });
+    renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Org act bot' } });
+    fireEvent.click(screen.getByTestId('ai-agent-mode-act'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-permissions');
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    await screen.findByTestId('ai-agent-limit-devices');
+
+    expect(await screen.findByTestId('ai-agent-scripts-ceiling-unavailable')).toBeInTheDocument();
   });
 
   it('collapses a partner draft\'s supervised-key registry behind a summary while shadow/off, mirroring the drawer', async () => {

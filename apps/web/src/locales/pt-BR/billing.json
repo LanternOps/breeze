@@ -1788,6 +1788,9 @@
       "viaStripe": "via Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "via QuickBooks",
+      "inQuickbooks": "No QuickBooks",
+      "syncingToQuickbooks": "Sincronizando…",
+      "quickbooksSyncFailed": "Falha na sincronização com o QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
@@ -1838,6 +1841,7 @@
       "taxVarianceHint": "O QuickBooks calculou um total de impostos diferente. Compare os dois registros antes de fechar o período.",
       "docNumber": "Documento do QuickBooks {{docNumber}}",
       "lastSynced": "Última sincronização em {{when}}",
+      "syncing": "Sincronizando…",
       "push": "Enviar ao QuickBooks",
       "pushed": "Fatura enviada ao QuickBooks.",
       "pushFailed": "Falha ao enviar a fatura ao QuickBooks.",

@@ -64,7 +64,7 @@ export default function HelperTab({
     if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
     const result = await save(existingLink?.id ?? null, {
       featureType: "helper",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: payload,
     });
     if (result) onLinkChanged(result, "helper");
@@ -81,7 +81,7 @@ export default function HelperTab({
     if (payload.lifecycleMode === "auto") delete payload.lifecycleMode;
     const result = await save(null, {
       featureType: "helper",
-      featurePolicyId: linkedPolicyId,
+      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
       inlineSettings: payload,
     });
     if (result) onLinkChanged(result, "helper");

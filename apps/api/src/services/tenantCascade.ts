@@ -117,6 +117,24 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
+  // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
+  // NOT NULL org_id, so all three are required here.
+  //   - ai_operator_operations references action_intents and ai_agent_runs,
+  //     both of which sort EARLIER in this alphabetical list. That is fine:
+  //     both FKs are ON DELETE SET NULL (restricted to the referencing column
+  //     so org_id survives), and topologicalCascadeOrder()'s runtime
+  //     pg_constraint read — not this list — decides the real DELETE order.
+  //   - ai_operator_task_outbox carries org_id of its own, unlike
+  //     intent_outbox (which is INTENTIONAL_UNSCOPED and rides its parent's
+  //     ON DELETE CASCADE), so it needs its own entry here.
+  //   - ai_operator_tasks references ai_agents ON DELETE RESTRICT, so tasks
+  //     MUST be deleted before agents. That too is the runtime topological
+  //     sort's job, not this array's — the alphabetical position is cosmetic
+  //     here exactly as it is for the two entries above. Stated only so a
+  //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
+  'ai_operator_operations',
+  'ai_operator_task_outbox',
+  'ai_operator_tasks',
   'ai_screenshots',
   'ai_sessions',
   // ai_unattended_exposure (Wave 5 Part A, #3827): blast-cap ledger. Sorts
@@ -301,6 +319,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'm365_connections',
   'm365_consent_sessions',
   'maintenance_windows',
+  // #4622 — org-scoped hand-entered inventory. Not append-only and carrying no
+  // immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
+  'manual_assets',
   'metric_anomalies',
   'metric_anomaly_candidates',
   'metric_anomaly_incidents',
@@ -529,7 +550,22 @@ export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
  */
 const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   table: string;
+  /**
+   * `'unwire'` marks an entry whose clearSql is an UPDATE that releases an FK
+   * (nulls the referencing column) and removes NO rows from `table`. The
+   * FK-on-delete ledger uses it to keep `table` out of the set of parents an
+   * erasure deletes from; the entry still counts as a pre-clear step for the
+   * FK it releases. Absent means the entry DELETEs from `table`.
+   */
+  kind?: 'unwire';
   clearSql: (orgId: string) => ReturnType<typeof sql>;
+  /**
+   * Rows this entry's `clearSql` DELIBERATELY leaves behind, counted so the
+   * erasure log says how many and why. Only `accounting_entity_mappings` has
+   * one: a mapping that still owes QuickBooks a payment delete.
+   */
+  retainedSql?: (orgId: string) => ReturnType<typeof sql>;
+  retainedWarning?: (count: number, orgId: string) => string;
 }> = [
   {
     table: 'device_commands',
@@ -578,6 +614,43 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE connection_id IN (SELECT id FROM psa_connections WHERE org_id = ${orgId})
          OR alert_id IN (SELECT id FROM alerts WHERE org_id = ${orgId})
          OR device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
+    `,
+  },
+  // partners.service_management_psa_connection_id -> psa_connections.id is
+  // ON DELETE RESTRICT (#5075 W04), and psa_connections IS in the org cascade
+  // list, so an org that owns a bound connection would abort its own GDPR
+  // erasure outright rather than merely stranding a row. `partners` has no
+  // org_id, so neither the cascade list nor the export policy reaches it --
+  // the migration's comment concluded from that that no registration applied,
+  // which is true of the TABLE and false of this FK.
+  //
+  // In practice PATCH /orgs/partners/me only binds partner-wide connections
+  // (`partner_id = caller AND org_id IS NULL`), which org erasure never
+  // deletes, so this clear is expected to match zero rows today. It is kept
+  // because that guarantee is app-layer only -- nothing in the schema stops an
+  // org-owned connection being bound -- and this repo does not accept
+  // app-layer-only tenancy guarantees.
+  //
+  // Both columns must move together: partners_service_management_connection_chk
+  // is a biconditional, so nulling the id while leaving mode='external' fails
+  // the CHECK (23514) and aborts the erasure just as surely as the FK did.
+  // 'native' is the column default and the value getServiceManagementMode
+  // already falls open to, so an un-wired partner lands on Breeze's own service
+  // desk rather than losing ticketing entirely.
+  //
+  // Note this is the one entry whose clearSql UPDATEs rather than DELETEs, so
+  // its row count lands in stats.tablesDeleted['partners'] as an un-wire count,
+  // not a deletion. No partner row is ever removed by an org erasure.
+  {
+    table: 'partners',
+    kind: 'unwire',
+    clearSql: (orgId) => sql`
+      UPDATE partners
+      SET service_management_mode = 'native',
+          service_management_psa_connection_id = NULL
+      WHERE service_management_psa_connection_id IN (
+        SELECT id FROM psa_connections WHERE org_id = ${orgId}
+      )
     `,
   },
   // Software deployment chain. None of these three tables is reachable by the
@@ -675,6 +748,18 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
   // ahead of the CORE_ORG_CASCADE_DELETE_ORDER walk that deletes
   // invoices/invoice_payments themselves) so the subqueries below still see
   // the rows they need to join through.
+  //
+  // ONE EXCEPTION, and it is not a gap: a 'payment' row with
+  // `pending_op = 'delete'` is the OUTBOX of a QuickBooks deletion Breeze still
+  // owes (Phase D2). Breeze created that Payment in the partner's books and
+  // deleting the mapping discards the debt silently, leaving real money
+  // recorded against an org that no longer exists — and nothing can recreate
+  // the row, because the `accounting_entity_mappings_entity_partner_guard`
+  // trigger refuses an INSERT whose `invoice_payments` row is gone. The row is
+  // retained instead, and the count is logged. It holds no org-scoped personal
+  // data (a remote id, a SyncToken, a status) and it is bounded in time:
+  // `deletePaymentInAccounting` deletes it once QuickBooks confirms, or drops
+  // it loudly after PAYMENT_DELETE_UNRESOLVED_GRACE_MS.
   {
     table: 'accounting_entity_mappings',
     clearSql: (orgId) => sql`
@@ -682,10 +767,22 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE (m.breeze_entity_type = 'org' AND m.breeze_entity_id = ${orgId}::uuid)
          OR (m.breeze_entity_type = 'invoice' AND m.breeze_entity_id IN (
                SELECT id FROM invoices WHERE org_id = ${orgId}::uuid))
-         OR (m.breeze_entity_type = 'payment' AND m.breeze_entity_id IN (
+         OR (m.breeze_entity_type = 'payment' AND m.pending_op IS DISTINCT FROM 'delete'
+             AND m.breeze_entity_id IN (
                SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
                 WHERE i.org_id = ${orgId}::uuid))
     `,
+    retainedSql: (orgId) => sql`
+      SELECT count(*)::int AS n FROM accounting_entity_mappings m
+       WHERE m.breeze_entity_type = 'payment'
+         AND m.pending_op = 'delete'
+         AND m.breeze_entity_id IN (
+               SELECT p.id FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id
+                WHERE i.org_id = ${orgId}::uuid)
+    `,
+    retainedWarning: (count, orgId) =>
+      `[tenantCascade] org=${orgId}: kept ${count} accounting_entity_mappings row(s) that still owe `
+      + 'QuickBooks a payment delete; the delete worker removes them once QuickBooks confirms',
   },
 ];
 
@@ -907,6 +1004,16 @@ export async function cascadeDeleteOrg(
       });
       stats.tablesDeleted[assoc.table] = (stats.tablesDeleted[assoc.table] ?? 0) + count;
       stats.totalRowsDeleted += count;
+      // Rows this entry deliberately left behind. Counted AFTER the delete (so
+      // the query cannot race it) and only ever logged: an erasure must not
+      // fail because a QuickBooks delete is still owed.
+      if (assoc.retainedSql && assoc.retainedWarning) {
+        const retained = await dbModule.withSystemDbAccessContext(async () => {
+          const rows = (await dbModule.db.execute(assoc.retainedSql!(orgId))) as unknown as Array<{ n: number | string }>;
+          return Number(rows[0]?.n ?? 0);
+        });
+        if (retained > 0) console.warn(assoc.retainedWarning(retained, orgId));
+      }
     } catch (err) {
       // Tolerate missing tables (e.g. a deployment that doesn't have
       // every optional table). Anything else aborts the erasure — record
@@ -1139,7 +1246,30 @@ export async function cascadeDeletePartner(
   // partner that ever exercised SSO would fail the sweep on the
   // sso_providers/users DELETEs (FK violation) without this pre-clear.
   // Mirrors the ASSOCIATED_SYSTEM_SCOPED_TABLES step in cascadeDeleteOrg.
-  const partnerAssociatedPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
+  const partnerAssociatedPreClears: ReadonlyArray<{ table: string; statsKey?: string; clearSql: ReturnType<typeof sql> }> = [
+    // Service Management un-wire (#5075 W04). The partner's OWN row holds
+    // partners.service_management_psa_connection_id -> psa_connections.id,
+    // ON DELETE RESTRICT, and the partner-axis sweep below runs
+    // `DELETE FROM psa_connections WHERE partner_id = ...` -- which is exactly
+    // the partner-wide row PATCH /orgs/partners/me binds. Without this the
+    // sweep aborts the purge with 23503 for every partner in external mode.
+    // The org-axis twin in ASSOCIATED_SYSTEM_SCOPED_TABLES covers org-owned
+    // connections; this one covers the live partner-wide case. Both columns
+    // move together because partners_service_management_connection_chk is a
+    // biconditional. It is an UPDATE, not a DELETE, and the final partners
+    // DELETE below already owns tablesDeleted['partners'], so the un-wire
+    // count is recorded under its own key rather than inflating that one.
+    {
+      table: 'partners',
+      statsKey: 'partners.service_management_unwired',
+      clearSql: sql`
+        UPDATE partners
+        SET service_management_mode = 'native',
+            service_management_psa_connection_id = NULL
+        WHERE id = ${partnerId}
+          AND service_management_psa_connection_id IS NOT NULL
+      `,
+    },
     {
       table: 'user_sso_identities',
       clearSql: sql`
@@ -1236,7 +1366,8 @@ export async function cascadeDeletePartner(
         const result = await dbModule.db.execute(assoc.clearSql);
         return extractRowCount(result);
       });
-      tablesDeleted[assoc.table] = (tablesDeleted[assoc.table] ?? 0) + count;
+      const key = assoc.statsKey ?? assoc.table;
+      tablesDeleted[key] = (tablesDeleted[key] ?? 0) + count;
       totalRowsDeleted += count;
     } catch (err) {
       if (!isUndefinedTable(err)) {

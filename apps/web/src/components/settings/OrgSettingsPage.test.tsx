@@ -6,6 +6,7 @@ import OrgSettingsPage, { runOrgNameSave } from './OrgSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -55,6 +56,7 @@ vi.mock('../extensions/ExtensionSlotHost', () => ({
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
+const navigateToMock = vi.mocked(navigateTo);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -355,6 +357,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(screen.getByTestId('remote-access')).not.toBeNull();
   });
 
+  it('redirects an old #contracts deep link to the organization record\'s Contracts & Billing tab (#5075 W03)', async () => {
+    window.location.hash = '#contracts';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#billing', { replace: true }));
+    // ContractsList is no longer embedded here.
+    expect(screen.queryByTestId('org-tab-contracts')).not.toBeInTheDocument();
+  });
+
+  it('no longer lists Contracts in the sidebar nav — it moved to the organization record', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('org-name-input');
+    expect(screen.queryByRole('link', { name: /^contracts$/i })).not.toBeInTheDocument();
+  });
+
   it('mounts the Remote Access tab without an onDirty channel, so it can never strand the page as unsaved (#3432)', async () => {
     remoteAccessProps.length = 0;
     window.location.hash = '#remote-access';
@@ -409,16 +427,29 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(Object.keys(props.context).sort()).toEqual(['contractVersion', 'organizationId'].sort());
   });
 
-  it('deep-links #contacts to the Contacts tab and hands it the tab organization (#3258 W04)', async () => {
+  it('deep-links #contacts to the organization record instead of rendering it here (#5075 W02)', async () => {
     window.location.hash = '#contacts';
     render(<OrgSettingsPage orgId="org-1" />);
 
+    // The nav entry is still there and still marks itself active...
     const link = await screen.findByRole('link', { name: /^contacts$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
-    // The card fetches for the org whose settings are open, NOT the globally
-    // selected one — the two differ whenever an admin opens one tenant while
-    // another is selected in the header.
-    expect(screen.getByTestId('contacts-card')).toHaveTextContent('org-1');
+    // ...but activating it hands off to the record for the org whose
+    // settings are open, NOT the globally selected one — the two differ
+    // whenever an admin opens one tenant while another is selected in the
+    // header — and ContactsCard never mounts on this page anymore.
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
+  });
+
+  it('redirects a Contacts nav click the same way as the #contacts deep link (#5075 W02)', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+    await userEvent.click(screen.getByRole('link', { name: /^contacts$/i }));
+
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/organizations/org-1#contacts', { replace: true }));
+    expect(screen.queryByTestId('contacts-card')).not.toBeInTheDocument();
   });
 
   it('offers the compact section select for narrow viewports', async () => {

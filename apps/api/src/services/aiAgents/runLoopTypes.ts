@@ -24,6 +24,7 @@ import type {
   SweepFindingsOutcome,
   TicketTriageProposal,
   TicketTriageSkip,
+  SubmitTaskStepPayload,
 } from '@breeze/shared';
 import type { AuthContext } from '../../middleware/auth';
 import type { AlertVerdictIntentInfo } from './alertVerdicts';
@@ -123,6 +124,16 @@ export interface OutcomeExecutedAction {
 export type TicketProposalOutcome = TicketTriageProposal;
 
 export interface AgentRunOutcome {
+  /**
+   * The model's `submit_task_step` submission on a task-linked run (#5205 W06).
+   *
+   * A PROPOSAL, never a decision. `taskCoordinator.ts` reads this off the
+   * committed run row and runs it through the recipe's `validateNextStep`
+   * before anything happens; a `nextStep` naming a step the recipe does not
+   * permit from the current step ends the task with a classified failure
+   * (spec §6.2). Nothing in the run loop acts on it.
+   */
+  taskStep?: SubmitTaskStepPayload;
   /** The model's `submit_ticket_proposal` submission on a `triage`-profile
    *  run — see `TicketProposalOutcome`'s docstring. Absent for every
    *  non-triage run, and for a triage run that never called the tool. */
@@ -263,6 +274,15 @@ export interface RunRow {
    *  fixed-tick sweeper — read DEFENSIVELY below (any field may be missing or
    *  the wrong shape; the column has no compile-time schema). */
   triggerRef: Record<string, unknown>;
+  /**
+   * AI Operator task linkage (#5205 W06). All three are null on every legacy
+   * run and all three are set on a task-linked one — `ai_agent_runs_task_link_chk`
+   * enforces the all-or-none rule in Postgres, and the run loop's own branches
+   * key on `taskId` alone.
+   */
+  taskId: string | null;
+  taskStepKey: string | null;
+  taskAttemptOrdinal: number | null;
 }
 
 export interface AgentRow {

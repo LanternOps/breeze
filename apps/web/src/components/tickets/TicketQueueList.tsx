@@ -19,6 +19,10 @@ interface Props {
   /** Bulk selection (UI brief §6). Checkboxes render only when onToggleSelect is provided. */
   bulkSelectedIds?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  /** Suppresses the per-row org name — for a host that already pins one org
+   *  (the organization record's Tickets tab), where every row would otherwise
+   *  repeat the same name the page's own header already shows. */
+  hideOrg?: boolean;
 }
 
 type TFunction = ReturnType<typeof useTranslation>['t'];
@@ -40,7 +44,7 @@ function translatedStatusLabel(config: TicketConfig | null, status: TicketStatus
   return systemRow?.name ?? t(/* i18n-dynamic */ `ticketQueueList.status.${status}`);
 }
 
-function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect }: Props) {
+function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null, onClearFilters, bulkSelectedIds, onToggleSelect, hideOrg = false }: Props) {
   const { t } = useTranslation('tickets');
   const anyBulkSelected = (bulkSelectedIds?.size ?? 0) > 0;
 
@@ -134,7 +138,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 )}
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
-              <span className="truncate">{ticket.orgName ?? ''}</span>
+              {!hideOrg && <span className="truncate">{ticket.orgName ?? ''}</span>}
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={ticket} />
                 <span title={formatDateTime(ticket.updatedAt)}>{timeAgo(ticket.updatedAt, t)}</span>

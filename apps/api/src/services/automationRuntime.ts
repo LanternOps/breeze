@@ -11,7 +11,7 @@ import {
   automationRuns,
   automationRunDeviceResults,
   configPolicyAutomations,
-  configPolicyFeatureLinks,
+  configPolicyEffectiveFeatureLinks,
   configurationPolicies,
   deviceGroupMemberships,
   devices,
@@ -23,6 +23,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { deliveryTtlMs, isOfflineQueueEnabled, type OfflinePolicy } from './commandOfflinePolicy';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
@@ -302,6 +303,12 @@ export type RunScriptAction = {
    * drops rather than throws.
    */
   runAs?: 'system' | 'user' | 'elevated';
+  /**
+   * #5128 W4 — what happens when the device is offline at dispatch time.
+   * Absent means 'queue' (the shared validator defaults it), so a stored
+   * action authored before this field existed queues like a new one.
+   */
+  whenOffline?: 'queue' | 'skip';
 };
 
 export type SendNotificationAction = {
@@ -323,6 +330,8 @@ export type ExecuteCommandAction = {
   type: 'execute_command';
   command: string;
   shell?: 'bash' | 'powershell' | 'cmd';
+  /** #5128 W4 — see RunScriptAction.whenOffline. */
+  whenOffline?: 'queue' | 'skip';
 };
 
 export type DeploySoftwareAction = {
@@ -419,6 +428,51 @@ function asString(value: unknown): string | undefined {
  */
 function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
   return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
+}
+
+/**
+ * #5128 W4. Mirrors `asRunAs`: an unrecognised stored value falls back to the
+ * schema default rather than throwing mid-run. 'queue' is the conservative
+ * fallback in the sense that matters here — the work is not silently dropped;
+ * it waits for the device and expires on the delivery deadline.
+ */
+function asWhenOffline(value: unknown): 'queue' | 'skip' {
+  return value === 'skip' ? 'skip' : 'queue';
+}
+
+/**
+ * #5128 W4. Automations rejected offline devices outright before this wave, so
+ * their queue arm is gated on `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` (default
+ * on since W4, removed in W5). With the flag off, or with the action set to
+ * 'skip', the dispatch keeps today's `device_offline` failure verbatim.
+ */
+function automationOfflinePolicy(whenOffline: 'queue' | 'skip' | undefined): OfflinePolicy {
+  if (asWhenOffline(whenOffline) === 'skip' || !isOfflineQueueEnabled()) {
+    return { kind: 'reject' };
+  }
+  return { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') };
+}
+
+/** #5128 W4 — the operator-facing string for a step waiting on an OFFLINE device. */
+const QUEUED_OFFLINE_MESSAGE = 'Queued — device offline';
+
+/**
+ * #5128 W4 — the same, for a device we DID have a socket to and still failed to
+ * reach ('claim_lost' / 'decrypt_failed' / 'send_failed'). The command is
+ * queued either way, but telling a tech "device offline" about a device that is
+ * plainly online sends them chasing a connectivity problem that does not exist.
+ * `scriptDispatch`'s `deliveryOutcome` is the only thing that distinguishes the
+ * two, so the message has to be derived from it rather than from `delivered`.
+ */
+const QUEUED_UNDELIVERED_MESSAGE = 'Queued — delivery to the agent failed; will retry on its next check-in';
+
+function queuedMessageFor(deliveryOutcome: string | undefined): string {
+  // `undefined` is treated as the offline case: it is what the pre-W4 result
+  // shape carried, and 'no_agent' is overwhelmingly the reason a dispatch is
+  // undelivered.
+  return deliveryOutcome === undefined || deliveryOutcome === 'no_agent'
+    ? QUEUED_OFFLINE_MESSAGE
+    : QUEUED_UNDELIVERED_MESSAGE;
 }
 
 function asNonEmptyString(value: unknown): string | undefined {
@@ -582,6 +636,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         scriptId,
         parameters,
         runAs: asRunAs(action.runAs),
+        whenOffline: asWhenOffline(action.whenOffline),
       });
       continue;
     }
@@ -627,6 +682,7 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
         type: 'execute_command',
         command,
         shell: shell === 'bash' || shell === 'powershell' || shell === 'cmd' ? shell : undefined,
+        whenOffline: asWhenOffline(action.whenOffline),
       });
       continue;
     }
@@ -1289,6 +1345,12 @@ type ActionExecutionOutcome =
       status: 'queued' | 'delivered' | 'running';
       commandId?: string;
       scriptExecutionId?: string;
+      /**
+       * #5128 W4 — operator-facing reason this step is not running yet. Only
+       * set on the queued-because-offline path; everything else keeps falling
+       * back to the run-log message in `persistActionExecutionOutcome`.
+       */
+      message?: string;
     }
   | { status: 'succeeded' }
   | { status: 'failed'; message?: string };
@@ -1399,9 +1461,11 @@ export async function executeRunScriptAction(
   // payload build, sensitive-field encryption, queueCommand, and claim/decrypt/
   // WS-send. On a queueCommand throw it deletes its own pending execution row
   // before rethrowing (the old discardQueuelessExecution catch, now inside the
-  // core). requireOnline:true reproduces queueCommandForExecution's online gate
-  // — offline devices short-circuit before any insert, so there is no orphan
-  // row to discard on that path either.
+  // core). #5128 W4: the offline policy now comes from the action's
+  // `whenOffline` option — 'skip' (or the queue flag being off) reproduces
+  // queueCommandForExecution's online gate, in which case offline devices
+  // short-circuit before any insert, so there is no orphan row to discard on
+  // that path either.
   const dispatch = await dispatchScriptToDevice({
     device: context.device,
     source: { kind: 'saved', script, automationRunId: context.runId },
@@ -1414,7 +1478,7 @@ export async function executeRunScriptAction(
     // longer forwards unchecked user input and needs no cast. The `??` is the
     // whole contract the automation form's "Script default" option relies on.
     runAs: action.runAs ?? script.runAs,
-    requireOnline: true,
+    offlinePolicy: automationOfflinePolicy(action.whenOffline),
     variableScope,
   });
 
@@ -1447,6 +1511,7 @@ export async function executeRunScriptAction(
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
       ...(dispatch.executionId ? { scriptExecutionId: dispatch.executionId } : {}),
+      ...(dispatch.delivered ? {} : { message: queuedMessageFor(dispatch.deliveryOutcome) }),
     },
     log: logEntry('Queued run_script action', 'info', {
       actionType: action.type,
@@ -1487,7 +1552,7 @@ function chooseShellForDevice(deviceOsType: 'windows' | 'macos' | 'linux', reque
   return 'bash';
 }
 
-async function executeCommandAction(
+export async function executeCommandAction(
   action: ExecuteCommandAction,
   actionIndex: number,
   context: ActionExecutionContext,
@@ -1511,7 +1576,7 @@ async function executeCommandAction(
     timeoutSeconds: 300,
     runAs: 'system',
     createdBy: context.automation.createdBy ?? null,
-    requireOnline: true,
+    offlinePolicy: automationOfflinePolicy(action.whenOffline),
   });
 
   if (!dispatch.ok) {
@@ -1530,6 +1595,7 @@ async function executeCommandAction(
     outcome: {
       status: dispatch.delivered ? 'delivered' : 'queued',
       commandId: dispatch.commandId,
+      ...(dispatch.delivered ? {} : { message: queuedMessageFor(dispatch.deliveryOutcome) }),
     },
     log: logEntry('Queued execute_command action', 'info', {
       actionType: action.type,
@@ -1935,7 +2001,7 @@ async function executeAction(
   };
 }
 
-async function persistActionExecutionOutcome(
+export async function persistActionExecutionOutcome(
   runId: string,
   deviceId: string,
   actionIndex: number,
@@ -1951,8 +2017,8 @@ async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
-    message: outcome.status === 'failed'
-      ? outcome.message ?? result.log.message
+    message: 'message' in outcome && outcome.message
+      ? outcome.message
       : result.log.message,
   });
 }
@@ -2832,9 +2898,22 @@ export { isCronDue, matchesCronField } from './cronDue';
 
 type ConfigPolicyAutomationRow = typeof configPolicyAutomations.$inferSelect;
 
+/**
+ * Resolves the owner of a config-policy automation run.
+ *
+ * #5080: takes the ASSIGNED policy id as well as the feature-link id, and
+ * verifies the link is EFFECTIVE for that policy through
+ * `config_policy_effective_feature_links`. A feature link that a parent
+ * authored belongs to the parent AND every child inheriting it, so resolving
+ * "the" policy from a link id alone would attribute a child's run — and its
+ * reference resolution, its org clamp, and its `automation_runs` row — to
+ * whichever owner the planner returned first. Returning null when the pair does
+ * not resolve makes the caller fail the run rather than proceed unclamped.
+ */
 async function resolveConfigPolicyAutomationContext(
   tx: DbTransaction,
   featureLinkId: string,
+  configPolicyId: string,
 ): Promise<{ configPolicyId: string; orgId: string | null; partnerId: string | null } | null> {
   const [row] = await tx
     .select({
@@ -2842,12 +2921,15 @@ async function resolveConfigPolicyAutomationContext(
       orgId: configurationPolicies.orgId,
       partnerId: configurationPolicies.partnerId,
     })
-    .from(configPolicyFeatureLinks)
+    .from(configPolicyEffectiveFeatureLinks)
     .innerJoin(
       configurationPolicies,
-      eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
     )
-    .where(eq(configPolicyFeatureLinks.id, featureLinkId))
+    .where(and(
+      eq(configPolicyEffectiveFeatureLinks.id, featureLinkId),
+      eq(configPolicyEffectiveFeatureLinks.configPolicyId, configPolicyId),
+    ))
     .limit(1);
   return row ?? null;
 }
@@ -2855,6 +2937,8 @@ async function resolveConfigPolicyAutomationContext(
 async function admitConfigPolicyAutomationRun(
   options: {
     automation: ConfigPolicyAutomationRow;
+    /** The ASSIGNED policy this run executes under (#5080). */
+    configPolicyId: string;
     targetDeviceIds: string[];
     triggeredBy: string;
     details?: Record<string, unknown>;
@@ -2867,10 +2951,14 @@ async function admitConfigPolicyAutomationRun(
   resolvedReferences: ResolvedAutomationReferences | null;
 }> {
   return db.transaction(async (tx) => {
-    const context = await resolveConfigPolicyAutomationContext(tx, options.automation.featureLinkId);
+    const context = await resolveConfigPolicyAutomationContext(
+      tx,
+      options.automation.featureLinkId,
+      options.configPolicyId,
+    );
     if (!context) {
       throw new Error(
-        `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId})`,
+        `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId}, configPolicyId=${options.configPolicyId})`,
       );
     }
     if (requireOrgId && !context.orgId) {
@@ -2923,6 +3011,8 @@ async function admitConfigPolicyAutomationRun(
  */
 export async function createConfigPolicyAutomationRun(options: {
   automation: ConfigPolicyAutomationRow;
+  /** The ASSIGNED policy this run executes under (#5080). */
+  configPolicyId: string;
   targetDeviceIds: string[];
   triggeredBy: string;
   details?: Record<string, unknown>;
@@ -2938,6 +3028,8 @@ export async function createConfigPolicyAutomationRun(options: {
  */
 export async function executeConfigPolicyAutomationRun(
   automation: ConfigPolicyAutomationRow,
+  /** The ASSIGNED policy this run executes under (#5080). */
+  configPolicyId: string,
   targetDeviceIds: string[],
   triggeredBy: string,
 ): Promise<{
@@ -2954,7 +3046,7 @@ export async function executeConfigPolicyAutomationRun(
     // pre-authorization runtime contract. No action can be dispatched because
     // parsing failed, so this branch deliberately skips reference resolution.
     const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-      { automation, targetDeviceIds, triggeredBy },
+      { automation, configPolicyId, targetDeviceIds, triggeredBy },
       null,
       true,
     ));
@@ -2979,7 +3071,7 @@ export async function executeConfigPolicyAutomationRun(
     };
   }
   const admission = await withAutomationRuntimeDb(() => admitConfigPolicyAutomationRun(
-    { automation, targetDeviceIds, triggeredBy },
+    { automation, configPolicyId, targetDeviceIds, triggeredBy },
     actions,
     true,
   ));

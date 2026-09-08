@@ -10,6 +10,7 @@
 // by the partial unique index wsp_ingest_jobs_one_active_idx — ensureJob works
 // with that index, it does not re-check it in application code.
 import { sql } from 'drizzle-orm';
+import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import type { WorkspaceDatabase } from '../hostTypes';
 import type { IngestTrigger, IngestPhase, IngestJobStatus } from '../schema/ingestJobs';
 
@@ -98,10 +99,6 @@ function mapRow(r: Raw): IngestJobRow {
   };
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
-}
-
 export function createIngestJobsService(db: WorkspaceDatabase) {
   const d = db;
 
@@ -121,7 +118,9 @@ export function createIngestJobsService(db: WorkspaceDatabase) {
     for (let attempt = 0; attempt < 3; attempt++) {
       let inserted: Raw | null = null;
       try {
-        inserted = firstRaw(await d.execute(sql`
+        // A failed insert must roll back its savepoint before the fallback SELECT.
+        // The host holds an outer org-scoped transaction for the request.
+        inserted = firstRaw(await d.transaction((tx) => tx.execute(sql`
           INSERT INTO workspace_ingest_jobs (org_id, source_id, crawl_run_id, trigger, force)
           SELECT ${orgId}::uuid, ${sourceId}::uuid, ${crawlRunId}::uuid,
                  ${opts.trigger}::workspace_ingest_trigger, ${force}
@@ -132,9 +131,9 @@ export function createIngestJobsService(db: WorkspaceDatabase) {
                   = COALESCE(${sourceId}::uuid, ${ORG_WIDE_SOURCE_KEY}::uuid)
               AND status IN ('pending', 'running')
           )
-          RETURNING *`));
+          RETURNING *`)));
       } catch (err) {
-        if (!isUniqueViolation(err)) throw err;
+        if (!isPgUniqueViolation(err)) throw err;
         inserted = null;
       }
       if (inserted) return { job: mapRow(inserted), created: true };

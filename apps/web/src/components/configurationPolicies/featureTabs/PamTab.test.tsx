@@ -81,4 +81,19 @@ describe('PamTab', () => {
     const settings = inlineSettingsFromCall(saveMock.mock.calls[0]);
     expect(settings).toEqual({ uacInterceptionEnabled: true });
   });
+
+  // #5080: `featurePolicyId` means a standalone entity id — PAM is inline
+  // settings, so it must never carry the parent CONFIG policy's own id.
+  it('sends featurePolicyId: null even when a parent config policy is linked', () => {
+    render(<PamTab {...baseProps} linkedPolicyId="parent-1" />);
+
+    const saveButton = screen
+      .getAllByRole('button')
+      .find((b) => /save/i.test(b.textContent ?? '')) as HTMLButtonElement;
+    fireEvent.click(saveButton);
+
+    expect(saveMock).toHaveBeenCalled();
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { featurePolicyId: string | null }];
+    expect(call[1].featurePolicyId).toBeNull();
+  });
 });

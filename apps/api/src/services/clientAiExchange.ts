@@ -362,6 +362,7 @@ export async function resolveAndMintClientSession(
       } catch (err) {
         // Concurrent first-exchange race: portal_users_entra_identity_uniq
         // makes the loser 23505 — re-select the winner's row.
+        // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
         if ((err as { cause?: { code?: string } }).cause?.code !== '23505') throw err;
         [user] = await db
           .select(USER_COLUMNS)

@@ -8,11 +8,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
+// Every `.set({...})` object handed to the chain, in call order. #4542 asserts
+// on the PATCH itself (is `paidAt` present? is it null?), which a
+// `toHaveBeenCalled`-style mock assertion cannot express: the bug was a missing
+// KEY, not a missing call.
+const setCalls = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'groupBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
+    chain.set = vi.fn((patch: unknown) => {
+      if (patch && typeof patch === 'object') setCalls.calls.push(patch as Record<string, unknown>);
+      return chain;
+    });
     // Make the chain awaitable: resolve to the next queued result (or []).
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -29,15 +39,27 @@ vi.mock('../db', () => {
   );
   return {
     db,
+    // The ambient DB scope the partner-axis accounting reads fail closed on.
+    getCurrentDbAccessContext: () => ({ scope: ambientScope }),
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn()
   };
 });
+let ambientScope: 'system' | 'partner' | 'organization' = 'partner';
 
 // The compat service owns the jsonb merge now; its own suite proves the SQL
 // shape. Here it is stubbed so these tests assert delegation, not re-assert it.
 vi.mock('./contacts/compat', () => ({
   mergeBillingContact: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The system audit writer voidPayment uses to persist the
+// "QuickBooks record untouched" fact for EVERY caller (the AI/MCP path writes
+// no route audit of its own).
+const { writeAuditEventMock } = vi.hoisted(() => ({ writeAuditEventMock: vi.fn() }));
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: writeAuditEventMock,
+  requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
 // Multi-currency wave 3 (#3775): the resolver + bundle economics are mocked;
@@ -67,13 +89,18 @@ vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockR
 vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoicePush: vi.fn().mockResolvedValue(undefined),
   enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingPaymentPush: vi.fn().mockResolvedValue(true),
+  enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
-// The QBO payment-mapping cleanup voidPayment now performs inside its own
-// transaction (Phase D, Task 3). Mocked so these tests assert the DELEGATION
-// (handle + payment id), not a second copy of the applier's own suite.
-vi.mock('./accounting/accountingPaymentPull', () => ({
-  clearPaymentMappingForInvoicePayment: vi.fn().mockResolvedValue(0),
+// The Phase D2 payment push/delete REQUEST helpers recordPayment/voidPayment
+// call inside their own transaction. Mocked so these tests assert the
+// DELEGATION (transaction handle, arguments, ordering against the enqueue),
+// not a second copy of the coordinator's own suite.
+vi.mock('./accounting/accountingPaymentPush', () => ({
+  requestPaymentPush: vi.fn().mockResolvedValue(null),
+  requestPaymentDelete: vi.fn().mockResolvedValue(null),
+  fanOutOwedPayments: vi.fn().mockResolvedValue([]),
 }));
 
 import { SQL } from 'drizzle-orm';
@@ -84,10 +111,17 @@ import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
-import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
-import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import {
+  enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
+  enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
+} from '../jobs/accountingSyncWorker';
+import { requestPaymentPush, requestPaymentDelete, fanOutOwedPayments } from './accounting/accountingPaymentPush';
 
-const clearPaymentMappingMock = vi.mocked(clearPaymentMappingForInvoicePayment);
+const requestPaymentPushMock = vi.mocked(requestPaymentPush);
+const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
+const fanOutOwedPaymentsMock = vi.mocked(fanOutOwedPayments);
+const enqueuePaymentPushMock = vi.mocked(enqueueAccountingPaymentPush);
+const enqueuePaymentDeleteMock = vi.mocked(enqueueAccountingPaymentDelete);
 
 const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
 const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
@@ -1734,20 +1768,148 @@ describe('runOverdueSweep tenant scope', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase D (QuickBooks payment pull-back, Task 3): the payment-mapping cleanup
-// and the widened listPayments source tag.
+// Phase D2 (QuickBooks payment PUSH, Task 5): the record/void hooks, the
+// QuickBooks-origin void refusal, and the widened listPayments row shape.
 // ---------------------------------------------------------------------------
 
-describe('voidPayment clears the QuickBooks payment mapping', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+describe('recordPayment -> QuickBooks push hook', () => {
+  beforeEach(() => {
+    results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks();
+    requestPaymentPushMock.mockResolvedValue(null);
+    fanOutOwedPaymentsMock.mockResolvedValue([]);
+    ambientScope = 'partner';
+  });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const invoice = {
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-0001',
+    currencyCode: 'USD', total: '100.00', amountPaid: '0.00', balance: '100.00', dueDate: null,
+    voidedAt: null, paidAt: null, markedOverdueAt: null,
+  };
+
+  /** The reads recordPayment issues inside its one transaction, in order. */
+  function queueRecordPayment() {
+    queueResult([invoice]);                                                    // invoice FOR UPDATE
+    queueResult([]);                                                           // prior payments (balance 100.00)
+    queueResult([{ id: 'pay1', amount: '10.00', method: 'check', reference: null, recordedBy: 'u1' }]); // insert returning
+    queueResult([invoice]);                                                    // recompute: invoice re-read
+    queueResult([{ amount: '10.00' }]);                                        // recompute: payment sum
+    queueResult([]);                                                           // recompute: invoice update
+    queueResult([{ ...invoice, status: 'partially_paid', amountPaid: '10.00', balance: '90.00' }]); // final read
+  }
+
+  const record = () => svc.recordPayment('i1', { amount: '10.00', method: 'check', receivedAt: '2026-09-02' } as never, actor);
+
+  it('requests the push INSIDE the payment transaction and enqueues only AFTER it returns', async () => {
+    // The mapping row is the outbox and must be written in the SAME transaction
+    // as the payment; the Redis nudge must not happen until that transaction has
+    // returned, or a rolled-back payment could still leave a job behind.
+    const order: string[] = [];
+    requestPaymentPushMock.mockImplementation(async () => { order.push('request'); return 'map-1'; });
+    enqueuePaymentPushMock.mockImplementation(async () => { order.push('enqueue'); return true; });
+    const txMock = (db as unknown as { transaction: Mock }).transaction;
+    txMock.mockImplementationOnce(async (fn: (tx: unknown) => unknown) => {
+      const out = await fn(db);
+      order.push('tx-returned');
+      return out;
+    });
+    queueRecordPayment();
+
+    await record();
+
+    // `db` IS the transaction handle the callback receives, so this also proves
+    // the request did not escape to a fresh connection.
+    expect(requestPaymentPushMock).toHaveBeenCalledWith(db, {
+      invoicePaymentId: 'pay1', invoiceId: 'i1', partnerId: 'p1',
+    });
+    expect(order).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('does not enqueue when nothing is owed (push disabled, manual mode, or the invoice is not in QuickBooks)', async () => {
+    requestPaymentPushMock.mockResolvedValue(null);
+    queueRecordPayment();
+
+    await record();
+
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+    // ...and no fan-out either: a partner-scoped null means "nothing owed", not
+    // "I could not write it".
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+  });
+
+  it('an ORG-SCOPED recording does not throw, and re-runs the push request in a SYSTEM context', async () => {
+    // The org-scoped transaction cannot write the outbox row at all (the
+    // partner-axis tables are invisible to it), so `requestPaymentPush` returns
+    // null and reports the skip. Throwing instead broke quote acceptance, which
+    // takes its deposit in exactly this context (review wave 5). The recovery is
+    // a system-context fan-out — `fanOutOwedPayments`, not a second
+    // `requestPaymentPush`, because it already refuses a payment outside
+    // `push_payments_since` and an invoice whose mapping is not synced.
+    ambientScope = 'organization';
+    requestPaymentPushMock.mockResolvedValue(null);
+    fanOutOwedPaymentsMock.mockResolvedValue(['map-9']);
+    queueRecordPayment();
+
+    await expect(record()).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
+
+    expect(fanOutOwedPaymentsMock).toHaveBeenCalledWith('i1', 'p1', expect.any(Function));
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-9', 'p1');
+  });
+
+  it('a partner-scoped recording never reaches the fan-out fallback', async () => {
+    // The fallback is keyed on the SCOPE, not on the null: a partner-scoped
+    // caller that legitimately owes nothing must not trigger an extra fan-out.
+    ambientScope = 'partner';
+    requestPaymentPushMock.mockResolvedValue(null);
+    queueRecordPayment();
+
+    await record();
+
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a committed payment because Redis is down', async () => {
+    requestPaymentPushMock.mockResolvedValue('map-1');
+    enqueuePaymentPushMock.mockRejectedValue(new Error('redis down'));
+    queueRecordPayment();
+
+    const res = await record();
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '10.00' });
+  });
+});
+
+describe('voidPayment -> QuickBooks delete hook', () => {
+  beforeEach(() => {
+    results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks();
+    requestPaymentDeleteMock.mockResolvedValue(null);
+  });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
   /** Queues the reads voidPayment issues, in order. */
-  function queueVoidPaymentReads(payment: Record<string, unknown>) {
+  function queueVoidPaymentReads(
+    payment: Record<string, unknown>,
+    mappingRows: Array<Record<string, unknown>> = [],
+    // Only read when the mapping probe says QuickBooks-origin, so the ordinary
+    // Breeze-payment path queues nothing extra.
+    connectionRows?: Array<Record<string, unknown>>,
+    // The org-scope pre-check, which runs in its own system context BETWEEN the
+    // discovery read and the transaction: mapping, then invoice, then connection
+    // (the last two only when the mapping is QuickBooks-origin).
+    preCheckRows?: Array<Array<Record<string, unknown>>>,
+  ) {
     queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
+    for (const rows of preCheckRows ?? []) queueResult(rows);                            // org-scope pre-check
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
     queueResult([payment]);                                                              // payment re-read under lock
+    // Under org scope the in-transaction origin/connection probes do NOT run —
+    // the pre-check above already answered — so they queue nothing.
+    if (!preCheckRows) {
+      queueResult(mappingRows);                                                          // payment mapping origin probe
+      if (connectionRows) queueResult(connectionRows);                                   // QuickBooks connection probe
+    }
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum
@@ -1755,37 +1917,194 @@ describe('voidPayment clears the QuickBooks payment mapping', () => {
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // final getOwnedInvoiceOr404
   }
 
-  it('deletes the payment mapping row with the SAME transaction handle, before the payment row', async () => {
-    clearPaymentMappingMock.mockResolvedValueOnce(1);
-    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check', reference: '10441', recordedBy: null });
+  const payment = (over: Record<string, unknown> = {}) => ({
+    id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check',
+    reference: '10441', recordedBy: null, ...over,
+  });
+
+  beforeEach(() => { ambientScope = 'partner'; });
+
+  it('requests the delete with the SAME transaction handle, BEFORE the payment row is destroyed', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
 
     await svc.voidPayment('pay1', actor);
 
-    // The mocked db chain IS the tx handle the transaction callback receives, so
-    // asserting on it proves the cleanup runs inside the caller's transaction
-    // rather than escaping to a fresh connection.
-    expect(clearPaymentMappingMock).toHaveBeenCalledTimes(1);
-    expect(clearPaymentMappingMock).toHaveBeenCalledWith(db, 'pay1');
-    // Mapping first: breeze_entity_id is polymorphic with no FK to cascade, so
-    // deleting the payment row first would strand the mapping.
-    const clearOrder = clearPaymentMappingMock.mock.invocationCallOrder[0]!;
+    expect(requestPaymentDeleteMock).toHaveBeenCalledWith(db, 'pay1');
+    // breeze_entity_id is polymorphic with no FK to cascade: deleting the
+    // payment row first would strand the mapping row behind it, and the
+    // coordinator's own guard trigger then refuses to recreate it.
+    const requestOrder = requestPaymentDeleteMock.mock.invocationCallOrder[0]!;
     const deleteOrder = (db as unknown as { delete: Mock }).delete.mock.invocationCallOrder[0]!;
-    expect(clearOrder).toBeLessThan(deleteOrder);
+    expect(requestOrder).toBeLessThan(deleteOrder);
   });
 
-  it('does not throw when a manual payment has no mapping row to remove', async () => {
-    clearPaymentMappingMock.mockResolvedValueOnce(0);
-    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'cash', reference: null, recordedBy: 'u1' });
+  it('enqueues the delete only AFTER the transaction returns', async () => {
+    const order: string[] = [];
+    requestPaymentDeleteMock.mockImplementation(async () => { order.push('request'); return 'map-1'; });
+    enqueuePaymentDeleteMock.mockImplementation(async () => { order.push('enqueue'); return true; });
+    const txMock = (db as unknown as { transaction: Mock }).transaction;
+    txMock.mockImplementationOnce(async (fn: (tx: unknown) => unknown) => {
+      const out = await fn(db);
+      order.push('tx-returned');
+      return out;
+    });
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(order).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('does not enqueue when there was nothing to delete (an ordinary manual payment)', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment({ method: 'cash', reference: null, recordedBy: 'u1' }), []);
 
     const res = await svc.voidPayment('pay1', actor);
 
     expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '40.00', method: 'cash' });
-    await expect(clearPaymentMappingMock.mock.results[0]!.value).resolves.toBe(0);
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a committed void because Redis is down', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    enqueuePaymentDeleteMock.mockRejectedValue(new Error('redis down'));
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
+  });
+
+  it('an ORG-SCOPED void of a QuickBooks-origin payment is still REFUSED, via the system pre-check', async () => {
+    // The in-transaction origin probe reads a PARTNER-axis table, so an
+    // org-scoped principal sees zero rows and the guard would pass a payment it
+    // must refuse. Refusing every org-scoped void was wrong too — they are
+    // legitimate — so the answer comes from a read-only system-context
+    // pre-check taken BEFORE the transaction (review wave 5).
+    ambientScope = 'organization';
+    queueVoidPaymentReads(payment(), [], undefined, [
+      [{ breezeOrigin: false }],                        // the mapping: QuickBooks-origin
+      [{ partnerId: 'p1' }],                            // its invoice, for the partner id
+      [{ status: 'connected', pullPayments: true }],    // ...and a realm that WOULD re-import
+    ]);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+    });
+    expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+  });
+
+  it('an ORG-SCOPED void of a BREEZE payment is allowed, and requests the delete after commit', async () => {
+    // The in-transaction `requestPaymentDelete` cannot write from an org context,
+    // so it returns null; the post-commit system-context call is what actually
+    // flips the mapping — and that one works, because the mapping row was
+    // committed long before this transaction.
+    ambientScope = 'organization';
+    queueVoidPaymentReads(payment(), [], undefined, [
+      [{ breezeOrigin: true }], // pre-check: Breeze-origin, so it stops there
+    ]);
+    requestPaymentDeleteMock.mockResolvedValueOnce(null);   // in-tx, org-scoped: skipped
+    requestPaymentDeleteMock.mockResolvedValueOnce('map-1'); // post-commit, system context
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1' });
+    expect(requestPaymentDeleteMock).toHaveBeenCalledTimes(2);
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('REFUSES a QuickBooks-origin payment at the service layer, not just in the UI', async () => {
+    // Until now only the UI hid the button, so any API client could void a row
+    // QuickBooks owns — and the next CDC sweep would pull it straight back in,
+    // leaving an audit trail of a void that did nothing.
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: true }]);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+    });
+    expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when pull_payments is off', async () => {
+    // The refusal's whole argument is "the next CDC sweep would pull it straight
+    // back in". With pull off there is no such sweep — Breeze skips every
+    // QuickBooks-origin change — so the refusal makes the payment permanently
+    // unremovable instead of protecting anything (review wave 2, finding 8).
+    requestPaymentDeleteMock.mockResolvedValue(null); // QBO-origin: the mapping is DELETED, nothing enqueued
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: false }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', quickbooksRecordUntouched: true });
+    expect(requestPaymentDeleteMock).toHaveBeenCalled();
+    // No QuickBooks write: Breeze never created that Payment.
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('PERSISTS the untouched-QuickBooks fact itself, so every caller records it', async () => {
+    // The flag rode home on the return value only, and the AI/MCP path writes no
+    // audit at all — so on that path the fact that a QuickBooks-origin payment
+    // was voided while its QuickBooks record was left standing reached no
+    // durable store anywhere (review wave 3, finding D2). The service writes it,
+    // which covers every caller including future ones.
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'connected', pullPayments: false }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'invoice.payment.voided_quickbooks_untouched',
+      orgId: 'org1',
+      resourceType: 'invoice_payment',
+      resourceId: 'pay1',
+      details: expect.objectContaining({ invoiceId: 'i1', reason: 'pull_disabled' }),
+    }));
+  });
+
+  it('writes no such audit for an ordinary Breeze payment void', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(writeAuditEventMock.mock.calls.some(
+      (call) => (call[1] as { action?: string }).action === 'invoice.payment.voided_quickbooks_untouched',
+    )).toBe(false);
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when the connection is not connected', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], [{ status: 'reauth_required', pullPayments: true }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ quickbooksRecordUntouched: true });
+  });
+
+  it('ALLOWS voiding a QuickBooks-origin payment when the connection is gone entirely', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }], []);
+
+    await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({
+      audit: { quickbooksRecordUntouched: true },
+    });
+  });
+
+  it('does not flag an ordinary Breeze payment as QuickBooks-untouched', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).not.toHaveProperty('quickbooksRecordUntouched');
   });
 });
 
-describe('listPayments source tagging', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+describe('listPayments source tagging + accountingSync', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -1793,20 +2112,59 @@ describe('listPayments source tagging', () => {
   function queueListPayments(
     payments: Array<Record<string, unknown>>,
     stripeLinked: string[],
-    qboLinked: string[],
+    mappings: Array<Record<string, unknown>>,
   ) {
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]);
     queueResult(payments);
     queueResult(stripeLinked.map((id) => ({ invoicePaymentId: id })));
-    queueResult(qboLinked.map((id) => ({ breezeEntityId: id })));
+    queueResult(mappings);
   }
 
-  it('tags a payment carrying a QuickBooks payment mapping as quickbooks', async () => {
-    queueListPayments([{ id: 'pay-qbo', method: 'check' }], [], ['pay-qbo']);
+  const mapping = (over: Record<string, unknown> = {}) => ({
+    breezeEntityId: 'pay1', breezeOrigin: true, syncStatus: 'synced', lastError: null, ...over,
+  });
+
+  it('classifies a QUICKBOOKS-ORIGIN mapped payment as quickbooks with no sync card', async () => {
+    // QuickBooks owns the row: the UI must not offer a hand-void, and there is
+    // no Breeze-side push state to report on it.
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ breezeOrigin: false })]);
 
     const rows = await svc.listPayments('i1', actor);
 
-    expect(rows).toEqual([expect.objectContaining({ id: 'pay-qbo', source: 'quickbooks' })]);
+    expect(rows).toEqual([expect.objectContaining({ id: 'pay1', source: 'quickbooks', accountingSync: null })]);
+  });
+
+  it('classifies a BREEZE-ORIGIN mapped payment as manual, with its sync state attached', async () => {
+    // A payment Breeze PUSHED to QuickBooks stays hand-voidable (the void
+    // propagates the deletion) — it only gains a sync badge.
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ syncStatus: 'synced' })]);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({ source: 'manual', accountingSync: { status: 'synced', lastError: null } });
+  });
+
+  it('surfaces a push failure on a Stripe payment without changing its source', async () => {
+    queueListPayments(
+      [{ id: 'pay1', method: 'card' }],
+      ['pay1'],
+      [mapping({ syncStatus: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' })],
+    );
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({
+      source: 'stripe',
+      accountingSync: { status: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' },
+    });
+  });
+
+  it('leaves an unmapped payment with a null sync card', async () => {
+    queueListPayments([{ id: 'pay1', method: 'cash' }], [], []);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({ source: 'manual', accountingSync: null });
   });
 
   it('tags a succeeded Stripe mapping as stripe and everything else as manual', async () => {
@@ -1821,10 +2179,10 @@ describe('listPayments source tagging', () => {
     expect(rows.map((r) => r.source)).toEqual(['stripe', 'manual']);
   });
 
-  it('reports stripe when a row somehow carries BOTH links (stripe wins)', async () => {
+  it('reports stripe when a QuickBooks-owned row somehow carries BOTH links (stripe wins)', async () => {
     // Structurally impossible today — asserted so the precedence is a decision
-    // in the code rather than an accident of Set-lookup order.
-    queueListPayments([{ id: 'pay-both', method: 'card' }], ['pay-both'], ['pay-both']);
+    // in the code rather than an accident of lookup order.
+    queueListPayments([{ id: 'pay1', method: 'card' }], ['pay1'], [mapping({ breezeOrigin: false })]);
 
     const rows = await svc.listPayments('i1', actor);
 
@@ -1836,5 +2194,165 @@ describe('listPayments source tagging', () => {
     queueResult([]);
 
     await expect(svc.listPayments('i1', actor)).resolves.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4542 — paid_at is STAMPED but was never CLEARED. Every path that drops an
+// invoice out of `paid` (a voided payment, a Stripe refund, a QuickBooks-side
+// reversal, a void) left the payment date behind, so "paid in period" reports
+// counted the invoice again in the period it was un-paid.
+// ---------------------------------------------------------------------------
+
+describe('recomputeInvoiceStatus paid_at lifecycle (#4542)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  /** An issued invoice; `total` and `paidAt` are what the assertions turn on. */
+  const issued = (over: Record<string, unknown> = {}) => ({
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent',
+    invoiceNumber: 'INV-0001', currencyCode: 'USD', total: '100.00', amountPaid: '0.00',
+    balance: '100.00', dueDate: null, voidedAt: null, paidAt: null, markedOverdueAt: null,
+    ...over,
+  });
+
+  /** recomputeInvoiceStatus reads: invoice → payment rows → (update). */
+  function queueRecompute(inv: Record<string, unknown>, payments: Array<{ amount: string }>) {
+    queueResult([inv]);
+    queueResult(payments);
+    queueResult([]);
+  }
+
+  const lastPatch = () => setCalls.calls.at(-1)!;
+
+  it('stamps paid_at when the invoice becomes paid', async () => {
+    queueRecompute(issued({ paidAt: null }), [{ amount: '100.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'paid', amountPaid: '100.00', balance: '0.00', paidAt: expect.any(Date) });
+  });
+
+  it('CLEARS paid_at when a reversal drops the invoice out of paid', async () => {
+    // The bug: paid_at survived the reversal, so a partially_paid invoice still
+    // reported a payment date and every "paid in period" report double-counted it.
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), [{ amount: '40.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'partially_paid', balance: '60.00', paidAt: null });
+  });
+
+  it('CLEARS paid_at when every payment is reversed and the invoice falls back to sent', async () => {
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), []);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'sent', amountPaid: '0.00', paidAt: null });
+  });
+
+  it('leaves paid_at alone when the invoice is still paid (no needless rewrite of the payment date)', async () => {
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), [{ amount: '100.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'paid' });
+    expect('paidAt' in lastPatch()).toBe(false);
+  });
+
+  it('leaves paid_at alone when an unpaid invoice stays unpaid (no null churn on every recompute)', async () => {
+    queueRecompute(issued({ paidAt: null }), [{ amount: '40.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'partially_paid' });
+    expect('paidAt' in lastPatch()).toBe(false);
+  });
+});
+
+describe('voidInvoice clears paid_at (#4542)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('nulls paid_at on the void update, which bypasses recomputeInvoiceStatus entirely', async () => {
+    // A PAID invoice that is voided would otherwise keep its payment date
+    // forever: this update writes `status: 'void'` directly and never runs the
+    // recompute whose paid_at branch was just fixed.
+    queueResult([{
+      id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'paid', invoiceNumber: 'INV-0001',
+      currencyCode: 'USD', total: '100.00', amountPaid: '100.00', balance: '0.00', dueDate: null,
+      voidedAt: null, paidAt: new Date('2026-09-01T00:00:00Z'), markedOverdueAt: null,
+    }]); // invoice FOR UPDATE
+    // No invoice_payments rows: the operator removed the payment first, as the
+    // #5180 guard below now requires. `paid_at` survives that removal (the
+    // recompute never clears it — see its sibling test above), which is exactly
+    // why the void still has to null it.
+    queueResult([]); // invoice_payments sum (#5180)
+    queueResult([]); // invoice_lines FOR UPDATE (no source-backed lines)
+    queueResult([]); // the void update itself
+    queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
+
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+
+    const voidPatch = setCalls.calls.find((p) => p.status === 'void')!;
+    expect(voidPatch).toMatchObject({ voidedAt: expect.any(Date), voidReason: 'duplicate', paidAt: null });
+  });
+});
+
+describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const sentInvoice = (overrides: Record<string, unknown> = {}) => ({
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-0001',
+    currencyCode: 'USD', total: '100.00', amountPaid: '0.00', balance: '100.00', dueDate: null,
+    voidedAt: null, paidAt: null, markedOverdueAt: null, ...overrides,
+  });
+
+  it('throws 409 INVOICE_HAS_PAYMENTS and writes NOTHING when a payment is applied', async () => {
+    // The production failure (#5180): the local void succeeded, QuickBooks
+    // refused it five times, and the payment pull then flagged the mapping —
+    // Breeze said void, QuickBooks said paid. It is wrong locally too: the void
+    // releases the source rows for re-invoicing while collected money stays
+    // recorded against them.
+    queueResult([sentInvoice({ status: 'partially_paid', amountPaid: '40.00', balance: '60.00' })]); // invoice FOR UPDATE
+    queueResult([{ amount: '40.00' }]); // invoice_payments
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor))
+      .rejects.toMatchObject({ status: 409, code: 'INVOICE_HAS_PAYMENTS' });
+
+    // No status flip, and — the dangerous half — no source-row release.
+    expect(setCalls.calls).toEqual([]);
+  });
+
+  it('names the amount, the currency and the remedy, so the operator knows the next step', async () => {
+    queueResult([sentInvoice({ status: 'paid', currencyCode: 'EUR', amountPaid: '100.00', balance: '0.00' })]);
+    queueResult([{ amount: '60.00' }, { amount: '40.00' }]); // two partial payments
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor)).rejects.toThrow(
+      /100\.00 EUR of payments applied.*Remove those payments first.*QuickBooks/s,
+    );
+  });
+
+  it('still voids an unpaid invoice — the guard is on applied payments, not on status', async () => {
+    queueResult([sentInvoice()]); // invoice FOR UPDATE
+    queueResult([]); // invoice_payments: none
+    queueResult([]); // invoice_lines FOR UPDATE
+    queueResult([]); // the void update
+    queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
+
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+
+    expect(setCalls.calls.find((p) => p.status === 'void')).toBeTruthy();
+  });
+
+  it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {
+    // Guards the boundary the reduce() makes easy to get wrong — a single cent
+    // applied is still money against the document.
+    queueResult([sentInvoice({ status: 'partially_paid' })]);
+    queueResult([{ amount: '0.01' }]);
+
+    await expect(svc.voidInvoice('i1', 'duplicate', {}, actor))
+      .rejects.toMatchObject({ code: 'INVOICE_HAS_PAYMENTS' });
   });
 });

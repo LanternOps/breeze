@@ -37,6 +37,21 @@
       "title": "Em breve",
       "description": "Esta aba chega na próxima atualização do registro da organização."
     },
+    "devices": {
+      "loadError": "Não foi possível carregar os dispositivos desta organização.",
+      "searchPlaceholder": "Pesquisar dispositivos",
+      "allStatuses": "Todos os status",
+      "allSites": "Todos os locais",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Manutenção",
+        "decommissioned": "Removido",
+        "quarantined": "Em quarentena",
+        "updating": "Atualizando",
+        "pending": "Pendente"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Dispositivos",
@@ -94,6 +109,24 @@
       "title": "Não foi possível carregar esta organização",
       "description": "Ocorreu um erro ao buscar o registro. Verifique sua conexão e tente novamente."
     },
-    "loading": "Carregando organização…"
+    "loading": "Carregando organização…",
+    "tickets": {
+      "tabs": {
+        "open": "Abertos",
+        "all": "Todos",
+        "closed": "Fechados"
+      },
+      "newTicket": "Novo chamado",
+      "loadFailed": "Falha ao carregar chamados.",
+      "forbidden": "Você não tem permissão para visualizar chamados.",
+      "truncated": "Exibindo {{shown}} de {{total}} chamados."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contratos",
+        "invoices": "Faturas",
+        "quotes": "Cotações"
+      }
+    }
   }
 }

@@ -503,6 +503,26 @@ describe('POST /tunnels/proxy-connect', () => {
     app.route('/tunnels', tunnelRoutes);
   });
 
+  // #5213 — discovered_assets.ip_address is nullable now (manual website /
+  // DNS-only assets). `String(null)` is the literal "null", which would sail
+  // past isTargetBlocked and reach the agent as a garbage tunnel target.
+  it('refuses to open a proxy tunnel to an asset with no IP', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([{ ...assetRow, ipAddress: null }]) as any);
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/no IP address/i);
+    // No allowlist rule and no session may be written for an unreachable target.
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('creates exactly one allowlist rule across two identical calls (idempotency); the rule has a single-port pattern + correct siteId/discoveredAssetId', async () => {
     vi.mocked(db.select)
       // --- Call 1: no existing rule, gets created ---

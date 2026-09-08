@@ -33,6 +33,7 @@ import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
 import { deviceScriptsHash } from "@/lib/deviceScriptsLink";
 import { runAction, ActionError } from "@/lib/runAction";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -300,14 +301,26 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case "reboot_safe_mode":
         case "shutdown":
         case "lock": {
-          await sendDeviceCommand(device.id, action);
+          const result = await sendDeviceCommand(device.id, action);
           const label =
             action === "reboot_safe_mode"
               ? t("deviceDetailPage.rebootToSafeMode")
               : action.charAt(0).toUpperCase() + action.slice(1);
+          // #5128 W2 — a 201 means "a row was inserted", not "the machine
+          // acted"; `result.delivery` is the dispatch core's own outcome, so
+          // an offline device gets the honest "runs when it reconnects" copy
+          // instead of a false "command sent".
+          //
+          // 'queued_live' means the device IS online — only the immediate
+          // socket push missed, and the next heartbeat (seconds away) claims
+          // it. Only 'queued_offline' means "wait for it to reconnect".
           showToast({
             type: "success",
-            message: `${label} command sent to ${device.hostname}`,
+            message: result.delivery !== "queued_offline"
+              ? `${label} command sent to ${device.hostname}`
+              : result.deliverBy
+                ? t("devicesPage.toasts.runsWhenOnline", { date: formatDateTime(result.deliverBy) })
+                : t("devicesPage.toasts.runsWhenOnlineNoExpiry"),
           });
           break;
         }

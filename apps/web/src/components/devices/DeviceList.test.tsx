@@ -453,6 +453,19 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     }
   });
 
+  it('hides the Organization column when forceSingleOrg even in fleet scope (#5075 W02)', () => {
+    // Fleet scope (allOrgs) — the ambient condition that would normally show
+    // the column — is left in place. The organization record's Devices tab
+    // sets forceSingleOrg regardless of what the OrgSwitcher currently points
+    // at, so every row belonging to the same org must never grow a redundant
+    // Organization column just because the switcher happens to be on "All
+    // organizations" or a different org than the record's.
+    expect(orgScopeState.allOrgs).toBe(true);
+    render(<DeviceList devices={[baseDevice]} forceSingleOrg />);
+    expect(screen.queryByTitle('Sort by organization')).toBeNull();
+    expect(screen.queryByText('Acme')).toBeNull();
+  });
+
   it('sorts devices with numeric collation (host-2 before host-10)', () => {
     const devices: Device[] = [
       { ...baseDevice, id: 'b1b1b1b1-0000-0000-0000-000000000001', hostname: 'host-10' },
@@ -533,8 +546,9 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     );
 
     // Columns adapt to the classes on screen (Class/Type only render when a
-    // network row is present; OS/CPU/… only when an agent row is), so render
-    // one of each to bring the whole catalog out.
+    // non-agent row is present; OS/CPU/… only when an agent row is;
+    // assetTag/location only when a manual row is, #4622 W04), so render one
+    // of each to bring the whole catalog out.
     const networkRow: Device = {
       ...baseDevice,
       id: 'b1b1b1b1-0000-0000-0000-0000000000b1',
@@ -542,7 +556,15 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
       deviceClass: 'network',
       assetType: 'printer',
     };
-    const { container } = render(<DeviceList devices={[baseDevice, networkRow]} networkDevicesEnabled />);
+    const manualRow: Device = {
+      ...baseDevice,
+      id: 'c1c1c1c1-0000-0000-0000-0000000000c1',
+      hostname: 'spare-laptop',
+      deviceClass: 'manual',
+      assetType: 'workstation',
+      status: 'unknown',
+    };
+    const { container } = render(<DeviceList devices={[baseDevice, networkRow, manualRow]} networkDevicesEnabled />);
 
     const headers = Array.from(container.querySelectorAll('thead th'));
     // First (checkbox) and last (Actions) are structural; everything between
@@ -1441,9 +1463,16 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
    * Clicking an item closes the menu and clears the selection, so each button is
    * driven from a fresh render and identified by index within the live menu.
    */
+  // Buttons DISABLED in the live menu — e.g. bulk-delete-manual on an
+  // all-agent selection (#4622 W04: manual-only, correctly inert here) —
+  // cannot emit anything by construction and are excluded from the
+  // enumeration; a disabled button is not a class this contract governs.
+  const enabledButtons = (container: HTMLElement) =>
+    within(container).getAllByRole('button').filter((b) => !b.hasAttribute('disabled'));
+
   function emittedBulkActions(): string[] {
     const probe = render(<DeviceList devices={bulkDevices()} onBulkAction={vi.fn()} />);
-    const buttonCount = within(openBulkMenu()).getAllByRole('button').length;
+    const buttonCount = enabledButtons(openBulkMenu()).length;
     probe.unmount();
     expect(buttonCount).toBeGreaterThan(0); // menu must actually render items
 
@@ -1451,7 +1480,7 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     for (let i = 0; i < buttonCount; i++) {
       const onBulkAction = vi.fn();
       const view = render(<DeviceList devices={bulkDevices()} onBulkAction={onBulkAction} />);
-      const buttons = within(openBulkMenu()).getAllByRole('button');
+      const buttons = enabledButtons(openBulkMenu());
       fireEvent.click(buttons[i]!);
       expect(onBulkAction).toHaveBeenCalledTimes(1);
       emitted.push(onBulkAction.mock.calls[0]![0] as string);
@@ -1479,7 +1508,7 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     const probe = render(
       <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={vi.fn()} />,
     );
-    const buttonCount = within(openRemovedBulkMenu()).getAllByRole('button').length;
+    const buttonCount = enabledButtons(openRemovedBulkMenu()).length;
     probe.unmount();
     expect(buttonCount).toBeGreaterThan(0);
 
@@ -1489,7 +1518,7 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
       const view = render(
         <DeviceList devices={removedDevices()} includeDecommissioned onBulkAction={onBulkAction} />,
       );
-      const buttons = within(openRemovedBulkMenu()).getAllByRole('button');
+      const buttons = enabledButtons(openRemovedBulkMenu());
       fireEvent.click(buttons[i]!);
       expect(onBulkAction).toHaveBeenCalledTimes(1);
       emitted.push(onBulkAction.mock.calls[0]![0] as string);
@@ -1596,6 +1625,73 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     // Both call APIs that REQUIRE status='decommissioned'; offering them for an
     // active selection is a guaranteed 400/409 per device.
     expect([...REMOVED_ONLY_BULK_ACTIONS].sort()).toEqual(['permanent-delete', 'restore']);
+  });
+});
+
+describe('DeviceList — manual asset bulk delete + row actions (#4622 W04)', () => {
+  const manualDevice = (extra: Partial<Device> = {}): Device => ({
+    ...baseDevice,
+    id: 'c1111111-1111-1111-1111-111111111111',
+    hostname: 'spare-laptop',
+    deviceClass: 'manual',
+    assetType: 'workstation',
+    status: 'unknown',
+    ...extra,
+  });
+
+  it('offers Edit and Delete (not View) on a manual row, wired to onSelect/onAction', () => {
+    const onSelect = vi.fn();
+    const onAction = vi.fn();
+    const device = manualDevice();
+    render(<DeviceList devices={[device]} onSelect={onSelect} onAction={onAction} />);
+
+    fireEvent.click(screen.getByTestId(`device-${device.id}-edit-manual`));
+    expect(onSelect).toHaveBeenCalledWith(device);
+
+    fireEvent.click(screen.getByTestId(`device-${device.id}-delete-manual`));
+    expect(onAction).toHaveBeenCalledWith('delete-manual', device);
+
+    expect(screen.queryByTestId(`device-${device.id}-open-network`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${device.id}-actions-menu`)).not.toBeInTheDocument();
+  });
+
+  it('bulk-delete-manual is disabled with no manual row selected, enabled with one', () => {
+    const agentA = { ...baseDevice, id: 'a1111111-1111-1111-1111-111111111111' };
+    const manual = manualDevice();
+    render(<DeviceList devices={[agentA, manual]} onBulkAction={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    const menu = screen.getByTestId('bulk-actions-menu');
+    const deleteManualButton = within(menu).getByTestId('bulk-delete-manual');
+    // Mixed selection (1 agent + 1 manual): eligible for the manual-only
+    // action, and the "N of M eligible" suffix reports the split honestly.
+    expect(deleteManualButton).not.toBeDisabled();
+    expect(deleteManualButton.textContent).toMatch(/1 of 2/);
+  });
+
+  it('bulk-delete-manual stays disabled for an agent-only selection', () => {
+    const agentA = { ...baseDevice, id: 'a1111111-1111-1111-1111-111111111111' };
+    const agentB = { ...baseDevice, id: 'a2222222-2222-2222-2222-222222222222' };
+    render(<DeviceList devices={[agentA, agentB]} onBulkAction={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    const menu = screen.getByTestId('bulk-actions-menu');
+    expect(within(menu).getByTestId('bulk-delete-manual')).toBeDisabled();
+  });
+
+  it('fires onBulkAction("delete-manual", ...) for a manual-only selection', () => {
+    const onBulkAction = vi.fn();
+    const manualA = manualDevice({ id: 'c1111111-1111-1111-1111-111111111111' });
+    const manualB = manualDevice({ id: 'c2222222-2222-2222-2222-222222222222', hostname: 'desk-phone' });
+    render(<DeviceList devices={[manualA, manualB]} onBulkAction={onBulkAction} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(within(screen.getByTestId('bulk-actions-menu')).getByTestId('bulk-delete-manual'));
+
+    expect(onBulkAction).toHaveBeenCalledWith('delete-manual', [manualA, manualB]);
   });
 });
 

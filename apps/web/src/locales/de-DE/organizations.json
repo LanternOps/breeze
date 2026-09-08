@@ -37,6 +37,21 @@
       "title": "Demnächst verfügbar",
       "description": "Dieser Tab wird im nächsten Update des Organisationsdatensatzes verfügbar sein."
     },
+    "devices": {
+      "loadError": "Die Geräte dieser Organisation konnten nicht geladen werden.",
+      "searchPlaceholder": "Geräte suchen",
+      "allStatuses": "Alle Status",
+      "allSites": "Alle Standorte",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Wartung",
+        "decommissioned": "Entfernt",
+        "quarantined": "Unter Quarantäne gestellt",
+        "updating": "Aktualisierung",
+        "pending": "Ausstehend"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Geräte",
@@ -94,6 +109,24 @@
       "title": "Diese Organisation konnte nicht geladen werden",
       "description": "Beim Abrufen des Datensatzes ist ein Fehler aufgetreten. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
     },
-    "loading": "Organisation wird geladen…"
+    "loading": "Organisation wird geladen…",
+    "tickets": {
+      "tabs": {
+        "open": "Offen",
+        "all": "Alle",
+        "closed": "Geschlossen"
+      },
+      "newTicket": "Neues Ticket",
+      "loadFailed": "Die Tickets konnten nicht geladen werden.",
+      "forbidden": "Sie sind nicht berechtigt, Tickets anzuzeigen.",
+      "truncated": "{{shown}} von {{total}} Tickets werden angezeigt."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Verträge",
+        "invoices": "Rechnungen",
+        "quotes": "Angebote"
+      }
+    }
   }
 }

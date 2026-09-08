@@ -133,7 +133,10 @@
       "removing": "Removendo...",
       "removeConfiguration": "Remover configuração",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "managedByYourMsp": "Gerenciado pelo seu MSP",
+      "inheritedByPolicies_one": "Herdado por {{count}} política",
+      "inheritedByPolicies_other": "Herdado por {{count}} políticas"
     },
     "configPolicyList": {
       "archived": "Arquivada",
@@ -152,7 +155,8 @@
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
       "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
-      "summary": "{{filtered}} de {{total}} políticas"
+      "summary": "{{filtered}} de {{total}} políticas",
+      "inheritsBadge": "Herda"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "Tem certeza de que deseja excluir",
       "thisWillAlsoRemoveAllFeatureLinks": "? Isso também removerá todos os vínculos de recursos e atribuições. Esta ação não pode ser desfeita.",
       "delete": "excluir",
-      "deleting": "Excluindo..."
+      "deleting": "Excluindo...",
+      "deleteBlockedByChildren": "Exclua primeiro as políticas que herdam desta:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Falha ao carregar as atribuições",
@@ -895,6 +900,11 @@
         "time": "Hora",
         "dayOfWeek": "Dia da semana",
         "dayOfMonth": "Dia do mês",
+        "offlineDevices": "Dispositivos offline",
+        "offlineBehaviorQueue": "Enfileirar para dispositivos offline",
+        "offlineBehaviorQueueDescription": "É executado no próximo check-in, antes da próxima execução agendada.",
+        "offlineBehaviorSkip": "Ignorar dispositivos offline",
+        "offlineBehaviorSkipDescription": "Dispositivos offline no momento da execução do trabalho são registrados como ignorados.",
         "rebootPolicy": "Política de reinicialização",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
@@ -938,7 +948,8 @@
         "loadingPolicies": "Carregando políticas...",
         "noExistingPoliciesFound": "Nenhuma política existente encontrada.",
         "selectAPolicy": "Selecionar a política...",
-        "clearSelection": "Limpar seleção"
+        "clearSelection": "Limpar seleção",
+        "allOrgs": "Todas as orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",
