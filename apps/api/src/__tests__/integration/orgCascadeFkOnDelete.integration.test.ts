@@ -59,10 +59,7 @@ import {
  *      cascade set, and otherwise decided by array order;
  *   d) both ends are in the cascade set, so `topologicalCascadeOrder()` puts
  *      the child first;
- *   e) the edge is self-referential AND the table's `org_id` is NOT NULL;
- *   f) the exact configuration-policy parent edge has its enabled ownership
- *      constraint guard. configPolicyInheritance exercises its closed org row
- *      set, external-child rejection and ownership moves against the live DB.
+ *   e) the edge is self-referential AND the table's `org_id` is NOT NULL.
  *
  * (e) is the subtle one. A self-reference is normally safe because one
  * statement removes the org's whole row set and NO ACTION is checked at
@@ -195,25 +192,6 @@ async function readOrgIdNotNull(): Promise<Map<string, boolean>> {
   return new Map(rows.map((row) => [row.table_name, row.not_null]));
 }
 
-/** W01 enforces both parent compatibility and ownership immutability here. */
-async function hasConfigPolicyOwnershipGuard(): Promise<boolean> {
-  const rows = await db.execute(sql`
-    SELECT 1 FROM pg_trigger t
-    JOIN pg_proc p ON p.oid = t.tgfoid
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE t.tgrelid = 'public.configuration_policies'::regclass
-      AND t.tgname = 'configuration_policies_parent_guard'
-      AND t.tgenabled IN ('O', 'A') AND t.tgconstraint <> 0
-      AND t.tgtype = 21 -- AFTER ROW INSERT OR UPDATE
-      AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
-           FROM unnest(t.tgattr::smallint[]) AS k(attnum)
-           JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = k.attnum)
-          = ARRAY['org_id', 'parent_policy_id', 'partner_id']::text[]
-      AND n.nspname = 'public' AND p.proname = 'breeze_config_policy_parent_guard'
-  `);
-  return rows.length === 1;
-}
-
 const cascadeTables = new Set(getOrgCascadeDeleteOrder());
 /** Pre-clear table -> its index in ASSOCIATED_SYSTEM_SCOPED_TABLES (the run order). */
 const preClearOrder = new Map(
@@ -254,19 +232,11 @@ function classifyEdge(
   row: FkRow,
   reached: Set<string>,
   orgIdNotNull: Map<string, boolean>,
-  configPolicyOwnershipGuard = false,
 ): OrgCascadeFkReason | null {
   if (!reached.has(row.parent_table)) return null;
 
   if (row.child_table === row.parent_table) {
     if (row.delete_action === 'c' || row.delete_action === 'n') return null;
-    // Nullable partner-wide rows are safe only for this proved ownership guard;
-    // other nullable self references remain debt in the generic ledger.
-    if (configPolicyOwnershipGuard && cascadeTables.has(row.child_table)
-      && row.child_table === 'configuration_policies'
-      && row.constraint_name === 'configuration_policies_parent_policy_id_fkey'
-      && row.delete_action === 'a'
-      && row.child_columns.length === 1 && row.child_columns[0] === 'parent_policy_id') return null;
     return orgIdNotNull.get(row.child_table) === true ? null : 'self-ref-open-row-set';
   }
   if (row.delete_action === 'n') {
@@ -307,41 +277,17 @@ const compareRefs = (a: string[], b: string[]) =>
 
 /** Every edge erasure does NOT handle, keyed for lookup. */
 async function classifyAll(): Promise<Map<string, { row: FkRow; reason: OrgCascadeFkReason }>> {
-  const [rows, orgIdNotNull, guard] = await Promise.all([
-    readForeignKeys(), readOrgIdNotNull(), hasConfigPolicyOwnershipGuard(),
-  ]);
+  const [rows, orgIdNotNull] = await Promise.all([readForeignKeys(), readOrgIdNotNull()]);
   const reached = protectedTables(rows);
   const out = new Map<string, { row: FkRow; reason: OrgCascadeFkReason }>();
   for (const row of rows) {
-    const reason = classifyEdge(row, reached, orgIdNotNull, guard);
+    const reason = classifyEdge(row, reached, orgIdNotNull);
     if (reason !== null) out.set(rowKey(row), { row, reason });
   }
   return out;
 }
 
 describe('org-erasure FK ON DELETE contract', () => {
-  it('requires the live ownership guard and exact parent edge for nullable policy rows', async () => {
-    const rows = await readForeignKeys();
-    const edge = rows.find((row) => row.constraint_name === 'configuration_policies_parent_policy_id_fkey')!;
-    expect(edge).toBeDefined();
-    const nullability = await readOrgIdNotNull();
-    expect(nullability.get('configuration_policies')).toBe(false);
-    const reached = protectedTables(rows);
-    const guard = await hasConfigPolicyOwnershipGuard();
-    expect(guard).toBe(true);
-    expect(classifyEdge(edge, reached, nullability, guard)).toBeNull();
-    // Classifier controls: missing guard or drifted edge must restore the finding.
-    expect(classifyEdge(edge, reached, nullability, false)).toBe('self-ref-open-row-set');
-    for (const drift of [
-      { constraint_name: 'unexpected_parent_fk' },
-      { child_columns: ['unexpected_parent_id'] },
-      { delete_action: 'r' },
-    ]) {
-      expect(classifyEdge({ ...edge, ...drift }, reached, nullability, guard))
-        .toBe('self-ref-open-row-set');
-    }
-  });
-
   it('reads a live FK graph in which every classifier branch is exercised', async () => {
     const [rows, orgIdNotNull] = await Promise.all([readForeignKeys(), readOrgIdNotNull()]);
     const reached = protectedTables(rows);
