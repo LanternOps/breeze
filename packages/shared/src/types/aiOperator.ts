@@ -81,7 +81,7 @@ export const AI_OPERATOR_EXECUTION_REF_KINDS = [
 export type AiOperatorExecutionRefKind = (typeof AI_OPERATOR_EXECUTION_REF_KINDS)[number];
 
 export const AI_OPERATOR_OPERATION_DISPATCH_STATES = [
-  'reserved', 'dispatched', 'dispatch_failed', 'abandoned',
+  'reserved', 'dispatched', 'dispatch_failed', 'cancelled', 'abandoned',
 ] as const;
 export type AiOperatorOperationDispatchState = (typeof AI_OPERATOR_OPERATION_DISPATCH_STATES)[number];
 
