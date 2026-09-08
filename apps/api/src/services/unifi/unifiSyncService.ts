@@ -190,6 +190,10 @@ async function reconcileDiscoveredAsset(
       // typeSource is set only on the INSERT side; the conflict branch must
       // never reset an existing row's type_source back to 'auto'.
       typeSource: 'auto',
+      // #5213 — same reasoning, insert side only: a scan-discovered row that
+      // UniFi later enriches is still a scan row, and a MANUAL row must never
+      // be relabelled 'unifi' by an enrichment pass.
+      source: 'unifi',
       ...(classified
         ? {
             assetType: classified,
@@ -200,6 +204,10 @@ async function reconcileDiscoveredAsset(
     })
     .onConflictDoUpdate({
       target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
+      // The (org_id, ip_address) unique index is PARTIAL as of #5213. Postgres
+      // only infers a partial index when the statement repeats its predicate;
+      // without this the upsert fails at runtime with 42P10.
+      targetWhere: sql`${discoveredAssets.ipAddress} is not null`,
       set: conflictSet,
     })
     .returning({ id: discoveredAssets.id });
