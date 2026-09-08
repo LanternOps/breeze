@@ -233,17 +233,19 @@ transaction:
 1. Validate `condition` against the kind's schema; validate `responses` against
    `automationActionSchema` with the monitor restrictions.
 2. Upsert `alert_templates` row (`is_built_in = true`, `managed_by_monitor_id`), with
-   `conditions = [kindToConditionHandler(kind, condition)]`, severity, cooldown, auto-resolve,
-   title/message templates derived from the kind.
+   `conditions = kindToAlertCondition(kind, condition)` — a single root condition object
+   (`alertTemplates.conditions` holds one condition or one group, never an array), severity,
+   cooldown, auto-resolve, title/message templates derived from the kind.
 3. Upsert `alert_rules` row (`managed_by_monitor_id`, `template_id`, `is_active = enabled`,
    `target_type = 'monitor'`, `target_id = monitor_id`). The sweep already evaluates rules through
    `evaluateDeviceAlerts`; a new `target_type` resolver maps `'monitor'` to the devices the
    attachment resolution yields (see *Targeting*), so no second evaluator is introduced.
 4. Upsert `automations` row (`managed_by_monitor_id`; `managed_by_agent_id = ai_agent_id`;
    `trigger = { type: 'event', event: 'alert.triggered', filter: { ruleId: <compiled rule id> } }`;
-   `actions = responses`; `enabled`). The optional `filter: { ruleId }` field is added to the
-   `event` branch of `automationTriggerSchema` (`packages/shared/src/validators/index.ts`) and
-   honoured by `shouldTriggerEventAutomation` (today it matches on event type only).
+   `actions = responses`; `enabled`). The runtime already honours `trigger.filter` as key/value
+   equality against the event payload (`matchesEventFilter` in `automationWorker.ts`); only the
+   `event` branch of `automationTriggerSchema` (`packages/shared/src/validators/index.ts`) lacks the
+   field, so the validator gains `filter: z.record(z.unknown()).optional()`.
 5. Write `compiled_*` pointers and `compiled_hash = sha256(canonical(definition))`.
 
 Every compiled row is deterministic from the definition; the contract test recompiles every
@@ -389,17 +391,19 @@ Left nav (`Sidebar.tsx`):
 
 - **Alerts** → `/alerts` — unchanged (inbox, acknowledge, suppress, resolve, correlations,
   Incidents).
-- **Monitoring** → `/monitoring` (new entry under Fleet Management, replaces the "Network Monitor"
-  entry). Hash tabs: `#monitors` (default), `#network` (the existing network-monitor page moves here
-  unchanged), `#delivery` (notification channels, routing rules, escalation policies — the pages
-  that exist today under `/alerts/*` without nav), `#legacy-rules` (standalone alert rules with no
-  `managed_by_monitor_id`, each with **Convert to monitor**). Page title "Monitoring & Automation".
-  Existing bookmarks to `/monitoring` land on the hub with `#monitors` selected; `#network` is the
-  old page unchanged.
-- **Jobs** → `/jobs` (new entry). Hash tabs: `#scheduled`, `#on-demand` (manual), `#webhooks`,
-  `#event-rules` (unmanaged event-trigger automations, so nothing a customer built disappears),
-  `#history`. `/automations` and `/automations/:id` become redirects to `/jobs`. Monitor-managed
-  automations are hidden from Jobs and shown inside their monitor.
+- **Monitoring** → `/monitoring` (renamed "Network Monitor" entry under Fleet Management). The hub
+  uses a **path-based** tab strip (the `AlertsTabStrip` pattern) because the existing network page
+  already owns `window.location.hash` for its own tabs: **Monitors** `/monitoring` (default from W2;
+  in W1 the network page stays at `/monitoring`), **Network** `/monitoring/network` (the existing
+  page, moved in W2), **Delivery** `/monitoring/delivery` (notification channels; routing rules and
+  escalation policies join when they get a UI), **Legacy rules** `/monitoring/rules` (standalone
+  alert rules with no `managed_by_monitor_id`, each with **Convert to monitor**; W2). Page title
+  "Monitoring & Automation".
+- **Jobs** → `/jobs` (new entry, top level after Scripts, permission `automations:read`). Hash tabs:
+  `#all` (default), `#scheduled`, `#on-demand`, `#webhooks`, `#event-rules` (unmanaged event-trigger
+  automations, so nothing a customer built disappears). Run history stays the per-row modal.
+  `/automations`, `/automations/new` and `/automations/:id` become 301 redirects to `/jobs*`.
+  Monitor-managed automations are hidden from Jobs (W2) and shown inside their monitor.
 - Config-policy editor: new **Monitors** tab (attachment list with enable/override per row, plus
   "Attach existing" and "Create monitor"). Existing Monitoring / Alert / Automation tabs remain
   and gain a one-line banner pointing at Monitors for fleet-wide rules.
@@ -456,7 +460,7 @@ MCP: `list_monitors`, `get_monitor_activity`, `reset_monitor_escalation` (Tier 2
 
 | wave | ships | must not break |
 |---|---|---|
-| **W1 — discoverability** (no schema) | Jobs nav entry + `/jobs` page over existing automations with the hash tabs; `/automations` redirects; Monitoring nav entry with `#network` and `#delivery` tabs hosting the existing pages; Alert Rules listed under `#legacy-rules` | every existing URL (redirects), permissions |
+| **W1 — discoverability** (no schema) | Jobs nav entry + `/jobs` pages over existing automations with the trigger tabs; `/automations` redirects; "Network Monitor" nav entry becomes **Monitoring** with a path tab strip (Network, Delivery) | every existing URL (redirects), permissions, the network page's own hash tabs |
 | **W2 — definitions and compile** | `monitor_definitions`, `config_policy_monitors`, `monitor` feature type, kind registry for the eleven existing handler kinds, compiler + managed-row guards + drift contract test, `'monitor'` target resolver, cumulative resolution, escalation lookup on the policy alert path, monitor editor + policy Monitors tab, "Deploy to…", convert-to-monitor. **Prerequisite: #5240 (device-bound event automations).** | alert sweep, correlation, cooldown, routing, escalation policies, partner fan-out, #5080 inheritance, AI verdicts, MCP `manage_automations` (now refuses managed rows) |
 | **W3 — episodes and recurrence** | `monitor_device_state`, `monitor_episodes`, episode open/close in the sweep hook, latch + requires-human alert + pause + reset API, Activity tab, `response_outcome` from terminal run state (fixes queued-as-success), `requires_human` handling in auto-resolve and the verdict subscriber | AI admission and loop guards, delivery dedupe, escalation cancellation |
 | **W4 — coverage** | handler-only kinds (antivirus, software_presence, backup_continuity), script monitor, network_check adapter (after #5241) with partner-wide `networkMonitors`, service/process watch delivery from `resolveMonitorsForDevice` (heartbeat builder reads monitors first, config-policy tab second) | agent config payload shape (`monitoring_settings` unchanged on the wire), local auto-restart |
