@@ -11,12 +11,15 @@
  * chasing a network problem that didn't exist.
  *
  * This module treats rVFC as advisory rather than authoritative: it starts
- * on rVFC when available, but arms a watchdog. If the video is demonstrably
- * live (`readyState >= HAVE_CURRENT_DATA` and `currentTime` has advanced
- * since the watchdog armed) yet no rVFC callback has arrived within
+ * on rVFC when available, but arms a heartbeat watchdog that is re-armed on
+ * every real rVFC callback. If the video is demonstrably live
+ * (`readyState >= HAVE_CURRENT_DATA` and `currentTime` has advanced since
+ * the watchdog last armed) yet no rVFC callback has arrived within
  * `watchdogMs`, it gives up on rVFC for the rest of this session and
  * switches permanently to a `currentTime`-poll fallback — the same
- * approximation used when rVFC isn't present at all.
+ * approximation used when rVFC isn't present at all. Re-arming on every
+ * callback (rather than only once at startup) means this also recovers from
+ * rVFC going silent mid-session, not just from it never firing at all.
  *
  * A `getStats()`-based `framesDecoded` counter would be more transport-truthful,
  * but is not used here: it needs a live `RTCPeerConnection` threaded into this
@@ -40,7 +43,6 @@ const HAVE_CURRENT_DATA = 2;
 
 type RvfcCapableVideo = HTMLVideoElement & {
   requestVideoFrameCallback?: (callback: () => void) => number;
-  cancelVideoFrameCallback?: (handle: number) => void;
 };
 
 export interface FrameCounterOptions {
@@ -106,31 +108,29 @@ export function startFrameCounter(options: FrameCounterOptions): FrameCounterHan
     return { stop };
   }
 
-  const onRvfcFrame = () => {
-    if (stopped || usingPoll) return;
-    // A real callback fired — rVFC works here. Cancel any pending watchdog
-    // check and keep going with rVFC.
-    clearWatchdog();
-    onFrame();
-    rvfc(onRvfcFrame);
-  };
-  rvfc(onRvfcFrame);
-
-  // Arm (and, while the video isn't observably live yet, keep re-arming) a
-  // watchdog that gives up on rVFC once it's had a fair chance to fire on a
-  // live video and didn't.
+  // Heartbeat watchdog: (re-)armed on every real rVFC callback, not just
+  // once at startup. This is what lets it catch BOTH failure modes: rVFC
+  // never fires at all (issue #5292), and rVFC fires normally for a while
+  // then goes silent mid-session (e.g. a transient decoder hiccup) without
+  // ever formally unregistering. Each check snapshots `currentTime` at arm
+  // time and compares it `watchdogMs` later — if the video has demonstrably
+  // kept playing in that window but rVFC stayed silent, the failure is
+  // rVFC's, not the stream's.
   const armWatchdog = () => {
     if (stopped || usingPoll) return;
-    const startTime = video.currentTime;
+    const referenceTime = video.currentTime;
     watchdogTimer = setTimeout(() => {
       if (stopped || usingPoll) return;
-      const isLive = video.readyState >= HAVE_CURRENT_DATA && video.currentTime !== startTime;
+      const isLive = video.readyState >= HAVE_CURRENT_DATA && video.currentTime !== referenceTime;
       if (isLive) {
+        // Engage the fallback BEFORE the caller-supplied log callback, so a
+        // throwing logger can never prevent recovery — that would silently
+        // reintroduce the exact bug this module exists to fix.
+        startPoll();
         log?.(
-          'requestVideoFrameCallback is supported but did not fire while the video was ' +
+          'requestVideoFrameCallback is supported but stopped firing while the video was ' +
             'live; falling back to currentTime polling for frame counting (see issue #5292).',
         );
-        startPoll();
         return;
       }
       // Video isn't clearly live yet (still buffering/paused) — give it
@@ -138,6 +138,18 @@ export function startFrameCounter(options: FrameCounterOptions): FrameCounterHan
       armWatchdog();
     }, watchdogMs);
   };
+
+  const onRvfcFrame = () => {
+    if (stopped || usingPoll) return;
+    onFrame();
+    rvfc(onRvfcFrame);
+    // A real callback just fired — rVFC is alive right now. Reset the
+    // watchdog's clock instead of clearing it for good, so a later stall
+    // still gets caught.
+    clearWatchdog();
+    armWatchdog();
+  };
+  rvfc(onRvfcFrame);
   armWatchdog();
 
   return { stop };

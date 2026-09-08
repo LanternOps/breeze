@@ -87,6 +87,48 @@ describe('startFrameCounter', () => {
     handle.stop();
   });
 
+  it('falls back once a previously-working rVFC goes silent mid-session, not just at startup', () => {
+    // The watchdog must be a heartbeat, not a one-shot startup check: rVFC
+    // can fire normally for a while and then stop invoking its callback
+    // (e.g. a transient decoder hiccup) without the WebView ever formally
+    // signalling that it gave up. A one-shot watchdog that only clears
+    // itself on the first callback would never recover from this.
+    let pendingCb: (() => void) | null = null;
+    const video = makeVideo({
+      readyState: 2,
+      requestVideoFrameCallback: (cb) => {
+        pendingCb = cb;
+        return 1;
+      },
+    });
+    let frames = 0;
+    const handle = startFrameCounter({
+      video: video as unknown as HTMLVideoElement,
+      onFrame: () => { frames++; },
+    });
+
+    // rVFC fires normally for a few frames.
+    for (let i = 0; i < 5; i++) {
+      video.currentTime += 0.016;
+      pendingCb!();
+      vi.advanceTimersByTime(16);
+    }
+    expect(frames).toBe(5);
+
+    // Then it goes silent: pendingCb is never invoked again, but the video
+    // keeps decoding/advancing underneath.
+    const framesBeforeStall = frames;
+    let elapsed = 0;
+    while (elapsed < DEFAULT_WATCHDOG_MS + 500) {
+      video.currentTime += 0.016;
+      vi.advanceTimersByTime(16);
+      elapsed += 16;
+    }
+
+    expect(frames).toBeGreaterThan(framesBeforeStall);
+    handle.stop();
+  });
+
   it('never engages the poll fallback while the video is not yet live (readyState 0, currentTime frozen)', () => {
     const video = makeVideo({
       readyState: 0,
