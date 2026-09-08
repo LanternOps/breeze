@@ -132,6 +132,16 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — its
+// own contract (the intent_outbox row, the conditional task_outbox leg) is
+// pinned by taskOutbox.test.ts and the writer contract integration test, not
+// here. The real function reads `intentOutbox` from the `../db/schema/
+// actionIntents` mock below, which only stubs `actionIntents`.
+const mockPublishIntentTerminalOutbox = vi.fn((..._args: unknown[]) => Promise.resolve());
+vi.mock('./aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: (...args: unknown[]) => mockPublishIntentTerminalOutbox(...args),
+}));
+
 // Mocked as a collaborator (like intentService): the inline release path calls
 // this to re-prove the requester's authorization before executing. Also cuts
 // the real module's ../aiTools import chain (which would otherwise drag in

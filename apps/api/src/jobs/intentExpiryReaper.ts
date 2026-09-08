@@ -12,6 +12,7 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { attachWorkerObservability } from './workerObservability';
 import { recordOperationResult } from '../services/aiOperator/operationService';
+import { enqueueTaskOutbox, INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ } from '../services/aiOperator/taskOutbox';
 
 /**
  * Reaps `action_intents` rows past their deadline (spec
@@ -137,6 +138,8 @@ type ExpiredIntentRow = {
   source: string;
   requested_by_user_id: string | null;
   expires_at: Date;
+  /** #5205 W05 (#5210): non-null iff this is an AI Operator task-linked intent. */
+  task_id: string | null;
 };
 
 type StaleExecutingIntentRow = {
@@ -195,7 +198,8 @@ export async function reapExpiredIntents(): Promise<number> {
       a.argument_digest,
       a.source,
       a.requested_by_user_id,
-      a.expires_at;
+      a.expires_at,
+      a.task_id;
   `);
 
   const rows = extractRows<ExpiredIntentRow>(transitioned);
@@ -245,6 +249,23 @@ export async function reapExpiredIntents(): Promise<number> {
       payload: { intentId: row.id, orgId: row.org_id },
     })),
   );
+
+  // #5205 W05 (#5210), spec §6.3: task-linked rows also need the task_outbox
+  // wake, atomically with the expiry above (same transaction as the CTE
+  // UPDATE and the intentOutbox insert — this whole pass runs inside ONE
+  // Postgres transaction, see the file-header note on why errors here must
+  // propagate rather than be swallowed).
+  for (const row of rows) {
+    if (row.task_id) {
+      await enqueueTaskOutbox(db, {
+        orgId: row.org_id,
+        taskId: row.task_id,
+        sourceKind: 'intent',
+        sourceId: row.id,
+        transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_expired,
+      });
+    }
+  }
 
   for (const row of rows) {
     try {
@@ -315,6 +336,32 @@ export async function reapStaleExecutingIntents(): Promise<number> {
   const rows = extractRows<StaleExecutingIntentRow>(transitioned);
   if (rows.length === 0) {
     return 0;
+  }
+
+  // #5205 W05 (#5210), baseline C18: this writer terminalizes intents to
+  // `failed` but published NOTHING — the two writers baseline §3.2 calls out
+  // as the concrete gap. Same transaction as the CTE UPDATE above (this whole
+  // function runs inside ONE Postgres transaction via `runWithSystemDbAccess`
+  // — see reapExpiredIntents's header for why a failure here must propagate,
+  // not be swallowed: a swallowed error here would leave the CAS committed
+  // with no outbox row, exactly the strand this migration exists to close).
+  await db.insert(intentOutbox).values(
+    rows.map((row) => ({
+      intentId: row.id,
+      eventType: 'intent_failed' as const,
+      payload: { intentId: row.id, orgId: row.org_id },
+    })),
+  );
+  for (const row of rows) {
+    if (row.task_id) {
+      await enqueueTaskOutbox(db, {
+        orgId: row.org_id,
+        taskId: row.task_id,
+        sourceKind: 'intent',
+        sourceId: row.id,
+        transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_failed,
+      });
+    }
   }
 
   const requestLike = requestLikeFromSnapshot({});

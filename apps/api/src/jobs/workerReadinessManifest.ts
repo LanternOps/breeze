@@ -136,6 +136,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('approvalExpiryReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
+  consumers('aiOperatorTaskOutboxPublisher'),
   consumers('intentExpiryReaper'),
   consumers('intentReleaseWorker'),
   consumers('stripeReconcileSweep'),

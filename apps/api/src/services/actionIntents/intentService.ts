@@ -55,6 +55,7 @@ import {
   OperationReplayError,
   reserveOperation,
 } from '../aiOperator/operationService';
+import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -818,6 +819,27 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
       status: 'cancelled',
       errorCode: 'no_eligible_approvers',
     };
+    // #5205 W05 (#5210), spec §6.3: this row is freshly inserted in THIS same
+    // transaction (createActionIntent's caller), so the CAS above cannot lose
+    // a race — `cancelled` truthy is the ordinary case; the ?? fallback above
+    // exists only for a defensive read-shape mismatch, not a real loss. A
+    // task-linked intent reaches this path too: `reserveOperation` already ran
+    // earlier in the SAME transaction (spec §6.5), before this fail-closed
+    // cancel — a no-eligible-approvers task operation must not strand the
+    // task in `waiting` any more than any other terminal writer.
+    if (cancelled) {
+      // Nothing was ever dispatched — terminally `cancelled` on the operation
+      // too (distinct from `abandoned`), same reasoning as
+      // cancelActionIntent's identical branch below.
+      if (isTaskLinkedIntent(inserted)) {
+        await markOperationCancelled(tx, inserted.id);
+      }
+      await publishIntentTerminalOutbox(
+        tx,
+        { id: inserted.id, orgId: inserted.orgId, taskId: inserted.taskId },
+        'intent_cancelled',
+      );
+    }
   }
 
   return { approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent };
@@ -2343,13 +2365,15 @@ export async function cancelActionIntent(
       if (taskLinked) {
         await markOperationCancelled(db, intentId);
       }
-      await db.insert(intentOutbox).values({
-        intentId,
-        eventType: 'intent_cancelled',
-        // Ids only, no argument content (spec §3.2) — matches the
-        // intent_created/intent_approved/intent_rejected/intent_expired rows.
-        payload: { intentId, orgId: intent.orgId },
-      });
+      // #5205 W05 (#5210): same intentOutbox row this always wrote, plus (when
+      // task-linked) the task_outbox leg — `intent.taskId` is read from the
+      // pre-transaction snapshot, which is safe since task linkage is
+      // immutable.
+      await publishIntentTerminalOutbox(
+        db,
+        { id: intentId, orgId: intent.orgId, taskId: intent.taskId },
+        'intent_cancelled',
+      );
       return true;
     });
   } catch (err) {
