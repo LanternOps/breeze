@@ -2,8 +2,8 @@
 title: Monitoring & Automation unification (monitors as the authoring object)
 status: approved
 date: 2026-09-08
-tracking_issue: LanternOps/breeze#4984
-origin: "#4984 community proposal (Discord, MSP migrating from Datto RMM); escalation counter #4672"
+tracking_issue: LanternOps/breeze#5287
+origin: "#4984 community proposal (feature tracker #5287, waves #5288–#5291) (Discord, MSP migrating from Datto RMM); escalation counter #4672"
 ---
 
 # Monitoring & Automation unification
