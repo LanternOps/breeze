@@ -158,6 +158,35 @@ describe('ci-success gating contract', () => {
     ).toEqual([]);
   });
 
+  it('the docs-only bypass is fail-closed (classifier success AND literal false)', () => {
+    // `changes` classifies the PR diff; on a docs-only PR every code job is skipped and
+    // ci-success must still pass. The bypass may only fire when the classifier succeeded
+    // and emitted exactly `false` — an empty or unexpected output falls through to the
+    // per-job assertions, where the skipped jobs fail them. `classify-pr-paths.test.mjs`
+    // executes the real shell against these shapes; this pins the text.
+    expect(envBlock).toContain('CODE_CHANGED: ${{ needs.changes.outputs.code }}');
+    expect(blockingCondition).toContain('[[ "${CHANGES_RESULT}" != "success" ]] ||');
+    expect(blockingCondition).toContain('{ [[ "${CODE_CHANGED}" != "false" ]] && {');
+    expect(blockingCondition).not.toContain('"${CODE_CHANGED}" == "true"');
+  });
+
+  it('every code job is gated on the classifier (docs-only PRs skip it)', () => {
+    const exempt = new Set(['changes', 'ci-success', 'main-red-alert', 'build-mobile-ios']);
+    const ungated = workflowJobs.filter((job) => {
+      if (exempt.has(job)) return false;
+      const body = jobBodies.get(job) ?? '';
+      return (
+        !/^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/m.test(body) ||
+        !/^    if: needs\.changes\.outputs\.code == 'true'$/m.test(body)
+      );
+    });
+    expect(
+      ungated,
+      `Jobs that would run on a docs-only PR: ${ungated.join(', ')}. ` +
+        "Add `changes` to needs: and `if: needs.changes.outputs.code == 'true'`.",
+    ).toEqual([]);
+  });
+
   it('test-mobile blocks a merge (regression guard for #3941)', () => {
     // Regression guard for GitHub issue #3941.
     expect(neededJobs, 'test-mobile is missing from ci-success needs:').toContain('test-mobile');
