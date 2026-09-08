@@ -69,6 +69,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 4, // W01 #5075: cognates — "Sites", "{{count}} site(s)"
+    'pages.json': 10, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -165,6 +166,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2).
     'patches.json': 16,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -265,6 +267,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 38,
     'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
+    'pages.json': 11, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -372,6 +375,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 15,
     'integrations.json': 40,
     'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
+    'pages.json': 11, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2).
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -490,6 +494,7 @@ const namespaceDuplicateBaselines = {
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'pages.json': 14, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2).
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -566,6 +571,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 22,
     'integrations.json': 81,
     'organizations.json': 1, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term
+    'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -634,6 +640,7 @@ const namespaceDuplicateBaselines = {
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
+    'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",

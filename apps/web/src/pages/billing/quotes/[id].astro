@@ -5,6 +5,6 @@ import QuoteWorkspace from '../../../components/billing/quotes/QuoteWorkspace';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Quote">
+<DashboardLayout titleKey="titles.billingQuotesDetail">
   <QuoteWorkspace id={id} client:load />
 </DashboardLayout>

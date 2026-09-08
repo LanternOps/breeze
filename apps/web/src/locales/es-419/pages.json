@@ -1,0 +1,264 @@
+{
+  "titles": {
+    "notFound": "Página no encontrada",
+    "serverError": "Algo salió mal",
+    "acceptInvite": "Aceptar invitación",
+    "accountConnectedApps": "Aplicaciones conectadas",
+    "accountDelete": "Eliminar cuenta",
+    "accountDevices": "Dispositivos de confianza",
+    "accountInactive": "Comenzar",
+    "accountTestApproval": "Probar aprobación",
+    "adminAccountDeletionRequestsDetail": "Solicitud de eliminación de cuenta",
+    "adminAccountDeletionRequests": "Solicitudes de eliminación de cuenta",
+    "adminAiKillSwitch": "Interruptor de emergencia de IA",
+    "adminConnectedApps": "Aplicaciones conectadas (admin)",
+    "adminLlmProviderCatalog": "Catálogo de proveedores de LLM",
+    "adminQuarantined": "Dispositivos en cuarentena",
+    "adminThirdPartyCatalog": "Catálogo de terceros",
+    "adminTrustAct": "Acción de confianza del socio",
+    "adminTrustQueue": "Cola de confianza del socio",
+    "adminUsersDetailDevices": "Dispositivos del usuario",
+    "aiAgentsImpact": "Impacto de IA",
+    "aiAgentsRunsDetail": "Detalle de ejecución",
+    "aiAgentsRuns": "Ejecuciones de agentes",
+    "aiForOffice": "AI para Office",
+    "aiRisk": "Motor de riesgo de IA",
+    "alertsChannels": "Canales de notificación",
+    "alertsCorrelations": "Correlaciones de alertas",
+    "alertsDetail": "Detalles de la alerta",
+    "alerts": "Alertas",
+    "analytics": "Analítica",
+    "approvals": "Aprobaciones",
+    "auditBaselinesDetail": "Línea base de auditoría",
+    "auditBaselines": "Líneas base de auditoría",
+    "audit": "Pista de auditoría",
+    "auth": "Inicia sesión o crea una cuenta",
+    "authConnectSso": "Conecta tu acceso",
+    "authMfaSetup": "Configurar MFA",
+    "authVerifyEmail": "Verificar correo electrónico",
+    "automationsDetail": "Editar automatización",
+    "automations": "Automatizaciones",
+    "automationsNew": "Nueva automatización",
+    "backup": "Copia de seguridad",
+    "billingInvoices": "Facturas",
+    "billingInvoicesDetail": "Factura",
+    "billingQuotes": "Cotizaciones",
+    "billingQuotesDetail": "Cotización",
+    "c2c": "Copia de seguridad en la nube",
+    "cisHardening": "CIS Benchmarks",
+    "configurationPoliciesDefaults": "Valores predeterminados de Breeze",
+    "configurationPoliciesDetail": "Política de configuración",
+    "configurationPolicies": "Políticas de configuración",
+    "configurationPoliciesNew": "Nueva política de configuración",
+    "contracts": "Contratos",
+    "contractsDetail": "Contrato",
+    "contractsNew": "Nuevo contrato",
+    "devicesCompare": "Comparación de dispositivos",
+    "devicesGroups": "Grupos de dispositivos",
+    "devicesDetail": "Detalles del dispositivo",
+    "devices": "Dispositivos",
+    "devicesNetworkDetail": "Detalles del dispositivo de red",
+    "devicesPosture": "Postura de la flota",
+    "discovery": "Descubrimiento de red",
+    "dnsSecurity": "DNS Seguridad",
+    "dr": "Recuperación ante desastres",
+    "extensionsNamePath": "Extensión",
+    "fleet": "Orquestación de flota",
+    "forgotPassword": "Olvidé mi contraseña",
+    "incidentsDetail": "Detalle del incidente",
+    "incidents": "Incidentes",
+    "dashboard": "Panel",
+    "integrations": "Integraciones",
+    "integrationsPsa": "Integraciones PSA",
+    "integrationsWebhooks": "Webhooks",
+    "login": "Iniciar sesión",
+    "logs": "Registros",
+    "monitoring": "Monitoreo",
+    "oauthConsent": "Autorizar acceso",
+    "onedrive": "OneDrive",
+    "organizationsDetail": "Organización",
+    "pam": "Acceso privilegiado",
+    "partner": "Portal del socio",
+    "patches": "Parches",
+    "peripherals": "Control de periféricos",
+    "policiesCompliance": "Panel de cumplimiento",
+    "policiesDetail": "Editar política",
+    "policies": "Políticas",
+    "policiesNew": "Nueva política",
+    "quick": "Soporte rápido",
+    "registerPartner": "Registra tu empresa",
+    "remoteFilesDevice": "Administrador de archivos remoto",
+    "remoteFiles": "Iniciar transferencia de archivos",
+    "remote": "Acceso remoto",
+    "remoteProxyTunnel": "Proxy de red",
+    "remoteQuickSupport": "Soporte rápido",
+    "remoteSessions": "Historial de sesiones",
+    "remoteTerminalDevice": "Terminal remota",
+    "remoteTerminal": "Iniciar sesión de terminal",
+    "remoteTools": "Herramientas remotas",
+    "remoteVncTunnel": "Escritorio remoto VNC",
+    "reportsBuilder": "Generador de informes",
+    "reportsDetailEdit": "Editar informe",
+    "reports": "Informes",
+    "reportsNew": "Crear informe",
+    "reportsTemplates": "Plantillas de informes",
+    "resetPassword": "Restablecer contraseña",
+    "scriptsDetail": "Editar script",
+    "scriptsDetailExecutions": "Historial de ejecuciones",
+    "scripts": "Scripts",
+    "scriptsNew": "Nuevo script",
+    "securityAdminAudit": "Auditoría de cuentas de administrador",
+    "securityAntivirus": "Cobertura de antivirus",
+    "securityEdr": "EDR",
+    "securityEncryption": "Estado de cifrado",
+    "securityFirewall": "Estado del firewall",
+    "security": "Seguridad",
+    "securityPasswordPolicy": "Política de contraseñas",
+    "securityRecommendations": "Recomendaciones de seguridad",
+    "securityScore": "Puntuación de seguridad",
+    "securityTrends": "Tendencias de seguridad",
+    "securityUserRisk": "Riesgo del usuario",
+    "securityVulnerabilities": "Vulnerabilidades",
+    "sensitiveData": "Datos confidenciales",
+    "settingsAccessReviews": "Revisiones de acceso",
+    "settingsAiAgents": "Agentes de IA",
+    "settingsAiUsage": "Uso y presupuesto de IA",
+    "settingsAlertTemplatesDetail": "Plantilla de alerta",
+    "settingsAlertTemplates": "Plantillas de alerta",
+    "settingsApiKeys": "Claves de API",
+    "settingsBilling": "Configuración de facturación",
+    "settingsCatalog": "Catálogo de productos",
+    "settingsConnectedApps": "Aplicaciones conectadas",
+    "settingsCustomFields": "Campos personalizados",
+    "settingsEnrollmentKeys": "Claves de inscripción",
+    "settingsFilters": "Filtros guardados",
+    "settings": "Configuración",
+    "settingsOfficeAddinBindings": "Vínculos del complemento de Outlook",
+    "settingsOrganizationsDetail": "Configuración de la organización",
+    "settingsOrganizationsDetailBilling": "Facturación de la organización",
+    "settingsOrganizations": "Organizaciones",
+    "settingsPartner": "Configuración del socio",
+    "settingsPartnerServicePrincipals": "Entidades de servicio",
+    "settingsProfile": "Configuración de perfil",
+    "settingsRoles": "Roles",
+    "settingsSitesDetail": "Configuración del sitio",
+    "settingsSso": "Inicio de sesión único (SSO)",
+    "settingsUsers": "Usuarios",
+    "settingsVariables": "Variables",
+    "settingsWebhooks": "Webhooks",
+    "setup": "Configuración inicial",
+    "software": "Biblioteca de software",
+    "softwareInventory": "Software",
+    "softwarePolicies": "Software",
+    "ticketsDetail": "Ticket",
+    "tickets": "Tickets",
+    "ticketsNew": "Crear ticket",
+    "timesheet": "Hoja de tiempo",
+    "vulnerabilities": "Vulnerabilidades",
+    "workspace": "Asistente de IA"
+  },
+  "layout": {
+    "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
+    "metaDescriptionSetup": "Breeze RMM - Configuración Inicial"
+  },
+  "authShell": {
+    "tagline": "La plataforma RMM moderna creada para velocidad, claridad y escala."
+  },
+  "errorPage": {
+    "notFoundBody": "La página que buscas no existe o pudo haber sido movida.",
+    "serverErrorBody": "Ocurrió un error inesperado de nuestro lado. Nuestro equipo fue notificado — intenta de nuevo en un momento.",
+    "referenceIdLabel": "ID de referencia:",
+    "dashboardLink": "Ir al panel",
+    "signInLink": "Iniciar sesión"
+  },
+  "settingsIndex": {
+    "heading": "Configuración",
+    "description": "Gestiona la configuración, los usuarios y los sitios de tu organización.",
+    "cards": {
+      "ticketing": {
+        "title": "Tickets",
+        "description": "Configura los estados de tickets, SLAs de prioridad, categorías y valores predeterminados de exportación."
+      },
+      "catalog": {
+        "title": "Catálogo de productos",
+        "description": "Gestiona artículos de hardware, software y servicios, precios y paquetes."
+      },
+      "billing": {
+        "title": "Facturación",
+        "description": "Moneda de facturación, impuestos, numeración, términos y pie de página predeterminados."
+      },
+      "organizations": {
+        "title": "Organizaciones",
+        "description": "Gestiona organizaciones, contratos y configuración de cuentas."
+      },
+      "users": {
+        "title": "Usuarios",
+        "description": "Invita usuarios, gestiona roles y controla los permisos de acceso."
+      },
+      "sso": {
+        "title": "Inicio de sesión único",
+        "description": "Configura proveedores de SSO, verifica dominios de correo y exige el inicio de sesión mediante SSO."
+      },
+      "accessReviews": {
+        "title": "Revisiones de acceso",
+        "description": "Ejecuta certificaciones periódicas de acceso de usuarios y exporta registros de certificación."
+      },
+      "connectedApps": {
+        "title": "Aplicaciones conectadas",
+        "description": "Revisa y revoca asistentes de IA y clientes MCP autorizados a acceder a tu organización."
+      },
+      "officeAddinBindings": {
+        "title": "Vínculos del complemento de Outlook",
+        "description": "Gestiona los técnicos vinculados al complemento de Outlook y revoca el acceso."
+      },
+      "sites": {
+        "title": "Sitios",
+        "description": "Configura ubicaciones, zonas horarias y ajustes específicos de cada sitio."
+      }
+    }
+  },
+  "settingsBillingPage": {
+    "heading": "Configuración de facturación",
+    "description": "Moneda de facturación, impuestos, numeración, términos y pie de página para tus clientes."
+  },
+  "settingsConnectedAppsPage": {
+    "heading": "Aplicaciones conectadas",
+    "description": "Asistentes de IA y otros clientes MCP autorizados a acceder a tu organización mediante OAuth. Revoca el acceso en cualquier momento — el token de la aplicación será rechazado en un plazo de 10 minutos."
+  },
+  "settingsOrganizationBillingPage": {
+    "backLink": "← Configuración de la organización",
+    "heading": "Configuración de facturación",
+    "description": "Identidad fiscal y dirección de facturación usadas en las facturas de esta organización."
+  },
+  "alertsCorrelationsPage": {
+    "heading": "Correlaciones de alertas",
+    "description": "Revisa incidentes de alertas agrupados, evidencia compartida y RCA bajo demanda."
+  },
+  "reportsBuilderPage": {
+    "breadcrumbReports": "Informes",
+    "breadcrumbBuilder": "Generador",
+    "heading": "Generador de informes",
+    "description": "Diseña, programa y distribuye informes con vistas previas en tiempo real."
+  },
+  "reportsNewPage": {
+    "breadcrumbReports": "Informes",
+    "breadcrumbNew": "Nuevo informe",
+    "heading": "Crear informe",
+    "description": "Configura un nuevo informe para monitorear y analizar tu infraestructura."
+  },
+  "remoteToolsPage": {
+    "loading": "Cargando herramientas remotas...",
+    "loadingHint": "Selecciona un dispositivo para acceder a las herramientas de gestión remota"
+  },
+  "remoteTerminalPage": {
+    "loading": "Cargando terminal remota...",
+    "loadingDeviceName": "Cargando dispositivo..."
+  },
+  "authLayout": {
+    "tagline": "Monitoreo y Gestión Remota"
+  },
+  "authPage": {
+    "description": "Breeze RMM - Inicia sesión o crea tu cuenta",
+    "tagline": "Inicia sesión o crea tu cuenta para comenzar."
+  }
+}

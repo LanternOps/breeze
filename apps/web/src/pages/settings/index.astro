@@ -1,13 +1,16 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
 import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
+import { tServer } from '../../lib/i18n/server';
+
+const locale = Astro.locals.locale;
 ---
 
-<DashboardLayout title="Settings">
+<DashboardLayout titleKey="titles.settings">
   <div class="space-y-6">
     <div>
-      <h1 class="text-xl font-semibold tracking-tight">Settings</h1>
-      <p class="text-muted-foreground">Manage your organization settings, users, and sites.</p>
+      <h1 class="text-xl font-semibold tracking-tight">{tServer(locale, 'settingsIndex.heading')}</h1>
+      <p class="text-muted-foreground">{tServer(locale, 'settingsIndex.description')}</p>
     </div>
 
     <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -18,9 +21,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Ticketing</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.ticketing.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Configure ticket statuses, priority SLAs, categories, and export defaults.
+            {tServer(locale, 'settingsIndex.cards.ticketing.description')}
           </p>
         </div>
       </a>
@@ -39,9 +42,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         data-catalog-settings-card
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Product Catalog</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.catalog.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Manage hardware, software, and service items, pricing, and bundles.
+            {tServer(locale, 'settingsIndex.cards.catalog.description')}
           </p>
         </div>
       </a>
@@ -52,9 +55,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         data-billing-settings-card
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Billing</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.billing.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Invoice currency, tax, numbering, terms, and footer defaults.
+            {tServer(locale, 'settingsIndex.cards.billing.description')}
           </p>
         </div>
       </a>
@@ -64,9 +67,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Organizations</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.organizations.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Manage organizations, contracts, and account settings.
+            {tServer(locale, 'settingsIndex.cards.organizations.description')}
           </p>
         </div>
       </a>
@@ -76,9 +79,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Users</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.users.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Invite users, manage roles, and control access permissions.
+            {tServer(locale, 'settingsIndex.cards.users.description')}
           </p>
         </div>
       </a>
@@ -88,9 +91,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Single Sign-On</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.sso.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Configure SSO providers, verify email domains, and enforce SSO login.
+            {tServer(locale, 'settingsIndex.cards.sso.description')}
           </p>
         </div>
       </a>
@@ -100,9 +103,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Access Reviews</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.accessReviews.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Run periodic user-access certifications and export attestation records.
+            {tServer(locale, 'settingsIndex.cards.accessReviews.description')}
           </p>
         </div>
       </a>
@@ -112,9 +115,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Connected Apps</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.connectedApps.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Review and revoke AI assistants and MCP clients authorized to access your tenant.
+            {tServer(locale, 'settingsIndex.cards.connectedApps.description')}
           </p>
         </div>
       </a>
@@ -124,9 +127,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Outlook Add-in Bindings</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.officeAddinBindings.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Manage technicians bound to the Outlook tech add-in, and revoke access.
+            {tServer(locale, 'settingsIndex.cards.officeAddinBindings.description')}
           </p>
         </div>
       </a>
@@ -136,9 +139,9 @@ import PartnerSettingsCard from '../../components/settings/PartnerSettingsCard';
         class="rounded-lg border bg-card p-6 shadow-xs transition hover:border-primary hover:shadow-md"
       >
         <div class="space-y-2">
-          <h2 class="text-lg font-semibold">Sites</h2>
+          <h2 class="text-lg font-semibold">{tServer(locale, 'settingsIndex.cards.sites.title')}</h2>
           <p class="text-sm text-muted-foreground">
-            Configure locations, timezones, and site-specific settings.
+            {tServer(locale, 'settingsIndex.cards.sites.description')}
           </p>
         </div>
       </a>

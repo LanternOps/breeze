@@ -5,6 +5,6 @@ import PolicyEditPage from '../../components/automations/PolicyEditPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Edit Policy">
+<DashboardLayout titleKey="titles.policiesDetail">
   <PolicyEditPage policyId={id} client:load />
 </DashboardLayout>

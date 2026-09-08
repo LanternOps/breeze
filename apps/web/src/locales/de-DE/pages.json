@@ -1,0 +1,264 @@
+{
+  "titles": {
+    "notFound": "Seite nicht gefunden",
+    "serverError": "Etwas ist schiefgelaufen",
+    "acceptInvite": "Einladung annehmen",
+    "accountConnectedApps": "Verbundene Apps",
+    "accountDelete": "Konto löschen",
+    "accountDevices": "Vertrauenswürdige Geräte",
+    "accountInactive": "Loslegen",
+    "accountTestApproval": "Genehmigung testen",
+    "adminAccountDeletionRequestsDetail": "Kontolöschungsanfrage",
+    "adminAccountDeletionRequests": "Kontolöschungsanfragen",
+    "adminAiKillSwitch": "KI-Notausschalter",
+    "adminConnectedApps": "Verbundene Apps (Admin)",
+    "adminLlmProviderCatalog": "LLM-Anbieterkatalog",
+    "adminQuarantined": "Geräte in Quarantäne",
+    "adminThirdPartyCatalog": "Drittanbieterkatalog",
+    "adminTrustAct": "Partner-Vertrauensaktion",
+    "adminTrustQueue": "Partner-Vertrauenswarteschlange",
+    "adminUsersDetailDevices": "Geräte des Benutzers",
+    "aiAgentsImpact": "KI-Wirkung",
+    "aiAgentsRunsDetail": "Lauf-Details",
+    "aiAgentsRuns": "Agenten-Läufe",
+    "aiForOffice": "KI für Office",
+    "aiRisk": "KI-Risiko-Engine",
+    "alertsChannels": "Benachrichtigungskanäle",
+    "alertsCorrelations": "Warnmeldungskorrelationen",
+    "alertsDetail": "Warnmeldungsdetails",
+    "alerts": "Warnmeldungen",
+    "analytics": "Analysen",
+    "approvals": "Genehmigungen",
+    "auditBaselinesDetail": "Audit-Baseline",
+    "auditBaselines": "Audit-Baselines",
+    "audit": "Audit-Protokoll",
+    "auth": "Anmelden oder Konto erstellen",
+    "authConnectSso": "Ihre Anmeldung verbinden",
+    "authMfaSetup": "MFA einrichten",
+    "authVerifyEmail": "E-Mail bestätigen",
+    "automationsDetail": "Automatisierung bearbeiten",
+    "automations": "Automatisierungen",
+    "automationsNew": "Neue Automatisierung",
+    "backup": "Backup",
+    "billingInvoices": "Rechnungen",
+    "billingInvoicesDetail": "Rechnung",
+    "billingQuotes": "Angebote",
+    "billingQuotesDetail": "Angebot",
+    "c2c": "Cloud-Backup",
+    "cisHardening": "CIS Benchmarks",
+    "configurationPoliciesDefaults": "Breeze-Standardwerte",
+    "configurationPoliciesDetail": "Konfigurationsrichtlinie",
+    "configurationPolicies": "Konfigurationsrichtlinien",
+    "configurationPoliciesNew": "Neue Konfigurationsrichtlinie",
+    "contracts": "Verträge",
+    "contractsDetail": "Vertrag",
+    "contractsNew": "Neuer Vertrag",
+    "devicesCompare": "Gerätevergleich",
+    "devicesGroups": "Gerätegruppen",
+    "devicesDetail": "Gerätedetails",
+    "devices": "Geräte",
+    "devicesNetworkDetail": "Netzwerkgerätedetails",
+    "devicesPosture": "Flottenstatus",
+    "discovery": "Netzwerkerkennung",
+    "dnsSecurity": "DNS-Sicherheit",
+    "dr": "Notfallwiederherstellung",
+    "extensionsNamePath": "Erweiterung",
+    "fleet": "Flottenorchestrierung",
+    "forgotPassword": "Passwort vergessen",
+    "incidentsDetail": "Vorfalldetails",
+    "incidents": "Vorfälle",
+    "dashboard": "Dashboard",
+    "integrations": "Integrationen",
+    "integrationsPsa": "PSA-Integrationen",
+    "integrationsWebhooks": "Webhooks",
+    "login": "Anmelden",
+    "logs": "Protokolle",
+    "monitoring": "Überwachung",
+    "oauthConsent": "Zugriff autorisieren",
+    "onedrive": "OneDrive",
+    "organizationsDetail": "Organisation",
+    "pam": "Privilegierter Zugriff",
+    "partner": "Partnerportal",
+    "patches": "Patches",
+    "peripherals": "Peripheriegeräte-Steuerung",
+    "policiesCompliance": "Compliance-Dashboard",
+    "policiesDetail": "Richtlinie bearbeiten",
+    "policies": "Richtlinien",
+    "policiesNew": "Neue Richtlinie",
+    "quick": "Schnellsupport",
+    "registerPartner": "Registrieren Sie Ihr Unternehmen",
+    "remoteFilesDevice": "Remote-Dateimanager",
+    "remoteFiles": "Dateiübertragung starten",
+    "remote": "Fernzugriff",
+    "remoteProxyTunnel": "Netzwerk-Proxy",
+    "remoteQuickSupport": "Schnellsupport",
+    "remoteSessions": "Sitzungsverlauf",
+    "remoteTerminalDevice": "Remote-Terminal",
+    "remoteTerminal": "Terminalsitzung starten",
+    "remoteTools": "Remote-Tools",
+    "remoteVncTunnel": "VNC-Remote-Desktop",
+    "reportsBuilder": "Berichtsersteller",
+    "reportsDetailEdit": "Bericht bearbeiten",
+    "reports": "Berichte",
+    "reportsNew": "Bericht erstellen",
+    "reportsTemplates": "Berichtsvorlagen",
+    "resetPassword": "Passwort zurücksetzen",
+    "scriptsDetail": "Skript bearbeiten",
+    "scriptsDetailExecutions": "Ausführungsverlauf",
+    "scripts": "Skripte",
+    "scriptsNew": "Neues Skript",
+    "securityAdminAudit": "Admin-Kontoaudit",
+    "securityAntivirus": "Antiviren-Abdeckung",
+    "securityEdr": "EDR",
+    "securityEncryption": "Verschlüsselungsstatus",
+    "securityFirewall": "Firewall-Status",
+    "security": "Sicherheit",
+    "securityPasswordPolicy": "Passwortrichtlinie",
+    "securityRecommendations": "Sicherheitsempfehlungen",
+    "securityScore": "Sicherheitswert",
+    "securityTrends": "Sicherheitstrends",
+    "securityUserRisk": "Benutzerrisiko",
+    "securityVulnerabilities": "Schwachstellen",
+    "sensitiveData": "Sensible Daten",
+    "settingsAccessReviews": "Zugriffsüberprüfungen",
+    "settingsAiAgents": "KI-Agenten",
+    "settingsAiUsage": "KI-Nutzung und Budget",
+    "settingsAlertTemplatesDetail": "Warnmeldungsvorlage",
+    "settingsAlertTemplates": "Warnmeldungsvorlagen",
+    "settingsApiKeys": "API-Schlüssel",
+    "settingsBilling": "Abrechnungseinstellungen",
+    "settingsCatalog": "Produktkatalog",
+    "settingsConnectedApps": "Verbundene Apps",
+    "settingsCustomFields": "Benutzerdefinierte Felder",
+    "settingsEnrollmentKeys": "Registrierungsschlüssel",
+    "settingsFilters": "Gespeicherte Filter",
+    "settings": "Einstellungen",
+    "settingsOfficeAddinBindings": "Outlook-Add-In-Bindungen",
+    "settingsOrganizationsDetail": "Organisationseinstellungen",
+    "settingsOrganizationsDetailBilling": "Abrechnung der Organisation",
+    "settingsOrganizations": "Organisationen",
+    "settingsPartner": "Partnereinstellungen",
+    "settingsPartnerServicePrincipals": "Dienstprinzipale",
+    "settingsProfile": "Profileinstellungen",
+    "settingsRoles": "Rollen",
+    "settingsSitesDetail": "Standorteinstellungen",
+    "settingsSso": "Single Sign-On (SSO)",
+    "settingsUsers": "Benutzer",
+    "settingsVariables": "Variablen",
+    "settingsWebhooks": "Webhooks",
+    "setup": "Ersteinrichtung",
+    "software": "Softwarebibliothek",
+    "softwareInventory": "Software",
+    "softwarePolicies": "Software",
+    "ticketsDetail": "Ticket",
+    "tickets": "Tickets",
+    "ticketsNew": "Ticket erstellen",
+    "timesheet": "Zeiterfassung",
+    "vulnerabilities": "Schwachstellen",
+    "workspace": "KI-Assistent"
+  },
+  "layout": {
+    "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
+    "metaDescriptionSetup": "Breeze RMM - Ersteinrichtung"
+  },
+  "authShell": {
+    "tagline": "Die moderne RMM-Plattform für Geschwindigkeit, Klarheit und Skalierbarkeit."
+  },
+  "errorPage": {
+    "notFoundBody": "Die gesuchte Seite existiert nicht oder wurde möglicherweise verschoben.",
+    "serverErrorBody": "Auf unserer Seite ist ein unerwarteter Fehler aufgetreten. Unser Team wurde benachrichtigt — bitte versuchen Sie es gleich noch einmal.",
+    "referenceIdLabel": "Referenz-ID:",
+    "dashboardLink": "Zum Dashboard",
+    "signInLink": "Anmelden"
+  },
+  "settingsIndex": {
+    "heading": "Einstellungen",
+    "description": "Verwalten Sie die Einstellungen, Benutzer und Standorte Ihrer Organisation.",
+    "cards": {
+      "ticketing": {
+        "title": "Ticketing",
+        "description": "Konfigurieren Sie Ticketstatus, Prioritäts-SLAs, Kategorien und Exportstandards."
+      },
+      "catalog": {
+        "title": "Produktkatalog",
+        "description": "Verwalten Sie Hardware-, Software- und Dienstleistungsartikel, Preise und Pakete."
+      },
+      "billing": {
+        "title": "Abrechnung",
+        "description": "Rechnungswährung, Steuern, Nummerierung, Bedingungen und Standard-Fußzeile."
+      },
+      "organizations": {
+        "title": "Organisationen",
+        "description": "Verwalten Sie Organisationen, Verträge und Kontoeinstellungen."
+      },
+      "users": {
+        "title": "Benutzer",
+        "description": "Laden Sie Benutzer ein, verwalten Sie Rollen und steuern Sie Zugriffsberechtigungen."
+      },
+      "sso": {
+        "title": "Single Sign-On",
+        "description": "Konfigurieren Sie SSO-Anbieter, überprüfen Sie E-Mail-Domains und erzwingen Sie die SSO-Anmeldung."
+      },
+      "accessReviews": {
+        "title": "Zugriffsüberprüfungen",
+        "description": "Führen Sie regelmäßige Zugriffszertifizierungen für Benutzer durch und exportieren Sie Nachweisprotokolle."
+      },
+      "connectedApps": {
+        "title": "Verbundene Apps",
+        "description": "Überprüfen und widerrufen Sie KI-Assistenten und MCP-Clients, die Zugriff auf Ihren Mandanten haben."
+      },
+      "officeAddinBindings": {
+        "title": "Outlook-Add-In-Bindungen",
+        "description": "Verwalten Sie Techniker, die an das Outlook-Add-In gebunden sind, und widerrufen Sie den Zugriff."
+      },
+      "sites": {
+        "title": "Standorte",
+        "description": "Konfigurieren Sie Standorte, Zeitzonen und standortspezifische Einstellungen."
+      }
+    }
+  },
+  "settingsBillingPage": {
+    "heading": "Abrechnungseinstellungen",
+    "description": "Rechnungswährung, Steuern, Nummerierung, Bedingungen und Fußzeile für Ihre Kunden."
+  },
+  "settingsConnectedAppsPage": {
+    "heading": "Verbundene Apps",
+    "description": "KI-Assistenten und andere MCP-Clients, die per OAuth für den Zugriff auf Ihren Mandanten autorisiert wurden. Widerrufen Sie den Zugriff jederzeit — das Token der App wird innerhalb von 10 Minuten abgelehnt."
+  },
+  "settingsOrganizationBillingPage": {
+    "backLink": "← Organisationseinstellungen",
+    "heading": "Abrechnungseinstellungen",
+    "description": "Steuerliche Identität und Rechnungsadresse für die Rechnungen dieser Organisation."
+  },
+  "alertsCorrelationsPage": {
+    "heading": "Warnmeldungskorrelationen",
+    "description": "Prüfen Sie gruppierte Warnmeldungsvorfälle, gemeinsame Nachweise und RCA auf Abruf."
+  },
+  "reportsBuilderPage": {
+    "breadcrumbReports": "Berichte",
+    "breadcrumbBuilder": "Ersteller",
+    "heading": "Berichtsersteller",
+    "description": "Erstellen, planen und verteilen Sie Berichte mit Live-Vorschauen."
+  },
+  "reportsNewPage": {
+    "breadcrumbReports": "Berichte",
+    "breadcrumbNew": "Neuer Bericht",
+    "heading": "Bericht erstellen",
+    "description": "Konfigurieren Sie einen neuen Bericht, um Ihre Infrastruktur zu verfolgen und zu analysieren."
+  },
+  "remoteToolsPage": {
+    "loading": "Remote-Tools werden geladen...",
+    "loadingHint": "Wählen Sie ein Gerät aus, um auf Remote-Verwaltungstools zuzugreifen"
+  },
+  "remoteTerminalPage": {
+    "loading": "Remote-Terminal wird geladen...",
+    "loadingDeviceName": "Gerät wird geladen..."
+  },
+  "authLayout": {
+    "tagline": "Remote-Überwachung und -Verwaltung"
+  },
+  "authPage": {
+    "description": "Breeze RMM - Anmelden oder Konto erstellen",
+    "tagline": "Melden Sie sich an oder erstellen Sie Ihr Konto, um loszulegen."
+  }
+}

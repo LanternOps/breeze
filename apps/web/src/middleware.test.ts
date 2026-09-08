@@ -8,10 +8,13 @@ import { LOCALE_COOKIE_NAME } from './lib/appearance';
 
 type MockLocals = { locale?: string };
 
-function makeContext(cookieValue: string | undefined) {
+function makeContext(cookieValue: string | undefined, acceptLanguage?: string) {
   return {
     cookies: {
       get: (name: string) => (name === LOCALE_COOKIE_NAME && cookieValue !== undefined ? { value: cookieValue } : undefined),
+    },
+    request: {
+      headers: new Headers(acceptLanguage !== undefined ? { 'accept-language': acceptLanguage } : {}),
     },
     locals: {} as MockLocals,
   };
@@ -112,5 +115,32 @@ describe('locale cookie -> context.locals.locale', () => {
     const invalid = makeContext('klingon');
     await onRequest(invalid as any, async () => new Response('ok'));
     expect(invalid.locals.locale).toBeUndefined();
+  });
+
+  // Maintainer follow-up on #5041: a browser-only signal must not be
+  // invisible to the SSR shell just because the user never explicitly chose
+  // a locale (no cookie yet).
+  it('onRequest falls back to Accept-Language when there is no cookie', async () => {
+    const context = makeContext(undefined, 'pt-BR,pt;q=0.9,en;q=0.8');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('pt-BR');
+  });
+
+  it('onRequest prefers the explicit cookie over Accept-Language', async () => {
+    const context = makeContext('de-DE', 'pt-BR,pt;q=0.9');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('de-DE');
+  });
+
+  it('onRequest ignores an invalid cookie and still falls back to Accept-Language', async () => {
+    const context = makeContext('klingon', 'fr-FR');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBe('fr-FR');
+  });
+
+  it('onRequest leaves locale undefined when neither cookie nor Accept-Language resolve', async () => {
+    const context = makeContext(undefined, 'klingon,xx-XX');
+    await onRequest(context as any, async () => new Response('ok'));
+    expect(context.locals.locale).toBeUndefined();
   });
 });

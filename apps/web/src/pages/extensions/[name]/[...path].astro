@@ -46,6 +46,6 @@ const extensionName = nameValid ? (name as string) : '';
 const extensionPath = pathValid ? '/' + pathSegments.join('/') : UNMATCHABLE_EXTENSION_PATH;
 ---
 
-<DashboardLayout title="Extension">
+<DashboardLayout titleKey="titles.extensionsNamePath">
   <ExtensionPageHost extensionName={extensionName} path={extensionPath} client:load />
 </DashboardLayout>

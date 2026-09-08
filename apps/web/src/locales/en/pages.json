@@ -1,0 +1,264 @@
+{
+  "titles": {
+    "notFound": "Page not found",
+    "serverError": "Something went wrong",
+    "acceptInvite": "Accept Invite",
+    "accountConnectedApps": "Connected apps",
+    "accountDelete": "Delete account",
+    "accountDevices": "Trusted devices",
+    "accountInactive": "Get Started",
+    "accountTestApproval": "Test approval",
+    "adminAccountDeletionRequestsDetail": "Account deletion request",
+    "adminAccountDeletionRequests": "Account deletion requests",
+    "adminAiKillSwitch": "AI Kill Switch",
+    "adminConnectedApps": "Connected apps (admin)",
+    "adminLlmProviderCatalog": "LLM Provider Catalog",
+    "adminQuarantined": "Quarantined Devices",
+    "adminThirdPartyCatalog": "Third-Party Catalog",
+    "adminTrustAct": "Partner trust action",
+    "adminTrustQueue": "Partner Trust Queue",
+    "adminUsersDetailDevices": "User devices",
+    "aiAgentsImpact": "AI Impact",
+    "aiAgentsRunsDetail": "Run Detail",
+    "aiAgentsRuns": "Agent Runs",
+    "aiForOffice": "AI for Office",
+    "aiRisk": "AI Risk Engine",
+    "alertsChannels": "Notification Channels",
+    "alertsCorrelations": "Alert Correlations",
+    "alertsDetail": "Alert Details",
+    "alerts": "Alerts",
+    "analytics": "Analytics",
+    "approvals": "Approvals",
+    "auditBaselinesDetail": "Audit Baseline",
+    "auditBaselines": "Audit Baselines",
+    "audit": "Audit Trail",
+    "auth": "Sign in or create account",
+    "authConnectSso": "Connect your sign-in",
+    "authMfaSetup": "Set up MFA",
+    "authVerifyEmail": "Verify Email",
+    "automationsDetail": "Edit Automation",
+    "automations": "Automations",
+    "automationsNew": "New Automation",
+    "backup": "Backup",
+    "billingInvoices": "Invoices",
+    "billingInvoicesDetail": "Invoice",
+    "billingQuotes": "Quotes",
+    "billingQuotesDetail": "Quote",
+    "c2c": "Cloud Backup",
+    "cisHardening": "CIS Benchmarks",
+    "configurationPoliciesDefaults": "Breeze Defaults",
+    "configurationPoliciesDetail": "Configuration Policy",
+    "configurationPolicies": "Configuration Policies",
+    "configurationPoliciesNew": "New Configuration Policy",
+    "contracts": "Contracts",
+    "contractsDetail": "Contract",
+    "contractsNew": "New contract",
+    "devicesCompare": "Device Comparison",
+    "devicesGroups": "Device Groups",
+    "devicesDetail": "Device Details",
+    "devices": "Devices",
+    "devicesNetworkDetail": "Network Device Details",
+    "devicesPosture": "Fleet Posture",
+    "discovery": "Network Discovery",
+    "dnsSecurity": "DNS Security",
+    "dr": "Disaster Recovery",
+    "extensionsNamePath": "Extension",
+    "fleet": "Fleet Orchestration",
+    "forgotPassword": "Forgot Password",
+    "incidentsDetail": "Incident Detail",
+    "incidents": "Incidents",
+    "dashboard": "Dashboard",
+    "integrations": "Integrations",
+    "integrationsPsa": "PSA Integrations",
+    "integrationsWebhooks": "Webhooks",
+    "login": "Sign In",
+    "logs": "Logs",
+    "monitoring": "Monitoring",
+    "oauthConsent": "Authorize access",
+    "onedrive": "OneDrive",
+    "organizationsDetail": "Organization",
+    "pam": "Privileged Access",
+    "partner": "Partner Portal",
+    "patches": "Patches",
+    "peripherals": "Peripheral Control",
+    "policiesCompliance": "Compliance Dashboard",
+    "policiesDetail": "Edit Policy",
+    "policies": "Policies",
+    "policiesNew": "New Policy",
+    "quick": "Quick Support",
+    "registerPartner": "Register Your Company",
+    "remoteFilesDevice": "Remote File Manager",
+    "remoteFiles": "Start File Transfer",
+    "remote": "Remote Access",
+    "remoteProxyTunnel": "Network Proxy",
+    "remoteQuickSupport": "Quick Support",
+    "remoteSessions": "Session History",
+    "remoteTerminalDevice": "Remote Terminal",
+    "remoteTerminal": "Start Terminal Session",
+    "remoteTools": "Remote Tools",
+    "remoteVncTunnel": "VNC Remote Desktop",
+    "reportsBuilder": "Report Builder",
+    "reportsDetailEdit": "Edit Report",
+    "reports": "Reports",
+    "reportsNew": "Create Report",
+    "reportsTemplates": "Report Templates",
+    "resetPassword": "Reset Password",
+    "scriptsDetail": "Edit Script",
+    "scriptsDetailExecutions": "Execution History",
+    "scripts": "Scripts",
+    "scriptsNew": "New Script",
+    "securityAdminAudit": "Admin Account Audit",
+    "securityAntivirus": "Antivirus Coverage",
+    "securityEdr": "EDR",
+    "securityEncryption": "Encryption Status",
+    "securityFirewall": "Firewall Status",
+    "security": "Security",
+    "securityPasswordPolicy": "Password Policy",
+    "securityRecommendations": "Security Recommendations",
+    "securityScore": "Security Score",
+    "securityTrends": "Security Trends",
+    "securityUserRisk": "User Risk",
+    "securityVulnerabilities": "Vulnerabilities",
+    "sensitiveData": "Sensitive Data",
+    "settingsAccessReviews": "Access Reviews",
+    "settingsAiAgents": "AI Agents",
+    "settingsAiUsage": "AI Usage & Budget",
+    "settingsAlertTemplatesDetail": "Alert Template",
+    "settingsAlertTemplates": "Alert Templates",
+    "settingsApiKeys": "API Keys",
+    "settingsBilling": "Billing Settings",
+    "settingsCatalog": "Product Catalog",
+    "settingsConnectedApps": "Connected apps",
+    "settingsCustomFields": "Custom Fields",
+    "settingsEnrollmentKeys": "Enrollment Keys",
+    "settingsFilters": "Saved Filters",
+    "settings": "Settings",
+    "settingsOfficeAddinBindings": "Outlook Add-in Bindings",
+    "settingsOrganizationsDetail": "Organization Settings",
+    "settingsOrganizationsDetailBilling": "Organization Billing",
+    "settingsOrganizations": "Organizations",
+    "settingsPartner": "Partner Settings",
+    "settingsPartnerServicePrincipals": "Service Principals",
+    "settingsProfile": "Profile Settings",
+    "settingsRoles": "Roles",
+    "settingsSitesDetail": "Site Settings",
+    "settingsSso": "Single Sign-On",
+    "settingsUsers": "Users",
+    "settingsVariables": "Variables",
+    "settingsWebhooks": "Webhooks",
+    "setup": "Initial Setup",
+    "software": "Software Library",
+    "softwareInventory": "Software",
+    "softwarePolicies": "Software",
+    "ticketsDetail": "Ticket",
+    "tickets": "Tickets",
+    "ticketsNew": "Create Ticket",
+    "timesheet": "Timesheet",
+    "vulnerabilities": "Vulnerabilities",
+    "workspace": "AI Assistant"
+  },
+  "layout": {
+    "metaDescription": "Breeze RMM - Remote Monitoring and Management",
+    "metaDescriptionSetup": "Breeze RMM - Initial Setup"
+  },
+  "authShell": {
+    "tagline": "The modern RMM platform built for speed, clarity, and scale."
+  },
+  "errorPage": {
+    "notFoundBody": "The page you’re looking for doesn’t exist or may have been moved.",
+    "serverErrorBody": "An unexpected error occurred on our end. Our team has been notified — please try again in a moment.",
+    "referenceIdLabel": "Reference ID:",
+    "dashboardLink": "Go to dashboard",
+    "signInLink": "Sign in"
+  },
+  "settingsIndex": {
+    "heading": "Settings",
+    "description": "Manage your organization settings, users, and sites.",
+    "cards": {
+      "ticketing": {
+        "title": "Ticketing",
+        "description": "Configure ticket statuses, priority SLAs, categories, and export defaults."
+      },
+      "catalog": {
+        "title": "Product Catalog",
+        "description": "Manage hardware, software, and service items, pricing, and bundles."
+      },
+      "billing": {
+        "title": "Billing",
+        "description": "Invoice currency, tax, numbering, terms, and footer defaults."
+      },
+      "organizations": {
+        "title": "Organizations",
+        "description": "Manage organizations, contracts, and account settings."
+      },
+      "users": {
+        "title": "Users",
+        "description": "Invite users, manage roles, and control access permissions."
+      },
+      "sso": {
+        "title": "Single Sign-On",
+        "description": "Configure SSO providers, verify email domains, and enforce SSO login."
+      },
+      "accessReviews": {
+        "title": "Access Reviews",
+        "description": "Run periodic user-access certifications and export attestation records."
+      },
+      "connectedApps": {
+        "title": "Connected Apps",
+        "description": "Review and revoke AI assistants and MCP clients authorized to access your tenant."
+      },
+      "officeAddinBindings": {
+        "title": "Outlook Add-in Bindings",
+        "description": "Manage technicians bound to the Outlook tech add-in, and revoke access."
+      },
+      "sites": {
+        "title": "Sites",
+        "description": "Configure locations, timezones, and site-specific settings."
+      }
+    }
+  },
+  "settingsBillingPage": {
+    "heading": "Billing settings",
+    "description": "Invoice currency, tax, numbering, terms, and footer for your customers."
+  },
+  "settingsConnectedAppsPage": {
+    "heading": "Connected apps",
+    "description": "AI assistants and other MCP clients that have been authorized to access your tenant via OAuth. Revoke access at any time — the app's token will be rejected within 10 minutes."
+  },
+  "settingsOrganizationBillingPage": {
+    "backLink": "← Organization settings",
+    "heading": "Billing settings",
+    "description": "Tax identity and billing address used on this organization's invoices."
+  },
+  "alertsCorrelationsPage": {
+    "heading": "Alert Correlations",
+    "description": "Review grouped alert incidents, shared evidence, and on-demand RCA."
+  },
+  "reportsBuilderPage": {
+    "breadcrumbReports": "Reports",
+    "breadcrumbBuilder": "Builder",
+    "heading": "Report Builder",
+    "description": "Design, schedule, and distribute reports with live previews."
+  },
+  "reportsNewPage": {
+    "breadcrumbReports": "Reports",
+    "breadcrumbNew": "New Report",
+    "heading": "Create Report",
+    "description": "Configure a new report to track and analyze your infrastructure."
+  },
+  "remoteToolsPage": {
+    "loading": "Loading Remote Tools...",
+    "loadingHint": "Select a device to access remote management tools"
+  },
+  "remoteTerminalPage": {
+    "loading": "Loading Remote Terminal...",
+    "loadingDeviceName": "Loading device..."
+  },
+  "authLayout": {
+    "tagline": "Remote Monitoring & Management"
+  },
+  "authPage": {
+    "description": "Breeze RMM - Sign in or create your account",
+    "tagline": "Sign in or create your account to get started."
+  }
+}
