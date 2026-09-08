@@ -104,6 +104,7 @@ const COMPARE_MAX_DEVICES = 4;
 import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
+import { getAgentVersionRelation } from "./agentVersionRelation";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -497,6 +498,22 @@ type DeviceListProps = {
   // could be viewing this org's record while the switcher points at "All
   // organizations" or a different org entirely.
   forceSingleOrg?: boolean;
+  // Issue #5285: each visible org's effective agent-version target (its
+  // agentVersionPins.agent pin, or the globally promoted version when
+  // unpinned), resolved ONCE per page load by the caller (DevicesPage) — not
+  // per row, since the list is hot. Keyed by orgId; a missing/null entry
+  // means "not resolved yet" and the column renders unchanged (plain dash
+  // stays plain, no tint).
+  effectiveAgentVersionByOrgId?: Record<string, string | null | undefined>;
+};
+
+// Agent Version column tint (#5285). No new colours: reuses the same
+// success/info/warning tokens statusColors already draws on, just without the
+// border (this is a text pill inside a plain cell, not a status chip).
+const agentVersionRelationColors: Record<"equal" | "ahead" | "behind", string> = {
+  equal: "bg-success/15 text-success",
+  ahead: "bg-info/15 text-info",
+  behind: "bg-warning/15 text-warning",
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -765,6 +782,7 @@ export default function DeviceList({
   listFilters,
   onListFiltersChange,
   forceSingleOrg = false,
+  effectiveAgentVersionByOrgId,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   // Use provided timezone or browser default
@@ -1925,14 +1943,51 @@ export default function DeviceList({
     agentVersion: {
       header: () =>
         sortHeader("agentVersion", "Agent Version", "Sort by agent version"),
-      cell: (device) => (
-        <td
-          key="agentVersion"
-          className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
-        >
-          {device.agentVersion || dash}
-        </td>
-      ),
+      cell: (device) => {
+        // Issue #5285: colour by relation to the org's effective agent-
+        // version pin/promoted version. Unresolved effective version (org not
+        // in the map yet), a missing device version (network/manual rows,
+        // never heartbeat'd), or an unparseable string on either side all
+        // classify as "unknown" — render the plain dash exactly as before.
+        const effectiveVersion =
+          effectiveAgentVersionByOrgId?.[device.orgId] ?? null;
+        const relation = getAgentVersionRelation(
+          device.agentVersion,
+          effectiveVersion,
+        );
+        if (relation === "unknown") {
+          return (
+            <td
+              key="agentVersion"
+              data-testid={`device-${device.id}-agent-version`}
+              className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap"
+            >
+              {device.agentVersion || dash}
+            </td>
+          );
+        }
+        const tooltipKey =
+          relation === "equal"
+            ? "deviceList.agentVersionRelation.equalTooltip"
+            : relation === "ahead"
+              ? "deviceList.agentVersionRelation.aheadTooltip"
+              : "deviceList.agentVersionRelation.behindTooltip";
+        return (
+          <td
+            key="agentVersion"
+            data-testid={`device-${device.id}-agent-version`}
+            className="px-3 py-3 text-sm whitespace-nowrap"
+          >
+            <span
+              data-agent-version-relation={relation}
+              title={t(/* i18n-dynamic */ tooltipKey, { version: effectiveVersion })}
+              className={`rounded px-1.5 py-0.5 text-xs font-medium ${agentVersionRelationColors[relation]}`}
+            >
+              {device.agentVersion}
+            </span>
+          </td>
+        );
+      },
     },
     watchdogVersion: {
       header: () =>

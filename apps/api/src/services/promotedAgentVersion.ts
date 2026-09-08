@@ -300,3 +300,54 @@ export async function getRegisteredComponentVersion(
 
   return row.version;
 }
+
+/**
+ * The promoted "agent" component version, deliberately WITHOUT platform/arch
+ * scoping — used only to feed the Devices list "Agent Version" colour badge
+ * (issue #5285: a device with no org-level pin is compared against this as
+ * its effective target). NOT part of the #3499 lockstep the two resolvers
+ * above maintain: this is a display hint the user can visually skim, not a
+ * byte-serving decision, so a lookup fault fails SOFT (null, badge falls back
+ * to the plain dash) rather than throwing/503ing a page render.
+ *
+ * In practice every platform/arch slot for a component is promoted together —
+ * `POST /agent-versions/promote` operates on every registered tuple of a
+ * version at once — so any single isLatest row for `agent` in this server's
+ * edition is representative of the whole fleet's target. If a rollout is ever
+ * left split mid-promotion across slots, this takes the most-recently-
+ * promoted row (same `created_at DESC` tiebreak the lockstep resolvers use) —
+ * a deliberately loose choice since the caller only renders a colour hint
+ * from it, never a checksum or download decision.
+ */
+export async function getPromotedAgentVersionForDisplay(): Promise<string | null> {
+  const edition = getBinaryEdition();
+
+  let row: { version: string } | undefined;
+  try {
+    [row] = await db
+      .select({ version: agentVersions.version })
+      .from(agentVersions)
+      .where(
+        and(
+          eq(agentVersions.component, 'agent'),
+          eq(agentVersions.isLatest, true),
+          eq(agentVersions.edition, edition),
+        ),
+      )
+      .orderBy(desc(agentVersions.createdAt))
+      .limit(1);
+  } catch (err) {
+    console.error(
+      '[promotedAgentVersion] display-only promoted-version lookup failed; ' +
+        'the Devices list badge falls back to the plain dash for this render',
+      err,
+    );
+    return null;
+  }
+
+  // Same "unknown" sentinel handling as the other resolvers (binarySync's
+  // local-registration path for a deployment with no BINARY_VERSION_FILE).
+  if (!row || row.version === 'unknown') return null;
+
+  return row.version;
+}

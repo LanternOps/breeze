@@ -302,6 +302,12 @@ export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
+  // Issue #5285: each visible org's effective agent-version target (pin or
+  // promoted fallback), resolved once per page load — see the fetch below.
+  // Absent until it resolves; DeviceList treats a missing entry as "not
+  // resolved yet" and renders the column unchanged (no tint).
+  const [effectiveAgentVersionByOrgId, setEffectiveAgentVersionByOrgId] =
+    useState<Record<string, string | null>>({});
   const [deviceGroups, setDeviceGroups] = useState<DeviceGroup[]>([]);
   const [groupMembershipMap, setGroupMembershipMap] = useState<Map<string, Set<string>>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -894,6 +900,32 @@ export default function DevicesPage() {
       setDevices(devicesWithNames);
       setOrgs(orgsList);
       setSites(sitesList);
+
+      // Issue #5285: resolve each visible org's effective agent-version
+      // target ONCE per page load (not per device row) so the Agent Version
+      // column can colour-code by relation to it. Fired after orgsList is
+      // known, in parallel with rendering — best-effort: a failure here only
+      // means the column stays uncoloured (plain dash), never blocks the
+      // device list itself from rendering.
+      const orgIdsForVersions = [...new Set(orgsList.map((o) => o.id))];
+      if (orgIdsForVersions.length > 0) {
+        fetchWithAuth(`/agent-versions/effective?orgIds=${orgIdsForVersions.join(',')}`, { signal })
+          .then(async (res) => {
+            if (!res.ok) {
+              console.warn('Failed to fetch effective agent versions:', res.status);
+              return;
+            }
+            const body = await res.json();
+            const data = body?.data;
+            if (data && typeof data === 'object' && !Array.isArray(data)) {
+              setEffectiveAgentVersionByOrgId(data);
+            }
+          })
+          .catch((err) => {
+            if (err instanceof Error && err.name === 'AbortError') return;
+            console.warn('Failed to fetch effective agent versions:', err);
+          });
+      }
     } catch (err) {
       // Aborts are expected when the component unmounts mid-walk — drop
       // them silently rather than rendering a misleading error banner.
@@ -2275,6 +2307,7 @@ export default function DevicesPage() {
           autoSelectGroupId={autoSelectGroupId}
           onAutoSelectConsumed={handleAutoSelectConsumed}
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
+          effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
         />
       ) : (
         <div className="space-y-3">

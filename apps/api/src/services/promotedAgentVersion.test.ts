@@ -81,6 +81,7 @@ vi.mock('../db/schema', () => ({
 import {
   getPromotedComponentVersion,
   getRegisteredComponentVersion,
+  getPromotedAgentVersionForDisplay,
   PromotedVersionUnavailableError,
   __resetPromotedVersionCaptureCacheForTests,
 } from './promotedAgentVersion';
@@ -339,5 +340,56 @@ describe('getRegisteredComponentVersion (issue #5159)', () => {
     await expect(
       getRegisteredComponentVersion('agent', 'solaris', 'amd64', '0.110.0'),
     ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPromotedAgentVersionForDisplay — a deliberately platform/arch-UNSCOPED
+// lookup of the promoted "agent" version, used only to feed the Devices list
+// colour badge (issue #5285). NOT part of the #3499 lockstep above: this is a
+// display hint, not a byte-serving decision, so it fails soft (null) rather
+// than throwing.
+// ---------------------------------------------------------------------------
+describe('getPromotedAgentVersionForDisplay', () => {
+  const OLD_EDITION = process.env.BINARY_EDITION;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._reset();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    if (OLD_EDITION === undefined) delete process.env.BINARY_EDITION;
+    else process.env.BINARY_EDITION = OLD_EDITION;
+  });
+
+  it('returns the promoted agent version for this edition', async () => {
+    dbMock._setResult([{ version: '0.110.0' }]);
+    await expect(getPromotedAgentVersionForDisplay()).resolves.toBe('0.110.0');
+    expect(boundValueFor('av.component')).toBe('agent');
+    expect(boundValueFor('av.is_latest')).toBe(true);
+  });
+
+  it('scopes to this server\'s own build edition', async () => {
+    process.env.BINARY_EDITION = 'hosted';
+    dbMock._setResult([{ version: '0.110.0' }]);
+    await getPromotedAgentVersionForDisplay();
+    expect(boundValueFor('av.edition')).toBe('hosted');
+  });
+
+  it('returns null when no promoted row exists yet (never synced)', async () => {
+    dbMock._setResult([]);
+    await expect(getPromotedAgentVersionForDisplay()).resolves.toBeNull();
+  });
+
+  it('treats the "unknown" sentinel as unresolvable, same as the other resolvers', async () => {
+    dbMock._setResult([{ version: 'unknown' }]);
+    await expect(getPromotedAgentVersionForDisplay()).resolves.toBeNull();
+  });
+
+  it('fails soft (null) rather than throwing on a lookup fault — this only feeds a display badge', async () => {
+    dbMock._setError(new Error('connection terminated'));
+    await expect(getPromotedAgentVersionForDisplay()).resolves.toBeNull();
   });
 });
