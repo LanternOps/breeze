@@ -503,6 +503,9 @@ func runWatchdog(stopCh <-chan struct{}) {
 	standbyWindow := watchdog.StandbyWindow("", 0, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
 	standbyReason := ""
 	standbyRecognized := true
+	// standbyHoldLogInterval bounds how often a still-holding STANDBY writes a
+	// heartbeat to the health journal.
+	const standbyHoldLogInterval = 5 * time.Minute
 	// A hold is deliberately not journaled per tick (the process ticker runs
 	// every few seconds), but a long hold must not look like a dead watchdog
 	// in the diagnostics bundle: an unrecognized reason can legitimately hold
