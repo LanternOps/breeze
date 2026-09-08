@@ -131,8 +131,13 @@ function siteVisibilityCondition(allowedSiteIds: string[] | undefined): SQL | un
 
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible
- * orgs admitted, newest-updated first. Optional `deviceId`/`state` filters
+ * orgs admitted, newest-created first. Optional `deviceId`/`state` filters
  * per spec §12's `GET /tasks` contract.
+ *
+ * Sorted by `created_at`, not `updated_at` (review fix, PR #5254) — see
+ * `operatorTasksListCursor.ts`'s header for why a keyset needs an immutable
+ * sort column, and `aiOperatorIndexes.integration.test.ts`'s "device-page
+ * task feed" case for the query shape this now matches.
  */
 aiOperatorTasksRoutes.get(
   '/tasks',
@@ -158,22 +163,29 @@ aiOperatorTasksRoutes.get(
 
     // Peek one extra row past `limit` to detect "is there a next page" —
     // mirrors `GET /ai/agents/runs`'s cursor-mode convention.
-    const rows = await db
+    let query = db
       .select({
         ...TASK_ROW_COLUMNS,
-        // Full microsecond-precision text of updatedAt, for the cursor only —
-        // see OperatorTasksCursor.u's docstring for why a JS Date must never
+        // Full microsecond-precision text of createdAt, for the cursor only —
+        // see OperatorTasksCursor.c's docstring for why a JS Date must never
         // seed this.
-        updatedAtRaw: sql<string>`to_char(${aiOperatorTasks.updatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+        createdAtRaw: sql<string>`to_char(${aiOperatorTasks.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       })
       .from(aiOperatorTasks)
-      // LEFT, not INNER — a deviceless task must still be returned; only
-      // present to evaluate the site-visibility predicate below (never
-      // selected for display, since `targetLabel` is already frozen on the
-      // task row).
-      .leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id))
+      .$dynamic();
+
+    // LEFT-join `devices` only when the caller is actually site-restricted
+    // (review fix, PR #5254) — an unrestricted caller's `siteVisibilityCondition`
+    // is `undefined` and contributes no predicate, so forcing the join into
+    // every plan regardless bought nothing but a second FORCE-RLS table in
+    // every unrestricted list query.
+    if (auth.allowedSiteIds !== undefined) {
+      query = query.leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id));
+    }
+
+    const rows = await query
       .where(and(...conditions))
-      .orderBy(desc(aiOperatorTasks.updatedAt), desc(aiOperatorTasks.id))
+      .orderBy(desc(aiOperatorTasks.createdAt), desc(aiOperatorTasks.id))
       .limit(limit + 1);
 
     let nextCursor: string | null = null;
@@ -240,7 +252,11 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
       // already returns nothing), but the unit-test path mocks the db with
       // no RLS at all.
       .where(and(eq(aiOperatorOperations.taskId, task.id), eq(aiOperatorOperations.orgId, task.orgId)))
-      .orderBy(aiOperatorOperations.operationKey, aiOperatorOperations.attemptOrdinal),
+      .orderBy(aiOperatorOperations.operationKey, aiOperatorOperations.attemptOrdinal)
+      // Defence-in-depth cap (review fix, PR #5254): nothing produces real
+      // volume yet (the coordinator is W08), but an unbounded array here
+      // would be a real cost once a heavily-retried task exists.
+      .limit(500),
     db
       .select({
         id: aiAgentRuns.id,
@@ -251,7 +267,8 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
       })
       .from(aiAgentRuns)
       .where(and(eq(aiAgentRuns.taskId, task.id), eq(aiAgentRuns.orgId, task.orgId)))
-      .orderBy(desc(aiAgentRuns.queuedAt)),
+      .orderBy(desc(aiAgentRuns.queuedAt))
+      .limit(500),
   ]);
 
   const dto: AiOperatorTaskDto = mapOperatorTask(

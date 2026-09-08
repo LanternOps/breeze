@@ -131,7 +131,11 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   const { t } = useTranslation('aiOperator');
   const [task, setTask] = useState<AiOperatorTaskDto | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
+  // Boolean, not the translated string — keeps `t` out of `load`'s deps (a
+  // translated-string dependency re-fires the fetch when a non-English
+  // locale finishes loading; review fix, PR #5254). Matches
+  // OperatorTaskActivityFeed's `error` state shape.
+  const [error, setError] = useState(false);
   const [notFound, setNotFound] = useState(false);
 
   // Monotonic request id + mount guard — same pattern as RunDetailPage's
@@ -145,41 +149,42 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
     };
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (id: string) => {
     requestIdRef.current += 1;
     const requestId = requestIdRef.current;
     setLoading(true);
-    setError(undefined);
+    setError(false);
     setNotFound(false);
     try {
-      const response = await fetchWithAuth(`/ai/operator/tasks/${taskId}`);
+      const response = await fetchWithAuth(`/ai/operator/tasks/${id}`);
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
       if (response.status === 404) {
         setNotFound(true);
         return;
       }
       if (!response.ok) {
-        setError(t('operatorTaskDetail.errors.load'));
+        setError(true);
         return;
       }
       const body = (await response.json()) as { data?: AiOperatorTaskDto };
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
       if (!body.data) {
-        setError(t('operatorTaskDetail.errors.load'));
+        setError(true);
         return;
       }
       setTask(body.data);
-    } catch {
+    } catch (err) {
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
-      setError(t('operatorTaskDetail.errors.load'));
+      console.error('[operator-task-detail] load failed', id, err);
+      setError(true);
     } finally {
       if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
     }
-  }, [taskId, t]);
+  }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(taskId);
+  }, [taskId, load]);
 
   if (loading) {
     return (
@@ -202,10 +207,10 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   if (error || !task) {
     return (
       <div data-testid="operator-task-error" className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{error ?? t('operatorTaskDetail.errors.load')}</p>
+        <p className="text-sm text-destructive">{t('operatorTaskDetail.errors.load')}</p>
         <button
           type="button"
-          onClick={() => void load()}
+          onClick={() => void load(taskId)}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('common:actions.retry')}

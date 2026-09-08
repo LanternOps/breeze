@@ -46,6 +46,11 @@ function selectChain<T>(
   const chain = {
     from: () => chain,
     leftJoin: () => chain,
+    // The list route builds its query with `.$dynamic()` so the site-visibility
+    // LEFT JOIN can be attached conditionally (review fix, PR #5254) —
+    // without this the real drizzle builder (and this mock) has no
+    // `.$dynamic` method and the route 500s before ever reaching `.where()`.
+    $dynamic: () => chain,
     where: (predicate: unknown) => { onWhere?.(predicate); return chain; },
     orderBy: () => chain,
     limit: () => chain,
@@ -113,8 +118,8 @@ function taskRow(overrides: Record<string, unknown> = {}) {
     accountingRootTaskId: TASK_ID,
     successorOfTaskId: null,
     createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    createdAtRaw: '2026-09-01T00:00:00.000000Z',
     updatedAt: new Date('2026-09-01T00:05:00.000Z'),
-    updatedAtRaw: '2026-09-01T00:05:00.000000Z',
     ...overrides,
   };
 }
@@ -147,8 +152,8 @@ describe('GET /ai/operator/tasks (org-wide keyset list)', () => {
   it('returns a nextCursor and trims the peeked row when a full extra page comes back', async () => {
     const rows = Array.from({ length: 26 }, (_, i) => taskRow({
       id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
-      updatedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
-      updatedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
+      createdAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
     }));
     selectMock.mockReturnValueOnce(selectChain(rows));
     const res = await buildApp().request('/ai/operator/tasks');

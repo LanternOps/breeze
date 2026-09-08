@@ -28,11 +28,20 @@ export default function OperatorTaskActivityFeed({ deviceId }: { deviceId: strin
       const res = await fetchWithAuth(`/ai/operator/tasks?deviceId=${deviceId}&limit=50`);
       if (res.ok) {
         const body = await res.json();
-        setTasks((body.data ?? []) as AiOperatorTaskListItemDto[]);
+        // A missing/wrong-shaped `data` is a broken response, not "no tasks"
+        // — falling back to `[]` here would render the empty state for a
+        // genuine load failure. Mirrors OperatorTaskDetail's `if (!body.data)`
+        // guard (review fix, PR #5254).
+        if (!Array.isArray(body.data)) {
+          setError(true);
+          return;
+        }
+        setTasks(body.data as AiOperatorTaskListItemDto[]);
       } else {
         setError(true);
       }
-    } catch {
+    } catch (err) {
+      console.error('[operator-task-feed] load failed', deviceId, err);
       setError(true);
     } finally {
       setLoading(false);

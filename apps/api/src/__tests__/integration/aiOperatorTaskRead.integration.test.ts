@@ -229,4 +229,63 @@ describe('AI Operator task read routes (W07, #5205/#5212) — real Postgres', ()
       expect(res.body.data.id).toBe(taskId);
     });
   });
+
+  describe('keyset pagination (real Postgres) — cursor resumption, not just single-page trim', () => {
+    // pr-test-analyzer review fix (PR #5254): the unit suite only proves a
+    // single page trims its peeked row; it never decodes a real `nextCursor`
+    // and walks a second page, so a bug that resumed from the peeked row
+    // instead of the last-kept one, or that got the `(created_at, id)` tuple
+    // comparison backwards, would pass every existing test. This walks the
+    // full ordered id sequence at `limit=1` across N+1 requests and asserts
+    // no duplicate/no omission — including the tie-break case the cursor
+    // design exists for: two tasks sharing the exact same `created_at`,
+    // resolved only by `id DESC` (`operatorTasksListCursor.ts`'s header).
+    runDb('walks every task exactly once across pages, including two tasks sharing the same created_at', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const agentId = await insertAgent(env.organization.id, env.user.id);
+
+      const tiedAt = new Date('2026-09-01T00:00:00.123456Z');
+      const ids: string[] = [];
+      // Two tasks forced to the SAME created_at — only `id DESC` can order them.
+      ids.push(await insertTask(env.organization.id, agentId, env.user.id, {
+        objective: 'Tied task A', createdAt: tiedAt,
+      }));
+      ids.push(await insertTask(env.organization.id, agentId, env.user.id, {
+        objective: 'Tied task B', createdAt: tiedAt,
+      }));
+      // Three more tasks each strictly later than the tied pair.
+      for (let i = 0; i < 3; i++) {
+        ids.push(await insertTask(env.organization.id, agentId, env.user.id, {
+          objective: `Task ${i}`,
+          createdAt: new Date(tiedAt.getTime() + (i + 1) * 1000),
+        }));
+      }
+
+      const seen: string[] = [];
+      let cursor: string | null | undefined;
+      for (let page = 0; page < ids.length + 1; page++) {
+        const path = cursor ? `/tasks?limit=1&cursor=${encodeURIComponent(cursor)}` : '/tasks?limit=1';
+        const res = await get(env, path);
+        expect(res.status).toBe(200);
+        if (res.body.data.length === 0) break;
+        expect(res.body.data).toHaveLength(1);
+        seen.push(res.body.data[0].id);
+        cursor = res.body.nextCursor;
+        if (!cursor) break;
+      }
+
+      // No duplicates, no omissions — every inserted id appears exactly once.
+      expect(seen).toHaveLength(ids.length);
+      expect(new Set(seen).size).toBe(ids.length);
+      expect(new Set(seen)).toEqual(new Set(ids));
+
+      // The three untied tasks must walk strictly newest-first, and the
+      // tied pair (whichever two ids they are) must be adjacent in the walk
+      // and resolve id DESC between themselves.
+      const tiedPair = [ids[0]!, ids[1]!].sort().reverse(); // id DESC
+      const tiedPositions = tiedPair.map((id) => seen.indexOf(id));
+      expect(tiedPositions[1]).toBe(tiedPositions[0]! + 1);
+      expect(seen.slice(tiedPositions[0]!, tiedPositions[0]! + 2)).toEqual(tiedPair);
+    });
+  });
 });

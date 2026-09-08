@@ -6,10 +6,15 @@
  *
  * SAFE PROJECTION IS THE POINT OF THIS FILE — same posture as
  * `services/aiAgents/runTrace.ts`'s header comment. Every mapper below is a
- * NAMED-FIELD function, never `{ ...row }`: `ai_operator_tasks.checkpoint`,
- * `frozen_scope`, `frozen_criteria`, `frozen_authority`, and
- * `ai_operator_operations.result` are never read here, so a DTO built by
- * these functions cannot carry them even by accident. Pure and synchronous —
+ * NAMED-FIELD function, never `{ ...row }`: `ai_operator_tasks.checkpoint`
+ * and `ai_operator_operations.result` — the only two jsonb columns on either
+ * table in the current thin-slice schema (`db/schema/aiOperatorTasks.ts`) —
+ * are never read here, so a DTO built by these functions cannot carry them
+ * even by accident. `OperatorTaskRowInput`/`OperatorOperationRowInput` below
+ * simply have no field for either column, which is what makes the guarantee
+ * structural rather than a matter of mapper discipline. (A later wave's
+ * fuller task model may add more jsonb columns — e.g. a frozen-authority
+ * blob — which would need the same treatment then.) Pure and synchronous —
  * every DB read happens in the route handler, which hands this module
  * already-loaded rows, so it is unit-testable against fixtures with no DB.
  */
@@ -84,8 +89,12 @@ export function computeOperatorTaskNextAction(
           // transitions a task into `waiting` — a null here is a data bug,
           // not a state the read side should throw on.
           return 'waiting_for_execution';
-        default:
-          return 'waiting_for_execution';
+        // No `default`, matching the outer switch's own convention (see this
+        // function's docstring): with `null`/`undefined` handled above, this
+        // inner switch is exhaustive over `AiOperatorWaitReason | null` too —
+        // a `default` here would silently absorb a future wait reason into
+        // "waiting_for_execution" instead of failing `tsc` (review fix, PR
+        // #5254).
       }
   }
 }
@@ -185,10 +194,9 @@ export function mapOperatorRunLink(row: OperatorRunLinkRowInput): AiOperatorTask
 
 /**
  * The shared field set between the list and detail DTOs — named-field
- * mapper, never `{ ...row }` — so `checkpoint`, `frozen_scope`,
- * `frozen_criteria`, and `frozen_authority` (every jsonb column on
- * `ai_operator_tasks`) have no path onto the wire even if a future column is
- * added to the row type above.
+ * mapper, never `{ ...row }` — so `checkpoint` (the only jsonb column on
+ * `ai_operator_tasks` today) has no path onto the wire even if an
+ * unrelated column is added to the row type above.
  */
 function mapOperatorTaskListItem_(row: OperatorTaskRowInput): AiOperatorTaskListItemDto {
   return {
