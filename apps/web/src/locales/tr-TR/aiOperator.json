@@ -1,0 +1,119 @@
+{
+  "taskState": {
+    "queued": "Sırada",
+    "running": "Çalışıyor",
+    "waiting": "Bekliyor",
+    "paused": "Duraklatıldı",
+    "stopping": "Durduruluyor",
+    "completed": "Tamamlandı",
+    "partial": "Kısmi",
+    "handedOff": "Devredildi",
+    "cancelled": "İptal edildi",
+    "failed": "Başarısız",
+    "expired": "Süresi doldu"
+  },
+  "operatorTaskDetail": {
+    "loading": "Görev yükleniyor...",
+    "agent": "{{name}} tarafından işleniyor",
+    "target": {
+      "label": "Hedef",
+      "none": "Hedef cihaz yok"
+    },
+    "origin": {
+      "label": "Köken",
+      "manual": "Manuel",
+      "alert": "Uyarı",
+      "ticket": "Talep",
+      "schedule": "Zamanlama",
+      "anomaly": "Anomali",
+      "sweep": "Tarama",
+      "chat": "Sohbet"
+    },
+    "state": {
+      "label": "Durum"
+    },
+    "phase": {
+      "investigate": "İncele",
+      "plan": "Planla",
+      "execute": "Yürüt",
+      "verify": "Doğrula",
+      "document": "Belgele"
+    },
+    "waitReason": {
+      "label": "Bekleniyor",
+      "approval": "Onay",
+      "information": "Bilgi",
+      "execution": "Yürütme",
+      "device": "Cihaz",
+      "maintenanceWindow": "Bakım penceresi",
+      "verificationWindow": "Doğrulama penceresi"
+    },
+    "nextAction": {
+      "label": "Sonraki eylem",
+      "approveInInbox": "Gelen kutusunda onayla",
+      "answerQuestion": "Bir soruyu yanıtla",
+      "waitingForDevice": "Cihaz bekleniyor",
+      "waitingForMaintenanceWindow": "Bakım penceresi bekleniyor",
+      "waitingForVerificationWindow": "Doğrulama penceresi bekleniyor",
+      "waitingForExecution": "Yürütme bekleniyor",
+      "queued": "Kabul için sırada",
+      "inProgress": "Devam ediyor",
+      "paused": "Duraklatıldı",
+      "stopping": "Durduruluyor",
+      "handedOff": "Devredildi",
+      "none": "Bekleyen bir şey yok"
+    },
+    "deadline": {
+      "label": "Son tarih",
+      "none": "Son tarih yok"
+    },
+    "outcome": {
+      "label": "Sonuç",
+      "verifiedResolved": "Doğrulanmış şekilde çözüldü",
+      "investigationComplete": "İnceleme tamamlandı",
+      "reportDelivered": "Rapor teslim edildi",
+      "noActionNeeded": "Eyleme gerek yok",
+      "trialComplete": "Deneme tamamlandı",
+      "unresolved": "Çözülmedi",
+      "unknownEffect": "Bilinmeyen etki"
+    },
+    "handoffSummary": {
+      "label": "Devir özeti"
+    },
+    "operations": {
+      "heading": "İşlemler",
+      "empty": "Henüz işlem yok.",
+      "attempt": "Deneme {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Ayrıldı",
+      "dispatched": "Gönderildi",
+      "dispatchFailed": "Gönderim başarısız",
+      "cancelled": "İptal edildi",
+      "abandoned": "Terk edildi"
+    },
+    "resultState": {
+      "pending": "Beklemede",
+      "succeeded": "Başarılı",
+      "failed": "Başarısız",
+      "unknown": "Bilinmiyor",
+      "superseded": "Yerini aldı"
+    },
+    "runs": {
+      "heading": "Bağlı çalıştırmalar",
+      "empty": "Henüz bağlı çalıştırma yok."
+    },
+    "notFound": {
+      "title": "Görev bulunamadı",
+      "description": "Bu görev mevcut değil veya erişiminiz yok."
+    },
+    "errors": {
+      "load": "Görev yüklenemedi."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Operator görevleri yükleniyor...",
+    "loadFailed": "Operator görevleri yüklenemedi.",
+    "empty": "Bu cihaz için Operator görevi yok."
+  }
+}

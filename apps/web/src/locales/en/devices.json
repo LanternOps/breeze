@@ -606,6 +606,8 @@
     "metricAnomalySignalsForThisDevice": "Metric anomaly signals for this device",
     "tickets": "Tickets",
     "ticketsLinkedToThisDevice": "Tickets linked to this device",
+    "operatorTasks": "Operator Tasks",
+    "operatorTasksForThisDevice": "AI Operator tasks for this device",
     "eventLog": "Event Log",
     "windowsMacosSystemEventLogs": "Windows/macOS system event logs",
     "monitoring": "Monitoring",

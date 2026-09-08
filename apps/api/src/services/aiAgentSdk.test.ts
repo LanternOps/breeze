@@ -132,6 +132,16 @@ vi.mock('./actionIntents/intentService', () => ({
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
+// #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — its
+// own contract (the intent_outbox row, the conditional task_outbox leg) is
+// pinned by taskOutbox.test.ts and the writer contract integration test, not
+// here. The real function reads `intentOutbox` from the `../db/schema/
+// actionIntents` mock below, which only stubs `actionIntents`.
+const mockPublishIntentTerminalOutbox = vi.fn((..._args: unknown[]) => Promise.resolve());
+vi.mock('./aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: (...args: unknown[]) => mockPublishIntentTerminalOutbox(...args),
+}));
+
 // Mocked as a collaborator (like intentService): the inline release path calls
 // this to re-prove the requester's authorization before executing. Also cuts
 // the real module's ../aiTools import chain (which would otherwise drag in
@@ -1277,6 +1287,14 @@ describe('createSessionPreToolUse', () => {
         executedAt: expect.any(Date),
         result: expect.objectContaining({ status: 'completed' }),
       }));
+      // #5205 W05 (#5210): the CAS win must also publish the terminal outbox
+      // event, with taskId always null here (this file never threads a task
+      // context through createActionIntent).
+      expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+        expect.anything(),
+        { id: 'intent-6', orgId: 'org-1', taskId: null },
+        'intent_completed',
+      );
     });
 
     // ---------------------------------------------------------------------
@@ -2488,6 +2506,14 @@ describe('inline secret-bearing completion (Task 6)', () => {
     // plan completion, audit event) still ran for this postToolUse call
     // instead of being aborted by an uncaught throw.
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_result' }));
+
+    // #5205 W05 (#5210): the guard-tripped CAS win must also publish the
+    // terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-leak', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   describe('Important 4: PAM-helper tier-3-but-intentless path pins intentId===undefined (deliberately out of scope for the plan-step fix below — PAM/helper sessions use their own elevation governance, not durable action-intents; see design doc docs/superpowers/specs/ai-mcp/2026-07-27-tier3-plan-mode-approval-parity-design.md §1.5)', () => {
@@ -2959,6 +2985,13 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'plan_step_start' }),
     );
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1): the
@@ -3021,6 +3054,12 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       'executing',
       'failed',
       { errorCode: 'content_changed' },
+    );
+    // #5205 W05 (#5210): same CAS win must publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-plan-digest-mismatch', orgId: 'org-1', taskId: null },
+      'intent_failed',
     );
   });
 
@@ -3455,6 +3494,13 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     });
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the executing -> failed CAS this revalidation
+    // failure drives must also publish the terminal outbox event.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-task3-revalidate', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------
@@ -3551,6 +3597,14 @@ describe('Task 3: a plan aborts when a tier-3 step does not execute', () => {
     );
     expect(session.activePlanId).toBeNull();
     expect(session.approvedPlanSteps.size).toBe(0);
+    // #5205 W05 (#5210): the self-heal CAS win must also publish the
+    // terminal outbox event — without this, a stranded-intent self-heal
+    // would silently never wake anything watching for the outcome.
+    expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+      expect.anything(),
+      { id: 'intent-selfheal', orgId: 'org-1', taskId: null },
+      'intent_failed',
+    );
   });
 
   // ----------------------------------------------------------------------

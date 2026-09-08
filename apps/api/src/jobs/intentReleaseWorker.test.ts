@@ -296,6 +296,14 @@ vi.mock('../services/aiOperator/dispatchClaim', () => ({
   claimTaskLinkedIntentForDispatch: dispatchClaimMock.claimTaskLinkedIntentForDispatch,
   revertTaskLinkedDispatchClaim: dispatchClaimMock.revertTaskLinkedDispatchClaim,
 }));
+// #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — same
+// reason as dispatchClaim above. Its own contract (the intent_outbox row, the
+// conditional task_outbox leg) is pinned by taskOutbox.test.ts and the writer
+// contract integration test, not here; this file's `db` mock has no `insert`
+// at all, so the real function would throw on every terminal transition.
+vi.mock('../services/aiOperator/taskOutbox', () => ({
+  publishIntentTerminalOutbox: vi.fn(async () => undefined),
+}));
 // Partial mock: `isTaskLinkedIntent` stays the REAL implementation (it is a
 // pure function with no db dependency, and it is the branch predicate this
 // file's task-linked cases exist to exercise) — only the operation-row
