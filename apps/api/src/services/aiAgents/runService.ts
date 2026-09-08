@@ -31,6 +31,10 @@ import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
 import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
+import {
+  RUN_TERMINAL_OUTBOX_TRANSITION_SEQ,
+  enqueueTaskOutbox,
+} from '../aiOperator/taskOutbox';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
@@ -187,6 +191,34 @@ export interface CreateAgentRunInput {
   };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
+  /**
+   * AI Operator task linkage (#5205 W06, spec §6.2). TRUSTED INTERNAL INPUT —
+   * `taskCoordinator.ts` is the only producer, and no HTTP surface may build
+   * it: the three columns it stamps are the admission identity that
+   * `ai_agent_runs_task_admission_uq` enforces one run per, so a caller that
+   * could choose them could mint a second reasoning attempt against someone
+   * else's task.
+   *
+   * Spec §6.2: "All continuation runs go through createAndEnqueueAgentRun.
+   * Extend its trusted internal input with task context rather than injecting
+   * it through arbitrary triggerRef JSON." This field IS that extension —
+   * deliberately a typed sibling of `dedupeKey`, not a blob inside
+   * `triggerRef`, so it cannot be set by anything that merely forwards a
+   * caller's trigger payload.
+   *
+   * `agentId` is the agent PINNED at admission. Spec §6.2: "The pinned agent
+   * ID must match the resolved effective agent; a replacement same-kind agent
+   * cannot inherit the task." A mismatch is an `ownership_mismatch` skip, not
+   * a silent re-point.
+   */
+  task?: {
+    taskId: string;
+    taskStepKey: string;
+    attemptOrdinal: number;
+    agentId: string;
+    /** Prompt template version, recorded per spec §6.2's accepted-drift rule. */
+    promptVersion: string;
+  };
   /**
    * Phase 2 wave P2-1 (alert verdicts). `'full'` (the default when omitted)
    * is the pre-existing run shape; `'verdict'` is a lighter-weight run scoped
@@ -590,10 +622,27 @@ export async function reapStalledAgentRuns(scope: {
     // single bulk UPDATE's WHERE clause would also have excluded. Sequential
     // (not parallel) deliberately: there are at most a handful of stalled
     // rows for one (agent, org) pair.
-    const moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
-      errorCode: 'stalled',
-      finishedAt: new Date(),
-    }, stale);
+    //
+    // PER-ROW try/catch (#5205 W06): `transitionRunStatus` gained a
+    // task-outbox insert inside its own transaction, so it can now THROW
+    // where it previously could only return false. This loop runs inside
+    // `createAndEnqueueAgentRun`'s advisory-lock-guarded admission
+    // transaction, so an escaping exception would abort the admission of a
+    // brand-new run for this (agent, org) — including the very retry a stuck
+    // task is attempting. One un-reapable row must not become an
+    // agent-wide outage. Same posture, and the same reason, as
+    // `taskReconciler.ts`'s per-task catch.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
+        errorCode: 'stalled',
+        finishedAt: new Date(),
+      }, stale);
+    } catch (error) {
+      console.error('[aiAgentRunService] failed to reap a stalled run; continuing', {
+        runId: row.id, agentId: scope.agentId, orgId: scope.orgId, error,
+      });
+    }
     if (moved) reapedIds.push(row.id);
   }
   if (reapedIds.length === 0) return [];
@@ -1053,6 +1102,19 @@ export async function createAndEnqueueAgentRun(
     //    this function carefully computed never reaches the caller and every
     //    duplicate trigger surfaces as a 500 instead. `DO NOTHING` never
     //    raises: an empty `returning()` IS the duplicate.
+    // #5205 W06, spec §6.2 — the pinned agent must still be the effective
+    // one. `resolveEffectiveAgent` returns the CURRENT live row for this
+    // (owner, kind); if the org replaced its triage agent between the task's
+    // admission and this continuation, that replacement has its own policy,
+    // its own act assets and its own graduation history. Letting it inherit
+    // the task would silently execute the remaining steps under authority the
+    // task was never reviewed against. Refuse instead, and let the task hand
+    // off — `ownership_mismatch` is the existing skip reason for exactly this
+    // "the run does not belong to the agent it claims" shape.
+    if (input.task && input.task.agentId !== resolved.agentId) {
+      return skip('ownership_mismatch');
+    }
+
     const [inserted] = await db
       .insert(aiAgentRuns)
       .values({
@@ -1074,6 +1136,17 @@ export async function createAndEnqueueAgentRun(
         policySnapshot: resolved,
         status: 'queued',
         correlationId: randomUUID(),
+        // All three or none — `ai_agent_runs_task_link_chk` enforces it.
+        taskId: input.task?.taskId ?? null,
+        taskStepKey: input.task?.taskStepKey ?? null,
+        taskAttemptOrdinal: input.task?.attemptOrdinal ?? null,
+        promptVersion: input.task?.promptVersion ?? null,
+        // The CONFIGURED model, which is all admission knows. `runLoop.ts`
+        // overwrites this with the model it actually used the moment it
+        // resolves `effective.model ?? llm.model` — that fallback to the org's
+        // LLM default is invisible here, and spec §6.2 asks for the RESOLVED
+        // model, not the requested one.
+        resolvedModel: input.task ? (resolved.effective.model ?? null) : null,
       })
       .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
       .returning();
@@ -1095,6 +1168,27 @@ export async function createAndEnqueueAgentRun(
     // configured the retry reaches this reclaim only once that window has
     // passed. That block is transient and intended; the PERMANENT one — the
     // dedupe key held forever — is what this removes.
+    // #5205 W06, spec §6.2: "Do not apply the legacy generic reset path to a
+    // task-linked row." The reclaim below re-stamps agent, policy snapshot,
+    // trigger and `queuedAt` onto an EXISTING row. For a task-linked run that
+    // is not a retry, it is an identity rewrite: the row carries the task's
+    // admission identity `(task_id, task_step_key, task_attempt_ordinal)`, and
+    // reclaiming it under a freshly-resolved policy snapshot would let the
+    // remaining steps of an already-reviewed task run under authority nobody
+    // reviewed — the same hazard the pinned-agent check above refuses.
+    //
+    // Spec §6.2 does permit a narrow reclaim ("a proven never-started
+    // admission with no effects, retaining the same task/attempt/agent/policy
+    // identity"). Proving "no effects" requires reading the operation rows,
+    // which admission deliberately does not do. So the thin slice takes the
+    // conservative half: refuse, report `duplicate`, and let the coordinator
+    // reconcile or admit an explicit NEXT attempt (which gets its own
+    // `attempt_ordinal`, its own dedupe key and its own row). That is strictly
+    // safe — it can waste an attempt, never mis-attribute one.
+    if (input.task) {
+      return skip('duplicate');
+    }
+
     const [reclaimed] = await db
       .update(aiAgentRuns)
       .set({
@@ -1234,8 +1328,41 @@ export async function transitionRunStatus(
         errorCode: aiAgentRuns.errorCode,
         outcome: aiAgentRuns.outcome,
         profile: aiAgentRuns.profile,
+        taskId: aiAgentRuns.taskId,
       });
-    return rows[0] ?? null;
+    const row = rows[0] ?? null;
+
+    // #5205 W06, spec §6.3: "Add a task outbox record atomically with each
+    // task-affecting authoritative transition." A task-linked run reaching a
+    // terminal status IS such a transition — it is how the coordinator learns
+    // the reasoning attempt produced a proposal, hit `awaiting_approval`, or
+    // failed.
+    //
+    // INSIDE this `inSystemDbContext` block on purpose, unlike the circuit
+    // bookkeeping below. `inSystemDbContext` opens the transaction the
+    // `set_config(..., true)` GUC is local to, so this insert commits WITH the
+    // status write or not at all. That atomicity is the entire value of an
+    // outbox: a row written after the commit could be lost by a crash in
+    // between, leaving a task waiting on a run that already finished, which is
+    // precisely the "run completion events publish after the DB write" gap
+    // spec §2 records against the existing `finishRun`.
+    //
+    // Placed HERE rather than in `runLoop.ts`'s `finishRun` because this
+    // function is the single terminalization chokepoint the terminalization
+    // contract test pins — so the reaper (`reapStalledAgentRuns`) and
+    // `failRunAfterEnqueueFailure` get the wake too, for free. A task whose
+    // run was reaped as stalled must still wake; putting this in `finishRun`
+    // would have covered only the happy path.
+    if (row && row.taskId && isTerminalRunStatus(to)) {
+      await enqueueTaskOutbox(db, {
+        orgId: row.orgId,
+        taskId: row.taskId,
+        sourceKind: 'run',
+        sourceId: row.id,
+        transitionSeq: RUN_TERMINAL_OUTBOX_TRANSITION_SEQ[to] ?? 0,
+      });
+    }
+    return row;
   });
   if (!moved) return false;
 

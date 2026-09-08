@@ -1,11 +1,11 @@
 ---
 title: Devices
-description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, and battery status.
+description: Work with the device list and device Info tab — customizable columns, filters, VPN presence, battery status, and manual (hand-entered) assets.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, and discovered network devices across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
 
 ---
 
@@ -24,6 +24,7 @@ The list shows a compact set of columns by default — hostname, class, organiza
 - **WAN IP** and **LAN IP** — the device's public (egress) address as seen from the server, and its local network interface address. Both are sortable; see [IP History](/features/ip-history/) for the timeline of address changes.
 - **Tags, last logged-in user, uptime, enrollment date**
 - **Desktop access** and **reliability score**
+- **Serial, asset tag, location** — inventory fields for manual assets (asset tag and location) and, where reported, serial number (manual assets and agent devices); see [Manual Assets](#manual-assets).
 
 Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
 
@@ -33,8 +34,46 @@ Above the list you can:
 
 - **Search** by display name or hostname.
 - Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
-- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), and Network (devices found by network discovery).
+- Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)).
 - Filter by **VPN** when the VPN column is enabled (see below).
+
+---
+
+## Manual Assets
+
+Not everything an MSP is responsible for runs an agent or answers a ping. A spare laptop in a drawer, a desk phone, a non-networked label printer, a loaner tablet out with a field tech — a **manual asset** records that equipment as plain inventory so it shows up in the same unified Devices list as everything else.
+
+### Discovered asset vs. manual asset
+
+The rule is simple: **does it have a network identity?**
+
+- **Has an IP address, hostname, or URL** — it's a discovered network asset (the **Network** class), found automatically by network discovery scanning and eligible for monitors, alerts, and topology. See [Network Discovery](/features/discovery/) if that's what you're looking for.
+- **Does not** — it's a manual asset. You type it in by hand, and it carries no reachability at all: it was never "online" or "offline", so its **Status** column shows **Unknown** rather than a misleading Offline.
+
+Manual assets deliberately carry no IP, MAC address, monitoring, alerts, or remote access — those are all agent/network concepts a hand-entered row cannot answer.
+
+### Adding a manual asset
+
+From the Devices page, open the **Add** menu next to the device list and choose **Add asset manually…** (the other item, **Install agent…**, is the existing agent-enrollment flow — the two share one menu since they're both ways of adding something to your fleet). Fill in:
+
+- **Site** (required) — defaults to the organization's only site when it has just one.
+- **Name** (required) — the label that appears everywhere else in the list.
+- **Asset type** — the same device-type list (printer, workstation, phone, etc.) discovered devices use.
+- **Manufacturer, model, serial number, asset tag, location** — free-text inventory fields. Location is a free-text field within the site ("Closet B, shelf 2"), not a structured address.
+- **Assigned to** — an organization contact (not a Breeze technician login) responsible for the asset.
+- **Tags** and **notes**.
+
+Serial numbers are not required to be unique — the same manufacturer's serial format can legitimately repeat across vendors. If you enter a serial that already exists in the organization, the form shows a non-blocking warning; it does not stop you from saving.
+
+### Editing, linking, and deleting
+
+Select a manual asset's row to reopen the same modal for editing. From there you can also **link** the record to an agent device or a discovered network asset once one shows up for that physical machine — for example, after IT installs the agent on a spare laptop that had been tracked manually. Linking is reversible (**Unlink** restores the manual record to the list) and never merges data destructively: the manual record's inventory fields (serial, asset tag, location, assigned contact, notes) stay attached and surface alongside the linked device or asset. A linked manual asset drops out of the Manual segment — the fleet is never double-counted — until you unlink it.
+
+**Delete** permanently removes a manual asset record (no agent to uninstall, so there's no separate "remove" step). It's available from the row actions and, for a manual-only selection, from the bulk actions menu.
+
+### Filtering and search
+
+The **Manual** segment (and its Devices-list count) is independent of network discovery being enabled — a manual asset still shows up even in an environment with no network-discovered devices at all. Search matches a manual asset's name, serial number, and asset tag. Structured filters apply only where they make sense for a manual asset: name, tags, asset type, organization, site, manufacturer, model, and serial number are supported; anything that depends on reachability or an agent (status, IP/MAC, last-seen, OS, agent version, metrics) is reported as *not applicable* rather than silently hiding the row without explanation.
 
 ---
 

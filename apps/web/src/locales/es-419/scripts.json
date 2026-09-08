@@ -154,8 +154,18 @@
       "severity": "Gravedad",
       "message": "Mensaje",
       "command": "Comando",
+      "whenOffline": "Si el dispositivo está sin conexión",
       "software": "Software",
       "failureNotificationChannel": "Canal de notificación de fallos"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Poner en cola (predeterminado)",
+        "skip": "Omitir"
+      }
+    },
+    "hints": {
+      "whenOffline": "El trabajo en cola espera al dispositivo y se ejecuta en su próxima conexión, o vence a los 7 días. Omitir hace que el paso falle de inmediato."
     },
     "placeholders": {
       "name": "Control de mantenimiento diario",

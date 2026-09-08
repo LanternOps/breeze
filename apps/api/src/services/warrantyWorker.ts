@@ -47,13 +47,15 @@ function createWarrantyWorker(): Worker<WarrantyJobData> {
             return { deviceId: job.data.deviceId };
 
           case 'sync-batch': {
-            const deviceIds = await getDevicesNeedingWarrantySync(50);
-            if (deviceIds.length === 0) {
+            // #4622 — subjects, not device ids: the sweep now covers manual
+            // assets with a manufacturer + serial alongside agent devices.
+            const subjects = await getDevicesNeedingWarrantySync(50);
+            if (subjects.length === 0) {
               return { synced: 0 };
             }
-            await syncWarrantyBatch(deviceIds);
-            console.log(`[WarrantyWorker] Batch synced ${deviceIds.length} devices`);
-            return { synced: deviceIds.length };
+            await syncWarrantyBatch(subjects);
+            console.log(`[WarrantyWorker] Batch synced ${subjects.length} warranty subjects`);
+            return { synced: subjects.length };
           }
 
           default:

@@ -25,12 +25,12 @@
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",
     "@types/mailparser": "^3.4.6",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "dotenv": "16.6.1",
     "happy-dom": "^20.11.0",
     "postgres": "3.4.9",
     "tsup": "8.5.1",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
   }

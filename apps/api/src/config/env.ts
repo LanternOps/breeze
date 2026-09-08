@@ -112,6 +112,32 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
+//
+// Two INDEPENDENT flags, both default OFF, both read at CALL time so a test
+// (and an operator) can flip one without a module reload:
+//
+//  - `AI_OPERATOR_TASKS_ENABLED` gates task ADMISSION and continuation-run
+//    admission. It does NOT gate the reconciler: spec §11.2 is explicit that
+//    turning admission off must still let late results land and in-flight
+//    effects settle, otherwise disabling the feature would strand every live
+//    task with an unobserved external side effect. "Off" means "start nothing
+//    new", never "stop watching what already happened".
+//  - `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` gates the one recipe, per
+//    spec §13's "each recipe ships behind its own flag". Task infrastructure
+//    and each executable recipe are separately controlled on purpose.
+//
+// The pre-existing AI kill switches (`AI_AGENTS_ENABLED` and the DB kill
+// switch) remain OVERRIDING gates above both of these — they fence admission
+// AND dispatch claims, and they too leave the reconciler running.
+export function aiOperatorTasksEnabled(): boolean {
+  return envFlag('AI_OPERATOR_TASKS_ENABLED', false);
+}
+
+export function aiOperatorServiceRecoveryEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.

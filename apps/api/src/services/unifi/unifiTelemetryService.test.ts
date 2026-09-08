@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reconcileTelemetry } from './unifiTelemetryService';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { DbExecutor } from './unifiConnectionService';
 
 type WriteRecord = { table: any; values: any; conflict?: any };
@@ -323,6 +324,35 @@ describe('reconcileTelemetry', () => {
     expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-new-2');
     const assetInsert = writes.inserts.find((w) => w.table === discoveredAssets);
     expect(assetInsert?.values.macAddress).toBeUndefined();
+  });
+
+  // #5213 — discovered_assets.source and the now-PARTIAL (org_id, ip_address)
+  // unique index.
+  it('stamps source=unifi on the insert side and repeats the partial-index predicate', async () => {
+    const { db, writes } = scriptedDb({
+      collector: { id: 'c1', orgId: 'org-a', siteId: 'site-a', integrationId: 'int-1' },
+      mappings: [],
+      assetInsertReturn: { id: 'asset-new-3' },
+    });
+
+    await reconcileTelemetry(db, {
+      collectorId: 'c1', polledAt: '2026-06-29T00:00:00Z', firmwareOk: true,
+      devices: [{ unifiDeviceId: 'd1', mac: 'ab:cd', name: 'sw1', raw: { ipAddress: '10.0.0.8' } }],
+      clients: [],
+    });
+
+    const assetInsert = writes.inserts.find((w) => w.table === discoveredAssets)!;
+    expect(assetInsert.values.source).toBe('unifi');
+    // Insert side only — the conflict branch must never relabel an existing
+    // (possibly manual) row.
+    expect(assetInsert.conflict?.set).not.toHaveProperty('source');
+    // Without targetWhere, Postgres cannot infer the partial unique index and
+    // the upsert fails at runtime with 42P10. Assert the PREDICATE, not just
+    // the key: `targetWhere: sql`true`` would satisfy a key-presence check and
+    // still 42P10 against a real server.
+    expect(Object.keys(assetInsert.conflict ?? {})).toContain('targetWhere');
+    const predicate = new PgDialect().sqlToQuery(assetInsert.conflict.targetWhere).sql;
+    expect(predicate).toMatch(/"ip_address"\s+is not null/i);
   });
 
   // Metrics the agent could not collect arrive absent from the body. They must

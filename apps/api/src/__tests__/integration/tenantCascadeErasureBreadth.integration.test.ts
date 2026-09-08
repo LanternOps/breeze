@@ -246,6 +246,35 @@ async function seed(): Promise<SeedHandles> {
       INSERT INTO tickets (org_id, ticket_number, subject, created_at, updated_at)
       VALUES (${orgId}, ${`BR-${suffix}-${orgId.slice(0, 8)}`}, 'Breadth ticket', now(), now())
     `);
+    // #4622 — manual_assets is org-cascade-registered but has NO device_id
+    // column, so it is absent from every device-scoped list and reaches the
+    // cascade only through CORE_ORG_CASCADE_DELETE_ORDER. Seeded WITH a device
+    // link so the delete has to clear the composite
+    // (linked_device_id, org_id) -> devices(id, org_id) FK as well: an ordering
+    // regression that put manual_assets after `devices` raises 23503 here
+    // rather than passing on an unpopulated table.
+    await testDb.execute(sql`
+      INSERT INTO manual_assets (org_id, site_id, name, linked_device_id)
+      VALUES (
+        ${orgId},
+        ${orgId === orgErased ? siteErased : siteControl},
+        ${`Breadth manual asset ${suffix}`},
+        ${deviceId}
+      )
+    `);
+    // #4622 W03 — a MANUAL-subject device_warranty row (device_id NULL,
+    // manual_asset_id set). device_warranty sorts before manual_assets in
+    // CORE_ORG_CASCADE_DELETE_ORDER, so this proves the child is deleted first;
+    // reversing the two would raise 23503 on the composite
+    // (manual_asset_id, org_id) -> manual_assets(id, org_id) FK. Without this
+    // row the org cascade only ever sees device-subject warranty rows.
+    await testDb.execute(sql`
+      INSERT INTO device_warranty (manual_asset_id, org_id, manufacturer, serial_number, status)
+      SELECT id, org_id, 'dell', ${`BR-MANUAL-SN-${suffix}`}, 'unknown'
+      FROM manual_assets
+      WHERE org_id = ${orgId}
+      LIMIT 1
+    `);
     await testDb.execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
       VALUES (${orgId}, 'user', ${actorUserId}, 'test.breadth', 'test', 'success', now())
@@ -371,8 +400,10 @@ describe('cascadeDeleteOrg — erasure breadth', () => {
       alerts: 1,
       audit_logs: 1,
       device_hardware: 1,
+      device_warranty: 1,
       devices: 1,
       maintenance_windows: 1,
+      manual_assets: 1,
       ml_feedback_events: 1,
       organizations: 1,
       quotes: 3,

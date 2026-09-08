@@ -154,8 +154,18 @@
       "severity": "Gravità",
       "message": "Messaggio",
       "command": "Comando",
+      "whenOffline": "Se il dispositivo è offline",
       "software": "Software",
       "failureNotificationChannel": "Canale di notifica errore"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Accoda (predefinito)",
+        "skip": "Salta"
+      }
+    },
+    "hints": {
+      "whenOffline": "Il lavoro in coda attende il dispositivo e viene eseguito alla connessione successiva, oppure scade dopo 7 giorni. Salta fa fallire subito il passaggio."
     },
     "placeholders": {
       "name": "Controllo manutenzione giornaliero",

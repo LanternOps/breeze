@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
+import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { navigateTo } from '@/lib/navigation';
 
 // Feature flags are evaluated at module load, so expose a mutable holder we can
@@ -24,11 +24,16 @@ vi.mock('@/lib/featureFlags', () => flagState);
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn(),
 }));
 
 vi.mock('../../lib/devicesFetch', () => ({
   fetchAllDevices: vi.fn(),
   fetchAllNetworkDevices: vi.fn(),
+  // Manual arm (#4622 W04) — carries no feature flag, so it's fetched on
+  // every render; defaults to empty so existing agent/network assertions are
+  // unaffected.
+  fetchAllManualAssets: vi.fn(),
 }));
 
 vi.mock('../../hooks/useEventStream', () => ({
@@ -149,6 +154,7 @@ vi.mock('./ScriptPickerModal', () => ({
 // this component was invoked at all (#4014).
 vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
 vi.mock('./AddDeviceModal', () => ({ default: () => null }));
+vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
@@ -342,6 +348,8 @@ beforeEach(() => {
   // Network arm (#1322) defaults to empty so existing assertions over the
   // agent fleet are unaffected.
   vi.mocked(fetchAllNetworkDevices).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
+  // Manual arm (#4622 W04) defaults to empty for the same reason.
+  vi.mocked(fetchAllManualAssets).mockResolvedValue({ data: [], total: 0, pagesWalked: 1 } as never);
 
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.startsWith('/filters/preview')) {
@@ -2974,5 +2982,41 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
     expect(notice.textContent).toMatch(/2 network devices hidden/);
     expect(notice.textContent).toMatch(/Needs Patches/);
     await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
+  });
+});
+
+// #5213 W02 — the header "Add" split menu. AddDeviceModal/AddNetworkAssetModal
+// are stubbed to `() => null` above, so this only exercises the menu's own
+// open/close/hash wiring, not the modals' internal behavior (covered by
+// AddDeviceModal.test.tsx / AddNetworkAssetModal.test.tsx respectively).
+describe('DevicesPage — header "Add" split menu (#5213)', () => {
+  beforeEach(() => {
+    window.location.hash = '';
+  });
+
+  it('opens the menu and selecting "Add network asset…" sets the hash and closes the menu', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    expect(screen.getByTestId('devices-page-add-menu')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-network-asset'));
+
+    expect(window.location.hash).toBe('#add-network-asset');
+    // The menu itself closes on selection — it is not the same UI as the modal.
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+  });
+
+  it('selecting "Install agent…" closes the menu without touching the hash', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-install-agent'));
+
+    expect(window.location.hash).toBe('');
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
   });
 });

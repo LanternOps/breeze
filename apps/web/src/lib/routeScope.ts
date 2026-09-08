@@ -102,6 +102,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // P2-6 (#4193): fleet value accounting — honours the org switcher (single
   // org) and aggregates across accessible orgs in All-organizations view.
   { pattern: /^\/ai-agents\/impact$/, kind: 'org-or-all' },
+  // Operator task detail (#5205 W07): a task belongs to one org, resolved by
+  // the API from the task id, so the page works under any org context.
+  { pattern: /^\/operator\/tasks\/[^/]+$/, kind: 'org-or-all' },
   { pattern: /^\/devices(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },

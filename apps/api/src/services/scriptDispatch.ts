@@ -80,11 +80,6 @@ export type DispatchScriptInput = {
   targetSessionId?: number;
   batchId?: string | null;
   /**
-   * @deprecated #5128 — alias for `offlinePolicy: { kind: 'reject' }`. Removed
-   * in W4 once automations pass an explicit policy.
-   */
-  requireOnline?: boolean;
-  /**
    * #5128 — explicit offline policy. Omit to take the registry default for
    * `script` (queue, standard TTL), which is what manual Run Script has always
    * done in practice.
@@ -208,7 +203,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
   const offlinePolicy: OfflinePolicy =
-    input.offlinePolicy ?? (input.requireOnline ? { kind: 'reject' } : defaultOfflinePolicy(CommandTypes.SCRIPT));
+    input.offlinePolicy ?? defaultOfflinePolicy(CommandTypes.SCRIPT);
   // A `reject` row is only created against a device we just observed online, so
   // it gets the short race grace rather than a queue window.
   const deliverBy = deliverByFor(offlinePolicy);

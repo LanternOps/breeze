@@ -4507,7 +4507,8 @@
       "saveOrder": "Organizasyon sırası kaydedilemedi",
       "saveOrganization": "Kuruluş kaydedilemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
-      "deleteSite": "Site silinemedi"
+      "deleteSite": "Site silinemedi",
+      "loadSites": "Bu kuruluşun siteleri yüklenemedi."
     },
     "status": {
       "active": "Aktif",
