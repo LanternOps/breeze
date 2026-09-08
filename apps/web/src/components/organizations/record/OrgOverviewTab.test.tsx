@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import '@/lib/i18n';
 import OrgOverviewTab from './OrgOverviewTab';
 import type { OrgFetch, OrgSummary } from './orgRecordFetch';
+import type { ServiceManagementMode } from './orgRecordTabs';
 
 const ORG_ID = 'org-record-1';
 
@@ -26,8 +27,15 @@ function fetchFor(handlers: { activity?: () => Response | Promise<Response>; ale
   }) as unknown as OrgFetch;
 }
 
-function renderTab(summary: OrgSummary | null, orgFetch: OrgFetch, summaryFailed = false) {
-  return render(<OrgOverviewTab orgId={ORG_ID} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} />);
+function renderTab(
+  summary: OrgSummary | null,
+  orgFetch: OrgFetch,
+  summaryFailed = false,
+  mode?: ServiceManagementMode,
+) {
+  return render(
+    <OrgOverviewTab orgId={ORG_ID} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} />,
+  );
 }
 
 beforeEach(() => {
@@ -109,6 +117,35 @@ describe('OrgOverviewTab — tiles', () => {
     renderTab(null, fetchFor({}), true);
     await waitFor(() => expect(screen.getByTestId('org-overview-summary-error')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tile-devices')).toBeNull();
+  });
+});
+
+describe('OrgOverviewTab — Service Management mode gate (#5075 W04)', () => {
+  const FULL_SUMMARY: OrgSummary = {
+    ...BASE_SUMMARY,
+    devices: { total: 10, online: 7, offline: 3 },
+    contacts: { count: 4, primary: null },
+    tickets: { open: 3, awaitingCustomer: 1 },
+    contracts: { active: 2, nextRenewalAt: '2026-12-01T00:00:00.000Z' },
+    invoices: { outstanding: '1250.50', currencyCode: 'USD', nextDueAt: '2026-10-01T00:00:00.000Z', overdueCount: 0 },
+  };
+
+  it('mode="native" renders every tile the summary carries, including tickets/contracts/invoices', async () => {
+    renderTab(FULL_SUMMARY, fetchFor({}), false, 'native');
+    await waitFor(() => expect(screen.getByTestId('org-overview-tile-devices')).toBeTruthy());
+    expect(screen.getByTestId('org-overview-tile-contacts')).toBeTruthy();
+    expect(screen.getByTestId('org-overview-tile-tickets')).toBeTruthy();
+    expect(screen.getByTestId('org-overview-tile-contracts')).toBeTruthy();
+    expect(screen.getByTestId('org-overview-tile-invoices')).toBeTruthy();
+  });
+
+  it('mode="off" keeps devices/contacts but withdraws the tickets/contracts/invoices tiles the module owns', async () => {
+    renderTab(FULL_SUMMARY, fetchFor({}), false, 'off');
+    await waitFor(() => expect(screen.getByTestId('org-overview-tile-devices')).toBeTruthy());
+    expect(screen.getByTestId('org-overview-tile-contacts')).toBeTruthy();
+    expect(screen.queryByTestId('org-overview-tile-tickets')).toBeNull();
+    expect(screen.queryByTestId('org-overview-tile-contracts')).toBeNull();
+    expect(screen.queryByTestId('org-overview-tile-invoices')).toBeNull();
   });
 });
 

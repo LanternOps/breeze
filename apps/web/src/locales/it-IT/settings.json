@@ -582,7 +582,18 @@
     "selfSaving": "Questa sezione salva autonomamente le proprie modifiche.",
     "saveSettings": "Salva impostazioni",
     "enforcedDescription": "I valori impostati qui vengono applicati a tutte le organizzazioni. Lascia i campi vuoti per consentire a ogni organizzazione di configurarli singolarmente.",
-    "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni."
+    "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni.",
+    "modules": {
+      "title": "Moduli",
+      "description": "Scegli quali parti di Breeze utilizza questo MSP. Disattivando la gestione servizi si nascondono ovunque il service desk e la fatturazione clienti e non è più possibile creare nuovi ticket.",
+      "nativeLabel": "Service desk e fatturazione Breeze",
+      "nativeDescription": "Ticket, fogli ore, preventivi, fatture e contratti sono gestiti in Breeze. È l’impostazione predefinita.",
+      "offLabel": "Disattivato — solo RMM",
+      "offDescription": "Nasconde le sezioni Service desk e Fatturazione e le schede Ticket e Fatturazione della scheda cliente. I ticket esistenti restano consultabili; non è possibile crearne di nuovi.",
+      "externalNote": "Questo partner utilizza un PSA esterno. La modifica non è ancora disponibile qui.",
+      "saved": "Moduli aggiornati",
+      "saveFailed": "Impossibile aggiornare i moduli"
+    }
   },
   "loginBranding": {
     "saved": "Branding di accesso salvato",
@@ -3315,6 +3326,7 @@
     "passkeyRenamed": "Passkey rinominata",
     "currentPasswordIsRequiredToDeleteAPasskey": "La password attuale è obbligatoria per eliminare una passkey",
     "passkeyDeleted": "Passkey eliminata",
+    "signInAgainToContinue": "Accedi di nuovo per continuare.",
     "failedToLoadPasskeys": "Caricamento passkey non riuscito",
     "failedToUpdateProfile": "Aggiornamento profilo non riuscito",
     "failedToUploadAvatar": "Caricamento avatar non riuscito",
@@ -4490,7 +4502,8 @@
       "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
       "saveOrganization": "Impossibile salvare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
-      "deleteSite": "Impossibile eliminare il sito"
+      "deleteSite": "Impossibile eliminare il sito",
+      "loadSites": "Impossibile caricare i siti di questa organizzazione."
     },
     "status": {
       "active": "Attiva",

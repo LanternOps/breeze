@@ -30,7 +30,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authRef.current);
     await next();
   },
-  requirePermission: () => async (_c: any, next: any) => next()
+  requirePermission: () => async (c: any, next: any) => { c.set('permissions', {}); return next(); }
 }));
 
 vi.mock('../../db', () => ({
@@ -96,6 +96,7 @@ vi.mock('../../services/aiAgents/alertVerdicts', () => ({
 }));
 
 import { alertsRoutes } from './alerts';
+import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
 
 const ALERT_ID = '5d4c3b2a-1111-4222-8333-444455556666';
 
@@ -168,5 +169,39 @@ describe('GET /alerts/:id/tickets', () => {
     authRef.current = null as unknown as typeof authRef.current;
     const res = await makeApp().request(`/alerts/${ALERT_ID}/tickets`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /alerts/:id/create-ticket', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authRef.current = {
+      scope: 'partner', user: { id: 'u-1', name: 'Tess Tech', email: 'tess@msp.example' },
+      partnerId: 'p-1', orgId: null, accessibleOrgIds: null, canAccessOrg: () => true
+    } as typeof authRef.current;
+  });
+
+  // #5075 W04 — Service Management 'off' refuses new-ticket creation.
+  // createTicketFromAlert rejects with a TicketServiceError(409,
+  // 'service_management_off'); the route's `catch (err) { if (err instanceof
+  // TicketServiceError) return c.json({ error: err.message }, err.status); }`
+  // (alerts.ts) must surface that status verbatim rather than defaulting to 400.
+  it('returns 409 when createTicketFromAlert rejects with a service_management_off TicketServiceError', async () => {
+    getAlertWithOrgCheckMock.mockResolvedValue({ id: ALERT_ID, orgId: 'org-1' });
+    const err = new TicketServiceError('Service Management is turned off for this partner');
+    // The mocked TicketServiceError class (vi.mock above) hardcodes status = 400;
+    // set the real status this test needs to distinguish it from the default.
+    (err as unknown as { status: number }).status = 409;
+    vi.mocked(createTicketFromAlert).mockRejectedValue(err);
+
+    const res = await makeApp().request(`/alerts/${ALERT_ID}/create-ticket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'Service Management is turned off for this partner');
   });
 });

@@ -14,7 +14,7 @@ vi.mock('./fetchWithTimeout', () => ({
   fetchWithTimeout: (...a: unknown[]) => fetchWithTimeout(...a),
 }));
 
-import { getAlerts } from './api';
+import { getAlerts, getAlertStats } from './api';
 
 function jsonOnce(body: unknown) {
   fetchWithTimeout.mockImplementationOnce(() =>
@@ -27,6 +27,16 @@ beforeEach(() => {
 });
 
 describe('getAlerts inbox query', () => {
+  it('preserves summary permission denial as a rejected read, never zero counts', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Permission denied' }), { status: 403 }));
+    await expect(getAlertStats()).rejects.toThrow();
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('/alerts/summary');
+  });
+
+  it('preserves scoped summary counts', async () => {
+    jsonOnce({ total: 3, bySeverity: { critical: 1, high: 1, medium: 0, low: 0 }, byStatus: { acknowledged: 1 } });
+    await expect(getAlertStats()).resolves.toEqual({ total: 3, critical: 1, high: 1, medium: 0, low: 0, acknowledged: 1 });
+  });
   it('requests active alerts by default', async () => {
     // The inbox is ordered by recency with no severity weighting. Asking for
     // everything lets resolved low-severity rows consume the page, which is how

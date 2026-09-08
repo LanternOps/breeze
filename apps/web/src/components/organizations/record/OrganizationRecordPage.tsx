@@ -24,12 +24,16 @@ import { usePermissions } from '@/lib/permissions';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
+import ContactsCard from '@/components/settings/ContactsCard';
+import OrgActivityTab from './OrgActivityTab';
 import OrgBillingTab from './OrgBillingTab';
+import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import OrgSitesTab from './OrgSitesTab';
 import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
-import { tabFromHash, visibleTabs, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
+import { tabFromHash, visibleTabs, type OrgRecordTab } from './orgRecordTabs';
 
 type LoadState =
   | { kind: 'loading' }
@@ -90,10 +94,11 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   );
   const allOrgs = useOrgStore((s) => s.organizations);
 
-  // W04 replaces this with the partner's stored mode. Failing open to 'native'
-  // is deliberate: hiding a module a partner actually runs is worse than
-  // showing a tab they have turned off.
-  const mode: ServiceManagementMode = 'native';
+  // The partner's stored Service Management mode (#5075 W04). Persisted and
+  // seeded by the Sidebar's /orgs/partners/me fetch; it defaults to 'native' and
+  // a failed fetch leaves it alone, so the record fails OPEN — hiding a module a
+  // partner actually runs is worse than showing a tab they have turned off.
+  const mode = useOrgStore((s) => s.serviceManagementMode);
 
   const isOrgScoped = claims.status === 'resolved' && claims.claims.scope === 'organization';
 
@@ -289,23 +294,15 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
-      {effectiveTab === 'overview' ? (
-        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} />
-      ) : effectiveTab === 'tickets' ? (
-        <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />
-      ) : effectiveTab === 'billing' ? (
-        <OrgBillingTab orgId={orgId} />
-      ) : (
-        // W02 replaces the rest with the real tabs; the ids are already routable
-        // so a deep link saved today keeps working when they land.
-        <div
-          data-testid={`org-record-tab-placeholder-${effectiveTab}`}
-          className="rounded-lg border border-dashed px-5 py-12 text-center"
-        >
-          <h2 className="text-sm font-semibold">{t('orgRecord.comingSoon.title')}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t('orgRecord.comingSoon.description')}</p>
-        </div>
+      {effectiveTab === 'overview' && (
+        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} />
       )}
+      {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
+      {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
+      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}
+      {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}
 
       {modal === 'archive' && (
         <ArchiveOrgModal

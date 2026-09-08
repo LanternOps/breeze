@@ -44,6 +44,15 @@ const patchData: PatchCompliance = {
 };
 
 describe('KpiStrip', () => {
+  it('omits alert links and load-failure copy when alert summary is denied', () => {
+    render(<KpiStrip devices={loaded(deviceStats)} alerts={unavailable<AlertsSummary>()} tickets={unavailable<TicketStats>()} patch={unavailable<PatchCompliance>()} onRetry={() => {}} />);
+    for (const id of ['dashboard-critical-card', 'dashboard-warnings-card']) {
+      const tile = screen.getByTestId(id);
+      expect(tile).toHaveTextContent('—');
+      expect(tile).not.toHaveAttribute('href');
+      expect(tile).not.toHaveTextContent('dashboard.stats.loadFailed');
+    }
+  });
   it('renders all six tiles with accurate values when every source is available', () => {
     render(
       <KpiStrip

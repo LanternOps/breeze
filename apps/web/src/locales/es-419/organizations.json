@@ -37,6 +37,21 @@
       "title": "Disponible pronto",
       "description": "Esta pestaña llegará en la próxima actualización del registro de la organización."
     },
+    "devices": {
+      "loadError": "No se pudieron cargar los dispositivos de esta organización.",
+      "searchPlaceholder": "Buscar dispositivos",
+      "allStatuses": "Todos los estados",
+      "allSites": "Todos los sitios",
+      "status": {
+        "online": "En línea",
+        "offline": "Desconectado",
+        "maintenance": "Mantenimiento",
+        "decommissioned": "Quitado",
+        "quarantined": "En cuarentena",
+        "updating": "Actualizando",
+        "pending": "Pendiente"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Dispositivos",

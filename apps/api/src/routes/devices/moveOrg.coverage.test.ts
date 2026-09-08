@@ -36,6 +36,15 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  // Same rule, applied to AI Operator task history (#5205 W03, #5208): the
+  // task's org_id is its immutable tenant and anchors four composite
+  // (x, org_id) FKs, so a restamp would 23503 the moment the task has an
+  // operation, an outbox wake, a linked run or a linked intent. moveOrg.ts detaches instead
+  // (device_id = NULL + target_detached_at/reason + fence to 'stopping'), and
+  // breeze_cascade_device_org_id() carries the same statement for a direct
+  // devices.org_id UPDATE. See the CORE_DEVICE_ORG_DENORMALIZED_TABLES
+  // comment block in core.ts.
+  'ai_operator_tasks',
   'offline_transition_effects', // immutable historical source route; see core.ts
   // Has org_id, but it is intentionally NOT re-stamped on move: exposure
   // history stays with the org the unattended action ran in (same
@@ -1207,5 +1216,89 @@ describe('device_group_memberships cross-org detach coverage (#3182)', () => {
       deviceOrgDenormalizedTables,
       'device_group_memberships stays in getDeviceOrgDenormalizedTables(): the loop UPDATE matches nothing once the detach above has run, and is retained as the backstop for any devices.org_id writer that reaches the loop without it (#3182)',
     ).toContain('device_group_memberships');
+  });
+});
+
+/**
+ * #4622 — `manual_assets` cross-org detach.
+ *
+ * `manual_assets` is org-scoped hand-entered inventory that may point at the
+ * agent device an engineer later installed, through the composite FK
+ * `(linked_device_id, org_id) -> devices(id, org_id)`. It has NO `device_id`
+ * column, so the generic re-stamp loop cannot reach it, and it is deliberately
+ * absent from `CORE_DEVICE_ORG_DENORMALIZED_TABLES` — a link-only table is not
+ * device-managed, and the "all listed tables are also device-managed"
+ * assertion above would report it as an orphan.
+ *
+ * Once the device leaves the org the link is not merely stale but
+ * unrepresentable, so the route nulls it. Placement is load-bearing and
+ * STRICTER than the `device_group_memberships` precedent above:
+ * `device_group_memberships_device_org_fk` is DEFERRABLE INITIALLY DEFERRED, so
+ * its detach may sit after the `devices` row flip.
+ * `manual_assets_linked_device_org_fk` is DEFERRABLE INITIALLY IMMEDIATE (the
+ * CLAUDE.md default for a composite FK referencing an `org_id` column), so its
+ * referential check fires at the end of the `UPDATE devices SET org_id`
+ * statement itself — a detach placed after that flip is already too late and
+ * the move aborts with 23503. Hence: BEFORE the devices update, not merely
+ * before the loop.
+ *
+ * No mirror in `breeze_cascade_device_org_id()`: that trigger runs in the same
+ * after-row queue as the IMMEDIATE RI check, so its ordering relative to the
+ * check is decided by trigger name and could not be relied on. The only other
+ * writer of `devices.org_id` is the org merge, which runs `SET CONSTRAINTS ALL
+ * DEFERRED` and re-points `manual_assets` wholesale via `orgMergeRegistry`
+ * REPOINT_TABLES — a merge must NOT detach.
+ *
+ * These are STATIC source assertions. That the move really stops 23503ing is
+ * proved against live Postgres in
+ * `src/__tests__/integration/manualAssetsRls.integration.test.ts`.
+ */
+describe('manual_assets cross-org detach coverage (#4622)', () => {
+  const moveOrgSource = () =>
+    readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+
+  it('moveOrg.ts nulls manual_assets.linked_device_id for the moved device', () => {
+    expect(moveOrgSource()).toMatch(
+      /UPDATE manual_assets SET linked_device_id = NULL\s+WHERE linked_device_id = \$\{deviceId\}::uuid/,
+    );
+  });
+
+  it('places the detach BEFORE the generic denormalized re-stamp loop', () => {
+    const src = moveOrgSource();
+    const detach = src.indexOf('UPDATE manual_assets SET linked_device_id = NULL');
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(detach, 'moveOrg.ts: no manual_assets detach found (#4622)').toBeGreaterThan(-1);
+    expect(detach).toBeLessThan(loop);
+  });
+
+  it('places the detach BEFORE the devices row flip (the IMMEDIATE FK check fires there)', () => {
+    const src = moveOrgSource();
+    const detach = src.indexOf('UPDATE manual_assets SET linked_device_id = NULL');
+    const flip = src.indexOf('.update(devices)');
+    expect(flip, 'moveOrg.ts: no devices row flip found').toBeGreaterThan(-1);
+    expect(
+      detach,
+      'manual_assets_linked_device_org_fk is INITIALLY IMMEDIATE, so its check fires at the end of the `UPDATE devices SET org_id` statement — a detach after the flip is too late and the move 23503s',
+    ).toBeLessThan(flip);
+  });
+
+  it('declares the link FK composite and DEFERRABLE INITIALLY IMMEDIATE', () => {
+    const ddl = readdirSync(MIGRATIONS_DIR)
+      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+      .map((name) => readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8'))
+      .join('\n')
+      .match(/ADD CONSTRAINT manual_assets_linked_device_org_fk[\s\S]{0,400}?;/);
+    expect(ddl, 'no migration adds manual_assets_linked_device_org_fk (#4622)').toBeTruthy();
+    const flat = ddl![0].replace(/\s+/g, ' ');
+    expect(flat).toContain('REFERENCES devices(id, org_id)');
+    expect(
+      flat,
+      'the org merge runs SET CONSTRAINTS ALL DEFERRED and re-points parent and child org_id in separate statements; orgLifecycleFoundations.integration.test.ts rejects any non-deferrable FK referencing a parent org_id',
+    ).toContain('DEFERRABLE INITIALLY IMMEDIATE');
+  });
+
+  it('is not registered as an org-denormalized table (link-only, not device-managed)', () => {
+    expect(DEVICE_ORG_DENORMALIZED_TABLES).not.toContain('manual_assets');
+    expect(deviceOrgDenormalizedTables).not.toContain('manual_assets');
   });
 });

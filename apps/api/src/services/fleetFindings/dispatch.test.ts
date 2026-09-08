@@ -514,6 +514,84 @@ describe('createRemediationRun / dispatchRunChunk — run-context override (#488
     const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
     expect(payload.runAs).toBe('elevated');
   });
+
+  // #5129. Fleet remediation is the one script-dispatch path that does NOT go
+  // through `dispatchScriptToDevice`, so it re-lists which script fields ride
+  // the payload by hand. If it forgets the acknowledgement, every acknowledged
+  // script silently reverts to "refused" the moment it is run from a
+  // remediation run rather than the Scripts page — a per-path regression the
+  // dispatchScriptToDevice suite cannot see.
+  const HKLM_ACK = 'PowerShell HKLM modification';
+
+  function seedScriptRun(scriptRow: Record<string, unknown>): void {
+    h.selectQueue.push([
+      {
+        id: RUN_1,
+        orgId: ORG_1,
+        actionKind: 'script',
+        commandType: null,
+        scriptId: SCRIPT_1,
+        parameterSnapshot: {},
+        status: 'running',
+        createdBy: USER_ID,
+        startedAt: new Date(),
+        runAs: null,
+      },
+    ]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([scriptRow]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-ack' } });
+  }
+
+  const riskyScript = (overrides: Record<string, unknown> = {}) => ({
+    orgId: ORG_1,
+    language: 'bash',
+    content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+    timeoutSeconds: 60,
+    runAs: 'system',
+    acknowledgedSecurityPatterns: [],
+    ...overrides,
+  });
+
+  it('forwards the script\u2019s acknowledged security patterns (#5129)', async () => {
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: [HKLM_ACK] }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.acknowledgedSecurityPatterns).toEqual([HKLM_ACK]);
+    // Guards the guard: the risky content really did ride along, so the
+    // assertion above is about a forwarded acknowledgement rather than an
+    // accidentally-empty payload.
+    expect(payload.content).toContain('HKLM');
+  });
+
+  it('omits the acknowledgement key when the script acknowledges nothing (#5129)', async () => {
+    // Keeps the wire byte-identical to pre-#5129 for unacknowledged scripts;
+    // an absent key is what the agent treats as fail closed.
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: [] }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('acknowledgedSecurityPatterns');
+  });
+
+  it('re-reads the acknowledgement at dispatch time, so a revoked one stops authorising the run (#5129)', async () => {
+    // The run was created while the script was acknowledged; the approval was
+    // revoked before this chunk dispatched. The script row is re-fetched here
+    // (the same re-fetch that exists for bound parameters), so the stale
+    // approval must NOT ride along and the device must refuse again.
+    seedScriptRun(riskyScript({ acknowledgedSecurityPatterns: null }));
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    const payload = queueCommandForExecutionMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('acknowledgedSecurityPatterns');
+    expect(payload.content).toContain('HKLM');
+  });
 });
 
 /**

@@ -22,7 +22,6 @@ import {
   Ticket,
   Archive
 } from 'lucide-react';
-import ContactsCard from './ContactsCard';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
@@ -306,14 +305,22 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
 
-  // Contracts moved into the organization record's Contracts & Billing tab
-  // (#5075 W03) — this settings tab now exists only to send an old `#contracts`
-  // link (bookmark or nav click) to its new home instead of showing stale UI.
-  // `replace: true` so the redirect doesn't leave the settings page's dead tab
-  // in back-history.
+  // Two settings tabs moved onto the organization record: contracts to its
+  // Contracts & Billing tab (#5075 W03) and contacts to its Contacts tab
+  // (#5075 W02). Both nav entries stay (they remain discoverable destinations
+  // from this page) but activating either hands off to the record rather than
+  // rendering stale UI here. One effect covers BOTH activation paths for each —
+  // a direct deep link (the mount/hashchange effect above sets `activeTab`) and
+  // a nav click (`switchTab` sets it too) funnel through the same state.
+  // `replace: true` on both: without it, Back returns to the dead settings tab,
+  // whose effect immediately redirects forward again — a Back-button trap.
   useEffect(() => {
-    if (activeTab !== 'contracts' || !effectiveOrgId) return;
-    void navigateTo(`/organizations/${effectiveOrgId}#billing`, { replace: true });
+    if (!effectiveOrgId) return;
+    if (activeTab === 'contracts') {
+      void navigateTo(`/organizations/${effectiveOrgId}#billing`, { replace: true });
+    } else if (activeTab === 'contacts') {
+      void navigateTo(`/organizations/${effectiveOrgId}#contacts`, { replace: true });
+    }
   }, [activeTab, effectiveOrgId]);
 
   const fetchOrgDetails = useCallback(async () => {
@@ -638,13 +645,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           />
         ) : null;
       case 'contacts':
-        // No onDirty: the card persists every change through its own request,
-        // so this tab never holds unsaved draft state.
-        return effectiveOrgId ? (
-          <div data-testid="org-tab-contacts">
-            <ContactsCard orgId={effectiveOrgId} />
-          </div>
-        ) : null;
+        // Redirected to the organization record's Contacts tab by the effect
+        // above — this case never actually renders ContactsCard here anymore.
+        return null;
       case 'contracts':
         // Redirected to the organization record's Contracts & Billing tab by
         // the effect above; render nothing while that navigation happens.

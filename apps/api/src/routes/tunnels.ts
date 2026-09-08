@@ -532,6 +532,12 @@ tunnelRoutes.post(
       return c.json({ error: 'Discovered asset not found or access denied' }, 404);
     }
 
+    // #5213: ip_address is nullable now (manual website / DNS-only assets).
+    // String(null) is the literal "null", which would sail past isTargetBlocked
+    // below and reach the agent as a garbage target rather than failing loudly.
+    if (!asset.ipAddress) {
+      return c.json({ error: 'This asset has no IP address; a tunnel needs one' }, 400);
+    }
     const ip = String(asset.ipAddress);
     const siteId = asset.siteId;
 

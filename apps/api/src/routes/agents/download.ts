@@ -4,8 +4,8 @@ import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
-import { getPromotedComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 
 export const downloadRoutes = new Hono();
 
@@ -106,20 +106,56 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // is different and throws: serving the env version then would reintroduce
     // the very mismatch this fixes and report a server-side DB fault to the
     // end user as a checksum failure.
+    // #5159: an explicit `?version=` pins the redirect to that exact release
+    // instead of the promoted one. The heartbeat can legitimately target a
+    // pinned/pilot version that is NOT promoted (resolvePinnedUpgradeTarget,
+    // #2124); GET /agent-versions/:version/download hands the agent that
+    // version's checksum and now points here WITH the version, so the bytes
+    // and the checksum come from one release again. Absent the param the
+    // route behaves exactly as before (promoted row, #3499).
+    const requestedVersion = c.req.query('version')?.trim() || undefined;
+
     if (getBinarySource() === 'github') {
       let redirectUrl: string;
       try {
-        const promotedVersion = await getPromotedComponentVersion(
-          config.component,
-          os,
-          arch,
-        );
+        let resolvedVersion: string | null;
+        if (requestedVersion) {
+          resolvedVersion = await getRegisteredComponentVersion(
+            config.component,
+            os,
+            arch,
+            requestedVersion,
+          );
+          if (!resolvedVersion) {
+            // Fail closed. Degrading to the promoted release here would hand
+            // back bytes for a DIFFERENT version than the caller asked for —
+            // exactly the substitution #5159 is about — and these routes are
+            // public, so an unregistered tag must never reach the URL builder.
+            console.warn(
+              `[${config.logTag}] refusing to serve ${filename}: no registered agent_versions row for requested version`,
+              { requestedVersion, os, arch, component: config.component },
+            );
+            return c.json(
+              {
+                error: 'Version not found',
+                message: `${config.entityLabel} for the requested version is not available.`,
+              },
+              404,
+            );
+          }
+        } else {
+          resolvedVersion = await getPromotedComponentVersion(
+            config.component,
+            os,
+            arch,
+          );
+        }
         // Inside the try on purpose: the URL builder ALSO throws — on a
         // malformed release tag, which a promoted row can carry because
         // agent_versions.version has no format constraint. That is the same
         // "we cannot determine a release to serve" condition, so it belongs on
         // the same 503 rather than falling through to a bare 500.
-        redirectUrl = config.githubUrlFor(os, arch, promotedVersion ?? undefined);
+        redirectUrl = config.githubUrlFor(os, arch, resolvedVersion ?? undefined);
       } catch (err) {
         console.error(
           `[${config.logTag}] refusing to serve ${filename}: could not resolve a release to redirect to`,
@@ -136,6 +172,43 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
         );
       }
       return c.redirect(redirectUrl, 302);
+    }
+
+    // Local mode serves ONE unversioned file per (component, os, arch) — the
+    // build baked into the binaries volume, whose version is the env-resolved
+    // one. It cannot honour a pin, so refuse rather than stream bytes for a
+    // version the caller did not ask for (the #5159 failure mode again, just
+    // one layer down). Our own callers only append `?version=` in github mode,
+    // so this is a guard against a hand-crafted or future request, not a path
+    // the agent takes. When the env version is unresolvable ('latest') we
+    // genuinely cannot tell, so serve as before and let the agent's checksum
+    // check be the backstop.
+    if (requestedVersion) {
+      const localVersion = getGithubReleaseVersion();
+      if (localVersion === 'latest') {
+        // Neither BINARY_VERSION nor BREEZE_VERSION is set, so we cannot say
+        // which build is on disk and cannot evaluate the guard. Serving is
+        // still the right call (refusing would break a deployment whose disk
+        // build IS the requested one), but say so: if the agent then reports a
+        // checksum failure, this line is what tells an operator why.
+        console.warn(
+          `[${config.logTag}] serving ${filename} for a requested version without being able to verify it: set BINARY_VERSION or BREEZE_VERSION so this server knows which build it holds`,
+          { requestedVersion },
+        );
+      }
+      if (localVersion !== 'latest' && localVersion !== requestedVersion) {
+        console.warn(
+          `[${config.logTag}] refusing to serve ${filename}: local mode has only the ${localVersion} build`,
+          { requestedVersion, localVersion },
+        );
+        return c.json(
+          {
+            error: 'Version not available',
+            message: `${config.entityLabel} for the requested version is not available from this server.`,
+          },
+          409,
+        );
+      }
     }
 
     // Local mode: try S3 presigned redirect first (bandwidth offload)
@@ -518,27 +591,66 @@ require_root() {
   fi
 }
 
-uninstall_macos() {
-  local agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
-  local watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
-  local user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
-
-  echo "Uninstalling Breeze Agent for macOS..."
-
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout system/com.breeze.agent 2>/dev/null || launchctl unload "$agent_plist" 2>/dev/null || true
-    launchctl bootout system/com.breeze.watchdog 2>/dev/null || launchctl unload "$watchdog_plist" 2>/dev/null || true
-    launchctl unload "$user_plist" 2>/dev/null || true
-  else
-    warn "launchctl not found; skipping service stop"
+# Package-owned macOS teardown. Embedded in Go; copied into download scripts.
+# BEGIN BREEZE MACOS UNINSTALL FUNCTIONS
+breeze_bootout() {
+  target="$1"
+  command -v launchctl >/dev/null 2>&1 || return 1
+  if launchctl bootout "$target" 2>/dev/null; then
+    return 0
   fi
+  # An absent job is already stopped; a job that remains loaded is a failure.
+  status=0
+  launchctl print "$target" >/dev/null 2>&1 || status=$?
+  # launchctl uses 113 (service not found) for an absent service target.
+  if [ "$status" -ne 113 ]; then
+    echo "Error: could not confirm $target stopped (launchctl status $status)" >&2
+    return 1
+  fi
+}
 
-  rm -f "$agent_plist"
-  rm -f "$watchdog_plist"
-  rm -f "$user_plist"
-  rm -f "$AGENT_BINARY"
-  rm -f "$WATCHDOG_BINARY"
-  rm -f "$BACKUP_BINARY"
+breeze_stop_watchdog() {
+  breeze_bootout system/com.breeze.watchdog
+}
+
+breeze_stop_helpers() {
+  # Include fast-user-switched sessions, not just the foreground console user.
+  sessions="$(ps -axo pid=,uid=,comm=)" || return 1
+  uids="$(printf '%s\\n' "$sessions" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $2 >= 500 && $NF ~ /(^|\\/)loginwindow$/ {print $2}' | sort -u)"
+  for uid in $uids; do
+    breeze_bootout "gui/$uid/com.breeze.desktop-helper-user" || return 1
+  done
+  # LoginWindow is a session type, not a launchctl domain name. Address each
+  # actual loginwindow process's domain, including the root login-screen session.
+  pids="$(printf '%s\\n' "$sessions" | awk '$1 ~ /^[0-9]+$/ && $1 > 0 && $2 ~ /^[0-9]+$/ && $NF ~ /(^|\\/)loginwindow$/ {print $1}' | sort -u)"
+  for pid in $pids; do
+    breeze_bootout "pid/$pid/com.breeze.desktop-helper-loginwindow" || return 1
+  done
+}
+
+breeze_remove_auxiliary() {
+  rm -f /Library/LaunchDaemons/com.breeze.watchdog.plist \\
+    /Library/LaunchAgents/com.breeze.desktop-helper-user.plist \\
+    /Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist \\
+    /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-desktop-helper \\
+    /usr/local/bin/breeze-backup \\
+    "/Library/Application Support/Breeze/agent.sock" || return 1
+  # Only forget this package's receipt; configuration and logs retain their policy.
+  receipts="$(pkgutil --pkgs)" || return 1
+  # Consume all input: grep -q can SIGPIPE printf under Bash pipefail.
+  if printf '%s\\n' "$receipts" | grep -Fx com.breeze.agent >/dev/null; then
+    pkgutil --forget com.breeze.agent || return 1
+  fi
+}
+# END BREEZE MACOS UNINSTALL FUNCTIONS
+
+uninstall_macos() {
+  echo "Uninstalling Breeze Agent for macOS..."
+  breeze_stop_watchdog || return 1
+  breeze_stop_helpers || return 1
+  breeze_bootout system/com.breeze.agent || return 1
+  rm -f /Library/LaunchDaemons/com.breeze.agent.plist "$AGENT_BINARY" || return 1
+  breeze_remove_auxiliary || return 1
 
   echo "Breeze Agent uninstalled."
   echo "Config at /Library/Application Support/Breeze/ was preserved."

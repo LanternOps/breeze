@@ -242,6 +242,13 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     // carry it (it is a real value of the `script_run_as` enum), even though
     // the form only offers system/user.
     runAs: z.enum(['system', 'user', 'elevated']).optional(),
+    // #5128 W4 — what to do when the target device is offline at dispatch
+    // time. 'queue' (the default) persists the command with a delivery
+    // deadline and the agent claims it on its next successful heartbeat;
+    // 'skip' reproduces the pre-#5128 behaviour of failing the step with
+    // `device_offline`. Defaulted rather than optional so a stored action
+    // authored before this field existed reads as 'queue'.
+    whenOffline: z.enum(['queue', 'skip']).default('queue'),
   }),
   z.object({
     type: z.literal('send_notification'),
@@ -260,6 +267,8 @@ export const automationActionSchema = z.discriminatedUnion('type', [
     type: z.literal('execute_command'),
     command: z.string(),
     shell: z.enum(['bash', 'powershell', 'cmd']).optional(),
+    // #5128 W4 — see the run_script arm above.
+    whenOffline: z.enum(['queue', 'skip']).default('queue'),
   }),
   z.object({
     type: z.literal('deploy_software'),
@@ -789,6 +798,12 @@ export const patchInlineSettingsSchema = z.object({
   scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
   scheduleDayOfMonth: z.number().int().min(1).max(28).default(1),
+  // #5128 W3: what a scheduled install does when the device is offline at
+  // dispatch. 'queue' (the default) persists the install_patches command with a
+  // delivery deadline of min(patch TTL, next occurrence) so it runs on the
+  // device's next check-in; 'skip' is the pre-#5128 behaviour of recording the
+  // device as skipped and moving on.
+  offlineBehavior: z.enum(['skip', 'queue']).default('queue'),
   rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window']).default('if_required'),
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
@@ -1135,6 +1150,7 @@ export * from './ai';
 export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
+export * from './aiOperator';
 export * from './orgNarrative';
 export * from './ticketTriage';
 export * from './aiAgentImpact';

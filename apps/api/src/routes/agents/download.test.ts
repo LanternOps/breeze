@@ -11,6 +11,7 @@ vi.mock('../../services/s3Storage', () => ({
 
 vi.mock('../../services/binarySource', () => ({
   getBinarySource: vi.fn(() => 'local'),
+  getGithubReleaseVersion: vi.fn(() => 'latest'),
   getGithubAgentUrl: vi.fn(),
   getGithubAgentPkgUrl: vi.fn(),
   getGithubHelperUrl: vi.fn(),
@@ -28,6 +29,10 @@ vi.mock('../../services/promotedAgentVersion', () => ({
   // Default: no promoted row, so every pre-existing test keeps exercising the
   // historical env-resolved redirect path unchanged.
   getPromotedComponentVersion: vi.fn(async () => null),
+  // #5159: default "the requested version is not registered here", so any
+  // pre-existing test that stumbles onto the ?version= branch fails closed
+  // rather than silently reusing the promoted row.
+  getRegisteredComponentVersion: vi.fn(async () => null),
 }));
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
@@ -37,9 +42,9 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
-import { getPromotedComponentVersion } from '../../services/promotedAgentVersion';
+import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
 describe('public agent binary downloads', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
@@ -411,6 +416,179 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
   });
 });
 
+describe('component downloads honour an explicit ?version= pin (issue #5159)', () => {
+  const ENV_VERSION = '0.108.0';
+  const PROMOTED_VERSION = '0.108.0'; // the globally promoted agent_versions row
+  const PINNED_VERSION = '0.110.0'; // an org agentVersionPins pilot, isLatest=false
+
+  const urlFor =
+    (component: string) =>
+    (os: string, arch: string, version?: string) =>
+      `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-${component}-${os}-${arch}`;
+
+  beforeEach(() => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(getGithubReleaseVersion).mockReturnValue(ENV_VERSION);
+    vi.mocked(getGithubAgentUrl).mockImplementation(urlFor('agent'));
+    vi.mocked(getGithubBackupUrl).mockImplementation(urlFor('backup'));
+    vi.mocked(getGithubWatchdogUrl).mockImplementation(urlFor('watchdog'));
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(PROMOTED_VERSION);
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(PINNED_VERSION);
+  });
+
+  afterEach(() => {
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(getGithubReleaseVersion).mockReset();
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    vi.mocked(getPromotedComponentVersion).mockReset();
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(null);
+    vi.mocked(getRegisteredComponentVersion).mockReset();
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(null);
+  });
+
+  it('redirects to the PINNED release, not the promoted one', async () => {
+    // The reporter's exact state: heartbeat targets the pinned 0.110.0 (allowed
+    // without isLatest per #2124) while agent_versions still promotes 0.108.0.
+    const res = await downloadRoutes.request(
+      `/download/windows/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(302);
+    expect(getRegisteredComponentVersion).toHaveBeenCalledWith(
+      'agent',
+      'windows',
+      'amd64',
+      PINNED_VERSION,
+    );
+    expect(getPromotedComponentVersion).not.toHaveBeenCalled();
+    expect(res.headers.get('location')).toBe(
+      `https://github.test/releases/download/v${PINNED_VERSION}/breeze-agent-windows-amd64`,
+    );
+    // The bug: 0.110.0 checksum, 0.108.0 bytes, forever "Updating".
+    expect(res.headers.get('location')).not.toContain(PROMOTED_VERSION);
+  });
+
+  it.each([
+    ['watchdog', '/download/watchdog/linux/amd64', 'linux', 'amd64', 'breeze-watchdog-linux-amd64'],
+    ['backup', '/download/backup/linux/amd64', 'linux', 'amd64', 'breeze-backup-linux-amd64'],
+    ['helper', '/download/helper/darwin/arm64', 'darwin', 'arm64', 'breeze-helper-darwin'],
+    ['user-helper', '/download/user-helper/windows/amd64', 'windows', 'amd64', 'breeze-user-helper-windows-amd64'],
+  ])(
+    'pins the %s route to the requested version, resolved for ITS OWN component',
+    async (component, path, os, arch, asset) => {
+      // The component argument matters and the mock is arg-blind, so assert
+      // the call itself: a route that passed a hardcoded 'agent' (or its
+      // neighbour's component) would resolve the wrong row in production and
+      // still produce a correct-looking Location here.
+      vi.mocked(getRegisteredComponentVersion).mockClear();
+      vi.mocked(getGithubHelperUrl).mockImplementation(
+        (o: string, version?: string) =>
+          `https://github.test/releases/download/v${version ?? ENV_VERSION}/breeze-helper-${o}`,
+      );
+      vi.mocked(getGithubUserHelperUrl).mockImplementation(urlFor('user-helper'));
+
+      const res = await downloadRoutes.request(`${path}?version=${PINNED_VERSION}`);
+
+      expect(res.status).toBe(302);
+      expect(getRegisteredComponentVersion).toHaveBeenCalledWith(
+        component,
+        os,
+        arch,
+        PINNED_VERSION,
+      );
+      expect(res.headers.get('location')).toBe(
+        `https://github.test/releases/download/v${PINNED_VERSION}/${asset}`,
+      );
+    },
+  );
+
+  it('404s an unregistered version instead of substituting the promoted one', async () => {
+    // These routes are public and unauthenticated: an arbitrary caller-supplied
+    // tag must never reach the release-URL builder, and silently serving the
+    // promoted build instead is the very substitution this fix removes.
+    vi.mocked(getRegisteredComponentVersion).mockResolvedValue(null);
+    vi.mocked(getGithubAgentUrl).mockClear();
+
+    const res = await downloadRoutes.request('/download/linux/amd64?version=9.9.9');
+
+    expect(res.status).toBe(404);
+    expect(getGithubAgentUrl).not.toHaveBeenCalled();
+    const body = await res.text();
+    expect(body).not.toContain('9.9.9');
+  });
+
+  it('503s when the pinned-version lookup faults', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getRegisteredComponentVersion).mockRejectedValue(
+      new Error('connection terminated'),
+    );
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+  });
+
+  it('falls back to the promoted row when no ?version= is given', async () => {
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(302);
+    expect(getRegisteredComponentVersion).not.toHaveBeenCalled();
+    expect(getPromotedComponentVersion).toHaveBeenCalledWith('agent', 'linux', 'amd64');
+  });
+
+  it('409s in local mode when the requested version is not the build on disk', async () => {
+    // Local mode has exactly one build per (component, os, arch); serving it
+    // for a different requested version is the same silent substitution.
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    expect(res.status).toBe(409);
+  });
+
+  it('warns instead of silently serving when local mode cannot tell which build it holds', async () => {
+    // Neither BINARY_VERSION nor BREEZE_VERSION set. Refusing would break a
+    // deployment whose disk build IS the requested one, so we serve — but the
+    // operator must be able to trace a later checksum failure back to here
+    // rather than to an unrelated cause.
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${PINNED_VERSION}`,
+    );
+
+    // Not a 409: the guard could not be evaluated, so it must not fire.
+    expect(res.status).toBe(404);
+    expect(
+      warn.mock.calls.some(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('without being able to verify it'),
+      ),
+    ).toBe(true);
+  });
+
+  it('serves normally in local mode when the requested version matches the build', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('local');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    // No binary staged in this test env, so a 404 (not a 409) proves the
+    // version guard let the request through to the normal disk path.
+    const res = await downloadRoutes.request(
+      `/download/linux/amd64?version=${ENV_VERSION}`,
+    );
+
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
   const originalHelperDir = process.env.HELPER_BINARY_DIR;
@@ -778,7 +956,7 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
     const script = await fetchScript();
     expect(script).toContain('Darwin*) uninstall_macos');
     expect(script).toContain('Linux*) uninstall_linux');
-    expect(script).toContain('launchctl bootout system/com.breeze.agent');
+    expect(script).toContain('breeze_bootout system/com.breeze.agent');
     expect(script).toContain('systemctl stop breeze-agent');
   });
 
@@ -790,7 +968,8 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
       script.indexOf('uninstall_macos()'),
       script.indexOf('uninstall_linux()'),
     );
-    expect(macosBlock).toContain('rm -f "$BACKUP_BINARY"');
+    expect(macosBlock).toContain('breeze_remove_auxiliary || return 1');
+    expect(script).toContain('/usr/local/bin/breeze-backup');
 
     const linuxStart = script.indexOf('uninstall_linux()');
     const linuxBlock = script.slice(
@@ -798,6 +977,47 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
       script.indexOf('require_root', linuxStart),
     );
     expect(linuxBlock).toContain('rm -f "$BACKUP_BINARY"');
+  });
+
+  it('executes macOS package cleanup with intercepted endpoint commands', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-uninstall-exec-'));
+    const calls = join(tmp, 'calls');
+    try {
+      for (const name of ['id', 'uname', 'launchctl', 'pkgutil', 'rm', 'ps']) {
+        let body = '#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >> "$FIXTURE_CALLS"\n';
+        if (name === 'id') body += 'echo 0\n';
+        if (name === 'uname') body += 'echo Darwin\n';
+        if (name === 'ps') body += "printf '101 501 loginwindow\\n102 502 loginwindow\\n101 501 loginwindow\\n'\n";
+        if (name === 'pkgutil') body += '[ "$1" != --pkgs ] || echo com.breeze.agent\n';
+        writeFileSync(join(tmp, name), body, { mode: 0o755 });
+      }
+      const script = join(tmp, 'uninstall.sh');
+      writeFileSync(script, await fetchScript());
+      execFileSync('/bin/bash', [script], { env: { ...process.env, PATH: `${tmp}:/usr/bin:/bin`, FIXTURE_CALLS: calls } });
+      const commands = readFileSync(calls, 'utf8');
+      const ordered = [
+        'launchctl bootout system/com.breeze.watchdog',
+        'launchctl bootout gui/501/com.breeze.desktop-helper-user',
+        'launchctl bootout gui/502/com.breeze.desktop-helper-user',
+        'launchctl bootout pid/101/com.breeze.desktop-helper-loginwindow',
+        'launchctl bootout pid/102/com.breeze.desktop-helper-loginwindow',
+        'launchctl bootout system/com.breeze.agent',
+        'pkgutil --forget com.breeze.agent',
+      ];
+      let previous = -1;
+      for (const call of ordered) {
+        expect(commands.indexOf(call)).toBeGreaterThan(previous);
+        previous = commands.indexOf(call);
+      }
+      for (const binary of ['breeze-agent', 'breeze-watchdog', 'breeze-backup', 'breeze-desktop-helper']) {
+        expect(commands).toContain(`/usr/local/bin/${binary}`);
+      }
+      expect(commands).not.toContain('rm -rf');
+      expect(commands).not.toContain('com.breeze.agent-user');
+      expect(commands).not.toContain('com.breeze.helper');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('matches the checked-in web and agent script copies', async () => {

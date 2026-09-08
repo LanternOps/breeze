@@ -390,10 +390,17 @@ softwarePoliciesRoutes.post(
 
 softwarePoliciesRoutes.get('/compliance/overview', requireSoftwarePolicyRead, async (c) => {
   const auth = c.get('auth');
+  const perms = c.get('permissions') as UserPermissions | undefined;
 
   const conditions: SQL[] = [];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
+  if (perms?.allowedSiteIds && auth.orgId) {
+    if (perms.allowedSiteIds.length === 0) {
+      return c.json({ total: 0, compliant: 0, violations: 0, unknown: 0 });
+    }
+    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
+  }
 
   const worstStatusSq = db
     .select({

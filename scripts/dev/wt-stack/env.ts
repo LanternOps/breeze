@@ -15,6 +15,14 @@ const DEV_ENV: Record<string, string> = {
   BINARY_SOURCE: 'github',
   CADDY_SITE_ADDRESS: ':80',
   BREEZE_PORTAL_IMAGE_REF: 'breeze-portal:dev',
+  // The next four are required by `x-api-env` (docker-compose.yml) with no
+  // default and postdate several developers' root .env — a stale .env leaves
+  // a fresh worktree unable to boot at all. Values match .env.example's own
+  // documented defaults.
+  REMOTE_ACCESS_ADMISSION_MODE: 'open',
+  EVENT_PERMISSION_EPOCH_MODE: 'compat',
+  REMOTE_WS_AUTH_MODE: 'post_upgrade',
+  REMOTE_WS_REDIS_TOPOLOGY: 'standalone-single-primary',
   // Caddy/postgres/redis images are digest-pinned in base compose; reuse the
   // values already present in the developer's root .env via compose interpolation.
 };

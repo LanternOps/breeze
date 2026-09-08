@@ -423,6 +423,13 @@ monitoringRoutes.put(
       .limit(1);
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
 
+    // #5213: ip_address is nullable now (manual website / DNS-only assets).
+    // snmp_devices.ip_address is varchar NOT NULL, so the old `?? ''` fallback
+    // satisfied the constraint and left the poller aimed at an empty string.
+    if (!asset.ipAddress) {
+      return c.json({ error: 'This asset has no IP address; SNMP polling needs one' }, 400);
+    }
+
     if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
       return c.json({ error: 'SNMP template not found' }, 404);
     }
@@ -440,8 +447,8 @@ monitoringRoutes.put(
     })();
 
     const setValues: Record<string, unknown> = {
-      name: asset.hostname ?? (asset.ipAddress as any) ?? 'Unknown',
-      ipAddress: (asset.ipAddress as any) ?? '',
+      name: asset.hostname ?? (asset.ipAddress as any),
+      ipAddress: asset.ipAddress as any,
       snmpVersion: body.snmpVersion,
       pollingInterval: body.pollingInterval ?? 300,
       port: body.port ?? 161,

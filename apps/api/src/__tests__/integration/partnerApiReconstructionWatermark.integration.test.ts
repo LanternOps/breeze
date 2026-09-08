@@ -25,6 +25,7 @@ import {
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
 import { createOrganization, createPartner, createSite, reapplyOrgIdFkDeferrability } from './db-utils';
+import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -54,6 +55,16 @@ describe('partner reconstruction resource watermarks', () => {
     // which lists devices_site_org_fk among the 16 constraints it converts).
     // Restore it rather than editing the shipped migration.
     await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
+    // The bare sql.raw replays above prove idempotency but also revert every
+    // function the hardening file (re)defines — breeze_partner_export_device_
+    // child_insert/update/delete — to its 2026-07-23 body for the rest of this
+    // vitest process. Later shipped migrations redefine those bodies (first:
+    // 2026-10-14-100200-device-warranty-manual-asset-subject.sql, which widens
+    // the device_id guard so a NULL-subject warranty row is legal), and any
+    // suite that runs after this one in the same shard would see the old body
+    // (PR #5253, Integration shard 1). replayMigration re-applies, in filename
+    // order, every later migration that redefines the same functions.
+    await replayMigration('2026-07-23-partner-export-material-state-hardening.sql');
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(

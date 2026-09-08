@@ -275,7 +275,7 @@ All endpoints require authentication and are scoped to the caller's organization
 ## Troubleshooting
 
 **AI-dispatched containment action stuck in pending.**
-The `execute_containment` tool queues an agent command. If the target device is offline, the command remains pending until the device reconnects. Check device connectivity.
+This is expected when the target device is offline: `execute_containment` (like `collect_evidence`) queues the command and delivers it automatically on the device's next successful heartbeat, up to a **7-day** deadline. It's visible and cancellable from the device's **Queued actions** list in the meantime. If the device is actually online and the action is still stuck, check device connectivity.
 
 **Evidence upload rejected.**
 The storage path must use an approved URI scheme (`s3://`, `gs://`, `r2://`, `azblob://`, `immutable://`, `https://`). Path traversal sequences (`..`) are blocked.

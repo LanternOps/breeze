@@ -700,10 +700,10 @@ export async function waitForCommandResult(
  * #5128: this is now a thin adapter over `dispatchDeviceCommand`, the single
  * enqueue seam. Every caller of this function hard-rejected offline devices
  * before #5128, so it passes `previouslyRejected: true` — the
- * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default off) is what decides
- * whether their offline devices reject as today or queue with a deadline.
- * The error strings are unchanged, so callers that surface `error` verbatim
- * behave identically while the flag is off.
+ * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default ON since W4; set it to
+ * `false` to opt out) is what decides whether their offline devices reject as
+ * they used to or queue with a deadline. The error strings are unchanged, so
+ * callers that surface `error` verbatim behave identically with the flag off.
  */
 export async function queueCommandForExecution(
   deviceId: string,

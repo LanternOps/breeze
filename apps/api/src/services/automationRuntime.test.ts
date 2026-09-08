@@ -122,7 +122,8 @@ describe('automationRuntime', () => {
     ]);
 
     expect(actions).toEqual([
-      { type: 'run_script', scriptId: 'script-1', parameters: { s: 'a', n: 3, b: true }, runAs: undefined },
+      // #5128 W4 — whenOffline is normalised to its default on every stored action.
+      { type: 'run_script', scriptId: 'script-1', parameters: { s: 'a', n: 3, b: true }, runAs: undefined, whenOffline: 'queue' },
     ]);
   });
 

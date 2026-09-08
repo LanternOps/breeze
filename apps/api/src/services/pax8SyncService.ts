@@ -38,6 +38,7 @@ function isUniqueViolation(err: unknown, constraint: string): boolean {
   for (let depth = 0; candidate && depth < 5; depth++) {
     if (typeof candidate === 'object') {
       const e = candidate as { code?: unknown; constraint_name?: unknown; message?: unknown; cause?: unknown };
+      // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
       if (e.code === '23505' && (e.constraint_name === constraint || typeof e.constraint_name !== 'string')) {
         return true;
       }

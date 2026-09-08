@@ -169,6 +169,33 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('catalog_item_org_pricing', 'partner_id', control.partnerId)).toBe(1);
   });
 
+  it('purges a partner whose Service Management is bound to a partner-wide PSA connection (#5075 W04)', async () => {
+    // partners.service_management_psa_connection_id -> psa_connections.id is
+    // ON DELETE RESTRICT, and the partner-axis sweep deletes partner-wide
+    // connections BEFORE the final partners DELETE. Without the un-wire
+    // pre-clear this purge aborts with 23503. This is the live shape: PATCH
+    // /orgs/partners/me only ever binds partner-wide (org_id IS NULL) rows.
+    const testDb = getTestDb();
+    const [conn] = (await testDb.execute(sql`
+      INSERT INTO psa_connections (partner_id, org_id, provider, name, credentials, created_at, updated_at)
+      VALUES (${purge.partnerId}, NULL, 'connectwise', 'Canary PSA', '{}'::jsonb, now(), now())
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await testDb.execute(sql`
+      UPDATE partners
+      SET service_management_mode = 'external', service_management_psa_connection_id = ${conn!.id}
+      WHERE id = ${purge.partnerId}
+    `);
+
+    const stats = await cascadeDeletePartner(purge.partnerId, SENTINEL);
+
+    expect(stats.tablesDeleted.partners).toBe(1);
+    expect(stats.tablesDeleted['partners.service_management_unwired']).toBe(1);
+    expect(await countById('partners', 'id', purge.partnerId)).toBe(0);
+    expect(await countById('psa_connections', 'id', conn!.id)).toBe(0);
+    expect(await countById('partners', 'id', control.partnerId)).toBe(1);
+  });
+
   it('writes purge_started and purged audit rows with org_id = NULL', async () => {
     await cascadeDeletePartner(purge.partnerId, SENTINEL);
 

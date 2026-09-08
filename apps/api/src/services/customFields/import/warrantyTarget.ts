@@ -221,6 +221,12 @@ export async function applyWarrantyImport(
     .values({ deviceId: write.deviceId, orgId: write.orgId, ...columns })
     .onConflictDoUpdate({
       target: deviceWarranty.deviceId,
+      // device_warranty_device_id_idx became PARTIAL in #4622 W03 (device_id is
+      // now nullable — a warranty row's subject is a device XOR a manual
+      // asset). Postgres only infers a partial unique index as the ON CONFLICT
+      // arbiter when the statement repeats the predicate, so omitting this
+      // raises 42P10 on every imported warranty row.
+      targetWhere: sql`${deviceWarranty.deviceId} IS NOT NULL`,
       set: { ...columns, orgId: write.orgId, updatedAt: new Date() },
       // The AUTHORITY on the provider rule; the read above is advisory. A row
       // that turns provider-owned between the two matches no target here and

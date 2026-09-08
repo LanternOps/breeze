@@ -155,6 +155,24 @@ dashboard. Pick one before running the suite:
 - set `MFA_FORCE_FOR_PARTNER_ADMIN=false` in the stack's `.env` (the documented
   relief valve; it suppresses only the role-force component) and restart `api`.
 
+### WebAuthn specs need `PUBLIC_APP_URL` to match the browser origin
+
+`intent-self-approve.spec.ts` and `ai-operator-approve-after-browser-close.spec.ts`
+run real WebAuthn ceremonies against Chrome's virtual authenticator. The server
+derives its Relying Party ID from `PUBLIC_APP_URL`, and the browser refuses any
+ceremony whose RP ID is not a suffix of the page's own origin
+(`SecurityError: The relying party ID is not a registrable domain suffix ...`).
+A stack whose `.env` still carries the production `PUBLIC_APP_URL` will fail
+these two specs and only these two. Point it at the stack's own base URL (e.g.
+`PUBLIC_APP_URL=http://localhost:<webPort>` from `.breeze-stack.json`) and
+restart `api`.
+
+Note also that the register-and-refresh ceremony ROTATES the refresh token,
+which revokes the JTI the page's session store is holding — the browser session
+that performs it is unusable afterwards ("Your session expired"). Enrol the key
+in a session that has no in-app work left, and carry it to the next context with
+`exportCredentials` / `importCredentials` (`e2e-tests/webauthn.ts`).
+
 ## Troubleshooting
 
 ### `globalSetup` fails on docker exec

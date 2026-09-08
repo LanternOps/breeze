@@ -139,6 +139,7 @@ import { aiRoutes } from './routes/ai';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -979,6 +980,9 @@ api.route('/ai/provider', aiProviderRoutes);
 // '/schedules' as an agent id (#4189).
 api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
+// module from the already-large aiAgentsRoutes per spec §12.
+api.route('/ai/operator', aiOperatorTasksRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);

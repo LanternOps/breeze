@@ -186,6 +186,7 @@ async function assertGroupInOrg(tx: DbExecutor, groupId: string, orgId: string) 
 function isGroupFkViolation(err: unknown): boolean {
   const node = pgErrorNode(err);
   const constraint = node?.constraint_name ?? node?.constraint;
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by the existing cause-chain mapper.
   return node?.code === '23503' && constraint === 'contract_lines_device_group_org_fk';
 }
 

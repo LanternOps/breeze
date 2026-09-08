@@ -582,7 +582,18 @@
     "selfSaving": "Esta sección guarda sus propios cambios.",
     "saveSettings": "Guardar configuración",
     "enforcedDescription": "Los valores que establezca aquí se aplicarán en todas las organizaciones. Deje los campos vacíos para permitir que cada organización configure individualmente.",
-    "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones."
+    "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones.",
+    "modules": {
+      "title": "Módulos",
+      "description": "Elija qué partes de Breeze usa este MSP. Desactivar la gestión de servicios oculta la mesa de servicio y la facturación de clientes en todas partes e impide crear tickets nuevos.",
+      "nativeLabel": "Mesa de servicio y facturación de Breeze",
+      "nativeDescription": "Los tickets, las hojas de tiempo, las cotizaciones, las facturas y los contratos se gestionan en Breeze. Es la opción predeterminada.",
+      "offLabel": "Desactivado: solo RMM",
+      "offDescription": "Oculta las secciones Mesa de servicio y Facturación y las pestañas Tickets y Facturación del registro del cliente. Los tickets existentes siguen siendo visibles; no se pueden crear nuevos.",
+      "externalNote": "Este socio usa un PSA externo. Todavía no se puede cambiar desde aquí.",
+      "saved": "Módulos actualizados",
+      "saveFailed": "No se pudieron actualizar los módulos"
+    }
   },
   "loginBranding": {
     "saved": "Marca de inicio de sesión guardada",
@@ -3320,6 +3331,7 @@
     "passkeyRenamed": "Clave de acceso renombrada",
     "currentPasswordIsRequiredToDeleteAPasskey": "Se requiere la contraseña actual para eliminar una clave de acceso",
     "passkeyDeleted": "Clave de acceso eliminada",
+    "signInAgainToContinue": "Inicia sesión de nuevo para continuar.",
     "failedToLoadPasskeys": "No se pudieron cargar las claves de acceso",
     "failedToUpdateProfile": "No se pudo actualizar el perfil",
     "failedToUploadAvatar": "No se pudo cargar el avatar",
@@ -4442,7 +4454,8 @@
       "saveOrder": "No se pudo guardar el orden de la organización",
       "saveOrganization": "No se pudo guardar la organización",
       "saveSite": "No se pudo guardar el sitio ({{status}})",
-      "deleteSite": "No se pudo eliminar el sitio"
+      "deleteSite": "No se pudo eliminar el sitio",
+      "loadSites": "No se pudieron cargar los sitios de esta organización."
     },
     "status": {
       "active": "Activo",

@@ -146,6 +146,30 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   queuedAt: timestamp('queued_at', { withTimezone: true }).defaultNow().notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
+  // AI Operator task linkage (#5205 W03, spec §6.2). All three NULL for every
+  // legacy/standalone run, all three set for a task-linked one —
+  // `ai_agent_runs_task_link_chk` enforces all-or-none. Admission identity is
+  // (task_id, task_step_key, task_attempt_ordinal), unique where task_id is
+  // not null; retries and lease recovery reuse the same tuple.
+  //
+  // `taskStepKey` is text, not the spec's `task_step_id` uuid: the thin slice
+  // has no `ai_operator_task_steps` table, so an unbacked uuid would be a
+  // string "resource id" pretending to be a key. P3-2 adds the steps table.
+  //
+  // The composite `(task_id, org_id) -> ai_operator_tasks(id, org_id)` FK is
+  // SQL-ONLY (migrations/2026-10-14-100000-ai-operator-thin-slice.sql):
+  // `aiOperatorTasks.ts` imports this module for its operation->run FK, so the
+  // reverse Drizzle edge would be a module cycle. Postgres has the constraint
+  // either way — same technique as `reports.sourceAiAgentScheduleId`.
+  taskId: uuid('task_id'),
+  taskStepKey: text('task_step_key'),
+  taskAttemptOrdinal: integer('task_attempt_ordinal'),
+  // Spec §6.2: no prompt registry exists yet, so runs 1 and 4 of one task may
+  // use different released prompts. That drift is accepted but must be
+  // RECORDED. `resolvedModel` because runLoop.ts may fall back to the org's
+  // LLM default rather than the policy snapshot's configured model.
+  promptVersion: text('prompt_version'),
+  resolvedModel: text('resolved_model'),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
@@ -186,6 +210,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // finished_at).
   orgProfileFinishedIdx: index('ai_agent_runs_org_profile_finished_idx')
     .on(table.orgId, table.profile, table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
+  // W03 (#5208): AI Operator admission identity — one reasoning run per task
+  // step and attempt (spec §6.2). Partial so legacy rows never collide.
+  taskAdmissionUq: uniqueIndex('ai_agent_runs_task_admission_uq')
+    .on(table.taskId, table.taskStepKey, table.taskAttemptOrdinal)
+    .where(sql`${table.taskId} IS NOT NULL`),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

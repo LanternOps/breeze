@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SecurityLevel } from '@peculiar/asn1-android';
 import type { MobileAttestation } from '@breeze/shared';
@@ -57,8 +58,10 @@ describe('Android attestation end to end (#1374 W04)', () => {
         platform: 'android',
         certificateChain: fixture.certificateChainDerB64,
       } as MobileAttestation,
-      // The fixture's challenge IS the transcript the client committed to.
-      transcript: fixture.challenge,
+      // The fixture's challenge IS the keygen digest the client minted the
+      // key with; the transcript (which embeds the SPKI) is a separate value.
+      transcript: crypto.randomBytes(32),
+      keyGenChallenge: fixture.challenge,
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
       publicKeyAlg: 'ES256',
     });
@@ -88,7 +91,8 @@ describe('Android attestation end to end (#1374 W04)', () => {
         platform: 'android',
         certificateChain: fixture.certificateChainDerB64,
       } as MobileAttestation,
-      transcript: fixture.challenge,
+      transcript: crypto.randomBytes(32),
+      keyGenChallenge: fixture.challenge,
       publicKeySpkiB64: attackerKey.attestedPublicKeyB64,
       publicKeyAlg: 'ES256',
     });
@@ -100,7 +104,7 @@ describe('Android attestation end to end (#1374 W04)', () => {
     });
   });
 
-  it('refuses a chain whose challenge is not the transcript', async () => {
+  it('refuses a chain whose challenge is not the keygen digest', async () => {
     const fixture = await mintAndroidKeyAttestationFixture();
     __setPinnedRootsForTests([fixture.rootPem]);
 
@@ -109,7 +113,8 @@ describe('Android attestation end to end (#1374 W04)', () => {
         platform: 'android',
         certificateChain: fixture.certificateChainDerB64,
       } as MobileAttestation,
-      transcript: Buffer.alloc(32, 7),
+      transcript: crypto.randomBytes(32),
+      keyGenChallenge: Buffer.alloc(32, 7),
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
       publicKeyAlg: 'ES256',
     });
@@ -131,7 +136,8 @@ describe('Android attestation end to end (#1374 W04)', () => {
         platform: 'android',
         certificateChain: fixture.certificateChainDerB64,
       } as MobileAttestation,
-      transcript: fixture.challenge,
+      transcript: crypto.randomBytes(32),
+      keyGenChallenge: fixture.challenge,
       publicKeySpkiB64: fixture.attestedPublicKeyB64,
       publicKeyAlg: 'ES256',
     });
@@ -151,7 +157,8 @@ describe('Android attestation end to end (#1374 W04)', () => {
         platform: 'android',
         certificateChain: fixture.certificateChainDerB64,
       } as MobileAttestation,
-      transcript: fixture.challenge,
+      transcript: crypto.randomBytes(32),
+      keyGenChallenge: fixture.challenge,
       publicKeySpkiB64: 'not-a-key',
       publicKeyAlg: 'ES256',
     });
