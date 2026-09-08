@@ -262,6 +262,19 @@ async function seed(): Promise<SeedHandles> {
         ${deviceId}
       )
     `);
+    // #4622 W03 — a MANUAL-subject device_warranty row (device_id NULL,
+    // manual_asset_id set). device_warranty sorts before manual_assets in
+    // CORE_ORG_CASCADE_DELETE_ORDER, so this proves the child is deleted first;
+    // reversing the two would raise 23503 on the composite
+    // (manual_asset_id, org_id) -> manual_assets(id, org_id) FK. Without this
+    // row the org cascade only ever sees device-subject warranty rows.
+    await testDb.execute(sql`
+      INSERT INTO device_warranty (manual_asset_id, org_id, manufacturer, serial_number, status)
+      SELECT id, org_id, 'dell', ${`BR-MANUAL-SN-${suffix}`}, 'unknown'
+      FROM manual_assets
+      WHERE org_id = ${orgId}
+      LIMIT 1
+    `);
     await testDb.execute(sql`
       INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
       VALUES (${orgId}, 'user', ${actorUserId}, 'test.breadth', 'test', 'success', now())
@@ -387,6 +400,7 @@ describe('cascadeDeleteOrg — erasure breadth', () => {
       alerts: 1,
       audit_logs: 1,
       device_hardware: 1,
+      device_warranty: 1,
       devices: 1,
       maintenance_windows: 1,
       manual_assets: 1,
