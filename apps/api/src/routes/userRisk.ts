@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 
-import { authMiddleware, requirePermission, requireScope, resolveOrgAccess } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, resolveOrgAccess } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   assignSecurityTraining,
@@ -316,6 +316,7 @@ userRiskRoutes.get(
 userRiskRoutes.post(
   '/users/:userId/training-completed',
   requirePermission('users', 'write'),
+  requireMfa(),
   zValidator('param', detailParamSchema),
   zValidator('json', completeTrainingSchema),
   async (c) => {
@@ -370,6 +371,7 @@ userRiskRoutes.post(
 userRiskRoutes.post(
   '/users/:userId/feedback',
   requirePermission('users', 'write'),
+  requireMfa(),
   zValidator('param', detailParamSchema),
   zValidator('json', feedbackPayloadSchema),
   async (c) => {
@@ -426,6 +428,7 @@ userRiskRoutes.post(
 userRiskRoutes.put(
   '/policy',
   requirePermission('users', 'write'),
+  requireMfa(),
   zValidator('json', policyPayloadSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -474,6 +477,7 @@ userRiskRoutes.get('/policy', requirePermission('users', 'read'), zValidator('qu
 userRiskRoutes.post(
   '/assign-training',
   requirePermission('users', 'write'),
+  requireMfa(),
   zValidator('json', assignTrainingSchema),
   async (c) => {
     const auth = c.get('auth');

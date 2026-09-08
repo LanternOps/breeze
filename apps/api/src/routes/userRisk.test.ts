@@ -5,6 +5,12 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => await next(),
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => await next(),
   requirePermission: () => async (_c: unknown, next: () => Promise<void>) => await next(),
+  requireMfa: () => async (c: any, next: () => Promise<void>) => {
+    if (c.req.header('x-deny-mfa')) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    await next();
+  },
   resolveOrgAccess: vi.fn()
 }));
 
@@ -73,6 +79,27 @@ describe('userRiskRoutes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(resolveOrgAccess).mockResolvedValue({ type: 'single', orgId: ORG_ID });
+  });
+
+  it.each([
+    ['POST', `/user-risk/users/${USER_ID}/training-completed`, { completedAt: 'not-a-date' }],
+    ['POST', `/user-risk/users/${USER_ID}/feedback`, { outcome: 'not-an-outcome' }],
+    ['PUT', '/user-risk/policy', { weights: 'not-an-object' }],
+    ['POST', '/user-risk/assign-training', { userId: 'not-a-uuid' }]
+  ])('%s %s requires MFA before validation or service effects', async (method, path, body) => {
+    const app = buildApp();
+    const res = await app.request(path, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-deny-mfa': 'true' },
+      body: JSON.stringify(body)
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(getUserRiskOrgMembership).not.toHaveBeenCalled();
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+    expect(updateUserRiskPolicy).not.toHaveBeenCalled();
+    expect(assignSecurityTraining).not.toHaveBeenCalled();
   });
 
   it('GET /scores returns ranked scores with pagination', async () => {
