@@ -330,6 +330,29 @@ describe('claimTaskLinkedIntentForDispatch (real Postgres, spec §7.3)', () => {
     expect(opRow!.dispatchState).toBe('dispatched');
   });
 
+  // NOTE FOR THE NEXT WAVE — the lock order is NOT covered by a test here, on
+  // purpose (review finding, PR #5259).
+  //
+  // The claim takes task -> operation -> intent; the reversal and
+  // `cancelActionIntent`'s task-linked branch originally took intent ->
+  // operation, an AB-BA cycle on {operation, intent} that Postgres resolves by
+  // aborting one side with 40P01. Both now take the operation row `FOR UPDATE`
+  // before touching the intent. Two ways to test that were tried and both
+  // rejected:
+  //
+  //   - Racing the two paths with `Promise.all`: the window between the two
+  //     locks is microseconds. Eight attempts against the deliberately BROKEN
+  //     ordering all came back green, so it proves nothing.
+  //   - Asserting the order directly by holding the intent row locked from a
+  //     second connection and probing the operation row with `FOR UPDATE
+  //     NOWAIT`: this is genuinely discriminating, but a held row lock in this
+  //     file leaks into the shared `./setup` TRUNCATE hook and took the rest of
+  //     the suite down with it (17 unrelated failures).
+  //
+  // So the ordering is enforced by the code and its comments at all three
+  // sites, not by an assertion. If you touch any of them, re-read
+  // `dispatchClaim.ts`'s header before you move a lock.
+
   describe('refused when the task cannot admit a new effect', () => {
     runDb.each(['paused', 'stopping', 'completed'] as const)('task state = %s', async (state) => {
       const t = await seedTenant();

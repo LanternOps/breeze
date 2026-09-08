@@ -11,6 +11,14 @@
 // The task row is taken `FOR UPDATE` first, and the intent CAS then re-states
 // the whole task predicate as an `EXISTS` over that same locked row.
 //
+// EVERY path that touches both an operation and its intent must take them in
+// that relative order — operation before intent — or it forms an AB-BA cycle
+// with this claim and deadlocks (40P01) under ordinary concurrency. The two
+// other such paths are `revertTaskLinkedDispatchClaim` below and
+// `cancelActionIntent`'s task-linked branch in intentService.ts; both take an
+// explicit `FOR UPDATE` on the operation row before touching the intent for
+// exactly this reason. If you add a third, do the same.
+//
 // Why the lock and not just the join (the Codex quorum's one substantive
 // disagreement, adopted): under READ COMMITTED an `UPDATE action_intents ...
 // FROM ai_operator_tasks` re-reads and re-checks only the row it is UPDATING
@@ -42,8 +50,23 @@ import { markOperationDispatched, revertOperationToReserved } from './operationS
  * facing contract, not just log text.
  */
 export type DispatchClaimRefusal =
-  /** No `ai_operator_operations` row for this intent — reservation never committed. */
+  /**
+   * No `ai_operator_operations` row exists for this intent at all. A BROKEN
+   * INVARIANT, not a race: `reserveOperation` runs in the same transaction as
+   * the intent insert, so a task-linked intent without an operation row should
+   * be unreachable. Kept distinct from `operation_already_claimed` so the
+   * caller can raise it to Sentry instead of logging it like an ordinary lost
+   * race — otherwise an intent would sit `approved` until an unrelated deadline
+   * reaper noticed, up to 24 h later for an `mcp_api` source, with no error
+   * code naming what went wrong.
+   */
   | 'operation_missing'
+  /**
+   * The operation row exists but is no longer `reserved` — another claimant
+   * already owns it. An ordinary, healthy race. The caller must NOT overwrite
+   * the winner's bookkeeping, and must not page anyone.
+   */
+  | 'operation_already_claimed'
   /** The task is not in a state that may admit a new effect, or its plan moved on. */
   | 'task_not_claimable'
   /** The intent itself was not `approved`, or its release lease had passed. */
@@ -171,7 +194,7 @@ export async function claimTaskLinkedIntentForDispatch(
     }
     if (operation.dispatchState !== 'reserved') {
       return refuse(
-        'operation_missing',
+        'operation_already_claimed',
         `operation ${operation.id} is '${operation.dispatchState}', not 'reserved'`,
       );
     }
@@ -229,18 +252,34 @@ export async function claimTaskLinkedIntentForDispatch(
 }
 
 /**
- * The kill-switch reversal (`executing -> approved`,
- * intentReleaseWorker.ts:139) extended for a task-linked intent: the operation
+ * The kill-switch reversal (`executing -> approved`, `pauseIntentForKillSwitch`
+ * in intentReleaseWorker.ts) extended for a task-linked intent: the operation
  * goes back to `reserved` in the SAME transaction, so the row never claims a
  * dispatch that was undone. Returns whether the reversal CAS was won — a lost
  * CAS means something else (a reaper, a duplicate delivery) already moved the
  * row and there is nothing to revert.
+ *
+ * LOCK ORDER — operation BEFORE intent, matching the claim. This `FOR UPDATE`
+ * is not decorative. `claimTaskLinkedIntentForDispatch` takes
+ * task -> operation -> intent; without this line the reversal would take
+ * intent -> operation, and the two paths would form an AB-BA cycle on
+ * {operation, intent}. That is reachable in ordinary operation: a kill switch
+ * engaging mid-release while a redelivered `intent_approved` job claims the
+ * same intent (a redelivery this worker is explicitly designed to tolerate)
+ * would deadlock, and Postgres would abort one side with 40P01. Take the
+ * operation lock first and the cycle cannot form.
  */
 export async function revertTaskLinkedDispatchClaim(
   intentId: string,
   detail: string,
 ): Promise<boolean> {
   return withSystemDbAccessContext(async () => {
+    await db
+      .select({ id: aiOperatorOperations.id })
+      .from(aiOperatorOperations)
+      .where(eq(aiOperatorOperations.intentId, intentId))
+      .for('update')
+      .limit(1);
     const rows = await db
       .update(actionIntents)
       .set({ status: 'approved' })

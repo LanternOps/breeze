@@ -10,7 +10,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
  *  THIS through to the evidence row rather than rebuilding a key itself. */
 const CANONICAL_OP_KEY = 'run_script:execute';
 
-const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock } = vi.hoisted(() => {
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -191,6 +191,24 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
         typeof intent.effectDigest === 'string' && intent.effectDigest.length > 0,
       ),
     },
+    // #5205 W04 (#5209): the ONE durable dispatch claim for a task-linked
+    // intent (dispatchClaim.ts) and the operation-row writers it and the
+    // worker share (operationService.ts). Both are mocked at the module
+    // boundary — neither can load for real here (they pull in the db/schema
+    // barrel this file's narrow per-table db mock doesn't cover) — but
+    // `isTaskLinkedIntent` is re-exported from the REAL module below (see the
+    // `vi.mock('../services/aiOperator/operationService', ...)` factory): it
+    // is the branch predicate every case in this section exercises, and
+    // mocking it to a constant would make every one of them vacuous.
+    dispatchClaimMock: {
+      claimTaskLinkedIntentForDispatch: vi.fn(),
+      revertTaskLinkedDispatchClaim: vi.fn(),
+    },
+    operationServiceMock: {
+      markOperationDispatchFailed: vi.fn(async () => undefined),
+      recordOperationExecutionRef: vi.fn(async () => undefined),
+      recordOperationResult: vi.fn(async () => undefined),
+    },
   };
 });
 
@@ -268,6 +286,29 @@ vi.mock('../services/actionIntents/metrics', () => ({
 vi.mock('../services/actionIntents/intentService', () => ({
   transitionIntent: intentServiceMock.transitionIntent,
 }));
+// #5205 W04 (#5209): the task-linked dispatch claim, mocked wholesale — same
+// reason as intentService above, and neither collaborator's own contract
+// (the FOR-UPDATE lock order, the EXISTS predicate) belongs in THIS file;
+// those are pinned where they live (dispatchClaim's own future integration
+// coverage). What this file proves is that the worker calls the right one
+// for the right kind of intent and reacts correctly to each result shape.
+vi.mock('../services/aiOperator/dispatchClaim', () => ({
+  claimTaskLinkedIntentForDispatch: dispatchClaimMock.claimTaskLinkedIntentForDispatch,
+  revertTaskLinkedDispatchClaim: dispatchClaimMock.revertTaskLinkedDispatchClaim,
+}));
+// Partial mock: `isTaskLinkedIntent` stays the REAL implementation (it is a
+// pure function with no db dependency, and it is the branch predicate this
+// file's task-linked cases exist to exercise) — only the operation-row
+// writers are swapped for spies, same treatment as opEvidence/fixWatch below.
+vi.mock('../services/aiOperator/operationService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiOperator/operationService')>();
+  return {
+    ...actual,
+    markOperationDispatchFailed: operationServiceMock.markOperationDispatchFailed,
+    recordOperationExecutionRef: operationServiceMock.recordOperationExecutionRef,
+    recordOperationResult: operationServiceMock.recordOperationResult,
+  };
+});
 vi.mock('../services/actionIntents/policyDecide', () => {
   // A local (not imported-from-real) `PolicyDecisionTransientError` — the
   // real module pulls in the full db/schema graph transitively, which this
@@ -2799,6 +2840,309 @@ describe('releaseApprovedIntent', () => {
 
         expect(sentryMock.captureException).toHaveBeenCalled();
       });
+    });
+  });
+
+  // #5205 W04 (#5209): `baseIntent()`'s taskId/taskStepKey/operationKey are
+  // all unset (undefined), so `isTaskLinkedIntent(intent)` was always false
+  // and every branch below ran zero times until this block — neither the
+  // task-linked dispatch claim (`dispatchClaim.ts`) nor the operation-row
+  // writers (`operationService.ts`) were ever exercised through the worker.
+  // `isTaskLinkedIntent` itself stays the REAL implementation (see the
+  // `vi.mock('../services/aiOperator/operationService', ...)` factory
+  // above) — it is the predicate every case here discriminates on.
+  describe('task-linked intents (#5205 W04)', () => {
+    const COMMAND_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+    function taskIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return baseIntent({
+        taskId: 'task-1',
+        taskStepKey: 'plan.step-1',
+        operationKey: 'op-1',
+        ...overrides,
+      } as Partial<ActionIntent>);
+    }
+
+    /** Task-linked equivalent of `primeThroughRevalidation`: primes a WON
+     *  dispatch claim (instead of the legacy CAS) and the rest of the shared
+     *  revalidation chain through to `executeTool`. */
+    function primeTaskLinkedThroughClaim(intent: ActionIntent) {
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({ won: true, leaseEpoch: 1 });
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('claim branch taken: calls claimTaskLinkedIntentForDispatch with {id, orgId, taskId} and never the legacy transitionIntent CAS', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(dispatchClaimMock.claimTaskLinkedIntentForDispatch).toHaveBeenCalledWith({
+        id: intent.id,
+        orgId: intent.orgId,
+        taskId: intent.taskId,
+      });
+      // Without the branch (isTaskLinkedIntent inverted or missing), the
+      // worker would fall through to the legacy claim — assert it never runs.
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+      );
+    });
+
+    it('legacy branch preserved: a NON-task intent still uses transitionIntent for the claim, never the task-linked claim', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+        intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+      );
+      expect(dispatchClaimMock.claimTaskLinkedIntentForDispatch).not.toHaveBeenCalled();
+    });
+
+    it('refused claim (task_not_claimable): markOperationDispatchFailed records refusal+detail, executeTool never runs, no terminal transition', async () => {
+      const intent = taskIntent();
+      // Only the load is primed beyond the claim — a refused claim must not
+      // reach anything downstream (same discipline as the legacy "release
+      // lease" refused-claim tests above).
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([]);
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({
+        won: false,
+        refusal: 'task_not_claimable',
+        detail: "task state 'stopping' cannot admit a new effect",
+      });
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.markOperationDispatchFailed).toHaveBeenCalledWith(
+        intent.id,
+        "task_not_claimable: task state 'stopping' cannot admit a new effect",
+      );
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it("refusal 'operation_already_claimed' does NOT write — another claimant owns the row", async () => {
+      const intent = taskIntent();
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([]);
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({
+        won: false,
+        refusal: 'operation_already_claimed',
+        detail: 'operation op-1 is \'dispatched\', not \'reserved\'',
+      });
+
+      await releaseApprovedIntent(intent.id);
+
+      // Writing here would clobber the WINNER's bookkeeping. This is a healthy
+      // race, so it is also not raised to Sentry — contrast the case below.
+      expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it("refusal 'operation_missing' IS raised to Sentry — a task-linked intent with no operation row is a broken invariant", async () => {
+      // `reserveOperation` commits in the same transaction as the intent
+      // insert, so this should be unreachable. If it ever happens there is no
+      // operation row to record the reason ON, and the intent would otherwise
+      // sit `approved` until an unrelated deadline reaper noticed — up to 24 h
+      // later for an `mcp_api` source — with nothing naming what went wrong.
+      const intent = taskIntent();
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([]);
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({
+        won: false,
+        refusal: 'operation_missing',
+        detail: `no operation row reserved for intent ${intent.id}`,
+      });
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('kill switch: reverts the dispatch claim, never the legacy executing->approved transitionIntent', async () => {
+      const intent = taskIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({ won: true, leaseEpoch: 1 });
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      // (c)/(d) — actor + org active — must resolve truthy to reach the
+      // agent-authority branch (e), same as the legacy kill-switch tests.
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: { policy: 'snapshot', epoch: 7, reason: 'kill-switched' },
+      });
+      dispatchClaimMock.revertTaskLinkedDispatchClaim.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(dispatchClaimMock.revertTaskLinkedDispatchClaim).toHaveBeenCalledWith(intent.id, 'kill_switch_engaged');
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(intent.id, 'executing', 'approved');
+    });
+
+    it('failIntent, NOT executed (digest_mismatch): markOperationDispatchFailed is called, recordOperationResult is not', async () => {
+      const intent = taskIntent();
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([]); // no winning approval -> digest_mismatch, before execution
+      dispatchClaimMock.claimTaskLinkedIntentForDispatch.mockResolvedValueOnce({ won: true, leaseEpoch: 1 });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.markOperationDispatchFailed).toHaveBeenCalledWith(intent.id, 'digest_mismatch');
+      expect(operationServiceMock.recordOperationResult).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('failIntent, executed (execution_error): recordOperationResult gets resultState unknown; markOperationDispatchFailed is not called', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationResult).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: intent.id, resultState: 'unknown' }),
+      );
+      expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
+    });
+
+    it('completed happy path: recordOperationExecutionRef gets the device_command ref, recordOperationResult gets succeeded + that same ref', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ status: 'completed', commandId: COMMAND_ID }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationExecutionRef).toHaveBeenCalledWith(
+        intent.id,
+        { kind: 'device_command', id: COMMAND_ID },
+      );
+      expect(operationServiceMock.recordOperationResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          intentId: intent.id,
+          resultState: 'succeeded',
+          executionRef: { kind: 'device_command', id: COMMAND_ID },
+        }),
+      );
+    });
+
+    it("TIMEOUT MAPS TO 'unknown', NEVER 'failed' — the single most important mapping in the file", async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ status: 'timeout', commandId: COMMAND_ID }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationResult).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: intent.id, resultState: 'unknown' }),
+      );
+      // Asserted as an explicit NOT-'failed' as well as the positive match
+      // above: `timeout` silently becoming `failed` is the one mapping spec
+      // §7.3 forbids getting backwards, so it gets its own negative assertion.
+      const calls = operationServiceMock.recordOperationResult.mock.calls as unknown as Array<[{ resultState: string }]>;
+      expect(calls[0]?.[0].resultState).not.toBe('failed');
+    });
+
+    it("status:'failed' maps to resultState 'failed'", async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ status: 'failed', commandId: COMMAND_ID }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationResult).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: intent.id, resultState: 'failed' }),
+      );
+    });
+
+    it('no commandId: recordOperationExecutionRef is never called (a refusal before the command row existed), but recordOperationResult still is', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ status: 'failed' }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
+      expect(operationServiceMock.recordOperationResult).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: intent.id, resultState: 'failed', executionRef: null }),
+      );
+    });
+
+    it('a non-uuid commandId is ignored (the extractor is uuid-validated): recordOperationExecutionRef is never called', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ status: 'failed', commandId: 'not-a-uuid' }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
+    });
+
+    it('losing terminal CAS still records the outcome TWICE (baseline §4 — the hole this second write closes)', async () => {
+      const intent = taskIntent();
+      primeTaskLinkedThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ status: 'completed', commandId: COMMAND_ID }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost executing -> completed CAS
+
+      await releaseApprovedIntent(intent.id);
+
+      const resultCalls = operationServiceMock.recordOperationResult.mock.calls as unknown as Array<[{ resultState: string }]>;
+      const succeededCalls = resultCalls.filter(([input]) => input.resultState === 'succeeded');
+      expect(succeededCalls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('a NON-task intent writes NOTHING to the operation module on the completed path', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(operationServiceMock.recordOperationResult).not.toHaveBeenCalled();
+      expect(operationServiceMock.recordOperationExecutionRef).not.toHaveBeenCalled();
+      expect(operationServiceMock.markOperationDispatchFailed).not.toHaveBeenCalled();
     });
   });
 });

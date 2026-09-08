@@ -93,6 +93,26 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return withSystem(fn);
 };
 
+/**
+ * Detaches from any ambient DB context so the callback genuinely opens its own
+ * transaction. Resolved off the module object for the same reason
+ * `runWithSystemDbAccess` above is: the unit suite mocks `../db`, and a missing
+ * export must fail loudly here rather than silently degrade into "ran inside
+ * the caller's transaction after all" — which is precisely the failure this
+ * helper exists to prevent (see its call site in reapStaleExecutingIntents).
+ */
+const runDetached = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const outside = dbModule.runOutsideDbContext;
+  if (typeof outside !== 'function') {
+    throw new Error(
+      '[IntentExpiryReaper] runOutsideDbContext not available — refusing to write the operation '
+      + 'result inside the reaper transaction (a swallowed failure there would silently roll the '
+      + 'whole batch back)',
+    );
+  }
+  return outside(fn);
+};
+
 let reaperQueue: Queue<ReaperJobData> | null = null;
 let reaperWorker: Worker<ReaperJobData> | null = null;
 
@@ -339,15 +359,36 @@ export async function reapStaleExecutingIntents(): Promise<number> {
     // `recordOperationResult` is rank-ordered, so this `unknown` cannot clobber
     // a definite outcome the release worker already recorded, and a definite
     // outcome arriving afterwards still overwrites this one.
+    //
+    // `runDetached` (runOutsideDbContext) is LOAD-BEARING, not tidiness. This function runs
+    // inside `runWithSystemDbAccess`, i.e. inside ONE Postgres transaction that
+    // also carries the CTE UPDATE above. `withSystemDbAccessContext` is a
+    // PASSTHROUGH when a context is already active (db/index.ts's "refuses to
+    // nest"), so without this wrapper `recordOperationResult` would join that
+    // transaction — and `runOperationWrite` SWALLOWS write failures by design.
+    // A swallowed error inside a shared transaction is exactly the trap this
+    // file's own `reapExpiredIntents` header documents: the backend is left in
+    // 25P02, every later statement fails, and the final COMMIT is silently
+    // converted to ROLLBACK without raising. The batch's `failed:execution_lost`
+    // transitions would be discarded while the caller still logged a success
+    // count, leaving those intents stuck in `executing` forever.
+    //
+    // Detaching gives the operation write its own transaction, which is also
+    // what the result contract wants: it must never be gated on the intent's
+    // status CAS (baseline §4). It costs a second pooled connection held
+    // briefly alongside this one — acceptable in a single background reaper
+    // lane, and not the request path the double-hold warning is about.
     if (row.task_id) {
-      await recordOperationResult({
-        intentId: row.id,
-        resultState: 'unknown',
-        result: {
-          errorCode: 'execution_lost',
-          staleExecutingTimeoutMinutes: STALE_EXECUTING_TIMEOUT_MINUTES,
-        },
-      });
+      await runDetached(() =>
+        recordOperationResult({
+          intentId: row.id,
+          resultState: 'unknown',
+          result: {
+            errorCode: 'execution_lost',
+            staleExecutingTimeoutMinutes: STALE_EXECUTING_TIMEOUT_MINUTES,
+          },
+        }),
+      );
     }
   }
 

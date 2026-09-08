@@ -861,16 +861,26 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     if (!claim.won) {
       // A lost claim NEVER dispatches and NEVER writes a result. Record why on
       // the operation so the coordinator sees a reason rather than a stall —
-      // except when the refusal was the operation itself not being `reserved`,
-      // which means another claimant already owns it and this worker must not
-      // overwrite their bookkeeping.
-      if (claim.refusal !== 'operation_missing') {
+      // except when another claimant already owns the row, where writing would
+      // overwrite the winner's bookkeeping.
+      if (claim.refusal !== 'operation_already_claimed') {
         await markOperationDispatchFailed(intent.id, `${claim.refusal}: ${claim.detail}`);
       }
-      console.warn(
+      const message =
         `[IntentReleaseWorker] task-linked intent ${intentId} refused the dispatch claim `
-        + `(${claim.refusal}): ${claim.detail}`,
-      );
+        + `(${claim.refusal}): ${claim.detail}`;
+      if (claim.refusal === 'operation_missing') {
+        // A task-linked intent with NO operation row is a broken invariant, not
+        // a race: `reserveOperation` commits in the same transaction as the
+        // intent insert. There is also no operation row to record the reason
+        // ON, so without this the intent would sit `approved` until an
+        // unrelated deadline reaper noticed — up to 24 h later for an
+        // `mcp_api` source — with nothing naming what actually went wrong.
+        console.error(message);
+        captureException(new Error(message));
+      } else {
+        console.warn(message);
+      }
     }
   } else {
     claimed = await transitionIntent(

@@ -47,7 +47,7 @@ import {
   IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 import { evaluateTicketAutonomy } from './ticketAutonomy';
-import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
+import { aiOperatorOperations, aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import {
   isTaskLinkedIntent,
   markOperationCancelled,
@@ -2294,6 +2294,22 @@ export async function cancelActionIntent(
   let inFlight = false;
   try {
     ok = await withSystemDbAccessContext(async () => {
+      // LOCK ORDER — operation BEFORE intent, matching
+      // `claimTaskLinkedIntentForDispatch` (services/aiOperator/dispatchClaim.ts,
+      // which takes task -> operation -> intent). Without this line the cancel
+      // path would take intent -> operation and the two would form an AB-BA
+      // cycle on {operation, intent}: a human cancelling while a release worker
+      // claims the same still-`approved` intent would deadlock, and Postgres
+      // would abort one side with 40P01. Read-only on its own; it exists purely
+      // to order the locks.
+      if (taskLinked) {
+        await db
+          .select({ id: aiOperatorOperations.id })
+          .from(aiOperatorOperations)
+          .where(eq(aiOperatorOperations.intentId, intentId))
+          .for('update')
+          .limit(1);
+      }
       const rows = await db
         .update(actionIntents)
         .set({ status: 'cancelled' })

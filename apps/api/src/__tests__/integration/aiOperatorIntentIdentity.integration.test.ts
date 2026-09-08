@@ -581,6 +581,66 @@ describe('createActionIntent — AI Operator task/operation identity (real Postg
         expect(await countIntents(taskB.taskId, OPERATION_KEY)).toBe(0);
       },
     );
+
+    // #5205 W04 (#5209), Gap 3 (PR #5259 review): (c) above proves the run's
+    // own admitted linkage — not the caller's assertion — gates the task
+    // context WITHIN one org. This is the cross-tenant variant: a second
+    // partner/org/agent/run/task, entirely separate seed data, so the
+    // assertion is not "these two tasks happen to differ" but "an org A run
+    // cannot mint a task-linked intent against an org B task" — the composite
+    // `(task_id, org_id) -> ai_operator_tasks(id, org_id)` FK on
+    // `ai_agent_runs` means org A's run can NEVER legitimately carry org B's
+    // task id, so `agentRun.taskId !== taskContext.taskId` (intentService.ts)
+    // refuses it the same way, but this proves that holds across the tenant
+    // boundary rather than assuming it from the same-org case alone.
+    runDb(
+      "(d) org A's agent auth cannot mint a task-linked intent against org B's task — task_context_invalid, no row written",
+      async () => {
+        const orgA = await seedTenant();
+        const orgB = await seedTenant();
+        const taskA = await createTask(orgA);
+        const taskB = await createTask(orgB);
+        const runA = await createRun(orgA, { taskId: taskA.taskId, taskStepKey: TASK_STEP_KEY, attemptOrdinal: 0 });
+        // Parallel fixture on org B, unused directly — establishes org B as a
+        // genuinely independent tenant with its own agent/run, not merely a
+        // second task row under org A.
+        await createRun(orgB, { taskId: taskB.taskId, taskStepKey: TASK_STEP_KEY, attemptOrdinal: 0 });
+
+        const crossTenantOperationKey = 'restart:spooler-cross-tenant';
+        await expect(
+          propose(orgA, runA, { task: taskCtx(taskB.taskId, TASK_STEP_KEY, crossTenantOperationKey, 0) }),
+        ).rejects.toMatchObject({ code: 'task_context_invalid' });
+
+        // No action_intents row for the forged task/operation identity, and no
+        // ai_operator_operations row reserved against org B's task either —
+        // the whole creation transaction never got far enough to write either.
+        expect(await countIntents(taskB.taskId, crossTenantOperationKey)).toBe(0);
+        expect(await countOperations(taskB.taskId, crossTenantOperationKey)).toBe(0);
+      },
+    );
+
+    // #5205 W04 (#5209), Gap 5 (PR #5259 review): the zod bounds on
+    // `actionIntentTaskContextSchema` (@breeze/shared/validators/aiOperator.ts)
+    // deliberately mirror the DB CHECK constraints on
+    // `ai_operator_operations.operation_key` (200 chars) — proving the zod
+    // bound fires FIRST, as a typed rejection at the seam, rather than
+    // surfacing as a raw 23514 mid-transaction.
+    runDb(
+      '(e) an operationKey over the 200-char bound is refused as task_context_invalid, before any row is written',
+      async () => {
+        const t = await seedTenant();
+        const task = await createTask(t);
+        const runId = await createRun(t, { taskId: task.taskId, taskStepKey: TASK_STEP_KEY, attemptOrdinal: 0 });
+        const overlongOperationKey = 'x'.repeat(201);
+
+        await expect(
+          propose(t, runId, { task: taskCtx(task.taskId, TASK_STEP_KEY, overlongOperationKey, 0) }),
+        ).rejects.toMatchObject({ code: 'task_context_invalid' });
+
+        expect(await countIntents(task.taskId, overlongOperationKey)).toBe(0);
+        expect(await countOperations(task.taskId, overlongOperationKey)).toBe(0);
+      },
+    );
   });
 
   runDb('an ordinary (non-task) agent intent still gets the run-derived key and creates NO operation row', async () => {

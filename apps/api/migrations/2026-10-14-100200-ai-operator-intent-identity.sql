@@ -104,10 +104,12 @@ ALTER TABLE ai_operator_operations
 -- 3. action_intents immutability: the three operation-identity columns
 -- ---------------------------------------------------------------------------
 -- Extend the ONE immutable-content function. Body copied verbatim from its
--- most recent definition (2026-09-25-ai-agents-ticket-triage.sql, which itself
--- copied 2026-09-23-ai-agents-scheduled-sweeps.sql) plus the three task
--- columns. Strict `IS DISTINCT FROM` for all three — no null-transition carve
--- out, see the header.
+-- most recent definition, 2026-09-25-ai-agents-ticket-triage.sql, plus the
+-- three task columns. (That file is the CURRENT definition; it is not itself
+-- byte-identical to the 2026-09-23 one before it, which is why it — and not
+-- the original 2026-07-18 creation — is the file to diff against.)
+-- Strict `IS DISTINCT FROM` for all three — no null-transition carve-out, see
+-- the header.
 
 CREATE OR REPLACE FUNCTION action_intents_block_content_update()
 RETURNS TRIGGER AS $$
