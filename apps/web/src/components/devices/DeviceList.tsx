@@ -419,6 +419,13 @@ type DeviceListProps = {
   // and the All/Agent/Network facet are hidden entirely so the list is the
   // agent-only view. DevicesPage passes ENABLE_NETWORK_DEVICES_IN_LIST.
   networkDevicesEnabled?: boolean;
+  // The organization record's Devices tab (#5075 W02): every row already
+  // belongs to the SAME org (the record's), so the Organization column would
+  // repeat that org's name on every row, same as single-org scope does. Forces
+  // fleet-view OFF regardless of the OrgSwitcher's ambient scope — a partner
+  // could be viewing this org's record while the switcher points at "All
+  // organizations" or a different org entirely.
+  forceSingleOrg?: boolean;
 };
 
 const statusColors: Record<DeviceStatus, string> = {
@@ -663,6 +670,7 @@ export default function DeviceList({
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
+  forceSingleOrg = false,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   // Use provided timezone or browser default
@@ -1115,7 +1123,12 @@ export default function DeviceList({
   // Fleet (All-organizations) view: only then does the Organization column
   // carry information — in single-org scope it would repeat the header's org
   // on every row, so it disappears from the table and the column picker.
-  const isFleetView = useOrgStore((s) => !s.currentOrgId && s.allOrgs);
+  // The hook call stays UNCONDITIONAL even when `forceSingleOrg` already
+  // decides the answer — hooks must run in the same order on every render,
+  // so gating this call behind an `if (!forceSingleOrg)` would violate the
+  // rules of hooks regardless of whether the prop's value ever changes.
+  const fleetFromStore = useOrgStore((s) => !s.currentOrgId && s.allOrgs);
+  const isFleetView = !forceSingleOrg && fleetFromStore;
 
   // The Class/Type columns belong to the network arm (#1322); hide them
   // entirely when the feature flag is off so the list is the agent-only view.

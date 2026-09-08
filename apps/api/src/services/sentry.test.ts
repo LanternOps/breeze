@@ -783,6 +783,11 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     ['accounting/accountingPaymentPush.ts', 12], // +2 noteRecordFailed (give-up alarm, own catch), +1 the org-scope outbox skip
     ['../jobs/accountingSyncWorker.ts', 2],
     ['../jobs/accountingReconcileWorker.ts', 5],
+    // #5126: the same #4828/Phase D2 defect in the pull-back path — every
+    // captureException in accountingPaymentPull.ts tagged camelCase keys
+    // (action, resourceId, remotePaymentId, invoiceId) with no allowlisted
+    // equivalent, silently dropped by buildSafeTags/pickAllowedTags.
+    ['accounting/accountingPaymentPull.ts', 3],
   ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
     const source = readFileSync(
       fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),

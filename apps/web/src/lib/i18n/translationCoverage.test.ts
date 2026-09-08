@@ -68,7 +68,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
-    'organizations.json': 4, // W01 #5075: cognates — "Sites", "{{count}} site(s)"
+    'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -264,7 +264,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 38,
-    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
+    'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -371,7 +371,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 146,
     'discovery.json': 15,
     'integrations.json': 40,
-    'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
+    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -489,7 +489,7 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
-    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -565,7 +565,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
-    'organizations.json': 1, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term
+    'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,

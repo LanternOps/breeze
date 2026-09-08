@@ -44,7 +44,31 @@ function fakeClient(devices: any[]): UnifiClient {
 
 type WriteRecord = { table: any; values: any; conflictSet?: any; conflictTarget?: any; conflictTargetWhere?: any; conflictOptKeys?: string[] };
 
-function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAsset?: any }) {
+// Recursively pull every string out of a drizzle where-clause tree (bound
+// param values AND the literal template-string chunks of any `sql` fragment),
+// so the mock can tell whether a query wrapped a column in
+// lower(replace(...)) without needing to render real SQL. Mirrors the harness
+// in unifiTelemetryService.test.ts (#5096) — kept as a local copy per that
+// file's own comment convention (helpers may be duplicated locally).
+function collectStrings(value: any, seen = new WeakSet<object>()): string[] {
+  if (typeof value === 'string') return [value];
+  if (value === null || value === undefined || typeof value !== 'object') return [];
+  if (seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) return value.flatMap((item) => collectStrings(item, seen));
+  return Object.values(value).flatMap((item) => collectStrings(item, seen));
+}
+
+function scriptedDb(opts: {
+  mappings: any[];
+  existingDevices?: any[];
+  existingAsset?: any;
+  // Keyed by the STORED (possibly non-canonical) mac_address value. When set,
+  // a discoveredAssets select is resolved by matching bound query strings
+  // against these keys — canonicalising the key first iff the query itself
+  // wrapped the column in lower(replace(...)), exactly like Postgres would.
+  assetByMac?: Record<string, any>;
+}) {
   const writes: { inserts: WriteRecord[]; updates: WriteRecord[] } = {
     inserts: [],
     updates: [],
@@ -53,6 +77,7 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
   function makeChain(ctx: {
     op: 'select' | 'insert' | 'update' | 'delete';
     table?: any;
+    whereArgs?: any[];
     insertValues?: any;
     setValues?: any;
     conflictSet?: any;
@@ -67,7 +92,8 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
         ctx.table = table;
         return chain;
       },
-      where(..._args: any[]) {
+      where(...args: any[]) {
+        ctx.whereArgs = args;
         return chain;
       },
       limit(_n: number) {
@@ -123,7 +149,19 @@ function scriptedDb(opts: { mappings: any[]; existingDevices?: any[]; existingAs
               } else if (ctx.table === unifiDevices) {
                 result = opts.existingDevices ?? [];
               } else if (ctx.table === discoveredAssets) {
-                result = opts.existingAsset ? [opts.existingAsset] : [];
+                if (opts.assetByMac) {
+                  const strings = collectStrings(ctx.whereArgs);
+                  const queryCanonicalises = strings.some(
+                    (s) => typeof s === 'string' && s.includes('lower(replace('),
+                  );
+                  const canonicalise = (v: string) => v.trim().toLowerCase().replace(/-/g, ':');
+                  const matchKey = Object.keys(opts.assetByMac).find((key) =>
+                    strings.includes(queryCanonicalises ? canonicalise(key) : key),
+                  );
+                  result = matchKey ? [opts.assetByMac[matchKey]] : [];
+                } else {
+                  result = opts.existingAsset ? [opts.existingAsset] : [];
+                }
               } else {
                 // unifiSyncRuns select, or any other table
                 result = [];
@@ -350,6 +388,80 @@ describe('unifiSyncService.syncIntegration', () => {
     expect(deviceInserts).toHaveLength(1);
     expect(deviceInserts[0]!.values.discoveredAssetId).toBeNull();
   });
+
+  // Twin of unifiTelemetryService.test.ts's "links a device when the STORED
+  // discovered_assets mac is non-canonical" (#5096). The cloud-sync path
+  // (this file) had the same raw eq(macAddress, device.mac) comparison and
+  // was not fixed by #5096 — #5102 closes that gap.
+  it('links a device when the STORED discovered_assets mac is non-canonical (#5102, twin of #5096)', async () => {
+    const { writes, db } = scriptedDb({
+      mappings: [BASE_MAPPING],
+      // Legacy row written before canonicalisation existed — uppercase/hyphenated.
+      assetByMac: { 'AA-BB-CC-DD-EE-FF': { id: 'asset-legacy' } },
+    });
+    const client = fakeClient([
+      {
+        ...NET_NEW_DEVICE,
+        mac: 'aa:bb:cc:dd:ee:ff', // already-canonical incoming mac
+        ip: '10.0.0.99', // deliberately does not match any asset — mac must be what links it
+      },
+    ]);
+
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+
+    expect(result.status).toBe('success');
+
+    // Linked to the existing legacy asset via the canonicalised mac match —
+    // a missed match would create a duplicate discovered_assets row.
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-legacy');
+
+    // The enrich write should also store the canonical form going forward, so
+    // this row stops being the non-canonical outlier for future lookups.
+    const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
+    expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
+  });
+
+  // Twin of unifiTelemetryService.test.ts's "normalizes device MAC
+  // (uppercase/hyphen) for asset linking and storage" (#5096/#5087) — the
+  // OTHER direction from the test above. There the stored key was
+  // non-canonical and the incoming mac already canonical, which does not
+  // exercise canonicalMac(device.mac) on the JS side (an already-canonical
+  // input is a no-op for that call). Here the incoming mac is non-canonical
+  // and the stored row is already canonical, so only a bound query parameter
+  // that was actually run through canonicalMac() can match.
+  it('links a device when the INCOMING mac is non-canonical (#5102, twin of #5096)', async () => {
+    const { writes, db } = scriptedDb({
+      mappings: [BASE_MAPPING],
+      assetByMac: { 'aa:bb:cc:dd:ee:ff': { id: 'asset-9' } },
+    });
+    const client = fakeClient([
+      {
+        ...NET_NEW_DEVICE,
+        mac: 'AA-BB-CC-DD-EE-FF', // controller reports uppercase/hyphenated
+        ip: '10.0.0.99', // deliberately does not match any asset — mac must be what links it
+      },
+    ]);
+
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+
+    expect(result.status).toBe('success');
+
+    const assetInserts = writes.inserts.filter((w) => w.table === discoveredAssets);
+    expect(assetInserts).toHaveLength(0);
+
+    const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
+    expect(deviceInserts).toHaveLength(1);
+    expect(deviceInserts[0]!.values.discoveredAssetId).toBe('asset-9');
+
+    // Stored canonical (lowercase, colon-separated), matching the telemetry path.
+    const assetUpdate = writes.updates.find((w) => w.table === discoveredAssets);
+    expect(assetUpdate?.values.macAddress).toBe('aa:bb:cc:dd:ee:ff');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -454,6 +566,10 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(renderSql(set.assetType)).toBe(
       `${MANUAL_GUARD_SQL}$8 else "discovered_assets"."asset_type" end`,
     );
+    // #5102: a device with no mac must not degrade into '' on the enrich write
+    // either (which would match a blank-mac row) — canonicalMac(null) is null,
+    // and macAddress: mac ?? undefined must stay undefined, not ''.
+    expect(set.macAddress).toBeUndefined();
   });
 
   it('leaves both type columns alone when the sync cannot classify the device', async () => {
