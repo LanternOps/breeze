@@ -2002,75 +2002,116 @@ export default function DevicesPage() {
   // and MonitoringAssetsDashboard. Only reachable when there is NO selection at
   // all: deriveOrgScope gives a concrete currentOrgId precedence over a later
   // refetch failure, so a warm session keeps working.
+  // #5265: AddNetworkAssetModal's post-create hand-off panel
+  // (data-testid="asset-post-create") lets a tech add an HTTP check right
+  // after creating the asset. onCreated fires refreshDevices(), which flips
+  // `loading` back to true — and every branch below is a SEPARATE `return`,
+  // so if the modal were only rendered inside the final (non-loading) branch,
+  // that `loading` flip would unmount it along with everything else,
+  // resetting AddNetworkAssetModal's internal `createdAsset` state to null
+  // and losing the hand-off panel the tech was just shown. Hoisting the modal
+  // into a Fragment that wraps EVERY branch — always at the same child
+  // position — keeps it mounted across the refresh; only the second child
+  // (skeleton / error / real content) swaps out underneath it. Covered by
+  // DevicesPage.postCreateHandoff.test.tsx ("keeps the network-asset modal mounted...").
+  const addNetworkAssetModal = (
+    <AddNetworkAssetModal
+      isOpen={showAddNetworkAsset}
+      onClose={() => {
+        window.location.hash = '';
+        setShowAddNetworkAsset(false);
+      }}
+      onCreated={() => { void refreshDevices(); }}
+    />
+  );
+
   if (orgContextFailed) {
-    return <OrgLoadFailedState error={orgScope.error} />;
+    return (
+      <>
+        {addNetworkAssetModal}
+        <OrgLoadFailedState error={orgScope.error} />
+      </>
+    );
   }
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="h-6 w-32 rounded bg-muted animate-pulse mb-2" />
-            <div className="h-4 w-48 rounded bg-muted animate-pulse" />
+      <>
+        {addNetworkAssetModal}
+        <div className="space-y-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="h-6 w-32 rounded bg-muted animate-pulse mb-2" />
+              <div className="h-4 w-48 rounded bg-muted animate-pulse" />
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-20 rounded-md bg-muted animate-pulse" />
+              <div className="h-10 w-28 rounded-md bg-muted animate-pulse" />
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-20 rounded-md bg-muted animate-pulse" />
-            <div className="h-10 w-28 rounded-md bg-muted animate-pulse" />
+          <div className="rounded-lg border bg-card p-6 shadow-xs">
+            <div className="flex items-center justify-between mb-6">
+              <div className="h-5 w-20 rounded bg-muted animate-pulse" />
+              <div className="h-10 w-56 rounded-md bg-muted animate-pulse" />
+            </div>
+            <div className="space-y-0 divide-y">
+              {[1, 2, 3, 4, 5].map(i => (
+                <div key={i} className="flex items-center gap-4 py-3">
+                  <div className="h-4 w-4 rounded bg-muted animate-pulse" />
+                  <div className="h-4 w-40 rounded bg-muted animate-pulse" />
+                  <div className="h-4 w-20 rounded bg-muted animate-pulse" />
+                  <div className="h-4 w-16 rounded bg-muted animate-pulse" />
+                  <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
+                  <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
+                  <div className="h-4 w-20 rounded bg-muted animate-pulse" />
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <div className="flex items-center justify-between mb-6">
-            <div className="h-5 w-20 rounded bg-muted animate-pulse" />
-            <div className="h-10 w-56 rounded-md bg-muted animate-pulse" />
-          </div>
-          <div className="space-y-0 divide-y">
-            {[1, 2, 3, 4, 5].map(i => (
-              <div key={i} className="flex items-center gap-4 py-3">
-                <div className="h-4 w-4 rounded bg-muted animate-pulse" />
-                <div className="h-4 w-40 rounded bg-muted animate-pulse" />
-                <div className="h-4 w-20 rounded bg-muted animate-pulse" />
-                <div className="h-4 w-16 rounded bg-muted animate-pulse" />
-                <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
-                <div className="hidden md:block h-4 w-16 rounded bg-muted animate-pulse" />
-                <div className="h-4 w-20 rounded bg-muted animate-pulse" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      </>
     );
   }
 
   // A 403 is a permission denial, not a transient load failure — render the
   // access-denied state (no misleading "session expired / try again" UI).
   if (error && isAccessDenied(error)) {
-    return <AccessDenied message={t('devicesPage.accessDenied')} />;
+    return (
+      <>
+        {addNetworkAssetModal}
+        <AccessDenied message={t('devicesPage.accessDenied')} />
+      </>
+    );
   }
 
   if (error) {
     return (
-      <div className="rounded-lg border bg-card p-6">
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="rounded-full bg-destructive/10 p-3 mb-3">
-            <AlertCircle className="h-5 w-5 text-destructive" />
+      <>
+        {addNetworkAssetModal}
+        <div className="rounded-lg border bg-card p-6">
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="rounded-full bg-destructive/10 p-3 mb-3">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+            </div>
+            <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
+            <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
+            <button
+              type="button"
+              onClick={() => void refreshDevices()}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              {t('devicesPage.tryAgain')}
+            </button>
           </div>
-          <p className="text-sm font-medium text-foreground mb-1">{getErrorTitle(error)}</p>
-          <p className="text-xs text-muted-foreground mb-3">{getErrorMessage(error)}</p>
-          <button
-            type="button"
-            onClick={() => void refreshDevices()}
-            className="text-xs font-medium text-primary hover:underline"
-          >
-            {t('devicesPage.tryAgain')}
-          </button>
         </div>
-      </div>
+      </>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <>
+      {addNetworkAssetModal}
+      <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">{t('devicesPage.title')}</h1>
@@ -2285,14 +2326,6 @@ export default function DevicesPage() {
       )}
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
-      <AddNetworkAssetModal
-        isOpen={showAddNetworkAsset}
-        onClose={() => {
-          window.location.hash = '';
-          setShowAddNetworkAsset(false);
-        }}
-        onCreated={() => { void refreshDevices(); }}
-      />
 
       <ManualAssetModal
         isOpen={showAddManualAsset || editingManualAsset != null}
@@ -2530,6 +2563,7 @@ export default function DevicesPage() {
           onAction={handleDeviceAction}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
