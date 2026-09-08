@@ -69,6 +69,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // tenant, device, or command identifier.
   'prior_status',
   'cas_label',
+  // #5283: `metric_anomaly_stage_stalled` is only actionable if the operator
+  // can see WHICH detection stage is stuck — a stalled `baseline` (the heavy
+  // metric_rollups scan) and a stalled `incidents` (a small collapse over
+  // metric_anomalies) have completely different causes and fixes. Closed
+  // 5-value set (METRIC_ANOMALY_STAGES), written as string literals; carries no
+  // tenant, device, or host identifier. `org_id` is separately allowlisted
+  // above and is what scopes the alert to a tenant.
+  'metric_anomaly_stage',
   // #3022: a Postgres CONNECT_TIMEOUT is already tagged `pg_code:CONNECT_TIMEOUT`,
   // but that alone says nothing about WHY — the driver reports the identical
   // error whether the handshake failed or this process was simply never
