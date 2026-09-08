@@ -32,14 +32,6 @@ import type { NewActionIntent } from '../../db/schema/actionIntents';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
-export const SYSTEM_CTX: DbAccessContext = {
-  scope: 'system',
-  orgId: null,
-  accessibleOrgIds: null,
-  accessiblePartnerIds: null,
-  userId: null,
-};
-
 export function orgContext(orgId: string, currentPartnerId: string | null): DbAccessContext {
   return {
     scope: 'organization',

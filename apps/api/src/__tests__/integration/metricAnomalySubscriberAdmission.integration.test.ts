@@ -27,7 +27,14 @@
  *     rather than a hand-rolled pre-check — the same class of gap
  *     `agentRunAdmission.integration.test.ts` documents for dedupe in
  *     general (a try/catch-a-23505 version once let every repeat trigger
- *     surface as a 500, invisible to a suite that mocks `../../db`).
+ *     surface as a 500, invisible to a suite that mocks `../../db`);
+ *   - the CROSS-trigger-kind collapse (`metricAnomalySubscriber.ts:40,
+ *     183-184`: when a sibling `metric_anomalies` row is already promoted to
+ *     an alert, the dedupe key becomes `alert:<linkedAlertId>` — the SAME key
+ *     an alert-triage run would already hold) actually rejects the insert
+ *     against a REAL pre-existing alert-triggered run on that key, not just
+ *     that the two dedupe-key strings happen to match
+ *     (`metricAnomalySubscriber.test.ts:169-179` only proves the string).
  *
  * This suite closes that gap: real Postgres, real `createAndEnqueueAgentRun`,
  * real dedupe collision. Fixture pattern follows
@@ -51,7 +58,7 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { aiAgentRuns, aiAgents, devices, metricAnomalyIncidents } from '../../db/schema';
+import { aiAgentRuns, aiAgents, alerts, devices, metricAnomalies, metricAnomalyIncidents } from '../../db/schema';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { handleAnomalyIncidentOpenedEvent } from '../../services/aiAgents/metricAnomalySubscriber';
 import type { BreezeEvent } from '../../services/eventBus';
@@ -83,6 +90,9 @@ interface Tenant {
   site: { id: string };
   device: { id: string };
   user: { id: string };
+  /** The org-override agent's id — needed to seed a PRIOR alert-triggered
+   *  run for the cross-trigger-kind dedupe test below. */
+  orgAgentId: string;
 }
 
 /**
@@ -131,18 +141,21 @@ async function seedTenant(orgTriggers: Record<string, unknown>): Promise<Tenant>
     }),
   );
 
-  await withSystemDbAccessContext(() =>
-    db.insert(aiAgents).values({
-      partnerId: null,
-      orgId: org.id,
-      kind: 'triage',
-      name: 'Org Triage',
-      ...policyFields({ triggers: { alertSeverities: ['critical', 'high'], ...orgTriggers } }),
-      createdBy: user.id,
-    }),
+  const [orgAgent] = await withSystemDbAccessContext(() =>
+    db
+      .insert(aiAgents)
+      .values({
+        partnerId: null,
+        orgId: org.id,
+        kind: 'triage',
+        name: 'Org Triage',
+        ...policyFields({ triggers: { alertSeverities: ['critical', 'high'], ...orgTriggers } }),
+        createdBy: user.id,
+      })
+      .returning({ id: aiAgents.id }),
   );
 
-  return { partner, org, site, device: device!, user: { id: user.id } };
+  return { partner, org, site, device: device!, user: { id: user.id }, orgAgentId: orgAgent!.id };
 }
 
 async function seedIncident(
@@ -167,6 +180,56 @@ async function seedIncident(
       .returning(),
   );
   return incident!;
+}
+
+/**
+ * A sibling `metric_anomalies` row sharing the incident's EXACT collapsing
+ * key (org_id, device_id, anomaly_type, bucket_seconds, window_start —
+ * `metricAnomalySubscriber.ts`'s `findLinkedAlertId`), already promoted to
+ * `alertId`. Requires a real `alerts` row for the FK.
+ */
+async function seedPromotedSiblingAnomaly(
+  t: Tenant,
+  incident: Awaited<ReturnType<typeof seedIncident>>,
+  alertId: string,
+) {
+  await withSystemDbAccessContext(() =>
+    db.insert(metricAnomalies).values({
+      orgId: t.org.id,
+      deviceId: t.device.id,
+      metricType: 'cpu',
+      metricName: 'cpu_percent',
+      anomalyType: incident.anomalyType,
+      bucketSeconds: incident.bucketSeconds,
+      windowStart: incident.windowStart,
+      windowEnd: new Date(incident.windowStart.getTime() + incident.bucketSeconds * 1000),
+      observedValue: 95,
+      score: 4.5,
+      confidence: 0.9,
+      linkedAlertId: alertId,
+    }),
+  );
+}
+
+/** A REAL alert-triggered run already holding `dedupeKey: 'alert:<alertId>'`
+ *  — the exact row the anomaly path's cross-dedupe must collide with. */
+async function seedPriorAlertTriggeredRun(t: Tenant, alertId: string) {
+  const [run] = await withSystemDbAccessContext(() =>
+    db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: t.orgAgentId,
+        orgId: t.org.id,
+        triggerKind: 'alert',
+        dedupeKey: `alert:${alertId}`,
+        modeAtStart: 'shadow',
+        deviceId: t.device.id,
+        alertId,
+        policySnapshot: { schemaVersion: 1 } as never,
+      })
+      .returning({ id: aiAgentRuns.id }),
+  );
+  return run!;
 }
 
 function anomalyOpenedEvent(t: Tenant, incidentId: string): BreezeEvent {
@@ -284,6 +347,53 @@ describe('#4178 anomaly-source trigger — end-to-end admission against real Pos
     // The stamp from the first admission is untouched by the skipped repeat.
     const updatedIncident = await readIncident(incident.id);
     expect(updatedIncident.agentRunId).toBe(firstRunId);
+  });
+
+  it('cross-dedupes onto a REAL prior alert-triggered run when a sibling metric_anomalies row is already promoted', async () => {
+    // metricAnomalySubscriber.ts:184 — when a sibling `metric_anomalies` row
+    // sharing the incident's collapsing key is already promoted to an alert,
+    // the dedupe key becomes `alert:<linkedAlertId>`, the SAME key an
+    // alert-triage run already holds. This proves that collision is a REAL
+    // (org_id, dedupe_key) unique-index rejection against a pre-existing
+    // row — not merely that the two dedupe-key strings happen to match
+    // (metricAnomalySubscriber.test.ts:169-179 only proves the string).
+    const t = await seedTenant({ anomalyEnabled: true });
+    // `metric_anomalies.anomaly_type` has a fixed-vocabulary CHECK
+    // (2026-06-18-z-metric-anomalies.sql: 'spike'|'drop'|'trend'|...),
+    // unlike `metric_anomaly_incidents.anomaly_type` (plain text, no CHECK)
+    // — the collapsing-key join needs an EXACT match, so this test's
+    // incident must use a value valid in BOTH tables.
+    const incident = await seedIncident(t, { anomalyType: 'spike' });
+
+    const [alert] = await withSystemDbAccessContext(() =>
+      db
+        .insert(alerts)
+        .values({ orgId: t.org.id, deviceId: t.device.id, severity: 'high', title: 'cpu spike alert' })
+        .returning({ id: alerts.id }),
+    );
+    await seedPromotedSiblingAnomaly(t, incident, alert!.id);
+    const priorRun = await seedPriorAlertTriggeredRun(t, alert!.id);
+
+    await handleAnomalyIncidentOpenedEvent(anomalyOpenedEvent(t, incident.id));
+
+    // No SECOND run was admitted for the anomaly trigger — it collapsed onto
+    // the prior alert-triggered run's own dedupe key.
+    const runs = await readRunsForOrg(t.org.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.id).toBe(priorRun.id);
+    expect(runs[0]!.triggerKind).toBe('alert');
+
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'ai.agent.run.skipped',
+      t.org.id,
+      expect.objectContaining({ reason: 'duplicate', triggerKind: 'anomaly' }),
+      'ai-agent-runner',
+    );
+
+    // The incident is correctly left un-stamped: admission was skipped, not
+    // credited to the anomaly path.
+    const updatedIncident = await readIncident(incident.id);
+    expect(updatedIncident.agentRunId).toBeNull();
   });
 
   it('negative control: an org agent without anomalyEnabled admits NOTHING', async () => {
