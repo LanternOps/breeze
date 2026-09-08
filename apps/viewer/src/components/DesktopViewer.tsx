@@ -18,6 +18,7 @@ import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
+import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
 import ViewerToolbar from './ViewerToolbar';
 import CredentialsPromptModal from './CredentialsPromptModal';
@@ -1128,40 +1129,22 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    params.deviceId,
 	  ]);
 
-  // Count WebRTC video frames via requestVideoFrameCallback
+  // Count WebRTC video frames for the FPS readout. See lib/frameCounter.ts
+  // for the rVFC-with-watchdog-fallback strategy: some WebViews (notably
+  // WKWebView on macOS) expose requestVideoFrameCallback but never invoke it
+  // for a WebRTC MediaStream, which otherwise left this reading a permanent
+  // 0 FPS while the picture was visibly updating (issue #5292).
   useEffect(() => {
     if (transport !== 'webrtc') return;
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    let active = true;
-
-    const rvfc = (videoEl as unknown as { requestVideoFrameCallback?: (cb: () => void) => number })
-      .requestVideoFrameCallback;
-
-    if (typeof rvfc === 'function') {
-      const onFrame = () => {
-        if (!active) return;
-        frameCountRef.current++;
-        rvfc.call(videoEl, onFrame);
-      };
-      rvfc.call(videoEl, onFrame);
-      return () => { active = false; };
-    }
-
-    // Fallback: approximate frames by watching currentTime advance.
-    let lastTime = videoEl.currentTime;
-    const tick = () => {
-      if (!active) return;
-      const t = videoEl.currentTime;
-      if (t !== lastTime) {
-        lastTime = t;
-        frameCountRef.current++;
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => { active = false; };
+    const counter = startFrameCounter({
+      video: videoEl,
+      onFrame: () => { frameCountRef.current++; },
+      log: (message) => console.debug('[DesktopViewer]', message),
+    });
+    return () => counter.stop();
   }, [transport]);
 
   // Request a keyframe when the viewer window/tab regains focus so the
