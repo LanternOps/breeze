@@ -115,5 +115,20 @@
     "loading": "Loading Operator tasks...",
     "loadFailed": "Operator tasks failed to load.",
     "empty": "No Operator tasks for this device."
+  },
+  "delegate": {
+    "button": "Delegate to Operator",
+    "dialogTitle": "Delegate to Operator",
+    "dialogMessage": "The Operator will investigate and attempt to resolve this using the workflow below.",
+    "orgLabel": "Organization",
+    "deviceLabel": "Device",
+    "serviceNameLabel": "Service name",
+    "serviceNamePlaceholder": "e.g. Spooler",
+    "serviceNameError": "Enter the service name to delegate this task.",
+    "workflowLabel": "Workflow",
+    "workflowName": "Service recovery",
+    "confirmLabel": "Delegate",
+    "queued": "Task delegated to the Operator.",
+    "failed": "Failed to delegate to the Operator."
   }
 }

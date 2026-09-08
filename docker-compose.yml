@@ -255,6 +255,13 @@ x-api-env: &api-env
   # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
   BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
   BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
+  # AI Operator (#5205), both default OFF per decision D2 (internal/test orgs
+  # only). Mapped here explicitly because Compose interpolates ONLY what this
+  # block names — a value in `.env` alone never reaches the container, so
+  # without these two lines the feature cannot be switched on in any
+  # deployment and `GET /config` reports it disabled with no error anywhere.
+  AI_OPERATOR_TASKS_ENABLED: ${AI_OPERATOR_TASKS_ENABLED:-false}
+  AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.

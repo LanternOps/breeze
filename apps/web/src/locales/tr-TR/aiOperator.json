@@ -115,5 +115,20 @@
     "loading": "Operator görevleri yükleniyor...",
     "loadFailed": "Operator görevleri yüklenemedi.",
     "empty": "Bu cihaz için Operator görevi yok."
+  },
+  "delegate": {
+    "button": "Operatöre Devret",
+    "dialogTitle": "Operatöre Devret",
+    "dialogMessage": "Operatör bunu aşağıdaki iş akışını kullanarak inceleyecek ve çözmeye çalışacaktır.",
+    "orgLabel": "Organizasyon",
+    "deviceLabel": "Cihaz",
+    "serviceNameLabel": "Hizmet adı",
+    "serviceNamePlaceholder": "ör. Yazdırma Kuyruğu",
+    "serviceNameError": "Bu görevi devretmek için hizmet adını girin.",
+    "workflowLabel": "İş akışı",
+    "workflowName": "Hizmet kurtarma",
+    "confirmLabel": "Devret",
+    "queued": "Görev Operatöre devredildi.",
+    "failed": "Görev Operatöre devredilemedi."
   }
 }

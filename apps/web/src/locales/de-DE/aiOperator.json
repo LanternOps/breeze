@@ -115,5 +115,20 @@
     "loading": "Operator-Aufgaben werden geladen...",
     "loadFailed": "Operator-Aufgaben konnten nicht geladen werden.",
     "empty": "Keine Operator-Aufgaben für dieses Gerät."
+  },
+  "delegate": {
+    "button": "An Operator delegieren",
+    "dialogTitle": "An Operator delegieren",
+    "dialogMessage": "Der Operator untersucht das Problem und versucht es mit dem folgenden Workflow zu beheben.",
+    "orgLabel": "Organisation",
+    "deviceLabel": "Gerät",
+    "serviceNameLabel": "Dienstname",
+    "serviceNamePlaceholder": "z. B. Spooler",
+    "serviceNameError": "Geben Sie den Dienstnamen ein, um diese Aufgabe zu delegieren.",
+    "workflowLabel": "Arbeitsablauf",
+    "workflowName": "Dienstwiederherstellung",
+    "confirmLabel": "Delegieren",
+    "queued": "Aufgabe an den Operator delegiert.",
+    "failed": "Delegierung an den Operator fehlgeschlagen."
   }
 }

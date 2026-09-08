@@ -115,5 +115,20 @@
     "loading": "Carregando tarefas do Operator...",
     "loadFailed": "Falha ao carregar as tarefas do Operator.",
     "empty": "Nenhuma tarefa do Operator para este dispositivo."
+  },
+  "delegate": {
+    "button": "Delegar ao Operador",
+    "dialogTitle": "Delegar ao Operador",
+    "dialogMessage": "O Operador vai investigar e tentar resolver isso usando o fluxo de trabalho abaixo.",
+    "orgLabel": "Organização",
+    "deviceLabel": "Dispositivo",
+    "serviceNameLabel": "Nome do serviço",
+    "serviceNamePlaceholder": "ex.: Spooler",
+    "serviceNameError": "Informe o nome do serviço para delegar esta tarefa.",
+    "workflowLabel": "Fluxo de trabalho",
+    "workflowName": "Recuperação de serviço",
+    "confirmLabel": "Delegar",
+    "queued": "Tarefa delegada ao Operador.",
+    "failed": "Falha ao delegar a tarefa ao Operador."
   }
 }

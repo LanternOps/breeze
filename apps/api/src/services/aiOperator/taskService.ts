@@ -27,7 +27,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiAgents } from '../../db/schema/aiAgents';
@@ -56,7 +56,13 @@ export type AdmitTaskRefusal =
   | 'invalid_input';
 
 export type AdmitTaskResult =
-  | { ok: true; taskId: string }
+  /**
+   * `replayed` is true when `clientIdempotencyKey` matched a task this org had
+   * already admitted, so NOTHING was created by this call (W08, #5246). The
+   * caller must still answer 202 with this id — a replay is a success, not a
+   * conflict — but it must not treat the call as having produced new work.
+   */
+  | { ok: true; taskId: string; replayed: boolean }
   | { ok: false; refusal: AdmitTaskRefusal; detail: string };
 
 export interface AdmitServiceRecoveryTaskInput {
@@ -69,6 +75,17 @@ export interface AdmitServiceRecoveryTaskInput {
   /** Override for tests; defaults to the recipe's own bound. */
   deadlineMs?: number;
   now?: Date;
+  /**
+   * Client-supplied admission idempotency key (spec §12), W08 (#5246).
+   *
+   * Unique per org via the PARTIAL unique index
+   * `ai_operator_tasks_client_idempotency_uq`. Re-admitting with a key this
+   * org has already used returns that task's id and inserts nothing, which is
+   * what stops a double-clicked "Delegate to Operator" from dispatching two
+   * service restarts to the same machine. Null (the default) means "no
+   * idempotency" and is what every internal admission passes.
+   */
+  clientIdempotencyKey?: string | null;
 }
 
 /**
@@ -159,7 +176,11 @@ export async function admitServiceRecoveryTask(
       const taskId = randomUUID();
       const deadlineMs = input.deadlineMs ?? SERVICE_RECOVERY_BOUNDS.deadlineMs;
 
-      await db.insert(aiOperatorTasks).values({
+      const clientIdempotencyKey = input.clientIdempotencyKey ?? null;
+
+      const inserted = await db
+        .insert(aiOperatorTasks)
+        .values({
         id: taskId,
         orgId: input.orgId,
         agentId: agent.id,
@@ -191,9 +212,59 @@ export async function admitServiceRecoveryTask(
         // The root of its own accounting tree (spec §6.1: "root has no root
         // pointer"), left null rather than self-referencing.
         accountingRootTaskId: null,
-      });
+        clientIdempotencyKey,
+        })
+        // W08 (#5246). `DO NOTHING` rather than catching 23505: a unique
+        // violation ABORTS the surrounding transaction, so the read-back
+        // needed to answer with the winner's id could not run in it. Letting
+        // Postgres swallow the conflict keeps the transaction alive and makes
+        // the replay read a plain follow-up statement. The conflict target
+        // must repeat the index's WHERE clause, or Postgres cannot match the
+        // PARTIAL index and raises 42P10 instead of deduplicating.
+        .onConflictDoNothing({
+          target: [aiOperatorTasks.orgId, aiOperatorTasks.clientIdempotencyKey],
+          where: sql`client_idempotency_key IS NOT NULL`,
+        })
+        .returning({ id: aiOperatorTasks.id });
 
-      return { ok: true as const, taskId };
+      if (inserted.length > 0) {
+        return { ok: true as const, taskId, replayed: false };
+      }
+
+      // Nothing inserted => the partial unique index rejected it, which can
+      // only happen when this org already holds a task under this key. Read
+      // the winner. Scoped by BOTH org and key: the index is org-scoped, and
+      // a key-only lookup would hand one tenant another tenant's task id.
+      const [existing] = await db
+        .select({ id: aiOperatorTasks.id })
+        .from(aiOperatorTasks)
+        .where(
+          and(
+            eq(aiOperatorTasks.orgId, input.orgId),
+            eq(aiOperatorTasks.clientIdempotencyKey, clientIdempotencyKey as string),
+          ),
+        )
+        .limit(1);
+
+      if (!existing) {
+        // A conflict fired but the row it must point at is not there. Nothing
+        // in the caller's request can cause this — the index is org+key scoped
+        // and so is this read — so it is a broken invariant (a concurrent
+        // erasure racing admission, or a future change that desynchronises the
+        // index from this lookup), never a client-format problem.
+        //
+        // THROW rather than refuse: a refusal would be reclassified by the
+        // route as a 422 that reads to the technician as "your input was
+        // wrong", and would leave no trace anywhere for anyone to investigate
+        // the actual consistency break. Same convention as
+        // `operationService.ts`'s dispatch-claim cardinality check. The key
+        // itself is caller-supplied and never logged.
+        throw new Error(
+          `[aiOperator] admission conflicted on the client idempotency key but no existing task was found for org ${input.orgId}`,
+        );
+      }
+
+      return { ok: true as const, taskId: existing.id, replayed: true };
     }));
 }
 

@@ -204,3 +204,62 @@ export const taskCheckpointSchema = z.object({
   fixWatchId: z.string().uuid().nullable().default(null),
 }).strict();
 export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
+
+// ---- W08 (#5246): admission request ----
+
+/**
+ * The record a task may cite as the reason it was delegated (spec §12,
+ * "optional source record"). Provenance only — it never widens authority and
+ * never selects a target: the target is `deviceId`, which the server
+ * re-resolves and re-authorizes on its own.
+ */
+export const OPERATOR_TASK_SOURCE_KINDS = ['alert', 'device'] as const;
+export type OperatorTaskSourceKind = (typeof OPERATOR_TASK_SOURCE_KINDS)[number];
+
+/**
+ * Body validator for `POST /api/v1/ai/operator/tasks` (#5205 W08, spec §12).
+ *
+ * `.strict()` is load-bearing, not tidiness. Spec §12: "Requests cannot supply
+ * a principal, effective policy, approval result, or trusted continuation
+ * token." Every one of those would arrive as an extra property — `task`,
+ * `policySnapshot`, `approval`, `principal`, `agentId` — and `.strict()` is
+ * what turns each into a 400 instead of a silently ignored field that a later
+ * refactor might start honouring. There is deliberately no `agentId` here
+ * either: §5.1 says the SERVER resolves the agent, so letting a client name
+ * one would be a client-chosen principal by another door.
+ *
+ * `mode` is a literal `'live'`; trials are P3-5, and admitting one through
+ * this route would produce a live task labelled as a trial.
+ */
+export const createOperatorTaskSchema = z.object({
+  mode: z.literal('live'),
+  recipeKey: z.literal('service_recovery'),
+  /**
+   * The recipe version the CLIENT reviewed. Checked against the server's
+   * released version and refused (422) on mismatch rather than silently
+   * upgraded — spec §5.1: the operator approves a specific reviewed workflow,
+   * and a cached catalog is never authority.
+   */
+  recipeVersion: z.number().int().min(1),
+  orgId: z.string().guid(),
+  deviceId: z.string().guid(),
+  inputs: z.object({
+    serviceName: z.string().min(1).max(255),
+  }).strict(),
+  sourceKind: z.enum(OPERATOR_TASK_SOURCE_KINDS).optional(),
+  sourceId: z.string().guid().optional(),
+  /**
+   * Required, not optional. A caller with no key gets no idempotency, and the
+   * effect this admits (a service restart on a customer machine) is the kind
+   * you cannot take back — so admission is refused without one rather than
+   * defaulting to at-least-once.
+   */
+  clientIdempotencyKey: z.string().min(8).max(200),
+}).strict()
+  // A source id without its kind (or the reverse) is a half-formed citation;
+  // accepting it would record provenance that cannot be resolved.
+  .refine((v) => (v.sourceKind === undefined) === (v.sourceId === undefined), {
+    message: 'sourceKind and sourceId must be provided together',
+    path: ['sourceId'],
+  });
+export type CreateOperatorTaskInput = z.infer<typeof createOperatorTaskSchema>;

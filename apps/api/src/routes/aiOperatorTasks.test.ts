@@ -4,10 +4,17 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
-const { selectMock, hasPermMock, authOkMock } = vi.hoisted(() => ({
+const {
+  selectMock, hasPermMock, authOkMock, mfaOkMock,
+  tasksEnabledMock, recipeEnabledMock, admitMock,
+} = vi.hoisted(() => ({
   selectMock: vi.fn(),
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
   authOkMock: vi.fn(() => true),
+  mfaOkMock: vi.fn(() => true),
+  tasksEnabledMock: vi.fn(() => true),
+  recipeEnabledMock: vi.fn(() => true),
+  admitMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -22,9 +29,26 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       c: { json: (body: unknown, status: number) => Response },
       next: () => Promise<void>,
     ) => (hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)),
+    // W08: the POST admission route is MFA step-up gated, same as
+    // `POST /ai/agents/:id/runs`. Mocked with the real middleware's own
+    // failure shape so a test can prove the gate is wired, not just present.
+    requireMfa: () => async (
+      c: { json: (body: unknown, status: number) => Response },
+      next: () => Promise<void>,
+    ) => (mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)),
     buildOrgAccessClosures: actual.buildOrgAccessClosures,
   };
 });
+
+vi.mock('../config/env', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  aiOperatorTasksEnabled: () => tasksEnabledMock(),
+  aiOperatorServiceRecoveryEnabled: () => recipeEnabledMock(),
+}));
+
+vi.mock('../services/aiOperator/taskService', () => ({
+  admitServiceRecoveryTask: (input: unknown) => admitMock(input),
+}));
 
 vi.mock('../db', () => ({
   db: { select: selectMock },
@@ -303,5 +327,262 @@ describe('GET /ai/operator/tasks/:id (detail)', () => {
     await buildApp({ allowedSiteIds: [siteId], canAccessSite: (id: string | null) => id === siteId })
       .request(`/ai/operator/tasks/${TASK_ID}`);
     expect(sqlText(capturedPredicate)).toContain('site_id');
+  });
+});
+
+/**
+ * W08 (#5246) — `POST /ai/operator/tasks`, the only route that creates a task.
+ *
+ * Every case below is a REFUSAL contract except the 202s, because the whole
+ * value of this route is what it declines to admit: each accepted task can
+ * dispatch a real service restart to a customer machine.
+ */
+describe('POST /ai/operator/tasks (W08 admission)', () => {
+  const SITE_ID = '99999999-9999-4999-8999-999999999999';
+  const ADMITTED_TASK_ID = '77777777-7777-4777-8777-777777777777';
+
+  function body(overrides: Record<string, unknown> = {}) {
+    return {
+      mode: 'live',
+      recipeKey: 'service_recovery',
+      recipeVersion: 1,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      inputs: { serviceName: 'spooler' },
+      clientIdempotencyKey: 'delegate-abcdef0123456789',
+      ...overrides,
+    };
+  }
+
+  function post(payload: unknown, authOverrides: Record<string, unknown> = {}) {
+    return buildApp(authOverrides).request('/ai/operator/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  const deviceRow = { id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID, hostname: 'WS-01' };
+
+  /** device row, then agent row, then the pending-cap count. */
+  function happyPathSelects(pendingCount = 0) {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: pendingCount }]));
+  }
+
+  beforeEach(() => {
+    selectMock.mockClear();
+    admitMock.mockClear();
+    mfaOkMock.mockReturnValue(true);
+    hasPermMock.mockReturnValue(true);
+    tasksEnabledMock.mockReturnValue(true);
+    recipeEnabledMock.mockReturnValue(true);
+    admitMock.mockResolvedValue({ ok: true, taskId: ADMITTED_TASK_ID, replayed: false });
+  });
+
+  it('admits a valid request with 202 and the new task id', async () => {
+    happyPathSelects();
+    const res = await post(body());
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ taskId: ADMITTED_TASK_ID, replayed: false });
+  });
+
+  it('passes the client idempotency key and the resolved agent through to admission', async () => {
+    happyPathSelects();
+    await post(body());
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      clientIdempotencyKey: 'delegate-abcdef0123456789',
+      requesterUserId: USER_ID,
+      recipeInput: expect.objectContaining({ deviceId: DEVICE_ID, serviceName: 'spooler' }),
+    }));
+  });
+
+  it('returns the SAME task id with 202 on an idempotent replay', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({ ok: true, taskId: ADMITTED_TASK_ID, replayed: true });
+    const res = await post(body());
+    expect(res.status).toBe(202);
+    // Identical id to the first admission: a replay is indistinguishable to
+    // the client, which is what stops a double-click becoming two restarts.
+    expect(await res.json()).toEqual({ taskId: ADMITTED_TASK_ID, replayed: true });
+  });
+
+  it('records origin `alert` and threads the alert id into the verification criterion', async () => {
+    happyPathSelects();
+    const alertId = '88888888-8888-4888-8888-888888888888';
+    await post(body({ sourceKind: 'alert', sourceId: alertId }));
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({
+      originKind: 'alert',
+      recipeInput: expect.objectContaining({ triggeringAlertId: alertId }),
+    }));
+  });
+
+  it('records origin `manual` and a null alert id for a device-page delegate', async () => {
+    happyPathSelects();
+    await post(body({ sourceKind: 'device', sourceId: DEVICE_ID }));
+    expect(admitMock).toHaveBeenCalledWith(expect.objectContaining({
+      originKind: 'manual',
+      recipeInput: expect.objectContaining({ triggeringAlertId: null }),
+    }));
+  });
+
+  // ---- Spec §12: "Requests cannot supply a principal, effective policy,
+  // approval result, or trusted continuation token." ----
+
+  it.each(['task', 'policySnapshot', 'approval', 'principal', 'agentId'])(
+    'rejects a body carrying a forged `%s` field before any admission',
+    async (field) => {
+      const res = await post(body({ [field]: { forged: true } }));
+      expect(res.status).toBe(400);
+      expect(admitMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a trial mode through the live admission route', async () => {
+    const res = await post(body({ mode: 'trial' }));
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a request with no idempotency key', async () => {
+    const payload = body() as Record<string, unknown>;
+    delete payload.clientIdempotencyKey;
+    const res = await post(payload);
+    expect(res.status).toBe(400);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a source id with no source kind', async () => {
+    const res = await post(body({ sourceId: DEVICE_ID }));
+    expect(res.status).toBe(400);
+  });
+
+  // ---- RBAC / MFA (spec §5.1) ----
+
+  it('requires ai_agents:write, not merely ai_agents:read', async () => {
+    hasPermMock.mockImplementation((_r, action) => action !== 'write');
+    const res = await post(body());
+    expect(res.status).toBe(403);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('requires the MFA step-up', async () => {
+    mfaOkMock.mockReturnValue(false);
+    const res = await post(body());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  // ---- Target authorization: non-enumerating 404 (spec §12) ----
+
+  it('404s without touching the database when the org is outside the caller access', async () => {
+    const res = await post(body({ orgId: OTHER_ORG_ID }), { canAccessOrg: () => false });
+    expect(res.status).toBe(404);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('404s when the device does not resolve inside the named org', async () => {
+    selectMock.mockReturnValueOnce(selectChain([]));
+    const res = await post(body());
+    expect(res.status).toBe(404);
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('404s (not 403) for a device outside a site-restricted caller sites', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      { ...deviceRow, siteId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+    ]));
+    const res = await post(body(), {
+      allowedSiteIds: [SITE_ID],
+      canAccessSite: (id: string | null) => id === SITE_ID,
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  // ---- Readiness, recomputed on launch (spec §12) ----
+
+  it('422s with an actionable reason when the task infrastructure flag is off', async () => {
+    tasksEnabledMock.mockReturnValue(false);
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_TASKS_DISABLED' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('422s when the service-recovery recipe flag is off', async () => {
+    recipeEnabledMock.mockReturnValue(false);
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_RECIPE_DISABLED' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('422s rather than silently upgrading a stale reviewed recipe version', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    const res = await post(body({ recipeVersion: 99 }));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_RECIPE_VERSION_MISMATCH' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('422s when the org has no enabled agent to run the task', async () => {
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    selectMock.mockReturnValueOnce(selectChain([]));
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_NO_AGENT' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an admission refusal as 422 with its reason', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({ ok: false, refusal: 'invalid_input', detail: 'serviceName is required' });
+    const res = await post(body());
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: 'serviceName is required', code: 'INVALID_INPUT' });
+  });
+
+  it('keeps an admission-time device refusal non-enumerating (404, not 422)', async () => {
+    happyPathSelects();
+    admitMock.mockResolvedValue({ ok: false, refusal: 'device_not_in_org', detail: 'device x is not in org y' });
+    const res = await post(body());
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+  });
+
+  // ---- Capacity (spec §7.2: pending cap 100 per org) ----
+
+  it('429s when the org is already at the pending-task cap', async () => {
+    happyPathSelects(100);
+    const res = await post(body());
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ code: 'OPERATOR_PENDING_CAP_REACHED' });
+    expect(admitMock).not.toHaveBeenCalled();
+  });
+
+  it('admits at one below the cap', async () => {
+    happyPathSelects(99);
+    const res = await post(body());
+    expect(res.status).toBe(202);
+  });
+
+  it('counts the cap over non-terminal states for the ONE named org', async () => {
+    let capturedPredicate: unknown;
+    selectMock.mockReturnValueOnce(selectChain([deviceRow]));
+    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }], (p) => { capturedPredicate = p; }));
+    await post(body());
+    const text = sqlText(capturedPredicate).toLowerCase();
+    expect(text).toContain('org_id');
+    expect(text).toContain('not in');
   });
 });
