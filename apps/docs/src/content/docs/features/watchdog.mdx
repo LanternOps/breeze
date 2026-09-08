@@ -46,7 +46,7 @@ The watchdog operates as a state machine with five states:
 | **Connecting** | Starting up, attempting to establish IPC connection to the agent |
 | **Monitoring** | Agent is healthy; running periodic health checks |
 | **Recovering** | Agent is unhealthy; performing escalating restart attempts |
-| **Standby** | Agent signaled a graceful shutdown (e.g., for an update); waiting for it to come back |
+| **Standby** | Agent signaled a graceful shutdown (e.g., for an update); waiting a bounded window for it to come back |
 | **Failover** | Recovery attempts exhausted; watchdog is communicating directly with the Breeze server on behalf of the device |
 
 ### State transitions
@@ -54,22 +54,33 @@ The watchdog operates as a state machine with five states:
 ```
 CONNECTING ──ipc connected──→ MONITORING
 CONNECTING ──agent not found─→ RECOVERING
+CONNECTING ──agent unhealthy─→ RECOVERING
 
 MONITORING ──agent unhealthy─→ RECOVERING
 MONITORING ──shutdown intent─→ STANDBY
 
 RECOVERING ──agent recovered─→ MONITORING
+RECOVERING ──ipc connected───→ MONITORING
 RECOVERING ──recovery exhausted──→ FAILOVER
 
 STANDBY ────agent recovered──→ MONITORING
+STANDBY ────ipc connected────→ MONITORING
+STANDBY ────agent unhealthy──→ RECOVERING
 STANDBY ────standby timeout──→ FAILOVER
 STANDBY ────start agent──────→ RECOVERING
 
 FAILOVER ───agent recovered──→ MONITORING
+FAILOVER ───ipc connected────→ MONITORING
 ```
 
 <Aside>
-  The **Standby** state handles planned agent downtime — for example, when the agent shuts itself down to apply a self-update. The watchdog waits for the configured standby timeout before escalating to failover, giving the update time to complete.
+  The **Standby** state handles planned agent downtime — for example, when the agent shuts itself down to apply a self-update. Health signals are ignored for the duration of the announced window, so the watchdog does not fight the very restart the agent asked for.
+
+  That window is bounded. Once it closes, the watchdog acts: if the agent is back and healthy it returns to **Monitoring**, and if the agent is still gone it escalates to **Recovering** and starts it. A shutdown reason the agent itself sends (a user stop, a self-update, a config reload) uses the short **standby grace** window; an unrecognised reason is held to the longer **standby timeout** ceiling and then parks in **Failover** — but only after a best-effort start, so a host is never left stopped indefinitely.
+</Aside>
+
+<Aside type="caution">
+  Because the watchdog restarts an agent that stays down past its standby window, `breeze-agent service stop` is **temporary** while the watchdog is installed — the agent comes back after the standby grace period. To stop the agent durably, stop or uninstall the watchdog as well.
 </Aside>
 
 ---
@@ -141,12 +152,13 @@ The watchdog reads its configuration from the same config directory as the agent
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Process check interval | 10 s | How often to check if the agent process is alive |
-| IPC probe interval | 15 s | How often to ping the agent over IPC |
-| Heartbeat stale threshold | 5 min | How long since the last heartbeat before the agent is considered stale |
+| Process check interval | 5 s | How often to check if the agent process is alive |
+| IPC probe interval | 30 s | How often to ping the agent over IPC |
+| Heartbeat stale threshold | 3 min | How long since the last heartbeat before the agent is considered stale |
 | Max recovery attempts | 3 | Number of escalating recovery tries before entering failover |
 | Recovery cooldown | 10 min | Window in which recovery attempts are counted; resets after expiry |
-| Standby timeout | 5 min | How long to wait in standby before escalating to failover |
+| Standby grace | 2 min | How long an announced shutdown the agent itself signalled is tolerated before the watchdog starts the agent again |
+| Standby timeout | 30 min | Ceiling on any standby. Applies in full only to an unrecognised shutdown reason; the agent's own reasons use the standby grace above |
 | Failover poll interval | 30 s | How often to poll the server for commands during failover |
 
 ---

@@ -85,3 +85,40 @@ func TestInstallScriptStillRestartsTheWatchdog(t *testing.T) {
 		t.Error("install-linux.sh must restart breeze-watchdog so a staged new binary actually takes over (#5252)")
 	}
 }
+
+// TestInstallScriptDoesNotLetTheWatchdogAbortTheAgentInstall guards a
+// regression introduced while fixing #5252.
+//
+// `breeze-watchdog service install` now exits non-zero when it cannot restart
+// the watchdog. install-linux.sh runs under `set -e` and invokes it roughly
+// halfway through — BEFORE the breeze-agent restart at the bottom. Left
+// unguarded, a transient watchdog restart failure aborts the installer right
+// there, the agent (already stopped near the top of the script) is never
+// started, and the only error printed talks about the watchdog. That is the
+// exact stranding this fix exists to prevent, reached through the watchdog leg.
+func TestInstallScriptDoesNotLetTheWatchdogAbortTheAgentInstall(t *testing.T) {
+	script := readInstallScript(t)
+
+	const invocation = "/usr/local/bin/breeze-watchdog service install"
+	var found bool
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Only lines that RUN the installer count. Comments and the recovery
+		// hint printed on failure mention the same command text.
+		if !strings.Contains(trimmed, invocation) ||
+			strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "echo ") {
+			continue
+		}
+		found = true
+		guarded := strings.HasPrefix(trimmed, "if ") || strings.Contains(trimmed, "||")
+		if !guarded {
+			t.Errorf("install-linux.sh calls %q unguarded under `set -e` (line: %q). "+
+				"A watchdog failure would abort the installer before breeze-agent is "+
+				"started, leaving the host offline (#5252).", invocation, trimmed)
+		}
+	}
+	if !found {
+		t.Skip("install-linux.sh no longer invokes the watchdog installer; guard not applicable")
+	}
+}

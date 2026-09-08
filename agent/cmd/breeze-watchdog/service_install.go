@@ -5,7 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// standbyHoldLogInterval bounds how often a still-holding STANDBY writes a
+// heartbeat to the health journal. Long enough not to flood a journal written
+// on a multi-second tick, short enough that a 30-minute hold is visibly alive
+// in the diagnostics bundle rather than looking like a dead watchdog.
+const standbyHoldLogInterval = 5 * time.Minute
 
 // commandRunner runs an external command and returns its combined output.
 // Production code uses execCommandRunner; tests substitute a recorder so the

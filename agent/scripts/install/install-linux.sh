@@ -94,9 +94,19 @@ fi
 # also runs against hosts where no NEW watchdog binary was staged above — in
 # which case the OLD binary's install still only enables — so the explicit
 # restart stays as the belt-and-braces path.
+#
+# The call is GUARDED. Since #5252 `breeze-watchdog service install` exits
+# non-zero when it cannot restart the watchdog, and this script runs under
+# `set -e` — so a bare call would abort the installer here, long before the
+# breeze-agent restart at the bottom, and leave the agent stopped. That is the
+# very stranding this script is being changed to prevent, just reached through
+# the watchdog leg. A watchdog problem must never block the agent.
 if [ -f "/usr/local/bin/breeze-watchdog" ]; then
     echo "Registering watchdog service..."
-    /usr/local/bin/breeze-watchdog service install
+    if ! /usr/local/bin/breeze-watchdog service install; then
+        echo "Warning: watchdog service install failed — continuing so the agent is still installed and started." >&2
+        echo "         Recover the watchdog with: sudo /usr/local/bin/breeze-watchdog service install" >&2
+    fi
     echo "Starting watchdog service..."
     systemctl restart breeze-watchdog || true
 fi

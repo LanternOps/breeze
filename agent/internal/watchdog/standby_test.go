@@ -175,3 +175,21 @@ func TestStandbyWindowSurvivesMisconfiguration(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluateStandbyClampsAWindowPastTheCeiling — the production caller
+// clamps via StandbyWindow, but EvaluateStandby must not depend on that. An
+// unclamped window from a future caller would silently reintroduce the
+// indefinite standby of #5252 with every other test still green.
+func TestEvaluateStandbyClampsAWindowPastTheCeiling(t *testing.T) {
+	const ceiling = 30 * time.Minute
+	in := StandbyInput{
+		Elapsed:    ceiling + time.Minute,
+		Window:     10 * time.Hour, // absurd, unclamped
+		Ceiling:    ceiling,
+		Recognized: true,
+	}
+	if got := EvaluateStandby(in); got != StandbyRecover {
+		t.Errorf("EvaluateStandby(%+v) = %s, want %s — an over-long window must be clamped to the ceiling",
+			in, got, StandbyRecover)
+	}
+}

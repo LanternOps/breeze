@@ -85,6 +85,13 @@ type StandbyInput struct {
 // the transition table static and makes the policy table-testable without a
 // live agent, an init system, or a clock.
 func EvaluateStandby(in StandbyInput) StandbyDecision {
+	// Defence in depth. The only production caller already clamps via
+	// StandbyWindow, but a future caller passing an unclamped window would
+	// reintroduce the indefinite standby this function exists to prevent —
+	// and it would do so silently, with every test still green.
+	if in.Ceiling > 0 && in.Window > in.Ceiling {
+		in.Window = in.Ceiling
+	}
 	if !in.Recognized {
 		// An unfamiliar reason may describe genuinely long maintenance, so we
 		// wait out the full ceiling rather than guessing a short window.

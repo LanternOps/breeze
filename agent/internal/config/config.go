@@ -363,7 +363,9 @@ func Default() *Config {
 			RecoveryCooldown:        10 * time.Minute,
 			StandbyTimeout:          30 * time.Minute,
 			// Kept in lockstep with watchdog.DefaultStandbyGrace by
-			// TestStandbyGraceDefaultMatchesWatchdogPackage. Not imported:
+			// TestStandbyGraceDefaultMatchesConfigDefault (it lives in the
+			// watchdog package, which may import config; not the reverse —
+			// watchdog/netcache.go already imports config). Not imported:
 			// config is the more fundamental package and must not grow a
 			// dependency on the watchdog for one constant.
 			StandbyGrace:               2 * time.Minute,

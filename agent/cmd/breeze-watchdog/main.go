@@ -503,6 +503,13 @@ func runWatchdog(stopCh <-chan struct{}) {
 	standbyWindow := watchdog.StandbyWindow("", 0, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
 	standbyReason := ""
 	standbyRecognized := true
+	// A hold is deliberately not journaled per tick (the process ticker runs
+	// every few seconds), but a long hold must not look like a dead watchdog
+	// in the diagnostics bundle: an unrecognized reason can legitimately hold
+	// out to the 30-minute ceiling, and the journal is what
+	// collect_diagnostics ships. One heartbeat every few minutes is the
+	// difference between "waiting on purpose" and "process died".
+	var lastStandbyHoldLog time.Time
 
 	// agentLooksHealthy requires live IPC AND a fresh heartbeat — the same
 	// evidence the FAILOVER self-recovery block uses. IsConnected() alone is
@@ -520,6 +527,24 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// applyStandby evaluates the standby policy once and acts on it. It is
 	// the ONLY place STANDBY leaves its state, so the per-tick check and the
 	// unhealthy-signal funnel below cannot drift apart (#5252).
+	// fireStandbyEvent applies a standby decision and refuses to let a
+	// rejected transition pass silently. HandleEvent logs nothing of its own
+	// on a rejected event, and this whole function exists to guarantee STANDBY
+	// never drifts without a trace.
+	fireStandbyEvent := func(event string, fields map[string]any) bool {
+		if _, ok := wd.HandleEvent(event); ok {
+			return true
+		}
+		rejected := make(map[string]any, len(fields)+2)
+		for k, v := range fields {
+			rejected[k] = v
+		}
+		rejected["event"] = event
+		rejected["state"] = wd.State()
+		journal.Log(watchdog.LevelError, "standby.transition_rejected", rejected)
+		return false
+	}
+
 	applyStandby := func() {
 		elapsed := time.Since(wd.LastTransitionTime())
 		decision := watchdog.EvaluateStandby(watchdog.StandbyInput{
@@ -537,18 +562,22 @@ func runWatchdog(stopCh <-chan struct{}) {
 		}
 		switch decision {
 		case watchdog.StandbyHold:
+			if time.Since(lastStandbyHoldLog) >= standbyHoldLogInterval {
+				lastStandbyHoldLog = time.Now()
+				journal.Log(watchdog.LevelInfo, "standby.holding", fields)
+			}
 			return
 		case watchdog.StandbyResume:
 			// The announced shutdown never completed — the agent is still
 			// there and healthy. Restarting it would be gratuitous.
 			journal.Log(watchdog.LevelInfo, "standby.agent_still_healthy", fields)
-			wd.HandleEvent(watchdog.EventAgentRecovered)
+			fireStandbyEvent(watchdog.EventAgentRecovered, fields)
 		case watchdog.StandbyRecover:
 			// The window closed with the agent gone. Hand off to the normal
 			// recovery ladder, which owns the restart budget, flap detection
 			// and its own ensure-start before FAILOVER.
 			journal.Log(watchdog.LevelWarn, "standby.window_expired", fields)
-			wd.HandleEvent(watchdog.EventAgentUnhealthy)
+			fireStandbyEvent(watchdog.EventAgentUnhealthy, fields)
 		case watchdog.StandbyFailover:
 			journal.Log(watchdog.LevelWarn, "standby.timeout", fields)
 			// Transition FIRST and only ensure-start on an ACCEPTED
@@ -556,9 +585,17 @@ func runWatchdog(stopCh <-chan struct{}) {
 			// ahead of a transition that did not happen would repeat it on
 			// every tick. Entering FAILOVER with the agent stopped is what
 			// stranded the host in #5252.
-			if _, ok := wd.HandleEvent(watchdog.EventStandbyTimeout); ok {
+			if fireStandbyEvent(watchdog.EventStandbyTimeout, fields) {
 				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
 			}
+		default:
+			// Go has no exhaustiveness check on this switch, so a decision
+			// added later would otherwise fall through as a no-op — i.e. the
+			// watchdog holds in STANDBY forever, which IS the #5252 failure.
+			// Escalate instead: starting an agent that did not need it is
+			// recoverable, leaving a remote host offline is not.
+			journal.Log(watchdog.LevelError, "standby.unknown_decision", fields)
+			fireStandbyEvent(watchdog.EventAgentUnhealthy, fields)
 		}
 	}
 
@@ -673,10 +710,15 @@ func runWatchdog(stopCh <-chan struct{}) {
 				standbyRecognized = watchdog.RecognizedShutdownReason(intent.Reason)
 				standbyWindow = watchdog.StandbyWindow(
 					intent.Reason, intent.ExpectedDuration, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
+				lastStandbyHoldLog = time.Now()
 				journal.Log(watchdog.LevelInfo, "standby.window", map[string]any{
-					"reason":         standbyReason,
-					"recognized":     standbyRecognized,
-					"window_seconds": int(standbyWindow.Seconds()),
+					"reason":     standbyReason,
+					"recognized": standbyRecognized,
+					// Both, so a declared duration that was clamped (or was
+					// corrupt) is visible in the shipped journal rather than
+					// showing up as a plausible-looking window with no trace.
+					"declared_seconds": intent.ExpectedDuration,
+					"window_seconds":   int(standbyWindow.Seconds()),
 				})
 			}
 
@@ -863,9 +905,11 @@ func runWatchdog(stopCh <-chan struct{}) {
 }
 
 // handleIPCMessage dispatches IPC envelope messages from the agent. It returns
-// the shutdown intent it handled, if any, so the caller can size the standby
-// window from the reason and declared duration the agent sent (#5252); nil for
-// every other message type and for an intent that failed to parse.
+// the shutdown intent that actually moved the watchdog into STANDBY, so the
+// caller can size the standby window from the reason and declared duration the
+// agent sent (#5252). It returns nil for every other message type, for an
+// intent that failed to parse, and for an intent that did not cause a
+// transition.
 func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) *ipc.ShutdownIntent {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
@@ -880,8 +924,14 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"reason":   intent.Reason,
 			"duration": intent.ExpectedDuration,
 		})
-		wd.HandleEvent(watchdog.EventShutdownIntent)
-		return &intent
+		// Report the intent ONLY when it actually moved us into STANDBY.
+		// shutdown_intent is a valid edge from MONITORING alone, so an intent
+		// that arrives while RECOVERING or in FAILOVER changes nothing — and
+		// must not resize a standby window that this intent did not open.
+		if _, ok := wd.HandleEvent(watchdog.EventShutdownIntent); ok {
+			return &intent
+		}
+		return nil
 
 	case ipc.TypeTokenUpdate:
 		var update ipc.TokenUpdate

@@ -277,6 +277,14 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		if !noWatchdog {
+			// Describe the service state we actually left behind. This line
+			// used to assert "installed and running" unconditionally, which
+			// before #5252 was never true on this platform and is still not
+			// true for a fresh un-enrolled host or a failed start.
+			agentStateLine := "The agent service is installed but is NOT running."
+			if started {
+				agentStateLine = "The agent service is installed and running."
+			}
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: exePath,
 				version:   version,
@@ -286,13 +294,13 @@ var serviceInstallCmd = &cobra.Command{
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
 					"Warning: watchdog bootstrap failed: %v\n"+
-						"The agent service is installed and running. The watchdog is NOT installed.\n"+
+						"%s The watchdog is NOT installed.\n"+
 						"To retry, choose one of:\n"+
 						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
 						"  2. Download %s manually, place it next to breeze-agent,\n"+
 						"     then run `sudo breeze-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
-					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
+					err, agentStateLine, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}
 		}
 
