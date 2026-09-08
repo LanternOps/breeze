@@ -6,7 +6,7 @@
  * every visible org rather than once per device row.
  *
  * This route is a thin composition of two already-tested resolvers
- * (getOrgAgentVersionPinsBatch in agents/helpers.ts,
+ * (getOrgAgentVersionPinsBatch in services/orgAgentVersionPins.ts,
  * getPromotedAgentVersionForDisplay in services/promotedAgentVersion.ts), so
  * both are mocked here — this file pins the route's OWN contract: query
  * parsing, auth scoping (an orgId outside the caller's access is silently
