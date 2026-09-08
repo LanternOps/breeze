@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { deviceWarranty, deviceHardware, devices, manualAssets } from '../db/schema';
-import { eq, and, lt, isNull, or, sql, asc } from 'drizzle-orm';
+import { eq, and, lt, isNull, or, sql } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
 import type { WarrantyLookupResult } from './warrantyProviders';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
@@ -265,6 +265,14 @@ async function upsertWarranty(
   const conflictTarget = subject.kind === 'device'
     ? deviceWarranty.deviceId
     : deviceWarranty.manualAssetId;
+  // Both unique indexes are PARTIAL now. Postgres can only infer a partial
+  // unique index as the ON CONFLICT arbiter when the statement repeats its
+  // predicate verbatim — without `targetWhere` this raises 42P10 ("no unique
+  // or exclusion constraint matching the ON CONFLICT specification") for
+  // EVERY warranty upsert, device rows included.
+  const conflictWhere = subject.kind === 'device'
+    ? sql`${deviceWarranty.deviceId} IS NOT NULL`
+    : sql`${deviceWarranty.manualAssetId} IS NOT NULL`;
 
   await db
     .insert(deviceWarranty)
@@ -285,6 +293,7 @@ async function upsertWarranty(
     })
     .onConflictDoUpdate({
       target: conflictTarget,
+      targetWhere: conflictWhere,
       set: {
         orgId,
         manufacturer: normalizeManufacturer(manufacturer),
@@ -385,6 +394,9 @@ export async function upsertAgentWarranty(
     })
     .onConflictDoUpdate({
       target: deviceWarranty.deviceId,
+      // device_warranty_device_id_idx is partial since #4622 W03 — the
+      // predicate must be repeated or Postgres cannot infer the arbiter (42P10).
+      targetWhere: sql`${deviceWarranty.deviceId} IS NOT NULL`,
       set: {
         orgId,
         manufacturer: normalizeManufacturer(data.manufacturer),
@@ -463,7 +475,12 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<Warrant
         )
       )
     )
-    .orderBy(asc(deviceWarranty.nextSyncAt))
+    // NULLS FIRST is explicit: Postgres defaults ASC to NULLS LAST, which would
+    // push "never synced yet" — the most overdue state there is — to the END of
+    // the fetched page, so a backlog of already-due rows would starve brand-new
+    // subjects forever. The JS re-sort below cannot fix what the page never
+    // returned.
+    .orderBy(sql`${deviceWarranty.nextSyncAt} ASC NULLS FIRST`)
     .limit(limit);
 
   const manualRows = await db
@@ -482,7 +499,7 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<Warrant
         )
       )
     )
-    .orderBy(asc(deviceWarranty.nextSyncAt))
+    .orderBy(sql`${deviceWarranty.nextSyncAt} ASC NULLS FIRST`)
     .limit(limit);
 
   type Candidate = { subject: WarrantySubject; nextSyncAt: Date | null };

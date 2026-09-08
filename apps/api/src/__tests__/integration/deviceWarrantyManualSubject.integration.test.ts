@@ -16,9 +16,10 @@ import './setup';
 
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { syncWarrantyForManualAsset, upsertAgentWarranty } from '../../services/warrantySync';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -191,5 +192,62 @@ describe('device_warranty XOR subject (#4622)', () => {
       // Partial: a NULL subject column must not occupy the conflict target.
       expect(index.indexdef).toContain('IS NOT NULL');
     }
+  });
+});
+
+/**
+ * The partial-unique-index arbiter, proven through the REAL writers.
+ *
+ * Every unit test of these paths mocks `../db`, so none of them can see a
+ * failure to infer the ON CONFLICT arbiter. Making
+ * `device_warranty_device_id_idx` partial breaks every `ON CONFLICT (device_id)`
+ * in the codebase with 42P10 unless the statement repeats the index predicate —
+ * and that breaks the EXISTING device path, not just the new manual one. These
+ * tests call the writers, never raw SQL.
+ */
+describe('device_warranty upsert arbiters survive the partial indexes (#4622)', () => {
+  runDb('syncWarrantyForManualAsset inserts, then updates the same row', async () => {
+    const { org, site } = await seedTenant();
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const manualAssetId = await seedManualAsset(org.id, site.id, `SN-UPSERT-${suffix}`);
+
+    await withSystemDbAccessContext(() => syncWarrantyForManualAsset(manualAssetId));
+    // The second call takes the ON CONFLICT path — the one needing the arbiter.
+    await withSystemDbAccessContext(() => syncWarrantyForManualAsset(manualAssetId));
+
+    const rows = (await getTestDb().execute(sql`
+      SELECT device_id FROM device_warranty WHERE manual_asset_id = ${manualAssetId}
+    `)) as unknown as Array<{ device_id: string | null }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.device_id).toBeNull();
+  });
+
+  runDb('upsertAgentWarranty (the device arbiter) inserts, then updates the same row', async () => {
+    const { org, site } = await seedTenant();
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const deviceId = await seedDevice(org.id, site.id, `xor-agent-upsert-${suffix}`);
+
+    const payload = {
+      source: 'agent_plist',
+      manufacturer: 'Apple',
+      serialNumber: `SN-AGENT-${suffix}`,
+      coverageEndDate: '2099-01-01',
+      coverageStartDate: '2024-01-01',
+      coverageType: 'AppleCare+',
+      coverageKind: 'fixed' as const,
+    };
+    await withSystemDbAccessContext(() => upsertAgentWarranty(deviceId, org.id, payload));
+    await withSystemDbAccessContext(() =>
+      upsertAgentWarranty(deviceId, org.id, { ...payload, coverageEndDate: '2098-01-01' }),
+    );
+
+    const rows = (await getTestDb().execute(sql`
+      SELECT manual_asset_id, warranty_end_date::text AS end_date
+      FROM device_warranty WHERE device_id = ${deviceId}
+    `)) as unknown as Array<{ manual_asset_id: string | null; end_date: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.manual_asset_id).toBeNull();
+    // The UPDATE arm actually ran — the conflict was resolved, not duplicated.
+    expect(rows[0]!.end_date).toBe('2098-01-01');
   });
 });
