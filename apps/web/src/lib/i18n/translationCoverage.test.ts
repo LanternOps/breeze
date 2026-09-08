@@ -19,6 +19,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 25,
     'ai.json': 1,
+    // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
+    // identical cognates in pt-BR.
+    'aiOperator.json': 2,
     'alerts.json': 43,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -117,6 +120,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 21,
     'ai.json': 4,
+    // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
+    // "chat" are identical cognates in es-419.
+    'aiOperator.json': 3,
     'alerts.json': 39,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -214,6 +220,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-FR.
+    'aiOperator.json': 3,
     'alerts.json': 58,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -329,6 +338,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-CA.
+    'aiOperator.json': 3,
     'alerts.json': 59,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -440,6 +452,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 31,
     'ai.json': 5,
+    // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
+    // "chat" and waitReason "information" are identical cognates in de-DE.
+    'aiOperator.json': 4,
     'alerts.json': 46,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -543,6 +558,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 38,
     'ai.json': 12,
+    // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
+    // identical cognates in it-IT.
+    'aiOperator.json': 2,
     'alerts.json': 57,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -615,6 +633,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 19,
     'ai.json': 1,
+    'aiOperator.json': 0,
     'alerts.json': 25,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
