@@ -64,8 +64,9 @@ export function DelegateToOperatorButton({
       setTouched(false);
     }
     // defaultServiceName intentionally excluded: only re-read when the dialog
-    // opens, not on every prop change while it's open.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // opens, not on every prop change while it's open. (No eslint-disable for
+    // react-hooks/exhaustive-deps here — the rule is not registered in this
+    // repo's config, so disabling it IS itself a lint error.)
   }, [open]);
 
   if (!loaded || !enabled) return null;

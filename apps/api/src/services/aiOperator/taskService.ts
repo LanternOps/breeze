@@ -247,13 +247,21 @@ export async function admitServiceRecoveryTask(
         .limit(1);
 
       if (!existing) {
-        // Structurally unreachable: DO NOTHING with a non-null key fires only
-        // on that index. Refusing beats inventing a task id.
-        return {
-          ok: false as const,
-          refusal: 'invalid_input' as const,
-          detail: 'admission conflicted but no existing task was found for the idempotency key',
-        };
+        // A conflict fired but the row it must point at is not there. Nothing
+        // in the caller's request can cause this — the index is org+key scoped
+        // and so is this read — so it is a broken invariant (a concurrent
+        // erasure racing admission, or a future change that desynchronises the
+        // index from this lookup), never a client-format problem.
+        //
+        // THROW rather than refuse: a refusal would be reclassified by the
+        // route as a 422 that reads to the technician as "your input was
+        // wrong", and would leave no trace anywhere for anyone to investigate
+        // the actual consistency break. Same convention as
+        // `operationService.ts`'s dispatch-claim cardinality check. The key
+        // itself is caller-supplied and never logged.
+        throw new Error(
+          `[aiOperator] admission conflicted on the client idempotency key but no existing task was found for org ${input.orgId}`,
+        );
       }
 
       return { ok: true as const, taskId: existing.id, replayed: true };
