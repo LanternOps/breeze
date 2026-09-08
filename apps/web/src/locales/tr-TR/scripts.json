@@ -154,8 +154,18 @@
       "severity": "Önem",
       "message": "Mesaj",
       "command": "Komut",
+      "whenOffline": "Cihaz çevrimdışıysa",
       "software": "Yazılım",
       "failureNotificationChannel": "Arıza Bildirim Kanalı"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Kuyruğa al (varsayılan)",
+        "skip": "Atla"
+      }
+    },
+    "hints": {
+      "whenOffline": "Kuyruğa alınan iş cihazı bekler ve bir sonraki bağlantısında çalışır ya da 7 gün sonra sona erer. Atla adımı hemen başarısız kılar."
     },
     "placeholders": {
       "name": "Günlük bakım kontrolü",

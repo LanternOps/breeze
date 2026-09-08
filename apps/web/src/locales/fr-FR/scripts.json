@@ -154,8 +154,18 @@
       "severity": "Gravité",
       "message": "Message",
       "command": "Commande",
+      "whenOffline": "Si l'appareil est hors ligne",
       "software": "Logiciel",
       "failureNotificationChannel": "Canal de notification d’échec"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Mettre en file d'attente (par défaut)",
+        "skip": "Ignorer"
+      }
+    },
+    "hints": {
+      "whenOffline": "Le travail en file d'attente attend l'appareil et s'exécute à sa prochaine connexion, ou expire après 7 jours. Ignorer fait échouer l'étape immédiatement."
     },
     "placeholders": {
       "name": "Contrôle de maintenance quotidien",

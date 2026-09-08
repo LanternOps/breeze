@@ -1168,9 +1168,11 @@ async function prepareDeviceExecution(
     .where(inArray(patches.id, patchIds));
 
   // #5128 W3: through the single enqueue seam so an offline device can be
-  // QUEUED instead of skipped. `previouslyRejected: true` keeps the flag gate in
-  // charge — this caller hard-rejected offline devices before #5128, so with
-  // DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED unset it still does.
+  // QUEUED instead of skipped. `previouslyRejected: true` keeps the flag gate
+  // in charge for the case where `resolvePatchOfflinePolicy` returns undefined
+  // (an explicit policy would win over the gate outright). W4 flipped that
+  // gate's default ON, so an UNSET DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED now
+  // queues rather than hard-rejecting; `=false` restores the old behaviour.
   //
   // `patchJobId` is now in the payload: it is what lets a result arriving days
   // later (or the reaper, or a cancel) find the job this command belongs to.

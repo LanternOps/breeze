@@ -312,6 +312,15 @@ x-api-env: &api-env
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
+  # Offline work queue (#5128). Queueing for previously-rejecting callers
+  # (patches, automations, scan/rollback) is ON by default since W4 — pass
+  # `false` to opt back out. The TTL vars are per delivery class, in hours;
+  # left empty so services/commandOfflinePolicy.ts owns the defaults
+  # (168 / 24 / 24) in exactly one place.
+  DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED: ${DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED:-}
+  DEVICE_COMMAND_QUEUE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS:-}
+  DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS: ${DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS:-}
   # Email — SMTP extras + Mailgun provider
   SMTP_FROM: ${SMTP_FROM:-}
   SMTP_SECURE: ${SMTP_SECURE:-}

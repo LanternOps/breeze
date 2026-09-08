@@ -157,6 +157,18 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(deliveryTtlMs('live')).toBe(REJECT_RACE_GRACE_MS);
   });
 
+  // #5128 W4 flipped the default. This is the ONLY test that asserts the
+  // unset-env behaviour — every other flag test stubs the value explicitly, so
+  // without this one the default could flip back unnoticed.
+  it('defaults ON when the env var is unset, and only an explicit "false" opts out', () => {
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', undefined);
+    expect(isOfflineQueueEnabled()).toBe(true);
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', '');
+    expect(isOfflineQueueEnabled()).toBe(true);
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+    expect(isOfflineQueueEnabled()).toBe(false);
+  });
+
   it('flag off + previouslyRejected keeps reject; flag on lets the registry queue', () => {
     vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
     expect(isOfflineQueueEnabled()).toBe(false);
