@@ -441,17 +441,26 @@ func (s *Session) Stop() {
 //
 // reason should already be short and free of OS handle values — the same bar
 // gdiCallError's text is held to — but it is truncated defensively regardless.
+//
+// stopOnce means only the first caller's reason is ever recorded — a second,
+// concurrent StopWithReason (e.g. an operator-initiated Stop() racing the
+// no-video watchdog) never runs this body at all. That second reason is not
+// silently dropped: it's logged at Debug below so a real failure reason lost
+// to that race is still visible to anyone reading agent logs, even though it
+// never reaches LastStopReason().
 func (s *Session) StopWithReason(reason string) {
+	if len(reason) > maxStopReasonBytes {
+		reason = reason[:maxStopReasonBytes]
+	}
+	ran := false
 	s.stopOnce.Do(func() {
+		ran = true
 		s.mu.Lock()
 		if !s.isActive {
 			s.mu.Unlock()
 			return
 		}
 		s.isActive = false
-		if len(reason) > maxStopReasonBytes {
-			reason = reason[:maxStopReasonBytes]
-		}
 		s.stopReason = reason
 		s.mu.Unlock()
 
@@ -468,20 +477,35 @@ func (s *Session) StopWithReason(reason string) {
 		s.doCleanup()
 
 		snap := s.metrics.Snapshot()
-		slog.Info("Desktop WebRTC session stopped",
+		logArgs := []any{
 			"session", s.id,
 			"totalCaptured", snap.FramesCaptured,
 			"totalSent", snap.FramesSent,
 			"totalSkipped", snap.FramesSkipped,
 			"uptime", snap.Uptime.Round(time.Second),
 			"reason", reason,
-		)
+		}
+		if reason != "" {
+			// A recorded reason means teardown was triggered by a real
+			// failure (currently: the no-video watchdog), not a routine
+			// stop — log it at a level that stands out from normal teardown.
+			slog.Warn("Desktop WebRTC session stopped", logArgs...)
+		} else {
+			slog.Info("Desktop WebRTC session stopped", logArgs...)
+		}
 
 		// Desktop sessions allocate large buffers (DXGI textures, NV12
 		// staging, RGBA frames). Return memory to the OS promptly rather
 		// than waiting for the next GC cycle.
 		debug.FreeOSMemory()
 	})
+	if !ran && reason != "" {
+		slog.Debug("Desktop session already stopping; discarding late stop reason",
+			"session", s.id,
+			"discardedReason", reason,
+			"recordedReason", s.LastStopReason(),
+		)
+	}
 }
 
 // LastStopReason returns the reason the most recent StopWithReason call

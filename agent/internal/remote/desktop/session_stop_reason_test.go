@@ -3,6 +3,7 @@ package desktop
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -126,6 +127,35 @@ func TestNoVideoStopReason_WiredThroughToSession(t *testing.T) {
 	got := s.LastStopReason()
 	if !strings.Contains(got, "GetDIBits failed") {
 		t.Errorf("session recorded reason %q, want it to contain the swallowed GDI error", got)
+	}
+}
+
+// A genuinely concurrent race (not just sequential calls) between two
+// StopWithReason callers — e.g. an operator-initiated Stop() racing the
+// no-video watchdog — must not panic or deadlock, and exactly one reason
+// wins. Run with -race: this is the scenario the silent-failure review
+// flagged (a losing StopWithReason call's reason used to vanish with no
+// trace at all; it's now logged at Debug — see StopWithReason's doc comment
+// — but this test only asserts the non-negotiable part: no data race, no
+// panic, and the winner is one of the two reasons offered, never a mix).
+func TestStopWithReason_ConcurrentCallsPickOneWinnerSafely(t *testing.T) {
+	s := newTestSession("session-1")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		s.StopWithReason("watchdog: capture failed")
+	}()
+	go func() {
+		defer wg.Done()
+		s.StopWithReason("")
+	}()
+	wg.Wait()
+
+	got := s.LastStopReason()
+	if got != "watchdog: capture failed" && got != "" {
+		t.Fatalf("LastStopReason() = %q, want one of the two offered reasons", got)
 	}
 }
 
