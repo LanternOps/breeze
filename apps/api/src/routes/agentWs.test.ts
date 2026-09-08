@@ -78,6 +78,9 @@ vi.mock('../db/schema', () => ({
     id: 'remoteSessions.id',
     deviceId: 'remoteSessions.deviceId',
     status: 'remoteSessions.status',
+    // #5300: the peer-disconnect handler references this inside a
+    // sql`COALESCE(...)` fragment to only fill errorMessage when empty.
+    errorMessage: 'remoteSessions.errorMessage',
   },
   // The delivery-epoch suites drive the REAL terminalWs (see the './terminalWs'
   // mock below), which reaches for these alongside remoteSessions/devices.
@@ -856,6 +859,42 @@ function selectWithInnerJoin(rows: unknown[]) {
   };
 }
 
+// Recursively collects string leaves out of a Drizzle `sql`/`and`/`eq` query
+// tree (mirrors the identical helper in installer.test.ts / discovery.test.ts).
+// Used to assert the shape of a sql`COALESCE(...)` fragment passed to a
+// mocked `.set()` without depending on Drizzle's internal node classes.
+function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
+  if (typeof node === 'string') {
+    acc.push(node);
+    return acc;
+  }
+  if (typeof node === 'number' || typeof node === 'boolean') {
+    acc.push(String(node));
+    return acc;
+  }
+  if (node === null || typeof node !== 'object' || seen.has(node)) return acc;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const queryChunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(queryChunks)) {
+    for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  const value = (node as { value?: unknown }).value;
+  if (Array.isArray(value)) {
+    for (const item of value) collectSqlLeafStrings(item, seen, acc);
+    return acc;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    acc.push(String(value));
+    return acc;
+  }
+  return acc;
+}
+
 function updateResult(rows: unknown[] = []) {
   const returning = vi.fn().mockResolvedValue(rows);
   return {
@@ -1604,6 +1643,82 @@ describe('agent websocket command results', () => {
 
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  // #5300: the no-video watchdog records the swallowed capture error via
+  // Session.StopWithReason/LastStopReason and the agent rides it as
+  // `stopReason` in the desk-disconnect result (heartbeat.
+  // sendDesktopDisconnectNotification / desktopDisconnectResultPayload).
+  // remote_sessions.errorMessage should pick it up, the same channel the
+  // startup-probe path (#5284/#5295) already fills on a desk-start failure.
+  it('persists the agent stopReason into remote_sessions.errorMessage on peer disconnect (#5300)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+
+    const sessionSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'session-123' }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-disconnect-session-123',
+        status: 'completed',
+        result: {
+          sessionId: 'session-123',
+          event: 'peer_disconnected',
+          stopReason: 'GetDIBits failed: Win32 error 87 (0x57)',
+        },
+      }),
+    } as any, ws as any);
+
+    expect(sessionSetSpy).toHaveBeenCalledTimes(1);
+    const setArg = sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.status).toBe('disconnected');
+    expect(setArg.endedAt).toBeInstanceOf(Date);
+    // errorMessage is a sql`COALESCE(...)` fragment, not a plain string —
+    // walk its leaves for the reason text and the column it guards on.
+    const leaves = collectSqlLeafStrings(setArg.errorMessage);
+    expect(leaves).toContain('GetDIBits failed: Win32 error 87 (0x57)');
+    expect(leaves).toContain('remoteSessions.errorMessage');
+  });
+
+  it('leaves errorMessage untouched on a peer disconnect with no stopReason', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+
+    const sessionSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'session-123' }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
+
+    // Every non-#5300 disconnect (grace timeout, lifetime policy, operator
+    // stop, darwin handoff, or simply an agent build predating this field)
+    // omits stopReason entirely — behavior must be identical to before #5300.
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-disconnect-session-123',
+        status: 'completed',
+        result: { sessionId: 'session-123', event: 'peer_disconnected' },
+      }),
+    } as any, ws as any);
+
+    expect(sessionSetSpy).toHaveBeenCalledTimes(1);
+    const setArg = sessionSetSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(setArg.status).toBe('disconnected');
+    expect('errorMessage' in setArg).toBe(false);
   });
 
   it('rejects desktop start failures with mismatched session IDs', async () => {

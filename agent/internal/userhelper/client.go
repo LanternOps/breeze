@@ -150,9 +150,11 @@ func (c *Client) Run() error {
 	}
 
 	// Notify the service when a WebRTC peer connection drops so it can relay
-	// the disconnect to the API and allow the viewer to reconnect.
-	c.desktopMgr.mgr.OnSessionStopped = func(sessionID string) {
-		notice := ipc.DesktopPeerDisconnectedNotice{SessionID: sessionID}
+	// the disconnect to the API and allow the viewer to reconnect. reason
+	// (#5300) carries the no-video watchdog's swallowed capture error, when
+	// one was recorded, across the helper->service IPC boundary.
+	c.desktopMgr.mgr.OnSessionStopped = func(sessionID, reason string) {
+		notice := ipc.DesktopPeerDisconnectedNotice{SessionID: sessionID, Reason: reason}
 		if err := c.conn.SendTyped("desk-disc-"+sessionID, ipc.TypeDesktopPeerDisconnected, notice); err != nil {
 			log.Warn("failed to send desktop peer disconnect via IPC", "session", sessionID, "error", err)
 		}

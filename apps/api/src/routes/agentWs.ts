@@ -2408,11 +2408,30 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 ? expectedSessionId
                 : null;
             if (sessionId && fastResult.event === 'peer_disconnected') {
+              // #5300: the no-video watchdog records the swallowed capture
+              // error via Session.StopWithReason/LastStopReason and the agent
+              // rides it here as `stopReason` (agentWs.desktop.peerDisconnected
+              // path — heartbeat.sendDesktopDisconnectNotification). Every
+              // other disconnect (peer-connection grace timeout, lifetime
+              // policy, operator stop, darwin handoff) omits the field, so
+              // this stays null for them, same as before this change.
+              const stopReason = redactSecretsFromOutput(
+                typeof fastResult.stopReason === 'string' ? fastResult.stopReason.slice(0, 1024) : ''
+              ) || null;
               try {
                 await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
                   const result = await db
                     .update(remoteSessions)
-                    .set({ status: 'disconnected', endedAt: new Date() })
+                    .set({
+                      status: 'disconnected',
+                      endedAt: new Date(),
+                      // Only fills errorMessage when it's still empty — never
+                      // overwrites a startup-probe failure text (#5284/#5295)
+                      // that a `desk-start` failure already stored there.
+                      ...(stopReason
+                        ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
+                        : {}),
+                    })
                     .where(
                       and(
                         eq(remoteSessions.id, sessionId),
@@ -3070,6 +3089,12 @@ const desktopCommandResultSchema = z.object({
     // server-side, but must be accepted so the result isn't dropped as
     // malformed (#2307).
     stopped: z.boolean().optional(),
+    // #5300: rides alongside a `peer_disconnected` event when the session's
+    // Session.LastStopReason() was non-empty — currently only the no-video
+    // watchdog's swallowed capture error. Bounded to match the agent's own
+    // cap (Session.StopWithReason / desktopStopReasonMaxBytes). Absent on
+    // every routine disconnect and from any agent build predating this field.
+    stopReason: z.string().max(300).optional(),
   }).strict().optional(),
 }).passthrough();
 

@@ -411,8 +411,38 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
-  it.each(['pending', 'connecting', 'active', 'disconnected', 'denied'])('still rejects a revoked %s session', async (status) => {
+  // 'disconnected' is deliberately excluded here (see the two #5300 tests
+  // below): a 'disconnected' session WITH a recorded errorMessage is now the
+  // mid-session counterpart to 'failed' and must return the diagnosis too —
+  // only a 'disconnected' session with NO recorded reason still rejects.
+  it.each(['pending', 'connecting', 'active', 'denied'])('still rejects a revoked %s session', async (status) => {
     mockViewerSelect({ session: { ...failedSession, status }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Session closed' });
+  });
+
+  // #5300: the no-video watchdog's swallowed capture error reaches
+  // remote_sessions.errorMessage via the peer-disconnect command_result
+  // (agentWs.desktop.peerDisconnected), landing the session in 'disconnected'
+  // — not 'failed'. Extends the same failure-diagnostics exception above so a
+  // mid-session capture failure is shown the same way a failed start already
+  // is (#5284/#5295).
+  it('returns the capture diagnosis for a disconnected session carrying a #5300 stop reason', async () => {
+    mockViewerSelect({ session: { ...failedSession, status: 'disconnected' }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: SESSION_ID, status: 'disconnected', errorMessage });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a revoked disconnected session with no recorded reason', async () => {
+    mockViewerSelect({
+      session: { ...failedSession, status: 'disconnected', errorMessage: null },
+      device: DEVICE,
+      user: USER,
+    });
     const res = await request();
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Session closed' });

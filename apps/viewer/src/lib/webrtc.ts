@@ -19,14 +19,28 @@ export class AgentSessionError extends Error {
 }
 
 /**
+ * The bare fallback text SessionEndedError carries when no server-provided
+ * reason is available. Exported so a caller (DesktopViewer) can tell a real
+ * #5300 reason apart from "nothing was recorded" without string-matching on
+ * a duplicated literal.
+ */
+export const SESSION_ENDED_DEFAULT_MESSAGE = 'This remote session has ended.';
+
+/**
  * Error thrown when the server rejects access to the session because it has
  * already ended (HTTP 401 'Session ended' from the mid-session revocation
  * guard — see Finding #5). The single-session viewer token can never connect
  * to this session again, so callers MUST stop retrying the same sessionId and
  * surface a terminal "session ended" state rather than hammering the endpoint.
+ *
+ * message (#5300) carries the session's remote_sessions.errorMessage when the
+ * caller looked one up (fetchSessionEndedReason) and the API had one to give
+ * — e.g. the no-video watchdog's swallowed capture error — so a mid-session
+ * failure can be shown the same way a failed start already is (#5284/#5295).
+ * Defaults to the generic text when no such reason exists.
  */
 export class SessionEndedError extends Error {
-  constructor(message = 'This remote session has ended.') {
+  constructor(message = SESSION_ENDED_DEFAULT_MESSAGE) {
     super(message);
     this.name = 'SessionEndedError';
   }
@@ -330,7 +344,14 @@ export async function createWebRTCSession(
       // A 401 here means the session was ended/revoked server-side — retrying
       // the same sessionId is futile (Finding #5). Surface a terminal error.
       if (isSessionEndedResponse(offerResp.status)) {
-        throw new SessionEndedError();
+        // #5300: this is exactly the case a mid-session capture failure hits
+        // — the no-video watchdog already revoked the session before this
+        // reconnect attempt's offer POST landed. One diagnostic read (same
+        // failure-diagnostics exception #5295 uses for a failed start) picks
+        // up the real reason when the API recorded one; every routine
+        // disconnect still falls back to the generic message unchanged.
+        const reason = await fetchSessionEndedReason(params);
+        throw new SessionEndedError(reason ?? undefined);
       }
       const msg = await offerResp.text().catch(() => 'unknown error');
       throw new Error(`Failed to submit WebRTC offer: ${msg}`);
@@ -377,6 +398,34 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
       }
     };
   });
+}
+
+/**
+ * Fetches the short, technician-facing reason a session ended, when the API
+ * has one. #5300: a mid-session capture failure (the no-video watchdog)
+ * leaves remote_sessions.errorMessage populated on a 'disconnected' session,
+ * the same way a failed start already does (#5284/#5295) — but only a
+ * request under desktopWs's `failure-diagnostics` exception can read it back
+ * after the viewer token/session was revoked. That exception is deliberately
+ * narrow (see validateViewerSessionAccess): it returns nothing for a routine
+ * disconnect with no recorded reason, so a null return here is the normal,
+ * silent case, not an error condition worth logging.
+ */
+async function fetchSessionEndedReason(params: AuthenticatedConnectionParams): Promise<string | null> {
+  try {
+    const resp = await apiFetch(
+      params.apiUrl,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/session`,
+      params.accessToken,
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return typeof data.errorMessage === 'string' && data.errorMessage.length > 0
+      ? data.errorMessage
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

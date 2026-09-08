@@ -187,7 +187,14 @@ type SessionManager struct {
 	// OnSessionStopped is called when a WebRTC peer connection transitions to
 	// Failed or Closed. Used to notify the API so it can mark the session as
 	// disconnected and allow reconnection.
-	OnSessionStopped func(sessionID string)
+	//
+	// reason is the session's LastStopReason() at the time this fires (#5300)
+	// — "" for every stop path except the no-video watchdog, which records the
+	// swallowed capture error via StopWithReason. Safe to read here: by the
+	// time a call site below invokes this, Session.Stop/StopWithReason has
+	// already returned (called synchronously, earlier in the same call chain),
+	// so the reason is fully committed under s.mu before this ever reads it.
+	OnSessionStopped func(sessionID, reason string)
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.

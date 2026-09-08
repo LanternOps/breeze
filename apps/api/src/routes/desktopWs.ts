@@ -280,11 +280,21 @@ async function validateViewerSessionAccess(
     // The status poll may read a terminal failure after agentWs revokes the
     // session so the viewer can explain why capture failed. This exception
     // never grants live access, and individual token revocation still wins.
-    const readingFailure = accessMode === 'failure-diagnostics' && session.status === 'failed';
+    //
+    // #5300: a 'disconnected' session can also carry a real reason now — the
+    // no-video watchdog's swallowed capture error, relayed through the
+    // peer-disconnect command_result as `stopReason` and written to
+    // errorMessage (agentWs.ts, agentWs.desktop.peerDisconnected). Extend the
+    // same diagnostics-only exception #5295 introduced for 'failed' so the
+    // viewer can read that reason back too — but only when one was actually
+    // recorded; a routine disconnect (no errorMessage) still 401s exactly as
+    // before, so this never widens access beyond what #5295 already allowed.
+    const readingFailure = accessMode === 'failure-diagnostics' &&
+      (session.status === 'failed' || (session.status === 'disconnected' && !!session.errorMessage));
     if (sessionRevoked && !readingFailure) {
       return { valid: false as const, status: 401 as const, error: 'Session closed' };
     }
-    if (session.status === 'disconnected' || (session.status === 'failed' && !readingFailure)) {
+    if ((session.status === 'disconnected' || session.status === 'failed') && !readingFailure) {
       return { valid: false as const, status: 401 as const, error: 'Session ended' };
     }
 
