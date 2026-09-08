@@ -32,6 +32,7 @@ import {
   Link2,
   Cloud,
   History,
+  Bot,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -73,6 +74,7 @@ import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
+import OperatorTaskActivityFeed from "../aiOperator/OperatorTaskActivityFeed";
 import DeviceAnomaliesPanel from "./DeviceAnomaliesPanel";
 import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
@@ -113,7 +115,8 @@ type CoreTab =
   | "peripherals"
   | "backup"
   | "linked-profiles"
-  | "tickets";
+  | "tickets"
+  | "operator-tasks";
 
 /**
  * Extension-contributed `device.detail.tabs` tab id:
@@ -206,6 +209,7 @@ const VALID_TABS: CoreTab[] = [
   "backup",
   "linked-profiles",
   "tickets",
+  "operator-tasks",
 ];
 
 // Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
@@ -445,6 +449,12 @@ export default function DeviceDetails({
       label: t("deviceDetails.tickets"),
       icon: <Ticket className="h-4 w-4" />,
       title: t("deviceDetails.ticketsLinkedToThisDevice"),
+    },
+    {
+      id: "operator-tasks",
+      label: t("deviceDetails.operatorTasks"),
+      icon: <Bot className="h-4 w-4" />,
+      title: t("deviceDetails.operatorTasksForThisDevice"),
     },
     {
       id: "eventlog",
@@ -861,6 +871,10 @@ export default function DeviceDetails({
       )}
 
       {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
+
+      {activeTab === "operator-tasks" && (
+        <OperatorTaskActivityFeed deviceId={device.id} />
+      )}
 
       {activeTab === "scripts" && (
         <DeviceScriptHistory

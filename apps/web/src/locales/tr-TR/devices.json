@@ -572,6 +572,8 @@
     "metricAnomalySignalsForThisDevice": "Bu cihaz için metrik anormallik sinyalleri",
     "tickets": "Biletler",
     "ticketsLinkedToThisDevice": "Bu cihaza bağlı biletler",
+    "operatorTasks": "Operatör Görevleri",
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri",
     "eventLog": "Olay Günlüğü",
     "windowsMacosSystemEventLogs": "Windows/macOS sistem olay günlükleri",
     "monitoring": "İzleme",

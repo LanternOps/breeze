@@ -572,6 +572,8 @@
     "metricAnomalySignalsForThisDevice": "Sinais de anomalias de métricas deste dispositivo",
     "tickets": "Tickets",
     "ticketsLinkedToThisDevice": "Tickets vinculados a este dispositivo",
+    "operatorTasks": "Tarefas do operador",
+    "operatorTasksForThisDevice": "Tarefas do operador de IA para este dispositivo",
     "eventLog": "Log de eventos",
     "windowsMacosSystemEventLogs": "Logs de eventos do sistema Windows/macOS",
     "monitoring": "Monitoramento",

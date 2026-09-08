@@ -1,0 +1,118 @@
+{
+  "taskState": {
+    "queued": "En cola",
+    "running": "En ejecución",
+    "waiting": "Esperando",
+    "paused": "Pausada",
+    "stopping": "Deteniéndose",
+    "completed": "Completada",
+    "partial": "Parcial",
+    "handedOff": "Transferida",
+    "cancelled": "Cancelada",
+    "failed": "Fallida",
+    "expired": "Vencida"
+  },
+  "operatorTaskDetail": {
+    "loading": "Cargando tarea...",
+    "agent": "Atendida por {{name}}",
+    "target": {
+      "label": "Objetivo",
+      "none": "Sin dispositivo objetivo"
+    },
+    "origin": {
+      "label": "Origen",
+      "manual": "Manual",
+      "alert": "Alerta",
+      "ticket": "Ticket",
+      "schedule": "Programación",
+      "anomaly": "Anomalía",
+      "sweep": "Barrido",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "Estado"
+    },
+    "phase": {
+      "investigate": "Investigar",
+      "plan": "Planificar",
+      "execute": "Ejecutar",
+      "verify": "Verificar",
+      "document": "Documentar"
+    },
+    "waitReason": {
+      "label": "Esperando",
+      "approval": "Aprobación",
+      "information": "Información",
+      "execution": "Ejecución",
+      "device": "Dispositivo",
+      "maintenanceWindow": "Ventana de mantenimiento",
+      "verificationWindow": "Ventana de verificación"
+    },
+    "nextAction": {
+      "label": "Próxima acción",
+      "approveInInbox": "Aprobar en la bandeja de entrada",
+      "answerQuestion": "Responder una pregunta",
+      "waitingForDevice": "Esperando el dispositivo",
+      "waitingForMaintenanceWindow": "Esperando la ventana de mantenimiento",
+      "waitingForVerificationWindow": "Esperando la ventana de verificación",
+      "waitingForExecution": "Esperando la ejecución",
+      "queued": "En cola para admisión",
+      "inProgress": "En curso",
+      "paused": "Pausada",
+      "stopping": "Deteniéndose",
+      "handedOff": "Transferida",
+      "none": "Nada pendiente"
+    },
+    "deadline": {
+      "label": "Fecha límite",
+      "none": "Sin fecha límite"
+    },
+    "outcome": {
+      "label": "Resultado",
+      "verifiedResolved": "Verificada como resuelta",
+      "investigationComplete": "Investigación completa",
+      "reportDelivered": "Informe entregado",
+      "noActionNeeded": "No se necesita acción",
+      "trialComplete": "Prueba completa",
+      "unresolved": "Sin resolver",
+      "unknownEffect": "Efecto desconocido"
+    },
+    "handoffSummary": {
+      "label": "Resumen de transferencia"
+    },
+    "operations": {
+      "heading": "Operaciones",
+      "empty": "Aún no hay operaciones.",
+      "attempt": "Intento {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Reservada",
+      "dispatched": "Enviada",
+      "dispatchFailed": "Error al enviar",
+      "abandoned": "Abandonada"
+    },
+    "resultState": {
+      "pending": "Pendiente",
+      "succeeded": "Exitosa",
+      "failed": "Fallida",
+      "unknown": "Desconocido",
+      "superseded": "Reemplazada"
+    },
+    "runs": {
+      "heading": "Ejecuciones vinculadas",
+      "empty": "Aún no hay ejecuciones vinculadas."
+    },
+    "notFound": {
+      "title": "Tarea no encontrada",
+      "description": "Esta tarea no existe o no tienes acceso a ella."
+    },
+    "errors": {
+      "load": "No se pudo cargar la tarea."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Cargando tareas de Operator...",
+    "loadFailed": "No se pudieron cargar las tareas de Operator.",
+    "empty": "No hay tareas de Operator para este dispositivo."
+  }
+}

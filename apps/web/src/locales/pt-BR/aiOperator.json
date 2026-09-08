@@ -1,0 +1,118 @@
+{
+  "taskState": {
+    "queued": "Na fila",
+    "running": "Em execução",
+    "waiting": "Aguardando",
+    "paused": "Pausada",
+    "stopping": "Parando",
+    "completed": "Concluída",
+    "partial": "Parcial",
+    "handedOff": "Transferida",
+    "cancelled": "Cancelada",
+    "failed": "Falhou",
+    "expired": "Expirada"
+  },
+  "operatorTaskDetail": {
+    "loading": "Carregando tarefa...",
+    "agent": "Atendida por {{name}}",
+    "target": {
+      "label": "Alvo",
+      "none": "Nenhum dispositivo alvo"
+    },
+    "origin": {
+      "label": "Origem",
+      "manual": "Manual",
+      "alert": "Alerta",
+      "ticket": "Chamado",
+      "schedule": "Agendamento",
+      "anomaly": "Anomalia",
+      "sweep": "Varredura",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "Estado"
+    },
+    "phase": {
+      "investigate": "Investigar",
+      "plan": "Planejar",
+      "execute": "Executar",
+      "verify": "Verificar",
+      "document": "Documentar"
+    },
+    "waitReason": {
+      "label": "Aguardando",
+      "approval": "Aprovação",
+      "information": "Informação",
+      "execution": "Execução",
+      "device": "Dispositivo",
+      "maintenanceWindow": "Janela de manutenção",
+      "verificationWindow": "Janela de verificação"
+    },
+    "nextAction": {
+      "label": "Próxima ação",
+      "approveInInbox": "Aprovar na caixa de entrada",
+      "answerQuestion": "Responder a uma pergunta",
+      "waitingForDevice": "Aguardando o dispositivo",
+      "waitingForMaintenanceWindow": "Aguardando a janela de manutenção",
+      "waitingForVerificationWindow": "Aguardando a janela de verificação",
+      "waitingForExecution": "Aguardando a execução",
+      "queued": "Na fila para admissão",
+      "inProgress": "Em andamento",
+      "paused": "Pausada",
+      "stopping": "Parando",
+      "handedOff": "Transferida",
+      "none": "Nada pendente"
+    },
+    "deadline": {
+      "label": "Prazo",
+      "none": "Sem prazo"
+    },
+    "outcome": {
+      "label": "Resultado",
+      "verifiedResolved": "Verificada como resolvida",
+      "investigationComplete": "Investigação concluída",
+      "reportDelivered": "Relatório entregue",
+      "noActionNeeded": "Nenhuma ação necessária",
+      "trialComplete": "Teste concluído",
+      "unresolved": "Não resolvida",
+      "unknownEffect": "Efeito desconhecido"
+    },
+    "handoffSummary": {
+      "label": "Resumo da transferência"
+    },
+    "operations": {
+      "heading": "Operações",
+      "empty": "Ainda não há operações.",
+      "attempt": "Tentativa {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Reservada",
+      "dispatched": "Enviada",
+      "dispatchFailed": "Falha no envio",
+      "abandoned": "Abandonada"
+    },
+    "resultState": {
+      "pending": "Pendente",
+      "succeeded": "Bem-sucedida",
+      "failed": "Falhou",
+      "unknown": "Desconhecido",
+      "superseded": "Substituída"
+    },
+    "runs": {
+      "heading": "Execuções vinculadas",
+      "empty": "Ainda não há execuções vinculadas."
+    },
+    "notFound": {
+      "title": "Tarefa não encontrada",
+      "description": "Esta tarefa não existe, ou você não tem acesso a ela."
+    },
+    "errors": {
+      "load": "Falha ao carregar a tarefa."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Carregando tarefas do Operator...",
+    "loadFailed": "Falha ao carregar as tarefas do Operator.",
+    "empty": "Nenhuma tarefa do Operator para este dispositivo."
+  }
+}

@@ -572,6 +572,8 @@
     "metricAnomalySignalsForThisDevice": "Metrische Anomaliesignale für dieses Gerät",
     "tickets": "Tickets",
     "ticketsLinkedToThisDevice": "Mit diesem Gerät verknüpfte Tickets",
+    "operatorTasks": "Operator-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
     "eventLog": "Ereignisprotokoll",
     "windowsMacosSystemEventLogs": "Windows-/macOS-Systemereignisprotokolle",
     "monitoring": "Überwachung",
