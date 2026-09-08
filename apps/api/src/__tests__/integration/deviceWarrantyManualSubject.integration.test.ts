@@ -104,8 +104,8 @@ describe('device_warranty XOR subject (#4622)', () => {
     const manualAssetId = await seedManualAsset(org.id, site.id, `SN-BOTH-${suffix}`);
     const deviceId = await seedDevice(org.id, site.id, `xor-agent-both-${suffix}`);
 
-    const cause = await withDbAccessContext(orgContext(org.id), () =>
-      causeOf(() =>
+    const cause = await causeOf(() =>
+      withDbAccessContext(orgContext(org.id), () =>
         db.execute(sql`
           INSERT INTO device_warranty (org_id, device_id, manual_asset_id, manufacturer, serial_number, status)
           VALUES (${org.id}, ${deviceId}, ${manualAssetId}, 'dell', ${`SN-BOTH-${suffix}`}, 'unknown')
@@ -121,8 +121,8 @@ describe('device_warranty XOR subject (#4622)', () => {
     const { org } = await seedTenant();
     const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
-    const cause = await withDbAccessContext(orgContext(org.id), () =>
-      causeOf(() =>
+    const cause = await causeOf(() =>
+      withDbAccessContext(orgContext(org.id), () =>
         db.execute(sql`
           INSERT INTO device_warranty (org_id, manufacturer, serial_number, status)
           VALUES (${org.id}, 'dell', ${`SN-NONE-${suffix}`}, 'unknown')
@@ -140,8 +140,8 @@ describe('device_warranty XOR subject (#4622)', () => {
     const b = await seedTenant();
     const foreignAssetId = await seedManualAsset(b.org.id, b.site.id, `SN-XORG-${suffix}`);
 
-    const cause = await withDbAccessContext(orgContext(a.org.id), () =>
-      causeOf(() =>
+    const cause = await causeOf(() =>
+      withDbAccessContext(orgContext(a.org.id), () =>
         db.execute(sql`
           INSERT INTO device_warranty (org_id, manual_asset_id, manufacturer, serial_number, status)
           VALUES (${a.org.id}, ${foreignAssetId}, 'dell', ${`SN-XORG-${suffix}`}, 'unknown')
