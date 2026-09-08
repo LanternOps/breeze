@@ -14,7 +14,8 @@ import {
 } from '../../middleware/auth';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../../middleware/apiKeyAuth';
 import { getDeviceWithOrgCheck } from './helpers';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
+import { canAccessDeviceSite, resolvePrincipalSitePermissions, type DeviceSitePermissions } from '../../services/deviceSiteAccess';
 import { createAuditLog } from '../../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -119,7 +120,7 @@ function dualAuth(
 
 interface ResolvedAccess {
   auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
-  permissions: UserPermissions | undefined;
+  permissions: DeviceSitePermissions | undefined;
   audit: { actorType: 'user' | 'api_key'; actorId: string | null; actorEmail: string | null };
 }
 
@@ -129,7 +130,7 @@ function resolveAccess(c: Context): ResolvedAccess {
   if (jwtAuth) {
     return {
       auth: jwtAuth,
-      permissions: c.get('permissions') as UserPermissions | undefined,
+      permissions: resolvePrincipalSitePermissions(c),
       audit: {
         actorType: 'user',
         actorId: jwtAuth.user?.id ?? null,
@@ -159,16 +160,14 @@ function resolveAccess(c: Context): ResolvedAccess {
       accessibleOrgIds: [orgId],
       canAccessOrg: (candidate: string) => candidate === orgId,
     },
-    permissions: undefined,
+    permissions: resolvePrincipalSitePermissions(c),
     audit: { actorType: 'api_key', actorId: apiKey.id, actorEmail: null },
   };
 }
 
 const SITE_DENIED = Symbol('SITE_DENIED');
 
-// Org-scoped device lookup that also honours a session's site allowlist. API
-// keys carry no `permissions` context (they're org-scoped, not site-scoped), so
-// the site check is skipped for them — same as devPush's API-key branch.
+// Both sessions and delegated keys retain their site authority after org lookup.
 async function loadAccessibleDevice(
   deviceId: string,
   access: ResolvedAccess,
@@ -176,16 +175,7 @@ async function loadAccessibleDevice(
   const device = await getDeviceWithOrgCheck(deviceId, access.auth);
   if (!device) return null;
 
-  const perms = access.permissions;
-  // Fail closed for SESSION callers: the JWT branch always runs requirePermission,
-  // which sets the permissions context, so a missing context on a user path means
-  // a site gate was dropped — deny rather than silently skip the allowlist check
-  // (mirrors the fail-loud stance of getDeviceWithOrgAndSiteCheck). An absent
-  // context is legitimate ONLY for org-scoped API keys.
-  if (access.audit.actorType !== 'api_key' && !perms) {
-    return SITE_DENIED;
-  }
-  if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+  if (!canAccessDeviceSite(access.permissions, device.siteId)) {
     return SITE_DENIED;
   }
   return device;
