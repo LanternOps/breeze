@@ -1697,7 +1697,7 @@ export default function DevicesPage() {
   // into a Fragment that wraps EVERY branch — always at the same child
   // position — keeps it mounted across the refresh; only the second child
   // (skeleton / error / real content) swaps out underneath it. Covered by
-  // DevicesPage.test.tsx ("keeps the network-asset modal mounted...").
+  // DevicesPage.postCreateHandoff.test.tsx ("keeps the network-asset modal mounted...").
   const addNetworkAssetModal = (
     <AddNetworkAssetModal
       isOpen={showAddNetworkAsset}
