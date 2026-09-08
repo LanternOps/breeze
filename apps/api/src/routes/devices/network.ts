@@ -9,7 +9,7 @@ import {
 } from '../../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
-import { listNetworkDevicesSchema } from './schemas';
+import { listNetworkDevicesSchema, createNetworkAssetSchema } from './schemas';
 
 export const networkRoutes = new Hono();
 
@@ -240,5 +240,118 @@ networkRoutes.get(
     if (total !== undefined) pagination.total = total;
 
     return c.json({ data, pagination });
+  },
+);
+
+/**
+ * POST /devices/network — hand-enter a network asset (#5213 W02).
+ *
+ * A manual network asset IS a `discovered_assets` row — same table, same
+ * consumers (monitors, SNMP, tunnels, the unified list, the partner
+ * inventory API) as a scan-discovered one. It is born:
+ *   - `approvalStatus: 'approved'` — a row a human typed has nothing to
+ *     triage; it must never surface in the pending-approval queue.
+ *   - `source: 'manual'`, `typeSource: 'manual'` — pins the type against
+ *     every classifier and marks provenance so a later scan of the same
+ *     IP updates the row in place instead of relabeling operator fields.
+ *   - `isOnline: false`, `lastSeenAt: null` — NOT negotiable. The
+ *     disappeared-sweep guard in discoveryWorker.ts keys on these staying
+ *     false/NULL until a real scan actually sees the asset; setting either
+ *     here would let a never-probed manual row falsely read as reachable.
+ *
+ * Reuses the same org/site auth narrowing as GET (site-scoped-tech gets a
+ * 403 for a site outside their allowlist, same as the list arm).
+ */
+networkRoutes.post(
+  '/network',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  zValidator('json', createNetworkAssetSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+
+    if (!auth.canAccessOrg(body.orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+    if (permissions?.allowedSiteIds && !canAccessSite(permissions, body.siteId)) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    try {
+      const [row] = await db
+        .insert(discoveredAssets)
+        .values({
+          orgId: body.orgId,
+          siteId: body.siteId,
+          label: body.label,
+          assetType: body.assetType,
+          ipAddress: body.ipAddress ?? null,
+          hostname: body.hostname ?? null,
+          url: body.url ?? null,
+          macAddress: body.macAddress ?? null,
+          manufacturer: body.manufacturer ?? null,
+          model: body.model ?? null,
+          notes: body.notes ?? null,
+          tags: body.tags,
+          source: 'manual',
+          approvalStatus: 'approved',
+          typeSource: 'manual',
+          isOnline: false,
+          lastSeenAt: null,
+        })
+        .returning();
+
+      // Same shape GET returns, with source/url added — deviceClass:'network',
+      // status is 'unknown' rather than 'offline' for a never-probed manual
+      // asset: we have made no reachability claim at all.
+      const data = {
+        id: row!.id,
+        deviceClass: 'network' as const,
+        assetType: row!.assetType,
+        orgId: row!.orgId,
+        siteId: row!.siteId,
+        hostname: row!.label || row!.hostname || row!.url || (row!.ipAddress ?? ''),
+        displayName: row!.label ?? null,
+        status: 'unknown' as const,
+        ipAddress: row!.ipAddress ?? null,
+        macAddress: row!.macAddress ?? null,
+        manufacturer: row!.manufacturer ?? null,
+        model: row!.model ?? null,
+        responseTimeMs: row!.responseTimeMs ?? null,
+        openPorts: row!.openPorts ?? null,
+        lastSeenAt: row!.lastSeenAt,
+        enrolledAt: row!.firstSeenAt,
+        tags: row!.tags ?? [],
+        monitoringEnabled: false,
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+        source: row!.source,
+        url: row!.url ?? null,
+        agentId: null,
+        agentVersion: null,
+        watchdogVersion: null,
+        osType: null,
+        osVersion: null,
+        osBuild: null,
+        architecture: null,
+        cpuPercent: null,
+        ramPercent: null,
+        hardware: null,
+        metrics: null,
+      };
+
+      return c.json(data, 201);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === '23505') {
+        return c.json({ error: 'An asset with this IP already exists in this organization' }, 409);
+      }
+      if (code === '23514') {
+        return c.json({ error: 'Provide at least one of: IP address, hostname, or URL' }, 400);
+      }
+      throw err;
+    }
   },
 );

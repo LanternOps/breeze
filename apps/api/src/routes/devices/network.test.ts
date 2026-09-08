@@ -13,6 +13,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
+    insert: vi.fn(),
   },
 }));
 
@@ -466,6 +467,263 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
     const res = await app2.request('/devices/network', {
       method: 'GET',
       headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// --- POST /devices/network — manual network asset create (#5213 W02) ------
+
+/** Rigs `db.insert(discoveredAssets).values(...).returning()` to resolve one row. */
+function rigNetworkInsert(row: unknown) {
+  const returning = vi.fn().mockResolvedValue([row]);
+  const values = vi.fn().mockReturnValue({ returning });
+  vi.mocked(db.insert).mockReturnValue({ values } as never);
+  return { values, returning };
+}
+
+/** Rigs the insert to reject with a Postgres error code (23505 / 23514). */
+function rigNetworkInsertError(code: string) {
+  const returning = vi.fn().mockRejectedValue({ code });
+  const values = vi.fn().mockReturnValue({ returning });
+  vi.mocked(db.insert).mockReturnValue({ values } as never);
+  return { values, returning };
+}
+
+const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SITE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const OTHER_ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const OTHER_SITE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+describe('POST /devices/network — manual network asset create (#5213)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    accessibleOrgIds = [ORG_ID];
+    allowedSiteIds = undefined;
+    app = new Hono();
+    app.route('/devices', networkRoutes);
+  });
+
+  it('creates an approved, manual, never-seen asset (201)', async () => {
+    const { values } = rigNetworkInsert({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      orgId: ORG_ID,
+      siteId: SITE_ID,
+      assetType: 'printer',
+      label: 'Warehouse printer',
+      hostname: null,
+      ipAddress: '10.4.4.4',
+      macAddress: null,
+      manufacturer: null,
+      model: null,
+      isOnline: false,
+      responseTimeMs: null,
+      openPorts: null,
+      lastSeenAt: null,
+      firstSeenAt: new Date('2026-09-07T00:00:00.000Z'),
+      tags: [],
+      source: 'manual',
+      url: null,
+    });
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID,
+        siteId: SITE_ID,
+        label: 'Warehouse printer',
+        assetType: 'printer',
+        ipAddress: '10.4.4.4',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.deviceClass).toBe('network');
+    expect(body.source).toBe('manual');
+    expect(body.status).toBe('unknown');
+
+    const inserted = values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(inserted).toMatchObject({
+      approvalStatus: 'approved',
+      source: 'manual',
+      typeSource: 'manual',
+      isOnline: false,
+    });
+    // The disappeared-sweep guard (discoveryWorker.ts) depends on this: a
+    // manual row must never be born online or with a last_seen_at.
+    expect(inserted.lastSeenAt ?? null).toBeNull();
+  });
+
+  it('rejects a payload with no identity at all (400, never reaches the DB)', async () => {
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, siteId: SITE_ID, label: 'Nothing' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload missing label (400)', async () => {
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, siteId: SITE_ID, ipAddress: '10.4.4.4' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('403s a request to an org the caller cannot access', async () => {
+    accessibleOrgIds = [ORG_ID];
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: OTHER_ORG_ID, siteId: SITE_ID, label: 'x', ipAddress: '10.0.0.9',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('403s a site-restricted technician outside their allowlist', async () => {
+    allowedSiteIds = [SITE_ID];
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: OTHER_SITE_ID, label: 'x', ipAddress: '10.0.0.9',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows a site-restricted technician inside their allowlist', async () => {
+    allowedSiteIds = [SITE_ID];
+    rigNetworkInsert({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      orgId: ORG_ID,
+      siteId: SITE_ID,
+      assetType: 'unknown',
+      label: 'x',
+      hostname: null,
+      ipAddress: '10.0.0.9',
+      macAddress: null,
+      manufacturer: null,
+      model: null,
+      isOnline: false,
+      responseTimeMs: null,
+      openPorts: null,
+      lastSeenAt: null,
+      firstSeenAt: new Date('2026-09-07T00:00:00.000Z'),
+      tags: [],
+      source: 'manual',
+      url: null,
+    });
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: SITE_ID, label: 'x', ipAddress: '10.0.0.9',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('409s on a duplicate IP in the same org (23505)', async () => {
+    rigNetworkInsertError('23505');
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: SITE_ID, label: 'dupe', ipAddress: '10.4.4.4',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/already exists/i);
+  });
+
+  it('400s when the DB CHECK constraint rejects an identity-less row (23514)', async () => {
+    rigNetworkInsertError('23514');
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: SITE_ID, label: 'x', ipAddress: '10.4.4.4',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('creates an IP-less website asset from a url alone', async () => {
+    const { values } = rigNetworkInsert({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      orgId: ORG_ID,
+      siteId: SITE_ID,
+      assetType: 'website',
+      label: 'Shop',
+      hostname: null,
+      ipAddress: null,
+      macAddress: null,
+      manufacturer: null,
+      model: null,
+      isOnline: false,
+      responseTimeMs: null,
+      openPorts: null,
+      lastSeenAt: null,
+      firstSeenAt: new Date('2026-09-07T00:00:00.000Z'),
+      tags: [],
+      source: 'manual',
+      url: 'https://shop.example',
+    });
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: SITE_ID, label: 'Shop', assetType: 'website',
+        url: 'https://shop.example',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const inserted = values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(inserted.ipAddress).toBeNull();
+    expect(inserted.url).toBe('https://shop.example');
+  });
+
+  it('401s when authMiddleware is NOT in the chain (proves the guard bites)', async () => {
+    const bare = new Hono();
+    bare.post(
+      '/network',
+      requireScope('organization', 'partner', 'system'),
+      requirePermission('devices', 'write'),
+      (c) => c.json({ ok: true }),
+    );
+    const app2 = new Hono();
+    app2.route('/devices', bare);
+
+    const res = await app2.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, siteId: SITE_ID, label: 'x', ipAddress: '10.0.0.9' }),
     });
 
     expect(res.status).toBe(401);
