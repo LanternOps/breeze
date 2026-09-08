@@ -34,7 +34,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
