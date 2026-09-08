@@ -153,7 +153,7 @@ describe('dispatchScriptToDevice — maintenance window gate (#4919)', () => {
     vi.mocked(checkScriptMaintenanceSuppression).mockResolvedValue(
       suppressed('window_active', 'Device is in a maintenance window that suppresses script execution'),
     );
-    // The requireOnline live re-read would say 'offline' if it ever ran.
+    // The offlinePolicy: 'reject' live re-read would say 'offline' if it ever ran.
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ status: 'offline' }]) }),
@@ -163,7 +163,7 @@ describe('dispatchScriptToDevice — maintenance window gate (#4919)', () => {
     const r = await dispatchScriptToDevice({
       device: device({ status: 'offline' }),
       source: { kind: 'saved', script: savedScript() },
-      requireOnline: true,
+      offlinePolicy: { kind: 'reject' },
     });
 
     expect(r).toMatchObject({ ok: false, code: 'maintenance_suppressed' });
