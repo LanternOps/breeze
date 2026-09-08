@@ -22,7 +22,13 @@ test('mobile compilation watches all native and workspace dependency inputs', ()
     assert.ok(changes.includes(`- '${input}'`), `Missing native build input ${input}`);
   }
   assert.match(changes, /runs-on: ubuntu-latest/u);
-  assert.match(changes, /github\.event\.before/u, 'compare all commits in a main push');
+  // ci.yml no longer runs on pushes to main (the merge queue evaluated every
+  // landing on its merge-group ref), so there is no multi-commit push to span:
+  // PRs and merge groups compare against the default branch, and a manual
+  // dispatch on main falls through to `mobile: true`.
+  assert.doesNotMatch(changes, /github\.event\.before/u, 'no push-only base: main pushes do not run CI');
+  assert.match(changes, /base: \$\{\{ github\.event\.repository\.default_branch \}\}/u, 'compare against the default branch');
+  assert.doesNotMatch(workflow, /^  push:\n\s+branches: \[main\]/mu, 'ci.yml must not trigger on push to main; the queue already ran it');
   assert.match(changes, /github\.event_name == 'workflow_dispatch'/u);
   assert.doesNotMatch(changes, /- 'apps\/api\/\*\*'/u);
   assert.match(build, /needs: \[mobile-native-changes\]/u);

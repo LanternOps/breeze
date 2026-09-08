@@ -7,6 +7,17 @@ import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import {
+  claimTaskLinkedIntentForDispatch,
+  revertTaskLinkedDispatchClaim,
+} from '../services/aiOperator/dispatchClaim';
+import {
+  isTaskLinkedIntent,
+  markOperationDispatchFailed,
+  recordOperationExecutionRef,
+  recordOperationResult,
+  type OperationResultState,
+} from '../services/aiOperator/operationService';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { createNotification } from '../services/userNotifications';
@@ -115,6 +126,89 @@ function normalizeToolResult(raw: string): Record<string, unknown> {
 }
 
 /**
+ * #5205 W04 (#5209), baseline §2.5: pulls the typed execution reference out of
+ * a tool result. `manage_services` returns `JSON.stringify(CommandResult)`
+ * verbatim (aiToolsScripts.ts, the `manage_services` handler), and
+ * `CommandResult.commandId` IS the `device_commands` row id, attached by
+ * `executeCommand` "once a command row exists (success or failure)"
+ * (commandQueue.ts:76-83). Nothing has to be threaded through: the id is
+ * already in the result the release worker holds.
+ *
+ * `commandId` is OPTIONAL and absent on failures that happen before the row is
+ * created (device missing/offline, insert failure), so a null return is a real,
+ * expected case — a refusal with no reference — not a parse bug.
+ *
+ * Deliberately shape-based rather than keyed off the tool name: any tool whose
+ * result carries a `commandId` is dispatching a device command, and hard-coding
+ * `manage_services` here would silently stop capturing references the day a
+ * second device-command tool joins the slice.
+ */
+function executionRefFromToolResult(
+  result: Record<string, unknown>,
+): { kind: 'device_command'; id: string } | null {
+  const commandId = result.commandId;
+  return typeof commandId === 'string' && UUID_RE.test(commandId)
+    ? { kind: 'device_command', id: commandId }
+    : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Writes the execution reference and the bounded result onto a task-linked
+ * intent's operation row. A no-op for a legacy intent. Never throws: it runs
+ * after the tool already had its real-world effect, so a bookkeeping failure
+ * must not fail an action that already happened (see `recordOperationResult`).
+ *
+ * The reference is attached first and separately: it is what makes an UNKNOWN
+ * effect reconcilable at all, so it must land even if the result write is later
+ * out-ranked or the process dies between the two.
+ */
+async function persistTaskOperationOutcome(
+  intent: ActionIntent,
+  result: Record<string, unknown>,
+  isError: boolean,
+): Promise<void> {
+  if (!isTaskLinkedIntent(intent)) return;
+  const ref = executionRefFromToolResult(result);
+  if (ref) await recordOperationExecutionRef(intent.id, ref);
+  await recordOperationResult({
+    intentId: intent.id,
+    resultState: operationResultStateFromToolResult(result, isError),
+    result,
+    executionRef: ref,
+  });
+}
+
+/**
+ * Maps a tool result onto an operation `result_state`.
+ *
+ * `CommandResult.status` is `'completed' | 'failed' | 'timeout'`
+ * (commandQueue.ts:67-84). **`timeout` becomes `unknown`, never `failed`** —
+ * that is the single most important mapping in this file. The tool waits 30 s
+ * while the device command itself reaps at 5 min (baseline §2.6), so between
+ * those two clocks a `timeout` means "the effect may still be landing", and
+ * `commandAcceptsAgentResultCondition` deliberately keeps the device row open
+ * to a genuine late agent result. Recording `failed` there would assert a
+ * non-effect the system cannot prove, which §7.3 forbids.
+ *
+ * `isError` is the caller's own returned-error detection, which is a real
+ * failure of the tool call itself.
+ */
+function operationResultStateFromToolResult(
+  result: Record<string, unknown>,
+  isError: boolean,
+): Exclude<OperationResultState, 'pending'> {
+  if (result.status === 'timeout') return 'unknown';
+  if (isError || result.status === 'failed') return 'failed';
+  if (result.status === 'completed') return 'succeeded';
+  // No recognisable device-command status (a non-command tool, or a truncated
+  // result): the call returned without error, so the dispatch succeeded, but
+  // say nothing stronger than that.
+  return isError ? 'failed' : 'succeeded';
+}
+
+/**
  * Wave-5A review fix (#3827): CAS `executing -> approved` (undoing the claim
  * `releaseApprovedIntent` took at step 1) instead of `failIntent`'s
  * `executing -> failed`. `agentReleaseAuthority.ts`'s 'kill_switch_engaged'
@@ -136,7 +230,13 @@ async function pauseIntentForKillSwitch(
   intent: ActionIntent,
   details?: Record<string, unknown>,
 ): Promise<void> {
-  const won = await transitionIntent(intent.id, 'executing', 'approved');
+  // #5205 W04 (#5209), spec §7.3: for a task-linked intent the reversal also
+  // puts the operation back to `reserved`, in the SAME transaction. Leaving it
+  // `dispatched` would tell the reconciler an effect is in flight when the
+  // claim was explicitly undone and the intent is claimable again.
+  const won = isTaskLinkedIntent(intent)
+    ? await revertTaskLinkedDispatchClaim(intent.id, 'kill_switch_engaged')
+    : await transitionIntent(intent.id, 'executing', 'approved');
   if (!won) return;
   const message = `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`;
   console.warn(message, details);
@@ -598,6 +698,27 @@ async function failIntent(
   // revalidation/digest/session refusal) pass no `executedAt` and so write
   // nothing, which is the whole point: an agent is never graded down for an
   // action it was refused permission to try.
+  // #5205 W04 (#5209): the operation row is written BEFORE the CAS and
+  // regardless of whether the CAS is won — that independence is the whole
+  // reason the row exists (baseline §4). `options.executed` is the repo's own
+  // attempted-ness discriminator and maps exactly onto the two cases here:
+  //   - not executed (every revalidation/digest/session/connection refusal):
+  //     nothing was ever sent, so the operation is a terminal dispatch failure.
+  //   - executed (execution_error, secret_seal_invariant_violated): the
+  //     provider-side call DID happen and its outcome is unknowable from here,
+  //     so `unknown` — never `failed`. A device command may still finish and
+  //     W06 reconciles it (baseline §2.6, the three clocks).
+  if (isTaskLinkedIntent(intent)) {
+    if (options.executed) {
+      await recordOperationResult({
+        intentId: intent.id,
+        resultState: 'unknown',
+        result: { errorCode, ...(options.details ?? {}) },
+      });
+    } else {
+      await markOperationDispatchFailed(intent.id, errorCode);
+    }
+  }
   const won = await terminalizeIntent(intent, 'failed', {
     errorCode,
     ...(options.executed ? { executedAt: new Date() } : {}),
@@ -658,33 +779,7 @@ async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): P
  * testing without spinning up a real BullMQ Worker.
  */
 export async function releaseApprovedIntent(intentId: string): Promise<void> {
-  // Step 1 (spec §5.1): the single-use release guard. Zero rows = lost race
-  // (expiry, cancel, a prior delivery of this exact job, or the stale-
-  // executing reaper already claimed it) — exit silently. This is what
-  // makes repeated/duplicate `intent_approved` enqueues safe.
-  // requireNotExpired folds the deadline into the claim: an approved intent
-  // cannot be claimed for execution once past its release_by lease (falling
-  // back to expires_at for legacy rows with no lease — see
-  // intentService.ts's transitionIntent). release_by, not
-  // approval_expires_at, is what governs an already-approved intent — an
-  // intent approved just before approval_expires_at gets a FRESH lease
-  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
-  // header), so it stays claimable here even though approval_expires_at has
-  // since passed. Once release_by itself passes, the 30s expiry reaper
-  // terminalizes the leftover approved row. Without this check an action
-  // could execute after its authorization window closed.
-  const claimed = await transitionIntent(
-    intentId,
-    'approved',
-    'executing',
-    { executedAt: null, executionStartedAt: new Date() },
-    { requireNotExpired: 'release' },
-  );
-  if (!claimed) {
-    return;
-  }
-
-  // Step 2: load the intent + its winning approval row. Both are fast local
+  // Step 1: load the intent + its winning approval row. Both are fast local
   // reads with no external I/O, so they share one short system-scoped
   // transaction — mirrors intentOutboxPublisher.ts's phase discipline
   // (DB-only work gets its own short context; the network/tool-execution
@@ -720,10 +815,83 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   });
 
   if (!intent) {
-    // Unreachable in practice — the CAS above requires the row to exist —
-    // but there is nothing to CAS to failed if the row itself is gone, so
-    // just log and stop rather than throwing out of a BullMQ processor.
-    console.error(`[IntentReleaseWorker] intent ${intentId} not found after CAS to executing`);
+    // The row is gone (erased, or an outbox row outliving its intent). There is
+    // nothing to claim and nothing to CAS to failed, so log and stop rather
+    // than throwing out of a BullMQ processor. #5205 W04 moved this check ahead
+    // of the claim — it used to read "not found after CAS to executing".
+    console.error(`[IntentReleaseWorker] intent ${intentId} not found`);
+    return;
+  }
+
+  // Step 2 (spec §5.1): the single-use release guard. Zero rows = lost race
+  // (expiry, cancel, a prior delivery of this exact job, or the stale-
+  // executing reaper already claimed it) — exit silently. This is what
+  // makes repeated/duplicate `intent_approved` enqueues safe.
+  // requireNotExpired folds the deadline into the claim: an approved intent
+  // cannot be claimed for execution once past its release_by lease (falling
+  // back to expires_at for legacy rows with no lease — see
+  // intentService.ts's transitionIntent). release_by, not
+  // approval_expires_at, is what governs an already-approved intent — an
+  // intent approved just before approval_expires_at gets a FRESH lease
+  // starting at approval time (the "59:59 trap" — jobs/intentExpiryReaper.ts's
+  // header), so it stays claimable here even though approval_expires_at has
+  // since passed. Once release_by itself passes, the 30s expiry reaper
+  // terminalizes the leftover approved row. Without this check an action
+  // could execute after its authorization window closed.
+  //
+  // #5205 W04 (#5209), spec §7.3: for a TASK-LINKED intent this same claim
+  // additionally carries the task's state, plan revision, deadline and target
+  // detachment — one conditional UPDATE inside one transaction that also flips
+  // the operation to `dispatched`, not a second claim taken afterwards.
+  //
+  // The load above used to sit AFTER the claim. It was moved in front of it so
+  // the claim can branch on `intent.taskId` without a second read: the row's
+  // content columns are DB-immutable, and nothing below reads its `status`
+  // (the outcome notifier re-reads the live status itself). Query count on the
+  // won path is unchanged; the lost-claim path now pays one read it did not
+  // pay before, which is a path that does nothing else.
+  let claimed: boolean;
+  if (isTaskLinkedIntent(intent) && intent.taskId) {
+    const claim = await claimTaskLinkedIntentForDispatch({
+      id: intent.id,
+      orgId: intent.orgId,
+      taskId: intent.taskId,
+    });
+    claimed = claim.won;
+    if (!claim.won) {
+      // A lost claim NEVER dispatches and NEVER writes a result. Record why on
+      // the operation so the coordinator sees a reason rather than a stall —
+      // except when another claimant already owns the row, where writing would
+      // overwrite the winner's bookkeeping.
+      if (claim.refusal !== 'operation_already_claimed') {
+        await markOperationDispatchFailed(intent.id, `${claim.refusal}: ${claim.detail}`);
+      }
+      const message =
+        `[IntentReleaseWorker] task-linked intent ${intentId} refused the dispatch claim `
+        + `(${claim.refusal}): ${claim.detail}`;
+      if (claim.refusal === 'operation_missing') {
+        // A task-linked intent with NO operation row is a broken invariant, not
+        // a race: `reserveOperation` commits in the same transaction as the
+        // intent insert. There is also no operation row to record the reason
+        // ON, so without this the intent would sit `approved` until an
+        // unrelated deadline reaper noticed — up to 24 h later for an
+        // `mcp_api` source — with nothing naming what actually went wrong.
+        console.error(message);
+        captureException(new Error(message));
+      } else {
+        console.warn(message);
+      }
+    }
+  } else {
+    claimed = await transitionIntent(
+      intentId,
+      'approved',
+      'executing',
+      { executedAt: null, executionStartedAt: new Date() },
+      { requireNotExpired: 'release' },
+    );
+  }
+  if (!claimed) {
     return;
   }
 
@@ -1005,6 +1173,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       await failOnPlaintextSecretGuard(intent, err);
       return;
     }
+    // #5205 W04 (#5209): the operation row records the outcome BEFORE the CAS
+    // is attempted, so a lost race cannot discard it (baseline §4).
+    await persistTaskOperationOutcome(intent, storedResult, true);
     const failed = await terminalizeIntent(intent, 'failed', {
       executedAt: new Date(),
       errorCode: 'tool_returned_error',
@@ -1014,6 +1185,8 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       auditReleaseFailure(intent, 'tool_returned_error', { returnedError: true });
     } else {
       // Lost the CAS after the tool ran — the side effect happened; surface it.
+      // The operation row above already holds the result, so this is now a
+      // reporting gap on the INTENT only, not a lost outcome.
       console.error(
         `[IntentReleaseWorker] Lost the executing->failed CAS for intent ${intent.id} after a returned tool error`,
       );
@@ -1041,6 +1214,12 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failOnPlaintextSecretGuard(intent, err);
     return;
   }
+  // #5205 W04 (#5209), spec §6.3 / baseline §4: execution reference + bounded
+  // result land on the operation row in their own write, BEFORE the intent CAS
+  // is attempted. The intent is terminal-and-immutable the moment it moves, and
+  // the losing-CAS path below used to drop the result entirely.
+  await persistTaskOperationOutcome(intent, finalResult, false);
+
   let fixWatchId: string | null = null;
   const completed = await terminalizeIntent(
     intent,
@@ -1065,6 +1244,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       + 'a reaper or duplicate delivery likely already terminalized it; the tool DID execute',
     );
     captureException(new Error(`intent ${intent.id} executed but lost the completed CAS`));
+    // #5205 W04 (#5209): write the outcome AGAIN on the losing path. It already
+    // landed above, but repeating it here is deliberate — the reaper may have
+    // stamped `unknown` in between, and `recordOperationResult` is rank-ordered
+    // so a definite outcome overwrites `unknown` while `unknown` never
+    // overwrites a definite one. This is the exact hole baseline §4 documented:
+    // "the result this execution produced is not recorded anywhere".
+    await persistTaskOperationOutcome(intent, finalResult, false);
     return;
   }
 

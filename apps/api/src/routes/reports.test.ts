@@ -126,6 +126,8 @@ vi.mock('drizzle-orm', () => ({
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   desc: (column: unknown) => ({ op: 'desc', column }),
+  // #4622 W03 — the device_inventory manual branch excludes retired assets.
+  isNull: (column: unknown) => ({ op: 'isNull', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values })
 }));
 
@@ -213,6 +215,16 @@ vi.mock('../db/schema', () => ({
     enrolledAt: 'devices.enrolledAt',
     tags: 'devices.tags',
     siteId: 'devices.siteId'
+  },
+  // #4622 W03 — device_inventory unions manual assets with agent devices.
+  manualAssets: {
+    id: 'manualAssets.id',
+    orgId: 'manualAssets.orgId',
+    siteId: 'manualAssets.siteId',
+    name: 'manualAssets.name',
+    serialNumber: 'manualAssets.serialNumber',
+    retiredAt: 'manualAssets.retiredAt',
+    createdAt: 'manualAssets.createdAt'
   },
   deviceSoftware: {
     id: 'deviceSoftware.id',
@@ -574,7 +586,16 @@ function mockAlertsSummaryQueries(rows: SummaryAlert[]) {
   return { captured, joins };
 }
 
-function mockGenerateDeviceInventoryQuery(rows: Array<{ hostname: string; siteId: string }>) {
+/**
+ * #4622 W03 — `device_inventory` now issues TWO queries: the agent-device
+ * branch, then the manual-asset branch. Both must be queued, and the manual
+ * branch is filtered on `manualAssets.siteId` so a site-scope test proves the
+ * predicate lands on that branch too rather than only on `devices`.
+ */
+function mockGenerateDeviceInventoryQuery(
+  rows: Array<{ hostname: string; siteId: string }>,
+  manualRows: Array<{ name: string; siteId: string; serialNumber?: string | null; createdAt?: Date | null }> = [],
+) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       leftJoin: vi.fn().mockReturnValue({
@@ -584,6 +605,21 @@ function mockGenerateDeviceInventoryQuery(rows: Array<{ hostname: string; siteId
       })
     })
   } as any);
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn((condition) => ({
+        orderBy: vi.fn().mockResolvedValue(filterByManualAssetSite(manualRows, condition))
+      }))
+    })
+  } as any);
+}
+
+function filterByManualAssetSite<T extends { siteId?: string }>(rows: T[], condition: any): T[] {
+  if (conditionHas(condition, 'inArray', 'manualAssets.siteId', (values) => Array.isArray(values))) {
+    const siteIds = findConditionValue(condition, 'inArray', 'manualAssets.siteId') as string[];
+    return rows.filter((row) => row.siteId && siteIds.includes(row.siteId));
+  }
+  return rows;
 }
 
 function scopedRunRow(overrides: Record<string, unknown> = {}) {
@@ -1958,7 +1994,8 @@ describe('reports routes', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([report])) // metadata lookup
       .mockReturnValueOnce(selectChain([report])) // predicate-guarded definition lookup
-      .mockReturnValueOnce(selectChain([])) // generator query (device_inventory rows)
+      .mockReturnValueOnce(selectChain([])) // generator query (device_inventory agent rows)
+      .mockReturnValueOnce(selectChain([])) // generator query (#4622 manual-asset branch)
       .mockReturnValueOnce(selectChain([{
         summary: { postureScore: 74 },
         generatedAt: '2026-06-01T09:00:00.000Z',
@@ -2457,6 +2494,12 @@ describe('reports routes', () => {
       { hostname: 'allowed-device', siteId: SITE_ALLOWED },
       { hostname: 'denied-device', siteId: SITE_DENIED }
     ];
+    // #4622 W03 — manual assets in BOTH sites, so a manual branch missing its
+    // own site predicate would leak 'denied-manual' to a restricted caller.
+    const manualRows = [
+      { name: 'allowed-manual', siteId: SITE_ALLOWED, serialNumber: 'MA-1', createdAt: new Date('2026-05-01T00:00:00Z') },
+      { name: 'denied-manual', siteId: SITE_DENIED, serialNumber: 'MA-2', createdAt: new Date('2026-05-01T00:00:00Z') }
+    ];
 
     it('returns 403 when a site-restricted caller filters to an out-of-scope siteId', async () => {
       permissionState.permissions = { allowedSiteIds: [SITE_ALLOWED] };
@@ -2497,7 +2540,7 @@ describe('reports routes', () => {
           fingerprint: 'a'.repeat(64),
         },
       };
-      mockGenerateDeviceInventoryQuery(rows);
+      mockGenerateDeviceInventoryQuery(rows, manualRows);
 
       const res = await app.request('/reports/generate', {
         method: 'POST',
@@ -2507,13 +2550,14 @@ describe('reports routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.data.rows).toHaveLength(1);
-      expect(body.data.rows[0].hostname).toBe('allowed-device');
-      expect(body.data.rowCount).toBe(1);
+      // One agent device + one manual asset, both from the allowed site only.
+      expect(body.data.rows.map((r: { hostname: string }) => r.hostname).sort())
+        .toEqual(['allowed-device', 'allowed-manual']);
+      expect(body.data.rowCount).toBe(2);
     });
 
     it('does not narrow generated reports for an unrestricted caller', async () => {
-      mockGenerateDeviceInventoryQuery(rows);
+      mockGenerateDeviceInventoryQuery(rows, manualRows);
 
       const res = await app.request('/reports/generate', {
         method: 'POST',
@@ -2523,8 +2567,8 @@ describe('reports routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.data.rows).toHaveLength(2);
-      expect(body.data.rowCount).toBe(2);
+      expect(body.data.rows).toHaveLength(4);
+      expect(body.data.rowCount).toBe(4);
     });
   });
 });
