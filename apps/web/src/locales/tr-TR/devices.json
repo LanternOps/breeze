@@ -120,6 +120,13 @@
     "title": "Ağ varlığı ekle",
     "submit": "Varlık ekle",
     "identityHint": "En az birini belirtin: IP adresi, ana bilgisayar adı veya URL.",
+    "urlRequiredHint": "Web sitesi ve hizmet varlıkları bir URL gerektirir.",
+    "postCreate": {
+      "monitorPrompt": "Bu varlık bir HTTP kontrolüyle izlensin mi?",
+      "actions": {
+        "addHttpCheck": "HTTP kontrolü ekle"
+      }
+    },
     "fields": {
       "label": "Ad",
       "ipAddress": "IP adresi",

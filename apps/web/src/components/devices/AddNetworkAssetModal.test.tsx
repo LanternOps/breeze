@@ -152,4 +152,79 @@ describe('AddNetworkAssetModal', () => {
     expect(body).not.toHaveProperty('source');
     expect(body).not.toHaveProperty('approvalStatus');
   });
+
+  // #5213 W03 — website/service targets. A URL is required outright (not
+  // just "any of IP/hostname/URL"), and MAC doesn't apply to an IP-less
+  // endpoint.
+  describe('website/service asset types', () => {
+    it('hides the MAC field and requires a URL specifically — hostname alone is not enough', async () => {
+      render(<AddNetworkAssetModal isOpen onClose={vi.fn()} onCreated={vi.fn()} />);
+      await waitForDialogFocus();
+
+      await userEvent.type(screen.getByTestId('asset-label'), 'Shop');
+      await userEvent.selectOptions(screen.getByTestId('asset-type'), 'website');
+
+      expect(screen.queryByTestId('asset-mac')).not.toBeInTheDocument();
+
+      await userEvent.type(screen.getByTestId('asset-hostname'), 'shop.example');
+      expect(screen.getByTestId('asset-submit')).toBeDisabled();
+
+      await userEvent.type(screen.getByTestId('asset-url'), 'https://shop.example');
+      expect(screen.getByTestId('asset-submit')).not.toBeDisabled();
+    });
+
+    it('offers an HTTP-check hand-off after creating the asset instead of closing immediately', async () => {
+      fetchWithAuthMock.mockResolvedValue(
+        makeJsonResponse({ id: 'web-1', assetType: 'website', url: 'https://shop.example', source: 'manual' }),
+      );
+      const onCreated = vi.fn();
+      const onClose = vi.fn();
+      render(<AddNetworkAssetModal isOpen onClose={onClose} onCreated={onCreated} />);
+      await waitForDialogFocus();
+
+      await userEvent.type(screen.getByTestId('asset-label'), 'Shop');
+      await userEvent.selectOptions(screen.getByTestId('asset-type'), 'website');
+      await userEvent.type(screen.getByTestId('asset-url'), 'https://shop.example');
+      await userEvent.click(screen.getByTestId('asset-submit'));
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web-1'));
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByTestId('asset-post-create')).toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('asset-post-create-done'));
+      expect(onClose).toHaveBeenCalled();
+    });
+
+    it('creates an http_check monitor pre-targeted at the asset URL via the hand-off', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ id: 'web-2', assetType: 'website', url: 'https://shop.example', source: 'manual' }),
+      );
+      render(<AddNetworkAssetModal isOpen onClose={vi.fn()} onCreated={vi.fn()} />);
+      await waitForDialogFocus();
+
+      await userEvent.type(screen.getByTestId('asset-label'), 'Shop');
+      await userEvent.selectOptions(screen.getByTestId('asset-type'), 'website');
+      await userEvent.type(screen.getByTestId('asset-url'), 'https://shop.example');
+      await userEvent.click(screen.getByTestId('asset-submit'));
+
+      await waitFor(() => expect(screen.getByTestId('asset-post-create-add-http-check')).toBeInTheDocument());
+      await userEvent.click(screen.getByTestId('asset-post-create-add-http-check'));
+
+      await userEvent.click(screen.getByRole('button', { name: /http check/i }));
+      await userEvent.type(screen.getByPlaceholderText(/production web server/i), 'Shop check');
+
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ id: 'mon-1' }));
+      await userEvent.click(screen.getByRole('button', { name: /create monitor/i }));
+
+      await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        '/monitors',
+        expect.objectContaining({ method: 'POST' }),
+      ));
+      const monitorCall = fetchWithAuthMock.mock.calls.find(([url]) => url === '/monitors')!;
+      const monitorBody = JSON.parse((monitorCall[1] as RequestInit).body as string);
+      expect(monitorBody).toMatchObject({
+        assetId: 'web-2', monitorType: 'http_check', target: 'https://shop.example',
+      });
+    });
+  });
 });

@@ -246,9 +246,18 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
 });
 
 const partnerNetworkEquipmentSchema = z.object({
-  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']),
-  name: z.string().max(255).nullable(), address: z.string().min(1).max(45), macAddress: z.string().max(17).nullable(),
+  // #5213 W03: 'website'/'service' — an IP-less manual asset whose identity
+  // is a URL. `address` becomes nullable for the same reason (host(NULL) is
+  // NULL, not the string "null"); every pre-existing type still always
+  // carries one, so this only widens the contract. `url`/`source` are new,
+  // ordinary (non-secret) fields — see the `included` bucket for
+  // `discovered_assets` in tenantExportPolicyRegistry.ts. This schema is the
+  // strict allowlist projectSiteInventory's output is validated against, so a
+  // field missing here fails the whole export closed with a 500.
+  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service']),
+  name: z.string().max(255).nullable(), address: z.string().min(1).max(45).nullable(), macAddress: z.string().max(17).nullable(),
   manufacturer: z.string().max(255).nullable(), model: z.string().max(255).nullable(),
+  url: z.string().max(2048).nullable(), source: z.enum(['scan', 'unifi', 'manual']),
 }).strict();
 
 export const partnerSiteInventoryExportRecordSchema = strictPartnerExportRecordSchema({

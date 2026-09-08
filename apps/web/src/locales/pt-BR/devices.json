@@ -120,6 +120,13 @@
     "title": "Adicionar ativo de rede",
     "submit": "Adicionar ativo",
     "identityHint": "Forneça pelo menos um: endereço IP, hostname ou URL.",
+    "urlRequiredHint": "Ativos do tipo site ou serviço exigem uma URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitorar este ativo com uma verificação HTTP?",
+      "actions": {
+        "addHttpCheck": "Adicionar verificação HTTP"
+      }
+    },
     "fields": {
       "label": "Nome",
       "ipAddress": "Endereço IP",

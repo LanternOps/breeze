@@ -317,6 +317,20 @@ Each asset in the response includes monitoring status flags:
 | `monitoringEnabled` | `true` if either SNMP or network monitoring is active |
 | `linkedDeviceName` | Display name or hostname of the linked enrolled device, if any |
 
+### Adding a Network Asset Manually
+
+Not every network asset can be discovered by a scan — a hosted website, a SaaS endpoint, or a device on a segment the agent can't reach still needs to show up alongside everything else in the unified **Devices** list. Use the **Add network asset** option from the Devices page's add-asset menu to hand-enter one.
+
+A manually-added asset is a real discovered-asset row (`source: manual`) — it gets the same list presentation, monitors, alerts, and topology treatment as a scan-discovered one, it's just born without a first sighting (`status: unknown` until something actually reaches it).
+
+**Identity.** Every asset needs at least one of: IP address, hostname, or URL. A `website` or `service` asset specifically requires a **URL** — those types have no stable IP (a hosted site's A record can change), so the URL is the identity, not a derived attribute.
+
+**Manual vs. hand-added assets (#4622).** This is for assets with a *network identity* (IP, hostname, or URL) — printers, routers, websites, SaaS endpoints, anything reachable on the network or the internet. Equipment with no network identity (a UPS, a physical lock, a piece of furniture you just want tracked in inventory) belongs to the separate hand-added asset tracker instead. The two never overlap: if it has an IP, hostname, or URL, it's a network asset.
+
+**A later scan updates it in place.** If a scan or the UniFi controller later finds the same IP, the existing row is updated — not duplicated. Fields you filled in by hand (hostname, manufacturer, model) are preserved; only liveness fields (last-seen time, online status) change. A `website`/`service` asset, having no IP, is never touched by a scan at all.
+
+**Monitoring hand-off.** After creating a `website` or `service` asset, the form offers to add an HTTP check right away, pre-targeted at the URL you entered — see [Network Monitors](#network-monitors) below for what HTTP checks report. You can always add monitoring later from the asset's detail page instead.
+
 ### Network Device Detail Page
 
 Clicking a network-discovered device in the unified **Devices** list opens a dedicated detail page (`/devices/network/:id`) instead of a popup. The page has breadcrumbs back to **Devices** and a working back button, so you can navigate in and out without losing your place.
