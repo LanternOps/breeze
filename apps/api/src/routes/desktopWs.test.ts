@@ -448,6 +448,31 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect(await res.json()).toEqual({ error: 'Session closed' });
   });
 
+  // The gate is "any recorded errorMessage on a disconnected row", not
+  // "a #5300 reason specifically" (see the comment above readingFailure) —
+  // staleCommandReaper.ts's reapStaleRemoteSessions also writes errorMessage
+  // on a 'disconnected' transition for its own routine timeouts. Documented
+  // here as accepted, not a regression: the reaper's text is benign/user-safe
+  // and this still never grants live access.
+  it('also returns a reaper-written timeout reason on a disconnected session', async () => {
+    mockViewerSelect({
+      session: {
+        ...failedSession,
+        status: 'disconnected',
+        errorMessage: 'Session timed out: exceeded maximum session duration',
+      },
+      device: DEVICE,
+      user: USER,
+    });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      id: SESSION_ID,
+      status: 'disconnected',
+      errorMessage: 'Session timed out: exceeded maximum session duration',
+    });
+  });
+
   it.each([
     ['offer', 'POST'], ['ws-ticket', 'POST'], ['ice-servers', 'GET'],
   ])('does not grant live access to %s', async (route, method) => {

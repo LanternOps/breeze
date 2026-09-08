@@ -286,9 +286,18 @@ async function validateViewerSessionAccess(
     // peer-disconnect command_result as `stopReason` and written to
     // errorMessage (agentWs.ts, agentWs.desktop.peerDisconnected). Extend the
     // same diagnostics-only exception #5295 introduced for 'failed' so the
-    // viewer can read that reason back too — but only when one was actually
-    // recorded; a routine disconnect (no errorMessage) still 401s exactly as
-    // before, so this never widens access beyond what #5295 already allowed.
+    // viewer can read that reason back too.
+    //
+    // The gate is "any recorded errorMessage on a disconnected row", not
+    // "a #5300 reason specifically" — staleCommandReaper.ts's
+    // reapStaleRemoteSessions also writes errorMessage on a 'disconnected'
+    // transition for its own routine timeouts ("connection was never
+    // established", "exceeded maximum session duration"), and those become
+    // readable here too. That's accepted as a side effect: the reaper's text
+    // is benign/user-safe and arguably useful to show instead of the bare
+    // generic message, and this still never grants live access — a routine
+    // disconnect with NO errorMessage at all still 401s exactly as before,
+    // so this never widens access beyond a read-only diagnostic string.
     const readingFailure = accessMode === 'failure-diagnostics' &&
       (session.status === 'failed' || (session.status === 'disconnected' && !!session.errorMessage));
     if (sessionRevoked && !readingFailure) {
