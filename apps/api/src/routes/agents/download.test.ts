@@ -956,7 +956,7 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
     const script = await fetchScript();
     expect(script).toContain('Darwin*) uninstall_macos');
     expect(script).toContain('Linux*) uninstall_linux');
-    expect(script).toContain('launchctl bootout system/com.breeze.agent');
+    expect(script).toContain('breeze_bootout system/com.breeze.agent');
     expect(script).toContain('systemctl stop breeze-agent');
   });
 
@@ -968,7 +968,8 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
       script.indexOf('uninstall_macos()'),
       script.indexOf('uninstall_linux()'),
     );
-    expect(macosBlock).toContain('rm -f "$BACKUP_BINARY"');
+    expect(macosBlock).toContain('breeze_remove_auxiliary || return 1');
+    expect(script).toContain('/usr/local/bin/breeze-backup');
 
     const linuxStart = script.indexOf('uninstall_linux()');
     const linuxBlock = script.slice(
@@ -976,6 +977,47 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
       script.indexOf('require_root', linuxStart),
     );
     expect(linuxBlock).toContain('rm -f "$BACKUP_BINARY"');
+  });
+
+  it('executes macOS package cleanup with intercepted endpoint commands', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'breeze-uninstall-exec-'));
+    const calls = join(tmp, 'calls');
+    try {
+      for (const name of ['id', 'uname', 'launchctl', 'pkgutil', 'rm', 'ps']) {
+        let body = '#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >> "$FIXTURE_CALLS"\n';
+        if (name === 'id') body += 'echo 0\n';
+        if (name === 'uname') body += 'echo Darwin\n';
+        if (name === 'ps') body += "printf '101 501 loginwindow\\n102 502 loginwindow\\n101 501 loginwindow\\n'\n";
+        if (name === 'pkgutil') body += '[ "$1" != --pkgs ] || echo com.breeze.agent\n';
+        writeFileSync(join(tmp, name), body, { mode: 0o755 });
+      }
+      const script = join(tmp, 'uninstall.sh');
+      writeFileSync(script, await fetchScript());
+      execFileSync('/bin/bash', [script], { env: { ...process.env, PATH: `${tmp}:/usr/bin:/bin`, FIXTURE_CALLS: calls } });
+      const commands = readFileSync(calls, 'utf8');
+      const ordered = [
+        'launchctl bootout system/com.breeze.watchdog',
+        'launchctl bootout gui/501/com.breeze.desktop-helper-user',
+        'launchctl bootout gui/502/com.breeze.desktop-helper-user',
+        'launchctl bootout pid/101/com.breeze.desktop-helper-loginwindow',
+        'launchctl bootout pid/102/com.breeze.desktop-helper-loginwindow',
+        'launchctl bootout system/com.breeze.agent',
+        'pkgutil --forget com.breeze.agent',
+      ];
+      let previous = -1;
+      for (const call of ordered) {
+        expect(commands.indexOf(call)).toBeGreaterThan(previous);
+        previous = commands.indexOf(call);
+      }
+      for (const binary of ['breeze-agent', 'breeze-watchdog', 'breeze-backup', 'breeze-desktop-helper']) {
+        expect(commands).toContain(`/usr/local/bin/${binary}`);
+      }
+      expect(commands).not.toContain('rm -rf');
+      expect(commands).not.toContain('com.breeze.agent-user');
+      expect(commands).not.toContain('com.breeze.helper');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('matches the checked-in web and agent script copies', async () => {
