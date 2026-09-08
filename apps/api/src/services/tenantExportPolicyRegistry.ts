@@ -85,7 +85,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // embed credentials or capabilities. Everything a customer must be able to
   // export therefore lives in a bounded text column here (objective,
   // outcome_detail, handoff_summary, target_label) and is `included`.
-  "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","dispatch_state","result_state","dispatched_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
+  "ai_operator_operations": tablePolicy("org_id", {"included":["id","org_id","task_id","task_step_key","operation_key","attempt_ordinal","intent_id","originating_run_id","argument_digest","execution_ref_kind","execution_ref_id","plan_revision","claimed_lease_epoch","dispatch_state","dispatch_detail","result_state","dispatched_at","cancel_requested_at","result_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
   "ai_operator_task_outbox": tablePolicy("org_id", {"included":["id","org_id","task_id","source_kind","source_id","transition_seq","due_at","published_at","attempts","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // lease_owner is a coordinator instance label, not credential material, but
   // it does not trip SUSPICIOUS_NAME_PARTS either — plain `included`.

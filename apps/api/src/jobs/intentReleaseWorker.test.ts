@@ -576,6 +576,12 @@ describe('releaseApprovedIntent', () => {
   });
 
   it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
+    // #5205 W04 (#5209): the intent row is now loaded BEFORE the claim (so the
+    // claim can branch on `task_id` without a second read), so a test that
+    // exercises a refused claim has to make the load succeed first. The claim's
+    // own semantics are unchanged — that is what the assertions below still pin.
+    dbState.selectActionIntentsResults.push([baseIntent()]);
+    dbState.selectApprovalRequestsResults.push([]);
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
 
     await releaseApprovedIntent('intent-1');
@@ -682,9 +688,13 @@ describe('releaseApprovedIntent', () => {
         approvalExpiresAt: new Date(Date.now() + 60 * 60_000),
         releaseBy: new Date(Date.now() - 1_000),
       } as Partial<ActionIntent>);
-      // Only the claim is primed: a refused claim must not reach anything
-      // downstream, so priming past it would both weaken the test and leak
-      // unconsumed `*Once` stubs into the next one.
+      // Only the claim is primed BEYOND the load: a refused claim must not
+      // reach anything downstream, so priming past it would both weaken the
+      // test and leak unconsumed `*Once` stubs into the next one. The load
+      // itself must succeed — see the double-delivery case above for why it
+      // now runs first (#5205 W04, #5209).
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([]);
       leaseAwareClaimOnce(intent);
 
       await releaseApprovedIntent(intent.id);
@@ -697,16 +707,35 @@ describe('releaseApprovedIntent', () => {
   });
 
   it('stamps execution_started_at when it claims the intent (approved -> executing)', async () => {
-    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // claim CAS
-    dbState.selectActionIntentsResults.push([]); // short-circuit: intent row missing after CAS
+    // #5205 W04 (#5209): the load now runs before the claim, so this drives the
+    // WHOLE happy path rather than short-circuiting on a missing row — which
+    // also keeps every `*Once` stub consumed instead of leaking into the next
+    // test. The assertion is unchanged: the claim patch is what this pins.
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
-    await releaseApprovedIntent('intent-3');
+    await releaseApprovedIntent(intent.id);
 
     expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
-      'intent-3', 'approved', 'executing',
+      intent.id, 'approved', 'executing',
       expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
       { requireNotExpired: 'release' },
     );
+  });
+
+  it('never claims — and never dispatches — when the intent row is gone', async () => {
+    // #5205 W04 (#5209): the load moved ahead of the claim, so a deleted or
+    // erased intent short-circuits BEFORE anything is claimed. Previously the
+    // worker CASed the row to `executing` and only then discovered it was
+    // missing, which is a claim taken on a row that does not exist.
+    dbState.selectActionIntentsResults.push([]);
+
+    await releaseApprovedIntent('intent-gone');
+
+    expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
   });
 
   it('happy path: CAS -> revalidate -> executeTool -> CAS completed, with a JSON result', async () => {
@@ -1852,8 +1881,21 @@ describe('releaseApprovedIntent', () => {
         metric: null,
         expectedTerminal: { kind: 'claim_lost' },
         unclaimed: true,
+        // #5205 W04 (#5209): the intent row must be primed so the pre-claim
+        // load succeeds and the claim is genuinely ATTEMPTED and lost — which
+        // is the branch this case is about. Without the row the worker would
+        // short-circuit at the load and never claim at all, and the queued
+        // claim result would leak into the next test unconsumed.
         arrange: () => {
-          intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+          // `mockReset` + a STANDING `false`, not a `*Once`: `vi.clearAllMocks()`
+          // clears recorded calls but NOT queued one-shot results, so an
+          // unconsumed `*Once` left by an earlier case in this file can be
+          // handed to this claim instead. A standing implementation makes the
+          // branch deterministic regardless of what ran before it, and the
+          // reset runs before the call under test so `transitions` still
+          // records exactly the claim.
+          intentServiceMock.transitionIntent.mockReset();
+          intentServiceMock.transitionIntent.mockResolvedValue(false);
         },
       },
       {
@@ -1990,10 +2032,20 @@ describe('releaseApprovedIntent', () => {
         expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
           intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
         );
-        // And the intent row itself was never even read: step 2's load runs
-        // only after a WON claim. Without this the case is satisfied by any
-        // flow that exits after one transition for some other reason.
-        expect((dbMock.ambient as { select: Mock }).select).not.toHaveBeenCalled();
+        // This used to assert `dbMock.ambient.select` was never called, on the
+        // grounds that step 2's load ran only after a WON claim. #5205 W04
+        // (#5209) swapped that order — the row is loaded first so the claim can
+        // branch on `task_id` — so the load now runs on every delivery and that
+        // assertion is no longer true of correct code.
+        //
+        // Its PURPOSE survives and is asserted more directly here: the guard
+        // existed so this case could not be satisfied "by any flow that exits
+        // after one transition for some other reason". A lost claim must do
+        // nothing OBSERVABLE — no tool execution, no terminal transaction, no
+        // evidence row. A read is not an effect; these three are.
+        expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+        expect(dbMock.transaction).not.toHaveBeenCalled();
+        expect((dbMock.executor as { insert: Mock }).insert).not.toHaveBeenCalled();
         return;
       }
       // Every other branch claimed first, then reached exactly one more
@@ -2021,7 +2073,16 @@ describe('releaseApprovedIntent', () => {
 
     it.each(BRANCHES)('$name', async (branch) => {
       const intent = agentIntent(branch.intent);
-      if (!branch.unclaimed) primeAgentThroughRevalidation(intent);
+      if (!branch.unclaimed) {
+        primeAgentThroughRevalidation(intent);
+      } else {
+        // #5205 W04 (#5209): the pre-claim load runs on EVERY delivery now, so
+        // even the lost-claim branch needs its row — and it must be THIS
+        // branch's intent, not a generic one, or the flow continues past the
+        // claim against a mismatched row.
+        dbState.selectActionIntentsResults.push([intent]);
+        dbState.selectApprovalRequestsResults.push([]);
+      }
       branch.arrange();
 
       await releaseApprovedIntent(intent.id);
@@ -2065,6 +2126,12 @@ describe('releaseApprovedIntent', () => {
 
       // BullMQ redelivers: the row is terminal now, so the claim CAS returns
       // false and the whole body — evidence included — is skipped.
+      // #5205 W04 (#5209): the load now runs before the claim on EVERY
+      // delivery, so the redelivered call needs its own primed row too — else
+      // the load itself short-circuits on a missing row, the claim is never
+      // even attempted, and this `false` stub leaks unconsumed into whatever
+      // test runs next.
+      dbState.selectActionIntentsResults.push([intent]);
       intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
       await releaseApprovedIntent(intent.id);
 
@@ -2925,6 +2992,10 @@ describe('processIntentReleaseJob', () => {
   describe('intent_created — ticket_autonomy recovery (P2-4 Task A3, #4191)', () => {
     it('routes a ticket_autonomy-decided row straight to release, never attemptPolicyDecision', async () => {
       dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
+      // #5205 W04 (#5209): releaseApprovedIntent now does its OWN pre-claim
+      // load (this row is separate from the `decidedVia` lookup above), so it
+      // needs its own queued row or the claim below is never even attempted.
+      dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
       intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race / already claimed — release path exits early, which is fine, we're proving ROUTING here
 
       const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
@@ -3008,6 +3079,10 @@ describe('processIntentReleaseJob', () => {
     // failed closed because the approver's permission was revoked is an
     // outright false statement about a privileged action.
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load consumes
+    // the FIRST queued row now, ahead of the outcome notifier's read below —
+    // prime both, in that order, or the notifier's read comes back empty.
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'failed' }]);
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'failed' }]);
 
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
@@ -3024,6 +3099,9 @@ describe('processIntentReleaseJob', () => {
     // see the truth table on outcomeNotificationClass, and the #4465 block at
     // the bottom of this file for the other half of the property.
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    // #5205 W04 (#5209): same ordering as THE LIE GUARD above — release's own
+    // pre-claim load consumes the first row, the notifier's re-read the second.
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
 
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
@@ -3114,6 +3192,11 @@ describe('processIntentReleaseJob', () => {
 
   it('a failed outcome notification never undoes a committed release', async () => {
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load consumes
+    // the first row; the outcome notifier's re-read (the one that actually
+    // calls createNotification, below) needs its own second row, or the
+    // queued rejection is never consumed here and leaks into a later test.
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
     dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
     notifyMock.createNotification.mockRejectedValueOnce(new Error('notify boom'));
 
@@ -3126,6 +3209,9 @@ describe('processIntentReleaseJob', () => {
   });
 
   it('dispatches intent_approved to releaseApprovedIntent', async () => {
+    // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load needs a
+    // row before the claim it exercises below is even attempted.
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // exits immediately via double-delivery guard
 
     const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
@@ -3248,6 +3334,9 @@ describe('agent-originated outcome notifications', () => {
     // intent_approved arrives but the release did not run (lost CAS) and the
     // row now says failed — recipients must hear the truth, at high priority.
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load consumes
+    // the first row now, ahead of the outcome notifier's re-read below.
+    dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT, status: 'failed' }]);
     dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT, status: 'failed' }]);
     dbState.selectAgentRunsResults.push([RUN_ROW]);
     dbState.selectAgentsResults.push([AGENT_ROW]);
@@ -3357,6 +3446,11 @@ describe('outcome notification dedupe identity (#4465)', () => {
    *  duplicate-delivery case), observing the intent at `status`. */
   async function deliverApprovedObserving(status: string): Promise<void> {
     intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load now reads
+    // the intent BEFORE the claim, ahead of the outcome notifier's re-read
+    // below — both queue off the same actionIntents SELECT mock, in call
+    // order, so this needs two rows where one used to do.
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' });
   }
@@ -3443,6 +3537,11 @@ describe('outcome notification dedupe identity (#4465)', () => {
     async function deliverCreatedObserving(status: string): Promise<void> {
       intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
       dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
+      // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load is a
+      // SECOND read, between the decidedVia lookup above and the outcome
+      // notifier's re-read below — three rows off the same mock now, in call
+      // order, where two used to do.
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
       dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status }]);
       await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
     }
@@ -3545,6 +3644,10 @@ describe('outcome notification dedupe identity (#4465)', () => {
 
     async function deliverAgentApprovedObserving(status: string): Promise<void> {
       intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+      // #5205 W04 (#5209): releaseApprovedIntent's own pre-claim load is a
+      // second read ahead of the outcome notifier's re-read (same reasoning
+      // as deliverApprovedObserving above).
+      dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT_4465, status }]);
       dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT_4465, status }]);
       dbState.selectAgentRunsResults.push([RUN_ROW_4465]);
       dbState.selectAgentsResults.push([AGENT_ROW_4465]);

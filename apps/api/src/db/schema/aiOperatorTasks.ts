@@ -257,10 +257,21 @@ export const aiOperatorOperations = pgTable(
     executionRefKind: text('execution_ref_kind').$type<AiOperatorExecutionRefKind>(),
     executionRefId: uuid('execution_ref_id'),
 
+    // W04 (#5209). `plan_revision` is `ai_operator_tasks.revision` pinned at
+    // reservation; the dispatch claim requires the task's CURRENT revision to
+    // still equal it, in the same conditional UPDATE. `claimed_lease_epoch` is
+    // the epoch OBSERVED at claim time — recorded for lineage, never fenced on
+    // from the intent-release path (spec §6.3: results from a superseded
+    // epoch's operation are accepted under their original identity).
+    planRevision: integer('plan_revision'),
+    claimedLeaseEpoch: bigint('claimed_lease_epoch', { mode: 'number' }),
+
     dispatchState: text('dispatch_state')
-      .$type<'reserved' | 'dispatched' | 'dispatch_failed' | 'abandoned'>()
+      .$type<'reserved' | 'dispatched' | 'dispatch_failed' | 'cancelled' | 'abandoned'>()
       .notNull()
       .default('reserved'),
+    /** Why a claim was refused / a dispatch failed. Bounded text, never jsonb. */
+    dispatchDetail: text('dispatch_detail'),
     // 'unknown' is a first-class result, not an error: between the tool's 30 s
     // wait and the device command's 5-minute reap the effect may still land
     // (spec §6.5, "three clocks").
@@ -271,6 +282,13 @@ export const aiOperatorOperations = pgTable(
     result: jsonb('result').$type<Record<string, unknown>>().notNull().default({}),
 
     dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    /**
+     * W04 (#5209): a human cancelled a task-linked intent that had already
+     * reached `executing`. The intent deliberately STAYS `executing` — spec
+     * §7.3 requires already-executing work to be shown in flight and settled
+     * only after reconciliation, never silently reported as "nothing happened".
+     */
+    cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
     resultAt: timestamp('result_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

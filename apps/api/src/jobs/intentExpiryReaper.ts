@@ -11,6 +11,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { attachWorkerObservability } from './workerObservability';
+import { recordOperationResult } from '../services/aiOperator/operationService';
 
 /**
  * Reaps `action_intents` rows past their deadline (spec
@@ -126,6 +127,8 @@ type StaleExecutingIntentRow = {
   source: string;
   execution_started_at: Date | string | null;
   decided_at: Date | null;
+  /** #5205 W04 (#5209): non-null iff this is an AI Operator task-linked intent. */
+  task_id: string | null;
 };
 
 function extractRows<T>(result: unknown): T[] {
@@ -285,7 +288,8 @@ export async function reapStaleExecutingIntents(): Promise<number> {
       a.argument_digest,
       a.source,
       a.execution_started_at,
-      a.decided_at;
+      a.decided_at,
+      a.task_id;
   `);
 
   const rows = extractRows<StaleExecutingIntentRow>(transitioned);
@@ -321,6 +325,29 @@ export async function reapStaleExecutingIntents(): Promise<number> {
     } catch (err) {
       console.error('[IntentExpiryReaper] Failed to write stale-executing audit event:', err);
       captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+
+    // #5205 W04 (#5209): `failed:execution_lost` on the intent means THIS
+    // SERVER gave up after 20 minutes. It does NOT mean the effect failed — the
+    // device command reaps at 5 minutes but stays open to a genuine late agent
+    // result (`commandAcceptsAgentResultCondition`), so the operation records
+    // `unknown`, never `failed`, and W06 reconciles it from the execution
+    // reference. Writing `failed` here would assert a non-effect the system
+    // cannot prove, which spec §7.3 forbids ("must never display 'nothing
+    // happened' if a change may still finish").
+    //
+    // `recordOperationResult` is rank-ordered, so this `unknown` cannot clobber
+    // a definite outcome the release worker already recorded, and a definite
+    // outcome arriving afterwards still overwrites this one.
+    if (row.task_id) {
+      await recordOperationResult({
+        intentId: row.id,
+        resultState: 'unknown',
+        result: {
+          errorCode: 'execution_lost',
+          staleExecutingTimeoutMinutes: STALE_EXECUTING_TIMEOUT_MINUTES,
+        },
+      });
     }
   }
 
