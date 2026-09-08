@@ -96,6 +96,59 @@ export const listNetworkDevicesSchema = z.object({
   search: z.string().optional(),
 });
 
+// GET /devices/manual — the manual arm of the unified Devices list (#4622).
+// Mirrors listNetworkDevicesSchema above exactly so the three arms of the
+// unified list share one query vocabulary.
+export const listManualAssetsSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  includeTotal: boolStr,
+
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  orgIds: csvUuidList,
+  siteIds: csvUuidList,
+
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+  search: z.string().optional(),
+});
+
+// POST /devices/manual — create a manual (non-networked) inventory asset.
+// Written array-friendly on purpose: the CSV import path (spec Decision 6,
+// deferred) reuses this element schema verbatim rather than re-deriving
+// validation.
+export const createManualAssetSchema = z.object({
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
+  name: z.string().min(1).max(255),
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).optional(),
+  manufacturer: z.string().max(255).nullish(),
+  model: z.string().max(255).nullish(),
+  serialNumber: z.string().max(255).nullish(),
+  assetTag: z.string().max(128).nullish(),
+  location: z.string().max(255).nullish(),
+  assignedContactId: z.string().guid().nullish(),
+  notes: z.string().nullish(),
+  tags: z.array(z.string()).optional(),
+});
+
+// PATCH /devices/manual/:id. orgId is immutable after create (matching
+// updateDeviceSchema's pattern of omitting the tenant key from the partial).
+export const updateManualAssetSchema = createManualAssetSchema
+  .partial()
+  .omit({ orgId: true })
+  .extend({ retiredAt: z.union([z.null(), z.string().datetime()]).optional() });
+
+// POST /devices/manual/:id/link — exactly one subject (deviceId XOR
+// discoveredAssetId), mirroring discovery.ts's linkAssetSchema shape.
+export const linkManualAssetSchema = z.object({
+  deviceId: z.string().guid().optional(),
+  discoveredAssetId: z.string().guid().optional(),
+}).refine(
+  (v) => (v.deviceId == null) !== (v.discoveredAssetId == null),
+  { message: 'Provide exactly one of deviceId or discoveredAssetId' },
+);
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.

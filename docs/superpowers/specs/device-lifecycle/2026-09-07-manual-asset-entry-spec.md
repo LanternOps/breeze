@@ -40,7 +40,7 @@ Two secondary gaps compound this and are worth stating because they shape the de
 
 No new permission is introduced (that would need three coordinated edits — registry, `DEFAULT_PERMISSIONS` in `apps/api/src/db/seed.ts:116-119`, and a migration — for no separation-of-duty gain). Site-scoped technicians are constrained by the same `permissions.allowedSiteIds` check the network arm already applies (`apps/api/src/routes/devices/network.ts:90-118`). Portal (customer) users get read-only exposure at most, and not in v1.
 
-MFA step-up: the discovery mutators carry `requireMfa()`; device edits do not. Manual asset writes are ordinary inventory edits with no blast radius beyond the org's own records, so **no step-up** — matching device edit, not discovery.
+MFA: every manual-asset mutator carries `requireMfa()` (session completed MFA); the read does not. **Corrected 2026-09-07 at W02 review:** the draft said device edits are ungated and chose "no step-up" to match them — false; `core.ts` PATCH /:id and the `discovery.ts` mutators both carry `requireMfa()`, so both sibling precedents require it.
 
 ## Proposed design
 

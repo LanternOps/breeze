@@ -642,7 +642,7 @@ Cases, one `it` each:
 11. `POST /:id/link` with a device in the same org but a different site → **400** (mirrors `apps/api/src/routes/discovery.ts:1485,1489`).
 12. `DELETE /:id/link` clears **both** columns.
 13. `DELETE /:id` → hard delete, `manual_asset.delete` audit written.
-14. Every mutator asserts **no** `requireMfa()` in its middleware chain — the absence is a deliberate decision (spec, Users & scope), so it gets an assertion rather than a silent omission.
+14. Every mutator asserts `requireMfa()` in its middleware chain and the read asserts its absence (corrected at W02 review — both sibling precedents, device edit and discovery mutators, are gated; the spec's original "no step-up" rested on a false premise).
 
 - [ ] **Step 2: Run — expect FAIL** (module not found)
 
