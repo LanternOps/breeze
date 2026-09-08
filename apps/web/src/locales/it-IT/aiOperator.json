@@ -115,5 +115,20 @@
     "loading": "Caricamento attività Operator...",
     "loadFailed": "Impossibile caricare le attività Operator.",
     "empty": "Nessuna attività Operator per questo dispositivo."
+  },
+  "delegate": {
+    "button": "Delega all'Operatore",
+    "dialogTitle": "Delega all'Operatore",
+    "dialogMessage": "L'Operatore analizzerà il problema e tenterà di risolverlo con il seguente flusso di lavoro.",
+    "orgLabel": "Organizzazione",
+    "deviceLabel": "Dispositivo",
+    "serviceNameLabel": "Nome del servizio",
+    "serviceNamePlaceholder": "es. Spooler",
+    "serviceNameError": "Inserisci il nome del servizio per delegare questa attività.",
+    "workflowLabel": "Flusso di lavoro",
+    "workflowName": "Ripristino del servizio",
+    "confirmLabel": "Delega",
+    "queued": "Attività delegata all'Operatore.",
+    "failed": "Impossibile delegare l'attività all'Operatore."
   }
 }

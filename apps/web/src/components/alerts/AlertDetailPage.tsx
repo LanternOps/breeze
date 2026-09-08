@@ -19,6 +19,8 @@ import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import { useOrgStore } from '@/stores/orgStore';
 import type { TicketStatus, TicketPriority } from '../tickets/ticketConfig';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
+import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
+import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
 import {
   formatAnomalyConfidence,
   formatAnomalyType,
@@ -37,6 +39,14 @@ type Alert = {
   status: AlertStatus;
   deviceId: string;
   deviceName: string;
+  /**
+   * The alert's OWN org. W08 (#5246): the delegate action targets this org,
+   * never the globally selected one — spec §5.1, "changing global
+   * organization context while drafting cannot retarget the task". The API
+   * has always returned it (the detail route spreads the whole alert row);
+   * it simply was not declared here before.
+   */
+  orgId: string;
   ruleId?: string;
   ruleName?: string;
   triggeredAt: string;
@@ -346,6 +356,20 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                 <CheckCircle className="mr-2 inline-block h-4 w-4" />
                 {t('alertDetailPage.acknowledge')}
               </button>
+            )}
+            {/* W08 of #5205 (#5246). Hidden entirely unless the AI Operator
+                flags are on. Targets the ALERT's org and device, and cites
+                the alert as its source so the verification criterion gets a
+                recurrence signal (without one, the best achievable outcome is
+                `investigation_complete`, never `verified_resolved`). */}
+            {(alert.status === 'active' || alert.status === 'acknowledged') && (
+              <DelegateToOperatorButton
+                orgId={alert.orgId}
+                deviceId={alert.deviceId}
+                deviceLabel={alert.deviceName}
+                source={{ kind: 'alert', id: alert.id }}
+                defaultServiceName={extractServiceNameFromAlert(alert) ?? undefined}
+              />
             )}
             {(alert.status === 'active' || alert.status === 'acknowledged') && (
               <button

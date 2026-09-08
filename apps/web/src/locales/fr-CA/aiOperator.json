@@ -115,5 +115,20 @@
     "loading": "Chargement des tâches Operator...",
     "loadFailed": "Échec du chargement des tâches Operator.",
     "empty": "Aucune tâche Operator pour cet appareil."
+  },
+  "delegate": {
+    "button": "Déléguer à l'Opérateur",
+    "dialogTitle": "Déléguer à l'Opérateur",
+    "dialogMessage": "L'Opérateur va enquêter et tenter de résoudre ce problème à l'aide du flux de travail ci-dessous.",
+    "orgLabel": "Organisation",
+    "deviceLabel": "Appareil",
+    "serviceNameLabel": "Nom du service",
+    "serviceNamePlaceholder": "p. ex. Spouleur",
+    "serviceNameError": "Entrez le nom du service pour déléguer cette tâche.",
+    "workflowLabel": "Flux de travail",
+    "workflowName": "Récupération de service",
+    "confirmLabel": "Déléguer",
+    "queued": "Tâche déléguée à l'Opérateur.",
+    "failed": "Échec de la délégation à l'Opérateur."
   }
 }
