@@ -27,8 +27,10 @@ interface AcceptLanguageEntry {
 
 /**
  * Parses an `Accept-Language` header into its tags ordered by descending
- * quality. Entries with `q=0` ("not acceptable"), the `*` wildcard, and
- * malformed quality values are dropped. Ties keep source order, which is what
+ * quality. Entries with `q=0` ("not acceptable") and the `*` wildcard are
+ * dropped. A malformed `q=` parameter (not a valid number) does not drop the
+ * entry — it simply fails to override the default, so the tag is kept at
+ * quality 1, its highest priority. Ties keep source order, which is what
  * browsers use to express preference among equal-quality tags.
  */
 export function parseAcceptLanguage(header: string | null | undefined): string[] {
