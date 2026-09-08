@@ -313,6 +313,9 @@ describe('action_intents schema', () => {
         'policyClassificationVersion',
         'policyReservationId',
         'policyKillEpoch',
+        'taskId',
+        'taskStepKey',
+        'operationKey',
       ].sort(),
     );
   });
