@@ -338,6 +338,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 		MaxRecoveryAttempts:     cfg.Watchdog.MaxRecoveryAttempts,
 		RecoveryCooldown:        cfg.Watchdog.RecoveryCooldown,
 		StandbyTimeout:          cfg.Watchdog.StandbyTimeout,
+		StandbyGrace:            cfg.Watchdog.StandbyGrace,
 		FailoverPollInterval:    cfg.Watchdog.FailoverPollInterval,
 	}
 
@@ -495,6 +496,84 @@ func runWatchdog(stopCh <-chan struct{}) {
 	var failoverFailures int
 	var lastDiskServerURL string
 
+	// --- STANDBY policy (#5252) ---------------------------------------
+	// Details of the shutdown the agent last announced. Only meaningful
+	// while the state is STANDBY; refreshed on every shutdown intent. The
+	// defaults describe an intent that arrived with no reason at all.
+	standbyWindow := watchdog.StandbyWindow("", 0, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
+	standbyReason := ""
+	standbyRecognized := true
+
+	// agentLooksHealthy requires live IPC AND a fresh heartbeat — the same
+	// evidence the FAILOVER self-recovery block uses. IsConnected() alone is
+	// only a socket flag and can still describe the connection of an agent
+	// that is on its way out, so on its own it would cancel the very standby
+	// the agent just asked for.
+	agentLooksHealthy := func() bool {
+		if !ipcClient.IsConnected() {
+			return false
+		}
+		hb := healthChecker.LastKnownHeartbeat(agentState)
+		return !hb.IsZero() && time.Since(hb) <= wdCfg.HeartbeatStaleThreshold
+	}
+
+	// applyStandby evaluates the standby policy once and acts on it. It is
+	// the ONLY place STANDBY leaves its state, so the per-tick check and the
+	// unhealthy-signal funnel below cannot drift apart (#5252).
+	applyStandby := func() {
+		elapsed := time.Since(wd.LastTransitionTime())
+		decision := watchdog.EvaluateStandby(watchdog.StandbyInput{
+			Elapsed:      elapsed,
+			Window:       standbyWindow,
+			Ceiling:      wdCfg.StandbyTimeout,
+			Recognized:   standbyRecognized,
+			AgentHealthy: agentLooksHealthy(),
+		})
+		fields := map[string]any{
+			"reason":          standbyReason,
+			"elapsed_seconds": int(elapsed.Seconds()),
+			"window_seconds":  int(standbyWindow.Seconds()),
+			"decision":        decision.String(),
+		}
+		switch decision {
+		case watchdog.StandbyHold:
+			return
+		case watchdog.StandbyResume:
+			// The announced shutdown never completed — the agent is still
+			// there and healthy. Restarting it would be gratuitous.
+			journal.Log(watchdog.LevelInfo, "standby.agent_still_healthy", fields)
+			wd.HandleEvent(watchdog.EventAgentRecovered)
+		case watchdog.StandbyRecover:
+			// The window closed with the agent gone. Hand off to the normal
+			// recovery ladder, which owns the restart budget, flap detection
+			// and its own ensure-start before FAILOVER.
+			journal.Log(watchdog.LevelWarn, "standby.window_expired", fields)
+			wd.HandleEvent(watchdog.EventAgentUnhealthy)
+		case watchdog.StandbyFailover:
+			journal.Log(watchdog.LevelWarn, "standby.timeout", fields)
+			// Transition FIRST and only ensure-start on an ACCEPTED
+			// transition: the ensure-start is budget-free, so running it
+			// ahead of a transition that did not happen would repeat it on
+			// every tick. Entering FAILOVER with the agent stopped is what
+			// stranded the host in #5252.
+			if _, ok := wd.HandleEvent(watchdog.EventStandbyTimeout); ok {
+				ensureAgentStartedBeforeFailover(runCtx, recovery, journal)
+			}
+		}
+	}
+
+	// noteAgentUnhealthy funnels EVERY "the agent looks dead" signal through
+	// one place. In STANDBY such a signal is EXPECTED — the agent announced
+	// it was going away — so the standby policy decides what happens rather
+	// than the raw transition table restarting an agent mid-shutdown.
+	noteAgentUnhealthy := func() {
+		if wd.State() == watchdog.StateStandby {
+			applyStandby()
+			return
+		}
+		wd.HandleEvent(watchdog.EventAgentUnhealthy)
+	}
+
 	for {
 		select {
 		case <-runCtx.Done():
@@ -524,7 +603,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 				result := healthChecker.CheckProcess(pid)
 				if result == watchdog.CheckProcessGone {
 					journal.Log(watchdog.LevelWarn, "check.process_gone", map[string]any{"pid": pid})
-					wd.HandleEvent(watchdog.EventAgentUnhealthy)
+					noteAgentUnhealthy()
 				}
 			}
 
@@ -536,7 +615,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 					journal.Log(watchdog.LevelError, "check.ipc_failed", map[string]any{
 						"consecutive_failures": healthChecker.IPCFailCount(),
 					})
-					wd.HandleEvent(watchdog.EventAgentUnhealthy)
+					noteAgentUnhealthy()
 				case watchdog.CheckIPCDegraded:
 					journal.Log(watchdog.LevelWarn, "check.ipc_degraded", map[string]any{
 						"consecutive_failures": healthChecker.IPCFailCount(),
@@ -581,7 +660,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 					"ipc_connected": ipcUp,
 					"vetoes_before": vetoes,
 				})
-				wd.HandleEvent(watchdog.EventAgentUnhealthy)
+				noteAgentUnhealthy()
 			case watchdog.StaleVetoed:
 				journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_ipc_alive", map[string]any{
 					"consecutive_vetoes": vetoes,
@@ -589,7 +668,17 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case env := <-ipcMessages:
-			handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker)
+			if intent := handleIPCMessage(env, wd, journal, cfg, tokenStore, healthChecker); intent != nil {
+				standbyReason = intent.Reason
+				standbyRecognized = watchdog.RecognizedShutdownReason(intent.Reason)
+				standbyWindow = watchdog.StandbyWindow(
+					intent.Reason, intent.ExpectedDuration, wdCfg.StandbyGrace, wdCfg.StandbyTimeout)
+				journal.Log(watchdog.LevelInfo, "standby.window", map[string]any{
+					"reason":         standbyReason,
+					"recognized":     standbyRecognized,
+					"window_seconds": int(standbyWindow.Seconds()),
+				})
+			}
 
 		case <-failoverTicker.C:
 			// Only poll in FAILOVER state.
@@ -756,11 +845,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			}
 
 		case watchdog.StateStandby:
-			// Check standby timeout.
-			if time.Since(wd.LastTransitionTime()) > wdCfg.StandbyTimeout {
-				journal.Log(watchdog.LevelWarn, "standby.timeout", nil)
-				wd.HandleEvent(watchdog.EventStandbyTimeout)
-			}
+			applyStandby()
 
 		case watchdog.StateMonitoring:
 			// Reset per-window recovery counter when healthy. Note: restart history
@@ -777,8 +862,11 @@ func runWatchdog(stopCh <-chan struct{}) {
 	}
 }
 
-// handleIPCMessage dispatches IPC envelope messages from the agent.
-func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) {
+// handleIPCMessage dispatches IPC envelope messages from the agent. It returns
+// the shutdown intent it handled, if any, so the caller can size the standby
+// window from the reason and declared duration the agent sent (#5252); nil for
+// every other message type and for an intent that failed to parse.
+func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdog.Journal, cfg *config.Config, tokens *tokenHolder, health *watchdog.HealthChecker) *ipc.ShutdownIntent {
 	switch env.Type {
 	case ipc.TypeShutdownIntent:
 		var intent ipc.ShutdownIntent
@@ -786,13 +874,14 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_shutdown_intent", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "agent.shutdown_intent", map[string]any{
 			"reason":   intent.Reason,
 			"duration": intent.ExpectedDuration,
 		})
 		wd.HandleEvent(watchdog.EventShutdownIntent)
+		return &intent
 
 	case ipc.TypeTokenUpdate:
 		var update ipc.TokenUpdate
@@ -800,7 +889,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_token_update", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "token.updated", nil)
 		tokens.Replace(update.Token)
@@ -818,7 +907,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			journal.Log(watchdog.LevelError, "ipc.bad_state_sync", map[string]any{
 				"error": err.Error(),
 			})
-			return
+			return nil
 		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", map[string]any{
 			"agentVersion":  sync.AgentVersion,
@@ -849,6 +938,7 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 			"type": env.Type,
 		})
 	}
+	return nil
 }
 
 // ensureAgentStartedBeforeFailover issues a budget-free, best-effort

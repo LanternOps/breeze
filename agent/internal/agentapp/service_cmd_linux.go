@@ -122,6 +122,8 @@ func init() {
 	serviceCmd.AddCommand(serviceReconcileUnitCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper systemd unit")
 	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	// A failed start returns an error from RunE; usage text would bury it.
+	serviceInstallCmd.SilenceUsage = true
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -145,7 +147,16 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		// Stop existing service before replacing binary (safe for upgrades).
+		//
+		// Whether it was RUNNING must be sampled BEFORE the stop: this command
+		// then goes on to decide whether to start it again, and asking
+		// afterwards only ever reports the state this very stop produced. That
+		// inversion is what shipped #5252 — the post-install check read
+		// "not running", printed "Next steps: 1. Start", and left a remote
+		// enrolled host offline with no way back in.
+		wasRunning := false
 		if _, err := os.Stat(linuxUnitDst); err == nil {
+			wasRunning = isSystemServiceRunning()
 			if stopErr := exec.Command("systemctl", "stop", linuxServiceName).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
@@ -191,17 +202,10 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		// Reload systemd
-		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to reload systemd: %s", strings.TrimSpace(string(out)))
-		}
-
-		// Enable the service
-		if out, err := exec.Command("systemctl", "enable", linuxServiceName).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to enable service: %s\n", strings.TrimSpace(string(out)))
-		}
-
-		// Create breeze group for IPC socket access (best-effort, idempotent)
+		// IPC prerequisites are created BEFORE the service is started: the
+		// agent opens its IPC socket in /var/run/breeze owned by the breeze
+		// group at startup, so an agent started ahead of them comes up
+		// without a usable socket. Best-effort and idempotent.
 		if err := exec.Command("getent", "group", "breeze").Run(); err != nil {
 			// Group doesn't exist — create it
 			if createErr := exec.Command("groupadd", "--system", "breeze").Run(); createErr != nil {
@@ -220,16 +224,33 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to set IPC directory ownership: %v\n", err)
 		}
 
-		fmt.Println()
-		fmt.Println("Breeze Agent service installed and enabled.")
-
-		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
 		enrolled := existingCfg != nil && existingCfg.AgentID != ""
-		running := isSystemServiceRunning()
 
-		if enrolled && running {
-			// Already enrolled and running — show current status automatically.
+		// Reload systemd, enable, and — unless this is a fresh un-enrolled
+		// host — start the service, so `service install` really is the
+		// upgrade path the docs describe (#5252).
+		plan := planServiceStart(wasRunning, enrolled)
+		started, startErr := applySystemdUnit(execCommandRunner, linuxServiceName, plan)
+		fmt.Printf("Systemd unit reloaded and enabled (%s).\n", linuxUnitDst)
+
+		fmt.Println()
+		switch {
+		case started:
+			fmt.Printf("Breeze Agent service installed, enabled and started (%s).\n", plan.Reason)
+		case startErr != nil:
+			fmt.Fprintf(os.Stderr,
+				"ERROR: the Breeze Agent service was stopped for this install and could NOT be started again: %v\n"+
+					"       This host is not being managed until it starts. Recover with:\n"+
+					"         sudo systemctl start breeze-agent\n"+
+					"         sudo journalctl -u breeze-agent -n 100 --no-pager\n",
+				startErr)
+		default:
+			fmt.Println("Breeze Agent service installed and enabled (not started: " + plan.Reason + ").")
+		}
+
+		if started {
+			// Show current status automatically.
 			fmt.Println()
 			statusCmd := exec.Command(linuxBinaryPath, "status")
 			statusCmd.Stdout = os.Stdout
@@ -239,7 +260,7 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Println("\nHelpful Commands:")
 			fmt.Println("  Logs:    journalctl -u breeze-agent -f")
 			fmt.Println("  Status:  sudo breeze-agent service status")
-			fmt.Println("  Restart: sudo breeze-agent service start")
+			fmt.Println("  Restart: sudo systemctl restart breeze-agent")
 		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
@@ -275,7 +296,10 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		return nil
+		// Reported last so the watchdog still gets bootstrapped, but reported:
+		// a silent exit 0 on a host whose agent is down is exactly how #5252
+		// went unnoticed until the device showed Offline.
+		return startErr
 	},
 }
 

@@ -97,6 +97,8 @@ func init() {
 	serviceCmd.AddCommand(serviceStatusCmd)
 	serviceInstallCmd.Flags().BoolVar(&withUserHelper, "with-user-helper", false, "Also install the per-user desktop helper LaunchAgent")
 	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	// A failed start returns an error from RunE; usage text would bury it.
+	serviceInstallCmd.SilenceUsage = true
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -120,7 +122,15 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		// Stop existing service before replacing binary (safe for upgrades).
+		//
+		// Whether it was RUNNING is sampled BEFORE the unload, because this
+		// command then decides whether to bootstrap it again — asking
+		// afterwards only reports the state this unload produced. That
+		// inversion is what stranded Linux hosts in #5252; macOS had the same
+		// shape (unload, never bootstrap).
+		wasRunning := false
 		if _, err := os.Stat(darwinPlistDst); err == nil {
+			wasRunning = isSystemServiceRunning()
 			if stopErr := exec.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
@@ -216,17 +226,32 @@ var serviceInstallCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Println()
-		fmt.Println("Breeze Agent service installed.")
-
-		// Show contextual next steps based on enrollment and service state.
+		// Start the daemon back up, so `service install` really is the upgrade
+		// path the docs describe (#5252). Runs after the breeze group and the
+		// helper LaunchAgents above: the agent inherits its group list at
+		// startup and opens its IPC socket immediately.
 		existingCfg, _ := config.Load(cfgFile)
 		enrolled := existingCfg != nil && existingCfg.AgentID != ""
-		running := isSystemServiceRunning()
+		plan := planServiceStart(wasRunning, enrolled)
+		started, startErr := applyLaunchdJob(
+			execCommandRunner, darwinLabel, darwinPlistDst, isLaunchdLoaded(darwinLabel), plan)
 
-		if enrolled && running {
-			// Already enrolled and running — nothing more to do.
-			fmt.Printf("\nAgent is enrolled and the service is running.\n")
+		fmt.Println()
+		switch {
+		case started:
+			fmt.Printf("Breeze Agent service installed and started (%s).\n", plan.Reason)
+		case startErr != nil:
+			fmt.Fprintf(os.Stderr,
+				"ERROR: the Breeze Agent daemon was stopped for this install and could NOT be started again: %v\n"+
+					"       This host is not being managed until it starts. Recover with:\n"+
+					"         sudo launchctl bootstrap system %s\n"+
+					"         tail -n 100 %s/agent.err\n",
+				startErr, darwinPlistDst, darwinLogDir)
+		default:
+			fmt.Println("Breeze Agent service installed (not started: " + plan.Reason + ").")
+		}
+
+		if started {
 			fmt.Printf("  Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		} else if enrolled {
 			fmt.Println()
@@ -262,7 +287,10 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		return nil
+		// Reported last so the watchdog still gets bootstrapped, but reported:
+		// a silent exit 0 on a host whose agent is down is exactly how #5252
+		// went unnoticed until the device showed Offline.
+		return startErr
 	},
 }
 

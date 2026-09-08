@@ -17,7 +17,17 @@ fi
 echo "Installing Breeze Agent..."
 
 # Stop existing service before replacing binary (safe for upgrades).
+#
+# Whether it was RUNNING is sampled BEFORE the stop: this script decides at the
+# end whether to start it again, and asking afterwards only ever reports the
+# state this stop produced. That inversion stranded a remote host in #5252 —
+# the installer stopped the agent, printed "Next steps: 1. Start", and left the
+# box offline with no management path back in.
+AGENT_WAS_RUNNING=0
 if [ -f "$SERVICE_DST" ]; then
+    if systemctl is-active --quiet breeze-agent; then
+        AGENT_WAS_RUNNING=1
+    fi
     if systemctl stop breeze-agent 2>&1; then
         echo "Stopped existing Breeze Agent service."
     else
@@ -80,8 +90,10 @@ fi
 # absent, else just restart" path silently skipped those edits, so an upgraded
 # host kept its stale watchdog unit and stayed one reboot away from a
 # 226/NAMESPACE wedge. `service install` is idempotent, so always calling it is
-# safe. It stops the service while writing the unit but does not start it, so we
-# (re)start explicitly afterward.
+# safe. Since #5252 `service install` restarts the unit itself, but this script
+# also runs against hosts where no NEW watchdog binary was staged above — in
+# which case the OLD binary's install still only enables — so the explicit
+# restart stays as the belt-and-braces path.
 if [ -f "/usr/local/bin/breeze-watchdog" ]; then
     echo "Registering watchdog service..."
     /usr/local/bin/breeze-watchdog service install
@@ -175,17 +187,37 @@ echo "Breeze Agent installed."
 echo ""
 
 # If the agent is already enrolled, skip the enrollment step in Next Steps.
+AGENT_ENROLLED=0
 if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yaml" 2>/dev/null; then
-    echo "Next steps:"
-    echo "  1. Start:   sudo systemctl start breeze-agent"
-    echo "  2. Status:  sudo systemctl status breeze-agent"
-    echo "  3. Logs:    journalctl -u breeze-agent -f"
-    echo "  4. User helper: systemctl --user enable breeze-agent-user (per-user)"
-else
-    echo "Next steps:"
-    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
-    echo "  2. Start:   sudo systemctl start breeze-agent"
-    echo "  3. Status:  sudo systemctl status breeze-agent"
-    echo "  4. Logs:    journalctl -u breeze-agent -f"
-    echo "  5. User helper: systemctl --user enable breeze-agent-user (per-user)"
+    AGENT_ENROLLED=1
 fi
+
+# Start the agent when it was running before this install, or when the host is
+# already enrolled. Deliberately AFTER the breeze group, /run/breeze and the
+# tmpfiles snippet above: the agent inherits its group list and opens its IPC
+# socket at startup. A fresh un-enrolled host is left stopped — there is
+# nothing for it to talk to yet.
+if [ "$AGENT_WAS_RUNNING" -eq 1 ] || [ "$AGENT_ENROLLED" -eq 1 ]; then
+    echo "Starting Breeze Agent service..."
+    if systemctl restart breeze-agent; then
+        echo "Breeze Agent service started."
+        echo ""
+        echo "Helpful commands:"
+        echo "  Status:  sudo systemctl status breeze-agent"
+        echo "  Logs:    journalctl -u breeze-agent -f"
+        echo "  User helper: systemctl --user enable breeze-agent-user (per-user)"
+        exit 0
+    fi
+    echo "ERROR: the Breeze Agent service was stopped for this install and could NOT be started again." >&2
+    echo "       This host is not being managed until it starts. Recover with:" >&2
+    echo "         sudo systemctl start breeze-agent" >&2
+    echo "         sudo journalctl -u breeze-agent -n 100 --no-pager" >&2
+    exit 1
+fi
+
+echo "Next steps:"
+echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
+echo "  2. Start:   sudo systemctl start breeze-agent"
+echo "  3. Status:  sudo systemctl status breeze-agent"
+echo "  4. Logs:    journalctl -u breeze-agent -f"
+echo "  5. User helper: systemctl --user enable breeze-agent-user (per-user)"

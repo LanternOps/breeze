@@ -23,10 +23,19 @@ type WatchdogConfig struct {
 	HeartbeatStaleThreshold time.Duration `mapstructure:"heartbeat_stale_threshold" yaml:"heartbeat_stale_threshold"`
 	MaxRecoveryAttempts     int           `mapstructure:"max_recovery_attempts" yaml:"max_recovery_attempts"`
 	RecoveryCooldown        time.Duration `mapstructure:"recovery_cooldown" yaml:"recovery_cooldown"`
-	StandbyTimeout          time.Duration `mapstructure:"standby_timeout" yaml:"standby_timeout"`
-	FailoverPollInterval    time.Duration `mapstructure:"failover_poll_interval" yaml:"failover_poll_interval"`
-	HealthJournalMaxSizeMB  int           `mapstructure:"health_journal_max_size_mb" yaml:"health_journal_max_size_mb"`
-	HealthJournalMaxFiles   int           `mapstructure:"health_journal_max_files" yaml:"health_journal_max_files"`
+	// StandbyTimeout is the ABSOLUTE cap on a standby. Since #5252 it is the
+	// ceiling only: a shutdown reason the agent itself sends is bounded by the
+	// much shorter StandbyGrace instead, so an ordinary stop no longer leaves
+	// a host unmanaged for half an hour.
+	StandbyTimeout time.Duration `mapstructure:"standby_timeout" yaml:"standby_timeout"`
+	// StandbyGrace is how long a recognized graceful shutdown (user_stop,
+	// update, config_reload) is tolerated before the watchdog treats the agent
+	// as stranded and restarts it. An agent-declared ExpectedDuration can
+	// raise it; StandbyTimeout caps it.
+	StandbyGrace           time.Duration `mapstructure:"standby_grace" yaml:"standby_grace"`
+	FailoverPollInterval   time.Duration `mapstructure:"failover_poll_interval" yaml:"failover_poll_interval"`
+	HealthJournalMaxSizeMB int           `mapstructure:"health_journal_max_size_mb" yaml:"health_journal_max_size_mb"`
+	HealthJournalMaxFiles  int           `mapstructure:"health_journal_max_files" yaml:"health_journal_max_files"`
 	// Auto-restart verification gate — set after Task 5 wires them.
 	RestartVerificationGrace   time.Duration `mapstructure:"restart_verification_grace" yaml:"restart_verification_grace"`
 	RestartVerificationTimeout time.Duration `mapstructure:"restart_verification_timeout" yaml:"restart_verification_timeout"`
@@ -346,13 +355,18 @@ func Default() *Config {
 		PolicyConfigStateProbes:    []PolicyConfigStateProbe{},
 
 		Watchdog: WatchdogConfig{
-			Enabled:                    true,
-			ProcessCheckInterval:       5 * time.Second,
-			IPCProbeInterval:           30 * time.Second,
-			HeartbeatStaleThreshold:    3 * time.Minute,
-			MaxRecoveryAttempts:        3,
-			RecoveryCooldown:           10 * time.Minute,
-			StandbyTimeout:             30 * time.Minute,
+			Enabled:                 true,
+			ProcessCheckInterval:    5 * time.Second,
+			IPCProbeInterval:        30 * time.Second,
+			HeartbeatStaleThreshold: 3 * time.Minute,
+			MaxRecoveryAttempts:     3,
+			RecoveryCooldown:        10 * time.Minute,
+			StandbyTimeout:          30 * time.Minute,
+			// Kept in lockstep with watchdog.DefaultStandbyGrace by
+			// TestStandbyGraceDefaultMatchesWatchdogPackage. Not imported:
+			// config is the more fundamental package and must not grow a
+			// dependency on the watchdog for one constant.
+			StandbyGrace:               2 * time.Minute,
 			FailoverPollInterval:       30 * time.Second,
 			HealthJournalMaxSizeMB:     10,
 			HealthJournalMaxFiles:      3,
