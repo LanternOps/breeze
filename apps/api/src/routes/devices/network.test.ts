@@ -483,12 +483,28 @@ function rigNetworkInsert(row: unknown) {
   return { values, returning };
 }
 
-/** Rigs the insert to reject with a Postgres error code (23505 / 23514). */
+/** Rigs the insert to reject with a Postgres error code (23505 / 23514 / 23503). */
 function rigNetworkInsertError(code: string) {
   const returning = vi.fn().mockRejectedValue({ code });
   const values = vi.fn().mockReturnValue({ returning });
   vi.mocked(db.insert).mockReturnValue({ values } as never);
   return { values, returning };
+}
+
+/**
+ * Rigs the `db.select(...).from(sites).where(...).limit(1)` site-in-org check
+ * that runs before every insert. `exists: true` stages one matching row;
+ * `false` stages an empty result (site not found, or belongs to a different
+ * org — the route can't tell them apart and shouldn't need to).
+ */
+function rigSiteInOrg(exists: boolean) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn().mockResolvedValue(exists ? [{ id: SITE_ID }] : []),
+      })),
+    })),
+  } as never);
 }
 
 const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -508,6 +524,7 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
   });
 
   it('creates an approved, manual, never-seen asset (201)', async () => {
+    rigSiteInOrg(true);
     const { values } = rigNetworkInsert({
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       orgId: ORG_ID,
@@ -610,6 +627,7 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
 
   it('allows a site-restricted technician inside their allowlist', async () => {
     allowedSiteIds = [SITE_ID];
+    rigSiteInOrg(true);
     rigNetworkInsert({
       id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       orgId: ORG_ID,
@@ -643,6 +661,7 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
   });
 
   it('409s on a duplicate IP in the same org (23505)', async () => {
+    rigSiteInOrg(true);
     rigNetworkInsertError('23505');
 
     const res = await app.request('/devices/network', {
@@ -659,6 +678,7 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
   });
 
   it('400s when the DB CHECK constraint rejects an identity-less row (23514)', async () => {
+    rigSiteInOrg(true);
     rigNetworkInsertError('23514');
 
     const res = await app.request('/devices/network', {
@@ -673,6 +693,7 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
   });
 
   it('creates an IP-less website asset from a url alone', async () => {
+    rigSiteInOrg(true);
     const { values } = rigNetworkInsert({
       id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       orgId: ORG_ID,
@@ -727,5 +748,49 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
     });
 
     expect(res.status).toBe(401);
+  });
+
+  // --- site-in-org validation (#5258 review) --------------------------------
+  // `discoveredAssets.siteId` has no composite FK to `sites(org_id, id)`, and
+  // an unrestricted (partner/system-scope) caller has no `allowedSiteIds` at
+  // all — resolveAssetScope alone performs ZERO site/org relationship check
+  // for that common case. Without this, a caller who can access org A could
+  // supply a real siteId that belongs to a completely different org B,
+  // writing a row with a corrupted org/site pairing that then flows through
+  // monitors, SNMP, tunnels and the partner inventory API.
+
+  it('400s when siteId exists but does not belong to orgId', async () => {
+    rigSiteInOrg(false);
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: OTHER_SITE_ID, label: 'x', ipAddress: '10.0.0.9',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/site/i);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('maps a foreign-key violation (23503) to 400, not a bare 500', async () => {
+    // Defence in depth for a TOCTOU race (org/site deleted between the
+    // site-in-org check above and the insert) — the site-in-org check
+    // handles the common case, this catches what slips past it.
+    rigSiteInOrg(true);
+    rigNetworkInsertError('23503');
+
+    const res = await app.request('/devices/network', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        orgId: ORG_ID, siteId: SITE_ID, label: 'x', ipAddress: '10.0.0.9',
+      }),
+    });
+
+    expect(res.status).toBe(400);
   });
 });

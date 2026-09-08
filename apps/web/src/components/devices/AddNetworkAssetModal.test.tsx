@@ -111,6 +111,32 @@ describe('AddNetworkAssetModal', () => {
     expect(screen.getByTestId('asset-submit')).toBeDisabled();
   });
 
+  // #5258 review — the error path had zero coverage: a regression that moved
+  // resetForm()/onClose() outside the try block, or left submit permanently
+  // disabled after a failure, would have shipped untested.
+  it('on a failed submit: shows the error, does not close or call onCreated, and re-enables submit', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ error: 'An asset with this IP already exists in this organization' }, false, 409),
+    );
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    render(<AddNetworkAssetModal isOpen onClose={onClose} onCreated={onCreated} />);
+    await waitForDialogFocus();
+
+    await userEvent.type(screen.getByTestId('asset-label'), 'dupe');
+    await userEvent.type(screen.getByTestId('asset-ip'), '10.4.4.4');
+    await userEvent.click(screen.getByTestId('asset-submit'));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('asset-submit')).not.toBeDisabled());
+
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // The form is NOT reset — the operator's input survives a failed submit.
+    expect((screen.getByTestId('asset-label') as HTMLInputElement).value).toBe('dupe');
+    expect(screen.getByText(/already exists/i)).toBeInTheDocument();
+  });
+
   it('does not post the org-scoped source field — it is server-assigned', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ id: 'a1' }));
     render(<AddNetworkAssetModal isOpen onClose={vi.fn()} onCreated={vi.fn()} />);

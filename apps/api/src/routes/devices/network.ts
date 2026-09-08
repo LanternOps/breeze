@@ -6,6 +6,7 @@ import {
   discoveredAssets,
   snmpDevices,
   networkMonitors,
+  sites,
 } from '../../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
@@ -350,6 +351,22 @@ networkRoutes.post(
       return c.json({ error: scopeError.error }, scopeError.status);
     }
 
+    // discoveredAssets.siteId has no composite FK to sites(org_id, id), and
+    // an unrestricted (partner/system-scope) caller has no allowedSiteIds at
+    // all — resolveAssetScope above performs ZERO site/org relationship
+    // check for that common case. Without this, a caller who can access
+    // orgId could supply a real siteId belonging to a completely different
+    // org, writing a row with a corrupted org/site pairing (mirrors the
+    // pattern in moveOrg.ts / groups.ts / provision.ts).
+    const [targetSite] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(and(eq(sites.id, body.siteId), eq(sites.orgId, body.orgId)))
+      .limit(1);
+    if (!targetSite) {
+      return c.json({ error: 'Site not found or does not belong to this organization' }, 400);
+    }
+
     try {
       const [row] = await db
         .insert(discoveredAssets)
@@ -385,6 +402,12 @@ networkRoutes.post(
       }
       if (code === '23514') {
         return c.json({ error: 'Provide at least one of: IP address, hostname, or URL' }, 400);
+      }
+      // Defence in depth for a TOCTOU race (org/site deleted between the
+      // site-in-org check above and this insert) — the check above handles
+      // the common case, this catches what slips past it.
+      if (code === '23503') {
+        return c.json({ error: 'Organization or site not found' }, 400);
       }
       throw err;
     }

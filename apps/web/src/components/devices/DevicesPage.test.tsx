@@ -2977,3 +2977,39 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
     await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
   });
 });
+
+// #5213 W02 — the header "Add" split menu. AddDeviceModal/AddNetworkAssetModal
+// are stubbed to `() => null` above, so this only exercises the menu's own
+// open/close/hash wiring, not the modals' internal behavior (covered by
+// AddDeviceModal.test.tsx / AddNetworkAssetModal.test.tsx respectively).
+describe('DevicesPage — header "Add" split menu (#5213)', () => {
+  beforeEach(() => {
+    window.location.hash = '';
+  });
+
+  it('opens the menu and selecting "Add network asset…" sets the hash and closes the menu', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    expect(screen.getByTestId('devices-page-add-menu')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-network-asset'));
+
+    expect(window.location.hash).toBe('#add-network-asset');
+    // The menu itself closes on selection — it is not the same UI as the modal.
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+  });
+
+  it('selecting "Install agent…" closes the menu without touching the hash', async () => {
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-trigger'));
+    fireEvent.click(screen.getByTestId('devices-page-add-menu-install-agent'));
+
+    expect(window.location.hash).toBe('');
+    expect(screen.queryByTestId('devices-page-add-menu')).toBeNull();
+  });
+});

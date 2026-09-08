@@ -125,7 +125,10 @@ export default function MonitoringPage() {
 
       <AddNetworkAssetModal
         isOpen={showAddNetworkAsset}
-        onClose={() => setShowAddNetworkAsset(false)}
+        onClose={() => {
+          window.location.hash = '';
+          setShowAddNetworkAsset(false);
+        }}
       />
     </div>
   );

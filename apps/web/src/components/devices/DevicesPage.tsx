@@ -2028,7 +2028,10 @@ export default function DevicesPage() {
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
       <AddNetworkAssetModal
         isOpen={showAddNetworkAsset}
-        onClose={() => setShowAddNetworkAsset(false)}
+        onClose={() => {
+          window.location.hash = '';
+          setShowAddNetworkAsset(false);
+        }}
         onCreated={() => { void refreshDevices(); }}
       />
 
