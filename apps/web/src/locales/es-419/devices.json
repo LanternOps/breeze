@@ -1884,9 +1884,6 @@
     "selectedOrganization": "la organización seleccionada",
     "subtitle": "Gestiona y monitoriza su flota.",
     "title": "Dispositivos",
-    "hiddenNetworkNotice_one": "1 dispositivo de red oculto — {{fields}} solo aplica a dispositivos con agente.",
-    "hiddenNetworkNotice_other": "{{count}} dispositivos de red ocultos — {{fields}} solo aplica a dispositivos con agente.",
-    "hiddenNetworkNotice": "{{count}} dispositivos de red ocultos — {{fields}} solo aplica a dispositivos con agente.",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
       "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",

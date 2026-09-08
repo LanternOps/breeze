@@ -1885,9 +1885,6 @@
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",
-    "hiddenNetworkNotice_one": "1 Netzwerkgerät ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
-    "hiddenNetworkNotice_other": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
-    "hiddenNetworkNotice": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",

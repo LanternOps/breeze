@@ -1888,9 +1888,6 @@
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
-    "hiddenNetworkNotice_one": "1 ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
-    "hiddenNetworkNotice_other": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
-    "hiddenNetworkNotice": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",

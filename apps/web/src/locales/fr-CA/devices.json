@@ -1884,9 +1884,6 @@
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
     "title": "Dispositifs",
-    "hiddenNetworkNotice_one": "1 appareil réseau masqué — {{fields}} s’applique uniquement aux appareils avec agent.",
-    "hiddenNetworkNotice_other": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
-    "hiddenNetworkNotice": "{{count}} appareils réseau masqués — {{fields}} s’applique uniquement aux appareils avec agent.",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",

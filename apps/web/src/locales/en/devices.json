@@ -1889,9 +1889,6 @@
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",
-    "hiddenNetworkNotice_one": "1 network device hidden — {{fields}} applies to agent devices only.",
-    "hiddenNetworkNotice_other": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
-    "hiddenNetworkNotice": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
