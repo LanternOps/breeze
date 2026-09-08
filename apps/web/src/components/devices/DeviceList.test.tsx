@@ -1628,6 +1628,73 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
   });
 });
 
+describe('DeviceList — manual asset bulk delete + row actions (#4622 W04)', () => {
+  const manualDevice = (extra: Partial<Device> = {}): Device => ({
+    ...baseDevice,
+    id: 'c1111111-1111-1111-1111-111111111111',
+    hostname: 'spare-laptop',
+    deviceClass: 'manual',
+    assetType: 'workstation',
+    status: 'unknown',
+    ...extra,
+  });
+
+  it('offers Edit and Delete (not View) on a manual row, wired to onSelect/onAction', () => {
+    const onSelect = vi.fn();
+    const onAction = vi.fn();
+    const device = manualDevice();
+    render(<DeviceList devices={[device]} onSelect={onSelect} onAction={onAction} />);
+
+    fireEvent.click(screen.getByTestId(`device-${device.id}-edit-manual`));
+    expect(onSelect).toHaveBeenCalledWith(device);
+
+    fireEvent.click(screen.getByTestId(`device-${device.id}-delete-manual`));
+    expect(onAction).toHaveBeenCalledWith('delete-manual', device);
+
+    expect(screen.queryByTestId(`device-${device.id}-open-network`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`device-${device.id}-actions-menu`)).not.toBeInTheDocument();
+  });
+
+  it('bulk-delete-manual is disabled with no manual row selected, enabled with one', () => {
+    const agentA = { ...baseDevice, id: 'a1111111-1111-1111-1111-111111111111' };
+    const manual = manualDevice();
+    render(<DeviceList devices={[agentA, manual]} onBulkAction={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    const menu = screen.getByTestId('bulk-actions-menu');
+    const deleteManualButton = within(menu).getByTestId('bulk-delete-manual');
+    // Mixed selection (1 agent + 1 manual): eligible for the manual-only
+    // action, and the "N of M eligible" suffix reports the split honestly.
+    expect(deleteManualButton).not.toBeDisabled();
+    expect(deleteManualButton.textContent).toMatch(/1 of 2/);
+  });
+
+  it('bulk-delete-manual stays disabled for an agent-only selection', () => {
+    const agentA = { ...baseDevice, id: 'a1111111-1111-1111-1111-111111111111' };
+    const agentB = { ...baseDevice, id: 'a2222222-2222-2222-2222-222222222222' };
+    render(<DeviceList devices={[agentA, agentB]} onBulkAction={vi.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    const menu = screen.getByTestId('bulk-actions-menu');
+    expect(within(menu).getByTestId('bulk-delete-manual')).toBeDisabled();
+  });
+
+  it('fires onBulkAction("delete-manual", ...) for a manual-only selection', () => {
+    const onBulkAction = vi.fn();
+    const manualA = manualDevice({ id: 'c1111111-1111-1111-1111-111111111111' });
+    const manualB = manualDevice({ id: 'c2222222-2222-2222-2222-222222222222', hostname: 'desk-phone' });
+    render(<DeviceList devices={[manualA, manualB]} onBulkAction={onBulkAction} />);
+
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    fireEvent.click(within(screen.getByTestId('bulk-actions-menu')).getByTestId('bulk-delete-manual'));
+
+    expect(onBulkAction).toHaveBeenCalledWith('delete-manual', [manualA, manualB]);
+  });
+});
+
 describe('classifyBulkSelection (#2787)', () => {
   it('reports removed only when EVERY selected device is removed', () => {
     expect(classifyBulkSelection(['decommissioned'])).toBe('removed');

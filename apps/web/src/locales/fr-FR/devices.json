@@ -1881,6 +1881,7 @@
       "actionFailed": "Échec de {{action}} sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
       "agentOnlyAction": "Cette action s’applique uniquement aux dispositifs agents. Les appareils réseau n’ont pas d’agent et ont été ignorés.",
+      "agentOnlyActionManual": "Cette action s’applique uniquement aux dispositifs agents. Les actifs manuels n’ont pas d’agent.",
       "alreadyPendingTail": "Déjà en attente de Tail",
       "bulkActionFailed": "Échec de l’action en masse",
       "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés.",

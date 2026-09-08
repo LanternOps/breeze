@@ -166,14 +166,21 @@ export default function ManualAssetModal({
     (async () => {
       try {
         const resp = await fetchWithAuth(`/orgs/organizations/${form.orgId}/contacts?limit=200`);
-        if (!resp.ok) return;
+        if (!resp.ok) {
+          // Best-effort, non-blocking field: the picker just stays empty
+          // rather than blocking the whole form. Logged (not silent) so a
+          // systemic auth/permission failure on this route is still
+          // debuggable instead of looking identical to "org has no contacts".
+          console.warn('[ManualAssetModal] failed to load org contacts:', resp.status);
+          return;
+        }
         const data = await resp.json();
         if (!cancelled) {
           setContacts(asList<ManualAssetContact>(data));
           setContactsLoadedForOrg(form.orgId);
         }
-      } catch {
-        // Best-effort: the assigned-contact picker just stays empty.
+      } catch (err) {
+        console.warn('[ManualAssetModal] failed to load org contacts:', err);
       }
     })();
     return () => {
@@ -211,8 +218,13 @@ export default function ManualAssetModal({
     };
     if (!isEdit) body.orgId = form.orgId;
 
+    // The mutation itself and its post-success side effects (onSaved/onClose)
+    // are deliberately NOT in the same try/catch: a throw from either side
+    // effect must never be re-labeled as "create/update failed" when the
+    // asset was in fact saved — runAction's own success toast already fired.
+    let result: { warnings?: { code: string; message: string }[] } | undefined;
     try {
-      const result = await runAction<{ warnings?: { code: string; message: string }[] }>({
+      result = await runAction<{ warnings?: { code: string; message: string }[] }>({
         request: () =>
           fetchWithAuth(isEdit ? `/devices/manual/${existing!.id}` : '/devices/manual', {
             method: isEdit ? 'PATCH' : 'POST',
@@ -223,22 +235,29 @@ export default function ManualAssetModal({
         onUnauthorized: handleSessionExpired,
         successMessage: isEdit ? t('manualAssetModal.toasts.updated') : t('manualAssetModal.toasts.created'),
       });
-      // Non-blocking: the create succeeded either way (spec — duplicate serial
-      // is a soft hint, never a rejection). Surfaced as its own toast so it
-      // doesn't get lost inside the success message.
-      const dup = result.warnings?.find((w) => w.code === 'DUPLICATE_SERIAL');
-      if (dup) {
-        setDuplicateWarning(dup.message);
-        showToast({ type: 'warning', message: dup.message });
-      }
-      onSaved();
-      if (!dup) onClose();
     } catch (err) {
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: isEdit ? t('manualAssetModal.errors.updateFailed') : t('manualAssetModal.errors.createFailed') });
       }
-    } finally {
       setSubmitting(false);
+      return;
+    }
+    setSubmitting(false);
+    // Non-blocking: the create succeeded either way (spec — duplicate serial
+    // is a soft hint, never a rejection). Surfaced as its own toast so it
+    // doesn't get lost inside the success message.
+    const dup = result.warnings?.find((w) => w.code === 'DUPLICATE_SERIAL');
+    if (dup) {
+      setDuplicateWarning(dup.message);
+      showToast({ type: 'warning', message: dup.message });
+    }
+    try {
+      onSaved();
+      if (!dup) onClose();
+    } catch (err) {
+      // The save genuinely succeeded — a bug in the caller's refresh/close
+      // handler must not read back as a failed save. Logged, not silent.
+      console.error('[ManualAssetModal] onSaved/onClose threw after a successful save', err);
     }
   };
 
@@ -257,12 +276,19 @@ export default function ManualAssetModal({
         onUnauthorized: handleSessionExpired,
         successMessage: t('manualAssetModal.toasts.linked'),
       });
-      onSaved();
-      onClose();
     } catch {
-      // runAction already toasted.
+      // runAction already toasted (or handled the 401 redirect).
+      return;
     } finally {
       setLinkBusy(false);
+    }
+    // The link genuinely succeeded — a throw here must not read back as a
+    // failed link (runAction's own catch above already handled that case).
+    try {
+      onSaved();
+      onClose();
+    } catch (err) {
+      console.error('[ManualAssetModal] onSaved/onClose threw after a successful link', err);
     }
   };
 
@@ -277,11 +303,16 @@ export default function ManualAssetModal({
         onUnauthorized: handleSessionExpired,
         successMessage: t('manualAssetModal.toasts.unlinked'),
       });
-      onSaved();
     } catch {
-      // runAction already toasted.
+      // runAction already toasted (or handled the 401 redirect).
+      return;
     } finally {
       setLinkBusy(false);
+    }
+    try {
+      onSaved();
+    } catch (err) {
+      console.error('[ManualAssetModal] onSaved threw after a successful unlink', err);
     }
   };
 

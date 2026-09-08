@@ -1882,6 +1882,7 @@
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
+      "agentOnlyActionManual": "Diese Aktion gilt nur für Agent-Geräte. Manuelle Assets haben keinen Agenten.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
       "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt.",

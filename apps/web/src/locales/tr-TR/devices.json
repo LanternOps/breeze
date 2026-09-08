@@ -1885,6 +1885,7 @@
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
+      "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
       "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",

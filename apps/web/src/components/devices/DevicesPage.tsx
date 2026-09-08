@@ -1069,23 +1069,27 @@ export default function DevicesPage() {
 
   const handleDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;
-    // Manual asset delete (#4622 W04) is manual-only and never reaches the
-    // network-only guard below (deviceClass is 'manual', not 'network'), so
-    // it falls straight through to the generic CONFIRM_REQUIRED_ACTIONS gate
-    // a few lines down — same confirm-then-run funnel as permanent-delete.
     // #4014: every branch of runDeviceAction below addresses an enrolled agent
     // through a `/devices/:id` endpoint, but a network row's `id` is a
     // `discovered_assets.id`, NOT a `devices.id` (#1322) — it matches no device
     // row and 404s. handleBulkAction has filtered these out since #1322.
     //
     // Stated as an invariant rather than as a claim about today's UI: this
-    // funnel must refuse network rows on its own, because nothing guarantees
-    // that every present and future caller hides the actions first. #4014 was
-    // exactly that failure — DeviceList hid them, DeviceCard did not, and the
-    // handler trusted its callers. A guard here cannot be re-opened by adding
-    // a third surface.
+    // funnel must refuse network AND manual rows on its own, because nothing
+    // guarantees that every present and future caller hides the actions
+    // first. #4014 was exactly that failure — DeviceList hid them, DeviceCard
+    // did not, and the handler trusted its callers. A guard here cannot be
+    // re-opened by adding a third surface — which is precisely what adding
+    // the manual class did, so the guard is widened alongside it. A manual
+    // asset's `id` is a `manual_assets.id`, same foreign-id problem as
+    // network. `delete-manual` is the one manual-eligible action and is
+    // carved out explicitly rather than by omission.
     if ((device.deviceClass ?? 'agent') === 'network') {
       showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+      return;
+    }
+    if ((device.deviceClass ?? 'agent') === 'manual' && action !== 'delete-manual') {
+      showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyActionManual') });
       return;
     }
     if (CONFIRM_REQUIRED_ACTIONS.has(action)) {
@@ -1922,7 +1926,11 @@ export default function DevicesPage() {
             }
             failed.push(device.hostname || device.id);
           }
-        } catch {
+        } catch (err) {
+          // Logged (not silent) — MFA detection above only inspects the
+          // response shape, so a network failure or a non-JSON error body
+          // would otherwise be invisible beyond "one of N failed".
+          console.warn(`[DevicesPage] delete-manual failed for ${device.id}:`, err);
           failed.push(device.hostname || device.id);
         }
       }
@@ -1943,6 +1951,12 @@ export default function DevicesPage() {
         });
       }
       await refreshDevices();
+    } catch (err) {
+      // Mirrors runBulkAction/runBulkPurge/runBulkRemove above: anything that
+      // throws AFTER the per-item loop (t(), summarizeFailedDevices(),
+      // refreshDevices()) must still surface a toast, or a hard, no-undo
+      // delete of several assets reports nothing at all to the operator.
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('devicesPage.toasts.bulkActionFailed', { action: 'delete-manual' }) });
     } finally {
       setActionInProgress(false);
     }

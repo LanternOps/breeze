@@ -1886,6 +1886,7 @@
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
+      "agentOnlyActionManual": "This action applies to agent devices only. Manual assets have no agent.",
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",
       "bulkAllDecommissioned": "All {{total}} selected device(s) are already removed.",
