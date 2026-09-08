@@ -13,7 +13,7 @@ import {
   agentLogs,
   onedriveDeviceState,
 } from '../../db/schema';
-import type { BatteryStatus } from '@breeze/shared';
+import type { BatteryStatus, DesktopAccessState } from '@breeze/shared';
 import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { heartbeatSchema } from './schemas';
@@ -239,6 +239,30 @@ export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
 /** Normalize the only PAM lifetime protocol version implemented here. */
 export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
   return value === 2 ? 2 : 0;
+}
+
+// #5250 — the agent recomputes `checkedAt` (and, on macOS/Linux, the whole
+// DesktopAccessState) fresh on EVERY heartbeat regardless of whether access
+// actually changed (agent/internal/heartbeat/desktop_access_{darwin,linux}.go
+// call time.Now().UTC() unconditionally). A raw JSON.stringify diff against
+// the stored value would therefore read as "changed" on essentially every
+// heartbeat for every mac/Linux device, defeating the point of a
+// change-gated publish. Compare only the fields that are actually
+// user-visible / decide Connect Desktop availability, ignoring the
+// timestamp.
+export function desktopAccessMeaningfullyChanged(
+  before: DesktopAccessState | null | undefined,
+  after: DesktopAccessState | null | undefined,
+): boolean {
+  if (!before && !after) return false;
+  if (!before || !after) return true;
+  return (
+    before.mode !== after.mode ||
+    before.loginUiReachable !== after.loginUiReachable ||
+    before.virtualDisplayReady !== after.virtualDisplayReady ||
+    (before.reason ?? null) !== (after.reason ?? null) ||
+    (before.remoteDesktopPermission ?? null) !== (after.remoteDesktopPermission ?? null)
+  );
 }
 
 export const heartbeatRoutes = new Hono();
@@ -1128,6 +1152,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }, 'heartbeat', { siteId: device.siteId }).catch(err => {
       console.error('[Heartbeat] Failed to publish device.updated:', err);
       captureException(err);
+    });
+  }
+
+  // #5250 — publish event when desktopAccess changes so pages holding the
+  // socket open (Remote Tools' Connect Desktop button) pick up a helper
+  // recovery / drop without requiring a remount. Mirrors the agentVersion
+  // publish above; guarded on deviceUpdates.desktopAccess (only set when the
+  // agent actually reported the field) diffed against the pre-update
+  // snapshot with desktopAccessMeaningfullyChanged — a raw JSON.stringify
+  // diff (as the state-change audit above uses) would fire on every
+  // heartbeat because `checkedAt` is refreshed unconditionally by the agent.
+  //
+  // `deviceUpdates` is a loosely-typed `Record<string, unknown>`, so TS
+  // narrows the `!== undefined` check to `{} | null` rather than the real
+  // shape — reassert the type explicitly. Safe: this field is only ever
+  // assigned from a truthy `data.desktopAccess` (a `DesktopAccessState`) above.
+  const reportedDesktopAccess = deviceUpdates.desktopAccess as DesktopAccessState | undefined;
+  if (
+    reportedDesktopAccess !== undefined &&
+    desktopAccessMeaningfullyChanged(device.desktopAccess, reportedDesktopAccess)
+  ) {
+    publishEvent('device.updated', device.orgId, {
+      deviceId: device.id,
+      fields: ['desktopAccess'],
+      desktopAccess: reportedDesktopAccess,
+    }, 'heartbeat', { siteId: device.siteId }).catch(err => {
+      console.error('[Heartbeat] Failed to publish device.updated (desktopAccess):', {
+        deviceId: device.id,
+        orgId: device.orgId,
+        err,
+      });
+      captureException(err, undefined, { field: 'desktopAccess', deviceId: device.id, orgId: device.orgId });
     });
   }
 

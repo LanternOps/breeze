@@ -12,11 +12,13 @@ import {
   Loader2,
   ShieldOff
 } from 'lucide-react';
+import * as Sentry from '@sentry/astro';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { useHashTab } from '@/lib/useHashState';
+import { useEventStream } from '@/hooks/useEventStream';
 
 // Import actual components
 import ProcessManager, { type Process, type ProcessStatus } from './ProcessManager';
@@ -486,34 +488,99 @@ export default function RemoteToolsPage({
     setResolvedDeviceOs(normalizeDeviceOs(deviceOs));
   }, [deviceOs]);
 
+  // #5250 — pulled out of the mount-only effect below so it can also be
+  // invoked from the live-update paths (device.updated event, tab
+  // visibility regain) without duplicating the fetch/parse logic. A ref
+  // tracks mount state across every caller, not just the initial effect.
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-    const fetchDevice = async () => {
-      try {
-        const response = await fetchWithAuth(`/devices/${deviceId}`);
-        if (!response.ok) {
-          console.error(`[RemoteToolsPage] Failed to load device info: HTTP ${response.status}`);
-          return;
-        }
-        const data: DeviceApiResponse = await response.json();
-        if (!mounted) return;
-        setResolvedDeviceName(data.displayName || data.hostname || deviceName);
-        setResolvedDeviceOs(normalizeDeviceOs(data.osType));
-        setIsHeadless(data.isHeadless === true);
-        setDesktopAccess(data.desktopAccess ?? null);
-        setRemoteAccessPolicy(data.remoteAccessPolicy ?? null);
-        setHelperLifecycleMode(data.helperLifecycleMode ?? null);
-      } catch (error) {
-        console.error('Failed to load device info:', error);
+  const fetchDevice = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth(`/devices/${deviceId}`);
+      if (!response.ok) {
+        console.error(`[RemoteToolsPage] Failed to load device info: HTTP ${response.status}`);
+        // #5250 — this fetch is now a load-bearing live-update path (the
+        // desktopAccess event's "value not in payload" fallback, and the
+        // visibility-regain refetch below), not just a one-shot mount call.
+        // A silent failure here reproduces the exact staleness this fix
+        // closes, with nothing in telemetry to show it happened.
+        Sentry.captureMessage('RemoteToolsPage failed to refresh device info', {
+          level: 'warning',
+          extra: { deviceId, status: response.status },
+        });
+        return;
+      }
+      const data: DeviceApiResponse = await response.json();
+      if (!mountedRef.current) return;
+      setResolvedDeviceName(data.displayName || data.hostname || deviceName);
+      setResolvedDeviceOs(normalizeDeviceOs(data.osType));
+      setIsHeadless(data.isHeadless === true);
+      setDesktopAccess(data.desktopAccess ?? null);
+      setRemoteAccessPolicy(data.remoteAccessPolicy ?? null);
+      setHelperLifecycleMode(data.helperLifecycleMode ?? null);
+    } catch (error) {
+      console.error('Failed to load device info:', error);
+      Sentry.captureException(error, { extra: { deviceId } });
+    }
+  }, [deviceId, deviceName]);
+
+  useEffect(() => {
+    fetchDevice();
+  }, [fetchDevice]);
+
+  // #5250 — Remote Tools previously only ever fetched device access state
+  // once on mount, so a helper recovering (or dropping) while this page
+  // stayed open left Connect Desktop stuck on its stale gray/lit state until
+  // the operator navigated away and back. Two live-update paths, same as the
+  // Overview page's device.updated subscription:
+  //  1. The heartbeat now publishes `device.updated` with
+  //     `fields: ['desktopAccess']` when the reported value changes
+  //     (apps/api/src/routes/agents/heartbeat.ts) — apply it directly rather
+  //     than round-tripping through another fetch.
+  //  2. A tab regaining visibility (operator switches back to this browser
+  //     tab/window) refetches once, covering the case where the socket was
+  //     disconnected while backgrounded.
+  const handleDeviceUpdatedEvent = useCallback(
+    (event: { type: string; payload: Record<string, unknown> }) => {
+      if (event.type !== 'device.updated') return;
+      if (event.payload.deviceId !== deviceId) return;
+      const fields = event.payload.fields as string[] | undefined;
+      if (!fields?.includes('desktopAccess')) return;
+      const nextDesktopAccess = event.payload.desktopAccess as DesktopAccessState | null | undefined;
+      if (nextDesktopAccess !== undefined) {
+        setDesktopAccess(nextDesktopAccess);
+      } else {
+        // Payload didn't carry the value (older API build) — fall back to a
+        // full refetch so we still pick up the change.
+        fetchDevice();
+      }
+    },
+    [deviceId, fetchDevice],
+  );
+
+  const { subscribe } = useEventStream({ onEvent: handleDeviceUpdatedEvent });
+
+  useEffect(() => {
+    subscribe(['device.updated']);
+  }, [subscribe]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchDevice();
       }
     };
-
-    fetchDevice();
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
-      mounted = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [deviceId, deviceName]);
+  }, [fetchDevice]);
 
   // Cleanup restart polling on unmount
   useEffect(() => {
