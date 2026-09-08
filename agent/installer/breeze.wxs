@@ -348,9 +348,11 @@
       Return="ignore" />
 
     <!-- Set SCM failure-action recovery on both services after they're
-         installed. Mirrors agent/cmd/breeze-agent/service_cmd_windows.go:72-79
-         and agent/cmd/breeze-watchdog/service_cmd_windows.go:63-67 (5s/10s/30s
-         restart escalation with 24-hour counter reset).
+         installed. Mirrors scmService.SetRecoveryActions in
+         agent/internal/winsvcinstall/scm_windows.go, which is what both
+         `breeze-agent.exe service install` and `breeze-watchdog.exe service
+         install` now apply (5s/10s/30s restart escalation with 24-hour counter
+         reset).
 
          Without this, MSI-installed services have no SCM-driven auto-restart;
          only `breeze-agent.exe service install` (the manual subcommand)
