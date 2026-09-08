@@ -1,6 +1,7 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
+import { pgErrorCode } from '../utils/pgErrors';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
@@ -589,6 +590,29 @@ const FILTER_QUERY_TIMEOUT_MS = 500;
 type FilterQueryTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /**
+ * The bounded `statement_timeout` above cancelled the filter query (SQLSTATE
+ * 57014). That is the guard working as designed — the filter is valid, it is
+ * just too expensive — so callers translate this into a 4xx telling the user
+ * to narrow it, never the 500 a raw `PostgresError` used to produce (#5181 /
+ * BREEZE-2C). Any other SQLSTATE propagates untouched and keeps its 500.
+ */
+export class FilterQueryTimeoutError extends Error {
+  /**
+   * NOT named `code`. `pgErrorCode` (utils/pgErrors.ts) duck-types any error
+   * with a string `.code`, checking the OUTER object before walking `.cause` —
+   * so a `code` field here would shadow the real SQLSTATE sitting on the cause
+   * and make `sentry.ts` tag the event `pg_code: 'filter_query_timeout'`
+   * instead of `'57014'`, defeating the SQLSTATE grouping that tag exists for.
+   * Any error class that wraps a Postgres error as its cause has to avoid the
+   * name.
+   */
+  readonly errorCode = 'filter_query_timeout';
+  constructor(options?: { cause?: unknown }) {
+    super('Filter query exceeded its time budget', options);
+  }
+}
+
+/**
  * Run a filter query under a bounded statement_timeout. Uses `db.transaction` so
  * the timeout applies whether the caller is inside the request's RLS transaction
  * (a SAVEPOINT that inherits the tenant GUCs) or on the bare connection pool (the
@@ -620,6 +644,24 @@ async function withFilterStatementTimeout<T>(
       // rejects all commands after a statement error until that savepoint is
       // rolled back, including the restoration in `finally` below.
       return await tx.transaction((queryTx) => run(queryTx));
+    } catch (error) {
+      // Anything that is not a cancellation — a bad column, a lock error, a
+      // dropped connection — is a real fault and keeps its existing 500 path.
+      //
+      // 57014 is `query_canceled`, and this function's own 500ms
+      // `statement_timeout` is NOT its only source: `pg_cancel_backend()` and a
+      // hot-standby recovery conflict raise it too. Discriminating further
+      // would mean matching the driver's message text, which is localized by
+      // `lc_messages` and so would silently stop matching on a differently
+      // configured deployment — worse than the imprecision. The imprecision is
+      // bounded and acceptable here: the window is 500ms wide, the caller's
+      // worst case is being told to narrow a filter that was actually
+      // cancelled by an operator, and the event code's registry entry records
+      // this caveat so triage does not read the warning as proof of a slow
+      // filter. What it must never do is silently swallow a genuine fault, and
+      // it does not — every other SQLSTATE still propagates untouched.
+      if (pgErrorCode(error) === '57014') throw new FilterQueryTimeoutError({ cause: error });
+      throw error;
     } finally {
       await tx.execute(
         sql`select set_config('statement_timeout', ${previousTimeout}, true)`

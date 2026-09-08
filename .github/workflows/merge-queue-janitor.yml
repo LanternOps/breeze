@@ -1,0 +1,47 @@
+name: Merge Queue Janitor
+
+# When the merge queue rebuilds (a bypass push to main, a dequeued entry ahead),
+# GitHub deletes the temporary `gh-readonly-queue/main/pr-N-<sha>` ref but does
+# NOT cancel the workflow runs that were started for it. Observed 2026-09-07:
+# 18 superseded merge_group runs sat in the runner queue ahead of the 4 live
+# ones and starved them. This job cancels any queued/in-progress merge_group
+# run whose ref no longer exists. Cheap: one API-only job every 10 minutes.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: merge-queue-janitor
+  cancel-in-progress: false
+
+jobs:
+  cancel-superseded:
+    name: Cancel superseded merge-group runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel merge_group runs whose queue ref is gone
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cancelled=0
+          for status in queued in_progress; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=merge_group&status=${status}&per_page=100" \
+              --jq '.workflow_runs[] | "\(.id) \(.head_branch)"' |
+            while read -r id ref; do
+              [ -n "$ref" ] || continue
+              if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ref}" >/dev/null 2>&1; then
+                continue
+              fi
+              echo "cancelling run ${id}: ref ${ref} no longer exists"
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null && cancelled=$((cancelled+1)) || true
+            done
+          done
+          echo "done"

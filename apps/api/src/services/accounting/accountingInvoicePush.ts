@@ -62,7 +62,7 @@ import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, n
 import { getAccountingProvider } from './providerRegistry';
 import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
-import { qboFaultOf, qboFaultSuffix } from './quickbooksFault';
+import { isQboPaymentLinkedRefusal, qboFaultOf, qboFaultSuffix } from './quickbooksFault';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   INVOICE_REMOTE_DELETED_ERROR,
@@ -100,6 +100,14 @@ export type AccountingInvoicePushErrorCode =
   // a push is mid-flight. Deliberately NOT in the worker's TERMINAL_CODES:
   // BullMQ must retry with backoff until the push records its remote id.
   | 'sync_in_progress'
+  // QuickBooks refused the void because a Payment is applied to the invoice
+  // THERE (#5180). A business rule, not an outage: every retry gets the same
+  // answer, so this must not be reported as `quickbooks_error` — that code is
+  // paired with 502 and read as "safe to retry", and the five-attempt ladder
+  // burned five Sentry alerts on it in production. Terminal in the worker; the
+  // mapping row carries a message naming the fix (unapply the payment in
+  // QuickBooks, then void again).
+  | 'void_blocked_by_payments'
   | 'quickbooks_error' | 'record_failed'; // 502s; record_failed = remote ok, local persist failed (never retry)
 
 export class AccountingInvoicePushError extends Error {
@@ -368,6 +376,22 @@ function providerStatusOf(err: unknown): number | undefined {
 function sanitizeInvoiceSyncErrorMessage(err: unknown): string {
   const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
   return `QuickBooks rejected the invoice sync${suffix}`;
+}
+
+/**
+ * The operator-visible `last_error` for a void QuickBooks refuses because the
+ * invoice is settled by a Payment there (#5180).
+ *
+ * Names the remedy, because the previous message ("QuickBooks rejected the
+ * invoice sync (HTTP 400: Business Validation Error)") left an operator with a
+ * mapping card that said only that something was rejected, five times. Carries
+ * the same sanitized fault suffix as its sibling — the fault CLASS, never
+ * Intuit's `Detail`.
+ */
+function voidBlockedByPaymentsMessage(err: unknown): string {
+  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
+  return 'QuickBooks will not void this invoice because a payment is applied to it there'
+    + ` — remove or unapply that payment in QuickBooks, then void the invoice again${suffix}`;
 }
 
 /** The provider's status and body to the SERVER LOG only — the one place the
@@ -986,7 +1010,14 @@ export async function voidInvoiceInAccounting(
   try {
     voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
-    const message = sanitizeInvoiceSyncErrorMessage(err);
+    // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
+    // never allow this". A payment applied to the invoice in QuickBooks makes
+    // the void permanently impossible until an operator removes it there, so
+    // the message names that action instead of the generic sync failure.
+    const blockedByPayments = isQboPaymentLinkedRefusal(err);
+    const message = blockedByPayments
+      ? voidBlockedByPaymentsMessage(err)
+      : sanitizeInvoiceSyncErrorMessage(err);
     logProviderFault('voidInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingInvoicePush',
@@ -996,6 +1027,7 @@ export async function voidInvoiceInAccounting(
     });
     // Own short context so the marker COMMITS before the throw below.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
+    if (blockedByPayments) throw new AccountingInvoicePushError('void_blocked_by_payments', 409, message);
     throw new AccountingInvoicePushError('quickbooks_error', 502, message);
   }
   // Success: sync_status/last_error are left exactly as they were (still

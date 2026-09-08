@@ -807,6 +807,7 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
+export * from './aiOperator';
 export * from './orgNarrativeReport';
 export * from './ticketTriage';
 export * from './aiAgentImpact';

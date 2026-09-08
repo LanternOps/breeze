@@ -177,6 +177,35 @@ export async function propagateTimedOutDeviceCommand(params: {
     });
   }
 
+  // #5128 W3 — patch installs. A queued install whose delivery deadline passed
+  // (or whose execution clock ran out) has to release the device from the patch
+  // job's counters through the shared finalizer, or the job never terminalises
+  // and its `queued` rows sit there forever: reapStalePatchJobResults only
+  // selects `pending`/`running`, deliberately, because the DELIVERY clock owns
+  // a queued row and this is where that clock reports.
+  // Cheap local discriminator so the dynamic import below only happens for a
+  // command that actually belongs to a patch job (the finalizer re-checks).
+  const carriesPatchJobId =
+    typeof payload?.patchJobId === 'string' && payload.patchJobId.trim().length > 0;
+  if (carriesPatchJobId) {
+    try {
+      // Dynamic, like the drExecution reconcile below: `patchJobFinalizer`
+      // registers its claim-time hold with `commandClaimEligibility`, which this
+      // module already reaches through `commandQueue`. A static edge would close
+      // that into an import cycle.
+      const { finalizePatchDeviceForCommand } = await import('../services/patchJobFinalizer');
+      await finalizePatchDeviceForCommand({
+        commandId,
+        payload,
+        terminal: { kind: params.kind ?? 'timeout', message: errorMsg },
+        completedAt,
+      });
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to finalize patch device for command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
   // Software deployment results, keyed on the owning command row.
   await db
     .update(deploymentResults)

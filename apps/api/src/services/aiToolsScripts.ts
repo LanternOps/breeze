@@ -96,7 +96,10 @@ async function verifyDeviceAccess(
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) {
     return { error: 'Device not found or access denied' };
   }
-  if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
+  if (requireOnline && device.status !== 'online')
+    return {
+      error: `Device ${device.hostname} is not online (status: ${device.status}). This tool needs a live connection; to run when the device reconnects use the Run Script / deployment tools instead.`,
+    };
   return { device };
 }
 
@@ -484,7 +487,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 // it always did.
                 runAs: runContext.data.runAs,
                 targetSessionId: runContext.data.targetSessionId,
-                requireOnline: true,
+                // #5128 W4 — the AI run_script tool answers synchronously and
+                // has no way to surface a later result, so it keeps the hard
+                // offline rejection the `requireOnline` alias used to give it.
+                // W5 softens the error TEXT, not the behaviour.
+                offlinePolicy: { kind: 'reject' },
                 variableScope,
               });
             })

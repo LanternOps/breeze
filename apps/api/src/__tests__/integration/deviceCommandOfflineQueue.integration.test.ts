@@ -10,7 +10,12 @@ import { withSystemDbAccessContext } from '../../db';
 import {
   deploymentResults,
   deviceCommands,
+  devicePatches,
   devices,
+  patchApprovals,
+  patchJobResults,
+  patchJobs,
+  patches,
   scriptExecutionBatches,
   scriptExecutions,
   scripts,
@@ -23,7 +28,9 @@ import {
   reapStaleDeviceCommands,
   reapStaleScriptExecutions,
 } from '../../jobs/staleCommandReaper';
+import { __testOnly as patchExecutorTestOnly } from '../../jobs/patchJobExecutor';
 import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
+import { commandResultHandlers } from '../../services/commandResultHandlers';
 import { commandsRoutes } from '../../routes/devices/commands';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
@@ -855,4 +862,291 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
     expect(batchTwice?.devicesFailed).toBe(1);
   });
 
+});
+
+/**
+ * #5128 W3 — the patch half of the offline queue, against real Postgres.
+ *
+ * These are the parts a mocked-db test cannot decide: whether the `queued`
+ * enum value exists, whether the counters actually move in the database, and
+ * whether the job's completion guard really keeps a job open while a device is
+ * still waiting to reconnect.
+ */
+describe('patch installs for offline devices — real PostgreSQL (#5128 W3)', () => {
+  let env: Awaited<ReturnType<typeof setupTestEnvironment>>;
+
+  beforeEach(async () => {
+    env = await setupTestEnvironment({ scope: 'organization' });
+    process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED = 'true';
+  });
+
+  async function makePatch(requiresReboot: boolean) {
+    const [patch] = await getTestDb()
+      .insert(patches)
+      .values({
+        source: 'microsoft',
+        externalId: `KB${randomUUID().slice(0, 8)}`,
+        title: 'W3 offline queue patch',
+        requiresReboot,
+      })
+      .returning();
+    if (!patch) throw new Error('patch fixture insert failed');
+    return patch;
+  }
+
+  async function makeJob(deviceId: string) {
+    const [job] = await getTestDb()
+      .insert(patchJobs)
+      .values({
+        orgId: env.organization.id,
+        name: 'W3 offline queue job',
+        status: 'running',
+        patches: { ringId: null, autoApprove: {} },
+        targets: {
+          deviceIds: [deviceId],
+          deployment: { rebootPolicy: 'never', offlineBehavior: 'queue' },
+          scheduleNextOccurrenceAt: new Date(Date.now() + 6 * HOUR_MS).toISOString(),
+        },
+        devicesTotal: 1,
+        devicesPending: 1,
+      })
+      .returning();
+    if (!job) throw new Error('patch job fixture insert failed');
+    return job;
+  }
+
+  async function jobRow(jobId: string) {
+    const [row] = await getTestDb().select().from(patchJobs).where(eq(patchJobs.id, jobId)).limit(1);
+    return row;
+  }
+
+  async function resultRows(jobId: string) {
+    return getTestDb()
+      .select()
+      .from(patchJobResults)
+      .where(eq(patchJobResults.jobId, jobId));
+  }
+
+  /**
+   * Approves the patch for the device's partner and records it as pending on the
+   * device, which is what `resolveApprovedPatchesForDevice` reads.
+   */
+  async function approveForDevice(deviceId: string, patchId: string) {
+    await getTestDb().insert(devicePatches).values({
+      deviceId,
+      patchId,
+      orgId: env.organization.id,
+      status: 'pending',
+    });
+    await getTestDb().insert(patchApprovals).values({
+      partnerId: env.partner.id,
+      patchId,
+      status: 'approved',
+      approvedAt: new Date(),
+    });
+  }
+
+  it('leaves an offline device queued and the job running', async () => {
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const patch = await makePatch(false);
+    const job = await makeJob(device.id);
+    await approveForDevice(device.id, patch.id);
+
+    const outcome = (await asSystem(() =>
+      patchExecutorTestOnly.processExecuteDevice({
+        type: 'execute-patch-job-device',
+        patchJobId: job.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+      }),
+    )) as { kind?: string; commandId?: string };
+
+    // processExecuteDevice returns the discriminated union from
+    // prepareDeviceExecution — the queued arm is `kind: 'queued'`.
+    expect(outcome.kind).toBe('queued');
+    expect(outcome.commandId).toBeTruthy();
+
+    // The install is a real, persisted, deliverable row — not a skip.
+    const [command] = await getTestDb()
+      .select()
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, device.id), eq(deviceCommands.type, 'install_patches')))
+      .limit(1);
+    expect(command?.status).toBe('pending');
+    expect(command?.deliverBy).toBeInstanceOf(Date);
+    // min(7d standard TTL, ~6h to the next occurrence) — the occurrence wins.
+    expect(command!.deliverBy!.getTime()).toBeLessThan(Date.now() + DAY_MS);
+    expect((command?.payload as { patchJobId?: string })?.patchJobId).toBe(job.id);
+
+    const rows = await resultRows(job.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('queued');
+
+    const after = await jobRow(job.id);
+    expect(after?.devicesPending).toBe(0);
+    expect(after?.devicesQueued).toBe(1);
+    // The whole point of OD-9: unfinished patching is never reported as done.
+    expect(after?.status).toBe('running');
+  });
+
+  it("records an offline device as skipped when the policy says 'skip'", async () => {
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const patch = await makePatch(false);
+    const job = await makeJob(device.id);
+    await getTestDb()
+      .update(patchJobs)
+      .set({
+        targets: {
+          deviceIds: [device.id],
+          deployment: { rebootPolicy: 'never', offlineBehavior: 'skip' },
+        },
+      })
+      .where(eq(patchJobs.id, job.id));
+    await approveForDevice(device.id, patch.id);
+
+    await asSystem(() =>
+      patchExecutorTestOnly.processExecuteDevice({
+        type: 'execute-patch-job-device',
+        patchJobId: job.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+      }),
+    );
+
+    expect(await countCommandsFor(device.id)).toBe(0);
+    const rows = await resultRows(job.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('skipped');
+    expect(rows[0]?.errorMessage).toBe('device_offline');
+
+    const after = await jobRow(job.id);
+    expect(after?.devicesQueued).toBe(0);
+    expect(after?.status).toBe('completed');
+  });
+
+  it('finalises the device and completes the job when the agent result finally arrives', async () => {
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const patch = await makePatch(false);
+    const job = await makeJob(device.id);
+    await approveForDevice(device.id, patch.id);
+
+    const outcome = (await asSystem(() =>
+      patchExecutorTestOnly.processExecuteDevice({
+        type: 'execute-patch-job-device',
+        patchJobId: job.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+      }),
+    )) as { kind?: string; commandId?: string };
+    const commandId = outcome.commandId!;
+
+    // The device reconnects days later and reports through the shared registry —
+    // the same entry both transports dispatch on.
+    const handler = commandResultHandlers.install_patches;
+    expect(handler).toBeDefined();
+    const command = (await commandRow(commandId))!;
+    await asSystem(() =>
+      handler!({
+        agentId: device.agentId!,
+        command,
+        commandId,
+        result: { status: 'completed', exitCode: 0 } as never,
+        resolvedDeviceId: device.id,
+        stdout: JSON.stringify({
+          success: true,
+          installedCount: 1,
+          failedCount: 0,
+          rebootRequired: false,
+          results: [{ id: patch.id, externalId: patch.externalId, status: 'installed' }],
+        }),
+      }),
+    );
+
+    const rows = await resultRows(job.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('completed');
+
+    const after = await jobRow(job.id);
+    expect(after?.devicesQueued).toBe(0);
+    expect(after?.devicesCompleted).toBe(1);
+    expect(after?.status).toBe('completed');
+    expect(after?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('does not double-count when a second result arrives for the same device', async () => {
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const patch = await makePatch(false);
+    const job = await makeJob(device.id);
+    await approveForDevice(device.id, patch.id);
+
+    const outcome = (await asSystem(() =>
+      patchExecutorTestOnly.processExecuteDevice({
+        type: 'execute-patch-job-device',
+        patchJobId: job.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+      }),
+    )) as { commandId?: string };
+    const commandId = outcome.commandId!;
+    const command = (await commandRow(commandId))!;
+
+    const send = () =>
+      asSystem(() =>
+        commandResultHandlers.install_patches!({
+          agentId: device.agentId!,
+          command,
+          commandId,
+          result: { status: 'completed', exitCode: 0 } as never,
+          resolvedDeviceId: device.id,
+          stdout: JSON.stringify({
+            success: true,
+            installedCount: 1,
+            failedCount: 0,
+            rebootRequired: false,
+            results: [{ id: patch.id, externalId: patch.externalId, status: 'installed' }],
+          }),
+        }),
+      );
+
+    await send();
+    await send();
+
+    const after = await jobRow(job.id);
+    // One device, one increment. A second decrement would drive devicesQueued
+    // negative and strand the job.
+    expect(after?.devicesCompleted).toBe(1);
+    expect(after?.devicesQueued).toBe(0);
+    expect(after?.devicesPending).toBe(0);
+  });
+
+  it('fails a queued device whose delivery deadline passes, through the reaper', async () => {
+    const device = await makeDevice(env.organization.id, env.site.id, 'offline');
+    const patch = await makePatch(false);
+    const job = await makeJob(device.id);
+    await approveForDevice(device.id, patch.id);
+
+    const outcome = (await asSystem(() =>
+      patchExecutorTestOnly.processExecuteDevice({
+        type: 'execute-patch-job-device',
+        patchJobId: job.id,
+        deviceId: device.id,
+        orgId: env.organization.id,
+      }),
+    )) as { commandId?: string };
+
+    // Pull the delivery deadline into the past; the device never came back.
+    await getTestDb()
+      .update(deviceCommands)
+      .set({ deliverBy: new Date(Date.now() - 1000) })
+      .where(eq(deviceCommands.id, outcome.commandId!));
+
+    expect(await asSystem(() => reapStaleDeviceCommands())).toBeGreaterThanOrEqual(1);
+
+    const rows = await resultRows(job.id);
+    expect(rows[0]?.status).toBe('failed');
+    const after = await jobRow(job.id);
+    expect(after?.devicesQueued).toBe(0);
+    expect(after?.devicesFailed).toBe(1);
+    expect(after?.status).toBe('failed');
+  });
 });

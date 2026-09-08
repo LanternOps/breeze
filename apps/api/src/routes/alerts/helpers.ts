@@ -50,6 +50,15 @@ export function ensureOrgAccess(orgId: string, auth: { canAccessOrg: (orgId: str
   return auth.canAccessOrg(orgId);
 }
 
+/** Device-bound alerts follow current device site; deviceless alerts are org-wide.
+ * Callers applying this predicate must left-join devices. */
+export function alertSiteScopeCondition(allowedSiteIds: string[] | undefined) {
+  if (allowedSiteIds === undefined) return undefined;
+  return allowedSiteIds.length === 0
+    ? isNull(alerts.deviceId)
+    : or(isNull(alerts.deviceId), inArray(devices.siteId, allowedSiteIds));
+}
+
 /**
  * Resolve the org a mutating alerts request should write to, honouring an
  * explicit (query-param) orgId for partner/system callers.

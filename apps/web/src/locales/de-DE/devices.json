@@ -159,7 +159,8 @@
       "quarantined": "Gerät befindet sich in Quarantäne",
       "updating": "Gerät wird aktualisiert",
       "pending": "Geräteregistrierung steht aus",
-      "notOnline": "Gerät ist nicht online"
+      "notOnline": "Gerät ist nicht online",
+      "unknown": "Gerät wurde noch nicht geprüft"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Remote-Terminal benötigt einen verbundenen Agenten. Eingereihte Befehle werden bei erneuter Verbindung ausgeführt.",
@@ -210,6 +211,16 @@
         "title": "Homebrew installieren",
         "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
         "confirm": "Homebrew installieren"
+      },
+      "bulkDeleteManual": {
+        "title": "{{count}} manuelle Assets löschen?",
+        "message": "Dadurch werden die ausgewählten manuellen Assets dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Löschen"
+      },
+      "deleteManual": {
+        "title": "{{hostname}} löschen?",
+        "message": "Dadurch wird dieser manuelle Asset dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Löschen"
       }
     },
     "removeDialog": {
@@ -396,7 +407,8 @@
     "segments": {
       "all": "Alle",
       "agent": "Agent",
-      "network": "Netzwerk"
+      "network": "Netzwerk",
+      "manual": "Manuell"
     },
     "filterByDeviceClass": "Nach Geräteklasse filtern"
   },
@@ -488,7 +500,8 @@
       "decommissioned": "Entfernt",
       "quarantined": "Unter Quarantäne gestellt",
       "updating": "Aktualisierung",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "unknown": "Unbekannt"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -630,7 +643,9 @@
     "rail": "Schiene",
     "strip": "Streifen",
     "networkAsset": "Netzwerk-Asset",
-    "networkAssets": "Netzwerk-Assets"
+    "networkAssets": "Netzwerk-Assets",
+    "operatorTasks": "Operator-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -1055,7 +1070,11 @@
       "status": "Status",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Zuletzt gesehen"
+      "lastSeen": "Zuletzt gesehen",
+      "serial": "Seriennummer",
+      "assetTag": "Asset-Tag",
+      "location": "Standort",
+      "source": "Quelle"
     },
     "sortBy": {
       "class": "Nach Klasse sortieren",
@@ -1068,7 +1087,11 @@
       "status": "Nach Status sortieren",
       "cpu": "Nach CPU-Auslastung sortieren",
       "ram": "Nach RAM-Auslastung sortieren",
-      "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit"
+      "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
+      "serial": "Nach Seriennummer sortieren",
+      "assetTag": "Nach Asset-Tag sortieren",
+      "location": "Nach Standort sortieren",
+      "source": "Nach Quelle sortieren"
     },
     "statuses": {
       "compact": {
@@ -1087,7 +1110,8 @@
         "decommissioned": "Entfernt",
         "quarantined": "Unter Quarantäne gestellt",
         "updating": "Aktualisierung",
-        "pending": "Ausstehend"
+        "pending": "Ausstehend",
+        "unknown": "Unbekannt"
       }
     },
     "roles": {
@@ -1187,7 +1211,21 @@
     "devicesPerPage": "Geräte pro Seite",
     "page": "Seite",
     "possibleDuplicate": "Mögliches Duplikat",
-    "possibleDuplicateTitle": "Dieses Gerät ersetzt möglicherweise einen früheren Eintrag mit demselben Hostnamen. Zum Prüfen öffnen."
+    "possibleDuplicateTitle": "Dieses Gerät ersetzt möglicherweise einen früheren Eintrag mit demselben Hostnamen. Zum Prüfen öffnen.",
+    "manualOnlyBulkAction": "Wählen Sie einen manuellen Asset aus, um diese Aktion zu verwenden.",
+    "manualAsset": "Manueller Asset",
+    "manual": "Manuell",
+    "selectedCompositionManual": "{{agent}} Agent, {{network}} Netzwerk, {{manual}} manuell",
+    "deleteManualSelected": "Manuelle Assets löschen",
+    "editManualAsset": "{{name}} bearbeiten",
+    "deleteManualAsset": "{{name}} löschen",
+    "edit": "Bearbeiten",
+    "delete": "Löschen",
+    "source": {
+      "scan": "Scan",
+      "unifi": "UniFi",
+      "manual": "Manuell"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -1847,18 +1885,16 @@
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
     "title": "Geräte",
-    "hiddenNetworkNotice_one": "1 Netzwerkgerät ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
-    "hiddenNetworkNotice_other": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
-    "hiddenNetworkNotice": "{{count}} Netzwerkgeräte ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
+      "agentOnlyActionManual": "Diese Aktion gilt nur für Agent-Geräte. Manuelle Assets haben keinen Agenten.",
       "alreadyPendingTail": "Tail ist bereits ausstehend",
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
       "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt.",
-      "bulkCommandPartialFailed": "Massenbefehl ist teilweise fehlgeschlagen",
-      "bulkCommandSent": "Massenbefehl gesendet",
+      "bulkCommandPartialFailed": "{{action}} an {{count}} Gerät(e) gesendet{{queuedTail}}{{skippedTail}}; {{failed}} fehlgeschlagen: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} an {{count}} Gerät(e) gesendet{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Entfernen für alle {{count}} Geräte fehlgeschlagen: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} Gerät(e) entfernt; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkDecommissioned": "{{count}} Gerät(e) entfernt",
@@ -1897,7 +1933,6 @@
       "networkSkipped_one": "1 Netzwerkgerät übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped_other": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
-      "compareNeedsTwo": "Der Vergleich benötigt mindestens 2 Agent-Geräte.",
       "permanentDeleteCancelled": "Endgültiges Löschen abgebrochen",
       "permanentDeleting": "{{hostname}} wird endgültig gelöscht…",
       "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
@@ -1910,7 +1945,19 @@
       "unknownAction": "Unbekannte Aktion",
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken"
+      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
+      "queuedOfflineTail": ", {{count}} für Offline-Geräte in die Warteschlange gestellt",
+      "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist — läuft ab am {{date}}",
+      "runsWhenOnlineNoExpiry": "Wird ausgeführt, sobald das Gerät online ist",
+      "deleteManualFailed": "{{hostname}} konnte nicht gelöscht werden.",
+      "mfaRequired": "Diese Aktion erfordert eine Multi-Faktor-Authentifizierung. Bitte melden Sie sich erneut an.",
+      "manualDeleted": "{{hostname}} gelöscht.",
+      "manualOnlyAction": "Wählen Sie einen manuellen Asset aus, um diese Aktion zu verwenden.",
+      "manualSkipped": "{{count}} nicht-manuelle Geräte übersprungen — diese Aktion gilt nur für manuelle Assets.",
+      "nonAgentSkipped": "{{count}} Geräte ohne Agent übersprungen — diese Aktion gilt nur für Agent-Geräte.",
+      "bulkManualDeleted": "{{count}} manuelle Assets gelöscht.",
+      "bulkManualDeleteAllFailed": "Löschen aller {{count}} manuellen Assets fehlgeschlagen: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "{{succeeded}} gelöscht; {{failed}} fehlgeschlagen: {{devices}}."
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -1920,6 +1967,18 @@
     "confirmDecommissionedSkip": {
       "message": "{{skipped}} von {{total}} ausgewählten Geräten sind entfernt und werden übersprungen – sie haben keinen verwalteten Agenten mehr. Mit den verbleibenden {{eligible}} Gerät(en) fortfahren? Geräte, die offline sind, führen dies bei der nächsten Anmeldung aus.",
       "title": "Einige ausgewählte Geräte sind entfernt"
+    },
+    "hiddenNonAgentNotice": "{{count}} {{class}} ausgeblendet — {{fields}} gilt nur für Agent-Geräte.",
+    "hiddenNonAgentClassLabel": {
+      "network": "Netzwerkgeräte",
+      "manual": "manuelle Assets",
+      "mixed": "Geräte"
+    },
+    "addMenu": {
+      "trigger": "Hinzufügen",
+      "installAgent": "Agent installieren…",
+      "addNetworkAsset": "Netzwerk-Asset hinzufügen…",
+      "addManualAsset": "Asset manuell hinzufügen…"
     }
   },
   "filterAddDropdown": {
@@ -2657,5 +2716,97 @@
       "manufacturer": "Hersteller"
     },
     "identityConflictNote": "Die Kennungen dieser Zeile verweisen auf unterschiedliche Geräte und können so nicht importiert werden — korrigieren Sie die Datei und führen Sie die Vorschau erneut aus. Die unten aufgeführten Kandidaten dienen nur zur Information."
+  },
+  "queuedActions": {
+    "title": "Aktionen in der Warteschlange",
+    "system": "System",
+    "aUser": "ein Benutzer",
+    "requestedBy": "Angefordert von {{who}}",
+    "expires": "Läuft ab am {{date}}",
+    "cancel": "Abbrechen",
+    "cancelled": "Aktion in der Warteschlange abgebrochen",
+    "cancelFailed": "Abbrechen der Aktion in der Warteschlange fehlgeschlagen",
+    "loadFailed": "Warteschlangenaktionen konnten nicht geladen werden.",
+    "empty": "Keine ausstehenden Aktionen"
+  },
+  "manualAssetModal": {
+    "addTitle": "Manuellen Asset hinzufügen",
+    "editTitle": "Manuellen Asset bearbeiten",
+    "cancel": "Abbrechen",
+    "create": "Erstellen",
+    "save": "Speichern",
+    "unlink": "Verknüpfung aufheben",
+    "linkSectionTitle": "Mit einem vorhandenen Gerät oder Netzwerk-Asset verknüpfen",
+    "linkDevicePlaceholder": "Gerät auswählen…",
+    "linkAssetPlaceholder": "Netzwerk-Asset auswählen…",
+    "linkToDevice": "Verknüpfen",
+    "linkToAsset": "Verknüpfen",
+    "linkedTo": "Verknüpft mit {{name}}",
+    "linkedUnknown": "ein unbekanntes Gerät",
+    "errors": {
+      "mfaRequired": "Diese Aktion erfordert eine Multi-Faktor-Authentifizierung. Bitte melden Sie sich erneut an.",
+      "createFailed": "Der manuelle Asset konnte nicht erstellt werden.",
+      "updateFailed": "Der manuelle Asset konnte nicht aktualisiert werden.",
+      "linkFailed": "Der Asset konnte nicht verknüpft werden.",
+      "unlinkFailed": "Die Verknüpfung des Assets konnte nicht aufgehoben werden."
+    },
+    "toasts": {
+      "created": "Manueller Asset erstellt.",
+      "updated": "Manueller Asset aktualisiert.",
+      "linked": "Asset verknüpft.",
+      "unlinked": "Verknüpfung des Assets aufgehoben."
+    },
+    "fields": {
+      "organization": "Organisation",
+      "selectOrganization": "Organisation auswählen…",
+      "site": "Standort",
+      "selectSite": "Standort auswählen…",
+      "name": "Name",
+      "namePlaceholder": "z. B. Ersatzlaptop, Empfangstelefon",
+      "assetType": "Asset-Typ",
+      "manufacturer": "Hersteller",
+      "model": "Modell",
+      "serialNumber": "Seriennummer",
+      "assetTag": "Asset-Tag",
+      "location": "Standort",
+      "locationPlaceholder": "z. B. Schrank B, Regal 2",
+      "assignedContact": "Zugewiesen an",
+      "assignedContactPlaceholder": "Kontakte durchsuchen…",
+      "tags": "Tags",
+      "tagsPlaceholder": "Durch Kommas getrennt",
+      "notes": "Notizen"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Netzwerk-Asset hinzufügen",
+    "submit": "Asset hinzufügen",
+    "identityHint": "Geben Sie mindestens eines an: IP-Adresse, Hostname oder URL.",
+    "urlRequiredHint": "Website- und Dienst-Assets benötigen eine URL.",
+    "postCreate": {
+      "monitorPrompt": "Dieses Asset mit einer HTTP-Prüfung überwachen?",
+      "actions": {
+        "addHttpCheck": "HTTP-Prüfung hinzufügen"
+      }
+    },
+    "fields": {
+      "label": "Name",
+      "ipAddress": "IP-Adresse",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "MAC-Adresse",
+      "manufacturer": "Hersteller",
+      "model": "Modell",
+      "tags": "Tags",
+      "notes": "Notizen"
+    },
+    "placeholders": {
+      "label": "z. B. Lagerdrucker",
+      "selectSite": "Standort auswählen",
+      "tags": "Kommagetrennt, z. B. lobby, etage-2"
+    },
+    "toasts": {
+      "created": "Netzwerk-Asset erstellt",
+      "createFailed": "Netzwerk-Asset konnte nicht erstellt werden"
+    }
   }
 }

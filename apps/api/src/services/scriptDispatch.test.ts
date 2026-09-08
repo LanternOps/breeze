@@ -131,7 +131,7 @@ const mockDiscardDelete = (rows: unknown[] | (() => Promise<unknown[]>)) => {
   return del;
 };
 
-// Mocks the live `devices.status` re-read the requireOnline gate performs.
+// Mocks the live `devices.status` re-read the reject-policy gate performs.
 // Pass `undefined` to model a device row that no longer exists.
 const mockLiveDeviceStatus = (status: string | undefined) => {
   vi.mocked(db.select).mockReturnValue({
@@ -224,9 +224,9 @@ describe('dispatchScriptToDevice — invariants', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('rejects offline device when requireOnline (snapshot and live read agree)', async () => {
+  it('rejects offline device under a reject policy (snapshot and live read agree)', async () => {
     mockLiveDeviceStatus('offline');
-    const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() } });
+    const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('device_offline');
@@ -234,15 +234,15 @@ describe('dispatchScriptToDevice — invariants', () => {
     }
   });
 
-  it('queues for an offline device when requireOnline is not set (manual semantics)', async () => {
+  it('queues for an offline device when no policy is passed (manual semantics)', async () => {
     const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(true);
-    // requireOnline:false is deliberate offline-queueing (manual/route
-    // semantics) — no live re-read should fire for it.
+    // The registry default for `script` is deliberate offline-queueing
+    // (manual/route semantics) — no live re-read should fire for it.
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('requireOnline gate re-reads live status: rejects a stale-online snapshot when the live read says offline', async () => {
+  it('reject policy re-reads live status: rejects a stale-online snapshot when the live read says offline', async () => {
     // Automation fleet runs snapshot device status once at run start
     // (automationRuntime.ts:1712/2269) and can dispatch minutes later — the
     // snapshot passed in here says 'online', but the live devices row has
@@ -250,7 +250,7 @@ describe('dispatchScriptToDevice — invariants', () => {
     // snapshot, or it would dispatch to a device that's actually offline.
     mockLiveDeviceStatus('offline');
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'online' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -260,19 +260,19 @@ describe('dispatchScriptToDevice — invariants', () => {
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('requireOnline gate proceeds when the live read says online, even off a stale non-online snapshot', async () => {
+  it('reject policy proceeds when the live read says online, even off a stale non-online snapshot', async () => {
     mockLiveDeviceStatus('online');
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'offline' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(true);
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it('requireOnline gate rejects with "Device not found" when the live row is gone', async () => {
+  it('reject policy rejects with "Device not found" when the live row is gone', async () => {
     mockLiveDeviceStatus(undefined);
     const r = await dispatchScriptToDevice({
-      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+      device: device({ status: 'online' }), offlinePolicy: { kind: 'reject' }, source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -327,11 +327,11 @@ describe('dispatchScriptToDevice — #5128 offline policy', () => {
     }
   });
 
-  it('requireOnline: true is still an alias for a reject policy', async () => {
+  it('an explicit reject policy short-circuits before any queueCommand', async () => {
     mockLiveDeviceStatus('offline');
     const r = await dispatchScriptToDevice({
       device: device({ status: 'offline' }),
-      requireOnline: true,
+      offlinePolicy: { kind: 'reject' },
       source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
@@ -339,17 +339,17 @@ describe('dispatchScriptToDevice — #5128 offline policy', () => {
     expect(queueCommand).not.toHaveBeenCalled();
   });
 
-  it('an explicit offlinePolicy reject wins over the absence of requireOnline', async () => {
+  it('an explicit offlinePolicy reject wins over the queueing registry default', async () => {
     mockLiveDeviceStatus('offline');
     const r = await dispatchScriptToDevice({
       device: device({ status: 'offline' }),
-      // requireOnline is NOT set — only the explicit policy should gate this.
+      // No implicit gate remains (#5128 W4) — only the explicit policy gates this.
       offlinePolicy: { kind: 'reject' },
       source: { kind: 'saved', script: savedScript() },
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('device_offline');
-    // The reject path re-reads live status, same as requireOnline.
+    // The reject path re-reads live status.
     expect(db.select).toHaveBeenCalledTimes(1);
     expect(queueCommand).not.toHaveBeenCalled();
   });
@@ -1128,7 +1128,7 @@ describe('dispatchScriptToDevice — sourced parameters', () => {
 
   describe('builtin name lookups', () => {
     // `loadBuiltinNameContext` is the only db.select this codepath makes
-    // (requireOnline is off in these tests), so one chain models both.
+    // (no reject policy in these tests), so one chain models both.
     const mockNameSelect = (rows: unknown[]) => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({

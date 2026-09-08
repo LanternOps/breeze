@@ -62,6 +62,10 @@ vi.mock('./patchJobExecutor', () => ({
   selectStaleScheduledJobIds: vi.fn(),
   filterOrphanedJobIds: vi.fn(),
 }));
+vi.mock('../services/patchJobFinalizer', () => ({ finalizePatchJobDevice: vi.fn() }));
+vi.mock('../services/sensitiveCommandPayload', () => ({
+  terminalPayloadErasureSet: vi.fn(() => ({ payload: null })),
+}));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/patchJobSnapshot', () => ({ buildPatchesSnapshot: vi.fn() }));
 vi.mock('../services/configPolicyPatching', () => ({

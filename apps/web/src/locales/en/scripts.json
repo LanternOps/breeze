@@ -154,8 +154,18 @@
       "severity": "Severity",
       "message": "Message",
       "command": "Command",
+      "whenOffline": "If the device is offline",
       "software": "Software",
       "failureNotificationChannel": "Failure Notification Channel"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Queue (default)",
+        "skip": "Skip"
+      }
+    },
+    "hints": {
+      "whenOffline": "Queued work waits for the device and runs on its next check-in, or expires after 7 days. Skip fails the step immediately."
     },
     "placeholders": {
       "name": "Daily maintenance check",
@@ -685,6 +695,7 @@
       "failed": "Failed",
       "timeout": "Timeout",
       "queued": "Queued",
+      "queuedOffline": "Queued — device offline",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -713,6 +724,7 @@
       "failed": "Failed",
       "timeout": "Timeout",
       "queued": "Queued",
+      "queuedOffline": "Queued — device offline",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -856,6 +868,9 @@
     "errors": {
       "selectDevice": "Please select at least one device",
       "executionFailed": "Execution failed"
+    },
+    "toasts": {
+      "runsWhenOnline": "Runs when the device is online"
     },
     "title": "Execute Script",
     "fields": {
@@ -1111,6 +1126,14 @@
       "notSecretRow": "Not a secret — use \"From a variable\"",
       "secretHint": "Delivered only as the environment variable {{env}} — never written into the script. Requires system-context execution and an agent that supports secure secret delivery.",
       "hint": "Resolved for every target device when the script runs — nobody is asked for it."
+    },
+    "securityReview": {
+      "title": "Security review",
+      "blockedHint_one": "This script matches 1 pattern the agent refuses to run without an acknowledgement.",
+      "blockedHint_other": "This script matches {{count}} patterns the agent refuses to run without an acknowledgement. Acknowledge each one you intend.",
+      "clearedHint": "Every matched pattern has been acknowledged.",
+      "willBlock": "Not acknowledged — the agent will refuse to run this script.",
+      "footnote": "An acknowledgement applies to this script only, and covers just the patterns listed here. If you later add a different risky operation, it will be blocked until you acknowledge that one too."
     }
   },
   "scriptList": {

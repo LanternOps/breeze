@@ -184,7 +184,6 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 
 ---
 
-
 ## Maintenance windows now suppress every script path (#4919)
 
 **Behaviour change.** A device inside a maintenance window with **Suppress
@@ -201,3 +200,12 @@ that **cannot be evaluated** is deliberately the opposite: it keeps the
 ordinary failure treatment (reddened run, on-failure notifications, Sentry), so
 an outage of the maintenance config can never render as a fleet of green runs.
 No env vars, no migrations.
+
+---
+
+## Passkey register/delete keeps the caller signed in (#5038)
+
+**Self-Hosting / Upgrade Notes.**
+- Behaviour change (API), no migration and no new env vars: registering or deleting a passkey still advances `mfa_epoch` and revokes every refresh family — every OTHER session is signed out — but the calling session is now REPLACED in the same response instead of evicted (it previously bounced the user to `/login?reason=session-expired` by their own action). `POST /auth/passkeys/register/verify` now returns `tokens.accessToken` on **both** branches (previously only on the first-factor enrollment) and `DELETE /auth/passkeys/:id` now returns it too, alongside rotated refresh/CSRF cookies the client must adopt; both can now answer **409** (another authentication issuance is in flight, or the factor set changed concurrently — nothing was written) and **428** (the client auth binding must be rotated first) from the shared auth-issuance admission path, replacing register's old bespoke 409. `tokens` is withheld on the rare post-commit install failure, in which case the client must re-authenticate.
+
+---

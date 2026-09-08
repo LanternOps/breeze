@@ -1397,6 +1397,12 @@ export async function previewOrgMerge(
           `this merge will EXPIRE ${expiredKeys} still-valid enrollment key belonging to the merged-away organization — pending installers using one will stop enrolling; mint a replacement under the surviving organization`,
         );
       }
+      const fencedTasks = await scalarCount(CUSTOM_WOULD_REVOKE_COUNTS.ai_operator_tasks!(loserOrgId));
+      if (fencedTasks > 0) {
+        notes.push(
+          `this merge will STOP ${fencedTasks} live AI Operator task belonging to the merged-away organization — its agents repoint to the surviving organization while the task record stays behind as source-org history, so the Operator fences the task (state -> stopping) rather than let it keep acting under a dead tenant; re-delegate anything still needed under the surviving organization`,
+        );
+      }
 
       const warnings = self.buildMergeWarnings({
         ...(await self.collectDuplicates([loserOrgId, survivorOrgId])),

@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
@@ -76,7 +78,9 @@
     "software": "Logiciels",
     "securityOverview": "Vue d’ensemble",
     "aiRisk": "Risque IA",
-    "deviceBackup": "Sauvegarde des appareils"
+    "deviceBackup": "Sauvegarde des appareils",
+    "sectionServiceDesk": "Centre de services",
+    "serviceManagement": "Gestion des services"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

@@ -434,6 +434,27 @@ export const deliverEventJobDataSchema = z.object({
   event: breezeEventEnvelopeSchema,
 }).strict();
 
+/**
+ * #5205 W05 (#5210), spec §6.3 — the AI Operator task coordinator's wake
+ * queue. `jobs/aiOperatorTaskOutboxPublisher.ts` (this wave) is the sole
+ * producer, draining `ai_operator_task_outbox`; the task coordinator (W06,
+ * not built yet) is the sole consumer. Job data is a TYPED REFERENCE only —
+ * never an embedded payload (spec §6.3) — so the consumer always re-reads the
+ * authoritative source row rather than trusting what shipped on the wire.
+ */
+export const AI_OPERATOR_COORDINATOR_QUEUE_NAME = 'ai-operator-coordinator';
+export const AI_OPERATOR_COORDINATOR_WAKE_JOB_NAME = 'task-wake';
+
+export const aiOperatorTaskWakeJobDataSchema = z.object({
+  v: z.literal(1),
+  orgId: z.string().min(1),
+  taskId: z.string().min(1),
+  sourceKind: z.enum(['run', 'intent', 'execution', 'verification', 'user_answer', 'target', 'cancellation']),
+  sourceId: z.string().min(1),
+  transitionSeq: z.number().int(),
+}).strict();
+export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobDataSchema>;
+
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
 export type FdbEntry = z.infer<typeof fdbEntrySchema>;

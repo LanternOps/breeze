@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura della flotta",
     "dashboard": "Dashboard",
@@ -76,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Panoramica",
     "aiRisk": "Rischio IA",
-    "deviceBackup": "Backup dispositivi"
+    "deviceBackup": "Backup dispositivi",
+    "sectionServiceDesk": "Service desk",
+    "serviceManagement": "Gestione servizi"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

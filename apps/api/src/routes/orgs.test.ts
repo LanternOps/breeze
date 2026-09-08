@@ -244,7 +244,14 @@ vi.mock('drizzle-orm', async (importActual) => {
     // suspended-org lifecycle override re-asserts its WHERE predicates
     // (eq(organizations.status,'suspended') / eq(organizations.partnerId,...))
     // without changing any behavior for the rest of the file.
-    eq: vi.fn(actual.eq)
+    eq: vi.fn(actual.eq),
+    // #5075 W04 — same rationale as `eq` above: spy with the REAL
+    // implementation so the PATCH /partners/me external-mode test can assert
+    // that the PSA-connection probe really carries `isNull(psaConnections.orgId)`.
+    // Without it the mocked `.where()` returns its canned row whatever it is
+    // handed, so dropping the partner-wide half of the ownership filter would
+    // not fail a single test.
+    isNull: vi.fn(actual.isNull)
   };
 });
 
@@ -287,7 +294,11 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
-import { eq, inArray, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNull, type SQL } from 'drizzle-orm';
+// Real table object (this module is NOT part of the '../db/schema' barrel mock),
+// so the ownership assertions below compare against the actual columns the
+// route uses rather than a sentinel that could drift.
+import { psaConnections } from '../db/schema/integrations';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db, withSystemDbAccessContext } from '../db';
 import { organizations, sites } from '../db/schema';
@@ -5212,6 +5223,39 @@ describe('org routes', () => {
         expect(keys).not.toContain(internal);
       }
     });
+
+    // #5075 W04 — Service Management mode surfaces on the partner settings
+    // read so the web settings card can render the current mode + bound PSA
+    // connection.
+    it('includes serviceManagementMode and serviceManagementPsaConnectionId', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // mockReturnValueOnce (not the persistent mockReturnValue the two tests
+      // above use): this describe's siblings prove that a persistent stub set
+      // here bleeds into later, unrelated db.select() calls in this file —
+      // vi.clearAllMocks() (beforeEach) clears call history but NOT a
+      // programmed mockReturnValue — and flipped an unrelated, otherwise-
+      // unmocked test 400 waiting on Postgres returning no rows into a 200.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'partner-123',
+              name: 'Acme MSP',
+              settings: {},
+              serviceManagementMode: 'native',
+              serviceManagementPsaConnectionId: null,
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.serviceManagementMode).toBe('native');
+      expect(body.serviceManagementPsaConnectionId).toBeNull();
+    });
   });
 
   describe('GET /partners/me/ip-allowlist/status', () => {
@@ -6164,6 +6208,166 @@ describe('org routes', () => {
         expect(getCaptured().settings.security.requireMfa).toBe(true);
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-123');
       });
+    });
+  });
+
+  // #5075 W04 — Service Management mode. `native`/`off` force the PSA
+  // connection id to null; `external` requires a partner-wide (org_id IS
+  // NULL) psa_connections row owned by THIS partner.
+  describe('PATCH /orgs/partners/me — serviceManagementMode (#5075 W04)', () => {
+    const validConnectionId = '11111111-1111-4111-8111-111111111111';
+    const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+
+    function mockCurrentPartnerSelect() {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any;
+    }
+
+    function mockPsaConnectionSelect(rows: Array<{ id: string }>) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      } as any;
+    }
+
+    it('sets mode to off and forces the connection id to null', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'off',
+                serviceManagementPsaConnectionId: null,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'off' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('off');
+      expect(setData!.serviceManagementPsaConnectionId).toBeNull();
+    });
+
+    it('rejects external mode with no connection id', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementMode: 'external' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects external mode when the connection lookup finds no row (cross-partner or org-scoped)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([]));
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/partner-wide PSA connections/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts external mode with a matching partner-wide connection', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockCurrentPartnerSelect())
+        .mockReturnValueOnce(mockPsaConnectionSelect([{ id: validConnectionId }]));
+      let setData: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          setData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                serviceManagementMode: 'external',
+                serviceManagementPsaConnectionId: validConnectionId,
+              }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceManagementMode: 'external',
+          serviceManagementPsaConnectionId: validConnectionId,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(setData).toBeDefined();
+      expect(setData!.serviceManagementMode).toBe('external');
+      expect(setData!.serviceManagementPsaConnectionId).toBe(validConnectionId);
+
+      // The mocked `.where()` answers with its canned row whatever predicate it
+      // is handed, so a 200 here proves only that SOME row came back — it does
+      // NOT prove the probe asked for the right one. Assert the three ownership
+      // conditions on the spies instead. Dropping any of them is a real
+      // cross-tenant defect: without the partner_id equality a partner could
+      // bind ANOTHER partner's PSA credentials, and without `org_id IS NULL` an
+      // org-scoped connection would be bound as if it were partner-wide and
+      // then serve every org under the partner from one org's credentials.
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.id, validConnectionId);
+      expect(vi.mocked(eq)).toHaveBeenCalledWith(psaConnections.partnerId, 'partner-123');
+      expect(vi.mocked(isNull)).toHaveBeenCalledWith(psaConnections.orgId);
+    });
+
+    it('rejects a connection id with no mode alongside it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValueOnce(mockCurrentPartnerSelect());
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serviceManagementPsaConnectionId: validConnectionId }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/requires serviceManagementMode/);
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 

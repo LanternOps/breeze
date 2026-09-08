@@ -78,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Overview",
     "aiRisk": "AI Risk",
-    "deviceBackup": "Device Backup"
+    "deviceBackup": "Device Backup",
+    "sectionServiceDesk": "Service Desk",
+    "serviceManagement": "Service Management"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

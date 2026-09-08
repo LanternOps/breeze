@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { discoveredAssetSourceEnum } from '../../db/schema/discovery';
 
 export const PARTNER_EXPORT_RESOURCES = [
   'organizations',
@@ -246,9 +247,25 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
 });
 
 const partnerNetworkEquipmentSchema = z.object({
-  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']),
-  name: z.string().max(255).nullable(), address: z.string().min(1).max(45), macAddress: z.string().max(17).nullable(),
+  // #5213 W03: 'website'/'service' — an IP-less manual asset whose identity
+  // is a URL. `address` was already reachable as null even for a
+  // pre-existing type before this PR (a hand-entered printer/router/etc. only
+  // needs ONE of ip/hostname/url — see AddNetworkAssetModal's identity rule
+  // and discovered_assets_manual_identity_chk), it just wasn't declared
+  // `.nullable()` here yet; this only makes the schema match what the column
+  // has always allowed. `url`/`source` are new, ordinary (non-secret) fields
+  // — see the `included` bucket for `discovered_assets` in
+  // tenantExportPolicyRegistry.ts. `source`'s enum is DERIVED from the DB
+  // enum (not hand-copied) so a future 4th source value fails loudly at the
+  // type level instead of 500ing the whole export in production the moment
+  // one ships — same reasoning as DISCOVERED_ASSET_TYPES in
+  // routes/devices/schemas.ts. This schema is the strict allowlist
+  // projectSiteInventory's output is validated against, so a field missing
+  // here fails the whole export closed with a 500.
+  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas', 'website', 'service']),
+  name: z.string().max(255).nullable(), address: z.string().min(1).max(45).nullable(), macAddress: z.string().max(17).nullable(),
   manufacturer: z.string().max(255).nullable(), model: z.string().max(255).nullable(),
+  url: z.string().max(2048).nullable(), source: z.enum(discoveredAssetSourceEnum.enumValues),
 }).strict();
 
 export const partnerSiteInventoryExportRecordSchema = strictPartnerExportRecordSchema({

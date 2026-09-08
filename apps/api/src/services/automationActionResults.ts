@@ -143,6 +143,18 @@ function decideTerminalTransition(
     terminalSource: input.source,
     output: input.output ?? null,
     error: input.error ?? null,
+    // #5128 W4: clear the dispatch-time message, exactly as
+    // `decideDispatchTransition`'s terminal branch already does. `message` is
+    // the "why is this not finished yet" field; once the action IS finished,
+    // `output`/`error` own the story. Leaving it set matters because
+    // `aggregateActionDetails` falls back to it (`output ?? message`, and
+    // `failed.error ?? failed.message`), so a stale value leaks into the
+    // device row: a script that queued while the device was offline, then
+    // reconnected and succeeded printing nothing, would report its output as
+    // "Queued — device offline", and one that later failed with no stderr
+    // would show that string as the red failure reason for a run that
+    // demonstrably executed.
+    message: null,
     completedAt: input.completedAt,
   };
 }

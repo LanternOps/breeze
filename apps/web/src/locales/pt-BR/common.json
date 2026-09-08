@@ -1,5 +1,7 @@
 {
-  "lists": { "separator": ", " },
+  "lists": {
+    "separator": ", "
+  },
   "nav": {
     "fleetPosture": "Postura da frota",
     "dashboard": "Painel",
@@ -76,7 +78,9 @@
     "software": "Software",
     "securityOverview": "Visão Geral",
     "aiRisk": "Risco de IA",
-    "deviceBackup": "Backup de Dispositivos"
+    "deviceBackup": "Backup de Dispositivos",
+    "sectionServiceDesk": "Central de serviços",
+    "serviceManagement": "Gestão de serviços"
   },
   "documentTitles": {
     "dashboard": "Painel",

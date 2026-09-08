@@ -136,6 +136,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('approvalExpiryReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
+  consumers('aiOperatorTaskOutboxPublisher'),
+  // #5205 W06 (#5211). The string must match the one passed to
+  // `attachWorkerObservability` in jobs/aiOperatorTaskWorker.ts exactly —
+  // `workerReadinessCoverage.test.ts` AST-scans every `new Worker(...)` site
+  // and diffs the two lists for an exact set match.
+  consumers('aiOperatorTaskWorker'),
   consumers('intentExpiryReaper'),
   consumers('intentReleaseWorker'),
   consumers('stripeReconcileSweep'),

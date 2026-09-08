@@ -224,6 +224,28 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     VALUES (${deviceId}, ${orgA}, ${customFieldDefinitionId}, 'asset_tag', ${customFieldValueSentinel}, 'manual')
   `);
 
+  // #4622 W03 — a manual asset AND a MANUAL-SUBJECT device_warranty row
+  // (device_id NULL, manual_asset_id set). W01 seeded neither, which left the
+  // roundtrip blind in two ways: `manual_asset_id` is a NEW COLUMN on a
+  // long-registered org-cascade table (the export-policy check that fires on a
+  // column, not just a table), and a warranty row whose subject is a manual
+  // asset is the only thing that proves the composite
+  // (manual_asset_id, org_id) -> manual_assets(id, org_id) FK is deleted in the
+  // right order during erasure rather than raising 23503.
+  const manualAssetId = crypto.randomUUID();
+  const manualAssetSerial = `MANUAL-ASSET-SN-${suffix}`;
+  await db.execute(sql`
+    INSERT INTO manual_assets (id, org_id, site_id, name, manufacturer, model, serial_number, asset_tag)
+    VALUES (
+      ${manualAssetId}, ${orgA}, ${siteA1}, ${'Roundtrip spare laptop ' + suffix},
+      'Dell', 'Latitude 7420', ${manualAssetSerial}, ${'ASSET-TAG-MANUAL-' + suffix}
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO device_warranty (org_id, manual_asset_id, manufacturer, serial_number, status)
+    VALUES (${orgA}, ${manualAssetId}, 'dell', ${manualAssetSerial}, 'unknown')
+  `);
+
   await db.execute(sql`
     INSERT INTO portal_branding (
       org_id,
@@ -500,6 +522,22 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(outcome[0]).toMatchObject({ uncovered_total: 2, flagged_total: 0, billed_overage_total: 0, snapshot_device_total: 3 });
     expect(outcome[0]).not.toHaveProperty('uncovered_by_role');
     expect(outcome[0]).not.toHaveProperty('overages');
+
+    // #4622 W03 — the manual asset itself, and the manual-subject warranty row
+    // that points at it, both reach the archive readably.
+    const manualAssetRows = await archiveTable(archive, 'manual_assets');
+    expect(manualAssetRows).toHaveLength(1);
+    expect(manualAssetRows[0]).toMatchObject({ org_id: orgA, manufacturer: 'Dell' });
+
+    const warrantyRows = await archiveTable(archive, 'device_warranty');
+    const manualWarranty = warrantyRows.find((row) => row.device_id === null);
+    expect(
+      manualWarranty,
+      'the manual-subject warranty row must survive to the export — a missing '
+        + '`manual_asset_id` classification drops it from the tenant archive',
+    ).toBeDefined();
+    expect(manualWarranty).toMatchObject({ org_id: orgA });
+    expect(manualWarranty!.manual_asset_id).not.toBeNull();
 
     const serializedZip = await Promise.all(
       Object.values(archive.files).map((entry) => entry.async('string')),

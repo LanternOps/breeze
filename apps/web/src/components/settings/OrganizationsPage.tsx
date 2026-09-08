@@ -4,8 +4,9 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
-import SiteList, { type Site } from './SiteList';
-import SiteForm from './SiteForm';
+import SiteList from './SiteList';
+import SiteModals from './SiteModals';
+import { useSiteCrud } from './useSiteCrud';
 import MergeOrgModal from './MergeOrgModal';
 import ArchiveOrgModal from './ArchiveOrgModal';
 import BulkOrgImport from '../organizations/BulkOrgImport';
@@ -19,7 +20,6 @@ import { navigateTo } from '@/lib/navigation';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
-type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
   name: string;
@@ -173,15 +173,9 @@ export default function OrganizationsPage() {
   // never itself trigger a re-render.
   const archivedRequestIdRef = useRef(0);
 
-  // Sites state
-  const [sites, setSites] = useState<Site[]>([]);
-  const [sitesLoading, setSitesLoading] = useState(false);
-  const [siteModalMode, setSiteModalMode] = useState<SiteModalMode>('closed');
-  const [selectedSite, setSelectedSite] = useState<Site | null>(null);
-  const [siteSubmitting, setSiteSubmitting] = useState(false);
-  // True when the site-add modal was auto-opened right after creating an org —
-  // drives first-site guidance copy and a Skip-for-now affordance.
-  const [guidingFirstSite, setGuidingFirstSite] = useState(false);
+  // Sites state — CRUD state and handlers moved to `useSiteCrud` (#5075 W02) so
+  // the organization record's Sites tab can share the exact same behaviour.
+  const siteCrud = useSiteCrud(selectedOrg?.id ?? null, { onUnauthorized: handleSessionExpired, t });
   // Partner's configured timezone, used to pre-select the timezone for new sites
   // instead of falling back to UTC. Undefined until loaded / if unavailable.
   const [partnerTimezone, setPartnerTimezone] = useState<string>();
@@ -365,40 +359,6 @@ export default function OrganizationsPage() {
     }
   }, [fetchOrganizations]);
 
-  // Returns the fetched site list, or null when we couldn't determine the real
-  // count. The null signal lets callers distinguish "confirmed zero sites" from
-  // "couldn't tell" — important for the first-site nudge, which must not fire on
-  // a guess (a transient failure, or an org that DOES have sites, would
-  // otherwise re-introduce the misleading nag of #1978). We fail closed (null)
-  // on BOTH a failed request AND a malformed HTTP-200 body (e.g. {}, {data:null},
-  // or any non-array payload): a 200 whose body isn't a parseable array of sites
-  // tells us nothing about the count, so it must not be read as "zero sites".
-  // Only a genuine empty array returns [] (legitimately zero → show the nag).
-  const fetchSites = useCallback(async (orgId: string): Promise<Site[] | null> => {
-    setSitesLoading(true);
-    try {
-      const response = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}`);
-      if (!response.ok) throw new Error(`Failed to fetch sites (status ${response.status})`);
-      const data = await response.json();
-      const siteList = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : null;
-      if (siteList === null) {
-        // 200 OK but the body isn't a parseable array of sites — fail closed so
-        // callers suppress the nag rather than treat this as confirmed zero.
-        setSites([]);
-        console.warn('[OrganizationsPage] sites response was ok but not a parseable array for org', orgId, data);
-        return null;
-      }
-      setSites(siteList);
-      return siteList;
-    } catch (err) {
-      setSites([]);
-      console.warn('[OrganizationsPage] failed to fetch sites for org', orgId, err);
-      return null;
-    } finally {
-      setSitesLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     fetchOrganizations();
   }, [fetchOrganizations]);
@@ -470,7 +430,7 @@ export default function OrganizationsPage() {
       // sites" would be a lie. The read-only detail pane has no sites section
       // anyway, so skip the request outright.
       if (isArchiveLifecycleOrg(selectedOrg)) {
-        setSites([]);
+        siteCrud.clear();
         return;
       }
       // Skip the fetch if org creation already fetched sites for this org
@@ -479,11 +439,11 @@ export default function OrganizationsPage() {
         skipSiteFetchForOrgId.current = null;
         return;
       }
-      fetchSites(selectedOrg.id);
+      siteCrud.refresh();
     } else {
-      setSites([]);
+      siteCrud.clear();
     }
-  }, [selectedOrg, fetchSites]);
+  }, [selectedOrg, siteCrud.refresh, siteCrud.clear]);
 
   // Org handlers
   const handleAdd = () => {
@@ -558,8 +518,7 @@ export default function OrganizationsPage() {
 
   const handleSelectOrg = (org: Organization) => {
     setSelectedOrg(prev => prev?.id === org.id ? prev : org);
-    setSiteModalMode('closed');
-    setSelectedSite(null);
+    siteCrud.close();
     window.location.hash = org.id;
   };
 
@@ -807,11 +766,13 @@ export default function OrganizationsPage() {
         setSelectedOrg(newOrg);
         window.location.hash = createdOrg.id;
 
-        const existingSites = await fetchSites(createdOrg.id);
+        // Explicit override, not the hook's bound orgId: `setSelectedOrg` above
+        // hasn't re-rendered yet, so `siteCrud` is still closed over the
+        // PREVIOUS selected org at this point in the handler.
+        const existingSites = await siteCrud.refresh(createdOrg.id);
         if (existingSites?.length === 0) {
-          setSelectedSite(null);
-          setGuidingFirstSite(true);
-          setSiteModalMode('add');
+          siteCrud.openAdd();
+          siteCrud.setGuidingFirstSite(true);
         }
       }
     } catch (err) {
@@ -837,142 +798,7 @@ export default function OrganizationsPage() {
     }
   };
 
-  // Site handlers
-  const handleAddSite = () => {
-    setSelectedSite(null);
-    setSiteModalMode('add');
-  };
-
-  const handleEditSite = (site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('edit');
-  };
-
-  const handleDeleteSite = (site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('delete');
-  };
-
-  const handleCloseSiteModal = () => {
-    setSiteModalMode('closed');
-    setSelectedSite(null);
-    setGuidingFirstSite(false);
-  };
-
-  const handleSiteSubmit = async (values: Record<string, unknown>) => {
-    if (!selectedOrg) return;
-    setSiteSubmitting(true);
-    try {
-      const payload = {
-        orgId: selectedOrg.id,
-        name: values.name,
-        timezone: values.timezone,
-        address: {
-          line1: values.addressLine1,
-          line2: values.addressLine2,
-          city: values.city,
-          state: values.state,
-          postalCode: values.postalCode,
-          country: values.country
-        },
-        contact: {
-          name: values.contactName,
-          email: values.contactEmail,
-          phone: values.contactPhone
-        }
-      };
-
-      const url = siteModalMode === 'edit' && selectedSite
-        ? `/orgs/sites/${selectedSite.id}`
-        : '/orgs/sites';
-      const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
-
-      // This handler already read the body — but it threw into `setError`,
-      // whose banner sits behind the still-open site modal. runAction keeps the
-      // extracted message and puts it somewhere the user can actually see.
-      await runAction({
-        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
-        // `organizationsPage.errors.saveSite` interpolates {{status}}, which
-        // runAction does not expose when building the fallback — passing 0
-        // renders the nonsense "Failed to save site (0)". This is the existing
-        // status-free sibling, present in all 8 locales, so no new keys and
-        // nothing for localeParity to catch.
-        errorFallback: t('siteDetailPage.errors.saveSite'),
-        onUnauthorized: handleSessionExpired,
-      });
-
-      await fetchSites(selectedOrg.id);
-      handleCloseSiteModal();
-    } catch (err) {
-      // See the org handlers above: runAction already toasted an ActionError,
-      // and onUnauthorized handles 401. Only a non-ActionError escape is
-      // unsurfaced, and the page banner is invisible behind this modal anyway.
-      if (!(err instanceof ActionError)) {
-        // A toast, NOT setError. The modal is still open on failure and the
-        // page banner renders behind its `fixed inset-0 z-50` overlay, so
-        // routing an unexpected error there reproduces the exact invisibility
-        // this change removes. Reachable in practice: `runAction` calls
-        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
-        // handleSessionExpired's logout or location.replace arrives here as a
-        // non-ActionError.
-        showToast({
-          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
-          type: 'error'
-        });
-      }
-    } finally {
-      setSiteSubmitting(false);
-    }
-  };
-
-  const handleConfirmDeleteSite = async () => {
-    if (!selectedSite || !selectedOrg) return;
-    setSiteSubmitting(true);
-    try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE' }),
-        errorFallback: t('organizationsPage.errors.deleteSite'),
-        onUnauthorized: handleSessionExpired,
-      });
-
-      await fetchSites(selectedOrg.id);
-      handleCloseSiteModal();
-    } catch (err) {
-      // See the org handlers above: runAction already toasted an ActionError,
-      // and onUnauthorized handles 401. Only a non-ActionError escape is
-      // unsurfaced, and the page banner is invisible behind this modal anyway.
-      if (!(err instanceof ActionError)) {
-        // A toast, NOT setError. The modal is still open on failure and the
-        // page banner renders behind its `fixed inset-0 z-50` overlay, so
-        // routing an unexpected error there reproduces the exact invisibility
-        // this change removes. Reachable in practice: `runAction` calls
-        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
-        // handleSessionExpired's logout or location.replace arrives here as a
-        // non-ActionError.
-        showToast({
-          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
-          type: 'error'
-        });
-      }
-    } finally {
-      setSiteSubmitting(false);
-    }
-  };
-
-  const getSiteFormDefaults = (site: Site & { address?: Record<string, string>; contact?: Record<string, string> }) => ({
-    name: site.name,
-    timezone: site.timezone,
-    addressLine1: site.address?.line1 ?? '',
-    addressLine2: site.address?.line2 ?? '',
-    city: site.address?.city ?? '',
-    state: site.address?.state ?? '',
-    postalCode: site.address?.postalCode ?? '',
-    country: site.address?.country ?? '',
-    contactName: site.contact?.name ?? '',
-    contactEmail: site.contact?.email ?? '',
-    contactPhone: site.contact?.phone ?? ''
-  });
+  // Site handlers — moved to `useSiteCrud` (#5075 W02); `siteCrud` above.
 
   if (loading) {
     return (
@@ -1385,17 +1211,17 @@ export default function OrganizationsPage() {
 
                 {/* Sites section */}
                 <div className="p-6">
-                  {sitesLoading ? (
+                  {siteCrud.sitesLoading ? (
                     <div className="flex items-center justify-center py-8">
                       <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                       <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
                     </div>
                   ) : (
                     <SiteList
-                      sites={sites}
-                      onAddSite={handleAddSite}
-                      onEdit={handleEditSite}
-                      onDelete={handleDeleteSite}
+                      sites={siteCrud.sites}
+                      onAddSite={siteCrud.openAdd}
+                      onEdit={siteCrud.openEdit}
+                      onDelete={siteCrud.openDelete}
                       onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
                     />
                   )}
@@ -1466,89 +1292,18 @@ export default function OrganizationsPage() {
         />
       )}
 
-      {/* Site Add/Edit Modal */}
-      {(siteModalMode === 'add' || siteModalMode === 'edit') && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border bg-card p-6 shadow-xs">
-              <div>
-                <h2 className="text-lg font-semibold">
-                  {siteModalMode === 'edit'
-                    ? t('organizationsPage.siteModal.editTitle')
-                    : guidingFirstSite
-                      ? t('organizationsPage.siteModal.firstTitle', { organization: selectedOrg?.name })
-                      : t('organizationsPage.siteModal.addTitle')}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {siteModalMode === 'edit'
-                    ? t('organizationsPage.siteModal.editDescription')
-                    : guidingFirstSite
-                      ? t('organizationsPage.siteModal.firstDescription')
-                      : t('organizationsPage.siteModal.addDescription', { organization: selectedOrg?.name })}
-                </p>
-              </div>
-              {guidingFirstSite && (
-                <button
-                  type="button"
-                  onClick={handleCloseSiteModal}
-                  className="shrink-0 rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                >
-                  {t('organizationsPage.siteModal.skip')}
-                </button>
-              )}
-            </div>
-            <SiteForm
-              onSubmit={handleSiteSubmit}
-              onCancel={handleCloseSiteModal}
-              defaultValues={
-                selectedSite
-                  ? getSiteFormDefaults(selectedSite as Site & { address?: Record<string, string>; contact?: Record<string, string> })
-                  : partnerTimezone
-                    ? { timezone: partnerTimezone }
-                    : undefined
-              }
-              submitLabel={
-                siteModalMode === 'edit'
-                  ? t('organizationsPage.siteModal.saveChanges')
-                  : guidingFirstSite
-                    ? t('organizationsPage.siteModal.createFirst')
-                    : t('organizationsPage.siteModal.create')
-              }
-              loading={siteSubmitting}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Site Delete Confirmation Modal */}
-      {siteModalMode === 'delete' && selectedSite && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">{t('organizationsPage.deleteSite.title')}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('organizationsPage.deleteSite.messagePrefix')} <span className="font-medium">{selectedSite.name}</span>?
-              {t('organizationsPage.deleteSite.messageSuffix')}
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleCloseSiteModal}
-                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDeleteSite}
-                disabled={siteSubmitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {siteSubmitting ? t('organizationsPage.actions.deleting') : t('common:actions.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SiteModals
+        mode={siteCrud.siteModalMode}
+        selectedSite={siteCrud.selectedSite}
+        guidingFirstSite={siteCrud.guidingFirstSite}
+        orgName={selectedOrg?.name}
+        partnerTimezone={partnerTimezone}
+        submitting={siteCrud.siteSubmitting}
+        onSubmit={siteCrud.submit}
+        onClose={siteCrud.close}
+        onConfirmDelete={siteCrud.confirmDelete}
+        getSiteFormDefaults={siteCrud.getSiteFormDefaults}
+      />
     </div>
   );
 }

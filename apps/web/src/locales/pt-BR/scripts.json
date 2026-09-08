@@ -154,8 +154,18 @@
       "severity": "Gravidade",
       "message": "Mensagem",
       "command": "Comando",
+      "whenOffline": "Se o dispositivo estiver offline",
       "software": "Software",
       "failureNotificationChannel": "Canal de notificação de falha"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Enfileirar (padrão)",
+        "skip": "Ignorar"
+      }
+    },
+    "hints": {
+      "whenOffline": "O trabalho na fila aguarda o dispositivo e é executado na próxima conexão, ou expira após 7 dias. Ignorar faz a etapa falhar imediatamente."
     },
     "placeholders": {
       "name": "Verificação diária de manutenção",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
-      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
+      "queuedOffline": "Na fila — dispositivo offline"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Concluído — sua solicitação de interrupção chegou tarde demais",
       "failedCancelTooLate": "Falha — sua solicitação de interrupção chegou tarde demais",
       "timeoutCancelTooLate": "Tempo limite — sua solicitação de interrupção chegou tarde demais",
-      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo"
+      "cancelFailed": "Falha ao interromper — o dispositivo não conseguiu interromper o processo",
+      "queuedOffline": "Na fila — dispositivo offline"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Executa quando o dispositivo estiver online"
     }
   },
   "secretParameters": {
@@ -1111,6 +1126,14 @@
       "notSecretRow": "Não é secreta — use \"De uma variável\"",
       "secretHint": "Entregue apenas como a variável de ambiente {{env}} — nunca escrita no script. Exige execução no contexto do sistema e um agente compatível com a entrega segura de segredos.",
       "hint": "Resolvido para cada dispositivo de destino quando o script é executado — ninguém precisa informar."
+    },
+    "securityReview": {
+      "title": "Revisão de segurança",
+      "blockedHint_one": "Este script corresponde a 1 padrão que o agente se recusa a executar sem um reconhecimento.",
+      "blockedHint_other": "Este script corresponde a {{count}} padrões que o agente se recusa a executar sem um reconhecimento. Reconheça cada um que você pretende permitir.",
+      "clearedHint": "Todos os padrões detectados foram reconhecidos.",
+      "willBlock": "Não reconhecido — o agente se recusará a executar este script.",
+      "footnote": "Um reconhecimento se aplica somente a este script e cobre apenas os padrões listados aqui. Se você adicionar depois uma operação arriscada diferente, ela será bloqueada até que você também a reconheça."
     }
   },
   "scriptList": {

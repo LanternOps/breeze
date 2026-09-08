@@ -43,6 +43,19 @@ export interface Site {
   createdAt: string;
 }
 
+/**
+ * Which service-desk/billing module a partner runs (#5075 W04).
+ *
+ * The web-side mirror of the API's `partners.service_management_mode` and of
+ * `partners_service_management_mode_chk`. Declared here, in the store that owns
+ * the runtime value, so there is exactly ONE definition — `orgRecordTabs.ts`
+ * re-exports this type rather than declaring a second copy that could drift.
+ */
+export type ServiceManagementMode = 'native' | 'external' | 'off';
+
+/** Mirrors the CHECK constraint. Used to sanitise a persisted value on rehydrate. */
+export const SERVICE_MANAGEMENT_MODES: readonly ServiceManagementMode[] = ['native', 'external', 'off'];
+
 interface OrgState {
   currentPartnerId: string | null;
   currentOrgId: string | null;
@@ -83,6 +96,18 @@ interface OrgState {
    * transient skeleton state and the second is terminal. See `useOrgScope`.
    */
   organizationsLoaded: boolean;
+  /**
+   * Which service-desk/billing module the current partner runs (#5075 W04).
+   * Persisted so the sidebar renders the right sections on the very first paint
+   * after a reload, before the Sidebar's `/orgs/partners/me` fetch resolves —
+   * without it, a partner running `off` sees Service Desk and Billing flash in
+   * and then vanish on every navigation.
+   *
+   * Defaults to `native` and FAILS OPEN: a failed mode fetch leaves whatever is
+   * here untouched rather than hiding a module the partner pays for. This is a
+   * product module switch, not authorization — the API re-checks everything.
+   */
+  serviceManagementMode: ServiceManagementMode;
 
   // Actions
   setPartner: (partnerId: string) => void;
@@ -107,6 +132,8 @@ interface OrgState {
   fetchOrganizations: () => Promise<void>;
   fetchSites: () => Promise<void>;
   clearOrgContext: () => void;
+  /** Adopt the partner's stored Service Management mode (Sidebar's /orgs/partners/me fetch). */
+  setServiceManagementMode: (mode: ServiceManagementMode) => void;
 }
 
 export const useOrgStore = create<OrgState>()(
@@ -123,6 +150,7 @@ export const useOrgStore = create<OrgState>()(
       isLoading: false,
       error: null,
       organizationsLoaded: false,
+      serviceManagementMode: 'native',
 
       setPartner: (partnerId) => {
         set({
@@ -340,8 +368,17 @@ export const useOrgStore = create<OrgState>()(
           organizationsLoaded: false,
           sites: [],
           enrollmentDefaults: null,
-          error: null
+          error: null,
+          // Persisted, so reset it for the same reason allOrgs/lastOrgId above
+          // are reset: a logout→login as a DIFFERENT partner would otherwise
+          // inherit the prior partner's module choice until the Sidebar's
+          // /orgs/partners/me fetch resolves.
+          serviceManagementMode: 'native'
         });
+      },
+
+      setServiceManagementMode: (mode) => {
+        set({ serviceManagementMode: mode });
       }
     }),
     {
@@ -355,7 +392,8 @@ export const useOrgStore = create<OrgState>()(
         currentPartnerId: state.currentPartnerId,
         currentOrgId: state.currentOrgId,
         allOrgs: state.allOrgs,
-        lastOrgId: state.lastOrgId
+        lastOrgId: state.lastOrgId,
+        serviceManagementMode: state.serviceManagementMode
       }),
       // Normalize a contradictory persisted pair on rehydrate. A concrete org
       // selection wins over a stale allOrgs flag (an older schema or tampered
@@ -365,6 +403,12 @@ export const useOrgStore = create<OrgState>()(
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<OrgState> | undefined) };
         if (merged.currentOrgId && merged.allOrgs) merged.allOrgs = false;
+        // A value written by a newer build (or hand-edited localStorage) must
+        // not leave the sidebar gated on a mode nothing understands — fail open
+        // to native, exactly as the API's getServiceManagementMode does.
+        if (!SERVICE_MANAGEMENT_MODES.includes(merged.serviceManagementMode)) {
+          merged.serviceManagementMode = 'native';
+        }
         return merged;
       }
     }

@@ -212,7 +212,7 @@ describe('run_script enforces script-device org equality', () => {
         triggerType: 'manual',
         triggeredBy: 'user-1',
         createdBy: 'user-1',
-        requireOnline: true,
+        offlinePolicy: { kind: 'reject' },
       }),
     );
 
