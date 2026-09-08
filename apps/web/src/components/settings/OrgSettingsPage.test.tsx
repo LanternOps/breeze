@@ -29,7 +29,11 @@ vi.mock('@/lib/navigation', () => ({
 vi.mock('./OrgBrandingEditor', () => ({ default: () => <div data-testid="branding-editor" /> }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
-vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="security" /> }));
+vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
+  onDirty: () => void; onSave: (value: unknown) => void;
+}) => <button data-testid="security" onClick={() => {
+  onDirty(); onSave({ allowedMethods: { totp: false, sms: false } });
+}}>Save security</button> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
 // Capture the props the Remote Access tab is mounted with. #3432: the parent
 // used to hand it `onDirty`, which it fired AFTER already persisting a rule —
@@ -322,6 +326,27 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
       if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
       return Promise.resolve(makeJsonResponse(orgDetails));
     });
+  });
+
+  it('surfaces the MFA activation rejection and preserves unsaved settings', async () => {
+    const message = 'Enroll an allowed MFA method for affected users before changing this policy.';
+    window.location.hash = '#security';
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      if (init?.method === 'PATCH') return Promise.resolve(makeJsonResponse({
+        code: 'mfa_policy_would_lock_out_users', error: message, count: 1, countCapped: false,
+      }, false, 409));
+      return Promise.resolve(makeJsonResponse(orgDetails));
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await userEvent.click(await screen.findByTestId('security'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByText(/saved at/i)).toBeNull();
+    expect(screen.getByText(/^unsaved changes$/i)).not.toBeNull();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations/org-1', expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ settings: { security: { allowedMethods: { totp: false, sms: false } } } }),
+    }));
   });
 
   it('never shows a fabricated "Saved at" timestamp on load', async () => {

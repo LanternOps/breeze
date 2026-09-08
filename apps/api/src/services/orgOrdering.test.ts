@@ -1,3 +1,4 @@
+vi.mock('./mfaPolicyActivation', () => ({ lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { selectMock, updateMock } = vi.hoisted(() => ({

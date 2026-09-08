@@ -152,7 +152,8 @@ runDb('serializes an automation link insert against a referenced policy owner mo
       // the only path that moves a policy's owner -- runs in system scope, so
       // that is the scope this race has to model; without the election the
       // owner move is refused by the guard before the reference validator this
-      // test is about ever runs (#5123).
+      // test is about ever runs (#5123). Also exercises the reference gate
+      // after the system-only ownership guard (#5099).
       await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing feature-policy mover backend pid');

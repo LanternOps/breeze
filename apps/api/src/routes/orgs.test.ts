@@ -1,3 +1,9 @@
+import { countMfaPolicyLockouts, lockMfaPolicySettings } from '../services/mfaPolicyActivation';
+vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/mfaPolicyActivation')>()),
+  lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined),
+  countMfaPolicyLockouts: vi.fn().mockResolvedValue(0),
+}));
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
@@ -374,12 +380,63 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(countMfaPolicyLockouts).mockReset().mockResolvedValue(0);
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
     selectedOrgIds.current = [];
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
+  });
+
+  describe('MFA policy activation safety', () => {
+    const id = '00000000-0000-4000-8000-000000000167';
+    const settings = { security: { allowedMethods: { totp: false, sms: false } } };
+
+    it.each([
+      ['PATCH', '/partners/me', 'partner'],
+      ['PATCH', `/partners/${id}`, 'partner'],
+      ['PATCH', `/organizations/${id}`, 'organization'],
+      ['PUT', `/organizations/${id}`, 'organization'],
+    ])('%s %s rejects newly stranded users before any write', async (method, path, kind) => {
+      if (path === '/partners/me') setAuthContext({ scope: 'partner', partnerId: id });
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(Object.assign(Promise.resolve([{ id, partnerId: id, settings: {} }]), { limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) })),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockResolvedValueOnce(2);
+      const response = await app.request(`/orgs${path}`, { method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings, force: true }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'mfa_policy_would_lock_out_users', count: 2, countCapped: false });
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind, id });
+      expect(countMfaPolicyLockouts).toHaveBeenCalledWith({ kind, id }, settings);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('inventory read failure fails closed before persistence', async () => {
+      vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id, settings: {} }]) }),
+      }) } as any);
+      vi.mocked(countMfaPolicyLockouts).mockRejectedValueOnce(new Error('inventory unavailable'));
+      const response = await app.request(`/orgs/partners/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(500);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('denied organization never reaches inventory or settings locks', async () => {
+      setAuthContext({ scope: 'partner', partnerId: id, canAccessOrg: () => false });
+      const response = await app.request(`/orgs/organizations/${id}`, { method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+      });
+      expect(response.status).toBe(404);
+      expect(countMfaPolicyLockouts).not.toHaveBeenCalled();
+      expect(lockMfaPolicySettings).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /orgs/partners', () => {
@@ -6559,6 +6616,8 @@ describe('org routes', () => {
       expect(writtenArg.settings.timezone).toBe('America/Chicago');
       expect(writtenArg.settings.branding).toEqual({ theme: 'dark' });
       expect(writtenArg.settings.organizationOrder).toEqual([id2, id1]);
+      expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind: 'partner', id: 'partner-123' });
+      expect(vi.mocked(lockMfaPolicySettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(db.select).mock.invocationCallOrder[1]!);
     });
 
     it('rejects a system-scoped caller', async () => {

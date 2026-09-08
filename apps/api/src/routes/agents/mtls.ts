@@ -1,3 +1,4 @@
+import { lockMfaPolicySettings } from '../../services/mfaPolicyActivation';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
@@ -1654,6 +1655,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)
@@ -1732,6 +1734,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)
@@ -1827,6 +1830,7 @@ mtlsRoutes.patch(
       return c.json({ error: 'Not authorized' }, 403);
     }
 
+    await lockMfaPolicySettings({ kind: 'organization', id: orgId });
     const [org] = await db
       .select({ id: organizations.id, settings: organizations.settings })
       .from(organizations)

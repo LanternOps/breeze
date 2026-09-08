@@ -1,3 +1,4 @@
+import { lockMfaPolicySettings } from './mfaPolicyActivation';
 /**
  * Private Software Download Origin Policy (Wave 6 Task 4, security remediation)
  *
@@ -165,6 +166,7 @@ export async function setOrganizationSoftwareDownloadPolicy(
   orgId: string,
   policy: SoftwareDownloadPolicy,
 ): Promise<SetOrganizationSoftwareDownloadPolicyResult> {
+  await lockMfaPolicySettings({ kind: 'organization', id: orgId });
   const [org] = await db
     .select({ settings: organizations.settings })
     .from(organizations)

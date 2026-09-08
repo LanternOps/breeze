@@ -1,3 +1,4 @@
+vi.mock('./mfaPolicyActivation', () => ({ lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // A `where(...)` result that is BOTH awaitable directly AND carries a

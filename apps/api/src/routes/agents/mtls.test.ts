@@ -1,3 +1,5 @@
+import { lockMfaPolicySettings } from '../../services/mfaPolicyActivation';
+vi.mock('../../services/mfaPolicyActivation', () => ({ lockMfaPolicySettings: vi.fn().mockResolvedValue(undefined) }));
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHash, generateKeyPairSync, sign } from 'crypto';
@@ -1824,6 +1826,27 @@ describe('POST /renew-cert/confirm — mode-gated assertion requirement (C2/I4)'
     expect(res.status).toBe(409);
     expect((await res.json()).state).toBe('revoked');
     expect(dbTransactionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('organization settings writers serialize with MFA policy changes', () => {
+  beforeEach(() => { vi.clearAllMocks(); mfaGate.deny = false; });
+  it.each([
+    ['mtls', { certLifetimeDays: 90, expiredCertPolicy: 'auto_reissue' }],
+    ['helper', { enabled: true }],
+    ['log-forwarding', { enabled: false }],
+  ])('%s takes the policy lock before reading the settings blob', async (path, payload) => {
+    dbSelectMock.mockReturnValueOnce({ from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    }) });
+    const response = await buildApp().request(`/agents/org/${ORG_ID}/settings/${path}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(payload),
+    });
+    expect(response.status).toBe(404);
+    expect(lockMfaPolicySettings).toHaveBeenCalledWith({ kind: 'organization', id: ORG_ID });
+    expect(vi.mocked(lockMfaPolicySettings).mock.invocationCallOrder[0]).toBeLessThan(dbSelectMock.mock.invocationCallOrder[0]!);
+    expect(dbUpdateMock).not.toHaveBeenCalled();
   });
 });
 

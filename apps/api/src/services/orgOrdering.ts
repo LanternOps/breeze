@@ -8,6 +8,7 @@
 // of the ORDER BY that LIMIT/OFFSET walks. Do not reintroduce a post-pagination
 // sort helper here.
 
+import { lockMfaPolicySettings } from './mfaPolicyActivation';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
@@ -53,6 +54,7 @@ export function sanitizeOrganizationOrder(
 export async function removeOrgFromPartnerOrder(partnerId: string, orgId: string): Promise<void> {
   await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
+      await lockMfaPolicySettings({ kind: 'partner', id: partnerId });
       const [current] = await db
         .select({ settings: partners.settings })
         .from(partners)
