@@ -1627,11 +1627,25 @@ jobs:
       # privilege -> remote/tools — which is harmless here (CGO_ENABLED=0 is
       # exactly the configuration remote/desktop's !cgo files are written for)
       # but is why it must stay out of the race step below.
+      # ./internal/winsvcinstall is the SCM half of `service install` for both the
+      # agent and the watchdog, extracted in #5299. Its package IS listed here
+      # rather than relying on internal/agentapp, which is NOT on this list (its
+      # inherited Windows reds are tracked in #2523) — a //go:build windows test
+      # left next to the installer would therefore have run on no job at all,
+      # which is the exact vacuous-gate failure the steps below guard against.
+      # Most of the package is deliberately untagged so the install sequence
+      # (sample before stop, stop before staging the binary, confirm RUNNING
+      # before claiming it) also executes in the Linux `test-agent` job; the
+      # windows-tagged half is the mgr adapter plus its command-line quoting and
+      # SCM-state mapping tests, which can only run here. Verified like logging
+      # and ipc: with GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets,
+      # its test binary compiles, and its Windows dependency graph contains no
+      # remote/desktop, no cgo, and no other first-party package.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/executor ./internal/winsvcinstall ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
