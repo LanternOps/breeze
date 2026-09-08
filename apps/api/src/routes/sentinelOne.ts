@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizations, s1Actions, s1Agents, s1Integrations, s1OrgMappings, s1Threats } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -483,6 +483,7 @@ sentinelOneRoutes.post(
 sentinelOneRoutes.get(
   '/status',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', statusQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -499,7 +500,12 @@ sentinelOneRoutes.get(
     }
     const scopedOrgId = orgResult && 'orgId' in orgResult ? orgResult.orgId : null;
 
-    const [integration] = await db
+    // The org-authorized helper reads only non-secret integration metadata
+    // across the partner RLS axis and confirms the org mapping. Device counts
+    // below remain in the caller's request context under forced RLS.
+    const integration = auth.scope === 'organization' && scopedOrgId
+      ? await getActiveS1IntegrationForOrg(scopedOrgId)
+      : (await db
       .select({
         id: s1Integrations.id,
         partnerId: s1Integrations.partnerId,
@@ -515,7 +521,7 @@ sentinelOneRoutes.get(
         eq(s1Integrations.partnerId, partnerResult.partnerId),
         eq(s1Integrations.isActive, true)
       ))
-      .limit(1);
+      .limit(1))[0];
 
     if (!integration) {
       return c.json({
@@ -532,8 +538,9 @@ sentinelOneRoutes.get(
       });
     }
 
-    // For org-scope callers, confirm the org is mapped before returning data
-    if (scopedOrgId) {
+    // The org helper already checked its mapping. Partner/system callers
+    // selecting an org must also confirm it belongs to this integration.
+    if (scopedOrgId && auth.scope !== 'organization') {
       const [mapping] = await db
         .select({ id: s1OrgMappings.id })
         .from(s1OrgMappings)
@@ -551,6 +558,8 @@ sentinelOneRoutes.get(
             mappedDevices: 0,
             infectedAgents: 0,
             activeThreats: 0,
+            highOrCriticalThreats: 0,
+            reportedThreatCount: 0,
             pendingActions: 0
           }
         });
@@ -572,6 +581,32 @@ sentinelOneRoutes.get(
       if (agentOrgCondition) agentConditions.push(agentOrgCondition);
       if (threatOrgCondition) threatConditions.push(threatOrgCondition);
       if (actionOrgCondition) actionConditions.push(actionOrgCondition);
+      // Actions have no integration FK; system orgCondition is unrestricted,
+      // so explicitly retain the selected partner axis for this component.
+      if (auth.scope === 'system') {
+        actionConditions.push(inArray(s1Actions.orgId, db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, partnerResult.partnerId))));
+      }
+    }
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && scopedOrgId) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ integration, mapped: true, summary: {
+          totalAgents: 0, mappedDevices: 0, infectedAgents: 0, activeThreats: 0,
+          highOrCriticalThreats: 0, pendingActions: 0, reportedThreatCount: 0,
+        } });
+      }
+      // Each security table has its own nullable device FK. SQL membership
+      // excludes unmapped rows and avoids materializing a fleet-sized ID list.
+      const siteDevices = db.select({ id: devices.id }).from(devices).where(and(
+        eq(devices.orgId, scopedOrgId), inArray(devices.siteId, perms.allowedSiteIds),
+      ));
+      agentConditions.push(inArray(s1Agents.deviceId, siteDevices));
+      threatConditions.push(inArray(s1Threats.deviceId, siteDevices));
+      actionConditions.push(inArray(s1Actions.deviceId, siteDevices));
     }
 
     const [agentSummary, threatSummary, actionSummary] = await Promise.all([
@@ -672,13 +707,11 @@ sentinelOneRoutes.get(
       if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
         return c.json({ error: 'Device not found or access denied' }, 403);
       }
-      // s1_threats.device_id is nullable; keep non-device-bound threat rows
-      // visible (they carry no site to gate on).
-      conditions.push(
-        allowedDeviceIds && allowedDeviceIds.length > 0
-          ? (or(isNull(s1Threats.deviceId), inArray(s1Threats.deviceId, allowedDeviceIds)) as SQL)
-          : isNull(s1Threats.deviceId),
-      );
+      // Unmapped threats have no authorized site, matching /status counts.
+      if (!allowedDeviceIds?.length) {
+        return c.json({ data: [], pagination: { total: 0, limit: query.limit ?? 100, offset: query.offset ?? 0 } });
+      }
+      conditions.push(inArray(s1Threats.deviceId, allowedDeviceIds));
     }
 
     if (query.integrationId) conditions.push(eq(s1Threats.integrationId, query.integrationId));
