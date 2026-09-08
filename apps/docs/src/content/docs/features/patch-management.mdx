@@ -149,7 +149,7 @@ The response includes:
 - **`deviceCount`** — number of accessible devices queued
 - **`queuedCommandIds`** — all successfully queued command IDs
 - **`dispatchedCommandIds`** — subset dispatched via active WebSocket connections
-- **`pendingCommandIds`** — subset queued but not yet dispatched (device offline)
+- **`pendingCommandIds`** — subset queued but not yet dispatched (device offline); delivered automatically on the device's next heartbeat, up to a 7-day deadline, and cancellable from the device's **Queued actions** list
 - **`failedDeviceIds`** — devices that could not be queued
 - **`skipped.missingDeviceIds`** — device IDs not found
 - **`skipped.inaccessibleDeviceIds`** — devices outside org access scope
@@ -222,7 +222,13 @@ Partial success is possible. Patches that could not be approved (e.g., already i
 
 A patch job is the unit of work that delivers approved patches to a set of devices. Jobs can be created automatically from a Configuration Policy patch schedule or manually via the UI or API. Each job targets a specific set of devices; when a job runs, the platform sends an `install_patches` command to each target device via its active WebSocket connection.
 
-Devices must be online (WebSocket connected) to receive the install command. If a device is offline when a job runs, it will be marked as pending within the job and will not receive the command until it reconnects, depending on how the job is configured.
+#### Offline devices
+
+By default (`offlineBehavior: queue` on the policy's Patch settings), an offline device isn't dropped from the job: the install command is queued and delivered automatically the next time the device successfully checks in, up to a **7-day** delivery deadline. The job stays open while it waits — it doesn't fail or time out just because a device hasn't reconnected yet. Set `offlineBehavior: skip` instead to leave offline devices out of the job rather than waiting for them.
+
+A still-queued install is superseded — not stacked — by the next scheduled occurrence of the same patch policy: if the schedule fires again before an offline device ever came back to receive the earlier install, that stale install is cancelled and the newer one takes its place, so a device that was offline for a while doesn't suddenly receive a backlog of outdated install attempts when it reconnects.
+
+You can see and cancel a still-waiting install from the device's own page (**Queued actions**), or from the job's device list.
 
 Scheduled patch jobs are reliable across restarts. If a job's scheduled run is ever lost before it reaches the queue — for example during a service restart — Breeze automatically detects the stranded job after its scheduled time and re-runs it, so no scheduled patch cycle is silently skipped.
 
@@ -403,6 +409,7 @@ Content-Type: application/json
 | `rebootMaxDeferrals` | integer | How many times one user may postpone a single restart before it proceeds (0–10). Must be at least `1` when `rebootAllowDeferral` is on. Default: `3` |
 | `rebootDeferralMinutes` | integer | How far each postponement pushes the restart out (5–1440 minutes). Default: `60`. `rebootDelayMinutes + rebootMaxDeferrals × rebootDeferralMinutes` may not exceed `10080` (7 days) — that sum is the hard deadline the restart is measured against, and the agent refuses a restart scheduled further out than that |
 | `exclusiveWindowsUpdate` | boolean | **Manage Windows Update exclusively through Breeze.** When enabled, Breeze disables the device's native Windows Update automatic-install channel, so updates on that device only arrive through Breeze's approval rings and schedule — no unexpected OS-initiated installs or reboots outside your policy. Turning it back off restores Windows' native update behavior. **Windows-only** — has no effect on macOS or Linux devices. Default: `false` |
+| `offlineBehavior` | string | What happens when a patch job targets a device that's offline: `queue` (default) holds the install and delivers it the moment the device reconnects, up to a 7-day deadline; `skip` leaves the device out of the job entirely rather than waiting for it. See [Offline devices](#offline-devices) below. |
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
@@ -523,7 +530,7 @@ The `GET /patches` response includes `source` (`microsoft`, `apple`, `linux`, `t
 ## Troubleshooting
 
 **Scan results not appearing.**
-Scanning is asynchronous — allow a few minutes for devices to report back. Confirm the device was online at scan time. If a device was offline when the scan was dispatched, the scan will run on its next connection to the platform.
+Scanning is asynchronous — allow a few minutes for devices to report back. If the device was offline when the scan was dispatched, it's queued and runs automatically on the device's next successful heartbeat (up to a 7-day deadline); cancellable from the device's **Queued actions** list in the meantime.
 
 **Patch approved but not deploying.**
 Approval does not automatically trigger a deployment. Once a patch is approved, it becomes eligible for installation, but a patch job must still be scheduled — either via a Configuration Policy schedule or by creating a job manually through the UI or API.

@@ -88,6 +88,21 @@ describe('verifyDeviceAccess — site scoping', () => {
   });
 });
 
+describe('verifyDeviceAccess — requireOnline guard', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('includes the live-connection hint and reconnect-tool pointer when the device is offline', async () => {
+    mockDeviceRow({ id: 'd1', orgId: 'org-1', siteId: 'site-A', hostname: 'offline-host', status: 'offline' });
+    const auth = makeAuth();
+    const result = await verifyDeviceAccess('d1', auth, /* requireOnline */ true);
+    expect(result).toEqual({
+      error:
+        'Device offline-host is not online (status: offline). This tool needs a live connection; ' +
+        'to run when the device reconnects use the Run Script / deployment tools instead.',
+    });
+  });
+});
+
 describe('verifyDeviceAccess — device-exact pinning (allowedDeviceIds)', () => {
   beforeEach(() => vi.clearAllMocks());
 
