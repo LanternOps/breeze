@@ -507,3 +507,66 @@ func TestSummaryDistinguishesAFailedStartFromADeliberateOne(t *testing.T) {
 		t.Errorf("deliberate-stop summary alarms the operator: %q", deliberate)
 	}
 }
+
+// Everything between the stop and the start runs on a service this command
+// took down itself. A bare "failed to copy the binary" reads as though nothing
+// changed, which is how a stranded host goes unnoticed — the error must say the
+// service is still stopped, and how to bring it back.
+func TestInstallSaysTheServiceIsStillStoppedWhenStagingFailsAfterAStop(t *testing.T) {
+	m := &fakeManager{existing: &fakeService{
+		beforeStart: []Status{{State: StateRunning}, {State: StateStopped}},
+	}}
+	req := newRequest(m, StartWhenRunningOrEnrolled(true))
+	req.Stage = func() (string, error) {
+		m.rec = append(m.rec, "stage")
+		return "", errors.New("failed to install service binary in protected Program Files location")
+	}
+
+	out, err := Install(m, req)
+	if err == nil {
+		t.Fatal("Install returned nil error after staging failed")
+	}
+	if !strings.Contains(err.Error(), "STILL STOPPED") {
+		t.Errorf("error does not warn that the service is still stopped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sc start BreezeAgent") {
+		t.Errorf("error does not say how to recover: %v", err)
+	}
+	if !strings.Contains(err.Error(), "protected Program Files location") {
+		t.Errorf("error lost the underlying cause: %v", err)
+	}
+	if !out.WasRunning || out.Installed {
+		t.Errorf("outcome = %+v, want WasRunning true and Installed false", out)
+	}
+}
+
+// The same failure on a service that was already stopped must NOT claim this
+// command took anything down.
+func TestInstallDoesNotClaimItStoppedAnAlreadyStoppedService(t *testing.T) {
+	m := &fakeManager{existing: &fakeService{beforeStart: []Status{{State: StateStopped}}}}
+	req := newRequest(m, StartWhenRunningOrEnrolled(true))
+	req.Stage = func() (string, error) { return "", errors.New("disk full") }
+
+	_, err := Install(m, req)
+	if err == nil {
+		t.Fatal("Install returned nil error after staging failed")
+	}
+	if strings.Contains(err.Error(), "STILL STOPPED") {
+		t.Errorf("error blames this install for a service it never stopped: %v", err)
+	}
+}
+
+// A reconfigure failure is the same class: it happens after the stop.
+func TestInstallSaysTheServiceIsStillStoppedWhenReconfigureFailsAfterAStop(t *testing.T) {
+	m := &fakeManager{existing: &fakeService{
+		beforeStart: []Status{{State: StateRunning}, {State: StateStopped}},
+		reconfErr:   errors.New("access is denied"),
+	}}
+	_, err := Install(m, newRequest(m, StartWhenRunningOrEnrolled(true)))
+	if err == nil {
+		t.Fatal("Install returned nil error after reconfigure failed")
+	}
+	if !strings.Contains(err.Error(), "STILL STOPPED") {
+		t.Errorf("error does not warn that the service is still stopped: %v", err)
+	}
+}

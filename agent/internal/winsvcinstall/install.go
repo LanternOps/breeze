@@ -293,12 +293,14 @@ func Install(m Manager, req Request) (Outcome, error) {
 	// error that says nothing about the real problem.
 	exePath, err := req.Stage()
 	if err != nil {
-		return out, err
+		return out, afterStopNote(err, out.WasRunning, req.Spec.Name)
 	}
 
 	if out.Existed {
 		if err := svcHandle.Reconfigure(req.Spec, exePath); err != nil {
-			return out, fmt.Errorf("failed to reconfigure the existing %q service: %w", req.Spec.Name, err)
+			return out, afterStopNote(
+				fmt.Errorf("failed to reconfigure the existing %q service: %w", req.Spec.Name, err),
+				out.WasRunning, req.Spec.Name)
 		}
 	} else {
 		svcHandle, err = m.Create(req.Spec, exePath)
@@ -345,6 +347,22 @@ func StartAndWait(m Manager, name string, t Timeouts) error {
 	}
 	defer func() { _ = s.Close() }()
 	return startAndWait(s, t)
+}
+
+// afterStopNote records that this attempt took a healthy service down.
+//
+// Everything between the stop and the start runs on a service this command
+// stopped itself, so a failure there is not "nothing changed" — it is a
+// previously-running agent left stopped. The bare staging or reconfigure error
+// reads as harmless, which is precisely how a stranded host goes unnoticed.
+func afterStopNote(err error, wasRunning bool, name string) error {
+	if !wasRunning {
+		return err
+	}
+	return fmt.Errorf(
+		"%w; the %q service was RUNNING and this attempt stopped it to replace the binary, "+
+			"so it is STILL STOPPED — recover with `sc start %s` once the cause above is fixed",
+		err, name, name)
 }
 
 // stopAndWait requests a stop and blocks until the service reports STOPPED.

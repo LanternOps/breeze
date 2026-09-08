@@ -54,8 +54,27 @@ var serviceInstallCmd = &cobra.Command{
 
 		// An enrolled host is one whose only management path IS the agent, so
 		// leaving it stopped after an upgrade strands the box (#5252/#5299).
-		existingCfg, _ := config.Load(cfgFile)
-		enrolled := existingCfg != nil && existingCfg.AgentID != ""
+		//
+		// config.Load returns (cfg, nil) when the file simply does not exist —
+		// a genuinely fresh host — and (nil, err) only when a config that IS
+		// there cannot be parsed. That second case is treated as ENROLLED: the
+		// file exists because something installed before, and silently
+		// downgrading an unreadable config to "fresh host" would leave stopped
+		// exactly the box we cannot diagnose, which is the failure this issue
+		// is about. The cost of guessing wrong is an un-enrolled agent sitting
+		// in waitForEnrollment, which is what the MSI does anyway.
+		existingCfg, cfgErr := config.Load(cfgFile)
+		agentID := ""
+		if existingCfg != nil {
+			agentID = existingCfg.AgentID
+		}
+		enrolled := hostLooksEnrolled(agentID, cfgErr)
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"Warning: could not read the agent config (%v).\n"+
+					"Assuming this host is enrolled and starting the service. "+
+					"Fix the config and re-run if that is wrong.\n", cfgErr)
+		}
 
 		var serviceExePath string
 		outcome, installErr := winsvcinstall.Install(m, winsvcinstall.Request{
