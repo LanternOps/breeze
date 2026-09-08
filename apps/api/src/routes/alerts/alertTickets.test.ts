@@ -30,7 +30,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authRef.current);
     await next();
   },
-  requirePermission: () => async (_c: any, next: any) => next()
+  requirePermission: () => async (c: any, next: any) => { c.set('permissions', {}); return next(); }
 }));
 
 vi.mock('../../db', () => ({
