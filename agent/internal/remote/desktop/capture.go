@@ -194,3 +194,27 @@ func describeCaptureFailure(capturer ScreenCapturer, probeErr error) error {
 	}
 	return fmt.Errorf("%w (last capture error: %w)", probeErr, last)
 }
+
+// swallowedCaptureError returns the text of the most recent error capturer
+// reported as a nil frame (see lastCaptureErrorReporter), or "" when the
+// capturer kept none, or does not implement the optional interface at all
+// (e.g. DXGI, which returns real errors instead of swallowing them), or is
+// nil.
+//
+// This is the mid-session counterpart to describeCaptureFailure: the no-video
+// watchdog (session_capture.go, #5300) uses it to give Session.StopWithReason
+// the same swallowed Win32 detail the startup probe attaches on the way in.
+func swallowedCaptureError(capturer ScreenCapturer) string {
+	if capturer == nil {
+		return ""
+	}
+	reporter, ok := capturer.(lastCaptureErrorReporter)
+	if !ok {
+		return ""
+	}
+	last := reporter.LastCaptureError()
+	if last == nil {
+		return ""
+	}
+	return last.Error()
+}

@@ -470,7 +470,7 @@ func TestDesktopDisconnectNotificationReleasesLeases(t *testing.T) {
 	if res := h.acquireDesktopLeases("sess-drop", 3, true); res != nil {
 		t.Fatalf("acquire failed: %+v", res)
 	}
-	h.sendDesktopDisconnectNotification("sess-drop")
+	h.sendDesktopDisconnectNotification("sess-drop", "")
 	_, released, _, _ := f.snapshot()
 	if len(released) != 2 {
 		t.Fatalf("peer disconnect must release every held role, got %+v", released)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
@@ -50,6 +50,18 @@ const PASTE_NOTICE_TTL_MS = 8_000;
 // operator must relaunch from the dashboard.
 const SESSION_ENDED_MESSAGE =
   'This remote session has ended. Relaunch it from the Breeze dashboard.';
+
+// #5300: a SessionEndedError carries a real server-provided reason (e.g. the
+// no-video watchdog's swallowed capture error) exactly when the caller found
+// one via fetchSessionEndedReason — SessionEndedError otherwise defaults to
+// SESSION_ENDED_DEFAULT_MESSAGE. Keep the relaunch call-to-action either way;
+// only the diagnostic clause changes.
+function sessionEndedDisplayMessage(err: SessionEndedError): string {
+  if (err.message && err.message !== SESSION_ENDED_DEFAULT_MESSAGE) {
+    return `${err.message} Relaunch it from the Breeze dashboard.`;
+  }
+  return SESSION_ENDED_MESSAGE;
+}
 
 // Shown when the WebSocket upgrade was refused before it completed. The
 // browser never exposes the HTTP status behind a failed handshake, so this
@@ -836,8 +848,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stopReconnect();
         setStatus('error');
         setConnectedAt(null);
-        setErrorMessage(SESSION_ENDED_MESSAGE);
-        onError(SESSION_ENDED_MESSAGE);
+        const msg = sessionEndedDisplayMessage(err);
+        setErrorMessage(msg);
+        onError(msg);
         reconnectInFlightRef.current = false;
         return;
       }
@@ -1020,9 +1033,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           userDisconnectRef.current = true;
           stopReconnect();
           setStatus('error');
-          setErrorMessage(SESSION_ENDED_MESSAGE);
+          const msg = sessionEndedDisplayMessage(err);
+          setErrorMessage(msg);
           setConnectedAt(null);
-          onError(SESSION_ENDED_MESSAGE);
+          onError(msg);
           return;
         }
         const msg = err instanceof Error ? err.message : 'Connection failed';

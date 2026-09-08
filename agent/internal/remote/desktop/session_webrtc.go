@@ -162,7 +162,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					}
 					m.StopSession(sessionID)
 					if m.OnSessionStopped != nil {
-						go m.OnSessionStopped(sessionID)
+						// session.LastStopReason() is "" here — a lifetime-policy
+						// stop goes through the plain Stop() path, not
+						// StopWithReason (#5300 is specifically about capture
+						// failures, not policy-driven expiry).
+						go m.OnSessionStopped(sessionID, session.LastStopReason())
 					}
 					return
 				}
@@ -618,7 +622,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 					logSelectedPair("disconnect-timeout")
 					m.StopSession(sessionID)
 					if m.OnSessionStopped != nil {
-						go m.OnSessionStopped(sessionID)
+						// #5300: carries the no-video watchdog's swallowed
+						// capture error through, when StopWithReason already
+						// closed peerConn and landed the session here.
+						go m.OnSessionStopped(sessionID, session.LastStopReason())
 					}
 				}
 			})
@@ -627,7 +634,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {
-				go m.OnSessionStopped(sessionID)
+				// #5300: same rationale as the disconnect-timeout branch above.
+				go m.OnSessionStopped(sessionID, session.LastStopReason())
 			}
 		}
 	})

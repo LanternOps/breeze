@@ -362,8 +362,17 @@ type SASResponse struct {
 // DesktopPeerDisconnectedNotice is sent by the user helper to the service
 // when a WebRTC peer connection drops (Failed or Closed). The service relays
 // this to the API so it can mark the session as disconnected.
+//
+// Reason (#5300) is the session's LastStopReason() at the time it stopped —
+// e.g. the Win32 error the no-video watchdog's capturer swallowed — so a
+// mid-session capture failure reaches the technician the same way the
+// startup probe path already does. Empty for every other stop path (peer
+// disconnect grace timeout, lifetime policy, operator stop). Older helpers
+// omit this field entirely; the service treats a missing Reason the same as
+// an empty one.
 type DesktopPeerDisconnectedNotice struct {
 	SessionID string `json:"sessionId"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // LaunchProcessRequest asks the user-role helper to launch a binary.
