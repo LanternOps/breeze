@@ -980,6 +980,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #5205 W05 (#5210): drains ai_operator_task_outbox into the
+    // ai-operator-coordinator queue W06's coordinator will consume. Same
+    // placement/precedent as intentOutboxPublisher above.
+    name: 'aiOperatorTaskOutboxPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskOutboxPublisher');
+      return {
+        init: m.initializeAiOperatorTaskOutboxPublisher,
+        shutdown: m.shutdownAiOperatorTaskOutboxPublisher,
+      };
+    },
+  },
+  {
     name: 'pamActuationWorker',
     placement: 'global',
     load: async () => {

@@ -159,7 +159,8 @@
       "quarantined": "Il dispositivo è in quarantena",
       "updating": "Il dispositivo è in aggiornamento",
       "pending": "Il dispositivo è in attesa di registrazione",
-      "notOnline": "Il dispositivo non è in linea"
+      "notOnline": "Il dispositivo non è in linea",
+      "unknown": "Il dispositivo non è ancora stato controllato"
     },
     "confirm": {
       "reboot": {
@@ -642,7 +643,9 @@
     "rail": "rail",
     "strip": "striscia",
     "networkAsset": "Asset di rete",
-    "networkAssets": "Asset di rete (elenco)"
+    "networkAssets": "Asset di rete (elenco)",
+    "operatorTasks": "Attività dell'operatore",
+    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Ultimo contatto",
       "serial": "Seriale",
       "assetTag": "Tag risorsa",
-      "location": "Posizione"
+      "location": "Posizione",
+      "source": "Origine"
     },
     "sortBy": {
       "class": "Ordina per classe",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Ordina per ultimo rilevamento",
       "serial": "Ordina per numero di serie",
       "assetTag": "Ordina per tag risorsa",
-      "location": "Ordina per posizione"
+      "location": "Ordina per posizione",
+      "source": "Ordina per origine"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "Modifica {{name}}",
     "deleteManualAsset": "Elimina {{name}}",
     "edit": "Modifica",
-    "delete": "Elimina"
+    "delete": "Elimina",
+    "source": {
+      "scan": "Scansione",
+      "unifi": "UniFi",
+      "manual": "Manuale"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -1961,14 +1971,17 @@
     "unknownSite": "Sito sconosciuto",
     "viewInstallationGuide": "Visualizza la guida di installazione",
     "importFromRmm": "Importa da un altro RMM",
-    "addAsset": "Aggiungi",
-    "installAgent": "Installa agente…",
-    "addManualAssetAction": "Aggiungi risorsa manualmente…",
     "hiddenNonAgentNotice": "{{count}} {{class}} nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivi di rete",
       "manual": "risorse manuali",
       "mixed": "dispositivi"
+    },
+    "addMenu": {
+      "trigger": "Aggiungi",
+      "installAgent": "Installa agente…",
+      "addNetworkAsset": "Aggiungi asset di rete…",
+      "addManualAsset": "Aggiungi risorsa manualmente…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Tag",
       "tagsPlaceholder": "Separati da virgole",
       "notes": "Note"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Aggiungi asset di rete",
+    "submit": "Aggiungi asset",
+    "identityHint": "Fornisci almeno uno tra: indirizzo IP, hostname o URL.",
+    "urlRequiredHint": "Gli asset di tipo sito web o servizio richiedono un URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitorare questo asset con un controllo HTTP?",
+      "actions": {
+        "addHttpCheck": "Aggiungi un controllo HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nome",
+      "ipAddress": "Indirizzo IP",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "Indirizzo MAC",
+      "manufacturer": "Produttore",
+      "model": "Modello",
+      "tags": "Tag",
+      "notes": "Note"
+    },
+    "placeholders": {
+      "label": "es. Stampante magazzino",
+      "selectSite": "Seleziona una sede",
+      "tags": "Separati da virgola, es. ingresso, piano-2"
+    },
+    "toasts": {
+      "created": "Asset di rete creato",
+      "createFailed": "Impossibile creare l’asset di rete"
     }
   }
 }

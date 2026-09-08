@@ -159,7 +159,8 @@
       "quarantined": "L’appareil est mis en quarantaine",
       "updating": "L’appareil se met à jour",
       "pending": "L’appareil est en attente d’inscription",
-      "notOnline": "L’appareil n’est pas en ligne"
+      "notOnline": "L’appareil n’est pas en ligne",
+      "unknown": "L'appareil n'a pas encore été sondé"
     },
     "confirm": {
       "reboot": {
@@ -642,7 +643,9 @@
     "rail": "Chemin de fer",
     "strip": "Strip",
     "networkAsset": "Actif réseau",
-    "networkAssets": "Actifs réseau"
+    "networkAssets": "Actifs réseau",
+    "operatorTasks": "Tâches de l'opérateur",
+    "operatorTasksForThisDevice": "Tâches de l'opérateur IA pour cet appareil"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Dernière apparition",
       "serial": "N° de série",
       "assetTag": "Étiquette d'actif",
-      "location": "Emplacement"
+      "location": "Emplacement",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Trier par classe",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Trier par dernière heure vue",
       "serial": "Trier par numéro de série",
       "assetTag": "Trier par étiquette d'actif",
-      "location": "Trier par emplacement"
+      "location": "Trier par emplacement",
+      "source": "Trier par source"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "Modifier {{name}}",
     "deleteManualAsset": "Supprimer {{name}}",
     "edit": "Modifier",
-    "delete": "Supprimer"
+    "delete": "Supprimer",
+    "source": {
+      "scan": "Analyse",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -1961,14 +1971,17 @@
       "title": "Certains appareils sélectionnés sont retirés"
     },
     "importFromRmm": "Importer depuis un autre RMM",
-    "addAsset": "Ajouter",
-    "installAgent": "Installer l'agent…",
-    "addManualAssetAction": "Ajouter un actif manuellement…",
     "hiddenNonAgentNotice": "{{count}} {{class}} masqués — {{fields}} s'applique uniquement aux appareils avec agent.",
     "hiddenNonAgentClassLabel": {
       "network": "appareils réseau",
       "manual": "actifs manuels",
       "mixed": "appareils"
+    },
+    "addMenu": {
+      "trigger": "Ajouter",
+      "installAgent": "Installer l'agent…",
+      "addNetworkAsset": "Ajouter un actif réseau…",
+      "addManualAsset": "Ajouter un actif manuellement…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Étiquettes",
       "tagsPlaceholder": "Séparées par des virgules",
       "notes": "Notes"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Ajouter un actif réseau",
+    "submit": "Ajouter l'actif",
+    "identityHint": "Fournissez au moins un des éléments suivants : adresse IP, nom d'hôte ou URL.",
+    "urlRequiredHint": "Les actifs de type site Web ou service nécessitent une URL.",
+    "postCreate": {
+      "monitorPrompt": "Surveiller cet actif avec une vérification HTTP?",
+      "actions": {
+        "addHttpCheck": "Ajouter une vérification HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nom",
+      "ipAddress": "Adresse IP",
+      "hostname": "Nom d'hôte",
+      "url": "URL",
+      "macAddress": "Adresse MAC",
+      "manufacturer": "Fabricant",
+      "model": "Modèle",
+      "tags": "Étiquettes",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "p. ex. Imprimante entrepôt",
+      "selectSite": "Sélectionner un site",
+      "tags": "Séparées par des virgules, p. ex. hall, étage-2"
+    },
+    "toasts": {
+      "created": "Actif réseau créé",
+      "createFailed": "Échec de la création de l'actif réseau"
     }
   }
 }

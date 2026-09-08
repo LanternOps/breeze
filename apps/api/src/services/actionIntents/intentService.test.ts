@@ -1181,8 +1181,15 @@ describe('createActionIntent — approver fan-out', () => {
       status: 'cancelled',
       errorCode: 'no_eligible_approvers',
     });
-    // Outbox row is still written (creation itself still happened).
-    expect(dbState.insertedOutboxValues).toHaveLength(1);
+    // Outbox rows: creation itself still happened, and #5205 W05 (#5210) now
+    // also publishes the terminal cancel — the fail-closed "no eligible
+    // approvers" path was one of the terminal writers that published nothing.
+    expect(dbState.insertedOutboxValues).toHaveLength(2);
+    // runHumanFanout's fail-closed cancel writes its intent_cancelled row
+    // BEFORE createActionIntent's own unconditional intent_created insert
+    // that follows it — so cancelled is [0], created is [1].
+    expect(dbState.insertedOutboxValues[0]).toMatchObject({ eventType: 'intent_cancelled' });
+    expect(dbState.insertedOutboxValues[1]).toMatchObject({ eventType: 'intent_created' });
     // No push for a cancelled intent.
     expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
     expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(

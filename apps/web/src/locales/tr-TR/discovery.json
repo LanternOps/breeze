@@ -707,6 +707,8 @@
     "iot": "Nesnelerin İnterneti",
     "camera": "Kamera",
     "nas": "NAS",
+    "website": "Web Sitesi",
+    "service": "Hizmet",
     "unknown": "Bilinmiyor",
     "patchPanel": "Bağlantı Paneli",
     "other": "Diğer"

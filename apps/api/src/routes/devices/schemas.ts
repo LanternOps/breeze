@@ -149,6 +149,46 @@ export const linkManualAssetSchema = z.object({
   { message: 'Provide exactly one of deviceId or discoveredAssetId' },
 );
 
+
+// POST /devices/network — hand-entered network asset (#5213 W02). `label` is
+// REQUIRED: W01 left a known gap where a url-only row falls through to an
+// empty display name in the unified-list DTO (network.ts's hostname
+// precedence is label > hostname > url > ip) — requiring it here closes that
+// at the door. At least one of ipAddress/hostname/url is required, mirroring
+// the DB CHECK discovered_assets_manual_identity_chk so a bad payload gets a
+// clean 400 instead of falling through to a raw 23514.
+// Base object shape shared by create and update — kept separate from the
+// `.refine()`-wrapped create schema below because zod 4's refine wrapper
+// cannot be `.partial()`ed directly (no `innerType()` unwrap, unlike zod 3).
+const networkAssetFields = z.object({
+  orgId: z.string().guid(),
+  siteId: z.string().guid(),
+  label: z.string().min(1).max(255),
+  assetType: z.enum(DISCOVERED_ASSET_TYPES).default('unknown'),
+  // zod 4 dropped `z.string().ip()` in favor of the standalone ipv4/ipv6
+  // validators; `inet` in Postgres accepts either family.
+  ipAddress: z.union([z.ipv4(), z.ipv6()]).nullish(),
+  hostname: z.string().max(255).nullish(),
+  url: z.string().url().max(2048).nullish(),
+  macAddress: z.string().max(17).nullish(),
+  manufacturer: z.string().max(255).nullish(),
+  model: z.string().max(255).nullish(),
+  notes: z.string().nullish(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const createNetworkAssetSchema = networkAssetFields.refine(
+  (v) => Boolean(v.ipAddress || v.hostname || v.url),
+  { message: 'Provide at least one of: IP address, hostname, or URL' },
+);
+
+// PATCH /devices/network/:id — orgId/siteId are immutable once created (a
+// network asset does not move orgs through this route), so they are omitted
+// rather than merely optional.
+export const updateNetworkAssetSchema = networkAssetFields
+  .partial()
+  .omit({ orgId: true, siteId: true });
+
 export const updateDeviceSchema = z.object({
   // Nullable so the inline-edit "clear" path (empty input → PATCH {displayName:null})
   // can unset the name; the devices.display_name column is nullable. See PR #787.

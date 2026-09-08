@@ -67,6 +67,10 @@ function networkFieldValue(field: string, d: Device): { applicable: boolean; val
       return { applicable: true, value: d.manufacturer ?? null };
     case 'hardware.model':
       return { applicable: true, value: d.model ?? null };
+    // #5213 — provenance (scan | unifi | manual). Network-only, same as the
+    // other discovered-asset fields above.
+    case 'source':
+      return { applicable: true, value: d.source ?? null };
     case 'daysSinceLastSeen': {
       const t = Date.parse(d.lastSeen);
       return { applicable: true, value: Number.isNaN(t) ? null : (Date.now() - t) / DAY_MS };

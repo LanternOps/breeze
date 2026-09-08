@@ -159,7 +159,8 @@
       "quarantined": "El dispositivo está en cuarentena",
       "updating": "El dispositivo se está actualizando",
       "pending": "El dispositivo está pendiente de inscripción",
-      "notOnline": "El dispositivo no está en línea"
+      "notOnline": "El dispositivo no está en línea",
+      "unknown": "El dispositivo aún no ha sido probado"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — la Terminal remota necesita un agente conectado. Los comandos en cola se ejecutan al reconectar.",
@@ -642,7 +643,9 @@
     "rail": "carril",
     "strip": "banda",
     "networkAsset": "Activo de red",
-    "networkAssets": "Activos de red"
+    "networkAssets": "Activos de red",
+    "operatorTasks": "Tareas del operador",
+    "operatorTasksForThisDevice": "Tareas del operador de IA para este dispositivo"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Visto por última vez",
       "serial": "N.º de serie",
       "assetTag": "Etiqueta de activo",
-      "location": "Ubicación"
+      "location": "Ubicación",
+      "source": "Origen"
     },
     "sortBy": {
       "class": "Ordenar por clase",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Ordenar por última hora vista",
       "serial": "Ordenar por número de serie",
       "assetTag": "Ordenar por etiqueta de activo",
-      "location": "Ordenar por ubicación"
+      "location": "Ordenar por ubicación",
+      "source": "Ordenar por origen"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "Editar {{name}}",
     "deleteManualAsset": "Eliminar {{name}}",
     "edit": "Editar",
-    "delete": "Eliminar"
+    "delete": "Eliminar",
+    "source": {
+      "scan": "Escaneo",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -1961,14 +1971,17 @@
       "title": "Algunos dispositivos seleccionados están quitados"
     },
     "importFromRmm": "Importar desde otro RMM",
-    "addAsset": "Agregar",
-    "installAgent": "Instalar agente…",
-    "addManualAssetAction": "Agregar activo manualmente…",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de red",
       "manual": "activos manuales",
       "mixed": "dispositivos"
+    },
+    "addMenu": {
+      "trigger": "Agregar",
+      "installAgent": "Instalar agente…",
+      "addNetworkAsset": "Agregar activo de red…",
+      "addManualAsset": "Agregar activo manualmente…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Etiquetas",
       "tagsPlaceholder": "Separadas por comas",
       "notes": "Notas"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Agregar activo de red",
+    "submit": "Agregar activo",
+    "identityHint": "Proporcione al menos uno: dirección IP, nombre de host o URL.",
+    "urlRequiredHint": "Los activos de tipo sitio web o servicio requieren una URL.",
+    "postCreate": {
+      "monitorPrompt": "¿Desea supervisar este activo con una verificación HTTP?",
+      "actions": {
+        "addHttpCheck": "Agregar verificación HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nombre",
+      "ipAddress": "Dirección IP",
+      "hostname": "Nombre de host",
+      "url": "URL",
+      "macAddress": "Dirección MAC",
+      "manufacturer": "Fabricante",
+      "model": "Modelo",
+      "tags": "Etiquetas",
+      "notes": "Notas"
+    },
+    "placeholders": {
+      "label": "p. ej., Impresora del almacén",
+      "selectSite": "Seleccionar un sitio",
+      "tags": "Separadas por comas, p. ej., lobby, piso-2"
+    },
+    "toasts": {
+      "created": "Activo de red creado",
+      "createFailed": "No se pudo crear el activo de red"
     }
   }
 }

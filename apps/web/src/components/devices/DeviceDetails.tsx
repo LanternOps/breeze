@@ -32,6 +32,7 @@ import {
   Link2,
   Cloud,
   History,
+  Bot,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -73,6 +74,7 @@ import { decodeScriptExecutionId } from "@/lib/deviceScriptsLink";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import DeviceBackupTab from "../backup/DeviceBackupTab";
 import DeviceTicketsTab from "../tickets/DeviceTicketsTab";
+import OperatorTaskActivityFeed from "../aiOperator/OperatorTaskActivityFeed";
 import DeviceAnomaliesPanel from "./DeviceAnomaliesPanel";
 import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
@@ -113,7 +115,8 @@ type CoreTab =
   | "peripherals"
   | "backup"
   | "linked-profiles"
-  | "tickets";
+  | "tickets"
+  | "operator-tasks";
 
 /**
  * Extension-contributed `device.detail.tabs` tab id:
@@ -156,7 +159,8 @@ const statusLabels: Record<DeviceStatus, string> = {
   quarantined: "Quarantined",
   updating: "Updating",
   pending: "Pending",
-  // No detail page exists for a manual asset in v1 (#4622 W04 spec), so this
+  // No detail page exists for a manual asset in v1 (#4622 W04 spec), and
+  // `unknown` is only produced for unprobed network rows (#5213), so this
   // never renders today — kept for the shared DeviceStatus exhaustiveness.
   unknown: "Unknown",
 };
@@ -210,6 +214,7 @@ const VALID_TABS: CoreTab[] = [
   "backup",
   "linked-profiles",
   "tickets",
+  "operator-tasks",
 ];
 
 // Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
@@ -449,6 +454,12 @@ export default function DeviceDetails({
       label: t("deviceDetails.tickets"),
       icon: <Ticket className="h-4 w-4" />,
       title: t("deviceDetails.ticketsLinkedToThisDevice"),
+    },
+    {
+      id: "operator-tasks",
+      label: t("deviceDetails.operatorTasks"),
+      icon: <Bot className="h-4 w-4" />,
+      title: t("deviceDetails.operatorTasksForThisDevice"),
     },
     {
       id: "eventlog",
@@ -866,6 +877,10 @@ export default function DeviceDetails({
 
       {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
 
+      {activeTab === "operator-tasks" && (
+        <OperatorTaskActivityFeed deviceId={device.id} />
+      )}
+
       {activeTab === "scripts" && (
         <DeviceScriptHistory
           deviceId={device.id}
@@ -939,9 +954,10 @@ export default function DeviceDetails({
       {activeTab === "backup" && (
         <DeviceBackupTab
           deviceId={device.id}
-          // DeviceBackupTab predates the manual-asset `unknown` status
-          // (#4622 W04) and has no detail page to reach anyway — degrade to
-          // "status not known" rather than widening its own literal union.
+          // 'unknown' (#5213 network rows, #4622 manual assets) never reaches
+          // this agent-only detail page; DeviceBackupTab's status prop predates
+          // that value, so treat it as "not provided" rather than widening a
+          // backup-module type for a status it can never actually see.
           deviceStatus={device.status === "unknown" ? undefined : device.status}
           timezone={effectiveTimezone}
         />

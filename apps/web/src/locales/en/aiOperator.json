@@ -1,0 +1,119 @@
+{
+  "taskState": {
+    "queued": "Queued",
+    "running": "Running",
+    "waiting": "Waiting",
+    "paused": "Paused",
+    "stopping": "Stopping",
+    "completed": "Completed",
+    "partial": "Partial",
+    "handedOff": "Handed off",
+    "cancelled": "Cancelled",
+    "failed": "Failed",
+    "expired": "Expired"
+  },
+  "operatorTaskDetail": {
+    "loading": "Loading task...",
+    "agent": "Handled by {{name}}",
+    "target": {
+      "label": "Target",
+      "none": "No device target"
+    },
+    "origin": {
+      "label": "Origin",
+      "manual": "Manual",
+      "alert": "Alert",
+      "ticket": "Ticket",
+      "schedule": "Schedule",
+      "anomaly": "Anomaly",
+      "sweep": "Sweep",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "State"
+    },
+    "phase": {
+      "investigate": "Investigate",
+      "plan": "Plan",
+      "execute": "Execute",
+      "verify": "Verify",
+      "document": "Document"
+    },
+    "waitReason": {
+      "label": "Waiting on",
+      "approval": "Approval",
+      "information": "Information",
+      "execution": "Execution",
+      "device": "Device",
+      "maintenanceWindow": "Maintenance window",
+      "verificationWindow": "Verification window"
+    },
+    "nextAction": {
+      "label": "Next action",
+      "approveInInbox": "Approve in inbox",
+      "answerQuestion": "Answer a question",
+      "waitingForDevice": "Waiting for device",
+      "waitingForMaintenanceWindow": "Waiting for maintenance window",
+      "waitingForVerificationWindow": "Waiting for verification window",
+      "waitingForExecution": "Waiting for execution",
+      "queued": "Queued for admission",
+      "inProgress": "In progress",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "handedOff": "Handed off",
+      "none": "Nothing pending"
+    },
+    "deadline": {
+      "label": "Deadline",
+      "none": "No deadline"
+    },
+    "outcome": {
+      "label": "Outcome",
+      "verifiedResolved": "Verified resolved",
+      "investigationComplete": "Investigation complete",
+      "reportDelivered": "Report delivered",
+      "noActionNeeded": "No action needed",
+      "trialComplete": "Trial complete",
+      "unresolved": "Unresolved",
+      "unknownEffect": "Unknown effect"
+    },
+    "handoffSummary": {
+      "label": "Handoff summary"
+    },
+    "operations": {
+      "heading": "Operations",
+      "empty": "No operations yet.",
+      "attempt": "Attempt {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Reserved",
+      "dispatched": "Dispatched",
+      "dispatchFailed": "Dispatch failed",
+      "cancelled": "Cancelled",
+      "abandoned": "Abandoned"
+    },
+    "resultState": {
+      "pending": "Pending",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "unknown": "Unknown",
+      "superseded": "Superseded"
+    },
+    "runs": {
+      "heading": "Linked runs",
+      "empty": "No linked runs yet."
+    },
+    "notFound": {
+      "title": "Task not found",
+      "description": "This task doesn't exist, or you don't have access to it."
+    },
+    "errors": {
+      "load": "The task failed to load."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Loading Operator tasks...",
+    "loadFailed": "Operator tasks failed to load.",
+    "empty": "No Operator tasks for this device."
+  }
+}

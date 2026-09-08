@@ -16,6 +16,7 @@ import RemoveDeviceDialog from './RemoveDeviceDialog';
 import { BulkPurgeDialog } from './BulkPurgeDialog';
 import AddDeviceModal from './AddDeviceModal';
 import ManualAssetModal from './ManualAssetModal';
+import AddNetworkAssetModal from './AddNetworkAssetModal';
 import RmmCustomFieldImport from './RmmCustomFieldImport';
 import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
@@ -154,20 +155,23 @@ const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] 
  * opens ManualAssetModal). Used in both the header and the empty-state
  * duplicate so the two never drift.
  *
- * A THIRD item — "Add network asset…" (#5228, hand-entered discovered_assets
- * rows) — is not on `main` yet. This is the obvious, tested slot for it: add
- * one more `<button>` of the same shape inside the dropdown, gated on
- * whatever entry-point flag/prop #5228 ships, rather than a second adjacent
- * control.
+ * The THIRD item — *Add network asset…* (#5213 W02, hand-entered
+ * discovered_assets rows, opens AddNetworkAssetModal) — landed on `main` in
+ * parallel as its own inline split menu; this merge folds it into this shared
+ * component so there is exactly ONE Add control on the page, and so the two
+ * instances no longer share a single open/closed flag (main's did, which made
+ * the header and empty-state menus open together).
  */
 function AddAssetMenu({
   onInstallAgent,
   onAddManualAsset,
+  onAddNetworkAsset,
   variant,
   testIdPrefix,
 }: {
   onInstallAgent: () => void;
   onAddManualAsset: () => void;
+  onAddNetworkAsset: () => void;
   variant: 'primary' | 'secondary';
   /** Distinguishes the header instance from the empty-state duplicate for testids. */
   testIdPrefix: string;
@@ -207,13 +211,13 @@ function AddAssetMenu({
         }
       >
         <Plus className="h-4 w-4" />
-        {t('devicesPage.addAsset')}
+        {t('devicesPage.addMenu.trigger')}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
       {open && (
         <div
           role="menu"
-          data-testid={`${testIdPrefix}-menu`}
+          data-testid={testIdPrefix}
           className="absolute right-0 z-20 mt-1 w-56 rounded-md border bg-card shadow-lg"
         >
           <button
@@ -226,7 +230,7 @@ function AddAssetMenu({
             }}
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
           >
-            {t('devicesPage.installAgent')}
+            {t('devicesPage.addMenu.installAgent')}
           </button>
           <button
             type="button"
@@ -238,9 +242,20 @@ function AddAssetMenu({
             }}
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
           >
-            {t('devicesPage.addManualAssetAction')}
+            {t('devicesPage.addMenu.addManualAsset')}
           </button>
-          {/* Slot for #5228's "Add network asset…" entry point. */}
+          <button
+            type="button"
+            role="menuitem"
+            data-testid={`${testIdPrefix}-network-asset`}
+            onClick={() => {
+              setOpen(false);
+              onAddNetworkAsset();
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+          >
+            {t('devicesPage.addMenu.addNetworkAsset')}
+          </button>
         </div>
       )}
     </div>
@@ -303,6 +318,12 @@ export default function DevicesPage() {
   // the hash only needs to say "the add flow is open", never which asset.
   const [showAddManualAsset, setShowAddManualAsset] = useHashState<boolean>(false, (h) => (h === 'add-manual-asset' ? true : undefined));
   const [editingManualAsset, setEditingManualAsset] = useState<Device | null>(null);
+  // Manual network asset (#5213 W02) — the third item of the shared
+  // AddAssetMenu below. Its own hash entry (not nested under showAddDevice),
+  // same shape as the manual-asset flow above.
+  const [showAddNetworkAsset, setShowAddNetworkAsset] = useHashState<boolean>(false, (h) =>
+    h === 'add-network-asset' ? true : undefined,
+  );
   // "Import from another RMM" (#3257 W09): the wizard owns its OWN step hash
   // (#import-definitions / #import-values) internally, so this only tracks
   // whether either of those hashes means the wizard is open at all.
@@ -772,6 +793,14 @@ export default function DevicesPage() {
         responseTimeMs: typeof d.responseTimeMs === 'number' ? d.responseTimeMs : null,
         monitoringEnabled: d.monitoringEnabled === true,
         enrolledAt: d.enrolledAt as string | undefined,
+        // #5213 — provenance (scan | unifi | manual) and the website/service
+        // identity. Anything else degrades to null rather than leaking an
+        // unexpected API value through the type.
+        source:
+          d.source === 'scan' || d.source === 'unifi' || d.source === 'manual'
+            ? d.source
+            : null,
+        url: typeof d.url === 'string' ? d.url : null,
       }));
 
       // Manual arm (#4622 W04): normalize manual_assets rows into the same
@@ -2087,9 +2116,13 @@ export default function DevicesPage() {
           </button>
           <AddAssetMenu
             variant="primary"
-            testIdPrefix="add-asset-menu"
+            testIdPrefix="devices-page-add-menu"
             onInstallAgent={() => setShowAddDevice(true)}
             onAddManualAsset={() => setShowAddManualAsset(true)}
+            onAddNetworkAsset={() => {
+              window.location.hash = 'add-network-asset';
+              setShowAddNetworkAsset(true);
+            }}
           />
         </div>
       </div>
@@ -2164,9 +2197,13 @@ export default function DevicesPage() {
             <div className="flex gap-3">
               <AddAssetMenu
                 variant="primary"
-                testIdPrefix="add-asset-menu-empty"
+                testIdPrefix="devices-page-empty-add-menu"
                 onInstallAgent={() => setShowAddDevice(true)}
                 onAddManualAsset={() => setShowAddManualAsset(true)}
+                onAddNetworkAsset={() => {
+                  window.location.hash = 'add-network-asset';
+                  setShowAddNetworkAsset(true);
+                }}
               />
               <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
                 {t('devicesPage.viewInstallationGuide')}
@@ -2248,6 +2285,14 @@ export default function DevicesPage() {
       )}
 
       <AddDeviceModal isOpen={showAddDevice} onClose={() => setShowAddDevice(false)} />
+      <AddNetworkAssetModal
+        isOpen={showAddNetworkAsset}
+        onClose={() => {
+          window.location.hash = '';
+          setShowAddNetworkAsset(false);
+        }}
+        onCreated={() => { void refreshDevices(); }}
+      />
 
       <ManualAssetModal
         isOpen={showAddManualAsset || editingManualAsset != null}

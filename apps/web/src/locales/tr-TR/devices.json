@@ -159,7 +159,8 @@
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
-      "notOnline": "Cihaz çevrimiçi değil"
+      "notOnline": "Cihaz çevrimiçi değil",
+      "unknown": "Cihaz henüz test edilmedi"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Uzak Terminalin bağlı bir aracıya ihtiyacı var. Sıraya alınan komutlar yeniden bağlanıldığında çalışmaya devam eder.",
@@ -642,7 +643,9 @@
     "rail": "demiryolu",
     "strip": "şerit",
     "networkAsset": "Ağ varlığı",
-    "networkAssets": "Ağ varlıkları"
+    "networkAssets": "Ağ varlıkları",
+    "operatorTasks": "Operatör Görevleri",
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
       "assetTag": "Varlık Etiketi",
-      "location": "Konum"
+      "location": "Konum",
+      "source": "Kaynak"
     },
     "sortBy": {
       "class": "Sınıfa göre sırala",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
-      "location": "Konuma göre sırala"
+      "location": "Konuma göre sırala",
+      "source": "Kaynağa göre sırala"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "{{name}} düzenle",
     "deleteManualAsset": "{{name}} sil",
     "edit": "Düzenle",
-    "delete": "Sil"
+    "delete": "Sil",
+    "source": {
+      "scan": "Tarama",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -1961,14 +1971,17 @@
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
     "importFromRmm": "Başka bir RMM'den içe aktar",
-    "addAsset": "Ekle",
-    "installAgent": "Aracı yükle…",
-    "addManualAssetAction": "Varlığı manuel olarak ekle…",
     "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
     "hiddenNonAgentClassLabel": {
       "network": "ağ cihazı",
       "manual": "manuel varlık",
       "mixed": "cihaz"
+    },
+    "addMenu": {
+      "trigger": "Ekle",
+      "installAgent": "Aracı yükle…",
+      "addNetworkAsset": "Ağ varlığı ekle…",
+      "addManualAsset": "Varlığı manuel olarak ekle…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Etiketler",
       "tagsPlaceholder": "Virgülle ayrılmış",
       "notes": "Notlar"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Ağ varlığı ekle",
+    "submit": "Varlık ekle",
+    "identityHint": "En az birini belirtin: IP adresi, ana bilgisayar adı veya URL.",
+    "urlRequiredHint": "Web sitesi ve hizmet varlıkları bir URL gerektirir.",
+    "postCreate": {
+      "monitorPrompt": "Bu varlık bir HTTP kontrolüyle izlensin mi?",
+      "actions": {
+        "addHttpCheck": "HTTP kontrolü ekle"
+      }
+    },
+    "fields": {
+      "label": "Ad",
+      "ipAddress": "IP adresi",
+      "hostname": "Ana bilgisayar adı",
+      "url": "URL",
+      "macAddress": "MAC adresi",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "tags": "Etiketler",
+      "notes": "Notlar"
+    },
+    "placeholders": {
+      "label": "örn. Depo yazıcısı",
+      "selectSite": "Bir konum seçin",
+      "tags": "Virgülle ayrılmış, örn. lobi, kat-2"
+    },
+    "toasts": {
+      "created": "Ağ varlığı oluşturuldu",
+      "createFailed": "Ağ varlığı oluşturulamadı"
     }
   }
 }

@@ -1150,6 +1150,7 @@ export * from './ai';
 export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
+export * from './aiOperator';
 export * from './orgNarrative';
 export * from './ticketTriage';
 export * from './aiAgentImpact';

@@ -159,7 +159,8 @@
       "quarantined": "Device is quarantined",
       "updating": "Device is updating",
       "pending": "Device is pending enrollment",
-      "notOnline": "Device is not online"
+      "notOnline": "Device is not online",
+      "unknown": "Device has not been probed yet"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Remote Terminal needs a connected agent. Queued commands still run on reconnect.",
@@ -642,7 +643,9 @@
     "rail": "rail",
     "strip": "strip",
     "networkAsset": "Network asset",
-    "networkAssets": "Network assets"
+    "networkAssets": "Network assets",
+    "operatorTasks": "Operator Tasks",
+    "operatorTasksForThisDevice": "AI Operator tasks for this device"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Last Seen",
       "serial": "Serial",
       "assetTag": "Asset Tag",
-      "location": "Location"
+      "location": "Location",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Sort by class",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Sort by last seen time",
       "serial": "Sort by serial number",
       "assetTag": "Sort by asset tag",
-      "location": "Sort by location"
+      "location": "Sort by location",
+      "source": "Sort by source"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "Edit {{name}}",
     "deleteManualAsset": "Delete {{name}}",
     "edit": "Edit",
-    "delete": "Delete"
+    "delete": "Delete",
+    "source": {
+      "scan": "Scan",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -1961,14 +1971,17 @@
     "unknownOrg": "Unknown Org",
     "unknownSite": "Unknown Site",
     "viewInstallationGuide": "View installation guide",
-    "addAsset": "Add",
-    "installAgent": "Install agent…",
-    "addManualAssetAction": "Add asset manually…",
     "hiddenNonAgentNotice": "{{count}} {{class}} hidden — {{fields}} applies to agent devices only.",
     "hiddenNonAgentClassLabel": {
       "network": "network devices",
       "manual": "manual assets",
       "mixed": "devices"
+    },
+    "addMenu": {
+      "trigger": "Add",
+      "installAgent": "Install agent…",
+      "addNetworkAsset": "Add network asset…",
+      "addManualAsset": "Add asset manually…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Tags",
       "tagsPlaceholder": "Comma-separated",
       "notes": "Notes"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Add network asset",
+    "submit": "Add asset",
+    "identityHint": "Provide at least one of: IP address, hostname, or URL.",
+    "urlRequiredHint": "Website and service assets require a URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitor this asset with an HTTP check?",
+      "actions": {
+        "addHttpCheck": "Add an HTTP check"
+      }
+    },
+    "fields": {
+      "label": "Name",
+      "ipAddress": "IP address",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "MAC address",
+      "manufacturer": "Manufacturer",
+      "model": "Model",
+      "tags": "Tags",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "e.g. Warehouse printer",
+      "selectSite": "Select a site",
+      "tags": "Comma-separated, e.g. lobby, floor-2"
+    },
+    "toasts": {
+      "created": "Network asset created",
+      "createFailed": "Failed to create network asset"
     }
   }
 }

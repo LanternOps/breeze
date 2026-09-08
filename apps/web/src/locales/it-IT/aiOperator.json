@@ -1,0 +1,119 @@
+{
+  "taskState": {
+    "queued": "In coda",
+    "running": "In esecuzione",
+    "waiting": "In attesa",
+    "paused": "In pausa",
+    "stopping": "Arresto in corso",
+    "completed": "Completata",
+    "partial": "Parziale",
+    "handedOff": "Trasferita",
+    "cancelled": "Annullata",
+    "failed": "Fallita",
+    "expired": "Scaduta"
+  },
+  "operatorTaskDetail": {
+    "loading": "Caricamento attività...",
+    "agent": "Gestita da {{name}}",
+    "target": {
+      "label": "Destinazione",
+      "none": "Nessun dispositivo di destinazione"
+    },
+    "origin": {
+      "label": "Origine",
+      "manual": "Manuale",
+      "alert": "Avviso",
+      "ticket": "Ticket",
+      "schedule": "Pianificazione",
+      "anomaly": "Anomalia",
+      "sweep": "Scansione",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "Stato"
+    },
+    "phase": {
+      "investigate": "Investigare",
+      "plan": "Pianificare",
+      "execute": "Eseguire",
+      "verify": "Verificare",
+      "document": "Documentare"
+    },
+    "waitReason": {
+      "label": "In attesa di",
+      "approval": "Approvazione",
+      "information": "Informazione",
+      "execution": "Esecuzione",
+      "device": "Dispositivo",
+      "maintenanceWindow": "Finestra di manutenzione",
+      "verificationWindow": "Finestra di verifica"
+    },
+    "nextAction": {
+      "label": "Prossima azione",
+      "approveInInbox": "Approva nella posta in arrivo",
+      "answerQuestion": "Rispondi a una domanda",
+      "waitingForDevice": "In attesa del dispositivo",
+      "waitingForMaintenanceWindow": "In attesa della finestra di manutenzione",
+      "waitingForVerificationWindow": "In attesa della finestra di verifica",
+      "waitingForExecution": "In attesa dell'esecuzione",
+      "queued": "In coda per l'ammissione",
+      "inProgress": "In corso",
+      "paused": "In pausa",
+      "stopping": "Arresto in corso",
+      "handedOff": "Trasferita",
+      "none": "Nulla in sospeso"
+    },
+    "deadline": {
+      "label": "Scadenza",
+      "none": "Nessuna scadenza"
+    },
+    "outcome": {
+      "label": "Esito",
+      "verifiedResolved": "Risolta e verificata",
+      "investigationComplete": "Indagine completata",
+      "reportDelivered": "Rapporto consegnato",
+      "noActionNeeded": "Nessuna azione necessaria",
+      "trialComplete": "Prova completata",
+      "unresolved": "Non risolta",
+      "unknownEffect": "Effetto sconosciuto"
+    },
+    "handoffSummary": {
+      "label": "Riepilogo del trasferimento"
+    },
+    "operations": {
+      "heading": "Operazioni",
+      "empty": "Nessuna operazione ancora.",
+      "attempt": "Tentativo {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Riservata",
+      "dispatched": "Inviata",
+      "dispatchFailed": "Invio fallito",
+      "cancelled": "Annullato",
+      "abandoned": "Abbandonata"
+    },
+    "resultState": {
+      "pending": "In sospeso",
+      "succeeded": "Riuscita",
+      "failed": "Fallita",
+      "unknown": "Sconosciuto",
+      "superseded": "Sostituita"
+    },
+    "runs": {
+      "heading": "Esecuzioni collegate",
+      "empty": "Nessuna esecuzione collegata ancora."
+    },
+    "notFound": {
+      "title": "Attività non trovata",
+      "description": "Questa attività non esiste, oppure non hai accesso ad essa."
+    },
+    "errors": {
+      "load": "Impossibile caricare l'attività."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Caricamento attività Operator...",
+    "loadFailed": "Impossibile caricare le attività Operator.",
+    "empty": "Nessuna attività Operator per questo dispositivo."
+  }
+}

@@ -11,8 +11,8 @@ export class DevicesPage extends BasePage {
   url = '/devices';
 
   heading = () => this.page.getByTestId('devices-heading');
-  addAssetMenuTrigger = () => this.page.getByTestId('add-asset-menu-trigger');
-  addManualAssetMenuItem = () => this.page.getByTestId('add-asset-menu-add-manual-asset');
+  addAssetMenuTrigger = () => this.page.getByTestId('devices-page-add-menu-trigger');
+  addManualAssetMenuItem = () => this.page.getByTestId('devices-page-add-menu-add-manual-asset');
   manualSegment = () => this.page.getByTestId('device-class-segment-manual');
 
   manualAssetModal = () => this.page.getByTestId('manual-asset-modal');

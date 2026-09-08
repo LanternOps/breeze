@@ -159,7 +159,8 @@
       "quarantined": "O dispositivo está em quarentena",
       "updating": "O dispositivo está sendo atualizado",
       "pending": "O dispositivo está aguardando inscrição",
-      "notOnline": "O dispositivo não está online"
+      "notOnline": "O dispositivo não está online",
+      "unknown": "O dispositivo ainda não foi verificado"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — o Terminal remoto precisa de um agente conectado. Comandos na fila são executados na reconexão.",
@@ -642,7 +643,9 @@
     "rail": "rail",
     "strip": "strip",
     "networkAsset": "Ativo de rede",
-    "networkAssets": "Ativos de rede"
+    "networkAssets": "Ativos de rede",
+    "operatorTasks": "Tarefas do operador",
+    "operatorTasksForThisDevice": "Tarefas do operador de IA para este dispositivo"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",
@@ -1070,7 +1073,8 @@
       "lastSeen": "Visto por último",
       "serial": "Série",
       "assetTag": "Etiqueta do ativo",
-      "location": "Localização"
+      "location": "Localização",
+      "source": "Origem"
     },
     "sortBy": {
       "class": "Ordenar por classe",
@@ -1086,7 +1090,8 @@
       "lastSeen": "Ordenar pela última vez em que foi visto",
       "serial": "Ordenar por número de série",
       "assetTag": "Ordenar por etiqueta do ativo",
-      "location": "Ordenar por localização"
+      "location": "Ordenar por localização",
+      "source": "Ordenar por origem"
     },
     "statuses": {
       "compact": {
@@ -1215,7 +1220,12 @@
     "editManualAsset": "Editar {{name}}",
     "deleteManualAsset": "Excluir {{name}}",
     "edit": "Editar",
-    "delete": "Excluir"
+    "delete": "Excluir",
+    "source": {
+      "scan": "Varredura",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -1961,14 +1971,17 @@
     "unknownSite": "Site desconhecido",
     "viewInstallationGuide": "Ver guia de instalação",
     "importFromRmm": "Importar de outro RMM",
-    "addAsset": "Adicionar",
-    "installAgent": "Instalar agente…",
-    "addManualAssetAction": "Adicionar ativo manualmente…",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} se aplica somente a dispositivos com agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de rede",
       "manual": "ativos manuais",
       "mixed": "dispositivos"
+    },
+    "addMenu": {
+      "trigger": "Adicionar",
+      "installAgent": "Instalar agente…",
+      "addNetworkAsset": "Adicionar ativo de rede…",
+      "addManualAsset": "Adicionar ativo manualmente…"
     }
   },
   "filterAddDropdown": {
@@ -2765,6 +2778,38 @@
       "tags": "Tags",
       "tagsPlaceholder": "Separadas por vírgula",
       "notes": "Notas"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Adicionar ativo de rede",
+    "submit": "Adicionar ativo",
+    "identityHint": "Forneça pelo menos um: endereço IP, hostname ou URL.",
+    "urlRequiredHint": "Ativos do tipo site ou serviço exigem uma URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitorar este ativo com uma verificação HTTP?",
+      "actions": {
+        "addHttpCheck": "Adicionar verificação HTTP"
+      }
+    },
+    "fields": {
+      "label": "Nome",
+      "ipAddress": "Endereço IP",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "Endereço MAC",
+      "manufacturer": "Fabricante",
+      "model": "Modelo",
+      "tags": "Tags",
+      "notes": "Notas"
+    },
+    "placeholders": {
+      "label": "ex.: Impressora do depósito",
+      "selectSite": "Selecionar um site",
+      "tags": "Separadas por vírgula, ex.: recepção, andar-2"
+    },
+    "toasts": {
+      "created": "Ativo de rede criado",
+      "createFailed": "Falha ao criar o ativo de rede"
     }
   }
 }

@@ -2873,6 +2873,10 @@ describe('POST /approvals/:id/report-suspicious', () => {
       where: vi.fn().mockReturnValue({ returning: casReturning }),
     });
     const siblingSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    // #5205 W05 (#5210): the report-suspicious rejection now publishes an
+    // intent_outbox row (via `tx`, not the ambient `db`) — the gap baseline
+    // C18 named. `tx.insert` was missing entirely before this wave since
+    // nothing wrote through it.
     const tx = {
       select: txSelectForUpdateStub(),
       update: vi
@@ -2880,6 +2884,7 @@ describe('POST /approvals/:id/report-suspicious', () => {
         .mockReturnValueOnce({ set: flipSet } as any) // 1) approval_requests -> reported
         .mockReturnValueOnce({ set: intentCasSet } as any) // 2) intent CAS
         .mockReturnValueOnce({ set: siblingSet } as any), // 3) sibling expiry
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any),
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
     vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);

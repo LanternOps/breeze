@@ -116,10 +116,13 @@ export type DeviceStatus =
   | "updating"
   | "pending"
   /**
-   * A manual asset (#4622 W04) has no reachability at all — it was never
-   * "online" or "offline", it was hand-typed. Rendered as its own neutral
-   * "Unknown" chip; claiming "offline" for a printer that was never online
-   * is the kind of small lie that makes an inventory list untrustworthy.
+   * No reachability claim at all. Produced two ways: a manual asset (#4622
+   * W04) that was hand-typed and never probed, and a manual network asset
+   * (#5213) that no scan has ever reached. Distinct from 'offline', which is
+   * a reachability claim (a probe ran and failed). Rendered as its own
+   * neutral "Unknown" chip; claiming "offline" for a printer that was never
+   * online is the kind of small lie that makes an inventory list
+   * untrustworthy.
    */
   | "unknown";
 export type OSType = "windows" | "macos" | "linux";
@@ -352,6 +355,15 @@ export type Device = {
    * apps/api/src/routes/agents/heartbeat.ts.
    */
   helperLifecycleMode?: 'always-on' | 'on-demand' | null;
+  /**
+   * Who created a network row (#5213): 'scan' (discovery worker), 'unifi'
+   * (controller sync), or 'manual' (operator-entered via
+   * POST /devices/network). undefined/null for agent rows, which have no
+   * concept of discovery provenance.
+   */
+  source?: 'scan' | 'unifi' | 'manual' | null;
+  /** Website/SaaS endpoint identity for an IP-less manual asset (#5213). */
+  url?: string | null;
 };
 
 // Columns that only make sense for a non-agent row (#1322, #4622): the class
@@ -363,6 +375,8 @@ export type Device = {
 const NON_AGENT_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "class",
   "type",
+  // #5213 — provenance (scan | unifi | manual). Agent rows have no source.
+  "source",
 ]);
 // Columns meaningful only for a hand-entered manual asset (#4622 W04) — no
 // analogue on an agent or a discovered network device.
@@ -591,8 +605,9 @@ const statusSortRank: Record<DeviceStatus, number> = {
   quarantined: 4,
   offline: 5,
   decommissioned: 6,
-  // A manual asset was never reachable, so it isn't "worse" than offline —
-  // it's a different axis entirely. Sorts last, after decommissioned.
+  // "No probe has ever run" is not a worse operational state than offline —
+  // it's a different axis entirely (#4622 W04, #5213). Sorts last, after
+  // decommissioned.
   unknown: 7,
 };
 
@@ -724,6 +739,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   },
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
+  // #5213 — network-only, like class/type above; agent rows sort blanks-last.
+  source: (d) =>
+    (d.deviceClass ?? "agent") === "network" ? (d.source ?? null) : null,
 };
 
 export default function DeviceList({
@@ -1537,6 +1555,35 @@ export default function DeviceList({
               <TypeIcon className="h-3.5 w-3.5" />
               <span className="truncate">{typeLabel}</span>
             </span>
+          </td>
+        );
+      },
+    },
+    source: {
+      header: () => sortHeader("source", t("deviceList.tableColumns.source"), t("deviceList.sortBy.source")),
+      cell: (device) => {
+        // Network-only (#5213); agent rows have no discovery provenance.
+        if ((device.deviceClass ?? "agent") !== "network" || !device.source) {
+          return (
+            <td key="source" className="px-3 py-3 text-sm whitespace-nowrap">
+              {dash}
+            </td>
+          );
+        }
+        const sourceLabel = t(/* i18n-dynamic */ `deviceList.source.${device.source}`);
+        return (
+          <td
+            key="source"
+            className="px-3 py-3 text-sm whitespace-nowrap"
+            data-testid={`device-${device.id}-source`}
+          >
+            {device.source === "manual" ? (
+              <span className="inline-flex items-center rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[10px] font-medium text-info">
+                {sourceLabel}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">{sourceLabel}</span>
+            )}
           </td>
         );
       },
