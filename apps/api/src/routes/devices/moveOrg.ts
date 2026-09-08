@@ -278,11 +278,14 @@ moveOrgRoutes.post(
         // audit rather than losing data silently.
         //
         // The work is a DB function, not inline SQL, for two reasons it cannot
-        // do from here: it reads custom_field_definitions across the org/partner
-        // axis (an org-scoped request context cannot see partner-wide rows,
-        // #4944), and it must pre-acquire BOTH orgs' partner-export locks in
-        // ascending UUID order before the projection trigger requests one — the
-        // same reason breeze_cascade_device_org_id pre-acquires them.
+        // do from here: it reads custom_field_definitions for BOTH the source
+        // and target orgs across the org/partner axis — and a request context
+        // sees only its own org's rows plus, since #4944
+        // (custom_field_definitions_partner_wide_select), its own partner's
+        // partner-wide ones, never the other org's — and it must pre-acquire
+        // BOTH orgs' partner-export locks in ascending UUID order before the
+        // projection trigger requests one — the same reason
+        // breeze_cascade_device_org_id pre-acquires them.
         // Values under PARTNER-WIDE definitions need no re-home while the move
         // stays inside one partner; a cross-partner move (system scope only)
         // loses that visibility too and drops them by the same rule.

@@ -27,6 +27,14 @@
  * partner-wide row) and that the trigger's scope elevation does not leak into the
  * caller's transaction.
  *
+ * #4944 NOTE. `custom_field_definitions_partner_wide_select`
+ * (2026-10-13-110000-custom-field-definitions-partner-wide-select.sql) added a
+ * SELECT-only branch letting an org token read its OWN partner's partner-wide
+ * rows. That changed one control in this file (see the inverted comment in
+ * `refuses a shadowing insert under the caller's own org scope`) and nothing
+ * else: the branch grants no write, so the 42501 forge assertions are untouched,
+ * and the trigger runs BEFORE ROW regardless of what the caller can see.
+ *
  * WHAT THE TENANT-SCOPE TESTS DO **NOT** PROVE, and the trap that is worth your
  * time before you "simplify" the migration. The function is SECURITY DEFINER, so
  * its lookups run as its OWNER — the role that applied the migration. On this
@@ -137,10 +145,11 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
 /**
  * An org-scoped session. `currentPartnerId` is populated from the token's
  * partnerId for org scope too (`buildDbAccessContext`), so it is set here
- * deliberately: leaving it null would let the org-scoped tests pass for the
- * wrong reason once #4944 adds a partner-wide SELECT branch keyed on it.
+ * deliberately: it is what #4944's partner-wide SELECT branch
+ * (`custom_field_definitions_partner_wide_select`) keys on, and leaving it null
+ * would let the org-scoped tests pass for the wrong reason.
  * `accessiblePartnerIds` stays empty — an org token never passes
- * `breeze_has_partner_access`.
+ * `breeze_has_partner_access`, which is what keeps that branch read-only.
  */
 function orgContext(orgId: string, currentPartnerId: string | null): DbAccessContext {
   return {
@@ -294,10 +303,12 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
     });
 
     /**
-     * The guard must not leak the other definition's identity. An org-scoped
-     * caller cannot otherwise see partner-wide rows on this table (#4944), so a
-     * message carrying the partner definition's uuid or name would turn the
-     * trigger into an enumeration oracle for partner-wide configuration.
+     * The guard must not leak the other definition's identity. Since #4944 an
+     * org-scoped caller CAN read its own partner's partner-wide rows, but the
+     * guard also fires in the reverse direction — a partner-wide insert
+     * shadowed by some org's key — and a message carrying that definition's
+     * uuid or name would turn the trigger into an enumeration oracle across
+     * rows the caller has no other way to reach. Keep it identity-free.
      */
     it('does not disclose the conflicting definition id or name', async () => {
       const partner = await createPartner();
@@ -518,21 +529,34 @@ describe('cross-axis field_key shadowing (#3257 W03)', () => {
    * body assertion further down is what covers it.
    */
   describe('under a tenant RLS context', () => {
-    it("refuses a shadowing insert under the caller's own org scope, even though an org token cannot see the partner-wide row", async () => {
+    it("refuses a shadowing insert under the caller's own org scope", async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
 
       await insertDefinition({ partnerId: partner.id, name: 'UDF 7', fieldKey: 'shadow_tenant_udf7' });
 
-      // Control: prove the caller really is blind to the row the trigger found,
-      // so the refusal below cannot be explained by ordinary visibility.
+      // #4944 INVERTED this control. It used to assert the caller was blind to
+      // the row the trigger found (0 rows), on the theory that a refusal it
+      // could not explain by ordinary visibility was evidence of the trigger's
+      // scope elevation. `custom_field_definitions_partner_wide_select`
+      // (2026-10-13-110000-custom-field-definitions-partner-wide-select.sql) now
+      // grants that read, so the row IS visible and the old control would be a
+      // false red. It is kept, inverted, as a POSITIVE control on the fixture:
+      // the partner-wide row really exists and really is the one the trigger
+      // matched, so a P0001 below cannot come from an unrelated failure.
+      //
+      // It never proved the elevation anyway — read the file header: on a
+      // superuser/BYPASSRLS migration owner (this stack and CI) all four
+      // tenant-scope tests pass with the elevation stripped. `pins the in-body
+      // scope elevation on the trigger function` (catalog body assertion) is the
+      // only thing in this file that can fail when the elevation is removed.
       const visible = await withDbAccessContext(orgContext(org.id, partner.id), () =>
         db.execute(sql`
           SELECT id FROM custom_field_definitions WHERE field_key = 'shadow_tenant_udf7'`));
       expect(
         (visible as unknown as unknown[]).length,
-        'org token must NOT see partner-wide rows on this table (#4944) — if it can, this test no longer proves the scope elevation',
-      ).toBe(0);
+        'the partner-wide fixture row must exist and be readable by its own partner\u2019s org token (#4944)',
+      ).toBe(1);
 
       await expectSqlState(
         () => insertDefinition(
