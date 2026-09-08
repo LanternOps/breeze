@@ -149,7 +149,7 @@ The response includes:
 - **`deviceCount`** — number of accessible devices queued
 - **`queuedCommandIds`** — all successfully queued command IDs
 - **`dispatchedCommandIds`** — subset dispatched via active WebSocket connections
-- **`pendingCommandIds`** — subset queued but not yet dispatched (device offline); delivered automatically on the device's next heartbeat, up to a 7-day deadline, and cancellable from the device's **Queued actions** list
+- **`pendingCommandIds`** — subset queued but not yet dispatched (device offline); delivered automatically on the device's next successful heartbeat, up to a 7-day deadline, and cancellable from the device's **Queued actions** list
 - **`failedDeviceIds`** — devices that could not be queued
 - **`skipped.missingDeviceIds`** — device IDs not found
 - **`skipped.inaccessibleDeviceIds`** — devices outside org access scope
