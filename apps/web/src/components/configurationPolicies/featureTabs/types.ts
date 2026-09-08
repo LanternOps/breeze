@@ -26,6 +26,15 @@ export type FeatureLink = {
   updatedAt?: string;
 };
 
+/** GET /configuration-policies/:id → parentPolicy (read-only embed; see spec "API"). */
+export type ParentPolicySummary = {
+  id: string;
+  name: string;
+  status: 'active' | 'inactive' | 'archived';
+  orgId: string | null; // null = partner-wide parent
+  featureLinks: FeatureLink[];
+};
+
 export type FeatureTabProps = {
   policyId: string;
   existingLink: FeatureLink | undefined;

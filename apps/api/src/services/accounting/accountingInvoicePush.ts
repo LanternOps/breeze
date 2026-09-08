@@ -60,7 +60,9 @@ import {
 import type { AccountingConnection } from './accountingConnectionService';
 import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, normalizeCurrencyCode } from './accountingCurrency';
 import { getAccountingProvider } from './providerRegistry';
+import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
+import { isQboPaymentLinkedRefusal, qboFaultOf, qboFaultSuffix } from './quickbooksFault';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   INVOICE_REMOTE_DELETED_ERROR,
@@ -70,6 +72,7 @@ import {
   type AccountingInvoicePayload,
   type AccountingVoidInvoicePayload,
   type InvoicePushResult,
+  type InvoiceVoidResult,
 } from './types';
 
 export type AccountingInvoicePushErrorCode =
@@ -97,6 +100,14 @@ export type AccountingInvoicePushErrorCode =
   // a push is mid-flight. Deliberately NOT in the worker's TERMINAL_CODES:
   // BullMQ must retry with backoff until the push records its remote id.
   | 'sync_in_progress'
+  // QuickBooks refused the void because a Payment is applied to the invoice
+  // THERE (#5180). A business rule, not an outage: every retry gets the same
+  // answer, so this must not be reported as `quickbooks_error` — that code is
+  // paired with 502 and read as "safe to retry", and the five-attempt ladder
+  // burned five Sentry alerts on it in production. Terminal in the worker; the
+  // mapping row carries a message naming the fix (unapply the payment in
+  // QuickBooks, then void again).
+  | 'void_blocked_by_payments'
   | 'quickbooks_error' | 'record_failed'; // 502s; record_failed = remote ok, local persist failed (never retry)
 
 export class AccountingInvoicePushError extends Error {
@@ -354,11 +365,48 @@ function translateNestedSyncError(err: unknown): never {
 // persistRemoteRef / upsertMappingRow unique-violation handling).
 // ---------------------------------------------------------------------------
 
-function sanitizeInvoiceSyncErrorMessage(err: unknown): string {
-  const status = err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
+function providerStatusOf(err: unknown): number | undefined {
+  return err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
     ? (err as { status: number }).status
     : undefined;
-  return status ? `QuickBooks rejected the invoice sync (HTTP ${status})` : 'QuickBooks rejected the invoice sync';
+}
+
+/** Carries Intuit's fault CLASS beside the status, never `Detail` — see
+ *  `sanitizePaymentSyncErrorMessage` for the full reasoning. */
+function sanitizeInvoiceSyncErrorMessage(err: unknown): string {
+  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
+  return `QuickBooks rejected the invoice sync${suffix}`;
+}
+
+/**
+ * The operator-visible `last_error` for a void QuickBooks refuses because the
+ * invoice is settled by a Payment there (#5180).
+ *
+ * Names the remedy, because the previous message ("QuickBooks rejected the
+ * invoice sync (HTTP 400: Business Validation Error)") left an operator with a
+ * mapping card that said only that something was rejected, five times. Carries
+ * the same sanitized fault suffix as its sibling — the fault CLASS, never
+ * Intuit's `Detail`.
+ */
+function voidBlockedByPaymentsMessage(err: unknown): string {
+  const suffix = qboFaultSuffix(providerStatusOf(err), qboFaultOf(err));
+  return 'QuickBooks will not void this invoice because a payment is applied to it there'
+    + ` — remove or unapply that payment in QuickBooks, then void the invoice again${suffix}`;
+}
+
+/** The provider's status and body to the SERVER LOG only — the one place the
+ *  raw fault survives `scrubEvent`. */
+function logProviderFault(operation: string, mappingId: string, err: unknown): void {
+  const body = err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
+    ? (err as { body: string }).body
+    : '';
+  console.error(
+    `[accountingInvoicePush] ${operation} failed`,
+    `mappingId=${mappingId}`,
+    `status=${providerStatusOf(err) ?? 'none'}`,
+    `faultCode=${qboFaultOf(err).code ?? 'none'}`,
+    `body=${body}`,
+  );
 }
 
 async function markInvoiceMappingError(mappingId: string, partnerId: string, message: string): Promise<void> {
@@ -779,8 +827,12 @@ export async function pushInvoiceToAccounting(
     result = await runOutsideDbContext(() => providerImpl.pushInvoice(liveConn, payload, lineMappings));
   } catch (err) {
     const message = sanitizeInvoiceSyncErrorMessage(err);
+    logProviderFault('pushInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: inv.id,
+      service: 'accountingInvoicePush',
+      accounting_mapping_id: mappingRow.id,
+      invoice_id: inv.id,
+      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Phase 2 (failure) — own short context so the marker COMMITS before the throw.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
@@ -833,6 +885,41 @@ export async function pushInvoiceToAccounting(
   if (becameVoid) {
     const { enqueueAccountingInvoiceVoid } = await import('../../jobs/accountingSyncWorker');
     await enqueueAccountingInvoiceVoid(inv.id, partnerId);
+  }
+
+  // ...but NOT for an invoice that went void mid-flight: the void job enqueued
+  // just above is about to remove it from QuickBooks, and every payment this
+  // would fan out gets a pending mapping the payment coordinator then refuses
+  // terminally with `invoice_void` — a red sync badge per payment for work that
+  // was never going to land.
+  //
+  // Fan out this invoice's payments (spec decision 10). Runs in BOTH modes: in
+  // `manual` it is the ONLY way payments reach QuickBooks, and in `auto` it
+  // catches payments recorded while this push was still in flight — their own
+  // `requestPaymentPush` returned null because the invoice had no remote id yet.
+  // The COORDINATOR is a plain static import (accountingPaymentPush does not
+  // import this module); only the ENQUEUE is lazy, for the same reason the void
+  // enqueue above is — accountingSyncWorker imports THIS module, so a static
+  // import of it would be a cycle (and would drag BullMQ/Redis into every unit
+  // test of the coordinator).
+  // Best-effort: the invoice push has already landed and been recorded, so
+  // failing here would report an error for work that succeeded and send the
+  // caller's retry back down the create path. The reconcile sweep re-enqueues
+  // any mapping row this leaves pending.
+  try {
+    const owed = becameVoid ? [] : await fanOutOwedPayments(inv.id, partnerId, runInDbContext);
+    if (owed.length > 0) {
+      const { enqueueAccountingPaymentPush } = await import('../../jobs/accountingSyncWorker');
+      for (const mappingId of owed) await enqueueAccountingPaymentPush(mappingId, partnerId);
+    }
+  } catch (err) {
+    // Tag keys must be in sentry.ts ALLOWED_TAG_NAMES (guarded by
+    // sentry.test.ts, #4828) — the phase rides in the error message instead.
+    captureException(
+      new Error(`payment-fan-out failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err }),
+      undefined,
+      { service: 'accountingInvoicePush', invoice_id: inv.id },
+    );
   }
 
   return {
@@ -919,19 +1006,62 @@ export async function voidInvoiceInAccounting(
     remoteSyncToken: mappingRow.remoteSyncToken ?? null,
   };
 
+  let voidResult: InvoiceVoidResult;
   try {
-    await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
+    voidResult = await runOutsideDbContext(() => providerImpl.voidInvoice(liveConn, voidPayload, mappingSeam));
   } catch (err) {
-    const message = sanitizeInvoiceSyncErrorMessage(err);
+    // #5180: separate "QuickBooks is unhappy right now" from "QuickBooks will
+    // never allow this". A payment applied to the invoice in QuickBooks makes
+    // the void permanently impossible until an operator removes it there, so
+    // the message names that action instead of the generic sync failure.
+    const blockedByPayments = isQboPaymentLinkedRefusal(err);
+    const message = blockedByPayments
+      ? voidBlockedByPaymentsMessage(err)
+      : sanitizeInvoiceSyncErrorMessage(err);
+    logProviderFault('voidInvoice', mappingRow.id, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
+      service: 'accountingInvoicePush',
+      accounting_mapping_id: mappingRow.id,
+      invoice_id: invoiceId,
+      qbo_fault_code: qboFaultOf(err).code ?? 'none',
     });
     // Own short context so the marker COMMITS before the throw below.
     await markInvoiceMappingErrorInOwnContext(runInDbContext, mappingRow.id, partnerId, message);
+    if (blockedByPayments) throw new AccountingInvoicePushError('void_blocked_by_payments', 409, message);
     throw new AccountingInvoicePushError('quickbooks_error', 502, message);
   }
   // Success: sync_status/last_error are left exactly as they were (still
   // 'synced'/null from the original push) — a void does not change whether
-  // the invoice's LAST sync succeeded, and there is no new remote state to
-  // record beyond what QuickBooks already reflects.
+  // the invoice's LAST sync succeeded.
+  //
+  // The SyncToken IS new state, though: a void bumps the Invoice's revision,
+  // so keeping the old one hands the next write a guaranteed 5010 (walk item
+  // 37). BEST EFFORT ON PURPOSE — QuickBooks has already voided the invoice, so
+  // failing the caller here would report a void that actually happened as an
+  // error, and the stale token is self-healing anyway (`pushInvoice` and
+  // `voidInvoice` both re-read on 5010). Skipped entirely when the response
+  // carried no token, so a tokenless reply cannot NULL out a good one.
+  if (voidResult.syncToken && voidResult.syncToken !== mappingRow.remoteSyncToken) {
+    try {
+      const rows = await runInDbContext(() => db
+        .update(accountingEntityMappings)
+        .set({ remoteSyncToken: voidResult.syncToken, updatedAt: new Date() })
+        .where(and(
+          eq(accountingEntityMappings.id, mappingRow.id),
+          eq(accountingEntityMappings.partnerId, partnerId),
+        ))
+        .returning({ id: accountingEntityMappings.id }));
+      if (!rows[0]) {
+        captureException(
+          new Error(`void SyncToken persist matched no accounting_entity_mappings row (id=${mappingRow.id})`),
+          undefined,
+          { service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId },
+        );
+      }
+    } catch (dbErr) {
+      captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
+        service: 'accountingInvoicePush', accounting_mapping_id: mappingRow.id, invoice_id: invoiceId,
+      });
+    }
+  }
 }

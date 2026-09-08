@@ -324,6 +324,11 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
       commandId: dispatch.commandId,
       ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
+      // #5128 W2 — the dispatch core's own delivery attempt, not a device
+      // status read: `delivered: false` covers every queued outcome
+      // ('no_agent' and the claim/decrypt/send-failed races alike), all of
+      // which land the row in `pending` awaiting the next heartbeat.
+      delivery: dispatch.delivered ? 'delivered' : 'queued_offline',
     });
   }
 

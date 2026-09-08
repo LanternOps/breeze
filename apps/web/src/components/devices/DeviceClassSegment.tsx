@@ -1,4 +1,4 @@
-import { Cpu, LayoutGrid, Network } from "lucide-react";
+import { Cpu, LayoutGrid, Network, Package } from "lucide-react";
 import type { ComponentType } from "react";
 import type { DeviceClassFilter } from "./deviceClassFilter";
 import { useTranslation } from "react-i18next";
@@ -6,12 +6,13 @@ import "../../lib/i18n";
 
 type DeviceClassSegmentProps = {
   value: DeviceClassFilter;
-  counts: { all: number; agent: number; network: number };
+  counts: { all: number; agent: number; network: number; manual: number };
   onChange: (value: DeviceClassFilter) => void;
 };
 
-// Icons mirror the Class column in DeviceList (Cpu = agent, Network = network)
-// so the segment and the per-row badge read as the same vocabulary.
+// Icons mirror the Class column in DeviceList (Cpu = agent, Network = network,
+// Package = manual) so the segment and the per-row badge read as the same
+// vocabulary.
 const SEGMENTS: Array<{
   id: DeviceClassFilter;
   labelKey: string;
@@ -23,6 +24,11 @@ const SEGMENTS: Array<{
     id: "network",
     labelKey: "deviceClassSegment.segments.network",
     icon: Network,
+  },
+  {
+    id: "manual",
+    labelKey: "deviceClassSegment.segments.manual",
+    icon: Package,
   },
 ];
 

@@ -13,6 +13,8 @@ import {
   Camera,
   HardDrive,
   HelpCircle,
+  Globe,
+  Cloud,
 } from 'lucide-react';
 
 export const DEVICE_ROLES = [
@@ -53,12 +55,29 @@ const ROLE_META: Record<DeviceRole, DeviceRoleMeta> = {
   unknown:       { label: 'Unknown',       icon: HelpCircle },
 };
 
+// #5213 W03: 'website'/'service' are valid discovery asset types (an IP-less
+// manual asset whose identity is a URL) but are deliberately NOT billable
+// device roles — DEVICE_ROLES above governs contract_lines_device_roles_chk,
+// and a website isn't a "device" a contract line bills per-seat/per-unit.
+// DeviceList's unified Type column calls these lookups on the raw discovery
+// `assetType` for every device class, though, so a non-billable asset type
+// still needs a real label/icon instead of the raw enum literal — this is a
+// separate, additive lookup, never a change to the billing tuple itself.
+const NON_BILLABLE_ROLE_META: Record<'website' | 'service', DeviceRoleMeta> = {
+  website: { label: 'Website', icon: Globe },
+  service: { label: 'Service', icon: Cloud },
+};
+
 export function getDeviceRoleLabel(role: string): string {
-  return ROLE_META[role as DeviceRole]?.label ?? role;
+  return ROLE_META[role as DeviceRole]?.label
+    ?? NON_BILLABLE_ROLE_META[role as keyof typeof NON_BILLABLE_ROLE_META]?.label
+    ?? role;
 }
 
 export function getDeviceRoleIcon(role: string): ComponentType<{ className?: string }> {
-  return ROLE_META[role as DeviceRole]?.icon ?? HelpCircle;
+  return ROLE_META[role as DeviceRole]?.icon
+    ?? NON_BILLABLE_ROLE_META[role as keyof typeof NON_BILLABLE_ROLE_META]?.icon
+    ?? HelpCircle;
 }
 
 export function getDeviceRoleSourceLabel(source: string): string {

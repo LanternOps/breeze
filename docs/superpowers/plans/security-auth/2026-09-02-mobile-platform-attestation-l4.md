@@ -1096,13 +1096,15 @@ export interface RegistrationAttempt {
 }
 
 /**
- * The bytes both the platform attestation and the registration proof-of-
- * possession are computed over.
+ * The bytes the registration proof-of-possession, the iOS App Attest
+ * `clientDataHash`, and the Android Play Integrity `requestHash` are computed
+ * over — all produced AFTER the key exists, so all may embed the SPKI.
  *
- * iOS passes this as App Attest's `clientDataHash`; Android passes it as the
- * KeyStore `setAttestationChallenge`; and the client also signs it with the
- * approval key under a biometric prompt. One digest, three bindings — which is
- * what makes "this attestation vouches for THIS key in THIS attempt" checkable.
+ * NOT the Android KeyStore `setAttestationChallenge`: that is fixed at key
+ * generation, before the SPKI exists, so it uses `androidKeyGenChallenge`
+ * (SHA256 over `breeze.authenticator.mobile-register.keygen.v1\n<attemptId>\n<challenge>\n<alg>`)
+ * and the attested leaf key is bound to the registered key by SPKI-digest
+ * equality in `verifyAndroid` (resolved 2026-09-07 before W06, quorum-approved).
  *
  * Domain-separated and newline-delimited so a signature minted for any other
  * Breeze flow, or a different field split with the same concatenation, cannot
@@ -1963,7 +1965,7 @@ pnpm --filter breeze-mobile test && pnpm --filter breeze-mobile exec tsc --noEmi
 
 Branch: `feature/1374-mobile-attestation/w06-android-client`. Base: `main`. **Requires W02 + W04 deployed.** Mirrors W05 task-for-task.
 
-- [ ] **Task 1:** Kotlin side of `modules/breeze-attestation`. `KeyGenParameterSpec.Builder(alias, PURPOSE_SIGN)` with `setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))`, `setDigests(DIGEST_SHA256)`, `setAttestationChallenge(transcript)`, `setUserAuthenticationRequired(true)`, `setInvalidatedByBiometricEnrollment(true)`, and `setIsStrongBoxBacked(true)` with a **documented** catch-and-retry on `StrongBoxUnavailableException` falling back to TEE (which yields `android_tee_key_attestation`, still L4-trusted). Export `KeyStore.getCertificateChain(alias)` as base64 DER, leaf first. Play Integrity via `com.google.android.play:integrity`.
+- [ ] **Task 1:** Kotlin side of `modules/breeze-attestation`. `KeyGenParameterSpec.Builder(alias, PURPOSE_SIGN)` with `setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))`, `setDigests(DIGEST_SHA256)`, `setAttestationChallenge(androidKeyGenChallenge)` (the pre-key keygen digest — see W02 Task 2; the full transcript is only computable after the SPKI exists and is used for the PoP signature and the Play Integrity `requestHash`), `setUserAuthenticationRequired(true)`, `setInvalidatedByBiometricEnrollment(true)`, and `setIsStrongBoxBacked(true)` with a **documented** catch-and-retry on `StrongBoxUnavailableException` falling back to TEE (which yields `android_tee_key_attestation`, still L4-trusted). Export `KeyStore.getCertificateChain(alias)` as base64 DER, leaf first. Play Integrity via `com.google.android.play:integrity`.
 - [ ] **Task 2:** Extend `attestingSigner.ts` with the Android branch; the client-side flow is identical to W05 Task 2 (the transcript comes from `packages/shared/src/utils/authenticatorTranscript.ts`), plus the Play Integrity token. Same test list.
 - [ ] **Task 3:** On-device verification on (a) a StrongBox device (Pixel 6+) and (b) a TEE-only device. Confirm the two bases land distinctly and both reach L4. Confirm an unlocked-bootloader device is **refused** (`deviceLocked` check, W04 Task 1 check 6).
 

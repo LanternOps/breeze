@@ -75,14 +75,43 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false });
+  });
+
+  it('features.aiOperatorTasks is false when neither AI Operator env var is set', async () => {
+    const { body } = await request();
+    expect(body.features.aiOperatorTasks).toBe(false);
+  });
+
+  it('features.aiOperatorTasks is false when only AI_OPERATOR_TASKS_ENABLED is set', async () => {
+    vi.stubEnv('AI_OPERATOR_TASKS_ENABLED', 'true');
+    vi.stubEnv('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', 'false');
+    const { body } = await request();
+    expect(body.features.aiOperatorTasks).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('features.aiOperatorTasks is false when only AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED is set', async () => {
+    vi.stubEnv('AI_OPERATOR_TASKS_ENABLED', 'false');
+    vi.stubEnv('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', 'true');
+    const { body } = await request();
+    expect(body.features.aiOperatorTasks).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('features.aiOperatorTasks is true when both AI Operator env vars are set', async () => {
+    vi.stubEnv('AI_OPERATOR_TASKS_ENABLED', 'true');
+    vi.stubEnv('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', 'true');
+    const { body } = await request();
+    expect(body.features.aiOperatorTasks).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   it('registration.enabled defaults to false when ENABLE_REGISTRATION unset', async () => {

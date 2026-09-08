@@ -619,7 +619,13 @@ describe('F. a device-less run never proposes', () => {
         }),
       });
       const preToolUse = createAgentRunPreToolUse({
-        run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
+        run: {
+        id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full',
+        // #5205 W06: a legacy (non-task) run — all three linkage columns null,
+        // which is what keeps the task fence and `submit_task_step` out of
+        // this suite's blast radius entirely.
+        taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
+      },
         agentName: AGENT.name,
         agentAuth,
         agentKind: AGENT.kind,
@@ -777,7 +783,13 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       return allowlistFor(toolName, action);
     });
     const sweepHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
+      run: {
+        id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full',
+        // #5205 W06: a legacy (non-task) run — all three linkage columns null,
+        // which is what keeps the task fence and `submit_task_step` out of
+        // this suite's blast radius entirely.
+        taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
+      },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,
@@ -799,7 +811,13 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     }
 
     const deniedHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
+      run: {
+        id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full',
+        // #5205 W06: a legacy (non-task) run — all three linkage columns null,
+        // which is what keeps the task fence and `submit_task_step` out of
+        // this suite's blast radius entirely.
+        taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
+      },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,
@@ -823,7 +841,13 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     });
 
     const proposeHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
+      run: {
+        id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full',
+        // #5205 W06: a legacy (non-task) run — all three linkage columns null,
+        // which is what keeps the task fence and `submit_task_step` out of
+        // this suite's blast radius entirely.
+        taskId: null, taskStepKey: null, taskAttemptOrdinal: null,
+      },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,

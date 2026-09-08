@@ -133,7 +133,10 @@
       "removing": "Rimozione...",
       "removeConfiguration": "Rimuovi configurazione",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "managedByYourMsp": "Gestito dal tuo MSP",
+      "inheritedByPolicies_one": "Ereditato da {{count}} criterio",
+      "inheritedByPolicies_other": "Ereditato da {{count}} criteri"
     },
     "configPolicyList": {
       "archived": "Archiviata",
@@ -152,7 +155,8 @@
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
       "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
-      "summary": "{{filtered}} di {{total}} criteri"
+      "summary": "{{filtered}} di {{total}} criteri",
+      "inheritsBadge": "Eredita"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "Vuoi davvero eliminare",
       "thisWillAlsoRemoveAllFeatureLinks": "? Verranno rimossi anche tutti i collegamenti alle funzionalità e le assegnazioni. Questa azione non può essere annullata.",
       "delete": "delete",
-      "deleting": "Eliminazione..."
+      "deleting": "Eliminazione...",
+      "deleteBlockedByChildren": "Elimina prima i criteri che ereditano da questo:"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Impossibile caricare le assegnazioni",
@@ -895,6 +900,11 @@
         "time": "Ora",
         "dayOfWeek": "Giorno della settimana",
         "dayOfMonth": "Giorno del mese",
+        "offlineDevices": "Dispositivi offline",
+        "offlineBehaviorQueue": "Metti in coda per i dispositivi offline",
+        "offlineBehaviorQueueDescription": "Viene eseguito al prossimo check-in, prima della successiva esecuzione pianificata.",
+        "offlineBehaviorSkip": "Ignora i dispositivi offline",
+        "offlineBehaviorSkipDescription": "I dispositivi offline al momento dell'esecuzione del processo vengono registrati come ignorati.",
         "rebootPolicy": "Criterio di riavvio",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
@@ -938,7 +948,8 @@
         "loadingPolicies": "Caricamento criteri...",
         "noExistingPoliciesFound": "Nessun criterio esistente trovato.",
         "selectAPolicy": "Seleziona un criterio...",
-        "clearSelection": "Cancella selezione"
+        "clearSelection": "Cancella selezione",
+        "allOrgs": "Tutte le org"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
-import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
+import { and, eq, gte, like, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
   devices,
+  deviceCommands,
   deviceHardware,
   deviceReliability,
   deviceNetwork,
@@ -19,6 +20,8 @@ import {
   organizations,
   users,
 } from '../../db/schema';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 import {
   authMiddleware,
   isInteractiveUserSession,
@@ -91,6 +94,16 @@ import { requireCapability } from '../../services/partnerTrust';
 export const DEVICE_LINKED_DEVICE_ID_TABLES = [
   'network_change_events',
   'discovered_assets',
+  // #4622 — a manual asset points at the device an agent was later installed
+  // on. DETACHED, never deleted: the row is hand-entered inventory (serial,
+  // asset tag, assigned contact, notes) that must outlive the device row.
+  // No DEVICE_LINK_DEPENDENT_COLUMNS entry: manual_assets declares no
+  // link-conditional CHECK constraint, so nothing else needs clearing.
+  // Deliberately absent from CORE_DEVICE_ORG_DENORMALIZED_TABLES too — it has
+  // no device_id column, so it is link-only rather than device-managed, and
+  // moveOrg.coverage.test.ts reports a listed non-device-managed table as an
+  // orphan. Its cross-org detach is hand-written in moveOrg.ts instead.
+  'manual_assets',
 ] as const;
 
 /**
@@ -161,8 +174,15 @@ export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly str
 // devices it charged for, by hostname, after a hard delete. Its device_id FK is
 // declared ON DELETE SET NULL to match, and the table is deliberately NOT
 // append-only so this generic UPDATE loop can run as breeze_app.
+// ai_operator_tasks (#5205 W03, #5208) also detaches: an AI Operator task is
+// durable remediation history — what was attempted, on what, with what result —
+// and must outlive the device it targeted, exactly like an agent run. Its
+// device_id FK is ON DELETE SET NULL to match. Two callers stamp the reason
+// beyond the generic device_id = NULL this list drives: deviceDeletion.ts
+// ('device_deleted') and moveOrg.ts ('device_moved'); both also fence any live
+// task, because a task whose target has vanished must not keep executing.
 export const DEVICE_DETACH_DEVICE_ID_TABLES = [
-  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'invoice_line_devices', 'support_sessions', 'tickets',
+  'abuse_endpoint_fingerprints', 'ai_agent_runs', 'ai_operator_tasks', 'invoice_line_devices', 'support_sessions', 'tickets',
 ] as const;
 
 /**
@@ -188,6 +208,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
+ *
+ * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
+ * #5208): AI Operator task history stays in the org that delegated the work.
+ * `org_id` is the task's immutable tenant and anchors four composite
+ * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
+ * operation, an outbox wake, a linked run or a linked intent. moveOrg detaches instead —
+ * device_id = NULL plus target_detached_at/reason and a fence of any live
+ * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *
  * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
  * an org_id column but is cascade-deleted, not moved. (a) Exposure history
@@ -1825,6 +1853,66 @@ coreRoutes.delete(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+
+      // #5128 — cancel this device's ordinary queued work in the SAME
+      // transaction as the status write. `self_uninstall` is explicitly
+      // EXCLUDED: the uninstall drain's whole purpose is to survive
+      // decommission and deliver when the machine next checks in, and
+      // `queueDeviceUninstall` below may be about to write exactly such a row.
+      // Claim-time eligibility refuses to deliver ordinary work to a
+      // decommissioned device anyway; this is what stops those rows sitting
+      // `pending` until their deadline.
+      // Read id/type/payload BEFORE the erasing UPDATE: the propagation below
+      // keys on `payload.executionId`, which `terminalPayloadErasureSet()` strips.
+      const cancelledOnDecommission = await tx
+        .select({
+          id: deviceCommands.id,
+          type: deviceCommands.type,
+          payload: deviceCommands.payload,
+        })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
+
+      const decommissionCancelledAt = new Date();
+      await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: decommissionCancelledAt,
+          result: {
+            status: 'cancelled',
+            reason: 'device_decommissioned',
+            cancelledBy: 'device_decommission',
+          },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(
+          and(
+            eq(deviceCommands.deviceId, deviceId),
+            eq(deviceCommands.status, 'pending'),
+            ne(deviceCommands.type, 'self_uninstall'),
+          ),
+        );
+
+      // Terminalise the OWNING records in the same transaction — otherwise a
+      // cancelled command strands its script_executions / deployment_results
+      // row `pending` forever (the command reaper only scans pending/sent
+      // COMMANDS, and this one is already terminal).
+      await propagateCancelledDeviceCommands(
+        cancelledOnDecommission.map((row) => ({
+          id: row.id,
+          type: row.type,
+          payload: row.payload as Record<string, unknown> | null,
+        })),
+        decommissionCancelledAt,
+        tx,
+      );
 
       if (uninstallAgent) {
         const queueResult = await queueDeviceUninstall(tx, deviceId, auth.user.id);

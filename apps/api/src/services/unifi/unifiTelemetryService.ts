@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
 import { upsertControllerSites } from './unifiControllerSiteService';
+import { normalizeMac, canonicalMac, canonicalAssetMac } from './unifiMac';
 
 // Fields the wire schema marks optional are `T | null | undefined` here, matching
 // what the zod validator infers (the agent omits zero-value fields via omitempty).
@@ -30,12 +31,9 @@ export interface TelemetryPayload {
 }
 export interface ReconcileResult { devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number; }
 
-// Canonical MAC form for cross-source matching: lowercase, colon-separated.
-// discovered_assets stores colon-lowercase; UniFi may report uppercase/hyphenated,
-// so we normalize both sides before comparing (and store the canonical form).
-function normalizeMac(mac: string): string {
-  return mac.trim().toLowerCase().replace(/-/g, ':');
-}
+// normalizeMac / canonicalMac / canonicalAssetMac now live in ./unifiMac —
+// shared with unifiSyncService.ts (#5096, #5102) so every UniFi producer
+// canonicalises discovered_assets.mac_address matches identically.
 
 // Extract IP from a telemetry device's raw payload.
 // UniFi device JSON uses `ipAddress`; guard against other field names too.
@@ -56,23 +54,29 @@ async function linkTelemetryDeviceToAsset(
   orgId: string,
   siteId: string,
   device: TelemetryDeviceDto,
+  mac: string | null,
 ): Promise<string | null> {
   const ip = deviceIp(device.raw);
   if (!ip) return null;
 
   const enrich = {
-    macAddress: device.mac ?? undefined,
+    // Store the canonical form: this row is the one every other producer matches
+    // against, so writing the source's casing here would poison future lookups.
+    macAddress: mac ?? undefined,
     hostname: device.name ?? undefined,
     manufacturer: 'Ubiquiti',
     isOnline: true,
     lastSeenAt: new Date(),
   };
 
-  // 1. Match by (org_id, mac) first — the stable identifier.
+  // 1. Match by (org_id, mac) first — the stable identifier. Normalize both
+  //    sides, exactly as the client path below does. Before #5087 the agent
+  //    decoded `mac` from a field the controller never sends, so this branch was
+  //    dead in production and the missing normalization never showed up.
   let existing: { id: string } | null = null;
-  if (device.mac) {
+  if (mac) {
     const byMac = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
-      .where(and(eq(discoveredAssets.orgId, orgId), eq(discoveredAssets.macAddress, device.mac))).limit(1);
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(canonicalAssetMac, mac))).limit(1);
     existing = byMac[0] ?? null;
   }
 
@@ -90,8 +94,16 @@ async function linkTelemetryDeviceToAsset(
 
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
   const inserted = await db.insert(discoveredAssets)
-    .values({ orgId, siteId, ipAddress: ip, ...enrich })
-    .onConflictDoUpdate({ target: [discoveredAssets.orgId, discoveredAssets.ipAddress], set: enrich })
+    // #5213 — `source` is insert-side only: the conflict branch must never
+    // relabel an existing (possibly manual) row.
+    .values({ orgId, siteId, ipAddress: ip, source: 'unifi', ...enrich })
+    .onConflictDoUpdate({
+      target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
+      // The index is PARTIAL as of #5213; Postgres only infers a partial unique
+      // index when the statement repeats its predicate (else 42P10 at runtime).
+      targetWhere: sql`${discoveredAssets.ipAddress} is not null`,
+      set: enrich,
+    })
     .returning({ id: discoveredAssets.id });
   return inserted[0]?.id ?? null;
 }
@@ -147,17 +159,27 @@ export async function reconcileTelemetry(
   for (const d of payload.devices) {
     seenDeviceIds.add(d.unifiDeviceId);
     const { orgId, siteId } = resolveSite(d.unifiSiteId);
-    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d);
+    const mac = canonicalMac(d.mac);
+    const discoveredAssetId = await linkTelemetryDeviceToAsset(db, orgId, siteId, d, mac);
+    // A metric the agent could not collect is omitted from the body, and must
+    // persist as SQL NULL so the UI can render "—" instead of a fabricated 0.
+    // Explicit `?? null` matters most on the UPDATE path: drizzle drops
+    // `undefined` keys from SET, which would silently preserve a stale value
+    // written by an older agent that still sent zeros.
+    const metrics = {
+      uptimeSeconds: d.uptimeSeconds ?? null, cpuPct: d.cpuPct ?? null, memPct: d.memPct ?? null,
+      txBytes: d.txBytes ?? null, rxBytes: d.rxBytes ?? null, numClients: d.numClients ?? null,
+    };
     await db.insert(unifiDeviceTelemetry).values({
-      collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac: d.mac, name: d.name,
-      uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct, txBytes: d.txBytes, rxBytes: d.rxBytes,
-      numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
+      collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac, name: d.name,
+      ...metrics,
+      discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
-        orgId, siteId, mac: d.mac, name: d.name, uptimeSeconds: d.uptimeSeconds, cpuPct: d.cpuPct, memPct: d.memPct,
-        txBytes: d.txBytes, rxBytes: d.rxBytes, numClients: d.numClients, discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
+        orgId, siteId, mac, name: d.name, ...metrics,
+        discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },
     });
@@ -184,7 +206,7 @@ export async function reconcileTelemetry(
     // Normalize both sides so casing/separator differences don't miss the link.
     let discoveredAssetId: string | null = null;
     const [asset] = await db.select({ id: discoveredAssets.id }).from(discoveredAssets)
-      .where(and(eq(discoveredAssets.orgId, orgId), eq(sql`lower(replace(${discoveredAssets.macAddress}, '-', ':'))`, mac))).limit(1);
+      .where(and(eq(discoveredAssets.orgId, orgId), eq(canonicalAssetMac, mac))).limit(1);
     discoveredAssetId = asset?.id ?? null;
 
     await db.insert(unifiClients).values({

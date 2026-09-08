@@ -8,7 +8,8 @@ import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
-import { queueCommand } from './commandQueue';
+import { CommandTypes, queueCommand } from './commandQueue';
+import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
   toAgentCommandFrame,
@@ -78,7 +79,12 @@ export type DispatchScriptInput = {
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
-  requireOnline?: boolean;
+  /**
+   * #5128 — explicit offline policy. Omit to take the registry default for
+   * `script` (queue, standard TTL), which is what manual Run Script has always
+   * done in practice.
+   */
+  offlinePolicy?: OfflinePolicy;
   // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
   // see tenantVariableResolution.ts. Required only when `source.kind ===
   // 'saved'` and the script content actually contains a {{var.*}} token; the
@@ -92,6 +98,12 @@ export type DispatchScriptResult =
       commandId: string;
       executionId: string | null;
       delivered: boolean;
+      /**
+       * #5128 — the instant after which the command expires undelivered. For a
+       * queued (offline) dispatch this is the honest answer to "how long will
+       * this wait?"; the UI copy renders it as the expiry date.
+       */
+      deliverBy: Date | null;
       // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
       // "queued for later" case; 'claim_lost', 'decrypt_failed', and
       // 'send_failed' all mean we had a connected agent and still failed to
@@ -190,7 +202,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
-  if (input.requireOnline) {
+  const offlinePolicy: OfflinePolicy =
+    input.offlinePolicy ?? defaultOfflinePolicy(CommandTypes.SCRIPT);
+  // A `reject` row is only created against a device we just observed online, so
+  // it gets the short race grace rather than a queue window.
+  const deliverBy = deliverByFor(offlinePolicy);
+
+  if (offlinePolicy.kind === 'reject') {
     // Re-read live status rather than trusting `device.status` (the caller's
     // snapshot). Automation fleet runs snapshot every target device ONCE at
     // run start (automationRuntime.ts:1712/2269) and can dispatch minutes
@@ -199,7 +217,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // (commandQueue.ts:650), which re-selected `devices.status` fresh on
     // every dispatch — a deleted test once pinned the opposite contract
     // ("must NOT pre-filter on it") for this codepath, which this restores.
-    // Only requireOnline gets the extra query: manual/route dispatch
+    // Only a `reject` policy gets the extra query: manual/route dispatch
     // deliberately queues offline devices, so no live read runs for it.
     const [liveDevice] = await db
       .select({ status: devices.status })
@@ -236,6 +254,17 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
   const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
   const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+  // #5129 — the agent STRICT-pattern descriptions a human acknowledged on the
+  // script record. Server-decided and delivered over the authenticated command
+  // channel; the agent never supplies it.
+  //
+  // A `raw` source has no script record and therefore no acknowledgement, so
+  // ad-hoc content (the automation `execute_command` action, remediation
+  // suggestions) keeps the pre-#5129 behaviour exactly: any Strict match is
+  // refused on the device. That is deliberate — there is no human decision on
+  // file for content that exists only for the duration of one dispatch.
+  const acknowledgedSecurityPatterns =
+    source.kind === 'saved' ? (source.script.acknowledgedSecurityPatterns ?? []) : [];
 
   // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
   // anything else happens with `content`. `hasVariableTokens` comes first so
@@ -508,11 +537,21 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(hasSecrets ? { secretEnv } : {}),
       timeoutSeconds,
       runAs,
+      // #5129. Omitted when empty so the wire stays identical to pre-#5129 for
+      // every script that acknowledges nothing — and an absent key is what the
+      // agent already treats as fail-closed.
+      ...(acknowledgedSecurityPatterns.length > 0 ? { acknowledgedSecurityPatterns } : {}),
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
     command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
       commandId: reservedCommandId,
+      // #5128: the DELIVERY deadline. Before this, a script queued for an
+      // offline laptop was reaped after ~10 min by its own 300 s EXECUTION
+      // timeout, even though the UI promised "the run will wait until it
+      // reconnects".
+      deliverBy,
+      submittedOrgId: device.orgId,
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -632,7 +671,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, deliverBy, ignoredParameters, runAs, targetSessionId: input.targetSessionId ?? null };
 }
 
 // #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade

@@ -27,7 +27,7 @@ outlives a context window.
 1. `gh pr list --state open` — non-draft PRs against `main` with CI running are
    the "waiting" set. Draft/stacked PRs are not.
 2. `gh pr checks <n> --watch` in the background (never poll by hand).
-3. Merge only on **head-SHA** green (`gh pr merge --squash --admin`). Ignore
+3. Merge only on **head-SHA** green (bare `gh pr merge <N>` enqueues; never `--admin`). Ignore
    only known-noise checks and say which: Trivy on `CVE-2026-14456`
    (base-image openssl) is the current one — confirm the CVE id in the log
    before dismissing it.

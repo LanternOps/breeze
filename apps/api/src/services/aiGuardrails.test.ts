@@ -281,6 +281,141 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
     });
   });
 
+  // --- execute_command: command-type-aware headline + impact text (#5173) ---
+  //
+  // Before this, buildApprovalDescription emitted the raw call signature for
+  // EVERY execute_command call ('Execute "kill_process" command on device
+  // 74e15ef8...'), and the "High impact" box fell through to the tool's
+  // catalog description ("Execute a system command on a device.") — true of
+  // every call, not what THIS call does. These builders produce a
+  // call-specific headline from the actual commandType + payload; a
+  // commandType this map doesn't recognise, or a payload missing the field a
+  // recognised commandType needs, falls back to the pre-existing generic
+  // wording so nothing regresses.
+  describe('execute_command command-type-aware description (#5173)', () => {
+    const DEVICE_ID = '74e15ef8-1234-5678-9abc-def012345678';
+
+    it('kill_process names the process and PID from payload', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { pid: 2920, processName: 'SupportAssistAgent.exe' },
+      });
+      expect(result.description).toBe(
+        'Kill process "SupportAssistAgent.exe" (PID 2920) on device 74e15ef8...'
+      );
+    });
+
+    it('kill_process falls back to PID alone when no process name is given', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { pid: 2920 },
+      });
+      expect(result.description).toBe('Kill process PID 2920 on device 74e15ef8...');
+    });
+
+    it('kill_process names the process alone when no PID is given', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+        payload: { processName: 'SupportAssistAgent.exe' },
+      });
+      expect(result.description).toBe('Kill process "SupportAssistAgent.exe" on device 74e15ef8...');
+    });
+
+    it('kill_process falls back to the generic signature when payload has neither field (no regression)', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'kill_process',
+      });
+      expect(result.description).toBe('Execute "kill_process" command on device 74e15ef8...');
+    });
+
+    it.each([
+      ['start_service', 'Start service "Spooler" on device 74e15ef8...'],
+      ['stop_service', 'Stop service "Spooler" on device 74e15ef8...'],
+      ['restart_service', 'Restart service "Spooler" on device 74e15ef8...'],
+    ])('%s names the service from payload.name', (commandType, expected) => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType,
+        payload: { name: 'Spooler' },
+      });
+      expect(result.description).toBe(expected);
+    });
+
+    it.each(['start_service', 'stop_service', 'restart_service'])(
+      '%s falls back to the generic signature without a service name (no regression)',
+      (commandType) => {
+        const result = checkGuardrails('execute_command', {
+          deviceId: DEVICE_ID,
+          commandType,
+        });
+        expect(result.description).toBe(`Execute "${commandType}" command on device 74e15ef8...`);
+      }
+    );
+
+    it('file_read names the target path', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_read',
+        payload: { path: 'C:\\Windows\\System32\\drivers\\etc\\hosts' },
+      });
+      expect(result.description).toBe(
+        'Read file "C:\\Windows\\System32\\drivers\\etc\\hosts" on device 74e15ef8...'
+      );
+    });
+
+    it('file_list falls back to a plain "List files" headline without a path', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_list',
+      });
+      expect(result.description).toBe('List files on device 74e15ef8...');
+    });
+
+    it('event_logs_query names the log', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'event_logs_query',
+        payload: { logName: 'Security' },
+      });
+      expect(result.description).toBe('Query "Security" event log on device 74e15ef8...');
+    });
+
+    it('event_logs_query falls back to a plain "Query event log" headline without a logName', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'event_logs_query',
+      });
+      expect(result.description).toBe('Query event log on device 74e15ef8...');
+    });
+
+    it('list_processes, list_services, event_logs_list, file_list get plain-English headlines', () => {
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'list_processes' }).description
+      ).toBe('List running processes on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'list_services' }).description
+      ).toBe('List services on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'event_logs_list' }).description
+      ).toBe('List event logs on device 74e15ef8...');
+      expect(
+        checkGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'file_list', payload: { path: 'C:\\Users' } }).description
+      ).toBe('List files in "C:\\Users" on device 74e15ef8...');
+    });
+
+    it('an unrecognised commandType keeps the pre-existing generic shape (no regression)', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'definitely_not_a_command',
+      });
+      expect(result.description).toBe('Execute "definitely_not_a_command" command on device 74e15ef8...');
+    });
+  });
+
   // --- Unknown tool → Tier 4 (blocked) ---
 
   it('blocks unknown tools with Tier 4', () => {

@@ -13,6 +13,11 @@ import { partners, organizations, sites, devices, agentVersions, partnerUsers } 
 // constant added to it would throw "No export is defined on the mock" at the
 // exact moment this 409 mapping runs.
 import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
+// Imported from the concrete schema module rather than the '../db/schema'
+// barrel: several route tests partially mock that barrel, and a new named
+// import there fails their module load ("No 'psaConnections' export is defined
+// on the mock") before a single test runs.
+import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -454,6 +459,8 @@ const partnerPublicColumns = () => ({
   invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  serviceManagementMode: partners.serviceManagementMode,
+  serviceManagementPsaConnectionId: partners.serviceManagementPsaConnectionId,
   createdAt: partners.createdAt,
   updatedAt: partners.updatedAt,
 });
@@ -820,7 +827,17 @@ const updatePartnerSettingsSchema = z.object({
     .max(63)
     .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers, and hyphens only')
     .nullable()
-    .optional()
+    .optional(),
+  // #5075 W04 — which service-desk/billing module this partner runs. Unlike
+  // `aiForOfficeEnabled` (platform-granted, writable only on PATCH /partners/:id),
+  // this is the partner's own product choice, so it lives here and NOT on the
+  // system-scoped partner schema.
+  //
+  // `external` is accepted by the API today even though the UI does not offer it
+  // yet — the follow-on external service-desk feature turns the radio on without
+  // needing an API change, and rejecting it here would make that a breaking one.
+  serviceManagementMode: z.enum(['native', 'external', 'off']).optional(),
+  serviceManagementPsaConnectionId: z.string().uuid().nullable().optional()
 });
 
 // Get own partner details (for partner-scoped users)
@@ -989,6 +1006,44 @@ orgRoutes.patch(
     if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
   }
 
+  // #5075 W04 — Service Management mode. `external` binds a PSA connection that
+  // must belong to THIS partner and be partner-wide (org_id IS NULL): a
+  // cross-partner id here would point a partner's whole service desk at another
+  // tenant's PSA credentials, and an org-scoped connection cannot serve every
+  // org under the partner. The read runs under the request RLS context, so the
+  // partner_id equality is a defence-in-depth check, not the only boundary.
+  //
+  // `native`/`off` FORCE the connection id to null rather than leaving whatever
+  // was there: partners_service_management_connection_chk is a biconditional, so
+  // a retained id would abort the UPDATE with 23514 (a 500 to the caller).
+  let nextMode: 'native' | 'external' | 'off' | undefined;
+  if (body.serviceManagementMode !== undefined) {
+    nextMode = body.serviceManagementMode;
+    if (nextMode === 'external') {
+      const connectionId = body.serviceManagementPsaConnectionId;
+      if (!connectionId) {
+        return c.json({ error: 'External mode requires one of your partner-wide PSA connections' }, 400);
+      }
+      const [connectionOk] = await db
+        .select({ id: psaConnections.id })
+        .from(psaConnections)
+        .where(and(
+          eq(psaConnections.id, connectionId),
+          eq(psaConnections.partnerId, auth.partnerId as string),
+          isNull(psaConnections.orgId),
+        ))
+        .limit(1);
+      if (!connectionOk) {
+        return c.json({ error: 'External mode requires one of your partner-wide PSA connections' }, 400);
+      }
+    }
+  } else if (body.serviceManagementPsaConnectionId !== undefined) {
+    // A connection id with no mode alongside it can only ever contradict the
+    // stored mode (native/off forbid one; external already has one), so refuse
+    // rather than write a row the CHECK will reject with an opaque 500.
+    return c.json({ error: 'serviceManagementPsaConnectionId requires serviceManagementMode' }, 400);
+  }
+
   // Encrypt secret-bearing fields (e.g. remoteAccessProviders[*].password)
   // BEFORE writing. Without this, every PATCH from the UI would regress the
   // column to plaintext between deploy-day batch re-encrypt runs.
@@ -997,6 +1052,11 @@ orgRoutes.patch(
     updatedAt: new Date()
   };
 
+  if (nextMode !== undefined) {
+    updateData.serviceManagementMode = nextMode;
+    updateData.serviceManagementPsaConnectionId =
+      nextMode === 'external' ? (body.serviceManagementPsaConnectionId as string) : null;
+  }
   if (body.name) updateData.name = body.name;
   if (body.billingEmail) updateData.billingEmail = body.billingEmail;
   // Explicit null (or an all-whitespace value) clears the signature.

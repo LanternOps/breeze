@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  assigneeDisplayName,
+  assigneeOptions,
   buildCreateTicketBody,
   canSubmitTicket,
+  defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
+  isExpectedAssigneeLoadFailure,
   preselectOrg,
   TICKET_PRIORITY_OPTIONS,
 } from './createTicketForm';
@@ -14,6 +18,31 @@ describe('buildCreateTicketBody', () => {
     ).toEqual({ ok: true, body: { orgId: 'o1', subject: 'Printer offline', priority: 'high' } });
   });
 
+  it('includes assigneeId when set', () => {
+    const r = buildCreateTicketBody({
+      orgId: 'o1',
+      subject: 'x',
+      description: '',
+      priority: 'normal',
+      assigneeId: 'u1',
+    });
+    expect(r).toEqual({ ok: true, body: { orgId: 'o1', subject: 'x', priority: 'normal', assigneeId: 'u1' } });
+  });
+
+  it('omits assigneeId when null or absent (Unassigned)', () => {
+    const withNull = buildCreateTicketBody({
+      orgId: 'o1',
+      subject: 'x',
+      description: '',
+      priority: 'normal',
+      assigneeId: null,
+    });
+    expect(withNull).toEqual({ ok: true, body: { orgId: 'o1', subject: 'x', priority: 'normal' } });
+
+    const withoutField = buildCreateTicketBody({ orgId: 'o1', subject: 'x', description: '', priority: 'normal' });
+    expect(withoutField).toEqual({ ok: true, body: { orgId: 'o1', subject: 'x', priority: 'normal' } });
+  });
+
   it('keeps a trimmed description when present', () => {
     const r = buildCreateTicketBody({ orgId: 'o1', subject: 'x', description: ' Paper jam on tray 2 ', priority: 'normal' });
     expect(r).toEqual({
@@ -22,7 +51,7 @@ describe('buildCreateTicketBody', () => {
     });
   });
 
-  it('refuses without an organisation, before checking the subject', () => {
+  it('refuses without an organization, before checking the subject', () => {
     expect(buildCreateTicketBody({ orgId: null, subject: '', description: '', priority: 'normal' })).toEqual({
       ok: false,
       reason: 'org',
@@ -56,10 +85,10 @@ describe('preselectOrg', () => {
     { id: 'a', name: 'Acme' },
     { id: 'b', name: 'Bolt' },
   ];
-  it('prefers the signed-in user\'s own organisation when it is in the list', () => {
+  it('prefers the signed-in user\'s own organization when it is in the list', () => {
     expect(preselectOrg(orgs, 'b')).toBe('b');
   });
-  it('picks the only organisation when there is exactly one', () => {
+  it('picks the only organization when there is exactly one', () => {
     expect(preselectOrg([orgs[0]], undefined)).toBe('a');
   });
   it('leaves the choice to the user otherwise', () => {
@@ -73,5 +102,99 @@ describe('priority options', () => {
   it('offers every API priority in escalation order and defaults to normal', () => {
     expect(TICKET_PRIORITY_OPTIONS).toEqual(['low', 'normal', 'high', 'urgent']);
     expect(DEFAULT_TICKET_PRIORITY).toBe('normal');
+  });
+});
+
+describe('isExpectedAssigneeLoadFailure', () => {
+  it('treats a 403 from GET /users as the expected no-users:read case (not reported)', () => {
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 403, message: 'Forbidden' })).toBe(true);
+  });
+  it('reports everything else — server errors, network failures, garbage', () => {
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 500, message: 'boom' })).toBe(false);
+    expect(isExpectedAssigneeLoadFailure({ statusCode: 404, message: 'gone' })).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(new TypeError('Network request failed'))).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(null)).toBe(false);
+    expect(isExpectedAssigneeLoadFailure(undefined)).toBe(false);
+    expect(isExpectedAssigneeLoadFailure('403')).toBe(false);
+  });
+});
+
+describe('assigneeDisplayName', () => {
+  it('uses the name when present', () => {
+    expect(assigneeDisplayName({ name: 'Casey Tech', email: 'casey@example.com' })).toBe('Casey Tech');
+  });
+
+  it('falls back to email when name is blank or missing', () => {
+    expect(assigneeDisplayName({ name: '  ', email: 'casey@example.com' })).toBe('casey@example.com');
+    expect(assigneeDisplayName({ name: null, email: 'casey@example.com' })).toBe('casey@example.com');
+  });
+});
+
+describe('defaultAssigneeId', () => {
+  it('defaults to the signed-in user', () => {
+    expect(defaultAssigneeId({ id: 'me-1' })).toBe('me-1');
+  });
+
+  it('is null when signed out', () => {
+    expect(defaultAssigneeId(null)).toBeNull();
+    expect(defaultAssigneeId(undefined)).toBeNull();
+  });
+});
+
+describe('assigneeOptions', () => {
+  const me = { id: 'me-1', name: 'Casey Tech', email: 'casey@example.com' };
+  const staff = [
+    { id: 'u2', name: 'Bailey Ops', email: 'bailey@example.com' },
+    { id: 'u3', name: null, email: 'alex@example.com' },
+  ];
+
+  it('leads with Unassigned, then the signed-in user labeled "(you)", then staff sorted by display name', () => {
+    expect(assigneeOptions(staff, me)).toEqual([
+      { id: null, label: 'Unassigned' },
+      { id: 'me-1', label: 'Casey Tech (you)' },
+      { id: 'u3', label: 'alex@example.com' },
+      { id: 'u2', label: 'Bailey Ops' },
+    ]);
+  });
+
+  it('dedupes the signed-in user out of the fetched staff list', () => {
+    const withMeDuplicated = [...staff, { id: 'me-1', name: 'Casey Tech', email: 'casey@example.com' }];
+    const options = assigneeOptions(withMeDuplicated, me);
+    expect(options.filter((o) => o.id === 'me-1')).toHaveLength(1);
+  });
+
+  it('dedupes a repeated id WITHIN the fetched staff list itself (e.g. paginated overlap)', () => {
+    const withInternalDuplicate = [...staff, { id: 'u2', name: 'Bailey Ops', email: 'bailey@example.com' }];
+    const options = assigneeOptions(withInternalDuplicate, me);
+    expect(options.filter((o) => o.id === 'u2')).toHaveLength(1);
+  });
+
+  it('drops a staff row with an empty id', () => {
+    const withBlankId = [...staff, { id: '', name: 'Ghost Row', email: 'ghost@example.com' }];
+    const options = assigneeOptions(withBlankId, me);
+    expect(options.some((o) => o.label === 'Ghost Row')).toBe(false);
+  });
+
+  it('labels the signed-in user by email, not "(you)" alone, when their name is blank', () => {
+    const meWithNoName = { id: 'me-1', name: '', email: 'casey@example.com' };
+    expect(assigneeOptions([], meWithNoName)).toEqual([
+      { id: null, label: 'Unassigned' },
+      { id: 'me-1', label: 'casey@example.com (you)' },
+    ]);
+  });
+
+  it('degrades to Unassigned + you when the staff fetch failed (empty list)', () => {
+    expect(assigneeOptions([], me)).toEqual([
+      { id: null, label: 'Unassigned' },
+      { id: 'me-1', label: 'Casey Tech (you)' },
+    ]);
+  });
+
+  it('omits the "(you)" row when signed out, but still lists fetched staff', () => {
+    expect(assigneeOptions(staff, null)).toEqual([
+      { id: null, label: 'Unassigned' },
+      { id: 'u3', label: 'alex@example.com' },
+      { id: 'u2', label: 'Bailey Ops' },
+    ]);
   });
 });

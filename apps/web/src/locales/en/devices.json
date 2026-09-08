@@ -159,7 +159,8 @@
       "quarantined": "Device is quarantined",
       "updating": "Device is updating",
       "pending": "Device is pending enrollment",
-      "notOnline": "Device is not online"
+      "notOnline": "Device is not online",
+      "unknown": "Device has not been probed yet"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Remote Terminal needs a connected agent. Queued commands still run on reconnect.",
@@ -210,6 +211,16 @@
         "title": "Install Homebrew",
         "message": "Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session with an active or passwordless sudo credential; otherwise the install fails and the error is reported back.",
         "confirm": "Install Homebrew"
+      },
+      "bulkDeleteManual": {
+        "title": "Delete {{count}} manual assets?",
+        "message": "This permanently deletes the selected manual assets. This cannot be undone.",
+        "confirm": "Delete"
+      },
+      "deleteManual": {
+        "title": "Delete {{hostname}}?",
+        "message": "This permanently deletes this manual asset. This cannot be undone.",
+        "confirm": "Delete"
       }
     },
     "removeDialog": {
@@ -396,7 +407,8 @@
     "segments": {
       "all": "All",
       "agent": "Agent",
-      "network": "Network"
+      "network": "Network",
+      "manual": "Manual"
     },
     "filterByDeviceClass": "Filter by device class"
   },
@@ -488,7 +500,8 @@
       "decommissioned": "Removed",
       "quarantined": "Quarantined",
       "updating": "Updating",
-      "pending": "Pending"
+      "pending": "Pending",
+      "unknown": "Unknown"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -630,7 +643,9 @@
     "rail": "rail",
     "strip": "strip",
     "networkAsset": "Network asset",
-    "networkAssets": "Network assets"
+    "networkAssets": "Network assets",
+    "operatorTasks": "Operator Tasks",
+    "operatorTasksForThisDevice": "AI Operator tasks for this device"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -672,6 +687,7 @@
     "refresh": "Refresh",
     "from": "From:",
     "linkedPolicy": "Linked policy:",
+    "inheritedFrom": "Inherited from {{name}}",
     "notEnforced": "Not enforced",
     "usingBreezeDefaults": "— using Breeze Defaults",
     "inheritanceChain": "Inheritance Chain",
@@ -1054,7 +1070,11 @@
       "status": "Status",
       "cpu": "CPU %",
       "ram": "RAM %",
-      "lastSeen": "Last Seen"
+      "lastSeen": "Last Seen",
+      "serial": "Serial",
+      "assetTag": "Asset Tag",
+      "location": "Location",
+      "source": "Source"
     },
     "sortBy": {
       "class": "Sort by class",
@@ -1067,7 +1087,11 @@
       "status": "Sort by status",
       "cpu": "Sort by CPU usage",
       "ram": "Sort by RAM usage",
-      "lastSeen": "Sort by last seen time"
+      "lastSeen": "Sort by last seen time",
+      "serial": "Sort by serial number",
+      "assetTag": "Sort by asset tag",
+      "location": "Sort by location",
+      "source": "Sort by source"
     },
     "statuses": {
       "compact": {
@@ -1086,7 +1110,8 @@
         "decommissioned": "Removed",
         "quarantined": "Quarantined",
         "updating": "Updating",
-        "pending": "Pending"
+        "pending": "Pending",
+        "unknown": "Unknown"
       }
     },
     "roles": {
@@ -1186,7 +1211,21 @@
     "devicesPerPage": "Devices per page",
     "page": "Page",
     "possibleDuplicate": "Possible duplicate",
-    "possibleDuplicateTitle": "This device may replace an earlier row with the same hostname. Open it to review."
+    "possibleDuplicateTitle": "This device may replace an earlier row with the same hostname. Open it to review.",
+    "manualOnlyBulkAction": "Select a manual asset to use this action.",
+    "manualAsset": "Manual asset",
+    "manual": "Manual",
+    "selectedCompositionManual": "{{agent}} agent, {{network}} network, {{manual}} manual",
+    "deleteManualSelected": "Delete manual assets",
+    "editManualAsset": "Edit {{name}}",
+    "deleteManualAsset": "Delete {{name}}",
+    "edit": "Edit",
+    "delete": "Delete",
+    "source": {
+      "scan": "Scan",
+      "unifi": "UniFi",
+      "manual": "Manual"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -1850,18 +1889,16 @@
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
     "title": "Devices",
-    "hiddenNetworkNotice_one": "1 network device hidden — {{fields}} applies to agent devices only.",
-    "hiddenNetworkNotice_other": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
-    "hiddenNetworkNotice": "{{count}} network devices hidden — {{fields}} applies to agent devices only.",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
+      "agentOnlyActionManual": "This action applies to agent devices only. Manual assets have no agent.",
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",
       "bulkAllDecommissioned": "All {{total}} selected device(s) are already removed.",
-      "bulkCommandPartialFailed": "Bulk Command Partial Failed",
-      "bulkCommandSent": "Bulk Command Sent",
+      "bulkCommandPartialFailed": "{{action}} sent to {{count}} device(s){{queuedTail}}{{skippedTail}}; {{failed}} failed: {{failureSummary}}",
+      "bulkCommandSent": "{{action}} sent to {{count}} device(s){{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Failed to remove all {{count}} device(s): {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} device(s) removed; {{failed}} failed: {{devices}}",
       "bulkDecommissioned": "{{count}} device(s) removed",
@@ -1900,11 +1937,13 @@
       "networkSkipped_one": "1 network device skipped — this action applies to agent devices only.",
       "networkSkipped_other": "{{count}} network devices skipped — this action applies to agent devices only.",
       "networkSkipped": "{{count}} network devices skipped — this action applies to agent devices only.",
-      "compareNeedsTwo": "Comparison needs at least 2 agent devices.",
       "permanentDeleteCancelled": "Permanent Delete Cancelled",
       "permanentDeleting": "Permanently deleting {{hostname}}…",
       "permanentlyDeleted": "{{hostname}} permanently deleted",
+      "queuedOfflineTail": ", {{count}} queued for offline devices",
       "restored": "Restored",
+      "runsWhenOnline": "Runs when the device is online — expires {{date}}",
+      "runsWhenOnlineNoExpiry": "Runs when the device is online",
       "scriptQueueFailed": "Script Queue Failed",
       "scriptQueuedMany": "Script Queued Many",
       "scriptQueuedOne": "Script Queued One",
@@ -1913,13 +1952,34 @@
       "unknownAction": "Unknown Action",
       "unknownBulkAction": "Unknown Bulk Action",
       "wakeSentWatching": "Wake Sent Watching",
-      "wakeTimeout": "Wake Timeout"
+      "wakeTimeout": "Wake Timeout",
+      "deleteManualFailed": "Failed to delete {{hostname}}.",
+      "mfaRequired": "This action requires multi-factor authentication. Please sign in again.",
+      "manualDeleted": "Deleted {{hostname}}.",
+      "manualOnlyAction": "Select a manual asset to use this action.",
+      "manualSkipped": "{{count}} non-manual devices skipped — this action applies to manual assets only.",
+      "nonAgentSkipped": "{{count}} non-agent devices skipped — this action applies to agent devices only.",
+      "bulkManualDeleted": "Deleted {{count}} manual assets.",
+      "bulkManualDeleteAllFailed": "Failed to delete all {{count}} manual assets: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "Deleted {{succeeded}}; {{failed}} failed: {{devices}}."
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",
     "unknownOrg": "Unknown Org",
     "unknownSite": "Unknown Site",
-    "viewInstallationGuide": "View installation guide"
+    "viewInstallationGuide": "View installation guide",
+    "hiddenNonAgentNotice": "{{count}} {{class}} hidden — {{fields}} applies to agent devices only.",
+    "hiddenNonAgentClassLabel": {
+      "network": "network devices",
+      "manual": "manual assets",
+      "mixed": "devices"
+    },
+    "addMenu": {
+      "trigger": "Add",
+      "installAgent": "Install agent…",
+      "addNetworkAsset": "Add network asset…",
+      "addManualAsset": "Add asset manually…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Add filter",
@@ -2381,6 +2441,18 @@
     },
     "label": "Quick filters"
   },
+  "queuedActions": {
+    "title": "Queued actions",
+    "system": "System",
+    "aUser": "a user",
+    "requestedBy": "Requested by {{who}}",
+    "expires": "Expires {{date}}",
+    "cancel": "Cancel",
+    "cancelled": "Queued action cancelled",
+    "cancelFailed": "Failed to cancel queued action",
+    "loadFailed": "Couldn't load queued actions.",
+    "empty": "No queued actions"
+  },
   "savedViewsMenu": {
     "applyTitle": "Apply \"{{name}}\"",
     "buildFilterFirst": "Build a filter first",
@@ -2655,6 +2727,86 @@
       "warrantyStartDate": "Warranty start date",
       "warrantyEndDate": "Warranty end date",
       "manufacturer": "Manufacturer"
+    }
+  },
+  "manualAssetModal": {
+    "addTitle": "Add manual asset",
+    "editTitle": "Edit manual asset",
+    "cancel": "Cancel",
+    "create": "Create",
+    "save": "Save",
+    "unlink": "Unlink",
+    "linkSectionTitle": "Link to an existing device or network asset",
+    "linkDevicePlaceholder": "Select a device…",
+    "linkAssetPlaceholder": "Select a network asset…",
+    "linkToDevice": "Link",
+    "linkToAsset": "Link",
+    "linkedTo": "Linked to {{name}}",
+    "linkedUnknown": "an unknown device",
+    "errors": {
+      "mfaRequired": "This action requires multi-factor authentication. Please sign in again.",
+      "createFailed": "Failed to create the manual asset.",
+      "updateFailed": "Failed to update the manual asset.",
+      "linkFailed": "Failed to link the asset.",
+      "unlinkFailed": "Failed to unlink the asset."
+    },
+    "toasts": {
+      "created": "Manual asset created.",
+      "updated": "Manual asset updated.",
+      "linked": "Asset linked.",
+      "unlinked": "Asset unlinked."
+    },
+    "fields": {
+      "organization": "Organization",
+      "selectOrganization": "Select an organization…",
+      "site": "Site",
+      "selectSite": "Select a site…",
+      "name": "Name",
+      "namePlaceholder": "e.g. Spare laptop, Front desk phone",
+      "assetType": "Asset type",
+      "manufacturer": "Manufacturer",
+      "model": "Model",
+      "serialNumber": "Serial number",
+      "assetTag": "Asset tag",
+      "location": "Location",
+      "locationPlaceholder": "e.g. Closet B, shelf 2",
+      "assignedContact": "Assigned to",
+      "assignedContactPlaceholder": "Search contacts…",
+      "tags": "Tags",
+      "tagsPlaceholder": "Comma-separated",
+      "notes": "Notes"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Add network asset",
+    "submit": "Add asset",
+    "identityHint": "Provide at least one of: IP address, hostname, or URL.",
+    "urlRequiredHint": "Website and service assets require a URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitor this asset with an HTTP check?",
+      "actions": {
+        "addHttpCheck": "Add an HTTP check"
+      }
+    },
+    "fields": {
+      "label": "Name",
+      "ipAddress": "IP address",
+      "hostname": "Hostname",
+      "url": "URL",
+      "macAddress": "MAC address",
+      "manufacturer": "Manufacturer",
+      "model": "Model",
+      "tags": "Tags",
+      "notes": "Notes"
+    },
+    "placeholders": {
+      "label": "e.g. Warehouse printer",
+      "selectSite": "Select a site",
+      "tags": "Comma-separated, e.g. lobby, floor-2"
+    },
+    "toasts": {
+      "created": "Network asset created",
+      "createFailed": "Failed to create network asset"
     }
   }
 }

@@ -5,7 +5,8 @@ import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
+import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter, FilterQueryTimeoutError } from '../services/filterEngine';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../services/filterPreviewTimeout';
 import {
   addManualGroupMemberships,
   evaluateGroupMembership,
@@ -1082,11 +1083,23 @@ groupRoutes.post(
     }
 
     const filter = group.filterConditions as FilterConditionGroup;
-    const preview = await evaluateFilterWithPreview(filter, {
-      orgId: group.orgId,
-      allowedSiteIds: group.siteId ? [group.siteId] : null,
-      previewLimit: limit
-    });
+    let preview;
+    try {
+      preview = await evaluateFilterWithPreview(filter, {
+        orgId: group.orgId,
+        allowedSiteIds: group.siteId ? [group.siteId] : null,
+        previewLimit: limit
+      });
+    } catch (error) {
+      // The fourth preview endpoint, and the one most likely to time out: a
+      // dynamic group's stored filter is applied to the whole org rather than
+      // being typed interactively, so nothing bounds its cost up front. Same
+      // treatment as the three in routes/filters.ts (#5181) — without it this
+      // endpoint would keep answering the anonymous 500 the issue is about.
+      if (!(error instanceof FilterQueryTimeoutError)) throw error;
+      reportFilterPreviewTimeout(group.orgId);
+      return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+    }
 
     return c.json({
       data: {

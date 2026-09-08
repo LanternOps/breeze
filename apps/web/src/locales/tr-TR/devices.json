@@ -159,7 +159,8 @@
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
-      "notOnline": "Cihaz çevrimiçi değil"
+      "notOnline": "Cihaz çevrimiçi değil",
+      "unknown": "Cihaz henüz test edilmedi"
     },
     "gateHint": {
       "liveSessionOnly": "{{reason}} — Uzak Terminalin bağlı bir aracıya ihtiyacı var. Sıraya alınan komutlar yeniden bağlanıldığında çalışmaya devam eder.",
@@ -210,6 +211,16 @@
         "title": "Homebrew'u yükle",
         "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
         "confirm": "Homebrew'u yükle"
+      },
+      "bulkDeleteManual": {
+        "title": "{{count}} manuel varlık silinsin mi?",
+        "message": "Bu, seçili manuel varlıkları kalıcı olarak siler. Bu işlem geri alınamaz.",
+        "confirm": "Sil"
+      },
+      "deleteManual": {
+        "title": "{{hostname}} silinsin mi?",
+        "message": "Bu, bu manuel varlığı kalıcı olarak siler. Bu işlem geri alınamaz.",
+        "confirm": "Sil"
       }
     },
     "removeDialog": {
@@ -396,7 +407,8 @@
     "segments": {
       "all": "Hepsi",
       "agent": "Temsilci",
-      "network": "Ağ"
+      "network": "Ağ",
+      "manual": "Manuel"
     },
     "filterByDeviceClass": "Cihaz sınıfına göre filtrele"
   },
@@ -488,7 +500,8 @@
       "decommissioned": "Çıkarıldı",
       "quarantined": "Karantinaya alındı",
       "updating": "Güncelleniyor",
-      "pending": "Beklemede"
+      "pending": "Beklemede",
+      "unknown": "Bilinmiyor"
     },
     "operatingSystems": {
       "windows": "Windows",
@@ -630,7 +643,9 @@
     "rail": "demiryolu",
     "strip": "şerit",
     "networkAsset": "Ağ varlığı",
-    "networkAssets": "Ağ varlıkları"
+    "networkAssets": "Ağ varlıkları",
+    "operatorTasks": "Operatör Görevleri",
+    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -679,7 +694,8 @@
     "priority": "Öncelik",
     "level": "Seviye",
     "policy2": "Politika",
-    "features": "Özellikler"
+    "features": "Özellikler",
+    "inheritedFrom": "Şuradan devralındı: {{name}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
@@ -1054,7 +1070,11 @@
       "status": "Durum",
       "cpu": "CPU %'si",
       "ram": "RAM %'si",
-      "lastSeen": "Son Görülme"
+      "lastSeen": "Son Görülme",
+      "serial": "Seri No",
+      "assetTag": "Varlık Etiketi",
+      "location": "Konum",
+      "source": "Kaynak"
     },
     "sortBy": {
       "class": "Sınıfa göre sırala",
@@ -1067,7 +1087,11 @@
       "status": "Duruma göre sırala",
       "cpu": "CPU kullanımına göre sırala",
       "ram": "RAM kullanımına göre sırala",
-      "lastSeen": "Son görülme zamanına göre sırala"
+      "lastSeen": "Son görülme zamanına göre sırala",
+      "serial": "Seri numarasına göre sırala",
+      "assetTag": "Varlık etiketine göre sırala",
+      "location": "Konuma göre sırala",
+      "source": "Kaynağa göre sırala"
     },
     "statuses": {
       "compact": {
@@ -1086,7 +1110,8 @@
         "decommissioned": "Çıkarıldı",
         "quarantined": "Karantinaya alındı",
         "updating": "Güncelleniyor",
-        "pending": "Beklemede"
+        "pending": "Beklemede",
+        "unknown": "Bilinmiyor"
       }
     },
     "roles": {
@@ -1186,7 +1211,21 @@
     "devicesPerPage": "Sayfa başına cihaz sayısı",
     "page": "Sayfa",
     "possibleDuplicate": "Olası kopya",
-    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın."
+    "possibleDuplicateTitle": "Bu cihaz daha önceki bir satırı aynı ana bilgisayar adıyla değiştirebilir. İncelemek için açın.",
+    "manualOnlyBulkAction": "Bu eylemi kullanmak için manuel bir varlık seçin.",
+    "manualAsset": "Manuel varlık",
+    "manual": "Manuel",
+    "selectedCompositionManual": "{{agent}} aracı, {{network}} ağ, {{manual}} manuel",
+    "deleteManualSelected": "Manuel varlıkları sil",
+    "editManualAsset": "{{name}} düzenle",
+    "deleteManualAsset": "{{name}} sil",
+    "edit": "Düzenle",
+    "delete": "Sil",
+    "source": {
+      "scan": "Tarama",
+      "unifi": "UniFi",
+      "manual": "Manuel"
+    }
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -1849,18 +1888,16 @@
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
     "title": "Cihazlar",
-    "hiddenNetworkNotice_one": "1 ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
-    "hiddenNetworkNotice_other": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
-    "hiddenNetworkNotice": "{{count}} ağ cihazı gizlendi — {{fields}} yalnızca ajanlı cihazlar için geçerlidir.",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
+      "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
       "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",
-      "bulkCommandPartialFailed": "Toplu Komut Kısmi Başarısız",
-      "bulkCommandSent": "Toplu Komut Gönderildi",
+      "bulkCommandPartialFailed": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}; {{failed}} başarısız oldu: {{failureSummary}}",
+      "bulkCommandSent": "{{action}}, {{count}} cihaza gönderildi{{queuedTail}}{{skippedTail}}",
       "bulkDecommissionAllFailed": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
       "bulkDecommissionFailed": "{{succeeded}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
       "bulkDecommissioned": "{{count}} cihaz çıkarıldı",
@@ -1899,7 +1936,6 @@
       "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
-      "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "permanentDeleteCancelled": "Kalıcı Silme İptal Edildi",
       "permanentDeleting": "{{hostname}} kalıcı olarak siliniyor…",
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
@@ -1912,14 +1948,38 @@
       "unknownAction": "Bilinmeyen Eylem",
       "unknownBulkAction": "Bilinmeyen Toplu İşlem",
       "wakeSentWatching": "Uyandırma İzlemeye Gönderildi",
-      "wakeTimeout": "Uyanma Zaman Aşımı"
+      "wakeTimeout": "Uyanma Zaman Aşımı",
+      "queuedOfflineTail": ", {{count}} çevrimdışı cihaz için sıraya alındı",
+      "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır — son geçerlilik: {{date}}",
+      "runsWhenOnlineNoExpiry": "Cihaz çevrimiçi olduğunda çalışır",
+      "deleteManualFailed": "{{hostname}} silinemedi.",
+      "mfaRequired": "Bu işlem çok faktörlü kimlik doğrulama gerektirir. Lütfen tekrar giriş yapın.",
+      "manualDeleted": "{{hostname}} silindi.",
+      "manualOnlyAction": "Bu eylemi kullanmak için manuel bir varlık seçin.",
+      "manualSkipped": "{{count}} manuel olmayan cihaz atlandı — bu eylem yalnızca manuel varlıklar için geçerlidir.",
+      "nonAgentSkipped": "{{count}} aracısız cihaz atlandı — bu eylem yalnızca aracılı cihazlar için geçerlidir.",
+      "bulkManualDeleted": "{{count}} manuel varlık silindi.",
+      "bulkManualDeleteAllFailed": "{{count}} manuel varlığın tümü silinemedi: {{devices}}.",
+      "bulkManualDeleteSomeFailed": "{{succeeded}} silindi; {{failed}} başarısız oldu: {{devices}}."
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
-    "importFromRmm": "Başka bir RMM'den içe aktar"
+    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
+    "hiddenNonAgentClassLabel": {
+      "network": "ağ cihazı",
+      "manual": "manuel varlık",
+      "mixed": "cihaz"
+    },
+    "addMenu": {
+      "trigger": "Ekle",
+      "installAgent": "Aracı yükle…",
+      "addNetworkAsset": "Ağ varlığı ekle…",
+      "addManualAsset": "Varlığı manuel olarak ekle…"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",
@@ -2656,5 +2716,97 @@
       "manufacturer": "Üretici"
     },
     "identityConflictNote": "Bu satırın tanımlayıcıları farklı cihazları işaret ediyor ve olduğu gibi içe aktarılamaz — dosyayı düzeltin ve önizlemeyi yeniden çalıştırın. Aşağıdaki adaylar yalnızca referans için gösterilmektedir."
+  },
+  "queuedActions": {
+    "title": "Sıradaki eylemler",
+    "system": "Sistem",
+    "aUser": "bir kullanıcı",
+    "requestedBy": "{{who}} tarafından istendi",
+    "expires": "Son geçerlilik: {{date}}",
+    "cancel": "İptal",
+    "cancelled": "Sıradaki eylem iptal edildi",
+    "cancelFailed": "Sıradaki eylem iptal edilemedi",
+    "loadFailed": "Sıradaki eylemler yüklenemedi.",
+    "empty": "Sıraya alınmış eylem yok"
+  },
+  "manualAssetModal": {
+    "addTitle": "Manuel varlık ekle",
+    "editTitle": "Manuel varlığı düzenle",
+    "cancel": "İptal",
+    "create": "Oluştur",
+    "save": "Kaydet",
+    "unlink": "Bağlantıyı kaldır",
+    "linkSectionTitle": "Mevcut bir cihaza veya ağ varlığına bağla",
+    "linkDevicePlaceholder": "Bir cihaz seçin…",
+    "linkAssetPlaceholder": "Bir ağ varlığı seçin…",
+    "linkToDevice": "Bağla",
+    "linkToAsset": "Bağla",
+    "linkedTo": "{{name}} ile bağlantılı",
+    "linkedUnknown": "bilinmeyen bir cihaz",
+    "errors": {
+      "mfaRequired": "Bu işlem çok faktörlü kimlik doğrulama gerektirir. Lütfen tekrar giriş yapın.",
+      "createFailed": "Manuel varlık oluşturulamadı.",
+      "updateFailed": "Manuel varlık güncellenemedi.",
+      "linkFailed": "Varlık bağlanamadı.",
+      "unlinkFailed": "Varlığın bağlantısı kaldırılamadı."
+    },
+    "toasts": {
+      "created": "Manuel varlık oluşturuldu.",
+      "updated": "Manuel varlık güncellendi.",
+      "linked": "Varlık bağlandı.",
+      "unlinked": "Varlığın bağlantısı kaldırıldı."
+    },
+    "fields": {
+      "organization": "Organizasyon",
+      "selectOrganization": "Bir organizasyon seçin…",
+      "site": "Site",
+      "selectSite": "Bir site seçin…",
+      "name": "Ad",
+      "namePlaceholder": "ör. yedek dizüstü bilgisayar, resepsiyon telefonu",
+      "assetType": "Varlık türü",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "serialNumber": "Seri numarası",
+      "assetTag": "Varlık etiketi",
+      "location": "Konum",
+      "locationPlaceholder": "ör. Dolap B, raf 2",
+      "assignedContact": "Atanan kişi",
+      "assignedContactPlaceholder": "Kişi ara…",
+      "tags": "Etiketler",
+      "tagsPlaceholder": "Virgülle ayrılmış",
+      "notes": "Notlar"
+    }
+  },
+  "addNetworkAssetModal": {
+    "title": "Ağ varlığı ekle",
+    "submit": "Varlık ekle",
+    "identityHint": "En az birini belirtin: IP adresi, ana bilgisayar adı veya URL.",
+    "urlRequiredHint": "Web sitesi ve hizmet varlıkları bir URL gerektirir.",
+    "postCreate": {
+      "monitorPrompt": "Bu varlık bir HTTP kontrolüyle izlensin mi?",
+      "actions": {
+        "addHttpCheck": "HTTP kontrolü ekle"
+      }
+    },
+    "fields": {
+      "label": "Ad",
+      "ipAddress": "IP adresi",
+      "hostname": "Ana bilgisayar adı",
+      "url": "URL",
+      "macAddress": "MAC adresi",
+      "manufacturer": "Üretici",
+      "model": "Model",
+      "tags": "Etiketler",
+      "notes": "Notlar"
+    },
+    "placeholders": {
+      "label": "örn. Depo yazıcısı",
+      "selectSite": "Bir konum seçin",
+      "tags": "Virgülle ayrılmış, örn. lobi, kat-2"
+    },
+    "toasts": {
+      "created": "Ağ varlığı oluşturuldu",
+      "createFailed": "Ağ varlığı oluşturulamadı"
+    }
   }
 }

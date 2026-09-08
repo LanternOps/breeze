@@ -41,11 +41,15 @@
  * its child table joined the cascade set) fails the burn-down test, so a
  * migration that fixes an edge forces the matching line out in the same PR.
  *
- * Three entries are NOT latent shapes but erasure failures that fire today for
- * any tenant with the relevant rows -- `restore_jobs`, `action_intents` and
- * `script_categories`, each carrying a note with its SQLSTATE and fix. They
- * are pinned rather than fixed because #4519 is explicitly scoped to making
- * the debt visible; the migrations are follow-up work.
+ * One entry is NOT a latent shape but an erasure failure that fires today for
+ * any tenant with the relevant rows -- `restore_jobs`, carrying a note with its
+ * SQLSTATE and fix. It is pinned rather than fixed because #4519 is explicitly
+ * scoped to making the debt visible; the migration is follow-up work.
+ * `script_categories.parent_id` was the second such entry and came off this
+ * ledger in #4873: `2026-10-13-120000-script-categories-parent-ownership-guard.sql`
+ * gave it `ON DELETE SET NULL` (all referencing columns nullable, so the
+ * classifier now calls it safe on its own) and added the DEFERRABLE
+ * `script_categories_parent_guard` so the offending shape cannot be built.
  *
  * A `note` is not a fix. The two `partner_export_*` entries carry a reviewed
  * argument for why their edge is unreachable in practice, so they are not debt
@@ -143,6 +147,36 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'dashboard_widgets', constraint: 'dashboard_widgets_dashboard_id_analytics_dashboards_id_fk', parentTable: 'analytics_dashboards', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_policy_id_automation_policies_id_f', parentTable: 'automation_policies', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'automation_runs', constraint: 'automation_runs_automation_id_automations_id_fk', parentTable: 'automations', reason: 'child-not-deleted', allColumnsNullable: true },
+  {
+    childTable: 'configuration_policies',
+    constraint: 'configuration_policies_parent_policy_id_fkey',
+    parentTable: 'configuration_policies',
+    reason: 'self-ref-open-row-set',
+    allColumnsNullable: true,
+    note:
+      'Reviewed, NOT a live failure -- the same shape script_categories.parent_id had before #4873 '
+      + '(fixed there with ON DELETE SET NULL), but closed by a guard rather than by the FK action. '
+      + 'configuration_policies.org_id is nullable (partner-wide policies, epic '
+      + '#2135), so the classifier cannot tell that `DELETE ... WHERE org_id = $1` still removes a '
+      + 'row set closed under this self-reference. The DEFERRABLE constraint trigger '
+      + '`configuration_policies_parent_guard` (2026-10-12-100000-config-policy-inheritance.sql, '
+      + '#5080 W01) closes it: a child may only name a parent on its OWN owner axis -- an org-owned '
+      + 'child names a same-org parent or its partner\'s partner-wide baseline; a partner-wide child '
+      + 'names only a partner-wide parent of the same partner. So no SURVIVING row can point at a '
+      + 'deleted one: partner-wide rows never reference org-owned rows, and another org\'s rows never '
+      + 'reference this org\'s. Ownership itself moves only in system context, and the trigger '
+      + 'revalidates the whole family at COMMIT (org merge runs SET CONSTRAINTS ALL DEFERRED), so a '
+      + 'cross-owner edge cannot be committed in the first place. Pinned rather than fixed because '
+      + 'both cheap actions are ruled out by the inheritance design (spec '
+      + 'docs/superpowers/specs/config-policy/2026-09-06-config-policy-inheritance-design.md, '
+      + 'Deletion): SET NULL would silently un-configure every child when a baseline is deleted, and '
+      + 'deleting a parent alone must be REFUSED, which CASCADE would turn into a silent mass '
+      + 'delete. The closure argument is proven empirically, not asserted: see the describe block '
+      + '"config policy inheritance -- erasure row-set closure (live DB)" in '
+      + 'configPolicyInheritance.integration.test.ts, which forges BOTH surviving-row shapes in '
+      + 'SYSTEM scope and then runs the real cascadeDeleteOrg() and cascadeDeletePartner() over a '
+      + 'parent+child family. (#5123)',
+  },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_deployment_id_deployments_id_fk', parentTable: 'deployments', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'automation_policy_compliance', constraint: 'automation_policy_compliance_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'deployment_devices', constraint: 'deployment_devices_device_id_devices_id_fk', parentTable: 'devices', reason: 'child-not-deleted', allColumnsNullable: false },
@@ -185,19 +219,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'access_review_items', constraint: 'access_review_items_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'partner_users', constraint: 'partner_users_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'role_permissions', constraint: 'role_permissions_role_id_roles_id_fk', parentTable: 'roles', reason: 'child-not-deleted', allColumnsNullable: false },
-  {
-    childTable: 'script_categories',
-    constraint: 'script_categories_parent_id_script_categories_id_fk',
-    parentTable: 'script_categories',
-    reason: 'self-ref-open-row-set',
-    allColumnsNullable: true,
-    note:
-      'LIVE ERASURE FAILURE. script_categories.org_id is NULLABLE (partner-wide categories, epic '
-      + '#2135), so DELETE ... WHERE org_id = $1 does NOT remove a row set closed under this '
-      + 'self-reference: a surviving partner-wide category whose parent_id points at an org-owned one '
-      + 'raises 23503. Verified empirically against Postgres 16. Fix forward with ON DELETE SET NULL '
-      + 'on parent_id.',
-  },
   { childTable: 'script_to_tags', constraint: 'script_to_tags_tag_id_script_tags_id_fk', parentTable: 'script_tags', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'config_policy_compliance_rules', constraint: 'config_policy_compliance_rules_remediation_script_id_scripts_id', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'patch_policies', constraint: 'patch_policies_post_install_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: true },
@@ -205,18 +226,6 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   { childTable: 'script_to_tags', constraint: 'script_to_tags_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'script_versions', constraint: 'script_versions_script_id_scripts_id_fk', parentTable: 'scripts', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'snmp_alert_thresholds', constraint: 'snmp_alert_thresholds_device_id_snmp_devices_id_fk', parentTable: 'snmp_devices', reason: 'child-not-deleted', allColumnsNullable: false },
-  {
-    childTable: 'action_intents',
-    constraint: 'action_intents_scope_ticket_org_fk',
-    parentTable: 'tickets',
-    reason: 'set-null-onto-not-null',
-    allColumnsNullable: false,
-    note:
-      'LIVE ERASURE FAILURE, and it fails with 23502 rather than 23503. The FK is ON DELETE SET '
-      + 'NULL over (scope_ticket_id, org_id) with no confdelsetcols, and action_intents.org_id is NOT '
-      + 'NULL -- so deleting a ticket tries to null a NOT NULL column. Fix forward by restricting the '
-      + 'action to SET NULL (scope_ticket_id).',
-  },
   { childTable: 'ticket_comments', constraint: 'ticket_comments_ticket_id_tickets_id_fk', parentTable: 'tickets', reason: 'child-not-deleted', allColumnsNullable: false },
   { childTable: 'access_review_items', constraint: 'access_review_items_reviewed_by_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: true },
   { childTable: 'access_review_items', constraint: 'access_review_items_user_id_users_id_fk', parentTable: 'users', reason: 'child-not-deleted', allColumnsNullable: false },
@@ -290,6 +299,20 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_device_id_devices_id_fk', parentTable: 'devices', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'software_deployments', constraint: 'software_deployments_maintenance_window_id_maintenance_windows_', parentTable: 'maintenance_windows', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'software_deployments', constraint: 'software_deployments_org_id_organizations_id_fk', parentTable: 'organizations', reason: 'pre-cleared', allColumnsNullable: false },
+  {
+    childTable: 'partners',
+    constraint: 'partners_service_management_psa_connection_id_fkey',
+    parentTable: 'psa_connections',
+    reason: 'pre-cleared',
+    allColumnsNullable: true,
+    note:
+      'ON DELETE RESTRICT, so without the pre-clear this FK ABORTS the erasure rather than '
+      + 'stranding a row. The clearSql un-wires mode and connection id together because '
+      + 'partners_service_management_connection_chk is a biconditional. Expected to match zero '
+      + 'rows in practice: PATCH /orgs/partners/me binds only partner-wide connections '
+      + '(org_id IS NULL), which org erasure never deletes -- but that is an app-layer '
+      + 'guarantee the schema does not enforce.',
+  },
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_connection_id_psa_connections_id_fk', parentTable: 'psa_connections', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'report_runs', constraint: 'report_runs_report_id_reports_id_fk', parentTable: 'reports', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'pre-cleared', allColumnsNullable: false },

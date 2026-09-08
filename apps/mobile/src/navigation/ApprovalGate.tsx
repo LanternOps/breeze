@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { logoutAsync } from '../store/authSlice';
 import { approverBannerCopy, type ApproverBannerSeverity } from './approverBannerCopy';
+import { selectFocusedApproval } from './approvalTakeover';
 import { useAppDispatch, useAppSelector } from '../store';
 import {
   clearApprovalsError,
@@ -48,9 +49,12 @@ export const LAST_HANDLED_APPROVAL_RESPONSE_KEY = 'notif:lastHandledApprovalResp
  */
 export function ApprovalGate({ children }: Props) {
   const dispatch = useAppDispatch();
-  const focused = useAppSelector((s) =>
-    s.approvals.pending.find((a) => a.id === s.approvals.focusId && a.status === 'pending')
-  );
+  // #5172: shared with ApprovalScreen so the takeover Modal's visibility and
+  // the screen's own "focused" can never drift apart — see approvalTakeover.ts.
+  const focused = useAppSelector((s) => selectFocusedApproval(s.approvals));
+  // Derived from `focused` itself (not a second store subscription) so the
+  // two can never disagree — see the module doc in approvalTakeover.ts.
+  const takeoverVisible = !!focused;
   const error = useAppSelector((s) => s.approvals.error);
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const approverRegistration = useAppSelector((s) => s.auth.approverRegistration);
@@ -157,7 +161,7 @@ export function ApprovalGate({ children }: Props) {
     <>
       {children}
       <Modal
-        visible={!!focused}
+        visible={takeoverVisible}
         animationType="none"
         presentationStyle="fullScreen"
         statusBarTranslucent
@@ -166,11 +170,11 @@ export function ApprovalGate({ children }: Props) {
       >
         <ApprovalScreen />
       </Modal>
-      {focused ? null : error ? (
+      {takeoverVisible ? null : error ? (
         <ApprovalErrorBanner message={error} onDismiss={() => dispatch(clearApprovalsError())} />
       ) : null}
-      {!focused && showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
-      {!focused && showApprover && approverSeverity ? (
+      {!takeoverVisible && showPush ? <PushFailedBanner onDismiss={() => setDismissedPush(true)} /> : null}
+      {!takeoverVisible && showApprover && approverSeverity ? (
         <ApproverSetupBanner
           severity={approverSeverity}
           reason={approverReason}

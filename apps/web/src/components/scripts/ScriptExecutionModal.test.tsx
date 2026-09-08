@@ -7,11 +7,14 @@ import ScriptExecutionModal, { type Device } from './ScriptExecutionModal';
 import type { ScriptParameter } from './ScriptFormSchema';
 import type { Script } from './ScriptList';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 // The advanced-filter panel is closed on open, so `useFilterPreview` is disabled
 // and never fetches — no transport stub is needed for these cases.
@@ -300,6 +303,44 @@ describe('ScriptExecutionModal admission truth', () => {
 
     await vi.waitFor(() => expect(screen.getByText('network unavailable')).toBeInTheDocument());
     expect(screen.queryByText('No devices were admitted. Review the reasons below.')).toBeNull();
+  });
+
+  // #5128 W2 — an admitted target is not necessarily running: one dispatched
+  // while its device was offline is `queued_offline`, and the inline
+  // "admitted and queued" panel text alone doesn't say the device has to
+  // reconnect first. Surface that as a toast.
+  it('toasts the offline-queue copy when an admitted target is queued_offline', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue({
+      requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'queued',
+      targets: [{
+        requestedDeviceId: 'd-1',
+        admission: 'admitted',
+        executionId: 'execution-1',
+        commandId: 'command-1',
+        delivery: 'queued_offline',
+      }],
+    } satisfies ScriptAdmissionResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Runs when the device is online' }),
+    );
+  });
+
+  it('does not toast the offline-queue copy when every admitted target was delivered', async () => {
+    renderModal([], vi.fn().mockResolvedValue({
+      ...admittedResult,
+      targets: [{ ...admittedResult.targets[0], delivery: 'delivered' }],
+    } satisfies ScriptAdmissionResult));
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 });
 

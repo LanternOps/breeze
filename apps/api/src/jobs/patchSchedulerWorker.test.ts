@@ -35,7 +35,7 @@ vi.mock('../db', () => {
 // only references them as opaque column handles passed to the mocked db chain.
 vi.mock('../db/schema', () => ({
   configurationPolicies: {},
-  configPolicyFeatureLinks: {},
+  configPolicyEffectiveFeatureLinks: {},
   configPolicyAssignments: {},
   patchJobs: {},
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
@@ -61,6 +61,10 @@ vi.mock('./patchJobExecutor', () => ({
   enqueuePatchJob: vi.fn(),
   selectStaleScheduledJobIds: vi.fn(),
   filterOrphanedJobIds: vi.fn(),
+}));
+vi.mock('../services/patchJobFinalizer', () => ({ finalizePatchJobDevice: vi.fn() }));
+vi.mock('../services/sensitiveCommandPayload', () => ({
+  terminalPayloadErasureSet: vi.fn(() => ({ payload: null })),
 }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/patchJobSnapshot', () => ({ buildPatchesSnapshot: vi.fn() }));

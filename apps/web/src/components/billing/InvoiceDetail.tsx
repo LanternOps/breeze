@@ -36,7 +36,9 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
   detail: InvoiceDetailData;
-  onChanged: () => void;
+  /** Refetch the invoice. May return a promise — AccountingSyncCard's sync
+   *  watch awaits it so its polls cannot overlap. */
+  onChanged: () => void | Promise<void>;
   /** The workspace header owns the primary actions (Issue / Issue & Send /
    *  Download PDF / Delete draft) — suppress the rail copy so the two don't
    *  render at once (mirrors QuoteDetail.actionsInHeader). */
@@ -563,6 +565,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             invoiceId={invoice.id}
             sync={detail.accountingSync}
             invoiceStatus={invoice.status}
+            invoiceTouchedAt={invoice.updatedAt}
             canPush={can('invoices', 'write')}
             onChanged={onChanged}
           />
@@ -647,6 +650,23 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           data-testid={`invoice-payment-quickbooks-${p.id}`}
                         >
                           {t('invoiceDetail.payments.quickbooks')}
+                        </span>
+                      )}
+                      {p.accountingSync && (
+                        <span
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                            p.accountingSync.status === 'error'
+                              ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                              : 'border-border bg-muted text-muted-foreground'
+                          }`}
+                          data-testid={`invoice-payment-qbosync-${p.id}`}
+                          title={p.accountingSync.lastError ?? undefined}
+                        >
+                          {p.accountingSync.status === 'error'
+                            ? t('invoiceDetail.payments.quickbooksSyncFailed')
+                            : p.accountingSync.status === 'pending'
+                              ? t('invoiceDetail.payments.syncingToQuickbooks')
+                              : t('invoiceDetail.payments.inQuickbooks')}
                         </span>
                       )}
                     </span>

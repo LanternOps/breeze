@@ -998,6 +998,36 @@ describe('scripts routes', () => {
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
+    it('does NOT copy the system script\u2019s security acknowledgements (#5129)', async () => {
+      // The import lands in a different org under a different owner. An
+      // acknowledgement is one named human accepting one risk on one script,
+      // so the copy starts unacknowledged and its first Strict match is
+      // refused until someone signs off on it here. Pinned because this insert
+      // is a hand-maintained column list.
+      mockClonePreamble(
+        systemSource({
+          content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+          acknowledgedSecurityPatterns: ['PowerShell HKLM modification'],
+          securityAcknowledgedBy: 'someone-else'
+        })
+      );
+      let inserted: Record<string, unknown> | undefined;
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockImplementation((vals: Record<string, unknown>) => {
+          inserted = vals;
+          return { returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, orgId: ORG_ID }]) };
+        })
+      } as any);
+
+      expect((await clone()).status).toBe(201);
+      expect(inserted).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(inserted).not.toHaveProperty('securityAcknowledgedBy');
+      // Guards the guard: the risky content really was copied, so the
+      // assertions above describe a declined approval rather than a script
+      // that had nothing to acknowledge.
+      expect(inserted!.content).toContain('HKLM');
+    });
+
     it('clones a clean system script unchanged', async () => {
       mockClonePreamble(systemSource());
       vi.mocked(db.insert).mockReturnValue({
@@ -1135,6 +1165,34 @@ describe('scripts routes', () => {
       // Fresh row: version always starts at 1, never copied from a source
       // that may have accumulated versions via prior edits.
       expect(getInserted().version).toBe(1);
+    });
+
+    it('does NOT copy the source script\u2019s security acknowledgements (#5129)', async () => {
+      // An acknowledgement records a named human accepting a specific risk on
+      // a specific script. The person cloning may not be that person, and a
+      // clone is usually the starting point for edits \u2014 so the copy starts
+      // unacknowledged and its first Strict match is refused until someone
+      // signs off on it. Asserted here because the clone insert is a
+      // hand-maintained column list: "completing" it would silently transfer
+      // the approval.
+      mockCloneSource(
+        orgSource({
+          content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1",
+          acknowledgedSecurityPatterns: ['PowerShell HKLM modification'],
+          securityAcknowledgedBy: 'user-999',
+        })
+      );
+      mockTagLookup();
+      const getInserted = mockInsertOnce({ orgId: ORG_ID });
+
+      expect((await clone()).status).toBe(201);
+      expect(getInserted()).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(getInserted()).not.toHaveProperty('securityAcknowledgedBy');
+      expect(getInserted()).not.toHaveProperty('securityAcknowledgedAt');
+      // Guards the guard: the source really did carry an acknowledgement, so
+      // the assertions above are about a copy that was declined rather than a
+      // field that never existed.
+      expect(getInserted().content).toContain('HKLM');
     });
 
     it.each([248, 249, 255])('bounds the default clone name for a %i-character source', async (length) => {
@@ -3259,6 +3317,214 @@ describe('scripts routes', () => {
       mockUpdate({});
       const res = await put({ parameters: [{ name: 'logLevel', type: 'string' }, { name: 'LOGLEVEL', type: 'string' }] });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // #5129 — Strict security-pattern acknowledgement on save.
+  describe('security pattern acknowledgement (#5129)', () => {
+    const HKLM = 'PowerShell HKLM modification';
+    const SCHTASKS = 'scheduled task creation';
+    const hklmLine = "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Contoso' -Name Enabled -Value 1";
+    const schtasksLine = 'schtasks /create /tn Nightly /tr C:\\x.exe /sc daily';
+
+    /** Mock the POST insert and hand back the captured `.values()` mock. */
+    function mockCreateInsert(): { values: ReturnType<typeof vi.fn> } {
+      const values = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'P', orgId: ORG_ID }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      return { values };
+    }
+
+    /** Mock the PUT read + capture what `.set()` receives. */
+    function mockUpdate(stored: Record<string, unknown>): { set: ReturnType<typeof vi.fn> } {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: SCRIPT_ID_1,
+                name: 'S',
+                content: hklmLine,
+                version: 7,
+                isSystem: false,
+                orgId: ORG_ID,
+                acknowledgedSecurityPatterns: [],
+                ...stored,
+              },
+            ]),
+          }),
+          innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+        }),
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'S', orgId: ORG_ID }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return { set };
+    }
+
+    const post = (body: Record<string, unknown>) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'P', osTypes: ['linux'], language: 'bash', ...body }),
+      });
+
+    const put = (body: unknown) =>
+      app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify(body),
+      });
+
+    /** The details of the `script.security_acknowledgement` audit, if one was written. */
+    function ackAuditDetails(): Record<string, unknown> | undefined {
+      const call = vi
+        .mocked(writeRouteAudit)
+        .mock.calls.find((c) => (c[1] as { action?: string }).action === 'script.security_acknowledgement');
+      return call ? ((call[1] as { details?: Record<string, unknown> }).details ?? {}) : undefined;
+    }
+
+    it('stores an acknowledgement the content actually matches on create', async () => {
+      const { values } = mockCreateInsert();
+      const res = await post({ content: hklmLine, acknowledgedSecurityPatterns: [HKLM] });
+
+      expect(res.status).toBe(201);
+      expect(values.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [HKLM],
+        securityAcknowledgedBy: expect.any(String),
+      });
+      expect(values.mock.calls[0]![0].securityAcknowledgedAt).toBeInstanceOf(Date);
+    });
+
+    it('audits the acknowledgement as its own action on create', async () => {
+      mockCreateInsert();
+      await post({ content: hklmLine, acknowledgedSecurityPatterns: [HKLM] });
+
+      expect(ackAuditDetails()).toMatchObject({ acknowledged: [HKLM], added: [HKLM] });
+    });
+
+    it('rejects a description outside the agent vocabulary', async () => {
+      mockCreateInsert();
+      const res = await post({ content: hklmLine, acknowledgedSecurityPatterns: ['allow everything'] });
+
+      // A typo or a probe must be a 400, never a silently-dropped approval the
+      // admin believes they granted.
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a BASIC-level description — those are never acknowledgeable', async () => {
+      mockCreateInsert();
+      const res = await post({ content: 'rm -rf /', acknowledgedSecurityPatterns: ['recursive delete on root directory'] });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('drops an acknowledgement for a pattern the content does not contain', async () => {
+      // The rule that stops anyone pre-acknowledging the whole vocabulary
+      // once and permanently disarming Strict checking for the script.
+      const { values } = mockCreateInsert();
+      await post({ content: 'echo hi', acknowledgedSecurityPatterns: [HKLM, SCHTASKS] });
+
+      expect(values.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [],
+        securityAcknowledgedBy: null,
+        securityAcknowledgedAt: null,
+      });
+      expect(ackAuditDetails()).toBeUndefined();
+    });
+
+    it('stores nothing and audits nothing for an ordinary script', async () => {
+      const { values } = mockCreateInsert();
+      await post({ content: 'echo hi' });
+
+      expect(values.mock.calls[0]![0]).toMatchObject({ acknowledgedSecurityPatterns: [] });
+      expect(ackAuditDetails()).toBeUndefined();
+    });
+
+    it('grants an acknowledgement on update and stamps who and when', async () => {
+      const { set } = mockUpdate({});
+      const res = await put({ acknowledgedSecurityPatterns: [HKLM] });
+
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [HKLM],
+        securityAcknowledgedBy: expect.any(String),
+      });
+      expect(ackAuditDetails()).toMatchObject({ added: [HKLM], removed: [] });
+    });
+
+    it('leaves the acknowledgement untouched on a metadata-only edit', async () => {
+      // A rename must not silently revoke an approval.
+      const { set } = mockUpdate({ acknowledgedSecurityPatterns: [HKLM] });
+      await put({ name: 'Renamed' });
+
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(ackAuditDetails()).toBeUndefined();
+    });
+
+    it('keeps the existing approval and refuses a newly-introduced pattern on edit', async () => {
+      // THE security property this design exists for. A boolean flag would
+      // have let the new pattern inherit the old approval silently.
+      const { set } = mockUpdate({ acknowledgedSecurityPatterns: [HKLM] });
+      await put({ content: `${hklmLine}\n${schtasksLine}` });
+
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('acknowledgedSecurityPatterns');
+      expect(ackAuditDetails()).toBeUndefined();
+    });
+
+    it('stores both when an edit adds a pattern and acknowledges it', async () => {
+      // The positive twin of the test above: the same code path DOES record a
+      // newly-introduced pattern once a human actually signs off on it, so
+      // the "still blocked" result above is a real refusal and not a dead
+      // branch.
+      const { set } = mockUpdate({ acknowledgedSecurityPatterns: [HKLM] });
+      await put({
+        content: `${hklmLine}\n${schtasksLine}`,
+        acknowledgedSecurityPatterns: [HKLM, SCHTASKS],
+      });
+
+      expect(set.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [SCHTASKS, HKLM],
+        securityAcknowledgedBy: expect.any(String),
+      });
+      expect(ackAuditDetails()).toMatchObject({ added: [SCHTASKS] });
+    });
+
+    it('drops a stored approval once the edit removes the risky line', async () => {
+      const { set } = mockUpdate({ acknowledgedSecurityPatterns: [HKLM] });
+      await put({ content: 'echo nothing risky' });
+
+      expect(set.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [],
+        securityAcknowledgedBy: null,
+        securityAcknowledgedAt: null,
+      });
+      expect(ackAuditDetails()).toMatchObject({ removed: [HKLM] });
+    });
+
+    it('treats an explicit empty array as a revoke', async () => {
+      const { set } = mockUpdate({ acknowledgedSecurityPatterns: [HKLM] });
+      await put({ acknowledgedSecurityPatterns: [] });
+
+      expect(set.mock.calls[0]![0]).toMatchObject({
+        acknowledgedSecurityPatterns: [],
+        securityAcknowledgedBy: null,
+        securityAcknowledgedAt: null,
+      });
+      expect(ackAuditDetails()).toMatchObject({ removed: [HKLM] });
+    });
+
+    it('rejects an unknown description on update without writing anything', async () => {
+      const { set } = mockUpdate({});
+      const res = await put({ acknowledgedSecurityPatterns: ['allow everything'] });
+
+      expect(res.status).toBe(400);
+      expect(set).not.toHaveBeenCalled();
     });
   });
 });

@@ -133,7 +133,10 @@
       "removing": "Enlèvement...",
       "removeConfiguration": "Supprimer la configuration",
       "complianceStatus2": "compliance_status",
-      "assignments2": "Affectations"
+      "assignments2": "Affectations",
+      "managedByYourMsp": "Géré par votre MSP",
+      "inheritedByPolicies_one": "Hérité par {{count}} politique",
+      "inheritedByPolicies_other": "Hérité par {{count}} politiques"
     },
     "configPolicyList": {
       "archived": "Archivé",
@@ -152,7 +155,8 @@
       "of2": "de",
       "itsOwningOrganization": "son organisation propriétaire",
       "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
-      "summary": "{{filtered}} de {{total}} politiques"
+      "summary": "{{filtered}} de {{total}} politiques",
+      "inheritsBadge": "Hérite"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",
@@ -168,7 +172,8 @@
       "areYouSureYouWantToDelete": "Êtes-vous sûr de vouloir supprimer ?",
       "thisWillAlsoRemoveAllFeatureLinks": "? Cela supprimera également tous les liens de fonctionnalités et attributions. Cette action ne peut être annulée.",
       "delete": "supprimer",
-      "deleting": "Suppression…"
+      "deleting": "Suppression…",
+      "deleteBlockedByChildren": "Supprimez d'abord les politiques qui héritent de celle-ci :"
     },
     "organizationScopePanel": {
       "failedToLoadAssignments": "Impossible de charger les affectations",
@@ -895,6 +900,11 @@
         "time": "Temps",
         "dayOfWeek": "Jour de la semaine",
         "dayOfMonth": "Jour du mois",
+        "offlineDevices": "Appareils hors ligne",
+        "offlineBehaviorQueue": "Mettre en file d'attente pour les appareils hors ligne",
+        "offlineBehaviorQueueDescription": "S'exécute à la prochaine connexion, avant la prochaine exécution planifiée.",
+        "offlineBehaviorSkip": "Ignorer les appareils hors ligne",
+        "offlineBehaviorSkipDescription": "Les appareils hors ligne au moment de l'exécution de la tâche sont enregistrés comme ignorés.",
         "rebootPolicy": "Politique de redémarrage",
         "rebootDelayMinutes": "Reboot delay (minutes)",
         "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
@@ -938,7 +948,8 @@
         "loadingPolicies": "Politiques de chargement...",
         "noExistingPoliciesFound": "Aucune stratégie existante n’a été trouvée.",
         "selectAPolicy": "Choisissez une stratégie...",
-        "clearSelection": "Effacer la sélection"
+        "clearSelection": "Effacer la sélection",
+        "allOrgs": "Toutes les orgs"
       },
       "remediationScriptPicker": {
         "powerShell": "PowerShell",

@@ -37,6 +37,21 @@
       "title": "In arrivo a breve",
       "description": "Questa scheda sarà disponibile nel prossimo aggiornamento della scheda organizzazione."
     },
+    "devices": {
+      "loadError": "Impossibile caricare i dispositivi di questa organizzazione.",
+      "searchPlaceholder": "Cerca dispositivi",
+      "allStatuses": "Tutti gli stati",
+      "allSites": "Tutti i siti",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Manutenzione",
+        "decommissioned": "Rimosso",
+        "quarantined": "In quarantena",
+        "updating": "Aggiornamento",
+        "pending": "In sospeso"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Dispositivi",
@@ -94,6 +109,24 @@
       "title": "Impossibile caricare questa organizzazione",
       "description": "Si è verificato un errore durante il recupero della scheda. Controlla la connessione e riprova."
     },
-    "loading": "Caricamento organizzazione…"
+    "loading": "Caricamento organizzazione…",
+    "tickets": {
+      "tabs": {
+        "open": "Aperti",
+        "all": "Tutti",
+        "closed": "Chiusi"
+      },
+      "newTicket": "Nuovo ticket",
+      "loadFailed": "Impossibile caricare i ticket.",
+      "forbidden": "Non hai l'autorizzazione per visualizzare i ticket.",
+      "truncated": "Visualizzazione di {{shown}} ticket su {{total}}."
+    },
+    "billing": {
+      "sections": {
+        "contracts": "Contratti",
+        "invoices": "Fatture",
+        "quotes": "Preventivi"
+      }
+    }
   }
 }

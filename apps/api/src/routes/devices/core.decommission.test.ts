@@ -85,6 +85,14 @@ vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
+// #5128 — spy on `ne` (pass-through to the real implementation) so the
+// decommission transaction's pending-command cancel write is assertable on
+// its `self_uninstall` exclusion without mocking all of drizzle-orm.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, ne: vi.fn(actual.ne) };
+});
+
 // #3986 task 7 — the route composes `queueDeviceUninstall` into its own
 // decommission transaction; the predicate/insert SQL it builds is already
 // covered on compiled SQL by deviceUninstallDrain.test.ts (task 6). Here we
@@ -106,6 +114,14 @@ vi.mock('../agents/enrollment', () => ({
   getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null),
 }));
 
+// #5128 — the decommission transaction cancels the device's ordinary pending
+// commands and must terminalise their OWNING records (script_executions /
+// deployment_results) in that SAME transaction. Mocked at the seam so the
+// route's wiring — including which executor it hands over — is assertable.
+vi.mock('../../services/commandCancelPropagation', () => ({
+  propagateCancelledDeviceCommands: vi.fn(),
+}));
+
 // The unit under test: core.ts imports BOTH terminateDeviceRemoteSessions and
 // TEARDOWN_FAILED. The mock MUST export both or the named import resolves to
 // undefined and the audit branch (teardownResult === TEARDOWN_FAILED) breaks.
@@ -120,8 +136,18 @@ import { terminateDeviceRemoteSessions } from '../../services/remoteSessionTeard
 import { disconnectAgent } from '../agentWs';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueDeviceUninstall, releaseDeviceRemoveReason } from '../../services/deviceUninstallDrain';
+import { ne } from 'drizzle-orm';
+import { deviceCommands } from '../../db/schema';
+import { propagateCancelledDeviceCommands } from '../../services/commandCancelPropagation';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
+
+/**
+ * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
+ * cancel-on-decommission read) resolves to. Empty by default so the existing
+ * write-ordering assertions are unaffected; the propagation test sets it.
+ */
+let pendingCommandRows: Array<{ id: string; type: string; payload: unknown }> = [];
 
 const ONLINE_DEVICE = {
   id: DEVICE_ID,
@@ -138,6 +164,7 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
 
   beforeEach(() => {
     vi.clearAllMocks();
+    pendingCommandRows = [];
     app = new Hono();
     app.route('/devices', coreRoutes);
   });
@@ -173,10 +200,17 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
     const set = vi.fn().mockReturnValue({ where: updWhere });
     vi.mocked(db.update).mockReturnValue({ set } as never);
 
-    const tx = { update: vi.fn().mockReturnValue({ set }) };
+    // #5128: the decommission transaction now SELECTs the pending commands
+    // (id/type/payload) before the erasing cancel UPDATE, so their owning
+    // script_executions / deployment_results rows can be terminalised in the
+    // same transaction. Default to no pending rows; individual tests override.
+    const txSelect = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(pendingCommandRows) }),
+    });
+    const tx = { update: vi.fn().mockReturnValue({ set }), select: txSelect };
     vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(tx));
 
-    return { set, updWhere, tx };
+    return { set, updWhere, tx, txSelect };
   }
 
   it('calls terminateDeviceRemoteSessions with the decommissioned device id', async () => {
@@ -294,13 +328,61 @@ describe('DELETE /devices/:id (decommission) — remote-session teardown wiring'
       });
 
       expect(res.status).toBe(200);
-      // Two writes: the status flip, then the linkage clear.
-      expect(set).toHaveBeenCalledTimes(2);
+      // Three writes: the status flip, the #5128 pending-command cancel
+      // (same transaction), then the linkage clear.
+      expect(set).toHaveBeenCalledTimes(3);
       expect(set).toHaveBeenNthCalledWith(1, expect.objectContaining({ status: 'decommissioned' }));
+      expect(set).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'cancelled' }));
       expect(set).toHaveBeenNthCalledWith(
-        2,
+        3,
         expect.objectContaining({ possibleReplacementOfDeviceId: null })
       );
+    });
+
+    // #5128 — the uninstall drain's whole purpose is to survive decommission
+    // and deliver on the device's next check-in; a `self_uninstall` row must
+    // never be swept up by the generic pending-command cancel this route now
+    // runs in the same transaction as the status write.
+    it('cancels pending commands but excludes self_uninstall from the sweep', async () => {
+      const { set } = rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenNthCalledWith(2, expect.objectContaining({ status: 'cancelled' }));
+      expect(vi.mocked(ne)).toHaveBeenCalledWith(deviceCommands.type, 'self_uninstall');
+    });
+
+    // #5128 review round 2 — a cancelled command is TERMINAL, so the command
+    // reaper (pending/sent only) never revisits it. Without propagation the
+    // owning script_executions / deployment_results row sits `pending` forever.
+    it('terminalises the OWNING records of the cancelled rows, on the SAME transaction', async () => {
+      pendingCommandRows = [
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ];
+      const { tx } = rigDecommission(ONLINE_DEVICE);
+
+      const res = await app.request(`/devices/${DEVICE_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(propagateCancelledDeviceCommands).toHaveBeenCalledTimes(1);
+      const [subjects, completedAt, executor] = vi.mocked(propagateCancelledDeviceCommands).mock
+        .calls[0]!;
+      expect(subjects).toEqual([
+        { id: 'cmd-script', type: 'script', payload: { executionId: 'exec-1' } },
+        { id: 'cmd-install', type: 'software_install', payload: { deploymentId: 'dep-1' } },
+      ]);
+      expect(completedAt).toBeInstanceOf(Date);
+      // The transaction handle, not the ambient db: a rollback of the status
+      // flip must roll the owning records back with it.
+      expect(executor).toBe(tx);
     });
 
     it('does not clear linkage when the device is already decommissioned (400)', async () => {
@@ -446,6 +528,7 @@ describe('POST /devices/:id/restore — uninstall release wiring', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    pendingCommandRows = [];
     app = new Hono();
     app.route('/devices', coreRoutes);
   });

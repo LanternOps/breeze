@@ -163,4 +163,51 @@ describe('AutomationEditPage — run_script run context (#4888)', () => {
     expect((screen.getByTestId('action-0-run-as-select') as HTMLSelectElement).value).toBe('elevated');
     expect((putBody().actions as Array<Record<string, unknown>>)[0]).toMatchObject({ runAs: 'elevated' });
   });
+
+  /**
+   * #5128 W4 — `whenOffline` is the second field to go through the field-by-field
+   * `buildActionPayload`, so it carries exactly the drop risk the block comment
+   * above describes. `AutomationForm.test.tsx` asserts on that component's own
+   * `onSubmit` prop, which is one layer ABOVE where such a drop happens; these
+   * assert on the PUT body that actually leaves the browser.
+   */
+  it('sends the chosen offline behaviour in the PUT body (run_script)', async () => {
+    await editAndSave({ type: 'run_script', scriptId: 's1' }, () => {
+      fireEvent.change(screen.getByTestId('action-0-when-offline-select'), { target: { value: 'skip' } });
+    });
+
+    expect((putBody().actions as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'run_script',
+      whenOffline: 'skip',
+    });
+  });
+
+  it('sends the chosen offline behaviour in the PUT body (execute_command)', async () => {
+    await editAndSave({ type: 'execute_command', command: 'whoami' }, () => {
+      fireEvent.change(screen.getByTestId('action-0-when-offline-select'), { target: { value: 'skip' } });
+    });
+
+    expect((putBody().actions as Array<Record<string, unknown>>)[0]).toMatchObject({
+      type: 'execute_command',
+      command: 'whoami',
+      whenOffline: 'skip',
+    });
+  });
+
+  it('omits whenOffline entirely for an automation authored before the field existed', async () => {
+    await editAndSave({ type: 'run_script', scriptId: 's1' });
+
+    // The control SHOWS Queue (the server's default), but the payload must not
+    // gain a field the operator never chose — a pre-#5128 action has to
+    // round-trip byte-identically through an unrelated edit.
+    expect((screen.getByTestId('action-0-when-offline-select') as HTMLSelectElement).value).toBe('queue');
+    expect((putBody().actions as Array<Record<string, unknown>>)[0]).not.toHaveProperty('whenOffline');
+  });
+
+  it('reads a stored skip back into the form and round-trips it through an unrelated edit', async () => {
+    await editAndSave({ type: 'run_script', scriptId: 's1', whenOffline: 'skip' });
+
+    expect((screen.getByTestId('action-0-when-offline-select') as HTMLSelectElement).value).toBe('skip');
+    expect((putBody().actions as Array<Record<string, unknown>>)[0]).toMatchObject({ whenOffline: 'skip' });
+  });
 });

@@ -36,7 +36,13 @@ export const AGENT_ERROR_COPY: Record<string, ((t: TranslateFn) => string) | und
   // carries the identical `rejected[]` shape as invalid_supervised_action_keys
   // above — mapped as the identical toast fallback.
   supervised_keys_grant_only: (t) => t('settings:aiAgentsPage.errors.invalidSupervisedActionKeys'),
+  // #5065: actAssets.scriptIds named a script the owner cannot see, one the
+  // partner baseline does not list, or the row does not allow run_script —
+  // the per-id detail is rendered by `agentSaveIssuesFromError` below.
+  invalid_script_ids: (t) => t('settings:aiAgentsPage.errors.invalidScriptIds'),
 };
+
+const SCRIPT_REJECT_REASONS = new Set(['not_found', 'not_in_partner_baseline', 'run_script_not_allowed']);
 
 /**
  * `missing[]` entries from the server's `act_prerequisites_not_met` 422
@@ -98,6 +104,27 @@ export function agentSaveIssuesFromError(
       : [];
     return rejected.map((entry) =>
       t('settings:aiAgentsPage.errors.supervisedKeyRejected', { key: entry.key, reason: entry.reason }));
+  }
+
+  // #5065: one entry per rejected script id with a translated reason.
+  if (err.code === 'invalid_script_ids') {
+    const body = err.body as { rejected?: unknown } | undefined;
+    const rejected = Array.isArray(body?.rejected)
+      ? body.rejected.filter(
+          (entry): entry is { id: string; reason: string } =>
+            typeof entry === 'object'
+            && entry !== null
+            && typeof (entry as { id?: unknown }).id === 'string'
+            && typeof (entry as { reason?: unknown }).reason === 'string',
+        )
+      : [];
+    return rejected.map((entry) =>
+      t('settings:aiAgentsPage.errors.scriptRejected', {
+        id: entry.id,
+        reason: SCRIPT_REJECT_REASONS.has(entry.reason)
+          ? t(/* i18n-dynamic */ `settings:aiAgentsPage.errors.scriptReject.${entry.reason}`)
+          : entry.reason,
+      }));
   }
 
   return null;

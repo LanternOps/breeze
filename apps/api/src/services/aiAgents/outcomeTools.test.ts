@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildOutcomeSdkTools, isOutcomeTool, outcomeToolsForProfile, validateOutcomeToolInput,
+  buildOutcomeSdkTools, isOutcomeTool, outcomeToolsForProfile, outcomeToolsForRun, validateOutcomeToolInput,
   OUTCOME_MCP_TOOL_NAMES, OUTCOME_TOOL_NAMES,
   type SdkTool,
 } from './outcomeTools';
@@ -177,12 +177,45 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     expect(outcomeToolsForProfile('sweep')).toEqual(['submit_sweep_findings']);
     expect(outcomeToolsForProfile('narrative')).toEqual(['submit_narrative']);
     expect(outcomeToolsForProfile('triage')).toEqual(['submit_ticket_proposal']);
-    // Every name in the catalog belongs to exactly one profile — a fifth
-    // outcome tool added without a profile mapping fails here. Driven off
-    // `AI_AGENT_RUN_PROFILES` rather than a hand-listed set so a fifth
-    // profile cannot be added without its mapping being counted.
-    const mapped = AI_AGENT_RUN_PROFILES.flatMap((profile) => outcomeToolsForProfile(profile));
-    expect([...mapped].sort()).toEqual([...OUTCOME_TOOL_NAMES].sort());
+    // Every name in the catalog is reachable through exactly one SELECTOR —
+    // an outcome tool that no selector exposes is dead code the pre-hook will
+    // always deny, and one that two selectors expose is an authority the
+    // catalog no longer describes. Driven off `AI_AGENT_RUN_PROFILES` rather
+    // than a hand-listed set so a sixth profile cannot be added without its
+    // mapping being counted.
+    //
+    // `submit_task_step` (#5205 W06) is deliberately NOT profile-mapped: a
+    // task-linked run uses the `full` profile, whose mapping is empty by
+    // design, and the tool is selected by the run's TASK LINKAGE instead
+    // (`outcomeToolsForRun`). So the union is asserted across BOTH selectors,
+    // which keeps the original "no orphan tool" property intact rather than
+    // carving out an unchecked exception.
+    const byProfile = AI_AGENT_RUN_PROFILES.flatMap((profile) => outcomeToolsForProfile(profile));
+    expect([...byProfile].sort()).toEqual(
+      [...OUTCOME_TOOL_NAMES].filter((name) => name !== 'submit_task_step').sort(),
+    );
+
+    const byTaskLinkage = outcomeToolsForRun({ profile: 'full', taskId: 'task-1' });
+    expect(byTaskLinkage).toEqual(['submit_task_step']);
+
+    expect([...new Set([...byProfile, ...byTaskLinkage])].sort())
+      .toEqual([...OUTCOME_TOOL_NAMES].sort());
+  });
+
+  it('outcomeToolsForRun adds submit_task_step ONLY for a task-linked run', () => {
+    // The tool is an authority, not a convenience: exposing it on a legacy run
+    // would let any full-profile run write a checkpoint into a task it does
+    // not belong to. The pre-hook, the post-hook capture and the SDK exposure
+    // all read this one function, so this is the single place that can widen.
+    expect(outcomeToolsForRun({ profile: 'full', taskId: null })).toEqual([]);
+    expect(outcomeToolsForRun({ profile: 'full' })).toEqual([]);
+    expect(outcomeToolsForRun({ profile: 'full', taskId: 'task-1' })).toEqual(['submit_task_step']);
+
+    // A task-linked run KEEPS its profile's own tools rather than replacing
+    // them — the thin slice never exercises this (task runs are `full`), but a
+    // later wave running a task step under another profile must get both.
+    expect(outcomeToolsForRun({ profile: 'verdict', taskId: 'task-1' }))
+      .toEqual(['submit_alert_verdict', 'submit_task_step']);
   });
 });
 

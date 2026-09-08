@@ -11,7 +11,6 @@ import {
   Copy,
   Check,
   CreditCard,
-  FileSignature,
   Fingerprint,
   Globe,
   Monitor,
@@ -23,8 +22,6 @@ import {
   Ticket,
   Archive
 } from 'lucide-react';
-import ContactsCard from './ContactsCard';
-import ContractsList from '../contracts/ContractsList';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
 import OrgBrandingEditor from './OrgBrandingEditor';
@@ -61,7 +58,11 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
       { key: 'contacts', hash: 'contacts', label: 'orgSettingsPage.nav.contacts', description: 'orgSettingsPage.nav.contactsDescription', icon: Contact },
-      { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
+      // 'contracts' is intentionally NOT a nav item anymore — it moved to the
+      // organization record's Contracts & Billing tab (#5075 W03). It stays a
+      // resolvable TabKey (see getTabFromHash's explicit case below) purely so
+      // an old `#contracts` bookmark/link still redirects there instead of
+      // landing on General with a silently-ignored hash.
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
       { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
       { key: 'extensions', hash: 'extensions', label: 'orgSettingsPage.nav.extensions', description: 'orgSettingsPage.nav.extensionsDescription', icon: Puzzle },
@@ -100,6 +101,10 @@ function getTabFromHash(): TabKey | null {
   if (typeof window === 'undefined') return null;
   const hash = window.location.hash.replace('#', '');
   const key = hash.split('/')[0] ?? '';
+  // 'contracts' has no nav entry (see TAB_GROUPS above) so it's absent from
+  // TAB_BY_KEY, but an old `#contracts` link must still resolve to the
+  // redirect effect rather than silently falling through to the default tab.
+  if (key === 'contracts') return 'contracts';
   return key in TAB_BY_KEY ? (key as TabKey) : null;
 }
 
@@ -299,6 +304,24 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
 
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
+
+  // Two settings tabs moved onto the organization record: contracts to its
+  // Contracts & Billing tab (#5075 W03) and contacts to its Contacts tab
+  // (#5075 W02). Both nav entries stay (they remain discoverable destinations
+  // from this page) but activating either hands off to the record rather than
+  // rendering stale UI here. One effect covers BOTH activation paths for each —
+  // a direct deep link (the mount/hashchange effect above sets `activeTab`) and
+  // a nav click (`switchTab` sets it too) funnel through the same state.
+  // `replace: true` on both: without it, Back returns to the dead settings tab,
+  // whose effect immediately redirects forward again — a Back-button trap.
+  useEffect(() => {
+    if (!effectiveOrgId) return;
+    if (activeTab === 'contracts') {
+      void navigateTo(`/organizations/${effectiveOrgId}#billing`, { replace: true });
+    } else if (activeTab === 'contacts') {
+      void navigateTo(`/organizations/${effectiveOrgId}#contacts`, { replace: true });
+    }
+  }, [activeTab, effectiveOrgId]);
 
   const fetchOrgDetails = useCallback(async () => {
     if (!effectiveOrgId) {
@@ -622,19 +645,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           />
         ) : null;
       case 'contacts':
-        // No onDirty: the card persists every change through its own request,
-        // so this tab never holds unsaved draft state.
-        return effectiveOrgId ? (
-          <div data-testid="org-tab-contacts">
-            <ContactsCard orgId={effectiveOrgId} />
-          </div>
-        ) : null;
+        // Redirected to the organization record's Contacts tab by the effect
+        // above — this case never actually renders ContactsCard here anymore.
+        return null;
       case 'contracts':
-        return effectiveOrgId ? (
-          <div data-testid="org-tab-contracts">
-            <ContractsList lockedOrgId={effectiveOrgId} />
-          </div>
-        ) : null;
+        // Redirected to the organization record's Contracts & Billing tab by
+        // the effect above; render nothing while that navigation happens.
+        return null;
       case 'billing':
         return effectiveOrgId ? (
           <div data-testid="org-tab-billing">

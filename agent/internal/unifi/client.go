@@ -14,6 +14,13 @@ import (
 
 const apiBase = "/proxy/network/integration/v1"
 
+// PoePort is an OUTBOUND-only shape: it is part of the telemetry upload body the
+// Breeze API accepts (see uploadDevice in collector.go), so these tags are the
+// Breeze ingest contract, NOT controller field names. The Integration API's
+// device LIST response carries no per-port PoE data, so nothing decodes into it
+// today; per-port PoE lives on the device DETAIL endpoint
+// (/sites/{siteId}/devices/{deviceId} → interfaces.ports[].poe), which the
+// collector does not fetch yet. Do not "align" these with the controller.
 type PoePort struct {
 	PortIdx       int     `json:"port_idx"`
 	Name          string  `json:"name"`
@@ -23,37 +30,81 @@ type PoePort struct {
 	Up            bool    `json:"up"`
 }
 
+// Device decodes ONE element of GET /v1/sites/{siteId}/devices.
+//
+// The tags are the UniFi Network Integration API's camelCase — `macAddress`, not
+// `mac`. They previously read as snake_case, so only `id` and `name` ever landed:
+// every device reached unifi_device_telemetry with an empty mac, which also
+// defeated the MAC-based discovered_assets enrichment (#5087).
+//
+// Fields tagged `json:"-"` are NOT on the device list response. They are left
+// explicitly un-decoded rather than given a guessed tag, and stay zero until the
+// collector fetches the endpoints that actually carry them:
+//   - UptimeSeconds, CPUPct, MemPct, TxBytes, RxBytes →
+//     /sites/{siteId}/devices/{deviceId}/statistics/latest, as uptimeSec,
+//     cpuUtilizationPct, memoryUtilizationPct and uplink.txRateBps/rxRateBps.
+//     Note txRate/rxRate are RATES, not the cumulative counters TxBytes/RxBytes
+//     model — that needs a unit decision, not just a tag.
+//   - PoePorts → the device DETAIL endpoint (interfaces.ports[].poe).
+//   - NumClients → not exposed by the Integration API at all. It could be
+//     derived by counting clients whose uplinkDeviceId is this device, but the
+//     client list is paginated and this client reads only the first page (see
+//     envelope below), so such a count can be silently short. An honest zero
+//     beats a confidently wrong number.
 type Device struct {
-	ID            string          `json:"id"`
-	Mac           string          `json:"mac"`
-	Name          string          `json:"name"`
-	UptimeSeconds int64           `json:"uptime_seconds"`
-	CPUPct        float64         `json:"cpu_pct"`
-	MemPct        float64         `json:"mem_pct"`
-	TxBytes       int64           `json:"tx_bytes"`
-	RxBytes       int64           `json:"rx_bytes"`
-	NumClients    int             `json:"num_clients"`
-	PoePorts      []PoePort       `json:"poe_ports"`
-	SiteID        string          `json:"site_id"`
-	Raw           json.RawMessage `json:"raw"`
+	ID   string `json:"id"`
+	Mac  string `json:"macAddress"`
+	Name string `json:"name"`
+
+	UptimeSeconds int64     `json:"-"`
+	CPUPct        float64   `json:"-"`
+	MemPct        float64   `json:"-"`
+	TxBytes       int64     `json:"-"`
+	RxBytes       int64     `json:"-"`
+	NumClients    int       `json:"-"`
+	PoePorts      []PoePort `json:"-"`
+
+	// Assigned by Poll after decoding, never read off the element itself.
+	SiteID string          `json:"-"`
+	Raw    json.RawMessage `json:"-"`
 }
 
+// Client decodes ONE element of GET /v1/sites/{siteId}/clients.
+//
+// Same camelCase contract as Device: `macAddress`/`ipAddress`/`uplinkDeviceId`,
+// and the client's display name arrives as `name` (there is no `hostname`).
+//
+// Fields tagged `json:"-"` are not present on the client list response. The
+// Integration API exposes no SSID, VLAN, signal strength, per-client throughput
+// or per-client uptime on this endpoint, so they stay zero rather than carry an
+// invented tag.
 type Client struct {
-	Mac               string          `json:"mac"`
-	Hostname          string          `json:"hostname"`
-	IP                string          `json:"ip"`
-	ConnectedDeviceID string          `json:"connected_device_id"`
-	SSID              string          `json:"ssid"`
-	SiteID            string          `json:"site_id"`
-	UplinkPortIdx     int             `json:"uplink_port_idx"`
-	Vlan              int             `json:"vlan"`
-	SignalDbm         int             `json:"signal_dbm"`
-	IsWired           bool            `json:"is_wired"`
-	TxBytes           int64           `json:"tx_bytes"`
-	RxBytes           int64           `json:"rx_bytes"`
-	UptimeSeconds     int64           `json:"uptime_seconds"`
-	Raw               json.RawMessage `json:"raw"`
+	Mac      string `json:"macAddress"`
+	Hostname string `json:"name"`
+	IP       string `json:"ipAddress"`
+	// Type is the controller's connection discriminator: WIRED, WIRELESS, VPN or
+	// TELEPORT. It is the only wired-ness signal the API sends — there is no
+	// is_wired boolean — so IsWired derives from it (see below).
+	Type              string `json:"type"`
+	ConnectedDeviceID string `json:"uplinkDeviceId"`
+
+	SSID          string `json:"-"`
+	Vlan          int    `json:"-"`
+	SignalDbm     int    `json:"-"`
+	UplinkPortIdx int    `json:"-"`
+	TxBytes       int64  `json:"-"`
+	RxBytes       int64  `json:"-"`
+	UptimeSeconds int64  `json:"-"`
+
+	// Assigned by Poll after decoding, never read off the element itself.
+	SiteID string          `json:"-"`
+	Raw    json.RawMessage `json:"-"`
 }
+
+// IsWired reports whether the controller classified this client as a wired
+// attachment. It is a method rather than a stored field so it cannot desync from
+// Type: WIRELESS, VPN and TELEPORT clients are all correctly not-wired.
+func (c Client) IsWired() bool { return strings.EqualFold(c.Type, "WIRED") }
 
 type SiteRef struct {
 	ID   string `json:"id"`
@@ -106,14 +157,110 @@ func DefaultHTTPClient() *http.Client {
 	}
 }
 
+// envelope is the Integration API's list wrapper. Offset/Limit/Count/TotalCount
+// describe pagination: a single request may return fewer than TotalCount
+// elements, and the caller must keep requesting with an advancing offset until
+// it has seen TotalCount elements. get() below does that internally so every
+// caller sees the FULL list from one call — a site with more devices or
+// clients than the controller's page size no longer gets silently truncated
+// (#5101).
 type envelope struct {
-	Data json.RawMessage `json:"data"`
+	Data       json.RawMessage `json:"data"`
+	Offset     int             `json:"offset"`
+	Limit      int             `json:"limit"`
+	Count      int             `json:"count"`
+	TotalCount int             `json:"totalCount"`
 }
 
-// get returns (body, statusCode, error). A 404 on the integration base is treated by
-// Poll as "integration unavailable / firmware too old" rather than a hard error.
+// maxListPages bounds how many pages a single get() call will request. The
+// client tracks its OWN offset — starting at 0, advancing by the page's Count —
+// rather than trusting the controller's echoed `offset` field, so a controller
+// that ignores the offset query param and re-serves the same page cannot desync
+// the client's counter. This cap is the second line of defense: it exists for a
+// controller that reports a TotalCount the client's advancing offset can never
+// catch up to (buggy, or actively hostile), so a single poll can never turn
+// into an unbounded number of requests. 500 pages comfortably covers any real
+// UniFi site — even a tiny page size of 25 covers 12,500 devices/clients.
+const maxListPages = 500
+
+// get returns (body, statusCode, error), transparently following pagination:
+// it keeps requesting pages with an advancing offset until the controller's
+// totalCount is reached (or the hard page cap fires), concatenating every
+// page's data elements into one JSON array. A 404 on the integration base is
+// treated by Poll as "integration unavailable / firmware too old" rather than
+// a hard error.
 func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	var elems []json.RawMessage
+	offset := 0
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			// 0, not http.StatusOK: every OTHER non-error return in this file
+			// pairs a 2xx status with a nil error, and 0 matches the convention
+			// already used for transport-level failures in getPage below.
+			return nil, 0, fmt.Errorf(
+				"unifi api %s: exceeded %d pages at offset %d without reaching the controller-reported total — aborting to avoid an unbounded loop",
+				path, maxListPages, offset)
+		}
+
+		body, status, err := c.getPage(ctx, path, offset)
+		if err != nil {
+			return nil, status, err
+		}
+		if status == http.StatusNotFound {
+			return nil, status, nil
+		}
+
+		var env envelope
+		if uerr := json.Unmarshal(body, &env); uerr != nil {
+			return nil, status, fmt.Errorf("unifi api %s: bad json: %w", path, uerr)
+		}
+		pageElems := rawElems(env.Data)
+		elems = append(elems, pageElems...)
+
+		// Advance by the number of elements actually decoded from `data`, not
+		// the controller-asserted `count` field: a buggy or hostile controller
+		// that claims count:10 while shipping 3 elements would otherwise make
+		// the client skip the 7 real items it never saw. Self-verifying against
+		// the payload we actually received is strictly safer than trusting
+		// server-reported metadata about that same payload.
+		advanced := len(pageElems)
+		nextOffset := offset + advanced
+		switch {
+		case nextOffset >= env.TotalCount:
+			// Done — the accumulated elements reach (or exceed) the
+			// controller's reported total. This is the ONLY success exit: it
+			// also covers the common non-paginated response (TotalCount==0),
+			// since any offset (including 0) is already >= 0.
+			return marshalRawElems(elems), status, nil
+		case advanced <= 0:
+			// A page decoded zero elements while the controller still claims
+			// more exist beyond our current offset. Returning success here
+			// with whatever was collected so far would silently truncate the
+			// list one layer below the exact bug #5101 fixed — so this is an
+			// error, not a quiet stop.
+			return nil, status, fmt.Errorf(
+				"unifi api %s: page at offset %d decoded 0 elements before reaching totalCount %d — aborting rather than silently truncating",
+				path, offset, env.TotalCount)
+		default:
+			offset = nextOffset
+		}
+	}
+}
+
+// getPage issues one page request. offset==0 is sent with no query string at
+// all, so a non-paginated endpoint (or a controller that omits offset/count/
+// totalCount entirely) behaves exactly as before this change — one request,
+// first-page-only.
+func (c *APIClient) getPage(ctx context.Context, path string, offset int) (json.RawMessage, int, error) {
+	reqPath := path
+	if offset > 0 {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		reqPath = fmt.Sprintf("%s%soffset=%d", path, sep, offset)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+reqPath, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -136,11 +283,22 @@ func (c *APIClient) get(ctx context.Context, path string) (json.RawMessage, int,
 		// the misleading "bad json" we'd otherwise hit on the truncated body.
 		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: read body: %w", path, rerr)
 	}
-	var env envelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("unifi api %s: bad json: %w", path, err)
+	return body, resp.StatusCode, nil
+}
+
+// marshalRawElems re-assembles paginated elements into one JSON array so
+// callers of get() keep decoding a single array, unaware pagination happened.
+func marshalRawElems(elems []json.RawMessage) json.RawMessage {
+	if elems == nil {
+		elems = []json.RawMessage{}
 	}
-	return env.Data, resp.StatusCode, nil
+	out, err := json.Marshal(elems)
+	if err != nil {
+		// elems are fragments already validated by json.Unmarshal when they were
+		// read out of rawElems; re-marshaling []json.RawMessage cannot fail.
+		return json.RawMessage("[]")
+	}
+	return out
 }
 
 // Poll reads sites, then devices + clients per site, tagging each with its SiteID.

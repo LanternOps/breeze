@@ -272,12 +272,22 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     assignmentTargetId: z.string().min(1).optional(),
     policyId: z.string().min(1),
     policyName: z.string().min(1),
+    // The ASSIGNED policy this dispatch runs for (#5080). Through the effective
+    // view one feature-link id belongs to the authoring parent AND every child,
+    // so the run-time ownership clamp cannot reverse-map the link — it clamps on
+    // this id. Optional purely so jobs enqueued before the deploy still parse;
+    // handlers fall back to `policyId`, which has always carried the same value.
+    configPolicyId: z.string().min(1).optional(),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
   }).strict(),
   z.object({
     type: z.literal('execute-config-policy-run'),
     configPolicyAutomationId: z.string().min(1),
+    // Same rule one queue stage later. Optional for pre-deploy jobs only; a run
+    // that arrives without it is SKIPPED rather than executed under a guessed
+    // owner (the next scheduler tick re-enqueues it with the id).
+    configPolicyId: z.string().min(1).optional(),
     targetDeviceIds: z.array(z.string().min(1)),
     triggeredBy: z.string().min(1),
   }).strict(),
@@ -423,6 +433,27 @@ export const deliverEventJobDataSchema = z.object({
   subscriberId: eventSubscriberIdSchema,
   event: breezeEventEnvelopeSchema,
 }).strict();
+
+/**
+ * #5205 W05 (#5210), spec §6.3 — the AI Operator task coordinator's wake
+ * queue. `jobs/aiOperatorTaskOutboxPublisher.ts` (this wave) is the sole
+ * producer, draining `ai_operator_task_outbox`; the task coordinator (W06,
+ * not built yet) is the sole consumer. Job data is a TYPED REFERENCE only —
+ * never an embedded payload (spec §6.3) — so the consumer always re-reads the
+ * authoritative source row rather than trusting what shipped on the wire.
+ */
+export const AI_OPERATOR_COORDINATOR_QUEUE_NAME = 'ai-operator-coordinator';
+export const AI_OPERATOR_COORDINATOR_WAKE_JOB_NAME = 'task-wake';
+
+export const aiOperatorTaskWakeJobDataSchema = z.object({
+  v: z.literal(1),
+  orgId: z.string().min(1),
+  taskId: z.string().min(1),
+  sourceKind: z.enum(['run', 'intent', 'execution', 'verification', 'user_answer', 'target', 'cancellation']),
+  sourceId: z.string().min(1),
+  transitionSeq: z.number().int(),
+}).strict();
+export type AiOperatorTaskWakeJobData = z.infer<typeof aiOperatorTaskWakeJobDataSchema>;
 
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;

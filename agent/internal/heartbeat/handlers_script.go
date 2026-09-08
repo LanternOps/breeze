@@ -130,6 +130,27 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	// this site decoded parameters and every user-context script ran without
 	// them.
 	script.Parameters = executor.ParametersFromPayload(cmd.Payload["parameters"])
+	// #5129 — the strict-pattern descriptions an admin acknowledged on the
+	// script record, decided server-side and delivered over the authenticated
+	// command channel. Absent (an older API) means "nothing acknowledged",
+	// which is exactly the pre-#5129 fail-closed behaviour.
+	//
+	// Read here AND in userhelper.Client.executeScript, which rebuilds this
+	// same struct on the far side of the runAs=user IPC hop — see #4882, where
+	// only this site decoded a payload field and every user-context run
+	// silently lost it.
+	script.AcknowledgedSecurityPatterns = tools.GetPayloadStringSlice(cmd.Payload, "acknowledgedSecurityPatterns")
+	if raw, present := cmd.Payload["acknowledgedSecurityPatterns"]; present && len(script.AcknowledgedSecurityPatterns) == 0 {
+		// The server omits the key entirely when nothing is acknowledged, so
+		// present-but-empty means the value arrived in a shape the decoder
+		// could not read (not a JSON array, or an array of non-strings). The
+		// fail-closed default then makes this look identical to "nobody
+		// acknowledged it" — the operator gets a correct refusal for the wrong
+		// reason and no way to tell an approval was lost in transit. Log it so
+		// a future payload-shaping regression is diagnosable from agent logs.
+		log.Warn("acknowledgedSecurityPatterns present but decoded to nothing; treating the script as unacknowledged",
+			"commandId", cmd.ID, "type", fmt.Sprintf("%T", raw))
+	}
 	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
 	// parameters block: secrets ride the process environment (buildEnvironment)
 	// and must never reach SubstituteParameters or validateScript, which would

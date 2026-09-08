@@ -214,7 +214,8 @@ async function accessToken(account: PlayIntegrityServiceAccount): Promise<string
   const assertion = await new SignJWT({ scope: PLAY_INTEGRITY_SCOPE })
     .setProtectedHeader({ alg: 'RS256' })
     .setIssuer(account.clientEmail)
-    .setSubject(account.clientEmail)
+    // No `sub`: that claim is for domain-wide delegation (impersonating a
+    // Workspace user). A plain service-account exchange omits it.
     .setAudience(OAUTH_TOKEN_URL)
     .setIssuedAt(Math.floor(nowMs / 1000))
     .setExpirationTime(Math.floor(nowMs / 1000) + 3600)

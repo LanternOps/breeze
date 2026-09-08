@@ -590,18 +590,30 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(await captureSqlState(() => admin.delete(devices)
       .where(eq(devices.id, movableDevice.id))))
       .toBe('23503');
-    // #5099 (2026-10-12-100000-config-policy-inheritance.sql) added a
-    // constraint trigger that rejects ANY non-system-scope owner change on
-    // configuration_policies before the composite-FK below gets a chance to
-    // fire. `admin` never elects system scope, so the ownership-immutable
-    // guard is now the fastest failure path for these two forges — assert
-    // the guard's outcome (23514 + its named constraint) rather than the FK.
-    expect(await captureSqlError(() => admin.update(configurationPolicies)
+    // #5080 W01 put a stricter guard in FRONT of the assignment reverse
+    // validator: configuration_policies ownership can only change in system
+    // scope at all (constraint trigger configuration_policies_parent_guard,
+    // constraint configuration_policies_owner_immutable). Both halves are
+    // pinned -- the outer guard, and, in the one scope that legitimately moves
+    // ownership (org merge), the reverse validator that was always the subject
+    // here. Asserting only the 23514 would quietly retire this test (#5123).
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
       .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
-    expect(await captureSqlError(() => admin.update(configurationPolicies)
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id));
+    }))).toBe('23503');
+    expect(await captureSqlFailure(() => admin.update(configurationPolicies)
       .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
       .toEqual({ code: '23514', constraint: 'configuration_policies_owner_immutable' });
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
+      await tx.update(configurationPolicies)
+        .set({ partnerId: partnerB.partner.id })
+        .where(eq(configurationPolicies.id, partnerPolicy.id));
+    }))).toBe('23503');
 
     const [updatableAssignment] = await withDbAccessContext(contextA, () =>
       db.insert(configPolicyAssignments).values({
@@ -677,12 +689,9 @@ describe('partner reconstruction export RLS traversal', () => {
       }).returning();
       if (!movingPolicy) throw new Error('concurrent owner policy seed failed');
       const policyMover = admin.transaction(async (tx) => {
-        // #5099's ownership-immutable guard rejects a configuration_policies
-        // owner change outside system scope (23514) — org merge is the only
-        // real-world mover, and it always runs in system scope. Elect it here
-        // so this in-flight move still holds its row lock the way a merge
-        // would, letting the assignment insert below serialize against it
-        // instead of the update failing before `ownerMove` ever resolves.
+        // System scope: #5080 W01 refuses a configuration-policy owner move in
+        // any other scope, and org merge -- the only real mover -- is system
+        // scoped. Without this the race never starts (#5123).
         await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
         await tx.update(configurationPolicies).set({ orgId: target.orgs[0]!.id })
           .where(eq(configurationPolicies.id, movingPolicy.id));
@@ -785,10 +794,10 @@ describe('partner reconstruction export RLS traversal', () => {
       { partnerId: second.partner.id, name: 'Bulk partner policy B' },
     ]).returning();
     if (!policyA || !policyB) throw new Error('bulk policy seed failed');
-    // #5099's ownership-immutable guard rejects a configuration_policies
-    // owner change outside system scope (23514) — this bulk owner set is a
-    // legitimate move (org merge shape) and must elect system scope to reach
-    // the FK/RLS-plumbing this assertion actually exercises.
+    // System scope, for the same reason as the owner-move race above: #5080 W01
+    // makes a configuration-policy owner change system-only. The property under
+    // test is unchanged -- a COMPLETE swap must not trip the reverse validator
+    // on the intermediate state (#5123).
     await expect(admin.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`);
       return tx.update(configurationPolicies).set({
@@ -1253,16 +1262,17 @@ async function captureSqlState(work: () => Promise<unknown>): Promise<string | u
   }
 }
 
-// Sibling to captureSqlState that also captures the constraint name, so a
-// SQLSTATE shared by multiple constraints (e.g. 23514) still discriminates
-// which one fired — see configPolicyInheritance.integration.test.ts's
-// expectSqlState for the same shape.
-async function captureSqlError(
+/**
+ * SQLSTATE plus the constraint that produced it. `configuration_policies`
+ * carries several 23514 sources, so a bare code would let a future CHECK on the
+ * same statement path satisfy an assertion meant for a specific guard (#5123).
+ */
+async function captureSqlFailure(
   work: () => Promise<unknown>,
-): Promise<{ code?: string; constraint?: string }> {
+): Promise<{ code?: string; constraint?: string } | undefined> {
   try {
     await work();
-    return {};
+    return undefined;
   } catch (error) {
     const wrapped = error as {
       code?: string;

@@ -13,6 +13,7 @@ import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
 import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
+import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -53,7 +54,12 @@ export type TicketServiceErrorCode =
   | 'INVALID_INPUT'
   // W08 #3902: one or more attachmentIds were not pending, not this user's,
   // or not on this ticket. The comment transaction is rolled back.
-  | 'ATTACHMENT_NOT_CLAIMABLE';
+  | 'ATTACHMENT_NOT_CLAIMABLE'
+  // #5075 W04 — the partner has Service Management switched off; no new
+  // tickets. Lowercase to match the wire code the web/AI surfaces branch on
+  // (`ServiceManagementOffError.code`), unlike the UPPER_SNAKE codes above,
+  // which are internal to the ticket service.
+  | 'service_management_off';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -497,6 +503,22 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     .limit(1);
   const org = orgRows[0];
   if (!org) throw new TicketServiceError('Organization not found', 404);
+
+  // #5075 W04 — Service Management 'off' withdraws NEW ticket creation for the
+  // whole partner. This is the ONE gate: every native creation surface (the
+  // alert dialog, the manage_tickets AI tool, the portal, the Office add-in,
+  // email-to-ticket) routes through createTicket, so no per-route mode check is
+  // needed — nor wanted, since a second check could drift from this one.
+  // Placed after the org resolve (it needs org.partnerId) but before any
+  // ticket-number allocation, so a refused create burns no counter value.
+  try {
+    await assertTicketCreationAllowed(org.partnerId);
+  } catch (err) {
+    if (err instanceof ServiceManagementOffError) {
+      throw new TicketServiceError(err.message, 409, 'service_management_off');
+    }
+    throw err;
+  }
 
   // Intake form (spec 2026-07-10): resolve + validate first so the composed
   // category feeds the existing assertCategoryInPartner guard below.
@@ -2200,9 +2222,14 @@ export interface MoveTicketOrgOptions {
 export async function moveTicketOrg(
   ticketId: string,
   targetOrgId: string,
-  actor: TicketActor,
+  actor: TicketActor | { kind: 'ai_agent'; agentId: string; name?: string },
   opts: MoveTicketOrgOptions = {}
 ): Promise<typeof tickets.$inferSelect> {
+  const isAgent = 'kind' in actor;
+  const userId = isAgent ? null : actor.userId;
+  const auditActor = isAgent
+    ? { actorType: 'ai_agent' as const, actorId: actor.agentId, initiatedBy: 'ai' as const }
+    : { actorId: actor.userId };
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId === targetOrgId) return ticket;
 
@@ -2464,9 +2491,13 @@ export async function moveTicketOrg(
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
-      userId: actor.userId,
+      userId,
       authorName: actor.name ?? null,
-      authorType: 'internal',
+      authorType: isAgent ? 'ai_agent' : 'internal',
+      originPrincipalKind: isAgent ? 'ai_agent' : 'user',
+      // Runs remain in the source org; never link this destination comment
+      // back to a source-org run after the detach above.
+      agentRunId: null,
       commentType: 'system',
       content: `Moved to ${targetOrg.name}` + (strandedCount > 0
         ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`
@@ -2481,7 +2512,7 @@ export async function moveTicketOrg(
     ticketId,
     orgId: targetOrgId,
     partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
+    actorUserId: userId,
     payload: { changed: ['orgId'] }
   });
   // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
@@ -2493,8 +2524,8 @@ export async function moveTicketOrg(
     detachedDeviceId: ticket.deviceId ?? null,
     ...(accepted?.accepted ? { currencyMismatchAccepted: accepted } : {})
   };
-  await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
-  await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: ticket.orgId, ...auditActor, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
+  await createAuditLogAsync({ orgId: targetOrgId, ...auditActor, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   return updated;
 }
 

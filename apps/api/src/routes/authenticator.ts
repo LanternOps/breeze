@@ -23,6 +23,7 @@ import {
   ATTEMPT_TTL_SECONDS,
   consumeRegistrationAttempt,
   issueRegistrationAttempt,
+  androidKeyGenChallenge,
   registrationTranscript,
   verifyPlatformAttestation,
 } from '../services/authenticatorAttestation';
@@ -598,6 +599,11 @@ authenticatorRoutes.post(
     const attested = await verifyPlatformAttestation({
       attestation: body.attestation,
       transcript,
+      keyGenChallenge: androidKeyGenChallenge({
+        attemptId: attempt.attemptId,
+        challenge: attempt.challenge,
+        publicKeyAlg: body.publicKeyAlg,
+      }),
       publicKeySpkiB64: body.publicKey,
       // The declared algorithm is inside the signed transcript and the PoP
       // above already verified under it, so by this point it is a proven

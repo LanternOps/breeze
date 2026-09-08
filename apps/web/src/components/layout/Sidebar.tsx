@@ -66,6 +66,7 @@ import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
@@ -166,6 +167,17 @@ type NavItem = {
   // the permission set is still loading, the item stays hidden. Typed as the
   // exact-pair union so a typo'd resource/action fails to compile.
   requiredPermission?: PermissionGrant;
+  // Hidden unless the partner runs the named product module. Today the only
+  // module is Service Management (the Breeze service desk + billing), whose
+  // mode lives on `partners.service_management_mode` and reaches the client via
+  // the store. `native` shows the module; `off` and `external` both hide these
+  // native surfaces (external's read-only PSA list is a follow-on feature).
+  //
+  // NOT authorization — a product module switch. Every route behind these items
+  // still enforces its own permissions server-side, and the store's default
+  // (`native`) means a failed mode fetch shows the module rather than hiding
+  // one the partner pays for.
+  requiresModule?: 'service_management';
 };
 
 // ---------------------------------------------------------------------------
@@ -178,10 +190,13 @@ type NavItem = {
 // Dashboard is ungated — it's the always-available landing page.
 export const topLevelNav: NavItem[] = [
   { name: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: LayoutDashboard },
+  // #5075 W04 — the customer record is the MSP's primary object, so it is
+  // top-level rather than buried under Settings (where it used to live, and no
+  // longer does: exactly one Organizations entry exists in the nav).
+  { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
   { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
-  { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
@@ -198,6 +213,10 @@ interface NavSection {
   labelKey?: string;
   icon: React.ComponentType<{ className?: string }>;
   items: NavItem[];
+  // Section-level module gate — hides the header and every item at once, so a
+  // section does not have to repeat `requiresModule` on each entry (and cannot
+  // half-hide if a later item forgets it).
+  requiresModule?: 'service_management';
 }
 
 // Exported for structural nav tests (see Sidebar.nav.test.tsx).
@@ -274,15 +293,34 @@ export const navSections: NavSection[] = [
     ],
   },
   {
+    // #5075 W04 — the service desk gets its own section instead of a top-level
+    // Tickets link plus a Timesheets entry stranded under Billing: the two are
+    // one workflow (log time against a ticket), and grouping them lets a single
+    // module gate withdraw both.
+    id: 'service-desk',
+    label: 'Service Desk',
+    labelKey: 'nav.sectionServiceDesk',
+    icon: Ticket,
+    requiresModule: 'service_management',
+    items: [
+      { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
+    ],
+  },
+  {
     id: 'billing',
     label: 'Billing',
     labelKey: 'nav.sectionBilling',
     icon: Receipt,
+    // Customer billing is the other half of the Service Management module: with
+    // the module off, Breeze is RMM only and quotes/invoices/contracts have no
+    // system of record here. (Partner Settings → Billing, the MSP's OWN
+    // subscription, stays visible — it is not part of the module.)
+    requiresModule: 'service_management',
     items: [
       { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
       { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
-      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
     ],
   },
@@ -309,7 +347,6 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
       { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
-      { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
@@ -516,6 +553,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  // #5075 W04 — persisted, so the first paint after a reload already has the
+  // right sections; the /orgs/partners/me effect below refreshes it.
+  const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -557,13 +597,28 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{ name?: string; aiForOfficeEnabled?: boolean; settings?: { branding?: { logoUrl?: string } } }>;
+        return r.json() as Promise<{
+          name?: string;
+          aiForOfficeEnabled?: boolean;
+          serviceManagementMode?: ServiceManagementMode;
+          settings?: { branding?: { logoUrl?: string } };
+        }>;
       })
       .then((data) => {
         if (cancelled || !data) return;
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
         setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
+        // Fail OPEN on anything unexpected: an older API that does not send the
+        // field, or a value this build does not know, falls back to `native`
+        // rather than withdrawing a module the partner is paying for. A failed
+        // request skips this branch entirely and leaves the persisted value in
+        // place — see the .catch below.
+        useOrgStore.getState().setServiceManagementMode(
+          SERVICE_MANAGEMENT_MODES.includes(data.serviceManagementMode as ServiceManagementMode)
+            ? (data.serviceManagementMode as ServiceManagementMode)
+            : 'native',
+        );
       })
       .catch((err) => {
         console.warn('[Sidebar] Failed to fetch partner branding:', err);
@@ -692,6 +747,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
   const isNavItemVisible = (item: NavItem): boolean => {
+    if (item.requiresModule === 'service_management' && serviceManagementMode !== 'native') return false;
     if (item.requiresAiForOffice && !aiForOfficeEnabled) return false;
     if (item.platformAdminOnly && !isPlatformAdmin) return false;
     if (item.partnerScopeOnly) {
@@ -759,6 +815,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     // Hide the whole section (header + divider) when every item is filtered out
     // by permissions/scope/flags — otherwise a permission-limited user sees an
     // empty group header that expands to nothing (#1629 follow-up).
+    // Section-level module gate first: a hidden module takes the header and the
+    // divider with it, not just the links.
+    if (section.requiresModule === 'service_management' && serviceManagementMode !== 'native') return null;
     if (!section.items.some(isNavItemVisible)) return null;
 
     const expanded = isSectionExpanded(section.id);

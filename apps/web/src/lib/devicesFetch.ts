@@ -238,6 +238,64 @@ export async function fetchAllNetworkDevices(
   return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
 }
 
+/**
+ * Manual-asset arm fetcher for the unified Devices list (#4622 W04). Walks
+ * the offset-paginated `/devices/manual` endpoint (hand-entered inventory
+ * rows with no network identity) and returns every accessible row.
+ *
+ * Deliberately mirrors {@link fetchAllNetworkDevices} byte-for-byte in shape:
+ * same offset-pagination contract (`GET /devices/manual` mirrors
+ * `listNetworkDevicesSchema`), same best-effort 404 degrade for an older API
+ * without the route. The manual arm carries NO feature flag — it is
+ * independent of `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` by design — so the
+ * caller must fetch it unconditionally, unlike the network arm.
+ */
+export async function fetchAllManualAssets(
+  options: FetchAllDevicesOptions = {},
+): Promise<DevicesListResponse> {
+  const pageLimit = options.pageLimit ?? PAGE_LIMIT;
+  const fetcher = options.fetcher ?? fetchWithAuth;
+  const signal = options.signal;
+
+  if (signal?.aborted) throw signalAbortError(signal);
+
+  const accumulated: Record<string, unknown>[] = [];
+  let total: number | undefined;
+
+  for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+    if (signal?.aborted) throw signalAbortError(signal);
+
+    const params = new URLSearchParams();
+    params.set('limit', String(pageLimit));
+    params.set('page', String(pageNum + 1));
+    if (pageNum === 0) params.set('includeTotal', 'true');
+
+    const resp = await fetcher(`/devices/manual?${params.toString()}`);
+    // Old API (no manual arm) — degrade gracefully to "no manual assets".
+    if (resp.status === 404) {
+      return { data: accumulated, total: accumulated.length, pagesWalked: pageNum + 1 };
+    }
+    if (!resp.ok) throw resp;
+
+    const body = (await resp.json()) as {
+      data?: Record<string, unknown>[];
+      pagination?: { total?: number; page?: number; limit?: number };
+    };
+    const page = body.data ?? [];
+    accumulated.push(...page);
+
+    if (pageNum === 0 && typeof body.pagination?.total === 'number') {
+      total = body.pagination.total;
+    }
+
+    if (page.length < pageLimit) {
+      return { data: accumulated, total, pagesWalked: pageNum + 1 };
+    }
+  }
+
+  return { data: accumulated, total: undefined, pagesWalked: MAX_PAGES };
+}
+
 /** Build the standard DOMException-shaped AbortError so callers can do
  *  `catch (err) { if (err.name === 'AbortError') return; }` against any
  *  abort source (DOM-native fetch, our walker, any other library). When

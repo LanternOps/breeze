@@ -174,6 +174,27 @@ describe('manage_tickets tool', () => {
     expect(serviceMocks.createTicket).not.toHaveBeenCalled();
   });
 
+  // #5075 W04 — Service Management 'off' refuses new-ticket creation.
+  // ticketService.createTicket rejects with a TicketServiceError(409,
+  // 'service_management_off'); the create action must convert that to JSON
+  // (like every other mutating action here) rather than let it escape as an
+  // unhandled rejection out of the AI tool-call loop.
+  it('create returns error JSON (not throws) when TicketServiceError is raised (service_management_off)', async () => {
+    const { TicketServiceError: TSE } = await vi.importActual<typeof import('./ticketService')>('./ticketService');
+    serviceMocks.createTicket.mockRejectedValue(
+      new TSE('Service Management is turned off for this partner', 409, 'service_management_off')
+    );
+
+    const out = await getTool().handler(
+      { action: 'create', orgId: 'o-1', subject: 'Disk full' },
+      auth
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty('error', 'Service Management is turned off for this partner');
+    expect(parsed).toHaveProperty('code', 'service_management_off');
+  });
+
   // ── list ──────────────────────────────────────────────────────────────────
 
   it('list returns tickets array', async () => {

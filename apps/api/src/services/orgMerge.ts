@@ -872,11 +872,36 @@ export async function runPostPassFixups(
      WHERE m.partner_id = ${uuid(partnerId)}
        AND m.breeze_entity_type = 'invoice'
        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = m.breeze_entity_id)`);
+  //
+  // The payment sweep EXCLUDES a row that still owes QuickBooks a delete
+  // (`pending_op = 'delete'`, Phase D2). Such a row is orphaned by
+  // construction — the void or full refund that flipped it deleted the
+  // `invoice_payments` row in the same transaction — so an unqualified sweep
+  // hit every in-flight owed delete for the WHOLE partner, not just this
+  // merge's, and discarded a QuickBooks removal Breeze had promised. Nothing
+  // could recreate them either: the `entity_partner_guard` trigger refuses an
+  // INSERT whose payment row is gone. `deletePaymentInAccounting` removes them
+  // itself once QuickBooks confirms, or drops them loudly after
+  // PAYMENT_DELETE_UNRESOLVED_GRACE_MS, so they are bounded in time; the count
+  // left behind is logged.
   const orphanPaymentMappingsDropped = await exec(sql`
     DELETE FROM accounting_entity_mappings m
      WHERE m.partner_id = ${uuid(partnerId)}
        AND m.breeze_entity_type = 'payment'
+       AND m.pending_op IS DISTINCT FROM 'delete'
        AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
+  const owedPaymentDeletesKept = await scalarCount(sql`
+    SELECT count(*)::int AS n FROM accounting_entity_mappings m
+     WHERE m.partner_id = ${uuid(partnerId)}
+       AND m.breeze_entity_type = 'payment'
+       AND m.pending_op = 'delete'
+       AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
+  if (owedPaymentDeletesKept > 0) {
+    console.warn(
+      `[orgMerge] partner=${partnerId}: kept ${owedPaymentDeletesKept} accounting_entity_mappings row(s) `
+      + 'that still owe QuickBooks a payment delete; the delete worker removes them once QuickBooks confirms',
+    );
+  }
 
   return {
     moved: partnerUsersFixed + assignmentsMoved,
@@ -1370,6 +1395,12 @@ export async function previewOrgMerge(
       if (expiredKeys > 0) {
         notes.push(
           `this merge will EXPIRE ${expiredKeys} still-valid enrollment key belonging to the merged-away organization — pending installers using one will stop enrolling; mint a replacement under the surviving organization`,
+        );
+      }
+      const fencedTasks = await scalarCount(CUSTOM_WOULD_REVOKE_COUNTS.ai_operator_tasks!(loserOrgId));
+      if (fencedTasks > 0) {
+        notes.push(
+          `this merge will STOP ${fencedTasks} live AI Operator task belonging to the merged-away organization — its agents repoint to the surviving organization while the task record stays behind as source-org history, so the Operator fences the task (state -> stopping) rather than let it keep acting under a dead tenant; re-delegate anything still needed under the surviving organization`,
         );
       }
 

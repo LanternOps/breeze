@@ -707,6 +707,8 @@
     "iot": "IoT",
     "camera": "Câmera",
     "nas": "NAS",
+    "website": "Site",
+    "service": "Serviço",
     "unknown": "Desconhecido",
     "patchPanel": "Painel de conexão",
     "other": "Outro"
