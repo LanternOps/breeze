@@ -1372,6 +1372,12 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   it('bulk toast reports how many of the sent commands were queued for offline devices', async () => {
     const { sendBulkCommand } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    // No advanced filter active — this test targets the whole default fleet
+    // (DEV_1/2/3), so canActOnDevices' filter re-check (RMM-QA-153) must not
+    // reject DEV_2 against the module default's active filter, which only
+    // matches DEV_1/DEV_3.
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
     vi.mocked(sendBulkCommand).mockResolvedValue({
       commands: [{}, {}, {}],
       failed: [],
@@ -1392,6 +1398,10 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   it('bulk toast omits the queued-offline clause when nothing was queued', async () => {
     const { sendBulkCommand } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    // No advanced filter active — see the sibling "reports how many" test
+    // above for why this must not inherit the module default's active filter.
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
     vi.mocked(sendBulkCommand).mockResolvedValue({
       commands: [{}, {}, {}],
       failed: [],
@@ -1403,10 +1413,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     await screen.findByTestId('device-list');
     fireEvent.click(screen.getByTestId('bulk-reboot'));
 
-    await waitFor(() => {
-      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /queued for offline devices/i.test(m))).toBe(false);
-    });
+    await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+    expect(messages.some(m => /queued for offline devices/i.test(m))).toBe(false);
   });
 
   it('refuses outright when EVERY selected device is decommissioned', async () => {
@@ -2982,6 +2991,25 @@ describe('DevicesPage — class segment badges tell the truth under a filter', (
     expect(notice.textContent).toMatch(/2 network devices hidden/);
     expect(notice.textContent).toMatch(/Needs Patches/);
     await waitFor(() => expect(screen.getByTestId('device-class-segment-network')).toHaveTextContent('0'));
+  });
+});
+
+
+describe('DevicesPage unresolved filter dispatch boundary (RMM-QA-153)', () => {
+  it('refuses bulk dispatch from a stale child selection while loading and after 503', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    let finish!: (response: Response) => void;
+    vi.mocked(fetchWithAuth).mockImplementation(url => url.startsWith('/filters/preview')
+      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(jsonResponse({ data: [] })));
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(screen.getByTestId('device-list')).toHaveAttribute('data-device-count', '3');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    expect(sendBulkCommand).not.toHaveBeenCalled();
+    await act(async () => finish({ ok: false, status: 503 } as Response));
+    expect(screen.getByTestId('device-list')).toHaveAttribute('data-filter-ids', '');
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    expect(sendBulkCommand).not.toHaveBeenCalled();
   });
 });
 
