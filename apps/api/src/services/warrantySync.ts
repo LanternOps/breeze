@@ -1,6 +1,6 @@
 import { db } from '../db';
-import { deviceWarranty, deviceHardware, devices } from '../db/schema';
-import { eq, and, lt, isNull, or, sql, asc } from 'drizzle-orm';
+import { deviceWarranty, deviceHardware, devices, manualAssets } from '../db/schema';
+import { eq, and, lt, isNull, or, sql } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
 import type { WarrantyLookupResult } from './warrantyProviders';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
@@ -102,33 +102,72 @@ export async function syncWarrantyForDevice(
   // that never arrives.
   if (device.isVirtual && !options.force) return;
 
-  const provider = getProviderForManufacturer(hw.manufacturer);
-  if (!provider) {
-    // Check if we already have agent-reported warranty data for this device.
-    // If so, don't overwrite it with an error — just skip.
-    const [existing] = await db
-      .select({ dataSource: deviceWarranty.dataSource, status: deviceWarranty.status })
-      .from(deviceWarranty)
-      .where(eq(deviceWarranty.deviceId, deviceId))
-      .limit(1);
+  await syncWarrantyForSubject({
+    orgId: device.orgId,
+    manufacturer: hw.manufacturer,
+    serialNumber: hw.serialNumber,
+    subject: { kind: 'device', deviceId },
+  });
+}
 
-    if (existing?.dataSource === 'agent_plist') {
-      // Agent-reported data exists — preserve it regardless of status, just update nextSyncAt
-      const now = new Date();
-      await db
-        .update(deviceWarranty)
-        .set({
-          lastSyncAt: now,
-          lastSyncError: null,
-          nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
-          updatedAt: now,
-        })
-        .where(eq(deviceWarranty.deviceId, deviceId));
-      return;
+/**
+ * #4622 — the subject a warranty row describes. `device_warranty` carries a
+ * `device_id` XOR `manual_asset_id` binding (device_warranty_one_subject_chk);
+ * everything downstream of provider resolution is identical for both.
+ */
+export type WarrantySubject =
+  | { kind: 'device'; deviceId: string }
+  | { kind: 'manualAsset'; manualAssetId: string };
+
+/**
+ * Subject-agnostic warranty sync: provider resolution, vendor lookup, status
+ * computation and the upsert.
+ *
+ * The device-only rules — the hardware lookup and the ephemeral/virtual guards
+ * — stay in `syncWarrantyForDevice` above and must NOT migrate down here: they
+ * are ownership/efficiency rules about agent devices, not about warranty data.
+ */
+export async function syncWarrantyForSubject(input: {
+  orgId: string;
+  manufacturer: string;
+  serialNumber: string;
+  subject: WarrantySubject;
+}): Promise<void> {
+  const { orgId, manufacturer, serialNumber, subject } = input;
+  const label = subject.kind === 'device'
+    ? `device ${subject.deviceId}`
+    : `manual asset ${subject.manualAssetId}`;
+
+  const provider = getProviderForManufacturer(manufacturer);
+  if (!provider) {
+    // Check if we already have agent-reported warranty data for this subject.
+    // If so, don't overwrite it with an error — just skip. Only an agent writes
+    // 'agent_plist', so only a device subject can ever carry it.
+    if (subject.kind === 'device') {
+      const [existing] = await db
+        .select({ dataSource: deviceWarranty.dataSource, status: deviceWarranty.status })
+        .from(deviceWarranty)
+        .where(eq(deviceWarranty.deviceId, subject.deviceId))
+        .limit(1);
+
+      if (existing?.dataSource === 'agent_plist') {
+        // Agent-reported data exists — preserve it regardless of status, just update nextSyncAt
+        const now = new Date();
+        await db
+          .update(deviceWarranty)
+          .set({
+            lastSyncAt: now,
+            lastSyncError: null,
+            nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
+            updatedAt: now,
+          })
+          .where(eq(deviceWarranty.deviceId, subject.deviceId));
+        return;
+      }
     }
 
     // No provider and no agent data — upsert as unknown (not an error)
-    await upsertWarranty(deviceId, device.orgId, hw.manufacturer, hw.serialNumber, {
+    await upsertWarranty(subject, orgId, manufacturer, serialNumber, {
       found: false,
       entitlements: [],
       warrantyStartDate: null,
@@ -138,19 +177,19 @@ export async function syncWarrantyForDevice(
   }
 
   try {
-    const results = await provider.lookup([hw.serialNumber]);
-    const result = results.get(hw.serialNumber) ?? {
+    const results = await provider.lookup([serialNumber]);
+    const result = results.get(serialNumber) ?? {
       found: false,
       entitlements: [],
       warrantyStartDate: null,
       warrantyEndDate: null,
     };
 
-    await upsertWarranty(deviceId, device.orgId, hw.manufacturer, hw.serialNumber, result);
+    await upsertWarranty(subject, orgId, manufacturer, serialNumber, result);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[WarrantySync] Error syncing device ${deviceId}:`, errorMsg);
-    await upsertWarranty(deviceId, device.orgId, hw.manufacturer, hw.serialNumber, {
+    console.error(`[WarrantySync] Error syncing ${label}:`, errorMsg);
+    await upsertWarranty(subject, orgId, manufacturer, serialNumber, {
       found: false,
       entitlements: [],
       warrantyStartDate: null,
@@ -159,16 +198,53 @@ export async function syncWarrantyForDevice(
     });
   }
 
-  // Evaluate warranty alerts after sync
-  try {
-    await evaluateWarrantyAlerts(deviceId);
-  } catch (err) {
-    console.error(`[WarrantySync] Alert evaluation error for device ${deviceId}:`, err instanceof Error ? err.message : err);
+  // Evaluate warranty alerts after sync.
+  //
+  // DELIBERATELY device-only. Manual-asset warranty is *displayed*, never
+  // alerted on, in v1 (#4622): the alert evaluator is device-shaped end to end
+  // (device alerts, device dedupe keys, device notification routing), and a
+  // hand-entered asset has no agent to remediate against. A stated decision,
+  // not an oversight — do not "fix" it by widening the call.
+  if (subject.kind === 'device') {
+    try {
+      await evaluateWarrantyAlerts(subject.deviceId);
+    } catch (err) {
+      console.error(`[WarrantySync] Alert evaluation error for device ${subject.deviceId}:`, err instanceof Error ? err.message : err);
+    }
   }
 }
 
+/**
+ * Sync a hand-entered asset (#4622). Eligible only when the technician supplied
+ * BOTH a manufacturer and a serial — a vendor lookup missing either is a
+ * guaranteed miss that burns vendor quota.
+ */
+export async function syncWarrantyForManualAsset(manualAssetId: string): Promise<void> {
+  const [asset] = await db
+    .select({
+      orgId: manualAssets.orgId,
+      manufacturer: manualAssets.manufacturer,
+      serialNumber: manualAssets.serialNumber,
+    })
+    .from(manualAssets)
+    .where(eq(manualAssets.id, manualAssetId))
+    .limit(1);
+
+  if (!asset?.manufacturer || !asset?.serialNumber) {
+    console.log(`[WarrantySync] No serial/manufacturer for manual asset ${manualAssetId}, skipping`);
+    return;
+  }
+
+  await syncWarrantyForSubject({
+    orgId: asset.orgId,
+    manufacturer: asset.manufacturer,
+    serialNumber: asset.serialNumber,
+    subject: { kind: 'manualAsset', manualAssetId },
+  });
+}
+
 async function upsertWarranty(
-  deviceId: string,
+  subject: WarrantySubject,
   orgId: string,
   manufacturer: string,
   serialNumber: string,
@@ -181,10 +257,28 @@ async function upsertWarranty(
   const now = new Date();
   const nextSyncAt = new Date(now.getTime() + SYNC_CADENCE_MS);
 
+  // Exactly one subject column is non-null — device_warranty_one_subject_chk
+  // rejects any other combination with 23514, and the two partial unique
+  // indexes give each kind its own conflict target.
+  const deviceId = subject.kind === 'device' ? subject.deviceId : null;
+  const manualAssetId = subject.kind === 'manualAsset' ? subject.manualAssetId : null;
+  const conflictTarget = subject.kind === 'device'
+    ? deviceWarranty.deviceId
+    : deviceWarranty.manualAssetId;
+  // Both unique indexes are PARTIAL now. Postgres can only infer a partial
+  // unique index as the ON CONFLICT arbiter when the statement repeats its
+  // predicate verbatim — without `targetWhere` this raises 42P10 ("no unique
+  // or exclusion constraint matching the ON CONFLICT specification") for
+  // EVERY warranty upsert, device rows included.
+  const conflictWhere = subject.kind === 'device'
+    ? sql`${deviceWarranty.deviceId} IS NOT NULL`
+    : sql`${deviceWarranty.manualAssetId} IS NOT NULL`;
+
   await db
     .insert(deviceWarranty)
     .values({
       deviceId,
+      manualAssetId,
       orgId,
       manufacturer: normalizeManufacturer(manufacturer),
       serialNumber,
@@ -198,7 +292,8 @@ async function upsertWarranty(
       nextSyncAt,
     })
     .onConflictDoUpdate({
-      target: deviceWarranty.deviceId,
+      target: conflictTarget,
+      targetWhere: conflictWhere,
       set: {
         orgId,
         manufacturer: normalizeManufacturer(manufacturer),
@@ -281,6 +376,9 @@ export async function upsertAgentWarranty(
     .insert(deviceWarranty)
     .values({
       deviceId,
+      // #4622 — explicit: the agent path only ever describes a device subject,
+      // and device_warranty_one_subject_chk requires the other side to be NULL.
+      manualAssetId: null,
       orgId,
       manufacturer: normalizeManufacturer(data.manufacturer),
       serialNumber: data.serialNumber,
@@ -296,6 +394,9 @@ export async function upsertAgentWarranty(
     })
     .onConflictDoUpdate({
       target: deviceWarranty.deviceId,
+      // device_warranty_device_id_idx is partial since #4622 W03 — the
+      // predicate must be repeated or Postgres cannot infer the arbiter (42P10).
+      targetWhere: sql`${deviceWarranty.deviceId} IS NOT NULL`,
       set: {
         orgId,
         manufacturer: normalizeManufacturer(data.manufacturer),
@@ -321,21 +422,40 @@ export async function upsertAgentWarranty(
   }
 }
 
-export async function syncWarrantyBatch(deviceIds: string[]): Promise<void> {
-  for (const deviceId of deviceIds) {
+export async function syncWarrantyBatch(subjects: WarrantySubject[]): Promise<void> {
+  for (const subject of subjects) {
     try {
-      await syncWarrantyForDevice(deviceId);
+      if (subject.kind === 'device') {
+        await syncWarrantyForDevice(subject.deviceId);
+      } else {
+        await syncWarrantyForManualAsset(subject.manualAssetId);
+      }
     } catch (err) {
-      console.error(`[WarrantySync] Batch sync error for device ${deviceId}:`, err instanceof Error ? err.message : err);
+      const label = subject.kind === 'device'
+        ? `device ${subject.deviceId}`
+        : `manual asset ${subject.manualAssetId}`;
+      console.error(`[WarrantySync] Batch sync error for ${label}:`, err instanceof Error ? err.message : err);
     }
   }
 }
 
-export async function getDevicesNeedingWarrantySync(limit = 50): Promise<string[]> {
+/**
+ * The 7-day fleet sweep, now over both subject kinds (#4622).
+ *
+ * Two queries rather than one `UNION ALL`: the arms join different tables and
+ * project different key columns, and merging in TypeScript keeps the *global*
+ * limit honest — each arm is fetched up to `limit`, the union is ordered by how
+ * overdue each subject is, and the slice is taken across both. A per-arm limit
+ * would let a large device fleet starve manual assets forever.
+ *
+ * A NULL `nextSyncAt` means "no warranty row yet", which is the most overdue
+ * state there is, so it sorts first.
+ */
+export async function getDevicesNeedingWarrantySync(limit = 50): Promise<WarrantySubject[]> {
   const now = new Date();
 
-  const rows = await db
-    .select({ deviceId: devices.id })
+  const deviceRows = await db
+    .select({ deviceId: devices.id, nextSyncAt: deviceWarranty.nextSyncAt })
     .from(devices)
     .leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -355,8 +475,50 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<string[
         )
       )
     )
-    .orderBy(asc(deviceWarranty.nextSyncAt))
+    // NULLS FIRST is explicit: Postgres defaults ASC to NULLS LAST, which would
+    // push "never synced yet" — the most overdue state there is — to the END of
+    // the fetched page, so a backlog of already-due rows would starve brand-new
+    // subjects forever. The JS re-sort below cannot fix what the page never
+    // returned.
+    .orderBy(sql`${deviceWarranty.nextSyncAt} ASC NULLS FIRST`)
     .limit(limit);
 
-  return rows.map((r) => r.deviceId);
+  const manualRows = await db
+    .select({ manualAssetId: manualAssets.id, nextSyncAt: deviceWarranty.nextSyncAt })
+    .from(manualAssets)
+    .leftJoin(deviceWarranty, eq(manualAssets.id, deviceWarranty.manualAssetId))
+    .where(
+      and(
+        // A vendor lookup needs both, and a retired asset is not worth quota.
+        sql`${manualAssets.manufacturer} IS NOT NULL`,
+        sql`${manualAssets.serialNumber} IS NOT NULL`,
+        isNull(manualAssets.retiredAt),
+        or(
+          isNull(deviceWarranty.id),
+          lt(deviceWarranty.nextSyncAt, now)
+        )
+      )
+    )
+    .orderBy(sql`${deviceWarranty.nextSyncAt} ASC NULLS FIRST`)
+    .limit(limit);
+
+  type Candidate = { subject: WarrantySubject; nextSyncAt: Date | null };
+  const candidates: Candidate[] = [
+    ...deviceRows.map((r) => ({
+      subject: { kind: 'device', deviceId: r.deviceId } as WarrantySubject,
+      nextSyncAt: r.nextSyncAt,
+    })),
+    ...manualRows.map((r) => ({
+      subject: { kind: 'manualAsset', manualAssetId: r.manualAssetId } as WarrantySubject,
+      nextSyncAt: r.nextSyncAt,
+    })),
+  ];
+
+  candidates.sort((a, b) => {
+    const at = a.nextSyncAt ? a.nextSyncAt.getTime() : Number.NEGATIVE_INFINITY;
+    const bt = b.nextSyncAt ? b.nextSyncAt.getTime() : Number.NEGATIVE_INFINITY;
+    return at - bt;
+  });
+
+  return candidates.slice(0, limit).map((c) => c.subject);
 }
