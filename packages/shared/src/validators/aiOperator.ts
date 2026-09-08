@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AI_OPERATOR_TASK_STATES } from '../types/aiOperator';
 
 /**
  * AI Operator task context carried into `createActionIntent` (#5205 W04,
@@ -37,7 +38,6 @@ export const actionIntentTaskContextSchema = z.object({
 export type ActionIntentTaskContext = z.infer<typeof actionIntentTaskContextSchema>;
 
 // ---- W07 (#5254): read-side list query ----
-import { AI_OPERATOR_TASK_STATES } from '../types/aiOperator';
 
 /**
  * Query validator for `GET /ai/operator/tasks` (#5205 W07). Mirrors the
