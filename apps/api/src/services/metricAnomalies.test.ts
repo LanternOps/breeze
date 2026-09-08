@@ -5,11 +5,17 @@ const {
   shouldProduceMlOutputMock,
   runOutsideDbContextMock,
   withSystemDbAccessContextMock,
+  captureMessageMock,
 } = vi.hoisted(() => ({
   executeMock: vi.fn(),
   shouldProduceMlOutputMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(),
+  captureMessageMock: vi.fn(),
+}));
+
+vi.mock('./sentry', () => ({
+  captureMessage: captureMessageMock,
 }));
 
 vi.mock('../db', () => ({
@@ -25,6 +31,7 @@ vi.mock('./mlFeatureFlags', () => ({
 }));
 
 import {
+  __resetMetricAnomalyStallTracking,
   METRIC_ANOMALY_LOCK_NAMESPACE,
   METRIC_ANOMALY_LOCK_TIMEOUT_MS,
   METRIC_ANOMALY_STATEMENT_TIMEOUT_MS,
@@ -57,6 +64,8 @@ function detectorStatements(): string[] {
 
 /** Reset the db mock to "lock acquired, no prior timeout to report". */
 function resetDbMocks(): void {
+  __resetMetricAnomalyStallTracking();
+  captureMessageMock.mockReset();
   executeMock.mockReset();
   executeMock.mockResolvedValue([{ acquired: true }]);
   runOutsideDbContextMock.mockReset();
@@ -490,5 +499,145 @@ describe('metric anomaly overlap guard (#5283)', () => {
     // detection fleet-wide.
     expect(withSystemDbAccessContextMock.mock.calls.map((call) => call[1]))
       .toContain('metricAnomalies.flags');
+  });
+});
+
+// Review follow-ups on #5283: the outcomes that only arise when stages
+// INTERACT — a timeout followed by lock contention, and the shadow stage
+// losing the lock while the main stages succeeded — plus the escalation that
+// stops a permanently-skipping stage from being an invisible outage.
+describe('metric anomaly skip reporting and stall escalation (#5283 review)', () => {
+  const orgId = '11111111-1111-1111-1111-111111111111';
+  const range = { from: new Date('2026-06-18T12:00:00.000Z'), to: new Date('2026-06-18T12:15:00.000Z') };
+
+  beforeEach(() => {
+    resetDbMocks();
+    shouldProduceMlOutputMock.mockReset();
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
+  });
+
+  /**
+   * Drive per-stage outcomes by call order, cycling so the SAME programme
+   * repeats for each successive `detectMetricAnomaliesRange` call — which is
+   * what the consecutive-skip tests need. (A non-cycling counter runs off the
+   * end of the array on run 2 and every stage silently succeeds, which is a
+   * vacuous green.)
+   */
+  function programDetectors(outcomes: Array<'ok' | string>): void {
+    let n = 0;
+    executeMock.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      if (text.includes('pg_try_advisory_xact_lock')) {
+        return [{ acquired: outcomes[n % outcomes.length] !== 'locked' }];
+      }
+      if (text.includes('INSERT INTO')) {
+        const outcome = outcomes[n % outcomes.length];
+        n += 1;
+        if (outcome && outcome !== 'ok') throw pgError(outcome);
+        return [];
+      }
+      return [{ acquired: true }];
+    });
+  }
+
+  it('reports a timeout ahead of later lock contention, so the actionable failure is not masked', async () => {
+    // baseline times out; growth-trend then loses the org lock to a racing
+    // backfill. Reporting this as a benign `locked` would hide the timeout —
+    // the one an operator actually has to act on.
+    let detectorIndex = 0;
+    executeMock.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      if (text.includes('pg_try_advisory_xact_lock')) {
+        return [{ acquired: detectorIndex < 1 }];
+      }
+      if (text.includes('INSERT INTO')) {
+        detectorIndex += 1;
+        throw pgError('57014');
+      }
+      return [{ acquired: true }];
+    });
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(result.stages.map((stage) => `${stage.stage}:${stage.outcome}`)).toEqual([
+      'baseline:timeout',
+      'growth-trend:locked',
+    ]);
+    expect(result).toMatchObject({ skipped: true, skippedReason: 'timeout', statements: 0 });
+  });
+
+  it('does not mark the whole run skipped when only the v1 shadow stage loses the lock', async () => {
+    shouldProduceMlOutputMock.mockResolvedValue(true);
+    let detectorIndex = 0;
+    executeMock.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      // Refuse the lock only for the 5th stage (v1-shadow).
+      if (text.includes('pg_try_advisory_xact_lock')) return [{ acquired: detectorIndex < 4 }];
+      if (text.includes('INSERT INTO')) {
+        detectorIndex += 1;
+        return [];
+      }
+      return [{ acquired: true }];
+    });
+
+    const result = await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(result).toMatchObject({
+      statements: 4,
+      v1ShadowStatements: 0,
+      v1ShadowSkipped: true,
+      skipped: false,
+    });
+    // The four main stages committed, so no skip reason may leak through.
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.stages.map((stage) => stage.outcome)).toEqual([
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+      'locked',
+    ]);
+  });
+
+  it('escalates to Sentry once a stage has skipped three consecutive runs, tagged with org, stage and SQLSTATE', async () => {
+    programDetectors(['57014', 'ok', 'ok', 'ok']);
+
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    // One skip is expected and self-healing — it must NOT page anyone.
+    expect(captureMessageMock).not.toHaveBeenCalled();
+
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock).toHaveBeenCalledWith(
+      expect.stringContaining('3 consecutive'),
+      expect.objectContaining({
+        eventCode: 'metric_anomaly_stage_stalled',
+        tags: expect.objectContaining({
+          org_id: orgId,
+          metric_anomaly_stage: 'baseline',
+          // Separates an administrative pg_cancel_backend from a real bound trip.
+          pg_code: '57014',
+        }),
+      }),
+    );
+  });
+
+  it('clears the stall counter when a stage recovers, so old skips cannot accumulate into a false alert', async () => {
+    programDetectors(['57014', 'ok', 'ok', 'ok']);
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    // A healthy run in between resets the streak...
+    programDetectors(['ok', 'ok', 'ok', 'ok']);
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    // ...so two further skips are still below the threshold.
+    programDetectors(['57014', 'ok', 'ok', 'ok']);
+    await detectMetricAnomaliesRange({ orgId, ...range });
+    await detectMetricAnomaliesRange({ orgId, ...range });
+
+    expect(captureMessageMock).not.toHaveBeenCalled();
   });
 });

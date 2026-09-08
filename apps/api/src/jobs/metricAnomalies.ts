@@ -35,7 +35,15 @@ const RAW_BUCKET_MINUTES = 5;
  * tick will pick it up".
  */
 const DEFAULT_LOOKBACK_MINUTES = SCAN_INTERVAL_MINUTES + RAW_BUCKET_MINUTES;
-const JOB_REUSE_STATES = new Set(['waiting', 'delayed', 'active']);
+/**
+ * - `queued`             — a new job was actually persisted.
+ * - `reused`             — a genuinely in-flight job already covers this org;
+ *                          this tick's window is NOT covered.
+ * - `stale-remove-failed`— a spent record could not be removed, so BullMQ would
+ *                          silently discard the add. Also uncovered, and a
+ *                          fault rather than an expected outcome.
+ */
+type EnqueueOutcome = 'queued' | 'reused' | 'stale-remove-failed';
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
@@ -119,13 +127,15 @@ async function findAnomalyOrgRows(): Promise<Array<{ orgId: string }>> {
     .groupBy(devices.orgId);
 }
 
-async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number; reused: number }> {
+async function processScanOrgs(
+  data: ScanOrgsJobData,
+): Promise<{ queued: number; reused: number; staleRemoveFailed: number }> {
   const orgRows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() => findAnomalyOrgRows())
   );
 
   if (orgRows.length === 0) {
-    return { queued: 0, reused: 0 };
+    return { queued: 0, reused: 0, staleRemoveFailed: 0 };
   }
 
   const scannedAt = new Date();
@@ -141,18 +151,17 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number;
   // cadence.
   let queued = 0;
   let reused = 0;
+  let staleRemoveFailed = 0;
   for (const row of orgRows) {
-    const result = await enqueueDetectOrgRange({
+    const { outcome } = await enqueueDetectOrgRange({
       jobId: buildScheduledMetricAnomalyJobId(row.orgId),
       orgId: row.orgId,
       from,
       to,
     });
-    if (result.reused) {
-      reused += 1;
-    } else {
-      queued += 1;
-    }
+    if (outcome === 'reused') reused += 1;
+    else if (outcome === 'stale-remove-failed') staleRemoveFailed += 1;
+    else queued += 1;
   }
 
   if (reused > 0) {
@@ -164,8 +173,17 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number;
         + `(${queued} newly queued) — those orgs' windows are not covered by this tick`,
     );
   }
+  if (staleRemoveFailed > 0) {
+    // Distinct from `reused`: nothing is running for these orgs AND nothing was
+    // scheduled. Counted and reported separately so it can never be read as the
+    // benign "a run is already in flight" case.
+    console.error(
+      `[MetricAnomaliesWorker] scan-orgs could not replace ${staleRemoveFailed} spent job record(s) — `
+        + 'those orgs were NOT scheduled this tick and will retry next tick',
+    );
+  }
 
-  return { queued, reused };
+  return { queued, reused, staleRemoveFailed };
 }
 
 async function processDetectOrgRange(data: DetectOrgRangeJobData): Promise<MetricAnomalyResult> {
@@ -264,18 +282,41 @@ async function enqueueDetectOrgRange(options: {
   orgId: string;
   from: Date;
   to: Date;
-}): Promise<{ id: string; reused: boolean }> {
+}): Promise<{ id: string; outcome: EnqueueOutcome }> {
   const queue = getMetricAnomaliesQueue();
   const { jobId } = options;
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
-    if (JOB_REUSE_STATES.has(state) || isReusableState(state)) {
-      return { id: String(existing.id ?? jobId), reused: true };
+    // `isReusableState` already covers active/waiting/delayed/waiting-children/
+    // prioritized — a strict superset of the local JOB_REUSE_STATES this used to
+    // OR against, so the extra check was redundant.
+    if (isReusableState(state)) {
+      return { id: String(existing.id ?? jobId), outcome: 'reused' };
     }
-    await existing.remove().catch((error) => {
-      console.error(`[MetricAnomaliesWorker] Failed to remove stale job ${jobId} (state '${state}'):`, error);
-    });
+
+    // A failed remove must NOT fall through to `add`. BullMQ's addStandardJob
+    // Lua script checks `EXISTS jobIdKey` FIRST and, when the key is still
+    // there, takes the duplicate path: it emits a `duplicated` event and
+    // returns the id without storing the new payload or pushing onto the wait
+    // list. So the `add` below would be a total no-op while still handing back
+    // a plausible-looking Job whose fields echo the options we passed — the
+    // caller would count a fresh enqueue, the org's window would silently go
+    // uncovered, and the `reused` warning that exists to surface exactly that
+    // undercoverage would never fire.
+    const removed = await existing.remove().then(
+      () => true,
+      (error: unknown) => {
+        console.error(
+          `[MetricAnomaliesWorker] Failed to remove stale job ${jobId} (state '${state}'):`,
+          error,
+        );
+        return false;
+      },
+    );
+    if (!removed) {
+      return { id: jobId, outcome: 'stale-remove-failed' };
+    }
   }
 
   const job = await queue.add(
@@ -294,7 +335,7 @@ async function enqueueDetectOrgRange(options: {
     }
   );
 
-  return { id: String(job.id ?? jobId), reused: false };
+  return { id: String(job.id ?? jobId), outcome: 'queued' };
 }
 
 export async function enqueueMetricAnomalyBackfill(options: {

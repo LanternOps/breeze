@@ -335,4 +335,50 @@ describe('metric anomalies queue helpers', () => {
       expect(new Date(second.from).getTime()).toBeLessThan(new Date(first.to).getTime());
     });
   });
+
+  // Review follow-ups on #5283.
+  describe('scan fan-out accounting (#5283 review)', () => {
+    it('does not enqueue — and does not report a fresh queue — when a spent record cannot be removed', async () => {
+      await initializeMetricAnomaliesWorker();
+      addMock.mockClear();
+      const removeMock = vi.fn().mockRejectedValue(new Error('redis unavailable'));
+      getJobMock.mockResolvedValue({
+        id: 'metric-anomalies-scheduled-org-1',
+        getState: vi.fn().mockResolvedValue('completed'),
+        remove: removeMock,
+      });
+
+      const result = await workerProcessorMock({ data: { type: 'scan-orgs' } });
+
+      // BullMQ's addStandardJob checks `EXISTS jobIdKey` FIRST and takes the
+      // duplicate path when the record is still there: it returns the id
+      // without storing the payload or pushing onto the wait list. Calling
+      // `add` anyway would be a total no-op reported as a successful enqueue,
+      // so the org's window would silently go uncovered — the exact class of
+      // invisible drop this PR exists to remove.
+      expect(detectAddCalls()).toHaveLength(0);
+      expect(result).toMatchObject({ queued: 0, reused: 0, staleRemoveFailed: 1 });
+    });
+
+    it('accounts each org separately across a multi-org fan-out', async () => {
+      groupByMock.mockResolvedValue([{ orgId: 'org-1' }, { orgId: 'org-2' }]);
+      await initializeMetricAnomaliesWorker();
+      addMock.mockClear();
+      // org-1 has a run in flight; org-2 is free.
+      getJobMock.mockImplementation(async (jobId: string) =>
+        jobId === 'metric-anomalies-scheduled-org-1'
+          ? { id: jobId, getState: vi.fn().mockResolvedValue('active') }
+          : null,
+      );
+
+      const result = await workerProcessorMock({ data: { type: 'scan-orgs' } });
+
+      // One org's reuse must not be counted against the other's enqueue.
+      expect(result).toMatchObject({ queued: 1, reused: 1, staleRemoveFailed: 0 });
+      const enqueued = detectAddCalls();
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]![1]).toMatchObject({ orgId: 'org-2' });
+      expect(enqueued[0]![2]).toMatchObject({ jobId: 'metric-anomalies-scheduled-org-2' });
+    });
+  });
 });

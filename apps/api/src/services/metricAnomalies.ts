@@ -3,6 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tightenLockTimeout, tightenStatementTimeout } from '../db/lockTimeout';
 import { pgErrorCode } from '../utils/pgErrors';
+import { captureMessage } from './sentry';
 import { shouldProduceMlOutput, type MlFeatureFlagName } from './mlFeatureFlags';
 
 export const METRIC_ANOMALY_VERSION = 'metric-anomalies-v1';
@@ -127,6 +128,57 @@ async function tryAcquireOrgDetectionLock(orgId: string): Promise<boolean> {
 }
 
 /**
+ * Consecutive non-`completed` outcomes per (org, stage).
+ *
+ * One skip is expected and self-healing — a backfill raced the cron, or a
+ * detector lost a lock race. A RUN of them is not: a detector that is
+ * permanently too slow for its `statement_timeout`, or an org whose lock is
+ * held by something stuck, would otherwise skip on every tick forever behind
+ * nothing but a `console.warn`. That is the same invisible-degradation shape as
+ * the incident this fixes, so it escalates to Sentry.
+ *
+ * Entries are deleted on success, so the map is bounded by the set of
+ * CURRENTLY failing (org, stage) pairs rather than by fleet size.
+ */
+const consecutiveSkipsByOrgStage = new Map<string, number>();
+const METRIC_ANOMALY_STALL_ALERT_AFTER = 3;
+
+/** TEST ONLY — clears the consecutive-skip counters between cases. */
+export function __resetMetricAnomalyStallTracking(): void {
+  consecutiveSkipsByOrgStage.clear();
+}
+
+function recordStageOutcome(result: MetricAnomalyStageResult, orgId: string): void {
+  const key = `${orgId}:${result.stage}`;
+  if (result.outcome === 'completed') {
+    consecutiveSkipsByOrgStage.delete(key);
+    return;
+  }
+
+  const consecutive = (consecutiveSkipsByOrgStage.get(key) ?? 0) + 1;
+  consecutiveSkipsByOrgStage.set(key, consecutive);
+
+  // Fire on the threshold and then once per further N, so a permanently stuck
+  // stage reports roughly every 30 minutes at the 10-minute cron rather than on
+  // every tick. `scrubEvent` strips the message, so the tags carry the payload —
+  // `pg_code` is what separates an administrative `pg_cancel_backend` (57014,
+  // arriving once) from a genuine statement_timeout or lock_timeout regression.
+  if (consecutive % METRIC_ANOMALY_STALL_ALERT_AFTER !== 0) return;
+  captureMessage(
+    `Metric anomaly stage skipped ${consecutive} consecutive runs`,
+    {
+      eventCode: 'metric_anomaly_stage_stalled',
+      level: 'warning',
+      tags: {
+        org_id: orgId,
+        metric_anomaly_stage: result.stage,
+        ...(result.sqlState ? { pg_code: result.sqlState } : {}),
+      },
+    },
+  );
+}
+
+/**
  * Run one detection stage in its own system-scoped transaction, under the
  * per-org advisory lock and bounded wait timeouts.
  *
@@ -169,7 +221,9 @@ async function runDetectionStage(
         `[MetricAnomalies] org=${orgId} stage=${stage} skipped — another detection run holds the org advisory lock`,
       );
     }
-    return { stage, outcome, durationMs: Date.now() - startedAt };
+    const result: MetricAnomalyStageResult = { stage, outcome, durationMs: Date.now() - startedAt };
+    recordStageOutcome(result, orgId);
+    return result;
   } catch (error) {
     const sqlState = pgErrorCode(error);
     // 55P03 = lock_not_available (our `lock_timeout`), 57014 = query_canceled
@@ -182,7 +236,14 @@ async function runDetectionStage(
         `[MetricAnomalies] org=${orgId} stage=${stage} exceeded its wait bound `
           + `(SQLSTATE ${sqlState}) after ${Date.now() - startedAt}ms — skipped for this tick`,
       );
-      return { stage, outcome: 'timeout', sqlState, durationMs: Date.now() - startedAt };
+      const result: MetricAnomalyStageResult = {
+        stage,
+        outcome: 'timeout',
+        sqlState,
+        durationMs: Date.now() - startedAt,
+      };
+      recordStageOutcome(result, orgId);
+      return result;
     }
     throw error;
   }
@@ -1111,6 +1172,21 @@ async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Prom
   `);
 }
 
+/**
+ * Why a run that wrote nothing wrote nothing.
+ *
+ * `timeout` wins over `locked`, deliberately. A lock skip is the DESIGNED
+ * outcome — a concurrent run is covering an overlapping window and this one
+ * correctly stood down — whereas a timeout means a detector could not finish
+ * inside its wait bound, which is the outcome an operator has to act on. A run
+ * can end up with both (a stage times out, then a backfill takes the org lock
+ * before the next stage starts), and reporting that as a benign `locked` would
+ * hide the very signal the bounds exist to raise.
+ */
+function deriveSkipReason(stages: MetricAnomalyStageResult[]): MetricAnomalySkipReason {
+  return stages.some((stage) => stage.outcome === 'timeout') ? 'timeout' : 'locked';
+}
+
 export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): Promise<MetricAnomalyResult> {
   const { from, to } = normalizeRange(options.from, options.to);
   const range: MetricAnomalyRange = { orgId: options.orgId, from, to };
@@ -1171,12 +1247,7 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     v1ShadowStatements,
     v1ShadowSkipped,
     skipped,
-    // Only meaningful when nothing landed at all. `locked` wins over `timeout`
-    // because a contended run is expected and self-healing, while a timeout is
-    // the one an operator needs to look at.
-    ...(skipped
-      ? { skippedReason: (lockContended ? 'locked' : 'timeout') as MetricAnomalySkipReason }
-      : {}),
+    ...(skipped ? { skippedReason: deriveSkipReason(stages) } : {}),
     stages,
   };
 }
