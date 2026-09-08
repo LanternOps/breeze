@@ -270,7 +270,7 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
 
           <div className="rounded-md border bg-muted/30 p-3">
             <p className="mb-2 text-xs text-muted-foreground">
-              {t(urlRequired ? 'addNetworkAssetModal.urlRequiredHint' : 'addNetworkAssetModal.identityHint')}
+              {urlRequired ? t('addNetworkAssetModal.urlRequiredHint') : t('addNetworkAssetModal.identityHint')}
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
