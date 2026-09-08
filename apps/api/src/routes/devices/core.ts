@@ -201,9 +201,9 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  *
  * ai_operator_tasks is deliberately ABSENT for the same reason (#5205 W03,
  * #5208): AI Operator task history stays in the org that delegated the work.
- * `org_id` is the task's immutable tenant and anchors three composite
+ * `org_id` is the task's immutable tenant and anchors four composite
  * (x, org_id) FKs, so a restamp here would 23503 the moment the task has an
- * operation, a linked run or a linked intent. moveOrg detaches instead —
+ * operation, an outbox wake, a linked run or a linked intent. moveOrg detaches instead —
  * device_id = NULL plus target_detached_at/reason and a fence of any live
  * task. It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  *

@@ -273,7 +273,7 @@ const resolveTicketDrafts: CustomMergeExecutor = async (loser) => {
 // reason ai_agent_runs is (owner decision 2026-08-23): a task's evidence — its
 // runs, its intents, its device command — all stays with the loser, so
 // repointing the task alone would split one remediation's story across two
-// orgs. `ai_operator_tasks.org_id` also anchors three composite (x, org_id)
+// orgs. `ai_operator_tasks.org_id` also anchors four composite (x, org_id)
 // FKs, so a bare repoint would 23503 regardless.
 //
 // So why is this `custom` rather than plain `leave-for-erasure`, like
@@ -317,19 +317,54 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
            updated_at = now()
      WHERE org_id = ${uuid(loser)}
        AND state IN ${AI_OPERATOR_LIVE_TASK_STATES}`);
+
+  // Detach the device target and record the REAL reason, in the resolve phase,
+  // BEFORE the move phase repoints `devices` to the survivor.
+  //
+  // Without this the reason is silently wrong. `devices` is a plain `repoint`
+  // table, so the move phase runs `UPDATE devices SET org_id = <survivor>`,
+  // which fires breeze_cascade_device_org_id() for every loser-org device —
+  // and that trigger stamps `COALESCE(target_detached_reason, 'device_moved')`.
+  // A merge-caused detachment would therefore be labelled `'device_moved'`,
+  // and `'org_merged'` — a value the CHECK constraint and the TS union both
+  // define — would never be written by any code path at all. Stamping here
+  // first means the trigger's COALESCE preserves this reason instead.
+  //
+  // Deliberately NOT restricted to live states: a terminal task's device is
+  // leaving the tenant for the same reason, and its evidence should say so.
+  // Nulling `device_id` here also makes the trigger's own UPDATE a no-op, so
+  // the two statements are convergent in either order.
+  const detached = await run(sql`
+    UPDATE ai_operator_tasks
+       SET device_id = NULL,
+           target_detached_at = COALESCE(target_detached_at, now()),
+           target_detached_reason = COALESCE(target_detached_reason, 'org_merged'),
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}
+       AND device_id IS NOT NULL`);
+
   return {
     moved: 0,
     dropped: 0,
-    notes: fenced > 0
-      ? [
-          `ai_operator_tasks: fenced ${fenced} live AI Operator task(s) from the merged-away org `
-          + '(state -> stopping, lease released, scheduled wake cancelled) so nothing keeps executing '
-          + 'under a dead tenant once its agents repoint to the survivor. The task records themselves '
-          + 'are NOT re-tenanted — Operator history stays with the source org, same rule as agent runs, '
-          + 'and is erased with the loser shell. Re-delegate the work under the surviving organization '
-          + 'if it still needs doing.',
-        ]
-      : [],
+    notes: [
+      ...(fenced > 0
+        ? [
+            `ai_operator_tasks: fenced ${fenced} live AI Operator task(s) from the merged-away org `
+            + '(state -> stopping, lease released, scheduled wake cancelled) so nothing keeps executing '
+            + 'under a dead tenant once its agents repoint to the survivor. The task records themselves '
+            + 'are NOT re-tenanted — Operator history stays with the source org, same rule as agent runs, '
+            + 'and is erased with the loser shell. Re-delegate the work under the surviving organization '
+            + 'if it still needs doing.',
+          ]
+        : []),
+      ...(detached > 0
+        ? [
+            `ai_operator_tasks: detached ${detached} AI Operator task(s) from their target device — the `
+            + 'devices move to the surviving organization while the task history stays behind, so the '
+            + 'task keeps its frozen target label as evidence but no longer points at the device.',
+          ]
+        : []),
+    ],
   };
 };
 

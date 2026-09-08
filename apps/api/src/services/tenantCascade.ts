@@ -127,8 +127,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   //   - ai_operator_task_outbox carries org_id of its own, unlike
   //     intent_outbox (which is INTENTIONAL_UNSCOPED and rides its parent's
   //     ON DELETE CASCADE), so it needs its own entry here.
-  //   - ai_operator_tasks references ai_agents ON DELETE RESTRICT and sorts
-  //     after it, which is the correct direction: tasks die before agents.
+  //   - ai_operator_tasks references ai_agents ON DELETE RESTRICT, so tasks
+  //     MUST be deleted before agents. That too is the runtime topological
+  //     sort's job, not this array's — the alphabetical position is cosmetic
+  //     here exactly as it is for the two entries above. Stated only so a
+  //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
   'ai_operator_operations',
   'ai_operator_task_outbox',
   'ai_operator_tasks',

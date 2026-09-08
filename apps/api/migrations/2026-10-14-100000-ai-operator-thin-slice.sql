@@ -58,8 +58,10 @@
 --  6. `ai_operator_task_outbox` is DELIBERATELY RLS-SCOPED. `intent_outbox` is
 --     `INTENTIONAL_UNSCOPED` (rls-coverage.integration.test.ts) because the
 --     agent WS path drains it, but the task coordinator must respect tenancy.
---     This is the repository's first RLS-scoped outbox and it MUST NEVER be
---     added to that allowlist (baseline contradiction C20).
+--     It MUST NEVER be added to that allowlist (baseline contradiction C20).
+--     Precedent: `ticket_outbox` (2026-09-19-ai-agents-ticket-shadow.sql) is
+--     already an RLS-scoped outbox with the identical Shape-1 policy set, so
+--     `intent_outbox`'s unscoped shape is the exception here, not the rule.
 --
 --  7. NO second unique arbiter on `action_intents (org_id, task_id,
 --     operation_key)`. `createActionIntent`'s `ON CONFLICT` names
@@ -564,7 +566,7 @@ COMMENT ON COLUMN action_intents.operation_key IS
 -- silently enrolled it in the device-move re-stamp loop that
 -- breeze_cascade_device_org_id() drives — a loop that would set the task's
 -- immutable `org_id` to the destination org and, the moment the task has an
--- operation, a linked run or a linked intent, abort the whole move on a
+-- operation, an outbox wake, a linked run or a linked intent, abort the whole move on a
 -- composite (x, org_id) FK.
 --
 -- The detach statement added in section 8 happens to run BEFORE that loop and
@@ -600,9 +602,9 @@ CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
     -- instead, and that statement is LOAD-BEARING, not a mirror of this loop
     -- (#3205 W07).
     -- ai_operator_tasks: AI Operator task history stays with the SOURCE org
-    -- (#5205 W03, #5208). org_id is immutable and anchors three composite
+    -- (#5205 W03, #5208). org_id is immutable and anchors four composite
     -- (x, org_id) FKs, so a re-stamp aborts the move as soon as the task has
-    -- an operation, a linked run or a linked intent. moveOrg.ts and this
+    -- an operation, an outbox wake, a linked run or a linked intent. moveOrg.ts and this
     -- trigger both detach device_id and fence the task instead.
     AND t.relname NOT IN (
       'ai_agent_runs',
@@ -719,7 +721,7 @@ BEGIN
     SET ticket_id = NULL
     WHERE ticket_id IN (SELECT id FROM public.tickets WHERE device_id = NEW.id);
   -- AI Operator task history stays with the SOURCE org (#5205 W03, #5208):
-  -- ai_operator_tasks.org_id is immutable and anchors three composite
+  -- ai_operator_tasks.org_id is immutable and anchors four composite
   -- (x, org_id) FKs, so the generic re-stamp loop below deliberately excludes
   -- it. Sever the device pointer and fence any live task, mirroring
   -- moveOrg.ts's explicit statement so a DIRECT `devices.org_id` UPDATE that

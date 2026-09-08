@@ -28,7 +28,14 @@ import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  db,
+  runOutsideDbContext,
+  withDbAccessContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
+import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
 import {
   actionIntents,
   aiAgents,
@@ -150,6 +157,78 @@ describe('AI Operator thin-slice schema', () => {
   // -------------------------------------------------------------------------
 
   describe('RLS as breeze_app', () => {
+    it('POSITIVE CONTROL: an ORG-scoped context can insert its own rows into all three tables', async () => {
+      // Without this, the three forge tests below are half a test: a WITH CHECK
+      // policy broken to deny EVERY org-scoped insert (own org included) would
+      // leave all three of them passing while the W04 write path is dead. Every
+      // other successful insert in this file goes through SYSTEM_CTX or the
+      // admin connection, so this is the only proof the org path works at all.
+      const ctx = orgContext(t.orgId);
+      const [task] = await withDbAccessContext(ctx, () =>
+        db.insert(aiOperatorTasks).values(taskValues(t)).returning({ id: aiOperatorTasks.id }),
+      );
+      expect(task!.id).toBeTruthy();
+
+      const [op] = await withDbAccessContext(ctx, () =>
+        db
+          .insert(aiOperatorOperations)
+          .values({
+            orgId: t.orgId,
+            taskId: task!.id,
+            taskStepKey: 'restart',
+            operationKey: 'restart:spooler:1',
+            argumentDigest: 'a'.repeat(64),
+          })
+          .returning({ id: aiOperatorOperations.id }),
+      );
+      expect(op!.id).toBeTruthy();
+
+      const [wake] = await withDbAccessContext(ctx, () =>
+        db
+          .insert(aiOperatorTaskOutbox)
+          .values({
+            orgId: t.orgId,
+            taskId: task!.id,
+            sourceKind: 'intent',
+            sourceId: randomUUID(),
+            transitionSeq: 1,
+          })
+          .returning({ id: aiOperatorTaskOutbox.id }),
+      );
+      expect(wake!.id).toBeTruthy();
+    });
+
+    it('cannot UPDATE or DELETE another org\'s task', async () => {
+      const victim = await insertTask(t);
+      const ctx = orgContext(attacker.orgId);
+
+      // RLS filters the row out rather than raising, so the assertion has to be
+      // on the row COUNT and on the victim row still being intact — a rejected
+      // statement and a silently-zero-row statement look identical otherwise.
+      await withDbAccessContext(ctx, () =>
+        db.update(aiOperatorTasks).set({ state: 'cancelled' }).where(eq(aiOperatorTasks.id, victim)),
+      );
+      await withDbAccessContext(ctx, () =>
+        db.delete(aiOperatorTasks).where(eq(aiOperatorTasks.id, victim)),
+      );
+
+      const after = (await withDbAccessContext(SYSTEM_CTX, () =>
+        db.execute(sql`SELECT state FROM ai_operator_tasks WHERE id = ${victim}::uuid`),
+      )) as unknown as Array<{ state: string }>;
+      expect(after).toHaveLength(1);
+      expect(after[0]!.state).toBe('queued');
+
+      // Positive control: the SAME statements under the OWNING org do land, so
+      // the two no-ops above are RLS and not a broken WHERE clause.
+      await withDbAccessContext(orgContext(t.orgId), () =>
+        db.update(aiOperatorTasks).set({ state: 'cancelled' }).where(eq(aiOperatorTasks.id, victim)),
+      );
+      const owned = (await withDbAccessContext(SYSTEM_CTX, () =>
+        db.execute(sql`SELECT state FROM ai_operator_tasks WHERE id = ${victim}::uuid`),
+      )) as unknown as Array<{ state: string }>;
+      expect(owned[0]!.state).toBe('cancelled');
+    });
+
     it('rejects a cross-org ai_operator_tasks forge (42501)', async () => {
       await expectSqlState(
         () =>
@@ -555,6 +634,137 @@ describe('AI Operator thin-slice schema', () => {
     expect(done.state).toBe('completed');
   });
 
+  it('detaches, stamps and fences a live task when the device is hard-deleted', async () => {
+    // Unlike device MOVE, device DELETE fires no org-change trigger, so
+    // deviceDeletion.ts's explicit statement is the ONLY thing that stamps the
+    // reason and fences the task. It also carries an ordering invariant worth
+    // pinning: `ai_operator_tasks` is in DEVICE_DETACH_DEVICE_ID_TABLES, whose
+    // generic loop nulls `device_id` with no stamp — so the specific statement
+    // must run FIRST. If someone reorders it after the loop, `WHERE device_id
+    // = <id>` matches nothing and every device-deleted task silently loses its
+    // detach reason and its fence. This test fails in exactly that case.
+    const deviceId = await insertDevice(t.orgId, t.siteId);
+    const liveId = await insertTask(t, {
+      deviceId,
+      targetLabel: 'PRINTSRV01',
+      state: 'running',
+      leaseOwner: 'coordinator-1',
+    });
+    const doneId = await insertTask(t, { deviceId, targetLabel: 'PRINTSRV01', state: 'completed' });
+
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.transaction(async (tx) => {
+          await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, deviceId);
+        }),
+      ),
+    );
+
+    const rows = (await withDbAccessContext(SYSTEM_CTX, () =>
+      db.execute(sql`
+        SELECT id, org_id, device_id, target_label, target_detached_at, target_detached_reason, state
+          FROM ai_operator_tasks WHERE id IN (${liveId}::uuid, ${doneId}::uuid)`),
+    )) as unknown as Array<Record<string, unknown>>;
+    // Positive control: the task rows SURVIVED the device delete. If the table
+    // had been (mis)registered in the device cascade-delete list instead of the
+    // detach list, this would be 0 and every assertion below would vacuously
+    // never run.
+    expect(rows).toHaveLength(2);
+    const byId = new Map(rows.map((r) => [r.id as string, r]));
+
+    const live = byId.get(liveId)!;
+    expect(live.device_id).toBeNull();
+    expect(live.target_detached_reason).toBe('device_deleted');
+    expect(live.target_detached_at).not.toBeNull();
+    expect(live.target_label).toBe('PRINTSRV01');
+    expect(live.state).toBe('stopping');
+    expect(live.org_id).toBe(t.orgId);
+
+    const done = byId.get(doneId)!;
+    expect(done.device_id).toBeNull();
+    expect(done.target_detached_reason).toBe('device_deleted');
+    expect(done.state).toBe('completed');
+  });
+
+  // -------------------------------------------------------------------------
+  // Remaining constraint surface
+  // -------------------------------------------------------------------------
+
+  describe('constraints', () => {
+    it('rejects a detach timestamp with no reason (23514) — the other branch of the CHECK', async () => {
+      await expectSqlState(() => insertTask(t, { targetDetachedAt: new Date() }), '23514');
+    });
+
+    it('rejects a cross-org accounting-root pointer (23503)', async () => {
+      const victimRoot = await insertTask(t);
+      await expectSqlState(
+        () => insertTask(attacker, { accountingRootTaskId: victimRoot }),
+        '23503',
+      );
+    });
+
+    it('rejects a cross-org successor pointer (23503)', async () => {
+      const victimPrior = await insertTask(t);
+      await expectSqlState(
+        () => insertTask(attacker, { successorOfTaskId: victimPrior }),
+        '23503',
+      );
+    });
+
+    it('accepts a SAME-org lineage pointer (positive control for the two above)', async () => {
+      const root = await insertTask(t);
+      const child = await insertTask(t, { accountingRootTaskId: root, successorOfTaskId: root });
+      expect(child).toBeTruthy();
+    });
+
+    it('rejects a task that is its own accounting root (23514)', async () => {
+      const id = randomUUID();
+      await expectSqlState(
+        () =>
+          withDbAccessContext(SYSTEM_CTX, () =>
+            db.insert(aiOperatorTasks).values({ ...taskValues(t), id, accountingRootTaskId: id }),
+          ),
+        '23514',
+      );
+    });
+
+    it('rejects an over-length objective (23514) — the bounded-text CHECKs are live', async () => {
+      await expectSqlState(() => insertTask(t, { objective: 'x'.repeat(4001) }), '23514');
+    });
+
+    it('rejects an oversized checkpoint (23514) — the jsonb size CHECK is live', async () => {
+      await expectSqlState(
+        () => insertTask(t, { checkpoint: { blob: 'x'.repeat(70_000) } }),
+        '23514',
+      );
+    });
+
+    it('dedupes outbox wakes on (org, task, source kind, source id, transition) (23505)', async () => {
+      const taskId = await insertTask(t);
+      const row = {
+        orgId: t.orgId,
+        taskId,
+        sourceKind: 'intent' as const,
+        sourceId: randomUUID(),
+        transitionSeq: 1,
+      };
+      await withDbAccessContext(SYSTEM_CTX, () => db.insert(aiOperatorTaskOutbox).values(row));
+      // A duplicate delivery of the same transition must converge, not double.
+      await expectSqlState(
+        () =>
+          withDbAccessContext(SYSTEM_CTX, () =>
+            db.insert(aiOperatorTaskOutbox).values({ ...row, dueAt: new Date() }),
+          ),
+        '23505',
+      );
+      // Positive control: a DIFFERENT transition of the same source is allowed.
+      const second = await withDbAccessContext(SYSTEM_CTX, () =>
+        db.insert(aiOperatorTaskOutbox).values({ ...row, transitionSeq: 2 }).returning(),
+      );
+      expect(second).toHaveLength(1);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Org merge fencing
   // -------------------------------------------------------------------------
@@ -615,6 +825,48 @@ describe('AI Operator thin-slice schema', () => {
       expect(terminal.outcome_detail).toBe('gave up');
 
       expect(byId.get(survivorId)!.state).toBe('running');
+    });
+
+    it('labels a device-targeted task \'org_merged\', not \'device_moved\'', async () => {
+      // The trap: `devices` is a plain `repoint` table, so the merge's MOVE
+      // phase runs `UPDATE devices SET org_id = <survivor>`, firing
+      // breeze_cascade_device_org_id(), whose statement stamps
+      // COALESCE(target_detached_reason, 'device_moved'). If the resolve-phase
+      // fence does not stamp the reason first, every merge-caused detachment
+      // is mislabelled 'device_moved' and 'org_merged' — a value both the CHECK
+      // constraint and the TS union define — is written by nothing, ever.
+      const deviceId = await insertDevice(t.orgId, t.siteId);
+      const liveId = await insertTask(t, { deviceId, targetLabel: 'PRINTSRV01', state: 'running' });
+      const doneId = await insertTask(t, { deviceId, targetLabel: 'PRINTSRV01', state: 'completed' });
+
+      await withSystemDbAccessContext(() =>
+        CUSTOM_RESOLVE_EXECUTORS.ai_operator_tasks!(t.orgId, attacker.orgId),
+      );
+
+      // Now simulate the move phase's devices repoint, which fires the trigger.
+      const adminDb = getTestDb() as never as typeof db;
+      await adminDb.execute(
+        sql`UPDATE devices SET org_id = ${attacker.orgId}::uuid, site_id = ${attacker.siteId}::uuid WHERE id = ${deviceId}::uuid`,
+      );
+
+      const rows = (await withDbAccessContext(SYSTEM_CTX, () =>
+        db.execute(sql`
+          SELECT id, device_id, target_label, target_detached_reason, state, org_id
+            FROM ai_operator_tasks WHERE id IN (${liveId}::uuid, ${doneId}::uuid)`),
+      )) as unknown as Array<Record<string, unknown>>;
+      const byId = new Map(rows.map((r) => [r.id as string, r]));
+
+      for (const id of [liveId, doneId]) {
+        const row = byId.get(id)!;
+        expect(row.target_detached_reason).toBe('org_merged');
+        expect(row.device_id).toBeNull();
+        expect(row.target_label).toBe('PRINTSRV01');
+        expect(row.org_id).toBe(t.orgId);
+      }
+      // The live one is still fenced; the terminal one is detached but not
+      // resurrected.
+      expect(byId.get(liveId)!.state).toBe('stopping');
+      expect(byId.get(doneId)!.state).toBe('completed');
     });
 
     it('is idempotent — a second fence pass reports nothing to fence', async () => {

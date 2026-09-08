@@ -37,9 +37,9 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
   // Same rule, applied to AI Operator task history (#5205 W03, #5208): the
-  // task's org_id is its immutable tenant and anchors three composite
+  // task's org_id is its immutable tenant and anchors four composite
   // (x, org_id) FKs, so a restamp would 23503 the moment the task has an
-  // operation, a linked run or a linked intent. moveOrg.ts detaches instead
+  // operation, an outbox wake, a linked run or a linked intent. moveOrg.ts detaches instead
   // (device_id = NULL + target_detached_at/reason + fence to 'stopping'), and
   // breeze_cascade_device_org_id() carries the same statement for a direct
   // devices.org_id UPDATE. See the CORE_DEVICE_ORG_DENORMALIZED_TABLES

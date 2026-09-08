@@ -414,12 +414,19 @@ moveOrgRoutes.post(
         // in-flight device command may still return, and its result must land
         // on the operation row before the reconciler settles the task (§6.3).
         //
-        // LOAD-BEARING, like the invoice_line_devices statement below rather
-        // than the ai_agent_runs one above: ai_operator_tasks is excluded from
-        // breeze_device_child_orgid_tables(), so the generic re-stamp loop
-        // never touches it — but breeze_cascade_device_org_id() carries an
-        // identical statement so a DIRECT devices.org_id UPDATE that bypasses
-        // this route cannot strand a cross-tenant pointer either.
+        // This normally matches NOTHING, exactly like the ai_agent_runs
+        // statement above and UNLIKE the load-bearing invoice_line_devices one
+        // below: the devices row was already flipped earlier in this same
+        // transaction, which fired breeze_cascade_device_org_id(), and that
+        // trigger carries an identical statement (the migration's section 8).
+        // It is kept as a route-local mirror so the detach is visible where
+        // the move is read, and so the route still detaches if the trigger is
+        // ever dropped. The trigger copy is the one that also covers a DIRECT
+        // devices.org_id UPDATE that bypasses this route entirely — which is
+        // why the integration coverage drives that path.
+        //
+        // Both copies are convergent (COALESCE on the detach stamp, CASE on
+        // the state), so whichever runs first wins and the other is a no-op.
         await tx.execute(
           sql`UPDATE ai_operator_tasks
                  SET device_id = NULL,

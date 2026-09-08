@@ -212,7 +212,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // a task's evidence (its runs, its intents, its device command) all stays
   // with the loser, so repointing the task alone would split one remediation's
   // story across two orgs. `ai_operator_tasks.org_id` is also the anchor of
-  // three composite (x, org_id) FKs, so a bare repoint would 23503 anyway.
+  // four composite (x, org_id) FKs, so a bare repoint would 23503 anyway.
   //
   // `ai_operator_tasks` is `custom`, not plain `leave-for-erasure`, because
   // leaving it alone is not sufficient: `mergeAiAgents` REPOINTS every
