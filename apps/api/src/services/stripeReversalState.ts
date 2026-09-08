@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
 import { accountingEntityMappings } from '../db/schema/accounting';
@@ -417,12 +417,15 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
 
 /** Retry pre-link/transient inbox rows in provider order. */
 export async function processPendingStripeFinancialEvents(limit = 200): Promise<number> {
-  const now = new Date();
   const pending = await withSystemDbAccessContext(() => db.select({ id: stripeFinancialEvents.stripeEventId })
     .from(stripeFinancialEvents)
     .where(and(
       inArray(stripeFinancialEvents.status, ['pending']),
-      or(isNull(stripeFinancialEvents.nextAttemptAt), lte(stripeFinancialEvents.nextAttemptAt, now)),
+      // Fresh next_attempt_at values come from PostgreSQL's DEFAULT NOW(). Use
+      // that same clock for eligibility: an application host a few milliseconds
+      // behind the database must not hide a newly durable reversal until the
+      // next ten-minute sweep. Later retry deadlines remain absolute instants.
+      or(isNull(stripeFinancialEvents.nextAttemptAt), sql`${stripeFinancialEvents.nextAttemptAt} <= NOW()`),
     ))
     .orderBy(asc(stripeFinancialEvents.nextAttemptAt), asc(stripeFinancialEvents.providerCreated), asc(stripeFinancialEvents.createdAt))
     .limit(limit));

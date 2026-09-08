@@ -3,7 +3,7 @@
  * contacted; normalized provider events are synthetic disposable fixtures.
  */
 import './setup';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -87,6 +87,7 @@ function financialEvent(f: Awaited<ReturnType<typeof seed>>, overrides: Record<s
 
 describe('Stripe financial reversal state (real PostgreSQL)', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
 
   runDb('full refund transitions the mapping before deleting, so the real FK/CHECK commits', async () => {
     const f = await seed();
@@ -275,6 +276,12 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       },
     ]));
 
+    // The database authored next_attempt_at with its own NOW(). Hold only the
+    // application Date clock behind it: eligibility must stay in PostgreSQL's
+    // clock domain, while retry timestamps may continue to use application
+    // time without starving the later applicable row.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() - 60_000));
     expect(await processPendingStripeFinancialEvents(200)).toBe(0);
     expect(await processPendingStripeFinancialEvents(200)).toBe(1);
     const [mapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments)
@@ -291,6 +298,8 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       chargeAmountMinor: '10000', refundedAmountMinor: '1000', payloadDigest: 'e'.repeat(64),
       attemptCount: 49,
     }));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() - 60_000));
     expect(await processPendingStripeFinancialEvents(1)).toBe(0);
     const [event] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
       .where(eq(stripeFinancialEvents.stripeEventId, 'evt_retry_exhausted')));
