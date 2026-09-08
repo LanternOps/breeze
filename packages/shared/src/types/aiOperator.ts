@@ -27,10 +27,22 @@ export const AI_OPERATOR_TASK_DTO_SCHEMA_VERSION = 1 as const;
 /**
  * Mirrors `AI_OPERATOR_TASK_STATES` in
  * `apps/api/src/db/schema/aiOperatorTasks.ts` (the CHECK-constrained source
- * of truth for the column). Kept as a separate literal list here — same
- * pattern as `AI_AGENT_RUN_STATUSES` vs. the `ai_agent_runs.status` column —
- * because `packages/shared` cannot import from `apps/api/src/db`. If the
- * schema's list changes, update both.
+ * of truth for the column). Kept as a separate, hand-duplicated literal list
+ * here — NOT the same pattern as `AI_AGENT_RUN_STATUSES` (review correction,
+ * PR #5254): that one is declared exactly once, in `aiAgents.ts` in this same
+ * file, and `apps/api/src/db/schema/aiAgents.ts` type-imports it directly
+ * (`import type { AiAgentRunStatus } from '@breeze/shared'`) — a type-only
+ * import, so `packages/shared` cannot import from `apps/api/src/db` is not
+ * actually what blocks doing the same thing here; nothing did. The six/seven
+ * unions in this file duplicate what `db/schema/aiOperatorTasks.ts` already
+ * exports (W03, already merged) instead of that schema file importing from
+ * here, which the `ai_agent_runs` precedent shows is possible. Consolidating
+ * onto one declaration (schema imports from shared, matching `aiAgents.ts`)
+ * is a reasonable follow-up; not done in this read-only wave to avoid editing
+ * an already-shipped, unrelated-wave schema file. `enumParity.test.ts`
+ * (`apps/api/src/services/aiOperator/`) mechanically asserts the two copies
+ * stay equal in the meantime — if the schema's list changes, that test fails
+ * until this one is updated to match.
  */
 export const AI_OPERATOR_TASK_STATES = [
   'queued', 'running', 'waiting', 'paused', 'stopping',
@@ -155,7 +167,27 @@ export interface AiOperatorTaskRunLinkDto {
   resolvedModel: string | null;
 }
 
-export interface AiOperatorTaskDto {
+/**
+ * The fields common to both the list item and the detail DTO — everything
+ * `GET /ai/operator/tasks` and `GET /ai/operator/tasks/:id` agree on.
+ *
+ * This is the PRIMARY declaration (review fix, PR #5254): `AiOperatorTaskDto`
+ * below is `extends AiOperatorTaskListItemDto`, adding only `operations`/
+ * `runs`. Declaring it the other way around — `AiOperatorTaskListItemDto =
+ * Omit<AiOperatorTaskDto, 'operations' | 'runs'>` — silently includes any
+ * FUTURE field added directly to the detail DTO on the list DTO too, with no
+ * compiler signal that a detail-only addition (e.g. a heavier per-row
+ * evidence blob) needs an explicit decision about whether it belongs on a
+ * paginated list of up to 50 rows. Extending forward from this base makes
+ * that decision visible: a field belongs on the list only if it's declared
+ * here, and a detail-only field requires touching `AiOperatorTaskDto`
+ * explicitly. This also matches how `mapOperatorTask`
+ * (`apps/api/src/services/aiOperator/taskReadService.ts`) actually builds the
+ * two DTOs at runtime — base fields via `mapOperatorTaskListItem_`, with
+ * `operations`/`runs` appended for the detail shape — so the type and the
+ * implementation now agree on which one is primary.
+ */
+export interface AiOperatorTaskListItemDto {
   schemaVersion: typeof AI_OPERATOR_TASK_DTO_SCHEMA_VERSION;
   id: string;
   orgId: string;
@@ -189,11 +221,12 @@ export interface AiOperatorTaskDto {
   successorOfTaskId: string | null;
   createdAt: string;
   updatedAt: string;
-  operations: AiOperatorTaskOperationDto[];
-  runs: AiOperatorTaskRunLinkDto[];
   nextAction: AiOperatorTaskNextAction;
 }
 
-/** Lighter list-item projection for `GET /ai/operator/tasks` — no
- *  operations/runs (that's what the detail route is for). */
-export type AiOperatorTaskListItemDto = Omit<AiOperatorTaskDto, 'operations' | 'runs'>;
+/** The full task detail DTO — the list-item fields plus safely-projected
+ *  `operations`/`runs` (that's what the detail route joins). */
+export interface AiOperatorTaskDto extends AiOperatorTaskListItemDto {
+  operations: AiOperatorTaskOperationDto[];
+  runs: AiOperatorTaskRunLinkDto[];
+}

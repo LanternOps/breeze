@@ -100,17 +100,12 @@ type SchemaResultState = (typeof aiOperatorOperations.$inferSelect)['resultState
 // #5254).
 type MutuallyAssignable<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _ModeParity = MutuallyAssignable<AiOperatorTaskMode, SchemaMode> extends true ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _OriginKindParity = MutuallyAssignable<AiOperatorTaskOriginKind, SchemaOriginKind> extends true ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _WaitDependencyKindParity =
   MutuallyAssignable<AiOperatorWaitDependencyKind, SchemaWaitDependencyKind> extends true ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _DispatchStateParity =
   MutuallyAssignable<AiOperatorOperationDispatchState, SchemaDispatchState> extends true ? true : never;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _ResultStateParity = MutuallyAssignable<AiOperatorOperationResultState, SchemaResultState> extends true ? true : never;
 
 // A single runtime test to anchor the compile-time checks above to a real

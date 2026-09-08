@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { aiAgents, aiOperatorTasks, devices, organizationUsers } from '../../db/schema';
+import { aiAgents, aiOperatorOperations, aiOperatorTasks, devices, organizationUsers } from '../../db/schema';
 import { aiOperatorTasksRoutes } from '../../routes/aiOperatorTasks';
 import { clearPermissionCache } from '../../services/permissions';
 import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
@@ -153,6 +153,50 @@ describe('AI Operator task read routes (W07, #5205/#5212) — real Postgres', ()
       // ever selects the named TASK_ROW_COLUMNS.
       expect(res.body.data).not.toHaveProperty('checkpoint');
       expect(res.body.data).not.toHaveProperty('frozenScope');
+    });
+
+    // pr-test-analyzer review fix (PR #5254): every prior "leak tripwire"
+    // assertion in this wave ran against fixtures whose TYPES have no
+    // `result`/`checkpoint` field at all (structurally can't leak) or against
+    // a mocked `db.select()` (checks the test's own fixture, not the real
+    // query). This is the one place a genuine `ai_operator_operations.result`
+    // payload — inserted for real, with a value distinctive enough to search
+    // for verbatim — goes through the real query and the real HTTP response
+    // body, proving the named-column SELECT in the route (not just the
+    // mapper) never touches that column.
+    runDb('a real ai_operator_operations.result payload never reaches the HTTP response body', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const agentId = await insertAgent(env.organization.id, env.user.id);
+      const taskId = await insertTask(env.organization.id, agentId, env.user.id);
+
+      const secretMarker = `zzz-operation-result-leak-marker-${randomUUID()}-zzz`;
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.insert(aiOperatorOperations).values({
+          orgId: env.organization.id,
+          taskId,
+          taskStepKey: 'restart',
+          operationKey: 'restart:spooler:1',
+          argumentDigest: 'a'.repeat(64),
+          resultState: 'succeeded',
+          result: { secret: secretMarker, exitCode: 0 },
+        }),
+      );
+
+      const res = await get(env, `/tasks/${taskId}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.operations).toHaveLength(1);
+      expect(res.body.data.operations[0]).toMatchObject({
+        operationKey: 'restart:spooler:1',
+        resultState: 'succeeded',
+      });
+      expect(res.body.data.operations[0]).not.toHaveProperty('result');
+
+      // Search the ENTIRE serialized response, not just the known field name —
+      // this is what catches a leak surfacing under an unexpected key, which
+      // a property-name-only assertion cannot.
+      const raw = JSON.stringify(res.body);
+      expect(raw).not.toContain(secretMarker);
+      expect(raw).not.toContain('"result"');
     });
   });
 
