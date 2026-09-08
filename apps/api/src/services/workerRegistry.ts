@@ -994,6 +994,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #5205 W06 (#5211): consumes the `ai-operator-coordinator` queue the W05
+    // publisher feeds, plus its own 15s reconciler tick. `global` for the same
+    // reason the publisher is — it touches Postgres and Redis only, never a
+    // live agent socket.
+    name: 'aiOperatorTaskWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiOperatorTaskWorker');
+      return {
+        init: m.initializeAiOperatorTaskWorker,
+        shutdown: m.shutdownAiOperatorTaskWorker,
+      };
+    },
+  },
+  {
     name: 'pamActuationWorker',
     placement: 'global',
     load: async () => {

@@ -112,6 +112,38 @@ function commandExecutionVerdict(output: string, isError: boolean): ActExecution
   return isError ? 'failed' : 'succeeded';
 }
 
+/**
+ * The independent service-state read, exposed for the AI Operator task
+ * criterion (#5205 W06).
+ *
+ * `verifyServiceRunning` below needs a full `VerifyActExecutionArgs['run']`
+ * (id/orgId/agentId/deviceId) because that is what an act-lane call site
+ * already has, but the read itself only ever uses `run.deviceId`. A task
+ * criterion has a device and an agent principal but NOT a run — half the
+ * point of a durable task is that the run which proposed the fix may have
+ * ended hours ago (spec §8.1's "fresh evidence"), so it must not have to
+ * fabricate one to ask "is this service running right now".
+ *
+ * This is a NARROWING adapter, not a second implementation: it calls the same
+ * function, so C10's rule (the criterion is always the independent
+ * `list_services` read, never the dispatch result) has exactly one
+ * implementation to audit.
+ */
+export async function verifyServiceRunningForTask(
+  target: { serviceName: string },
+  device: { deviceId: string },
+  agentUserId: string,
+): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  return verifyServiceRunning(
+    { kind: 'service', serviceName: target.serviceName } as Extract<ActTarget, { kind: 'service' }>,
+    // Only `deviceId` is read by `verifyServiceRunning`; the other three
+    // fields exist to satisfy the act-lane shape. Empty strings would be a
+    // lie if anything read them, so this cast documents that nothing does.
+    { id: '', orgId: '', agentId: '', deviceId: device.deviceId },
+    agentUserId,
+  );
+}
+
 async function verifyServiceRunning(
   target: Extract<ActTarget, { kind: 'service' }>,
   run: VerifyActExecutionArgs['run'],

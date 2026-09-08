@@ -72,6 +72,33 @@ export async function enqueueTaskOutbox(
 }
 
 /**
+ * `transitionSeq` for a task-linked RUN's terminal write (`sourceKind: 'run'`,
+ * `sourceId: runId`), #5205 W06.
+ *
+ * Same "terminal status ordinal" scheme, and same justification, as
+ * `INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ` below: `transitionRunStatus`'s CAS
+ * `from` list is always a LIVE status (`queued`/`running`), so a run reaches
+ * at most one terminal status ever and these fixed ordinals only need to be
+ * mutually distinct. A retried delivery of the SAME terminalization reuses the
+ * SAME ordinal, which is what lets the identity unique's `ON CONFLICT DO
+ * NOTHING` collapse it to one row.
+ *
+ * `awaiting_approval` is INCLUDED and is the ordinal that matters most for the
+ * thin slice: it is `isTerminalRunStatus`-terminal, and it is the exact moment
+ * a task must move to `waiting(approval)` and release its worker. Omitting it
+ * would leave the coordinator's most common wake to the reconciler's polling
+ * fallback instead of the event path.
+ */
+export const RUN_TERMINAL_OUTBOX_TRANSITION_SEQ: Record<string, number> = {
+  completed: 1,
+  failed: 2,
+  cancelled: 3,
+  expired: 4,
+  skipped: 5,
+  awaiting_approval: 6,
+};
+
+/**
  * `intent_outbox.event_type` values a task-linked intent's TERMINAL write can
  * publish. Widened by migration 2026-10-14-100300-ai-operator-intent-terminal-events.sql
  * to add `intent_completed`/`intent_failed` (there was no way to say either
