@@ -15,6 +15,109 @@ export const networkRoutes = new Hono();
 
 networkRoutes.use('*', authMiddleware);
 
+/** The row shape both the GET-arm select and the POST-arm insert `.returning()` share. */
+interface UnifiedListSourceRow {
+  id: string;
+  orgId: string;
+  siteId: string;
+  assetType: string;
+  hostname: string | null;
+  label: string | null;
+  ipAddress: string | null;
+  macAddress: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  isOnline: boolean;
+  responseTimeMs: number | null;
+  openPorts: unknown;
+  lastSeenAt: Date | null;
+  firstSeenAt: Date;
+  tags: string[] | null;
+  source: string;
+  url: string | null;
+  snmpMonitoringEnabled?: boolean;
+  networkMonitoringEnabled?: boolean;
+}
+
+/**
+ * Normalizes a `discovered_assets` row into the shared unified-list shape
+ * used by both handlers below (#5213 W02) — the create response must echo
+ * exactly what the list arm renders, or a freshly-created row would flicker
+ * to a different shape on the next GET.
+ *
+ * `deviceClass` is the presentation discriminator; agent-only fields
+ * (cpu/ram, agentVersion, watchdogVersion, osBuild) are null so the web
+ * table renders "—".
+ */
+function toUnifiedListShape(r: UnifiedListSourceRow) {
+  return {
+    id: r.id,
+    deviceClass: 'network' as const,
+    assetType: r.assetType,
+    orgId: r.orgId,
+    siteId: r.siteId,
+    // Name precedence: user label > hostname > URL > IP. `url` (#5213) is the
+    // only identity an IP-less website row has — without it in the chain a
+    // url-only row would render an empty name.
+    hostname: r.label || r.hostname || r.url || (r.ipAddress ?? ''),
+    displayName: r.label ?? null,
+    // A manual asset that no probe has ever reached is not "offline" — that
+    // is a reachability claim we have not made. Matches the 'unknown' status
+    // the #4622 manual-asset spec uses for the same situation.
+    status: r.lastSeenAt === null && r.source === 'manual'
+      ? ('unknown' as const)
+      : r.isOnline ? ('online' as const) : ('offline' as const),
+    ipAddress: r.ipAddress ?? null,
+    macAddress: r.macAddress ?? null,
+    manufacturer: r.manufacturer ?? null,
+    model: r.model ?? null,
+    responseTimeMs: r.responseTimeMs ?? null,
+    openPorts: r.openPorts ?? null,
+    lastSeenAt: r.lastSeenAt,
+    enrolledAt: r.firstSeenAt,
+    tags: r.tags ?? [],
+    monitoringEnabled: Boolean(r.snmpMonitoringEnabled) || Boolean(r.networkMonitoringEnabled),
+    snmpMonitoringEnabled: Boolean(r.snmpMonitoringEnabled),
+    networkMonitoringEnabled: Boolean(r.networkMonitoringEnabled),
+    // #5213 — provenance and the website/service identity.
+    source: r.source,
+    url: r.url ?? null,
+    // Agent-only fields, null for network devices.
+    agentId: null,
+    agentVersion: null,
+    watchdogVersion: null,
+    osType: null,
+    osVersion: null,
+    osBuild: null,
+    architecture: null,
+    cpuPercent: null,
+    ramPercent: null,
+    hardware: null,
+    metrics: null,
+  };
+}
+
+/**
+ * Resolves and enforces the org/site auth scope shared by both handlers
+ * below — extracted so GET and POST can never drift on who is allowed to
+ * see or write which org/site. Returns an error response to short-circuit
+ * with, or `null` when the caller is in scope.
+ */
+function resolveAssetScope(
+  auth: { canAccessOrg: (orgId: string) => boolean },
+  permissions: UserPermissions | undefined,
+  orgId: string,
+  siteId: string,
+): { error: string; status: 403 } | null {
+  if (!auth.canAccessOrg(orgId)) {
+    return { error: 'Access to this organization denied', status: 403 };
+  }
+  if (permissions?.allowedSiteIds && !canAccessSite(permissions, siteId)) {
+    return { error: 'Access to this site denied', status: 403 };
+  }
+  return null;
+}
+
 /**
  * GET /devices/network — the "network" arm of the unified Devices list
  * (issue #1322, phase 1).
@@ -165,6 +268,10 @@ networkRoutes.get(
         lastSeenAt: discoveredAssets.lastSeenAt,
         firstSeenAt: discoveredAssets.firstSeenAt,
         tags: discoveredAssets.tags,
+        // #5213 — provenance and the website/service identity, needed by
+        // toUnifiedListShape's hostname precedence and status derivation.
+        source: discoveredAssets.source,
+        url: discoveredAssets.url,
         snmpMonitoringEnabled: sql<boolean>`exists (
           select 1 from ${snmpDevices}
           where ${snmpDevices.assetId} = ${discoveredAssets.id}
@@ -197,44 +304,10 @@ networkRoutes.get(
       .limit(limit)
       .offset(offset);
 
-    // Normalize into the shared unified-list projection. `deviceClass`
-    // is the presentation discriminator; agent-only fields (cpu/ram,
-    // agentVersion, watchdogVersion, osBuild) are null so the web table renders "—".
-    const data = rows.map((r) => ({
-      id: r.id,
-      deviceClass: 'network' as const,
-      assetType: r.assetType,
-      orgId: r.orgId,
-      siteId: r.siteId,
-      // Name precedence: user label > hostname > IP, mirroring Discovery.
-      hostname: r.label || r.hostname || (r.ipAddress ?? ''),
-      displayName: r.label ?? null,
-      status: r.isOnline ? ('online' as const) : ('offline' as const),
-      ipAddress: r.ipAddress ?? null,
-      macAddress: r.macAddress ?? null,
-      manufacturer: r.manufacturer ?? null,
-      model: r.model ?? null,
-      responseTimeMs: r.responseTimeMs ?? null,
-      openPorts: r.openPorts ?? null,
-      lastSeenAt: r.lastSeenAt,
-      enrolledAt: r.firstSeenAt,
-      tags: r.tags ?? [],
-      monitoringEnabled: Boolean(r.snmpMonitoringEnabled) || Boolean(r.networkMonitoringEnabled),
-      snmpMonitoringEnabled: Boolean(r.snmpMonitoringEnabled),
-      networkMonitoringEnabled: Boolean(r.networkMonitoringEnabled),
-      // Agent-only fields, null for network devices.
-      agentId: null,
-      agentVersion: null,
-      watchdogVersion: null,
-      osType: null,
-      osVersion: null,
-      osBuild: null,
-      architecture: null,
-      cpuPercent: null,
-      ramPercent: null,
-      hardware: null,
-      metrics: null,
-    }));
+    // Normalize into the shared unified-list projection (#5213 — shared with
+    // the POST arm below via toUnifiedListShape, so a freshly-created row
+    // and the same row's next GET can never render as different shapes).
+    const data = rows.map((r) => toUnifiedListShape(r as UnifiedListSourceRow));
 
     const pagination: { page: number; limit: number; total?: number } = { page, limit };
     if (total !== undefined) pagination.total = total;
@@ -272,11 +345,9 @@ networkRoutes.post(
     const body = c.req.valid('json');
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
-    if (!auth.canAccessOrg(body.orgId)) {
-      return c.json({ error: 'Access to this organization denied' }, 403);
-    }
-    if (permissions?.allowedSiteIds && !canAccessSite(permissions, body.siteId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+    const scopeError = resolveAssetScope(auth, permissions, body.orgId, body.siteId);
+    if (scopeError) {
+      return c.json({ error: scopeError.error }, scopeError.status);
     }
 
     try {
@@ -303,46 +374,10 @@ networkRoutes.post(
         })
         .returning();
 
-      // Same shape GET returns, with source/url added — deviceClass:'network',
-      // status is 'unknown' rather than 'offline' for a never-probed manual
-      // asset: we have made no reachability claim at all.
-      const data = {
-        id: row!.id,
-        deviceClass: 'network' as const,
-        assetType: row!.assetType,
-        orgId: row!.orgId,
-        siteId: row!.siteId,
-        hostname: row!.label || row!.hostname || row!.url || (row!.ipAddress ?? ''),
-        displayName: row!.label ?? null,
-        status: 'unknown' as const,
-        ipAddress: row!.ipAddress ?? null,
-        macAddress: row!.macAddress ?? null,
-        manufacturer: row!.manufacturer ?? null,
-        model: row!.model ?? null,
-        responseTimeMs: row!.responseTimeMs ?? null,
-        openPorts: row!.openPorts ?? null,
-        lastSeenAt: row!.lastSeenAt,
-        enrolledAt: row!.firstSeenAt,
-        tags: row!.tags ?? [],
-        monitoringEnabled: false,
-        snmpMonitoringEnabled: false,
-        networkMonitoringEnabled: false,
-        source: row!.source,
-        url: row!.url ?? null,
-        agentId: null,
-        agentVersion: null,
-        watchdogVersion: null,
-        osType: null,
-        osVersion: null,
-        osBuild: null,
-        architecture: null,
-        cpuPercent: null,
-        ramPercent: null,
-        hardware: null,
-        metrics: null,
-      };
-
-      return c.json(data, 201);
+      // Same shared shape GET returns (toUnifiedListShape derives 'unknown'
+      // status itself from lastSeenAt===null && source==='manual', which is
+      // exactly what this row was just born as).
+      return c.json(toUnifiedListShape(row! as UnifiedListSourceRow), 201);
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code === '23505') {
