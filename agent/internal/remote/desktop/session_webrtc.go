@@ -276,8 +276,8 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	if probeErr != nil {
 		// The display is inaccessible (disconnected Windows session, no input
 		// desktop, GDI handle churn). Abort instead of returning a WebRTC
-		// answer that will stream zero frames. The defer at line 80 calls
-		// StopSession which closes the capturer.
+		// answer that will stream zero frames. StartSession's own deferred
+		// cleanup calls StopSession, which closes the capturer.
 		//
 		// describeCaptureFailure appends the last error the capturer swallowed
 		// as a nil frame, which is the only place a GDI-fallback failure is

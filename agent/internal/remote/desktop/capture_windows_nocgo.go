@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -109,6 +110,12 @@ type gdiCapturer struct {
 	consecutiveCaptureFailures int
 	lastFailureLog             time.Time
 
+	// Throttling for GDI handles Win32 refused to free. Separate from the
+	// capture-failure counters because a leak is a different problem with a
+	// different remedy, and it must not be hidden by the capture throttle.
+	teardownFailures int
+	lastTeardownLog  time.Time
+
 	// lastCaptureErr is the most recent error reported to the caller as a nil
 	// frame. Capture() deliberately swallows failures so a transient
 	// secure-desktop outage does not kill a live session; keeping the error
@@ -118,8 +125,16 @@ type gdiCapturer struct {
 }
 
 func init() {
-	if procSetProcessDPIAware.Find() == nil {
-		procSetProcessDPIAware.Call()
+	if procSetProcessDPIAware.Find() != nil {
+		return
+	}
+	// Not fatal, but not nothing either: without DPI awareness GetSystemMetrics
+	// reports scaled dimensions, which is the same class of capture/encoder size
+	// mismatch AlignEven exists to prevent (see ensureHandles). Worth a line in
+	// the helper log rather than nothing at all.
+	if ret, _, errno := procSetProcessDPIAware.Call(); ret == 0 {
+		slog.Debug("SetProcessDPIAware failed; capture dimensions may be DPI-scaled",
+			"error", gdiCallError("SetProcessDPIAware", errno).Error())
 	}
 }
 
@@ -219,33 +234,56 @@ func (c *gdiCapturer) ensureHandles() error {
 	return nil
 }
 
-// freeScreenDC releases a display DC through whichever entry point created it.
-func (c *gdiCapturer) freeScreenDC(hdc uintptr) {
+// freeScreenDC releases a display DC through whichever entry point created it,
+// and reports whether Win32 accepted the release.
+func (c *gdiCapturer) freeScreenDC(hdc uintptr) bool {
 	if hdc == 0 {
-		return
+		return true
 	}
+	var ret uintptr
 	if c.screenDCOwned {
-		procDeleteDC.Call(hdc) // CreateDC → DeleteDC
+		ret, _, _ = procDeleteDC.Call(hdc) // CreateDC → DeleteDC
 	} else {
-		procReleaseDC.Call(0, hdc) // GetDC → ReleaseDC
+		ret, _, _ = procReleaseDC.Call(0, hdc) // GetDC → ReleaseDC
 	}
+	return ret != 0
 }
 
 // releaseHandles frees all persistent GDI handles.
+//
+// Teardown results are checked rather than discarded. Handles are now rebuilt
+// on a thread change and after an unusable-handle frame, so a driver that
+// persistently rejects these calls would leak one DC and one bitmap PER FRAME
+// against the process-wide 10,000 GDI handle quota — and would do it invisibly,
+// because the capture failure itself is reported while the failed teardown
+// never was. Exhausting the quota breaks unrelated GDI calls elsewhere in the
+// agent, so the leak has to be visible before it gets there.
 func (c *gdiCapturer) releaseHandles() {
 	if !c.inited {
 		return
 	}
+	var failed []string
 	if c.oldBitmap != 0 && c.memDC != 0 {
-		procSelectObject.Call(c.memDC, c.oldBitmap)
+		if ret, _, _ := procSelectObject.Call(c.memDC, c.oldBitmap); ret == 0 {
+			failed = append(failed, "SelectObject(restore default bitmap)")
+		}
 	}
 	if c.hBitmap != 0 {
-		procDeleteObject.Call(c.hBitmap)
+		if ret, _, _ := procDeleteObject.Call(c.hBitmap); ret == 0 {
+			failed = append(failed, "DeleteObject(capture bitmap)")
+		}
 	}
 	if c.memDC != 0 {
-		procDeleteDC.Call(c.memDC)
+		if ret, _, _ := procDeleteDC.Call(c.memDC); ret == 0 {
+			failed = append(failed, "DeleteDC(memory DC)")
+		}
 	}
-	c.freeScreenDC(c.screenDC)
+	if !c.freeScreenDC(c.screenDC) {
+		failed = append(failed, "releasing the display DC")
+	}
+	if len(failed) > 0 {
+		c.recordTeardownFailureLocked(failed)
+	}
 	c.inited = false
 	c.screenDC = 0
 	c.screenDCOwned = false
@@ -298,6 +336,20 @@ func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
 		}
 		slog.Warn("GDI capture unavailable (returning no frame)", attrs...)
 		c.lastFailureLog = now
+	}
+}
+
+// recordTeardownFailureLocked reports GDI handles that Win32 refused to free.
+// Throttled hard: the interesting signal is "this is happening at all" and then
+// the running total, not one line per frame.
+func (c *gdiCapturer) recordTeardownFailureLocked(failed []string) {
+	c.teardownFailures++
+	now := time.Now()
+	if c.teardownFailures == 1 || now.Sub(c.lastTeardownLog) >= 30*time.Second {
+		slog.Warn("GDI handle teardown failed; handles may be leaking",
+			"operations", strings.Join(failed, ", "),
+			"totalTeardownFailures", c.teardownFailures)
+		c.lastTeardownLog = now
 	}
 }
 

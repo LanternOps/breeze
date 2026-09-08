@@ -57,10 +57,21 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 	if c.gdiNoFrameCount >= 15 && now.Sub(c.lastGDIRepair) >= 500*time.Millisecond {
 		c.lastGDIRepair = now
 		_ = c.switchToInputDesktop()
+		// Carry the swallowed capture error onto the replacement. Recreating the
+		// fallback otherwise resets it to nil, and LastCaptureError is the only
+		// channel by which a GDI failure reaches the technician (#5284) — a
+		// repair that discards the diagnosis hands StartSession an error-less
+		// capturer and puts the generic "no frame after N attempts" message
+		// back. Today the startup probe gives up long before this threshold, so
+		// this is guarding the invariant rather than a live bug; keeping it here
+		// means the two thresholds can be tuned independently without silently
+		// re-breaking the diagnostic.
+		var carried error
 		if c.gdiFallback != nil {
+			carried = c.gdiFallback.LastCaptureError()
 			_ = c.gdiFallback.Close()
 		}
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.gdiFallback = &gdiCapturer{config: c.config, lastCaptureErr: carried}
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
 	}

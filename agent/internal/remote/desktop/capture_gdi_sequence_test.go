@@ -217,8 +217,14 @@ func TestCaptureGDIFrameReportsBitBltErrno(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 	// #2160 saw this path and reported only "BitBlt failed".
-	if !strings.Contains(err.Error(), "BitBlt failed") || !strings.Contains(err.Error(), "6") {
-		t.Errorf("BitBlt failure must carry the Win32 code, got %q", err)
+	if !strings.Contains(err.Error(), "BitBlt failed") {
+		t.Errorf("BitBlt failure must name the call, got %q", err)
+	}
+	// Exact match, not strings.Contains: single-digit codes are substrings of
+	// the codes the fake injects elsewhere ("6" matches "6" in "0x6" but also
+	// any longer code), so a substring check can read green on the WRONG error.
+	if code, ok := win32ErrorCode(err); !ok || code != 6 {
+		t.Errorf("BitBlt failure must carry Win32 code 6, got %d (present=%v) in %q", code, ok, err)
 	}
 	if !errors.Is(err, syscall.Errno(6)) {
 		t.Errorf("errno must stay unwrappable, got %v", err)
@@ -239,8 +245,15 @@ func TestCaptureGDIFrameReportsGetDIBitsErrno(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if !strings.Contains(err.Error(), "GetDIBits failed") || !strings.Contains(err.Error(), "8") {
-		t.Errorf("GetDIBits failure must carry the Win32 code, got %q", err)
+	if !strings.Contains(err.Error(), "GetDIBits failed") {
+		t.Errorf("GetDIBits failure must name the call, got %q", err)
+	}
+	// Exact match. `strings.Contains(err, "8")` is satisfied by "87" — the code
+	// the fake returns for the selection-contract violation — so the substring
+	// form read green whether the injected errno or the #5284 regression
+	// produced the failure, i.e. it did not discriminate at all.
+	if code, ok := win32ErrorCode(err); !ok || code != 8 {
+		t.Errorf("GetDIBits failure must carry Win32 code 8, got %d (present=%v) in %q", code, ok, err)
 	}
 	// The bitmap must still be put back even on the failure path, so a later
 	// retry with the same handles is not silently blitting into nowhere.
