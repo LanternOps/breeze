@@ -184,6 +184,16 @@ type gdiFrameHandles struct {
 
 // captureGDIFrame performs exactly one GDI screen grab into dst (BGRA).
 func captureGDIFrame(ops gdiFrameOps, h gdiFrameHandles, bi *bitmapInfo, dst []byte) error {
+	// Bounds-check before handing the buffer to a syscall. GetDIBits writes
+	// width*height*4 bytes at &dst[0] with no idea how long the Go slice is, so
+	// a short buffer is heap corruption rather than an error — and an empty one
+	// panics on &dst[0]. The capturer keeps pixBuf and the BITMAPINFO in step,
+	// but this is the boundary where a mismatch would stop being recoverable.
+	if need := h.width * h.height * 4; h.width <= 0 || h.height <= 0 || len(dst) < need {
+		return fmt.Errorf("capture buffer is %d bytes, need %d for %dx%d",
+			len(dst), need, h.width, h.height)
+	}
+
 	// The errno of the CAPTUREBLT attempt is deliberately dropped: a driver
 	// that refuses CAPTUREBLT is an expected secure-desktop condition, and the
 	// errno that matters is the one from the plain-SRCCOPY retry below.

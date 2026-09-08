@@ -275,3 +275,39 @@ func countCalls(calls []string, name string) int {
 	}
 	return n
 }
+
+// GetDIBits writes width*height*4 bytes at &dst[0] regardless of how long the
+// Go slice actually is, so a short buffer would be heap corruption and an empty
+// one panics. The guard must reject both before any Win32 call runs.
+func TestCaptureGDIFrameRejectsUndersizedBuffer(t *testing.T) {
+	h := testHandles()
+	bi := newCaptureBitmapInfo(h.width, h.height)
+	full := h.width * h.height * 4
+
+	for _, tc := range []struct {
+		name string
+		dst  []byte
+		h    gdiFrameHandles
+	}{
+		{"empty buffer", nil, h},
+		{"one byte short", make([]byte, full-1), h},
+		{"zero width", make([]byte, full), gdiFrameHandles{memDC: h.memDC, screenDC: h.screenDC, hBitmap: h.hBitmap, oldBitmap: h.oldBitmap, width: 0, height: h.height}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGDI(h)
+			err := captureGDIFrame(f, tc.h, &bi, tc.dst)
+			if err == nil {
+				t.Fatal("expected the frame to be rejected")
+			}
+			if len(f.calls) != 0 {
+				t.Errorf("no Win32 call may run with a bad buffer, got %v", f.calls)
+			}
+		})
+	}
+
+	// An oversized buffer is fine — pixBuf is reused across resolutions.
+	f := newFakeGDI(h)
+	if err := captureGDIFrame(f, h, &bi, make([]byte, full*2)); err != nil {
+		t.Errorf("an oversized buffer must be accepted, got %v", err)
+	}
+}
