@@ -12,6 +12,7 @@ import {
   Loader2,
   ShieldOff
 } from 'lucide-react';
+import * as Sentry from '@sentry/astro';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
@@ -504,6 +505,15 @@ export default function RemoteToolsPage({
       const response = await fetchWithAuth(`/devices/${deviceId}`);
       if (!response.ok) {
         console.error(`[RemoteToolsPage] Failed to load device info: HTTP ${response.status}`);
+        // #5250 — this fetch is now a load-bearing live-update path (the
+        // desktopAccess event's "value not in payload" fallback, and the
+        // visibility-regain refetch below), not just a one-shot mount call.
+        // A silent failure here reproduces the exact staleness this fix
+        // closes, with nothing in telemetry to show it happened.
+        Sentry.captureMessage('RemoteToolsPage failed to refresh device info', {
+          level: 'warning',
+          extra: { deviceId, status: response.status },
+        });
         return;
       }
       const data: DeviceApiResponse = await response.json();
@@ -516,6 +526,7 @@ export default function RemoteToolsPage({
       setHelperLifecycleMode(data.helperLifecycleMode ?? null);
     } catch (error) {
       console.error('Failed to load device info:', error);
+      Sentry.captureException(error, { extra: { deviceId } });
     }
   }, [deviceId, deviceName]);
 

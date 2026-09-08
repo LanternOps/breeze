@@ -81,8 +81,11 @@ beforeEach(() => {
   });
 });
 
+const originalVisibilityState = document.visibilityState;
+
 afterEach(() => {
   cleanup();
+  Object.defineProperty(document, 'visibilityState', { value: originalVisibilityState, configurable: true });
 });
 
 const renderPage = () =>
@@ -172,6 +175,118 @@ describe('RemoteToolsPage live desktopAccess updates (#5250)', () => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
+    await waitFor(() =>
+      expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^user_session$/),
+    );
+  });
+
+  // #5250 review — the happy-path test above only proved recovery
+  // (unavailable → available); the helper DROPPING mid-session while the
+  // page stays open is at least as important (it is a security-relevant
+  // "is remote access still live" signal) and the handler code is
+  // symmetric today, but nothing pinned that until this test.
+  it('flips Connect Desktop from available to unavailable on a device.updated desktopAccess event (degrading transition)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/devices/${DEVICE_ID}`) {
+        return makeResponse({
+          hostname: 'mac-canary-01',
+          osType: 'macos',
+          isHeadless: false,
+          desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+        });
+      }
+      return makeResponse({}, false);
+    });
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^user_session$/),
+    );
+
+    emitDeviceEvent({
+      type: 'device.updated',
+      payload: {
+        deviceId: DEVICE_ID,
+        fields: ['desktopAccess'],
+        desktopAccess: {
+          mode: 'unavailable',
+          loginUiReachable: false,
+          virtualDisplayReady: false,
+          reason: 'helper_not_connected',
+          checkedAt: '2026-09-08T12:00:00.000Z',
+        },
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^unavailable$/),
+    );
+  });
+
+  // #5250 review — nothing previously exercised the `fields` guard itself on
+  // this page (the "different device" test exercises a different
+  // early-return); a device.updated event whose fields name something else
+  // entirely (e.g. agentVersion) must not touch desktopAccess.
+  it('ignores a device.updated event whose fields do not include desktopAccess', async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^unavailable$/),
+    );
+
+    emitDeviceEvent({
+      type: 'device.updated',
+      payload: {
+        deviceId: DEVICE_ID,
+        fields: ['agentVersion'],
+        agentVersion: '0.110.0',
+      },
+    });
+
+    expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^unavailable$/);
+  });
+
+  // #5250 review — the handler's fallback branch (fields names desktopAccess
+  // but the payload doesn't carry a value, e.g. an older API build) was
+  // entirely untested: it must refetch rather than silently do nothing.
+  it('refetches when a device.updated event names desktopAccess but the payload omits the value', async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^unavailable$/),
+    );
+
+    const fetchCallsBeforeEvent = fetchMock.mock.calls.filter(([url]) => url === `/devices/${DEVICE_ID}`).length;
+
+    // Helper recovers server-side; the event names the field but (as an
+    // older API build would) carries no value, so the page must fall back
+    // to a fetch rather than silently doing nothing.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === `/devices/${DEVICE_ID}`) {
+        return makeResponse({
+          hostname: 'mac-canary-01',
+          osType: 'macos',
+          isHeadless: false,
+          desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-08T12:00:00.000Z' },
+        });
+      }
+      return makeResponse({}, false);
+    });
+
+    emitDeviceEvent({
+      type: 'device.updated',
+      payload: {
+        deviceId: DEVICE_ID,
+        fields: ['desktopAccess'],
+        // No `desktopAccess` key at all.
+      },
+    });
+
+    await waitFor(() => {
+      const callsAfter = fetchMock.mock.calls.filter(([url]) => url === `/devices/${DEVICE_ID}`).length;
+      expect(callsAfter).toBeGreaterThan(fetchCallsBeforeEvent);
+    });
     await waitFor(() =>
       expect(screen.getByTestId('connect-desktop-mode')).toHaveTextContent(/^user_session$/),
     );
