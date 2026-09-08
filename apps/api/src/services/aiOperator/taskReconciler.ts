@@ -54,6 +54,26 @@ import {
 } from '../aiOperatorCoordinatorMetrics';
 import { parseTaskCheckpoint } from './taskService';
 
+/**
+ * A NOTE ON EVERY `${...}` BELOW THAT CARRIES A TIMESTAMP.
+ *
+ * Each one is `${date.toISOString()}::timestamptz`, never a bare `${date}`.
+ * A `Date` interpolated into a raw drizzle `sql` fragment is bound as a
+ * parameter that postgres.js then tries to serialise as a string, and it
+ * throws `TypeError: The "string" argument must be of type string or an
+ * instance of Buffer or ArrayBuffer. Received an instance of Date` at bind
+ * time — BEFORE the statement ever reaches Postgres. Nothing catches this at
+ * compile time and nothing catches it in a mocked test, because the generated
+ * SQL is correct; only a real connection fails. (Confirmed here: the first
+ * version of this file threw exactly that on all four scans, and
+ * `aiOperatorRecovery.integration.test.ts` is what found it.)
+ *
+ * The explicit `::timestamptz` cast is not decoration either: a bare text
+ * parameter compared against a `timestamptz` column can defeat the partial
+ * index's predicate proof, which would quietly turn these bounded scans into
+ * sequential ones under forced RLS.
+ */
+
 /** Rows claimed per set per pass (spec §11.2's proposed 50). */
 export const RECONCILER_SCAN_LIMIT = 50;
 
@@ -131,8 +151,8 @@ async function selectQueuedPastWake(now: Date): Promise<TaskRef[]> {
   return claimRefs(sql`
     SELECT id, org_id FROM ai_operator_tasks
     WHERE state = 'queued'
-      AND (next_wake_at IS NULL OR next_wake_at <= ${now})
-      AND updated_at < ${new Date(now.getTime() - QUEUED_GRACE_MS)}
+      AND (next_wake_at IS NULL OR next_wake_at <= ${now.toISOString()}::timestamptz)
+      AND updated_at < ${new Date(now.getTime() - QUEUED_GRACE_MS).toISOString()}::timestamptz
     ORDER BY next_wake_at NULLS FIRST
     LIMIT ${RECONCILER_SCAN_LIMIT}
     FOR UPDATE SKIP LOCKED
@@ -151,7 +171,7 @@ async function selectWaitingPastWake(now: Date): Promise<TaskRef[]> {
     SELECT id, org_id FROM ai_operator_tasks
     WHERE state = 'waiting'
       AND next_wake_at IS NOT NULL
-      AND next_wake_at <= ${now}
+      AND next_wake_at <= ${now.toISOString()}::timestamptz
     ORDER BY next_wake_at
     LIMIT ${RECONCILER_SCAN_LIMIT}
     FOR UPDATE SKIP LOCKED
@@ -173,7 +193,7 @@ async function selectRunningPastLease(now: Date): Promise<TaskRef[]> {
     SELECT id, org_id FROM ai_operator_tasks
     WHERE state IN ('running', 'stopping')
       AND lease_expires_at IS NOT NULL
-      AND lease_expires_at <= ${now}
+      AND lease_expires_at <= ${now.toISOString()}::timestamptz
     ORDER BY lease_expires_at
     LIMIT ${RECONCILER_SCAN_LIMIT}
     FOR UPDATE SKIP LOCKED
@@ -345,7 +365,7 @@ async function publishCensus(now: Date): Promise<void> {
       withSystemDbAccessContext(async () => {
         const raw = await db.execute(sql`
           SELECT state, count(*)::int AS n,
-                 max(EXTRACT(EPOCH FROM (${now} - updated_at)))::int AS oldest_age_seconds
+                 max(EXTRACT(EPOCH FROM (${now.toISOString()}::timestamptz - updated_at)))::int AS oldest_age_seconds
           FROM ai_operator_tasks
           WHERE state IN ('queued', 'running', 'waiting', 'paused', 'stopping')
           GROUP BY state

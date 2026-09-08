@@ -845,7 +845,16 @@ async function writeLeasedStep(
       // Due immediately: the very next tick continues from the new step.
       nextWakeAt: new Date(),
       leaseOwner: null,
-      leaseExpiresAt: null,
+      // AN ALREADY-EXPIRED LEASE, NOT A NULL ONE. This is load-bearing and it
+      // was a real bug: the task stays `running` here (it has more work to do
+      // this instant, it is not waiting on anything), and the ONLY recovery
+      // scan that selects a `running` task is set 3, whose predicate is
+      // `lease_expires_at IS NOT NULL AND lease_expires_at <= now()`. Nulling
+      // the lease therefore made the row invisible to all four scans and to
+      // the poll path — a task stranded in `running` forever, with no error
+      // anywhere. Leaving an expired lease says exactly what is true: nobody
+      // holds this, and it is due now.
+      leaseExpiresAt: new Date(Date.now() - 1),
     },
   });
 }

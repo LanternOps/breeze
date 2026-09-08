@@ -999,7 +999,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // reason the publisher is — it touches Postgres and Redis only, never a
     // live agent socket.
     name: 'aiOperatorTaskWorker',
-    placement: 'global',
+    // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
+    // below, and for the same reason. The coordinator's verification step
+    // issues a real `list_services` device read (`actVerify.ts`), so its
+    // runtime import closure reaches `routes/agentWs.ts` via
+    // `services/agentCommandAwait.ts`. On a non-socket-owner process that
+    // reach fails SILENTLY rather than loudly, which would quietly turn every
+    // criterion evaluation `inconclusive` and hand off tasks that had in fact
+    // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
+    // is exactly what that contract exists for (#4086).
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/aiOperatorTaskWorker');
       return {
