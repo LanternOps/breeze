@@ -297,7 +297,8 @@ Executes a script from the Breeze script library on each target device.
   "type": "run_script",
   "scriptId": "uuid",
   "parameters": { "param1": "value" },
-  "runAs": "system"
+  "runAs": "system",
+  "whenOffline": "queue"
 }
 ```
 
@@ -306,6 +307,7 @@ Executes a script from the Breeze script library on each target device.
 | `scriptId` | Yes | UUID of the script in the library |
 | `parameters` | No | Key-value pairs passed to the script at runtime |
 | `runAs` | No | Execution context: `system`, `user`, or `elevated`. Defaults to `system` |
+| `whenOffline` | No | What to do when a target device is offline: `queue` (default) delivers the run automatically on the device's next successful heartbeat, up to a 7-day deadline; `skip` fails that device immediately instead of waiting. |
 
 In the automation editor this appears as the **Run as** selector, with a **Script default** option that leaves the choice to the script itself. There is no target-session picker here, unlike a run started from a single device: an automation fans out across many machines, so naming one signed-in session would mean nothing.
 
@@ -357,7 +359,8 @@ Runs a raw shell command on each target device.
 {
   "type": "execute_command",
   "command": "systemctl restart nginx",
-  "shell": "bash"
+  "shell": "bash",
+  "whenOffline": "queue"
 }
 ```
 
@@ -365,6 +368,7 @@ Runs a raw shell command on each target device.
 |-------|----------|-------------|
 | `command` | Yes | The shell command to execute |
 | `shell` | No | Shell to use: `bash`, `powershell`, or `cmd`. Defaults based on device OS |
+| `whenOffline` | No | What to do when a target device is offline: `queue` (default) delivers the command automatically on the device's next successful heartbeat, up to a 7-day deadline; `skip` fails that device immediately instead of waiting. |
 
 ### deploy_software
 
@@ -516,5 +520,5 @@ Verify the URL is `/automations/webhooks/:id` where `:id` is the automation's UU
 **Run status is `partial`.**
 Retrieve the full run detail via `GET /automations/runs/:runId` and examine the `logs` array for entries with `level: "error"`. If `onFailure` was `continue` or `notify`, later actions may have still executed on devices that had earlier failures — review logs per `actionIndex` separately.
 
-**Script action failing.**
-The script referenced by `scriptId` must exist in the library and be accessible to the automation's organization. Target devices must be online when the run executes — offline devices produce a failure entry in the run logs.
+**Script/command action failing.**
+The script referenced by `scriptId` must exist in the library and be accessible to the automation's organization. For `run_script` and `execute_command` actions, an offline target device is not an automatic failure: by default (`whenOffline: queue`) the run is queued and delivered on the device's next successful heartbeat, up to a 7-day deadline. Set `whenOffline: skip` on the action if you want an offline device to produce an immediate failure entry in the run logs instead.
