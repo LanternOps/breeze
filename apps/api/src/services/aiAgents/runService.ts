@@ -622,10 +622,27 @@ export async function reapStalledAgentRuns(scope: {
     // single bulk UPDATE's WHERE clause would also have excluded. Sequential
     // (not parallel) deliberately: there are at most a handful of stalled
     // rows for one (agent, org) pair.
-    const moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
-      errorCode: 'stalled',
-      finishedAt: new Date(),
-    }, stale);
+    //
+    // PER-ROW try/catch (#5205 W06): `transitionRunStatus` gained a
+    // task-outbox insert inside its own transaction, so it can now THROW
+    // where it previously could only return false. This loop runs inside
+    // `createAndEnqueueAgentRun`'s advisory-lock-guarded admission
+    // transaction, so an escaping exception would abort the admission of a
+    // brand-new run for this (agent, org) — including the very retry a stuck
+    // task is attempting. One un-reapable row must not become an
+    // agent-wide outage. Same posture, and the same reason, as
+    // `taskReconciler.ts`'s per-task catch.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
+        errorCode: 'stalled',
+        finishedAt: new Date(),
+      }, stale);
+    } catch (error) {
+      console.error('[aiAgentRunService] failed to reap a stalled run; continuing', {
+        runId: row.id, agentId: scope.agentId, orgId: scope.orgId, error,
+      });
+    }
     if (moved) reapedIds.push(row.id);
   }
   if (reapedIds.length === 0) return [];

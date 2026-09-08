@@ -59,7 +59,7 @@ import {
   taskRunDedupeKey,
   validateNextStep,
 } from './recipes/serviceRecovery';
-import { parseTaskCheckpoint } from './taskService';
+import { parseTaskCheckpointResult } from './taskService';
 import { evaluateCriterion } from './verification';
 import {
   classifyDeviceCommandEvidence,
@@ -178,7 +178,7 @@ async function writeLeased(args: {
   leaseEpoch: number;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
 }): Promise<boolean> {
-  return runOutsideDbContext(() =>
+  const committed = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const rows = await db
         .update(aiOperatorTasks)
@@ -192,17 +192,24 @@ async function writeLeased(args: {
         .returning({ id: aiOperatorTasks.id });
       return rows.length === 1;
     }));
-}
 
-/** Release the lease without changing state, so another tick can pick it up. */
-async function releaseLease(task: AiOperatorTaskRow, leaseEpoch: number): Promise<void> {
-  await writeLeased({
-    orgId: task.orgId,
-    taskId: task.id,
-    revision: task.revision,
-    leaseEpoch,
-    patch: { leaseOwner: null, leaseExpiresAt: null },
-  });
+  // A lost CAS is EXPECTED and self-healing — another coordinator reclaimed
+  // the lease and is advancing this task instead, and the reconciler's
+  // `running_past_lease` scan is a second backstop. It is NOT an error.
+  //
+  // But it must not be invisible either. The step functions below deliberately
+  // do not branch on the return value (there is nothing useful for a stale
+  // coordinator to DO except stop, which it does by returning), so without
+  // this line a genuinely stuck case — a reclaimer that died between taking
+  // the lease and following through — would be indistinguishable from the
+  // healthy race, and the only symptom would be the waiting-age gauge drifting
+  // up with no explanation anywhere.
+  if (!committed) {
+    console.warn('[aiOperator] stale coordinator lost its lease CAS; another holder owns this task', {
+      taskId: args.taskId, orgId: args.orgId, revision: args.revision, leaseEpoch: args.leaseEpoch,
+    });
+  }
+  return committed;
 }
 
 /** Move the task to a typed wait and release. */
@@ -249,8 +256,7 @@ async function settle(args: {
   handoffSummary?: string;
   checkpoint?: TaskCheckpoint;
 }): Promise<boolean> {
-  if (args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
-  return writeLeased({
+  const committed = await writeLeased({
     orgId: args.task.orgId,
     taskId: args.task.id,
     revision: args.task.revision,
@@ -270,6 +276,17 @@ async function settle(args: {
       leaseExpiresAt: null,
     },
   });
+
+  // AFTER the write, never before. `ai_operator_unknown_effect_handoffs_total`
+  // is described in its own registration as "the metric that says the system
+  // is refusing to guess, and it should be rare enough to alert on" — so it
+  // has to count handoffs that actually happened. Incrementing ahead of the
+  // CAS counted a transition that may have lost its lease and written
+  // nothing, and double-counted whenever the reclaiming coordinator
+  // independently re-derived the same verdict. An alerting metric that
+  // over-reports is worse than none: it trains the reader to ignore it.
+  if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
+  return committed;
 }
 
 /**
@@ -375,14 +392,17 @@ async function admitReasoningRun(args: {
  * return holding it.
  */
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
-  const checkpoint = parseTaskCheckpoint(task.checkpoint);
-  if (!checkpoint) {
+  const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
+  if (!parsedCheckpoint.ok) {
     await settle({
       task, leaseEpoch, event: 'fail', outcome: 'unresolved',
-      detail: 'task checkpoint does not conform to the current schema',
+      // The zod issues, not just "it did not conform" — this terminalizes the
+      // task, so the message is the only forensic trail there will ever be.
+      detail: `task checkpoint does not conform to the current schema: ${parsedCheckpoint.detail}`,
     });
     return 'failed: unparseable checkpoint';
   }
+  const checkpoint = parsedCheckpoint.checkpoint;
 
   const now = new Date();
 

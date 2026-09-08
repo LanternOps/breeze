@@ -164,7 +164,21 @@ async function verifyServiceRunning(
     return { verification: 'inconclusive', detail: `service status read did not complete (${result.status})` };
   }
   const parsed = parseCommandResult(result.stdout ?? '{}');
-  const services = Array.isArray(parsed?.services) ? parsed!.services as unknown[] : [];
+  // An UNPARSEABLE or malformed read-back is not evidence that the service is
+  // stopped — it is evidence that we did not read the service state at all.
+  // Collapsing it to `services: []` (as this did) made a truncated or garbled
+  // agent response indistinguishable from a genuine "service confirmed not
+  // running", which then reads as a real negative: for an AI Operator task
+  // that authorizes another restart attempt, and eventually a handoff telling
+  // a technician the service is still down when nobody ever looked.
+  //
+  // `verifyProcessAbsent` below has always guarded this case, and its comment
+  // claims this function "already treats the analogous case conservatively" —
+  // which was not true until now. Both agree from here.
+  if (!parsed || !Array.isArray(parsed.services)) {
+    return { verification: 'inconclusive', detail: 'service list read-back was not parseable' };
+  }
+  const services = parsed.services as unknown[];
   const match = services.find((s): s is { name: string; status: string } =>
     typeof s === 'object' && s !== null
     && typeof (s as { name?: unknown }).name === 'string'

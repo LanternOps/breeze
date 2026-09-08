@@ -40,8 +40,11 @@
  */
 
 import { and, eq } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import {
+  db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext,
+} from '../../db';
 import { aiAgentFixWatches } from '../../db/schema/aiAgentFixWatches';
+import { devices } from '../../db/schema/devices';
 import { verifyServiceRunningForTask } from '../aiAgents/actVerify';
 import type { TaskCriterion, TaskVerificationResult } from '@breeze/shared';
 import type { AiOperatorTaskOutcome } from '../../db/schema/aiOperatorTasks';
@@ -65,13 +68,58 @@ export interface CriterionEvaluation {
   awaitingWindow: boolean;
 }
 
-/** Half (a) only, exposed so the recipe can take a pre-action baseline. */
+/**
+ * Half (a) only, exposed so the recipe can take a pre-action baseline.
+ *
+ * THE ORG CHECK IS NOT DECORATION. `verifyServiceRunningForTask` ends up in
+ * `executeCommandWithSystemPrecheck`, whose `precheckCommandExecution`
+ * (`commandQueue.ts`) resolves the device with `WHERE devices.id = $1` and NO
+ * org predicate, under a SYSTEM scope that bypasses RLS. Its comment calls
+ * that read "RLS-protected", which is true of the request paths it was
+ * written for and false of the system path.
+ *
+ * For a short-lived act-mode run that is academic — the device id came from
+ * the run's own org moments earlier. For a DURABLE TASK it is not: a task can
+ * sit `waiting` for days (that is the entire point of this wave), and a
+ * device can be moved to another organization in the meantime. Without the
+ * check below, verification would then dispatch a live `list_services`
+ * command to a device in a DIFFERENT tenant, attributed to the original org's
+ * frozen agent principal — an active cross-tenant command dispatch, not
+ * merely a stale read.
+ *
+ * So the device's membership is re-validated under the task's OWN org RLS
+ * context first, exactly as `deviceCommandEvidence.readDeviceCommandEvidence`
+ * does for the observe step. A device that has left the org yields
+ * `inconclusive` — never `failed`, because nothing was actually learned about
+ * the service, and `failed` would authorize another restart attempt.
+ */
 export async function readServiceRunning(args: {
   orgId: string;
   deviceId: string;
   serviceName: string;
   agentUserId: string;
 }): Promise<{ verdict: 'passed' | 'failed' | 'inconclusive'; detail: string; observedAt: Date }> {
+  const owned = await runOutsideDbContext(() =>
+    withDbAccessContext(
+      { scope: 'organization', orgId: args.orgId, accessibleOrgIds: [args.orgId] },
+      async () => {
+        const [row] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.id, args.deviceId), eq(devices.orgId, args.orgId)))
+          .limit(1);
+        return row ?? null;
+      },
+    ));
+
+  if (!owned) {
+    return {
+      verdict: 'inconclusive',
+      detail: 'the target device is no longer in this organization',
+      observedAt: new Date(),
+    };
+  }
+
   const outcome = await verifyServiceRunningForTask(
     { serviceName: args.serviceName },
     { deviceId: args.deviceId },

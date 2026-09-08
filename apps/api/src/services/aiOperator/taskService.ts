@@ -209,6 +209,38 @@ export interface TaskFence {
 }
 
 /**
+ * Whether a task in this shape must refuse NEW reasoning and NEW effects
+ * (spec §7.3), as a PURE function.
+ *
+ * Extracted from `loadTaskFence` so the predicate is exhaustively testable
+ * without a database — it is the check the run loop's pre-tool hook makes on
+ * every single tool call, and the consequence of getting it wrong is a
+ * cancelled or expired task whose in-flight run keeps proposing effects.
+ * Three independent reasons, any one of which fences:
+ *
+ *  1. the state itself (`paused`, `stopping`, or any terminal state);
+ *  2. the target is detached — the device moved org or was deleted, so the
+ *     frozen scope no longer resolves to anything this task may touch;
+ *  3. the deadline has passed. Fenced from the INSTANT it passes, not from
+ *     the instant a poller notices: spec §7.3 says expiry "stops new effects
+ *     like cancellation", and a reconciler tick is up to 15 seconds away.
+ *
+ * A null `deadlineAt` does NOT fence here, deliberately: admission always sets
+ * one, and the place that fails closed on its absence is the dispatch claim
+ * (`evaluateTaskClaimPredicate`, "absence of a bound is not permission"),
+ * which is the linearization point. Fencing on it here as well would only
+ * change which of the two refuses first.
+ */
+export function isTaskFenced(
+  task: { state: string; targetDetachedAt: Date | null; deadlineAt: Date | null },
+  now: Date = new Date(),
+): boolean {
+  if (admissionFenced(task.state)) return true;
+  if (task.targetDetachedAt !== null) return true;
+  return task.deadlineAt !== null && task.deadlineAt.getTime() <= now.getTime();
+}
+
+/**
  * Read the fence state of a task.
  *
  * Used by the run loop's pre-tool hook: spec §7.3 says a cancelled task
@@ -245,20 +277,40 @@ export async function loadTaskFence(orgId: string, taskId: string): Promise<Task
         leaseEpoch: row.leaseEpoch,
         deadlineAt: row.deadlineAt ?? null,
         targetDetachedAt: row.targetDetachedAt ?? null,
-        fenced:
-          admissionFenced(state)
-          || row.targetDetachedAt !== null
-          // A passed deadline fences immediately, without waiting for the
-          // reconciler to move the row to `stopping`. Expiry "stops new
-          // effects like cancellation" (spec §7.3) from the instant it
-          // passes, not from the instant a poller notices.
-          || (row.deadlineAt !== null && row.deadlineAt.getTime() <= Date.now()),
+        fenced: isTaskFenced({
+          state,
+          targetDetachedAt: row.targetDetachedAt ?? null,
+          deadlineAt: row.deadlineAt ?? null,
+        }),
       };
     }));
 }
 
-/** Parse a stored checkpoint, or null when it does not conform. */
-export function parseTaskCheckpoint(value: unknown): TaskCheckpoint | null {
+/**
+ * Parse a stored checkpoint.
+ *
+ * Returns the reason on failure rather than a bare `null`: the only caller
+ * TERMINALIZES the task on a parse failure, and doing that with the detail
+ * `'task checkpoint does not conform to the current schema'` and nothing else
+ * leaves whoever has to debug it with no field, no value and no way to tell a
+ * schema migration from a corrupt write.
+ */
+export function parseTaskCheckpointResult(
+  value: unknown,
+): { ok: true; checkpoint: TaskCheckpoint } | { ok: false; detail: string } {
   const parsed = taskCheckpointSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  if (parsed.success) return { ok: true, checkpoint: parsed.data };
+  return {
+    ok: false,
+    detail: parsed.error.issues
+      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('; ')
+      .slice(0, 400),
+  };
+}
+
+/** Convenience wrapper for callers that only need the value. */
+export function parseTaskCheckpoint(value: unknown): TaskCheckpoint | null {
+  const parsed = parseTaskCheckpointResult(value);
+  return parsed.ok ? parsed.checkpoint : null;
 }

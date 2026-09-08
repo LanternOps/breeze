@@ -173,6 +173,18 @@ export function classifyDeviceCommandEvidence(
   if (evidence.status === 'cancelled') {
     return { state: 'finished', outcome: 'failed' };
   }
-  // pending / sent / running, or any status this module has not been taught.
+  if (evidence.status === 'pending' || evidence.status === 'sent' || evidence.status === 'running') {
+    return { state: 'pending' };
+  }
+
+  // A status this module has not been taught. Treated as still-in-flight,
+  // which is the SAFE default (it cannot fabricate a result), and bounded by
+  // the recipe's unknown-effect horizon so it cannot strand a task. But it is
+  // logged rather than silently absorbed: a new terminal `device_commands`
+  // status added elsewhere would otherwise read as "in flight" for the whole
+  // horizon, with nothing anywhere pointing at the real cause.
+  console.warn('[aiOperator] unrecognized device_commands status; treating as pending', {
+    commandId: evidence.commandId, status: evidence.status, resultStatus: evidence.resultStatus,
+  });
   return { state: 'pending' };
 }

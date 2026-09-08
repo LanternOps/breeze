@@ -61,6 +61,7 @@ import { alertCorrelationGroups, alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
 import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
@@ -1898,10 +1899,28 @@ export async function executeAgentRun(runId: string): Promise<void> {
         ? 'ownership_mismatch'
         : 'run_failed';
     console.error('[aiAgentRunLoop] agent run failed', { runId, errorCode, error });
-    const moved = await transitionRunStatus(runId, 'running', 'failed', {
-      errorCode,
-      finishedAt: new Date(),
-    });
+    // This is the LAST-RESORT terminalization: the runner queue is
+    // `attempts: 1` (replaying a crashed run could re-invoke tools that
+    // already had real-world effects), so if this throws, the row stays
+    // `running` forever and any AI Operator task waiting on it re-arms its
+    // poll until its own deadline fires — with nothing anywhere explaining
+    // why. `transitionRunStatus` gained a task-outbox insert inside its
+    // transaction in #5205 W06 and can now throw where it previously could
+    // only return false, so the fallback needs a fallback.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(runId, 'running', 'failed', {
+        errorCode,
+        finishedAt: new Date(),
+      });
+    } catch (terminalError) {
+      console.error('[aiAgentRunLoop] could not terminalize a failed run', {
+        runId, orgId: run.orgId, errorCode, terminalError,
+      });
+      captureException(
+        terminalError instanceof Error ? terminalError : new Error(String(terminalError)),
+      );
+    }
     if (moved) {
       await safePublish('ai.agent.run.failed', run.orgId, {
         runId, agentId: run.agentId, errorCode,

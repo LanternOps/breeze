@@ -46,6 +46,7 @@ import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext'
 import { createActionIntent, transitionIntent } from '../../services/actionIntents/intentService';
 import { claimTaskLinkedIntentForDispatch } from '../../services/aiOperator/dispatchClaim';
 import { claimTaskLease, TASK_LEASE_MS } from '../../services/aiOperator/taskCoordinator';
+import { readServiceRunning } from '../../services/aiOperator/verification';
 import {
   createAndEnqueueAgentRun,
   transitionRunStatus,
@@ -671,6 +672,59 @@ describe('AI Operator run-terminal outbox (real Postgres)', () => {
     const rows = await withSystemDbAccessContext(() =>
       db.select().from(aiOperatorTaskOutbox).where(eq(aiOperatorTaskOutbox.taskId, task.id)));
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('AI Operator verification device scoping (real Postgres)', () => {
+  runDb('refuses to read service state on a device that has left the org', async () => {
+    // THE CROSS-TENANT DISPATCH GUARD (review finding, 2026-09-08).
+    //
+    // `readServiceRunning` ends up in `executeCommandWithSystemPrecheck`,
+    // whose `precheckCommandExecution` resolves the device with
+    // `WHERE devices.id = $1` and NO org predicate, under a system scope that
+    // bypasses RLS. For a short-lived act-mode run that is academic. For a
+    // DURABLE task — which can sit `waiting` for days, which is the point of
+    // this wave — it is not: a device moved to another organization in the
+    // meantime would still receive a live `list_services` command attributed
+    // to the original org's frozen agent principal.
+    //
+    // This test drives the REAL `readServiceRunning` against a device that is
+    // genuinely in another org and asserts it never gets that far. If the
+    // ownership probe were removed, the call would proceed to a device
+    // dispatch instead of returning `inconclusive` here.
+    const a = await seedTenant();
+    const b = await seedTenant();
+
+    const result = await readServiceRunning({
+      orgId: a.orgId,
+      // b's device — the "moved to another tenant" case.
+      deviceId: b.deviceId,
+      serviceName: 'spooler',
+      agentUserId: a.agentId,
+    });
+
+    expect(result.verdict).toBe('inconclusive');
+    expect(result.detail).toMatch(/no longer in this organization/i);
+    // `inconclusive`, NOT `failed` — nothing was learned about the service,
+    // and `failed` would authorize another restart attempt.
+    expect(result.verdict).not.toBe('failed');
+  });
+
+  runDb('reads normally for a device that IS in the org', async () => {
+    // The control: without it the assertion above would pass just as happily
+    // against an implementation that refused unconditionally. The device is
+    // offline in this fixture, so the read cannot complete — but it gets PAST
+    // the ownership probe, which is what distinguishes the two paths.
+    const t = await seedTenant();
+
+    const result = await readServiceRunning({
+      orgId: t.orgId,
+      deviceId: t.deviceId,
+      serviceName: 'spooler',
+      agentUserId: t.agentId,
+    });
+
+    expect(result.detail).not.toMatch(/no longer in this organization/i);
   });
 });
 
