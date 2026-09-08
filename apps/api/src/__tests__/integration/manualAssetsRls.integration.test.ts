@@ -239,6 +239,54 @@ describe('manual_assets tenant isolation (#4622)', () => {
     expect(linked[0]!.linked_device_id).toBe(deviceA!.id);
   });
 
+  runDb('nulls only the link column when a linked parent row is deleted', async () => {
+    // The three optional links are `ON DELETE SET NULL (<col>)`, not a bare SET
+    // NULL. On a COMPOSITE FK the bare form nulls every referencing column —
+    // here that includes org_id, which is NOT NULL — so deleting a linked
+    // device would raise 23502 and abort GDPR org erasure part-way through
+    // (#4100). This is the behavioural proof of the column-list form;
+    // orgCascadeFkOnDelete.integration.test.ts is the static ledger for it.
+    const { orgA, siteA } = await seedTwoTenants();
+    const [device] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId: orgA.id,
+        siteId: siteA.id,
+        agentId: `ma-del-${randomUUID()}`,
+        hostname: 'ma-del',
+        osType: 'linux',
+        osVersion: '1',
+        architecture: 'amd64',
+        agentVersion: '0.99.0',
+        status: 'online',
+      })
+      .returning({ id: devices.id });
+    const name = `survives-${randomUUID()}`;
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`
+        INSERT INTO manual_assets (org_id, site_id, name, linked_device_id)
+        VALUES (${orgA.id}::uuid, ${siteA.id}::uuid, ${name}, ${device!.id}::uuid)
+      `),
+    );
+
+    const deleted = await causeOf(() =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`DELETE FROM devices WHERE id = ${device!.id}::uuid`),
+      ),
+    );
+    expect(
+      deleted,
+      `deleting a linked device must not 23502 on manual_assets.org_id, got ${deleted?.code}: ${deleted?.message}`,
+    ).toBeUndefined();
+
+    const after = (await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT org_id, linked_device_id FROM manual_assets WHERE name = ${name}`),
+    )) as unknown as Array<{ org_id: string; linked_device_id: string | null }>;
+    expect(after, 'the inventory row must survive the device it pointed at').toHaveLength(1);
+    expect(after[0]!.linked_device_id).toBeNull();
+    expect(after[0]!.org_id, 'the tenant key must NOT be collateral damage').toBe(orgA.id);
+  });
+
   runDb('refuses a cross-org contact and a cross-org discovered asset', async () => {
     const { orgA, orgB, siteA, siteB } = await seedTwoTenants();
 

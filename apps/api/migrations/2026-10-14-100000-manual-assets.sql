@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS manual_assets (
 -- Composite tenant FKs. Every one is DEFERRABLE INITIALLY IMMEDIATE: org merge
 -- runs SET CONSTRAINTS ALL DEFERRED and re-points parent and child org_id in
 -- separate statements; a non-deferrable constraint aborts the merge with 23503.
+--
+-- The three optional links use the COLUMN-LIST form `ON DELETE SET NULL (col)`
+-- (PG 15+; precedent: 2026-10-04-100002-portal-users-contact-composite-fk.sql,
+-- 2026-10-06-100100-contract-lines-device-group.sql). A bare SET NULL on a
+-- COMPOSITE FK nulls EVERY referencing column — here that includes org_id,
+-- which is NOT NULL, so deleting a linked device/contact/discovered asset would
+-- raise 23502 and abort GDPR org erasure part-way through (#4100). The column
+-- list restricts the null to the link column and leaves the tenant key intact.
+-- orgCascadeFkOnDelete.integration.test.ts (Integration Tests shard 1) reads
+-- pg_constraint.confdelsetcols and fails any set-null-onto-not-null edge.
 DO $$ BEGIN
   ALTER TABLE manual_assets
     ADD CONSTRAINT manual_assets_site_org_fk
@@ -55,7 +65,7 @@ DO $$ BEGIN
   ALTER TABLE manual_assets
     ADD CONSTRAINT manual_assets_linked_device_org_fk
     FOREIGN KEY (linked_device_id, org_id) REFERENCES devices(id, org_id)
-    ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
+    ON DELETE SET NULL (linked_device_id) DEFERRABLE INITIALLY IMMEDIATE;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
@@ -63,7 +73,7 @@ DO $$ BEGIN
   ALTER TABLE manual_assets
     ADD CONSTRAINT manual_assets_linked_discovered_asset_org_fk
     FOREIGN KEY (linked_discovered_asset_id, org_id) REFERENCES discovered_assets(id, org_id)
-    ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
+    ON DELETE SET NULL (linked_discovered_asset_id) DEFERRABLE INITIALLY IMMEDIATE;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
@@ -71,7 +81,7 @@ DO $$ BEGIN
   ALTER TABLE manual_assets
     ADD CONSTRAINT manual_assets_assigned_contact_org_fk
     FOREIGN KEY (assigned_contact_id, org_id) REFERENCES contacts(id, org_id)
-    ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
+    ON DELETE SET NULL (assigned_contact_id) DEFERRABLE INITIALLY IMMEDIATE;
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
