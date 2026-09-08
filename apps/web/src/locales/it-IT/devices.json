@@ -120,6 +120,13 @@
     "title": "Aggiungi asset di rete",
     "submit": "Aggiungi asset",
     "identityHint": "Fornisci almeno uno tra: indirizzo IP, hostname o URL.",
+    "urlRequiredHint": "Gli asset di tipo sito web o servizio richiedono un URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitorare questo asset con un controllo HTTP?",
+      "actions": {
+        "addHttpCheck": "Aggiungi un controllo HTTP"
+      }
+    },
     "fields": {
       "label": "Nome",
       "ipAddress": "Indirizzo IP",

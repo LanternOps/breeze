@@ -120,6 +120,13 @@
     "title": "Ajouter un actif réseau",
     "submit": "Ajouter l'actif",
     "identityHint": "Indiquez au moins un des éléments suivants : adresse IP, nom d'hôte ou URL.",
+    "urlRequiredHint": "Les actifs de type site Web ou service nécessitent une URL.",
+    "postCreate": {
+      "monitorPrompt": "Surveiller cet actif avec une vérification HTTP ?",
+      "actions": {
+        "addHttpCheck": "Ajouter une vérification HTTP"
+      }
+    },
     "fields": {
       "label": "Nom",
       "ipAddress": "Adresse IP",

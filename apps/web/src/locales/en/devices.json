@@ -120,6 +120,13 @@
     "title": "Add network asset",
     "submit": "Add asset",
     "identityHint": "Provide at least one of: IP address, hostname, or URL.",
+    "urlRequiredHint": "Website and service assets require a URL.",
+    "postCreate": {
+      "monitorPrompt": "Monitor this asset with an HTTP check?",
+      "actions": {
+        "addHttpCheck": "Add an HTTP check"
+      }
+    },
     "fields": {
       "label": "Name",
       "ipAddress": "IP address",

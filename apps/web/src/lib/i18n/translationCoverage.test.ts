@@ -511,7 +511,8 @@ const namespaceDuplicateBaselines = {
     // #5213 W02: +6 — "URL", "UniFi", "Modell"/"Model", "Tags", "Notizen"/… and
     // other short cognates spelled identically in de-DE.
     'devices.json': 162,
-    'discovery.json': 26,
+    // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
+    'discovery.json': 27,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.

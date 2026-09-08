@@ -120,6 +120,13 @@
     "title": "Agregar activo de red",
     "submit": "Agregar activo",
     "identityHint": "Proporcione al menos uno: dirección IP, nombre de host o URL.",
+    "urlRequiredHint": "Los activos de tipo sitio web o servicio requieren una URL.",
+    "postCreate": {
+      "monitorPrompt": "¿Desea supervisar este activo con una verificación HTTP?",
+      "actions": {
+        "addHttpCheck": "Agregar verificación HTTP"
+      }
+    },
     "fields": {
       "label": "Nombre",
       "ipAddress": "Dirección IP",

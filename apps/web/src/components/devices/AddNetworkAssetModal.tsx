@@ -4,21 +4,24 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { runAction, ActionError, handleActionError } from '@/lib/runAction';
+import CreateMonitorForm from '../monitors/CreateMonitorForm';
 
-// #5213 W02 — hand-enter a network asset. A manual asset IS a discovered_assets
-// row (source='manual'), so this form posts the same identity fields the
-// scan/UniFi writers populate: assetType, ipAddress/hostname/url, mac,
-// manufacturer, model, tags, notes. `label` is REQUIRED here (not just on the
-// API): a url-only row with no label falls back to an empty display name in
-// the unified list's hostname precedence (label > hostname > url > ip).
+// #5213 W02/W03 — hand-enter a network asset. A manual asset IS a
+// discovered_assets row (source='manual'), so this form posts the same
+// identity fields the scan/UniFi writers populate: assetType,
+// ipAddress/hostname/url, mac, manufacturer, model, tags, notes. `label` is
+// REQUIRED here (not just on the API): a url-only row with no label falls
+// back to an empty display name in the unified list's hostname precedence
+// (label > hostname > url > ip).
 //
-// Asset-type options are deliberately the same 12 the Discovery list already
-// exposes (see discovery:assetTypes.*) — website/service exist in the DB enum
-// as of W01 but wiring their URL-required UX and http_check hand-off is W03's
-// job (docs/superpowers/plans/device-lifecycle/2026-09-07-manual-network-asset.md).
+// Asset-type options are the same 12 the Discovery list already exposes (see
+// discovery:assetTypes.*) plus `website`/`service` (W03,
+// docs/superpowers/plans/device-lifecycle/2026-09-07-manual-network-asset.md):
+// those two require a URL (not just "any identity") and hide the MAC field,
+// which doesn't apply to an IP-less endpoint.
 const NETWORK_ASSET_TYPES = [
   'workstation', 'server', 'printer', 'router', 'switch', 'firewall',
-  'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown',
+  'access_point', 'phone', 'iot', 'camera', 'nas', 'website', 'service', 'unknown',
 ] as const;
 type NetworkAssetType = (typeof NETWORK_ASSET_TYPES)[number];
 
@@ -36,8 +39,15 @@ const ASSET_TYPE_LABEL_KEYS: Record<NetworkAssetType, string> = {
   iot: 'discovery:assetTypes.iot',
   camera: 'discovery:assetTypes.camera',
   nas: 'discovery:assetTypes.nas',
+  website: 'discovery:assetTypes.website',
+  service: 'discovery:assetTypes.service',
   unknown: 'discovery:assetTypes.unknown',
 };
+
+// A website/service asset is identified by its URL, not an IP — it never has
+// a MAC address, and the URL (not "any of IP/hostname/URL") is what's
+// required. Everything else about the form stays the same.
+const URL_REQUIRED_TYPES = new Set<NetworkAssetType>(['website', 'service']);
 
 interface AddNetworkAssetModalProps {
   isOpen: boolean;
@@ -64,6 +74,12 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Post-create hand-off (W03): a website/service asset has no monitoring of
+  // its own yet, so offer an inline "Add an HTTP check" step instead of
+  // closing immediately. Every other asset type keeps the W02 behavior —
+  // close right away.
+  const [createdAsset, setCreatedAsset] = useState<{ id: string; url: string } | null>(null);
+  const [showMonitorForm, setShowMonitorForm] = useState(false);
 
   useEffect(() => {
     if (isOpen && currentOrgId && sites.length === 0) void fetchSites();
@@ -90,6 +106,8 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
     setTags('');
     setNotes('');
     setError(null);
+    setCreatedAsset(null);
+    setShowMonitorForm(false);
   };
 
   const handleClose = () => {
@@ -97,7 +115,10 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
     onClose();
   };
 
-  const hasIdentity = Boolean(ipAddress.trim() || hostname.trim() || url.trim());
+  const urlRequired = URL_REQUIRED_TYPES.has(assetType);
+  const hasIdentity = urlRequired
+    ? Boolean(url.trim())
+    : Boolean(ipAddress.trim() || hostname.trim() || url.trim());
   const canSubmit = Boolean(label.trim() && currentOrgId && siteId && hasIdentity) && !submitting;
 
   const handleSubmit = async (e: FormEvent) => {
@@ -115,7 +136,10 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
       ipAddress: ipAddress.trim() || null,
       hostname: hostname.trim() || null,
       url: url.trim() || null,
-      macAddress: macAddress.trim() || null,
+      // Hiding the MAC field for website/service doesn't clear its state — if
+      // the operator typed a MAC while a different type was selected and then
+      // switched, the stale value would otherwise still post silently.
+      macAddress: urlRequired ? null : (macAddress.trim() || null),
       manufacturer: manufacturer.trim() || null,
       model: model.trim() || null,
       notes: notes.trim() || null,
@@ -131,9 +155,15 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
         successMessage: t('addNetworkAssetModal.toasts.created'),
         errorFallback: t('addNetworkAssetModal.toasts.createFailed'),
       });
-      resetForm();
       onCreated?.(result.id);
-      onClose();
+      if (urlRequired) {
+        // Website/service: offer the HTTP-check hand-off instead of closing.
+        // The list has already been refreshed via onCreated above.
+        setCreatedAsset({ id: result.id, url: payload.url ?? '' });
+      } else {
+        resetForm();
+        onClose();
+      }
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       handleActionError(err, t('addNetworkAssetModal.toasts.createFailed'));
@@ -147,6 +177,40 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
     <Dialog open={isOpen} onClose={handleClose} title={t('addNetworkAssetModal.title')} maxWidth="lg">
       <div className="p-6">
         <h2 className="mb-4 text-lg font-semibold">{t('addNetworkAssetModal.title')}</h2>
+        {createdAsset ? (
+          <div className="space-y-4" data-testid="asset-post-create">
+            <p className="text-sm text-muted-foreground">{t('addNetworkAssetModal.postCreate.monitorPrompt')}</p>
+            {!showMonitorForm && (
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  data-testid="asset-post-create-done"
+                  onClick={handleClose}
+                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  {t('common:actions.done')}
+                </button>
+                <button
+                  type="button"
+                  data-testid="asset-post-create-add-http-check"
+                  onClick={() => setShowMonitorForm(true)}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  {t('addNetworkAssetModal.postCreate.actions.addHttpCheck')}
+                </button>
+              </div>
+            )}
+            {showMonitorForm && (
+              <CreateMonitorForm
+                assetId={createdAsset.id}
+                defaultTarget={createdAsset.url}
+                defaultMonitorType="http_check"
+                onCreated={handleClose}
+                onCancel={() => setShowMonitorForm(false)}
+              />
+            )}
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="asset-label-input" className="mb-1 block text-sm font-medium">
@@ -205,7 +269,9 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
           </div>
 
           <div className="rounded-md border bg-muted/30 p-3">
-            <p className="mb-2 text-xs text-muted-foreground">{t('addNetworkAssetModal.identityHint')}</p>
+            <p className="mb-2 text-xs text-muted-foreground">
+              {urlRequired ? t('addNetworkAssetModal.urlRequiredHint') : t('addNetworkAssetModal.identityHint')}
+            </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="asset-ip-input" className="mb-1 block text-sm font-medium">
@@ -248,27 +314,32 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://shop.example"
                 maxLength={2048}
+                required={urlRequired}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label htmlFor="asset-mac-input" className="mb-1 block text-sm font-medium">
-                {t('addNetworkAssetModal.fields.macAddress')}
-              </label>
-              <input
-                id="asset-mac-input"
-                data-testid="asset-mac"
-                type="text"
-                value={macAddress}
-                onChange={(e) => setMacAddress(e.target.value)}
-                placeholder="00:11:22:33:44:55"
-                maxLength={17}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
-            </div>
+          {/* A website/service asset has no MAC address — it isn't reachable
+              on the local network segment the way a printer or switch is. */}
+          <div className={urlRequired ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-2 gap-3'}>
+            {!urlRequired && (
+              <div>
+                <label htmlFor="asset-mac-input" className="mb-1 block text-sm font-medium">
+                  {t('addNetworkAssetModal.fields.macAddress')}
+                </label>
+                <input
+                  id="asset-mac-input"
+                  data-testid="asset-mac"
+                  type="text"
+                  value={macAddress}
+                  onChange={(e) => setMacAddress(e.target.value)}
+                  placeholder="00:11:22:33:44:55"
+                  maxLength={17}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm font-mono focus:outline-hidden focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            )}
             <div>
               <label htmlFor="asset-manufacturer-input" className="mb-1 block text-sm font-medium">
                 {t('addNetworkAssetModal.fields.manufacturer')}
@@ -350,6 +421,7 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
             </button>
           </div>
         </form>
+        )}
       </div>
     </Dialog>
   );

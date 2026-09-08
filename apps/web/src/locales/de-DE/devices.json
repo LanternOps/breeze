@@ -120,6 +120,13 @@
     "title": "Netzwerk-Asset hinzufügen",
     "submit": "Asset hinzufügen",
     "identityHint": "Geben Sie mindestens eines an: IP-Adresse, Hostname oder URL.",
+    "urlRequiredHint": "Website- und Dienst-Assets benötigen eine URL.",
+    "postCreate": {
+      "monitorPrompt": "Dieses Asset mit einer HTTP-Prüfung überwachen?",
+      "actions": {
+        "addHttpCheck": "HTTP-Prüfung hinzufügen"
+      }
+    },
     "fields": {
       "label": "Name",
       "ipAddress": "IP-Adresse",
