@@ -167,11 +167,17 @@ describe('ci-success gating contract', () => {
     expect(envBlock).toContain('CODE_CHANGED: ${{ needs.changes.outputs.code }}');
     expect(blockingCondition).toContain('[[ "${CHANGES_RESULT}" != "success" ]] ||');
     expect(blockingCondition).toContain('{ [[ "${CODE_CHANGED}" != "false" ]] && {');
+    // docs-check is required unless the classifier said `false` — same fail-closed shape.
+    expect(blockingCondition).toContain(
+      '{ [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; }',
+    );
     expect(blockingCondition).not.toContain('"${CODE_CHANGED}" == "true"');
   });
 
   it('every code job is gated on the classifier (docs-only PRs skip it)', () => {
-    const exempt = new Set(['changes', 'ci-success', 'main-red-alert', 'build-mobile-ios']);
+    // docs-check is gated on the `docs` output instead; build-mobile-ios inherits the gate
+    // through mobile-native-changes (its two lines are pinned by mobile-native-ci.test.mjs).
+    const exempt = new Set(['changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios']);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
