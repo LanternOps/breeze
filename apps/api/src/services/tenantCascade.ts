@@ -117,6 +117,24 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
+  // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
+  // NOT NULL org_id, so all three are required here.
+  //   - ai_operator_operations references action_intents and ai_agent_runs,
+  //     both of which sort EARLIER in this alphabetical list. That is fine:
+  //     both FKs are ON DELETE SET NULL (restricted to the referencing column
+  //     so org_id survives), and topologicalCascadeOrder()'s runtime
+  //     pg_constraint read — not this list — decides the real DELETE order.
+  //   - ai_operator_task_outbox carries org_id of its own, unlike
+  //     intent_outbox (which is INTENTIONAL_UNSCOPED and rides its parent's
+  //     ON DELETE CASCADE), so it needs its own entry here.
+  //   - ai_operator_tasks references ai_agents ON DELETE RESTRICT, so tasks
+  //     MUST be deleted before agents. That too is the runtime topological
+  //     sort's job, not this array's — the alphabetical position is cosmetic
+  //     here exactly as it is for the two entries above. Stated only so a
+  //     reader knows the RESTRICT edge exists and is load-bearing somewhere.
+  'ai_operator_operations',
+  'ai_operator_task_outbox',
+  'ai_operator_tasks',
   'ai_screenshots',
   'ai_sessions',
   // ai_unattended_exposure (Wave 5 Part A, #3827): blast-cap ledger. Sorts

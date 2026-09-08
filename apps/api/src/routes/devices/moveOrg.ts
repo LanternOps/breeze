@@ -401,6 +401,42 @@ moveOrgRoutes.post(
               WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // AI Operator task history stays with the SOURCE org too (#5205 W03,
+        // #5208), for the same reason agent runs do — and with one addition
+        // the runs statement above does not need: a task is LIVE work, not a
+        // finished record. A task still queued/running/waiting/paused holds a
+        // lease and a next_wake_at, so leaving it alone would let the
+        // coordinator keep acting on a device that now belongs to a different
+        // tenant. Sever the pointer, record WHY (the frozen target_label is
+        // retained, so the evidence still says what it was pointed at), and
+        // fence the task to `stopping` — spec §6.1's "cancel, expiry, handoff,
+        // authority loss" edge. `stopping` is deliberately NOT terminal: an
+        // in-flight device command may still return, and its result must land
+        // on the operation row before the reconciler settles the task (§6.3).
+        //
+        // This normally matches NOTHING, exactly like the ai_agent_runs
+        // statement above and UNLIKE the load-bearing invoice_line_devices one
+        // below: the devices row was already flipped earlier in this same
+        // transaction, which fired breeze_cascade_device_org_id(), and that
+        // trigger carries an identical statement (the migration's section 8).
+        // It is kept as a route-local mirror so the detach is visible where
+        // the move is read, and so the route still detaches if the trigger is
+        // ever dropped. The trigger copy is the one that also covers a DIRECT
+        // devices.org_id UPDATE that bypasses this route entirely — which is
+        // why the integration coverage drives that path.
+        //
+        // Both copies are convergent (COALESCE on the detach stamp, CASE on
+        // the state), so whichever runs first wins and the other is a no-op.
+        await tx.execute(
+          sql`UPDATE ai_operator_tasks
+                 SET device_id = NULL,
+                     target_detached_at = COALESCE(target_detached_at, now()),
+                     target_detached_reason = COALESCE(target_detached_reason, 'device_moved'),
+                     state = CASE WHEN state IN ('queued', 'running', 'waiting', 'paused') THEN 'stopping' ELSE state END,
+                     updated_at = now()
+               WHERE device_id = ${deviceId}::uuid`,
+        );
+
         // #3205 W07: billing evidence stays in the INVOICE's org — the invoice
         // and its lines do not move. UNLIKE the ai_agent_runs statement above,
         // which normally matches nothing because breeze_cascade_device_org_id()

@@ -36,6 +36,15 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  // Same rule, applied to AI Operator task history (#5205 W03, #5208): the
+  // task's org_id is its immutable tenant and anchors four composite
+  // (x, org_id) FKs, so a restamp would 23503 the moment the task has an
+  // operation, an outbox wake, a linked run or a linked intent. moveOrg.ts detaches instead
+  // (device_id = NULL + target_detached_at/reason + fence to 'stopping'), and
+  // breeze_cascade_device_org_id() carries the same statement for a direct
+  // devices.org_id UPDATE. See the CORE_DEVICE_ORG_DENORMALIZED_TABLES
+  // comment block in core.ts.
+  'ai_operator_tasks',
   'offline_transition_effects', // immutable historical source route; see core.ts
   // Has org_id, but it is intentionally NOT re-stamped on move: exposure
   // history stays with the org the unattended action ran in (same
