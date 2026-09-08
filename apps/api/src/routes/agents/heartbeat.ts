@@ -1131,6 +1131,26 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     });
   }
 
+  // #5250 — publish event when desktopAccess changes so pages holding the
+  // socket open (Remote Tools' Connect Desktop button) pick up a helper
+  // recovery / drop without requiring a remount. Mirrors the agentVersion
+  // publish above; guarded on deviceUpdates.desktopAccess (only set when the
+  // agent actually reported the field) diffed against the pre-update snapshot,
+  // same comparison the state-change audit above already uses.
+  if (
+    deviceUpdates.desktopAccess !== undefined &&
+    JSON.stringify(deviceUpdates.desktopAccess) !== JSON.stringify(device.desktopAccess ?? null)
+  ) {
+    publishEvent('device.updated', device.orgId, {
+      deviceId: device.id,
+      fields: ['desktopAccess'],
+      desktopAccess: deviceUpdates.desktopAccess,
+    }, 'heartbeat', { siteId: device.siteId }).catch(err => {
+      console.error('[Heartbeat] Failed to publish device.updated:', err);
+      captureException(err);
+    });
+  }
+
   if (data.metrics) {
     await db
       .insert(deviceMetrics)

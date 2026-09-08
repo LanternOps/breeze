@@ -4445,6 +4445,117 @@ describe('POST /agents/:id/heartbeat — state-change audit (finding #10)', () =
   });
 });
 
+// ---------------------------------------------------------------------
+// #5250 — desktopAccess change publishes device.updated so pages holding the
+// event stream open (Remote Tools' Connect Desktop button) can refresh
+// without a remount. Was previously written to devices + audited (finding
+// #10 above) but never pushed as a live event, unlike agentVersion.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — desktopAccess change publishes device.updated (#5250)', () => {
+  const baselineDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'macos',
+    osVersion: '14.5',
+    osBuild: null,
+    architecture: 'arm64',
+    agentVersion: '0.65.10',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    status: 'online',
+    desktopAccess: { mode: 'unavailable', loginUiReachable: false, virtualDisplayReady: false, checkedAt: '2026-09-01T00:00:00.000Z' },
+    mainAgentSilentSince: null,
+  };
+
+  function arrange(deviceOverrides: Record<string, unknown> = {}) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...baselineDevice, ...deviceOverrides }]),
+    );
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning([{ id: 'device-1' }])) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  async function beat(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('desktopAccess recovering from unavailable → available publishes device.updated with fields:[desktopAccess]', async () => {
+    arrange(); // baseline: mode 'unavailable'
+    const recovered = {
+      mode: 'user_session',
+      loginUiReachable: true,
+      virtualDisplayReady: true,
+      checkedAt: '2026-09-08T12:00:00.000Z',
+    };
+
+    const resp = await beat({ ...minimalHeartbeatBody, desktopAccess: recovered });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).toHaveBeenCalledWith(
+      'device.updated',
+      'org-1',
+      expect.objectContaining({
+        deviceId: 'device-1',
+        fields: ['desktopAccess'],
+        desktopAccess: recovered,
+      }),
+      'heartbeat',
+      expect.objectContaining({ siteId: 'site-1' }),
+    );
+  });
+
+  it('steady-state desktopAccess re-report (unchanged) does NOT publish device.updated', async () => {
+    arrange({
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+
+    const resp = await beat({
+      ...minimalHeartbeatBody,
+      desktopAccess: { mode: 'user_session', loginUiReachable: true, virtualDisplayReady: true, checkedAt: '2026-09-01T00:00:00.000Z' },
+    });
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('heartbeat with no desktopAccess reported does NOT publish device.updated for desktopAccess', async () => {
+    arrange(); // baseline desktopAccess 'unavailable'
+
+    const resp = await beat({ ...minimalHeartbeatBody }); // no desktopAccess field at all
+    expect(resp.status).toBe(200);
+
+    const { publishEvent } = await import('../../services/eventBus');
+    expect(publishEvent).not.toHaveBeenCalledWith(
+      'device.updated',
+      expect.anything(),
+      expect.objectContaining({ fields: ['desktopAccess'] }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+});
+
 describe('POST /agents/:id/heartbeat — agentRuntime gauges (#2389)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

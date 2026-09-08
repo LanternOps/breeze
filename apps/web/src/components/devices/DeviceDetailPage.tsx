@@ -231,6 +231,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
               : prev,
           );
         }
+        // #5250 — the heartbeat now also publishes this event when
+        // desktopAccess changes (was previously only agentVersion), so
+        // Overview picks up a helper recovering/dropping live instead of
+        // only on the next full remount/refetch.
+        if (fields?.includes("desktopAccess")) {
+          setDevice((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  desktopAccess:
+                    (payload.desktopAccess as Device["desktopAccess"]) ??
+                    prev.desktopAccess,
+                }
+              : prev,
+          );
+        }
       } else if (type === "device.decommissioned") {
         fetchDevice();
       }
