@@ -1,8 +1,12 @@
 /**
- * Wave W07 of #5205 (P3-1e, read side) — `GET /ai/operator/tasks` (org-scoped
- * keyset list) and `GET /ai/operator/tasks/:id` (detail). Read-only: no
- * POST/PUT/PATCH/DELETE here — admission, answers, pause/resume/cancel, and
- * the delegate action are later waves (W06/W08).
+ * The Operator task HTTP surface for #5205.
+ *
+ * W07 (P3-1e) shipped the read side — `GET /ai/operator/tasks` (org-scoped
+ * keyset list) and `GET /ai/operator/tasks/:id` (detail).
+ *
+ * W08 (P3-1f, #5246) adds the ONE write: `POST /ai/operator/tasks`, the only
+ * door through which a human creates a task. Answers, pause/resume/cancel and
+ * retry are still later waves (P3-5).
  *
  * Mounted at `/api/v1/ai/operator` — a separate route module from the
  * already-large `aiAgentsRoutes`, per spec §12 ("Add routes under
@@ -33,15 +37,23 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
+  createOperatorTaskSchema,
   operatorTaskListQuerySchema,
   type AiOperatorTaskDto,
   type AiOperatorTaskListItemDto,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { aiAgentRuns, aiOperatorOperations, aiOperatorTasks, devices } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
+import { aiAgents, aiAgentRuns, aiOperatorOperations, aiOperatorTasks, devices } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
+import { admitServiceRecoveryTask } from '../services/aiOperator/taskService';
+import {
+  SERVICE_RECOVERY_WORKFLOW_KEY,
+  SERVICE_RECOVERY_WORKFLOW_VERSION,
+} from '../services/aiOperator/recipes/serviceRecovery';
+import { TERMINAL_TASK_STATES } from '../services/aiOperator/taskTransitions';
 import {
   mapOperatorTask,
   mapOperatorTaskListItem,
@@ -62,6 +74,10 @@ aiOperatorTasksRoutes.use('*', authMiddleware);
 // Same capability as task inspection everywhere else in the AI surface (spec
 // §5.1) — no new permission minted for a read-only view.
 const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action);
+// W08: launching a task is a WRITE — spec §5.1, "ai_agents:write plus MFA for
+// interactive launch". Same pair `POST /ai/agents/:id/runs` carries, because
+// delegating a task is at least as consequential as triggering a single run.
+const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
 const scopes = requireScope('organization', 'partner', 'system');
 
 const UUID = z.string().guid();
@@ -128,6 +144,185 @@ function siteVisibilityCondition(allowedSiteIds: string[] | undefined): SQL | un
     allowedSiteIds.length > 0 ? inArray(devices.siteId, allowedSiteIds) : sql`false`,
   );
 }
+
+/**
+ * Spec §7.2: "Proposed pending cap is 100 per org; admission returns a visible
+ * capacity result when full." Pending = every non-terminal state, because a
+ * `paused` or `waiting` task still holds a deadline, a device target and a
+ * reconciler obligation — it is exactly the resource the cap bounds. A
+ * terminal task holds none of those.
+ */
+const OPERATOR_PENDING_TASK_CAP_PER_ORG = 100;
+
+/**
+ * `POST /api/v1/ai/operator/tasks` — the only door that creates a task
+ * (#5205 W08, #5246; spec §12's `POST /tasks` row).
+ *
+ * ORDER OF CHECKS IS THE CONTRACT, not a style choice:
+ *
+ *  1. `.strict()` body (400). Spec §12: "Requests cannot supply a principal,
+ *     effective policy, approval result, or trusted continuation token." A
+ *     body carrying `task`, `policySnapshot` or `approval` is rejected here,
+ *     before anything reads it.
+ *  2. Org access (non-enumerating 404). The body names an explicit `orgId`;
+ *     a caller without access to it learns nothing about whether it exists.
+ *  3. Device resolution + site access (non-enumerating 404) — the SAME
+ *     posture the W07 read routes take, so delegating cannot be used to probe
+ *     for devices a read cannot see.
+ *  4. Readiness recompute (422). Spec §12: "Recompute readiness on launch...
+ *     A cached catalog or draft is never authority." Flags and recipe version
+ *     are re-read here even though `admitServiceRecoveryTask` checks the flags
+ *     again — the second check is the one that actually gates the insert; this
+ *     one exists to produce an ACTIONABLE reason instead of a bare refusal.
+ *  5. Pending cap (429).
+ *  6. Admission, which is idempotent on `clientIdempotencyKey`.
+ *
+ * Returns 202 (not 201): admission commits a `queued` task with
+ * `next_wake_at = now`, and the coordinator's `queued_past_wake` scan — not
+ * Redis — is what picks it up, so the acceptance is durable the instant the
+ * row commits even with Redis down. That is spec §12's "once task + outbox
+ * commit, 202 is truthful", satisfied by a stronger mechanism than an outbox
+ * row: W06 deliberately writes NO outbox row at admission, because a queued
+ * task has no authoritative source row to re-derive a wake from.
+ */
+aiOperatorTasksRoutes.post(
+  '/tasks',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', createOperatorTaskSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+
+    // (2) Explicit org from the body. `canAccessOrg` is the same closure the
+    // org-scoping predicate is built from, so this cannot drift from what a
+    // read would allow. 404 rather than 403: confirming the org exists is
+    // itself a cross-tenant disclosure.
+    if (!auth.canAccessOrg(body.orgId)) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // (3) Resolve the target under the caller's own visibility. Note this
+    // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
+    // which runs as system — so the device must be visible to the caller
+    // before any system-scoped work happens on their behalf.
+    const [device] = await db
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
+      .from(devices)
+      .where(and(eq(devices.id, body.deviceId), eq(devices.orgId, body.orgId)))
+      .limit(1);
+    // A site-restricted caller may not delegate against a device outside their
+    // sites. Same non-enumerating 404 as the W07 detail route.
+    if (!device || (auth.canAccessSite && !auth.canAccessSite(device.siteId))) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    // (4) Readiness, recomputed now.
+    if (!aiOperatorTasksEnabled()) {
+      return c.json({
+        error: 'AI Operator tasks are not enabled for this deployment',
+        code: 'OPERATOR_TASKS_DISABLED',
+      }, 422);
+    }
+    if (!aiOperatorServiceRecoveryEnabled()) {
+      return c.json({
+        error: 'The service recovery workflow is not enabled for this deployment',
+        code: 'OPERATOR_RECIPE_DISABLED',
+      }, 422);
+    }
+    if (body.recipeVersion !== SERVICE_RECOVERY_WORKFLOW_VERSION) {
+      return c.json({
+        error: `Workflow ${SERVICE_RECOVERY_WORKFLOW_KEY} is at version ${SERVICE_RECOVERY_WORKFLOW_VERSION}; `
+          + `this request reviewed version ${body.recipeVersion}. Reload and review the current workflow.`,
+        code: 'OPERATOR_RECIPE_VERSION_MISMATCH',
+      }, 422);
+    }
+
+    // The SERVER picks the agent (spec §5.1 — the request cannot name a
+    // principal). Enabled agents visible to this org, org-owned preferred over
+    // partner-wide, then oldest first so the choice is deterministic and a
+    // replay resolves the same way.
+    const [agent] = await db
+      .select({ id: aiAgents.id })
+      .from(aiAgents)
+      .where(
+        and(
+          eq(aiAgents.enabled, true),
+          or(eq(aiAgents.orgId, body.orgId), isNull(aiAgents.orgId)),
+        ),
+      )
+      .orderBy(sql`${aiAgents.orgId} IS NULL`, aiAgents.createdAt, aiAgents.id)
+      .limit(1);
+    if (!agent) {
+      return c.json({
+        error: 'No enabled AI agent is available for this organization. '
+          + 'Enable an agent in Settings → AI Agents before delegating a task.',
+        code: 'OPERATOR_NO_AGENT',
+      }, 422);
+    }
+
+    // (5) Capacity. Counted over non-terminal states for this ONE org (not the
+    // caller's whole accessible set) — the cap is a per-tenant resource bound,
+    // so a partner-scope caller must not be able to exhaust one org's quota
+    // faster because they can see many.
+    const [pending] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aiOperatorTasks)
+      .where(
+        and(
+          eq(aiOperatorTasks.orgId, body.orgId),
+          sql`${aiOperatorTasks.state} NOT IN ${TERMINAL_TASK_STATES}`,
+        ),
+      );
+    if ((pending?.count ?? 0) >= OPERATOR_PENDING_TASK_CAP_PER_ORG) {
+      return c.json({
+        error: `This organization already has ${OPERATOR_PENDING_TASK_CAP_PER_ORG} unfinished Operator tasks. `
+          + 'Wait for tasks to finish, or stop ones that are no longer needed, before delegating more.',
+        code: 'OPERATOR_PENDING_CAP_REACHED',
+      }, 429);
+    }
+
+    // (6) Admit. The requester's authorized ceiling is what was just checked
+    // above (org + site + write permission + MFA); `requesterUserId` records
+    // WHOSE ceiling it is, which is what spec §5.1's "loss of that access
+    // pauses delegated execution" is later evaluated against.
+    const result = await admitServiceRecoveryTask({
+      orgId: body.orgId,
+      agentId: agent.id,
+      objective: `Restore the ${body.inputs.serviceName} service on ${device.hostname ?? body.deviceId}`,
+      // Provenance, not authority (spec §5.1: origins are explicit and never
+      // silently converted). A delegate from alert detail is origin 'alert';
+      // everything else through this route is a manual delegation.
+      originKind: body.sourceKind === 'alert' ? 'alert' : 'manual',
+      requesterUserId: auth.user?.id ?? null,
+      recipeInput: {
+        deviceId: body.deviceId,
+        serviceName: body.inputs.serviceName,
+        // The alert is the recurrence signal the verification criterion needs
+        // (W06: with no alertId the best achievable outcome is
+        // `investigation_complete`, never `verified_resolved`).
+        triggeringAlertId: body.sourceKind === 'alert' ? body.sourceId ?? null : null,
+      },
+      clientIdempotencyKey: body.clientIdempotencyKey,
+    });
+
+    if (!result.ok) {
+      // Every refusal here is a readiness/scope problem, not a client format
+      // error: 422 per spec §12 ("422 for unsupported workflow/criteria/
+      // setup"), except the two target refusals, which stay non-enumerating.
+      if (result.refusal === 'device_not_in_org') {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+    }
+
+    // A replay is a success, not a conflict: the caller asked for a task with
+    // this key and there is one. Same 202 and the SAME id — the client cannot
+    // tell the two apart, which is the whole point of idempotency.
+    return c.json({ taskId: result.taskId, replayed: result.replayed }, 202);
+  },
+);
 
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible

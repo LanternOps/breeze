@@ -196,6 +196,18 @@ export const aiOperatorTasks = pgTable(
     accountingRootTaskId: uuid('accounting_root_task_id'),
     successorOfTaskId: uuid('successor_of_task_id'),
 
+    // W08 (#5246): the client-supplied admission idempotency key from
+    // `POST /ai/operator/tasks` (spec §12 — "client idempotency key").
+    // Nullable because every pre-W08 row and every internally-admitted task
+    // has none; uniqueness is a PARTIAL unique index on
+    // `(org_id, client_idempotency_key) WHERE client_idempotency_key IS NOT
+    // NULL`, so nulls never collide. This column is what makes a duplicate
+    // POST return the SAME task instead of dispatching a second restart to a
+    // customer machine — the guarantee has to be a database constraint,
+    // because a read-then-insert in the route loses the race between two
+    // concurrent clicks.
+    clientIdempotencyKey: text('client_idempotency_key'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -241,6 +253,13 @@ export const aiOperatorTasks = pgTable(
     queuedWakeIdx: index('ai_operator_tasks_queued_wake_idx')
       .on(table.nextWakeAt)
       .where(sql`state = 'queued'`),
+
+    // W08 (#5246): admission idempotency. Partial so the column stays
+    // nullable for internal admissions; scoped by `org_id` so one tenant
+    // cannot probe or squat another tenant's keys.
+    clientIdempotencyUq: uniqueIndex('ai_operator_tasks_client_idempotency_uq')
+      .on(table.orgId, table.clientIdempotencyKey)
+      .where(sql`client_idempotency_key IS NOT NULL`),
   }),
 );
 
