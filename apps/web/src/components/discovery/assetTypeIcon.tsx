@@ -1,6 +1,8 @@
 import {
   Camera,
+  Cloud,
   Cpu,
+  Globe,
   HardDrive,
   HelpCircle,
   Monitor,
@@ -30,6 +32,8 @@ export const assetTypeIcons: Record<DiscoveredAssetType, LucideIcon> = {
   iot: Cpu,
   camera: Camera,
   nas: HardDrive,
+  website: Globe,
+  service: Cloud,
   unknown: HelpCircle,
 };
 

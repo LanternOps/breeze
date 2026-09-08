@@ -31,6 +31,9 @@ export type DiscoveredAssetType =
   | 'iot'
   | 'camera'
   | 'nas'
+  // website/service (#5213 W03): an IP-less manual asset whose identity is a URL.
+  | 'website'
+  | 'service'
   | 'unknown';
 
 export type OpenPortEntry = { port: number; service: string };
@@ -112,6 +115,8 @@ export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: 
   iot: { labelKey: 'discovery:assetTypes.iot', color: 'bg-amber-500/20 text-amber-700 border-amber-500/40', tile: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' },
   camera: { labelKey: 'discovery:assetTypes.camera', color: 'bg-pink-500/20 text-pink-700 border-pink-500/40', tile: 'bg-pink-500/15 text-pink-600 dark:text-pink-400 border-pink-500/30' },
   nas: { labelKey: 'discovery:assetTypes.nas', color: 'bg-sky-500/20 text-sky-700 border-sky-500/40', tile: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30' },
+  website: { labelKey: 'discovery:assetTypes.website', color: 'bg-lime-500/20 text-lime-700 border-lime-500/40', tile: 'bg-lime-500/15 text-lime-600 dark:text-lime-400 border-lime-500/30' },
+  service: { labelKey: 'discovery:assetTypes.service', color: 'bg-fuchsia-500/20 text-fuchsia-700 border-fuchsia-500/40', tile: 'bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400 border-fuchsia-500/30' },
   unknown: { labelKey: 'discovery:assetTypes.unknown', color: 'bg-muted text-muted-foreground border-muted', tile: 'bg-muted text-muted-foreground border-muted' }
 };
 
@@ -133,6 +138,8 @@ const assetTypeMap: Record<string, DiscoveredAssetType> = {
   iot: 'iot',
   camera: 'camera',
   nas: 'nas',
+  website: 'website',
+  service: 'service',
   unknown: 'unknown'
 };
 

@@ -136,7 +136,10 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
       ipAddress: ipAddress.trim() || null,
       hostname: hostname.trim() || null,
       url: url.trim() || null,
-      macAddress: macAddress.trim() || null,
+      // Hiding the MAC field for website/service doesn't clear its state — if
+      // the operator typed a MAC while a different type was selected and then
+      // switched, the stale value would otherwise still post silently.
+      macAddress: urlRequired ? null : (macAddress.trim() || null),
       manufacturer: manufacturer.trim() || null,
       model: model.trim() || null,
       notes: notes.trim() || null,
@@ -201,6 +204,7 @@ export default function AddNetworkAssetModal({ isOpen, onClose, onCreated }: Add
               <CreateMonitorForm
                 assetId={createdAsset.id}
                 defaultTarget={createdAsset.url}
+                defaultMonitorType="http_check"
                 onCreated={handleClose}
                 onCancel={() => setShowMonitorForm(false)}
               />
