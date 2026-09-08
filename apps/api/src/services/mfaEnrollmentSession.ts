@@ -42,10 +42,13 @@ export interface ReplaceSessionOnMfaFactorWriteInput<T> {
    * `recoveryCodeHashes` (which is what actually lands in the row). REQUIRED
    * and non-empty on this shape: a supplied set is the account's only valid
    * one from this commit on, so an empty or missing pair would be a silent
-   * lockout. A factor REMOVAL (#4934 `/mfa/disable`) installs no codes and
-   * must go through `completeMfaFactorRemoval`, which omits these fields by
-   * TYPE rather than by convention — the #5008 review found that an optional
-   * pair here let a rotation caller forget it and persist `[]` unnoticed.
+   * lockout. The two writes that install NO codes — a factor REMOVAL (#4934
+   * `/mfa/disable`, #5038 passkey delete) and a SECONDARY factor ADDITION on an
+   * account that already holds a code set (#5038 passkey register) — go through
+   * `completeMfaFactorRemoval` / `completeAdditionalMfaFactorEnrollment`, which
+   * omit these fields by TYPE rather than by convention — the #5008 review
+   * found that an optional pair here let a rotation caller forget it and
+   * persist `[]` unnoticed.
    */
   recoveryCodes: readonly string[];
   recoveryCodeHashes: readonly string[];
@@ -66,10 +69,19 @@ export type CompleteMfaFactorRemovalInput<T> = Omit<
   'expectedMfaEnabled' | 'recoveryCodes' | 'recoveryCodeHashes'
 >;
 
-/** Internal: the union both public entry points funnel into. */
+/**
+ * SECONDARY-factor addition shape (#5038 passkey register on an account that is
+ * already protected): the account keeps the recovery-code set it already holds,
+ * so this write installs none and reveals none. `expectedMfaEnabled` is fixed at
+ * `true` — an account with no factor yet is INITIAL enrollment, which must mint
+ * a code set and therefore goes through `completeInitialMfaEnrollment`.
+ */
+export type CompleteAdditionalMfaFactorEnrollmentInput<T> = CompleteMfaFactorRemovalInput<T>;
+
+/** Internal: the union every public entry point funnels into. */
 type MfaFactorWriteCoreInput<T> =
   | (ReplaceSessionOnMfaFactorWriteInput<T> & { factorWrite: 'install' | 'rotate' })
-  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' });
+  | (CompleteMfaFactorRemovalInput<T> & { expectedMfaEnabled: true; factorWrite: 'remove' | 'add' });
 
 export interface MfaFactorSessionReplacement<T> {
   value: T;
@@ -90,14 +102,16 @@ export interface MfaFactorSessionReplacement<T> {
  * when the response body carries a one-time secret the user has to read
  * (recovery codes, #4480): a caller signed out by its own request never sees it.
  *
- * Three shapes exist, differing only in `expectedMfaEnabled` and whether a code
+ * Four shapes exist, differing only in `expectedMfaEnabled` and whether a code
  * set accompanies the write, and each has its own entry point: this function
  * is ROTATION on a protected account (factor must still exist, codes required);
  * `completeInitialMfaEnrollment` is INSTALL (factor must not exist yet, codes
  * required); `completeMfaFactorRemoval` is REMOVAL (factor must still exist, no
  * codes — a self-disable that evicted its own caller bounced the user to
- * /login?reason=session-expired the moment they turned MFA off, #4934). All
- * three funnel into the same private core.
+ * /login?reason=session-expired the moment they turned MFA off, #4934); and
+ * `completeAdditionalMfaFactorEnrollment` is a SECONDARY ADDITION (factor must
+ * still exist, no codes — the account's existing set stays valid, #5038). All
+ * four funnel into the same private core.
  *
  * Expensive recovery-code generation and hashing belong before this call; every
  * authority-bearing write happens inside finishAuthIssuance's supplied
@@ -124,7 +138,26 @@ export async function replaceSessionOnMfaFactorWrite<T>(
 }
 
 /**
- * Factor-removal specialization (#4934 `/mfa/disable`): the account must still
+ * Secondary-factor-addition specialization (#5038 passkey register on an
+ * already-protected account): the account must still be protected when the bump
+ * lands, the recovery-code set it already holds is untouched, and the caller's
+ * own assurance is carried forward. Adding a factor still evicts every OTHER
+ * live session (SR2-07) — what it must not do is evict the actor.
+ */
+export async function completeAdditionalMfaFactorEnrollment<T>(
+  input: CompleteAdditionalMfaFactorEnrollmentInput<T>,
+): Promise<MfaFactorSessionReplacement<T>> {
+  if ('recoveryCodes' in input || 'recoveryCodeHashes' in input) {
+    throw new Error(
+      'A secondary factor addition installs no recovery codes; use replaceSessionOnMfaFactorWrite to rotate them',
+    );
+  }
+  return replaceSessionOnMfaFactorWriteCore({ ...input, expectedMfaEnabled: true, factorWrite: 'add' });
+}
+
+/**
+ * Factor-removal specialization (#4934 `/mfa/disable`, #5038 passkey delete):
+ * the account must still
  * be protected when the bump lands, no code set is installed, and the caller's
  * own assurance is carried forward. The only sanctioned way to call the
  * primitive without recovery codes.
@@ -144,15 +177,20 @@ async function replaceSessionOnMfaFactorWriteCore<T>(
   if (input.identity.userId !== input.userId) {
     throw new Error('Factor-write identity does not match the target user');
   }
-  const recoveryCodes = input.factorWrite === 'remove' ? [] : input.recoveryCodes;
-  const recoveryCodeHashes = input.factorWrite === 'remove' ? [] : input.recoveryCodeHashes;
+  // Only INSTALL and ROTATE carry a code pair; REMOVE and ADD leave the
+  // account's own set (empty or existing) exactly as it was.
+  const codePair = input.factorWrite === 'install' || input.factorWrite === 'rotate'
+    ? { codes: input.recoveryCodes, hashes: input.recoveryCodeHashes }
+    : null;
+  const recoveryCodes = codePair?.codes ?? [];
+  const recoveryCodeHashes = codePair?.hashes ?? [];
   if (
     !Number.isInteger(input.expectedAuthEpoch)
     || input.expectedAuthEpoch < 0
     || !Number.isInteger(input.expectedMfaEpoch)
     || input.expectedMfaEpoch < 0
     || recoveryCodes.length !== recoveryCodeHashes.length
-    || (input.factorWrite !== 'remove' && recoveryCodes.length === 0)
+    || (codePair !== null && recoveryCodes.length === 0)
   ) {
     throw new Error('Expected auth/MFA epochs and recovery-code counts must be valid');
   }

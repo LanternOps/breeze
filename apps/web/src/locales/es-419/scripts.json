@@ -154,8 +154,18 @@
       "severity": "Gravedad",
       "message": "Mensaje",
       "command": "Comando",
+      "whenOffline": "Si el dispositivo está sin conexión",
       "software": "Software",
       "failureNotificationChannel": "Canal de notificación de fallos"
+    },
+    "options": {
+      "whenOffline": {
+        "queue": "Poner en cola (predeterminado)",
+        "skip": "Omitir"
+      }
+    },
+    "hints": {
+      "whenOffline": "El trabajo en cola espera al dispositivo y se ejecuta en su próxima conexión, o vence a los 7 días. Omitir hace que el paso falle de inmediato."
     },
     "placeholders": {
       "name": "Control de mantenimiento diario",
@@ -690,7 +700,8 @@
       "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
       "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
       "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
-      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso",
+      "queuedOffline": "En cola — dispositivo sin conexión"
     }
   },
   "executionHistory": {
@@ -718,7 +729,8 @@
       "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
       "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
       "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
-      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso",
+      "queuedOffline": "En cola — dispositivo sin conexión"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
@@ -927,6 +939,9 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "toasts": {
+      "runsWhenOnline": "Se ejecutará cuando el dispositivo esté en línea"
     }
   },
   "secretParameters": {
@@ -1111,6 +1126,14 @@
       "notSecretRow": "No es secreta: usa \"Desde una variable\"",
       "secretHint": "Se entrega únicamente como la variable de entorno {{env}}: nunca se escribe en el script. Requiere ejecución en contexto de sistema y un agente compatible con la entrega segura de secretos.",
       "hint": "Se resuelve para cada dispositivo de destino al ejecutar el script: nadie tiene que indicarlo."
+    },
+    "securityReview": {
+      "title": "Revisión de seguridad",
+      "blockedHint_one": "Este script coincide con 1 patrón que el agente se niega a ejecutar sin un reconocimiento.",
+      "blockedHint_other": "Este script coincide con {{count}} patrones que el agente se niega a ejecutar sin un reconocimiento. Reconoce cada uno que quieras permitir.",
+      "clearedHint": "Todos los patrones detectados han sido reconocidos.",
+      "willBlock": "No reconocido: el agente se negará a ejecutar este script.",
+      "footnote": "Un reconocimiento se aplica solo a este script y cubre únicamente los patrones indicados aquí. Si más adelante agregas una operación riesgosa distinta, se bloqueará hasta que también la reconozcas."
     }
   },
   "scriptList": {

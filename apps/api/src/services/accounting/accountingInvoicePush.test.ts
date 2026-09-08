@@ -1236,6 +1236,49 @@ describe('voidInvoiceInAccounting', () => {
     expect(mapping.syncStatus).toBe('synced');
   });
 
+  // #5180 — the production incident: QuickBooks refused the void because the
+  // invoice was settled by a QuickBooks Payment, the failure was typed
+  // `quickbooks_error`, and BullMQ burned five attempts (and five Sentry
+  // alerts) on an answer that could never change.
+  it('classifies a QuickBooks "payment applied" refusal as the NON-retryable void_blocked_by_payments', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+        },
+      ],
+    });
+    voidInvoiceMock.mockRejectedValue(Object.assign(new Error('QuickBooks invoice void failed with 400'), {
+      status: 400,
+      qboFaultCode: '6000',
+      qboFaultMessage: 'Business Validation Error',
+      qboPaymentLinked: true,
+    }));
+
+    let caught: AccountingInvoicePushError | undefined;
+    try {
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
+    } catch (err) {
+      caught = err as AccountingInvoicePushError;
+    }
+
+    expect(caught?.code).toBe('void_blocked_by_payments');
+    expect(caught?.status).toBe(409);
+    // The message must name the remedy — the old one said only that something
+    // was rejected, five times, on a mapping card an operator had to act on.
+    expect(caught?.message).toBe(
+      'QuickBooks will not void this invoice because a payment is applied to it there'
+      + ' — remove or unapply that payment in QuickBooks, then void the invoice again'
+      + ' (HTTP 400: Business Validation Error)',
+    );
+    const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
+    expect(mapping.syncStatus).toBe('error');
+    expect(mapping.lastError).toBe(caught?.message);
+  });
+
   it('on provider void failure, marks the mapping error with a sanitized message and rethrows', async () => {
     setup({
       mappings: [

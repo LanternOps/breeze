@@ -4,7 +4,7 @@ import type { Device } from './DeviceList';
 import {
   evaluateNetworkAssetFilter,
   matchesMergedListFilters,
-  summarizeHiddenNetworkDevices,
+  summarizeHiddenNonAgentDevices,
   sortByDisplayName,
 } from './mergedListFilter';
 
@@ -52,6 +52,28 @@ const agent = (extra: Partial<Device> = {}): Device => ({
   siteName: 'HQ',
   agentVersion: '0.70.0',
   tags: ['x'],
+  ...extra,
+});
+
+const manual = (extra: Partial<Device> = {}): Device => ({
+  id: 'c0000000-0000-0000-0000-000000000001',
+  deviceClass: 'manual',
+  assetType: 'printer',
+  hostname: 'spare-printer',
+  os: '' as Device['os'],
+  osVersion: '',
+  status: 'unknown',
+  cpuPercent: 0,
+  ramPercent: 0,
+  lastSeen: '',
+  orgId: 'org-1',
+  orgName: '',
+  siteId: 'site-1',
+  siteName: '',
+  agentVersion: '',
+  tags: [],
+  serialNumber: 'SN-123',
+  assetTag: 'TAG-9',
   ...extra,
 });
 
@@ -125,6 +147,13 @@ describe('matchesMergedListFilters', () => {
     expect(matchesMergedListFilters(agent({ displayName: 'Front Desk' }), { ...base, query: 'front' })).toBe(true);
   });
 
+  it('search matches serial number and asset tag (manual assets)', () => {
+    const base = { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false };
+    expect(matchesMergedListFilters(manual(), { ...base, query: 'sn-123' })).toBe(true);
+    expect(matchesMergedListFilters(manual(), { ...base, query: 'tag-9' })).toBe(true);
+    expect(matchesMergedListFilters(manual(), { ...base, query: 'no-match' })).toBe(false);
+  });
+
   it('hides decommissioned rows unless asked for', () => {
     const base = { serverFilterIds: null, advancedFilter: null, query: '' };
     expect(matchesMergedListFilters(agent({ status: 'decommissioned' }), { ...base, includeDecommissioned: false })).toBe(false);
@@ -132,16 +161,50 @@ describe('matchesMergedListFilters', () => {
   });
 });
 
-describe('summarizeHiddenNetworkDevices', () => {
+describe('summarizeHiddenNonAgentDevices', () => {
   it('counts network rows dropped only because the filter uses agent-only fields, with the field list', () => {
     const group = and({ field: 'status', operator: 'equals', value: 'online' }, { field: 'patches.pending', operator: 'equals', value: 'yes' });
-    const s = summarizeHiddenNetworkDevices([net(), net({ id: 'b2', status: 'offline' }), agent()], { serverFilterIds: null, advancedFilter: group, includeDecommissioned: false, query: '', vpn: 'all' });
+    const s = summarizeHiddenNonAgentDevices([net(), net({ id: 'b2', status: 'offline' }), agent()], { serverFilterIds: null, advancedFilter: group, includeDecommissioned: false, query: '', vpn: 'all' });
     // The offline one fails on status (an applicable field), so it is not "hidden by agent-only".
-    expect(s).toEqual({ count: 1, fields: ['patches.pending'] });
+    expect(s).toEqual({ count: 1, fields: ['patches.pending'], classes: ['network'] });
   });
 
   it('is empty with no filter', () => {
-    expect(summarizeHiddenNetworkDevices([net()], { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false, query: '', vpn: 'all' })).toEqual({ count: 0, fields: [] });
+    expect(summarizeHiddenNonAgentDevices([net()], { serverFilterIds: null, advancedFilter: null, includeDecommissioned: false, query: '', vpn: 'all' })).toEqual({ count: 0, fields: [], classes: [] });
+  });
+
+  it('counts and names a manual row hidden by an agent-only filter — never silently dropped', () => {
+    const group = and({ field: 'agentVersion', operator: 'equals', value: '0.70.0' });
+    const s = summarizeHiddenNonAgentDevices([manual()], { serverFilterIds: null, advancedFilter: group, includeDecommissioned: false, query: '', vpn: 'all' });
+    expect(s).toEqual({ count: 1, fields: ['agentVersion'], classes: ['manual'] });
+  });
+
+  it('names both classes when both network and manual rows are hidden by the same agent-only filter', () => {
+    const group = and({ field: 'agentVersion', operator: 'equals', value: '0.70.0' });
+    const s = summarizeHiddenNonAgentDevices([net(), manual()], { serverFilterIds: null, advancedFilter: group, includeDecommissioned: false, query: '', vpn: 'all' });
+    expect(s.count).toBe(2);
+    expect(s.classes.sort()).toEqual(['manual', 'network']);
+  });
+});
+
+describe('evaluateNetworkAssetFilter — manual asset field dispatch', () => {
+  it('matches on the fields a manual asset can answer', () => {
+    expect(evaluateNetworkAssetFilter(and({ field: 'hostname', operator: 'contains', value: 'printer' }), manual()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'tags', operator: 'isEmpty', value: '' }), manual()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'deviceRole', operator: 'equals', value: 'printer' }), manual()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'orgId', operator: 'equals', value: 'org-1' }), manual()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'siteId', operator: 'equals', value: 'site-1' }), manual()).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hardware.manufacturer', operator: 'equals', value: 'HP' }), manual({ manufacturer: 'HP' })).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hardware.model', operator: 'equals', value: 'LJ-100' }), manual({ model: 'LJ-100' })).matches).toBe(true);
+    expect(evaluateNetworkAssetFilter(and({ field: 'hardware.serialNumber', operator: 'equals', value: 'SN-123' }), manual()).matches).toBe(true);
+  });
+
+  it('reports status, network.*, daysSinceLastSeen, lastSeenAt, osType and agentVersion as inapplicable for a manual asset — never a fabricated match or rejection', () => {
+    const inapplicable = ['status', 'network.ipAddress', 'network.macAddress', 'daysSinceLastSeen', 'lastSeenAt', 'osType', 'agentVersion'];
+    for (const field of inapplicable) {
+      const v = evaluateNetworkAssetFilter(and({ field, operator: 'equals', value: 'x' }), manual());
+      expect(v).toEqual({ matches: false, inapplicableFields: [field] });
+    }
   });
 });
 
@@ -233,14 +296,17 @@ describe('VPN facet in the shared predicate', () => {
     expect(matchesMergedListFilters(agent(), { ...base, vpn: 'any' })).toBe(false);
     expect(matchesMergedListFilters(net(), { ...base, vpn: 'any' })).toBe(false);
     expect(matchesMergedListFilters(net(), { ...base, vpn: 'all' })).toBe(true);
+    // A manual asset has no VPN client either — same rule as network.
+    expect(matchesMergedListFilters(manual(), { ...base, vpn: 'any' })).toBe(false);
+    expect(matchesMergedListFilters(manual(), { ...base, vpn: 'all' })).toBe(true);
   });
 
   it('the hidden-network summary names the VPN facet and skips rows hidden by search or decommission', () => {
     const rows = [net(), net({ id: 'b2', hostname: 'other' }), net({ id: 'b3', status: 'decommissioned' })];
     // The decommissioned row is hidden by an ordinary rule, so it is not blamed on the VPN facet.
-    expect(summarizeHiddenNetworkDevices(rows, { ...base, vpn: 'any' })).toEqual({ count: 2, fields: ['vpn'] });
-    expect(summarizeHiddenNetworkDevices(rows, { ...base, vpn: 'any', query: 'core' })).toEqual({ count: 1, fields: ['vpn'] });
+    expect(summarizeHiddenNonAgentDevices(rows, { ...base, vpn: 'any' })).toEqual({ count: 2, fields: ['vpn'], classes: ['network'] });
+    expect(summarizeHiddenNonAgentDevices(rows, { ...base, vpn: 'any', query: 'core' })).toEqual({ count: 1, fields: ['vpn'], classes: ['network'] });
     const patches = and({ field: 'patches.pending', operator: 'equals', value: 'yes' });
-    expect(summarizeHiddenNetworkDevices(rows, { ...base, advancedFilter: patches, vpn: 'all' })).toEqual({ count: 2, fields: ['patches.pending'] });
+    expect(summarizeHiddenNonAgentDevices(rows, { ...base, advancedFilter: patches, vpn: 'all' })).toEqual({ count: 2, fields: ['patches.pending'], classes: ['network'] });
   });
 });

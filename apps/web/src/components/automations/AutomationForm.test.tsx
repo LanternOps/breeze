@@ -82,3 +82,66 @@ describe('AutomationForm — run_script runAs override (#4888)', () => {
     expect(values.actions[0].runAs).toBe('user');
   });
 });
+
+describe('AutomationForm — whenOffline (#5128 W4)', () => {
+  const SCRIPTS = [{ id: 'script-1', name: 'Cleanup temp files' }];
+
+  it('renders the offline control on a run_script action, defaulting to Queue', () => {
+    render(
+      <AutomationForm onSubmit={vi.fn()} defaultValues={{ name: 'A' }} scripts={SCRIPTS} />,
+    );
+
+    const select = screen.getByTestId('action-0-when-offline-select') as HTMLSelectElement;
+    expect(select.value).toBe('queue');
+    expect(screen.getByRole('option', { name: 'Queue (default)' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Skip' })).toBeTruthy();
+  });
+
+  it('renders the offline control on an execute_command action too', () => {
+    render(<AutomationForm onSubmit={vi.fn()} defaultValues={{ name: 'A' }} />);
+
+    fireEvent.change(screen.getByDisplayValue('Run Script'), {
+      target: { value: 'execute_command' },
+    });
+
+    const select = screen.getByTestId('action-0-when-offline-select') as HTMLSelectElement;
+    expect(select.value).toBe('queue');
+  });
+
+  it('does not render the offline control on a deploy_software action', () => {
+    render(<AutomationForm onSubmit={vi.fn()} defaultValues={{ name: 'A' }} />);
+
+    fireEvent.change(screen.getByDisplayValue('Run Script'), {
+      target: { value: 'deploy_software' },
+    });
+
+    expect(screen.queryByTestId('action-0-when-offline-select')).toBeNull();
+  });
+
+  it('omits whenOffline from the payload when the operator never touches it', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <AutomationForm onSubmit={onSubmit} defaultValues={{ name: 'A' }} scripts={SCRIPTS} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Save automation/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect('whenOffline' in onSubmit.mock.calls[0][0].actions[0]).toBe(false);
+  });
+
+  it('submits whenOffline: "skip" once the operator picks Skip', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <AutomationForm onSubmit={onSubmit} defaultValues={{ name: 'A' }} scripts={SCRIPTS} />,
+    );
+
+    fireEvent.change(screen.getByTestId('action-0-when-offline-select'), {
+      target: { value: 'skip' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Save automation/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0].actions[0].whenOffline).toBe('skip');
+  });
+});

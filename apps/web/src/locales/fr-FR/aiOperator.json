@@ -1,0 +1,134 @@
+{
+  "taskState": {
+    "queued": "En file d'attente",
+    "running": "En cours",
+    "waiting": "En attente",
+    "paused": "En pause",
+    "stopping": "Arrêt en cours",
+    "completed": "Terminée",
+    "partial": "Partielle",
+    "handedOff": "Transférée",
+    "cancelled": "Annulée",
+    "failed": "Échouée",
+    "expired": "Expirée"
+  },
+  "operatorTaskDetail": {
+    "loading": "Chargement de la tâche...",
+    "agent": "Prise en charge par {{name}}",
+    "target": {
+      "label": "Cible",
+      "none": "Aucun appareil cible"
+    },
+    "origin": {
+      "label": "Origine",
+      "manual": "Manuelle",
+      "alert": "Alerte",
+      "ticket": "Ticket",
+      "schedule": "Planification",
+      "anomaly": "Anomalie",
+      "sweep": "Balayage",
+      "chat": "Chat"
+    },
+    "state": {
+      "label": "État"
+    },
+    "phase": {
+      "investigate": "Investiguer",
+      "plan": "Planifier",
+      "execute": "Exécuter",
+      "verify": "Vérifier",
+      "document": "Documenter"
+    },
+    "waitReason": {
+      "label": "En attente de",
+      "approval": "Approbation",
+      "information": "Information",
+      "execution": "Exécution",
+      "device": "Appareil",
+      "maintenanceWindow": "Fenêtre de maintenance",
+      "verificationWindow": "Fenêtre de vérification"
+    },
+    "nextAction": {
+      "label": "Prochaine action",
+      "approveInInbox": "Approuver dans la boîte de réception",
+      "answerQuestion": "Répondre à une question",
+      "waitingForDevice": "En attente de l'appareil",
+      "waitingForMaintenanceWindow": "En attente de la fenêtre de maintenance",
+      "waitingForVerificationWindow": "En attente de la fenêtre de vérification",
+      "waitingForExecution": "En attente de l'exécution",
+      "queued": "En file d'attente pour admission",
+      "inProgress": "En cours",
+      "paused": "En pause",
+      "stopping": "Arrêt en cours",
+      "handedOff": "Transférée",
+      "none": "Rien en attente"
+    },
+    "deadline": {
+      "label": "Échéance",
+      "none": "Aucune échéance"
+    },
+    "outcome": {
+      "label": "Résultat",
+      "verifiedResolved": "Résolution vérifiée",
+      "investigationComplete": "Investigation terminée",
+      "reportDelivered": "Rapport livré",
+      "noActionNeeded": "Aucune action nécessaire",
+      "trialComplete": "Essai terminé",
+      "unresolved": "Non résolue",
+      "unknownEffect": "Effet inconnu"
+    },
+    "handoffSummary": {
+      "label": "Résumé du transfert"
+    },
+    "operations": {
+      "heading": "Opérations",
+      "empty": "Aucune opération pour le moment.",
+      "attempt": "Tentative {{n}}"
+    },
+    "dispatchState": {
+      "reserved": "Réservée",
+      "dispatched": "Envoyée",
+      "dispatchFailed": "Échec de l'envoi",
+      "cancelled": "Annulé",
+      "abandoned": "Abandonnée"
+    },
+    "resultState": {
+      "pending": "En attente",
+      "succeeded": "Réussie",
+      "failed": "Échouée",
+      "unknown": "Inconnu",
+      "superseded": "Remplacée"
+    },
+    "runs": {
+      "heading": "Exécutions liées",
+      "empty": "Aucune exécution liée pour le moment."
+    },
+    "notFound": {
+      "title": "Tâche introuvable",
+      "description": "Cette tâche n'existe pas, ou vous n'y avez pas accès."
+    },
+    "errors": {
+      "load": "Le chargement de la tâche a échoué."
+    }
+  },
+  "operatorTaskFeed": {
+    "loading": "Chargement des tâches Operator...",
+    "loadFailed": "Échec du chargement des tâches Operator.",
+    "empty": "Aucune tâche Operator pour cet appareil."
+  },
+  "delegate": {
+    "button": "Déléguer à l'Opérateur",
+    "dialogTitle": "Déléguer à l'Opérateur",
+    "dialogMessage": "L'Opérateur va enquêter et tenter de résoudre ce problème à l'aide du flux de travail ci-dessous.",
+    "orgLabel": "Organisation",
+    "deviceLabel": "Appareil",
+    "serviceNameLabel": "Nom du service",
+    "serviceNamePlaceholder": "p. ex. Spouleur",
+    "serviceNameError": "Saisissez le nom du service pour déléguer cette tâche.",
+    "workflowLabel": "Flux de travail",
+    "workflowName": "Récupération de service",
+    "confirmLabel": "Déléguer",
+    "queued": "Tâche déléguée à l'Opérateur.",
+    "failed": "Échec de la délégation à l'Opérateur."
+  }
+}

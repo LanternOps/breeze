@@ -8,6 +8,10 @@ export interface CommandResult {
   type: string;
   status: string;
   createdAt: string;
+  // #5128 W2 — present on the single-command POST response: how the command
+  // was handed over, and (for a queued one) when it expires undelivered.
+  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  deliverBy?: string | null;
 }
 
 export type BulkCommandFailureCode =
@@ -33,6 +37,9 @@ export interface BulkCommandResponse {
   failed: BulkCommandFailed[];
   // Present for refresh_inventory dedup; older API responses may omit it.
   skipped?: BulkCommandSkipped[];
+  // #5128 W2 — device IDs whose command was queued for the device's next
+  // reconnect rather than delivered immediately (subset of `commands`).
+  queuedOffline?: string[];
 }
 
 /**

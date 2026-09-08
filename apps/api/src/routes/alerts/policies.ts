@@ -21,6 +21,7 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 policiesRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action),
   zValidator('query', listPoliciesSchema),
   async (c) => {
     const auth = c.get('auth');

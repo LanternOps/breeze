@@ -49,6 +49,10 @@ import {
   recordPamActuationResult,
   type PamActuationResultClassification,
 } from './pamActuationResult';
+// #5128 W3: patch installs can now be delivered days after the per-device BullMQ
+// task exited, so the agent's result must close the device out here rather than
+// through the executor's poll.
+import { handleInstallPatchesResult } from './patchJobFinalizer';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -858,4 +862,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
   pam_apply_v2: handlePamActuationV2Result,
   pam_cleanup_v2: handlePamActuationV2Result,
+  install_patches: handleInstallPatchesResult,
 };

@@ -17,6 +17,7 @@ import {
   type ActionIntentApprovalScope,
   type ActionIntentStatus,
 } from '../db/schema/actionIntents';
+import { publishIntentTerminalOutbox } from '../services/aiOperator/taskOutbox';
 import { dispatchApprovalPush } from '../services/expoPush';
 import { revokeUserOauthClient } from './lifecycle';
 import { recordActionIntentEvent } from '../services/actionIntents/metrics';
@@ -969,6 +970,7 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   id: actionIntents.id,
                   status: actionIntents.status,
                   orgId: actionIntents.orgId,
+                  taskId: actionIntents.taskId,
                 })
                 .from(actionIntents)
                 .where(eq(actionIntents.id, intentId))
@@ -1022,6 +1024,17 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                     ne(approvalRequests.id, existing.id),
                   ),
                 );
+
+              // #5205 W05 (#5210), baseline C18: this writer terminalizes the
+              // intent to `rejected` and published NOTHING at all today — the
+              // other concrete gap baseline §3.2 calls out. `locked.taskId` is
+              // read from the FOR-UPDATE-locked row above, safe to reuse here
+              // because task linkage is immutable.
+              await publishIntentTerminalOutbox(
+                tx,
+                { id: intentId, orgId: cas[0]!.orgId, taskId: locked?.taskId ?? null },
+                'intent_rejected',
+              );
 
               return {
                 rejected: cas[0] ?? null,

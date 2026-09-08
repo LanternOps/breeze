@@ -96,7 +96,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authRef.current);
     await next();
   },
-  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requirePermission: () => async (c: any, next: () => Promise<void>) => { c.set('permissions', {}); return next(); },
   requireMfa: () => async (_c: unknown, next: () => Promise<void>) => next(),
   siteAccessCheck: (allowedSiteIds?: string[]) => (siteId: string | null | undefined) => {
     if (!allowedSiteIds) return true;

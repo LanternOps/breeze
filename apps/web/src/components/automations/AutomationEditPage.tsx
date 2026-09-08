@@ -52,6 +52,16 @@ function asRunAs(value: unknown): 'system' | 'user' | 'elevated' | undefined {
   return value === 'system' || value === 'user' || value === 'elevated' ? value : undefined;
 }
 
+/**
+ * #5128 W4 — read the stored offline behaviour back so opening an automation
+ * for edit shows what is actually in effect. Absent stays absent: an action
+ * saved before the field existed must round-trip byte-identically until the
+ * operator changes it (the API defaults it to 'queue').
+ */
+function asWhenOffline(value: unknown): 'queue' | 'skip' | undefined {
+  return value === 'queue' || value === 'skip' ? value : undefined;
+}
+
 function normalizeActionForForm(value: unknown): ActionFormValues {
   const action = isPlainRecord(value) ? value : {};
   const type = asString(action.type);
@@ -74,7 +84,8 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
   if (type === 'execute_command') {
     return {
       type,
-      command: asString(action.command) ?? ''
+      command: asString(action.command) ?? '',
+      whenOffline: asWhenOffline(action.whenOffline)
     };
   }
 
@@ -92,7 +103,8 @@ function normalizeActionForForm(value: unknown): ActionFormValues {
     // automation for edit shows the choice that is actually in effect.
     // Without this the form would render "Script default" for an action that
     // overrides it, and the next save would erase the override.
-    runAs: asRunAs(action.runAs)
+    runAs: asRunAs(action.runAs),
+    whenOffline: asWhenOffline(action.whenOffline)
   };
 }
 
@@ -108,7 +120,11 @@ function buildActionPayload(action: ActionFormValues) {
       // (the Fix flow's discarded run-as select), so it must not be
       // reintroduced one layer below the form. `undefined` is omitted by
       // JSON.stringify, which is what "Script default" has to serialise to.
-      ...(action.runAs ? { runAs: action.runAs } : {})
+      ...(action.runAs ? { runAs: action.runAs } : {}),
+      // #5128 W4 — same field-by-field discipline as runAs above: omitted when
+      // the operator never touched the control, so an untouched pre-#5128
+      // action still serialises exactly as it did.
+      ...(action.whenOffline ? { whenOffline: action.whenOffline } : {})
     };
   }
 
@@ -136,7 +152,8 @@ function buildActionPayload(action: ActionFormValues) {
 
   return {
     type: action.type,
-    command: action.command
+    command: action.command,
+    ...(action.whenOffline ? { whenOffline: action.whenOffline } : {})
   };
 }
 

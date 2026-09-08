@@ -833,13 +833,7 @@ describe('sentinel one routes', () => {
       authState.scope = 'organization';
       authState.partnerId = PARTNER_ID;
 
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(null);
 
       const res = await app.request('/s1/status');
       expect(res.status).toBe(200);
@@ -856,37 +850,17 @@ describe('sentinel one routes', () => {
       authState.orgId = ORG_ID;
       authState.partnerId = PARTNER_ID;
 
-      // Integration found
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: INTEGRATION_ID,
-              partnerId: PARTNER_ID,
-              name: 'S1',
-              managementUrl: 'https://example.sentinelone.net',
-              isActive: true,
-              lastSyncAt: null,
-              lastSyncStatus: null,
-              lastSyncError: null,
-            }])
-          })
-        })
-      } as any);
-      // No mapping for this org
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([])
-          })
-        })
-      } as any);
+      // The org-authorized metadata helper requires a mapping before exposing
+      // the integration. No partner-axis route query or aggregate should run.
+      vi.mocked(getActiveS1IntegrationForOrg).mockResolvedValueOnce(null);
 
       const res = await app.request('/s1/status');
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.mapped).toBe(false);
+      expect(body.integration).toBeNull();
       expect(body.summary.totalAgents).toBe(0);
+      expect(getActiveS1IntegrationForOrg).toHaveBeenCalledWith(ORG_ID);
+      expect(db.select).not.toHaveBeenCalled();
     });
 
     it('partner scope returns cross-org coverage', async () => {

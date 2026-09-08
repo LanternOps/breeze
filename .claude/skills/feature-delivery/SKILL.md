@@ -111,10 +111,10 @@ preflight before it is safe on main.
 Then, in order:
 
 ```bash
-gh pr merge <N> --repo LanternOps/breeze --squash        # enqueues; NEVER --admin
+gh pr merge <N> --repo LanternOps/breeze        # enqueues; NEVER --admin, no strategy flag
 ```
-`main` is behind GitHub's **merge queue** (since 2026-09-07). `--squash` without
-`--admin` enqueues the PR; the queue rebuilds it on top of whatever is ahead, runs the
+`main` is behind GitHub's **merge queue** (since 2026-09-07). A bare `gh pr merge <N>` enqueues the PR (the queue owns the squash strategy;
+`--squash` only prints a warning); the queue rebuilds it on top of whatever is ahead, runs the
 full `CI Success` gate under `merge_group` (no path filters, smoke jobs blocking), and
 lands it serially. `--admin` bypasses the queue and is what caused the 09-06/09-07
 pile-ups (59 of 80 main runs cancelled, siblings CONFLICTING mid-sweep) — emergency

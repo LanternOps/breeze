@@ -37,6 +37,21 @@
       "title": "Coming shortly",
       "description": "This tab lands in the next update of the organization record."
     },
+    "devices": {
+      "loadError": "Couldn't load devices for this organization.",
+      "searchPlaceholder": "Search devices",
+      "allStatuses": "All statuses",
+      "allSites": "All sites",
+      "status": {
+        "online": "Online",
+        "offline": "Offline",
+        "maintenance": "Maintenance",
+        "decommissioned": "Removed",
+        "quarantined": "Quarantined",
+        "updating": "Updating",
+        "pending": "Pending"
+      }
+    },
     "overview": {
       "tiles": {
         "devices": "Devices",

@@ -61,6 +61,9 @@ import { alertCorrelationGroups, alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
+import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
+import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { BREEZE_MCP_TOOL_NAMES, createBreezeMcpServer } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
@@ -122,7 +125,7 @@ import {
   buildOutcomeSdkTools,
   isOutcomeTool,
   OUTCOME_MCP_TOOL_NAMES,
-  outcomeToolsForProfile,
+  outcomeToolsForRun,
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
@@ -227,6 +230,13 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         correlationGroupId: aiAgentRuns.correlationGroupId,
         scheduleId: aiAgentRuns.scheduleId,
         triggerRef: aiAgentRuns.triggerRef,
+        // #5205 W06 — the run's AI Operator task linkage. Loaded here rather
+        // than looked up on demand: the pre-tool hook consults `taskId` on
+        // EVERY tool call (the task fence), so a per-call lookup would be a
+        // second round trip on the model's critical path.
+        taskId: aiAgentRuns.taskId,
+        taskStepKey: aiAgentRuns.taskStepKey,
+        taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -464,7 +474,11 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
  * no RBAC helper is ever reached from an agent run.
  */
 export function createAgentRunPreToolUse(args: {
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile'>;
+  // #5205 W06 adds the three task-linkage columns: `taskId` selects
+  // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
+  // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
+  // Tier-3 proposal reserves under.
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -508,6 +522,16 @@ export function createAgentRunPreToolUse(args: {
     sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
   } = args;
 
+  /**
+   * #5205 W06 — the task fence read taken at the top of THIS tool call, kept
+   * so `recordProposal` can build the operation key from the SAME
+   * `plan_revision` the fence observed. Reading it twice would open a window
+   * where the key names a revision the fence never saw, which is precisely
+   * the mismatch `evaluateTaskClaimPredicate` would later refuse to dispatch.
+   * Null on a non-task run.
+   */
+  let taskFence: TaskFence | null = null;
+
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
    *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
    *  call, submit the SAME action-intent approval. */
@@ -539,6 +563,40 @@ export function createAgentRunPreToolUse(args: {
           source: 'ai_agent',
           orgId: run.orgId,
           reason: `Proposed by ${agentName} for run ${run.id}`,
+          // #5205 W06, spec §6.2: "Every mutating tool call on a task-linked
+          // run must enter the operation reservation path, even if the model
+          // calls an existing tool directly." This IS that path — passing the
+          // task context makes `createActionIntent` (W04) reserve the
+          // `ai_operator_operations` row in the SAME transaction as the intent
+          // insert and derive the intent's `idempotency_key` from task
+          // identity, so a continuation run re-proposing the same restart
+          // converges onto the existing intent (the C6 single-arbiter rule)
+          // instead of minting a second one.
+          //
+          // Note the branch is on `run.taskId`, not on the tool: EVERY tier-3
+          // proposal from a task-linked run is a task operation. There is no
+          // "direct effect" escape hatch on this path.
+          ...(run.taskId && run.taskStepKey && run.taskAttemptOrdinal !== null && taskFence
+            ? {
+              task: {
+                taskId: run.taskId,
+                taskStepKey: run.taskStepKey,
+                operationKey: buildTaskOperationKey({
+                  taskStepKey: run.taskStepKey,
+                  planRevision: taskFence.revision,
+                  toolName,
+                  // The tool's own device argument, resolved server-side by
+                  // `createActionIntent`'s scope resolution — used here only
+                  // to make the key target-specific.
+                  targetId: typeof (input as { deviceId?: unknown }).deviceId === 'string'
+                    ? (input as { deviceId: string }).deviceId
+                    : null,
+                  ordinal: 0,
+                }),
+                attemptOrdinal: run.taskAttemptOrdinal,
+              },
+            }
+            : {}),
         });
         entry.intentId = intent.id;
         // createActionIntent does NOT throw when nobody can approve: it
@@ -619,6 +677,37 @@ export function createAgentRunPreToolUse(args: {
   }
 
   return async (toolName, input) => {
+    // #5205 W06, spec §7.3 — THE TASK FENCE. There is no run-level cancel in
+    // this codebase (baseline C17: `cancelled`/`expired` are valid
+    // `ai_agent_runs` statuses with zero production writers and no route), so
+    // a task that is paused, stopping, expired or terminal cannot stop its
+    // in-flight reasoning run by cancelling it. It fences it at the next tool
+    // call and lets it finish, which is exactly this check.
+    //
+    // Ahead of the outcome-tool branch on purpose: `submit_task_step` is the
+    // one call whose result would otherwise be persisted into a checkpoint the
+    // task must no longer accept. A fenced task's run may still READ nothing
+    // and end; it may not propose, execute, or record.
+    if (run.taskId) {
+      const fence: TaskFence | null = await loadTaskFence(run.orgId, run.taskId).catch((error: unknown) => {
+        // A failed fence read is NOT permission. Refusing on a transient DB
+        // error costs one denied tool call in a run that is about to end
+        // anyway; allowing on it would let a cancelled task keep acting.
+        console.error('[aiAgentRunLoop] task fence read failed; denying', {
+          runId: run.id, taskId: run.taskId, error,
+        });
+        return null;
+      });
+      if (!fence || fence.fenced) {
+        const reason = fence
+          ? `AI Operator task ${run.taskId} is fenced (state '${fence.state}')`
+          : `AI Operator task ${run.taskId} could not be read`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: `${reason}. Stop and do not retry.` };
+      }
+      taskFence = fence;
+    }
+
     // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
     // `checkAgentGuardrails` below, because that guardrail has no allowlist
     // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
@@ -650,10 +739,16 @@ export function createAgentRunPreToolUse(args: {
       // sweep run can never record a verdict (or vice versa) even if a stale
       // tool cache offers the wrong name. The deny reason names the profile
       // because that is the mismatch a reviewer needs to see.
-      if (!outcomeToolsForProfile(run.profile).includes(toolName)) {
+      // #5205 W06: `outcomeToolsForRun`, not `outcomeToolsForProfile` — a
+      // task-linked run is a `full`-profile run (whose profile set is empty)
+      // that additionally owns `submit_task_step`. Same single-source-of-truth
+      // property, widened by one input.
+      if (!outcomeToolsForRun(run).includes(toolName)) {
         outcome.deniedActions.push({
           tool: toolName,
-          reason: `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
+          reason: run.taskId
+            ? `outcome tool ${toolName} is not available to this task-linked run`
+            : `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
         });
         return { allowed: false, error: 'not available on this run' };
       }
@@ -871,7 +966,11 @@ export function createAgentRunPostToolUse(args: {
   allowedPending: Map<string, number>;
   executionIdPending: Map<string, Array<string | null>>;
   actPinPending: Map<string, Array<ActAssetPin | null>>;
-  run: { id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile };
+  run: {
+    id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
+    /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
+    taskId?: string | null;
+  };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
 }): PostToolUseCallback {
@@ -886,7 +985,7 @@ export function createAgentRunPostToolUse(args: {
       // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
       // `outcomeToolsForProfile` the pre-hook denies against — so a name the
       // pre-hook refused can never still land in the outcome via this path.
-      if (!isError && outcomeToolsForProfile(run.profile).includes(toolName)) {
+      if (!isError && outcomeToolsForRun(run).includes(toolName)) {
         switch (toolName) {
           case 'submit_alert_verdict':
             outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
@@ -910,6 +1009,14 @@ export function createAgentRunPostToolUse(args: {
           // in `finishRun` (task A8), never here.
           case 'submit_ticket_proposal':
             outcome.ticketProposal = validateOutcomeToolInput(toolName, input);
+            break;
+          // #5205 W06 — the proposal is STORED, not acted on. The coordinator
+          // reads it off the persisted run row and `validateNextStep` decides
+          // whether the named step is reachable. Capturing it here is what
+          // makes the checkpoint durable: the run row is committed by
+          // `finishRun` before the task's wake ever fires.
+          case 'submit_task_step':
+            outcome.taskStep = validateOutcomeToolInput(toolName, input);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1293,6 +1400,30 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
   const model = effective.model ?? llm.model;
 
+  // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
+  // model on every task-linked run." Admission stamped the CONFIGURED model
+  // (`policySnapshot.effective.model`), which is null whenever the agent
+  // inherits the org's LLM default — the fallback on the line above. This is
+  // the first and only moment the value actually used is known, so it is
+  // stamped here rather than guessed at admission.
+  //
+  // Best-effort and non-fatal: a failed metadata write must never turn a
+  // healthy run into a failed one. `resolved_model` is not in
+  // `ai_agent_runs_immutable_guard()`'s deny-list, so this UPDATE is
+  // permitted where a `policy_snapshot` rewrite would raise.
+  if (run.taskId) {
+    try {
+      await inSystemDbContext(() => db
+        .update(aiAgentRuns)
+        .set({ resolvedModel: model })
+        .where(eq(aiAgentRuns.id, run.id)));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to stamp resolved model (non-fatal)', {
+        runId: run.id, taskId: run.taskId, error,
+      });
+    }
+  }
+
   // THE run's policy, not the agent's current one: `mode_at_start` and the
   // release-time revalidation in 3b both reason about this snapshot, and an
   // operator narrowing the allowlist mid-run must not change what a proposal
@@ -1368,7 +1499,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
-    run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId, profile: run.profile },
+    run: {
+      id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      profile: run.profile, taskId: run.taskId,
+    },
     agentUserId: agentAuth.user.id,
   });
 
@@ -1410,7 +1544,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(outcomeToolsForProfile(run.profile)),
+    buildOutcomeSdkTools(outcomeToolsForRun(run)),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
@@ -1765,10 +1899,28 @@ export async function executeAgentRun(runId: string): Promise<void> {
         ? 'ownership_mismatch'
         : 'run_failed';
     console.error('[aiAgentRunLoop] agent run failed', { runId, errorCode, error });
-    const moved = await transitionRunStatus(runId, 'running', 'failed', {
-      errorCode,
-      finishedAt: new Date(),
-    });
+    // This is the LAST-RESORT terminalization: the runner queue is
+    // `attempts: 1` (replaying a crashed run could re-invoke tools that
+    // already had real-world effects), so if this throws, the row stays
+    // `running` forever and any AI Operator task waiting on it re-arms its
+    // poll until its own deadline fires — with nothing anywhere explaining
+    // why. `transitionRunStatus` gained a task-outbox insert inside its
+    // transaction in #5205 W06 and can now throw where it previously could
+    // only return false, so the fallback needs a fallback.
+    let moved = false;
+    try {
+      moved = await transitionRunStatus(runId, 'running', 'failed', {
+        errorCode,
+        finishedAt: new Date(),
+      });
+    } catch (terminalError) {
+      console.error('[aiAgentRunLoop] could not terminalize a failed run', {
+        runId, orgId: run.orgId, errorCode, terminalError,
+      });
+      captureException(
+        terminalError instanceof Error ? terminalError : new Error(String(terminalError)),
+      );
+    }
     if (moved) {
       await safePublish('ai.agent.run.failed', run.orgId, {
         runId, agentId: run.agentId, errorCode,

@@ -51,6 +51,7 @@ const PATCH_NORMALIZED_MATERIAL_KEYS = [
   'scheduleTime',
   'scheduleDayOfWeek',
   'scheduleDayOfMonth',
+  'offlineBehavior',
   'rebootPolicy',
   'rebootDelayMinutes',
   'rebootAllowDeferral',

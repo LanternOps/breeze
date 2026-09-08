@@ -44,6 +44,13 @@ export const ATTEMPT_TTL_SECONDS = 300;
  */
 const TRANSCRIPT_DOMAIN = 'breeze.authenticator.mobile-register.v1';
 
+/**
+ * Domain tag for the Android KEY-GENERATION challenge — see
+ * `androidKeyGenChallenge`. Deliberately distinct from `TRANSCRIPT_DOMAIN` so
+ * the two digests can never be confused for one another.
+ */
+const ANDROID_KEYGEN_CHALLENGE_DOMAIN = 'breeze.authenticator.mobile-register.keygen.v1';
+
 const attemptKey = (attemptId: string) => `authenticator-attest:${attemptId}`;
 
 export interface RegistrationAttempt {
@@ -57,13 +64,16 @@ export interface RegistrationAttempt {
 }
 
 /**
- * The bytes both the platform attestation and the registration
- * proof-of-possession are computed over.
+ * The bytes the registration proof-of-possession, the iOS App Attest
+ * `clientDataHash`, and the Android Play Integrity `requestHash` are computed
+ * over. All three are produced AFTER the key exists, so all three can embed
+ * the SPKI.
  *
- * iOS passes this as App Attest's `clientDataHash`; Android passes it as the
- * KeyStore `setAttestationChallenge`; and the client also signs it with the new
- * approval key under a biometric prompt. One digest, three bindings — which is
- * what makes "this attestation vouches for THIS key in THIS attempt" checkable
+ * The one binding this digest cannot serve is the Android KeyStore attestation
+ * challenge, which is fixed at key generation — before the SPKI exists. That
+ * uses `androidKeyGenChallenge` instead; the attested leaf key is then tied to
+ * the registered key by `verifyAndroid`'s SPKI-digest equality check. Together:
+ * "this attestation vouches for THIS key in THIS attempt" stays checkable
  * rather than merely asserted.
  *
  * Domain-separated and newline-delimited so a signature minted for any other
@@ -90,6 +100,32 @@ export function registrationTranscript(input: {
         input.publicKeyAlg,
         input.publicKeySpkiB64,
       ].join('\n'),
+      'utf8',
+    )
+    .digest();
+}
+
+/**
+ * The Android KeyStore attestation challenge (`KeyGenParameterSpec.Builder
+ * .setAttestationChallenge`). It is an input to key GENERATION, so — unlike
+ * `registrationTranscript` — it cannot include the key's own SPKI. It binds
+ * the attempt (freshness) and the declared algorithm; key identity is bound
+ * separately by `verifyAndroid` comparing the attested leaf key with the
+ * registered SPKI. 32 bytes, well under Android's 128-byte challenge cap.
+ *
+ * The exact pre-image is pinned by a test: W06's Kotlin mints this on-device.
+ */
+export function androidKeyGenChallenge(input: {
+  attemptId: string;
+  challenge: string;
+  publicKeyAlg: MobileKeyAlg;
+}): Buffer {
+  return crypto
+    .createHash('sha256')
+    .update(
+      [ANDROID_KEYGEN_CHALLENGE_DOMAIN, input.attemptId, input.challenge, input.publicKeyAlg].join(
+        '\n',
+      ),
       'utf8',
     )
     .digest();
@@ -222,11 +258,14 @@ const ANDROID_PACKAGE_NAME = 'com.breeze.rmm';
 async function verifyAndroid(input: {
   attestation: Extract<MobileAttestation, { platform: 'android' }>;
   transcript: Buffer;
+  keyGenChallenge: Buffer;
   publicKeySpkiB64: string;
 }): Promise<AttestationResult> {
   const key = verifyAndroidKeyAttestation({
     certificateChainDerB64: input.attestation.certificateChain,
-    expectedChallenge: input.transcript,
+    // The cert carries the KEYGEN digest, not the transcript: the challenge is
+    // fixed before the key (and so the transcript's SPKI) exists.
+    expectedChallenge: input.keyGenChallenge,
     expectedPackageName: ANDROID_PACKAGE_NAME,
   });
 
@@ -295,6 +334,8 @@ async function verifyAndroid(input: {
 export async function verifyPlatformAttestation(input: {
   attestation: MobileAttestation;
   transcript: Buffer;
+  /** `androidKeyGenChallenge(...)` for this attempt. Unused on iOS. */
+  keyGenChallenge: Buffer;
   publicKeySpkiB64: string;
   publicKeyAlg: MobileKeyAlg;
 }): Promise<AttestationResult> {

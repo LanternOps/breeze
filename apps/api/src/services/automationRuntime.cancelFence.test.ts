@@ -341,4 +341,45 @@ describe('executeAutomationActionsInOrder — mid-flight cancellation', () => {
     expect(dispatchMock).toHaveBeenCalledTimes(2);
     expect(out.hasNonterminalActions).toBe(true);
   });
+
+  /**
+   * #5128 W4, END TO END. Every other assertion about the queued path stops at
+   * `executeRunScriptAction`'s return value. This is the one that drives the
+   * whole chain — `automationOfflinePolicy()` → `dispatchScriptToDevice` →
+   * `delivered: false` → outcome `queued` → `hasNonterminalActions` → run status
+   * — and it is the assertion that matters most: W4 flipped the flag default ON
+   * for every existing customer, so if a queued step failed the run, every
+   * nightly automation over a fleet with sleeping laptops would go red at once.
+   */
+  it('a queued (offline) dispatch does NOT fail the run and does not skip trailing actions', async () => {
+    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
+    dispatchMock.mockResolvedValue({
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: false,
+      deliveryOutcome: 'no_agent', deliverBy: new Date('2026-09-14T00:00:00.000Z'),
+      executedAt: null, ignoredParameters: [],
+    });
+    fenceSees();
+
+    // args() defaults are exactly what this needs: ONE device, TWO run_script
+    // actions, and onFailure: 'stop' — so a queued first action wrongly treated
+    // as a failure would stop the run and skip the second.
+    const out = await __testOnly.executeAutomationActionsInOrder(args());
+
+    expect(out.cancelled).toBe(false);
+    expect(out.devicesFailed).toBe(0);
+    // Non-terminal, so the run stays 'running' and waits for the agent rather
+    // than being computed as completed or failed.
+    expect(out.hasNonterminalActions).toBe(true);
+    // onFailure: 'stop' must NOT trigger — the SECOND action still dispatched.
+    expect(dispatchMock).toHaveBeenCalledTimes(2);
+    expect(recordActionDispatchMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(recordActionDispatchMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'skipped' }),
+    );
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'queued', message: 'Queued — device offline' }),
+    );
+  });
 });

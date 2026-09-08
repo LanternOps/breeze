@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // #3162: automation `run_script` actions must queue the command against a REAL
 // script_executions row so handleScriptResult can persist the agent's stdout.
@@ -112,6 +112,13 @@ function buildContext() {
 beforeEach(() => {
   updatedValues = [];
 
+  // #5128 W4: this suite predates the offline queue and asserts the legacy
+  // reject semantics, which are now only reachable with the flag off. Pin it
+  // explicitly rather than leaning on a default that flipped in W4 — the
+  // queue-arm behaviour has its own suite
+  // (automationRuntime.whenOffline.test.ts).
+  vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
+
   updateMock.mockReset().mockImplementation(() => ({
     set: (vals: Record<string, unknown>) => {
       updatedValues.push(vals);
@@ -134,6 +141,10 @@ beforeEach(() => {
     notificationChannelsById: new Map(),
   });
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('createAutomationRunRecord — ownership admission', () => {
@@ -212,7 +223,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
     expect(input.triggeredBy).toBe('user-1');
     expect(input.createdBy).toBe('user-1');
     expect(input.runAs).toBe('system');
-    expect(input.requireOnline).toBe(true);
+    expect(input.offlinePolicy).toEqual({ kind: 'reject' });
   });
 
   it('logs success with the core-assigned commandId and executionId once delivered', async () => {
@@ -254,6 +265,8 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       status: 'queued',
       commandId: 'cmd-1',
       scriptExecutionId: EXECUTION_ID,
+      // #5128 W4 — the operator-facing reason the step has not started.
+      message: 'Queued — device offline',
     });
     expect(updatedValues).toEqual([{ status: 'queued' }]);
   });
@@ -312,7 +325,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
     expect(updatedValues).toEqual([]);
   });
 
-  it('logs failure with the core error when the device is offline (requireOnline gate)', async () => {
+  it('logs failure with the core error when the device is offline (reject policy)', async () => {
     dispatchMock.mockResolvedValue({
       ok: false,
       code: 'device_offline',
@@ -331,7 +344,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       scriptId: 'script-1',
     });
     // No status write to make — the core never inserted an execution row for
-    // an offline device (requireOnline is checked before any insert).
+    // an offline device (the reject policy is checked before any insert).
     expect(updatedValues).toEqual([]);
   });
 

@@ -91,3 +91,54 @@ describe('DeviceCard sr-only status text', () => {
     expect(screen.queryByText('Decommissioned')).not.toBeInTheDocument();
   });
 });
+
+// #4622 W04: this card had no `deviceClass` handling for 'manual' at all when
+// the class was first introduced, so the grid offered the FULL agent kebab
+// (Terminal/Run Script/Reboot/Decommission/Permanent Delete) on a manual
+// asset's foreign `manual_assets.id` — the same #4014 failure class the
+// network arm was already fixed for. Locks in the fix: Edit/Delete only, no
+// metrics fetch.
+describe('DeviceCard manual asset class (#4622 W04)', () => {
+  const manualDevice: Device = {
+    ...baseDevice,
+    id: 'manual-1',
+    hostname: 'spare-laptop',
+    deviceClass: 'manual',
+    assetType: 'workstation',
+    status: 'unknown',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('never fires the agent metrics-history request for a manual row', async () => {
+    render(<DeviceCard device={manualDevice} />);
+    // Give any accidental effect a tick to fire before asserting its absence.
+    await Promise.resolve();
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('offers Edit and Delete, never the agent actions menu, for a manual row', () => {
+    const onClick = vi.fn();
+    const onAction = vi.fn();
+    render(<DeviceCard device={manualDevice} onClick={onClick} onAction={onAction} />);
+
+    expect(screen.getByTestId('device-manual-1-edit-manual')).toBeInTheDocument();
+    expect(screen.getByTestId('device-manual-1-delete-manual')).toBeInTheDocument();
+    expect(screen.queryByTestId('device-manual-1-actions-menu')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('device-manual-1-open-network')).not.toBeInTheDocument();
+
+    screen.getByTestId('device-manual-1-edit-manual').click();
+    expect(onClick).toHaveBeenCalledWith(manualDevice);
+
+    screen.getByTestId('device-manual-1-delete-manual').click();
+    expect(onAction).toHaveBeenCalledWith('delete-manual', manualDevice);
+  });
+
+  it('renders the Unknown status chip, never Offline, and no CPU/RAM reading', () => {
+    render(<DeviceCard device={manualDevice} />);
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(screen.queryByText('Offline')).not.toBeInTheDocument();
+  });
+});

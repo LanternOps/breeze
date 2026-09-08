@@ -9,6 +9,7 @@ import {
 } from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { AccountingPaymentPayload } from './types';
+import { isQboPaymentLinkedRefusal } from './quickbooksFault';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
   return {
@@ -532,6 +533,50 @@ describe('voidInvoice', () => {
     await expect(quickbooksProvider.voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' }))
       .rejects.toThrow(/failed with 400/);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // #5180 — the seam that makes the whole terminal-classification chain work.
+  // Everything downstream (the coordinator's catch, the worker's TERMINAL_CODES)
+  // keys off the fields `qboRequest` attaches HERE. If that attachment regresses
+  // — wrong property name, inverted condition — every hand-built-error test
+  // downstream stays green while the feature never fires against real
+  // QuickBooks, which is exactly the "five identical refusals, no signal"
+  // failure this issue was about. So this test starts from a real fetch reply.
+  it('attaches the payment-linked classification off the FULL fault body, so the coordinator can call the void terminal', async () => {
+    const detail = 'Business Validation Error: You cannot void this invoice because it has payments applied to it.'
+      // Padding so the reason sits PAST the 500-character truncation point that
+      // `body` storage applies — the classification must survive that.
+      + ` ${'x'.repeat(600)}`;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6000', Message: 'Business Validation Error', Detail: detail }] } }),
+      { status: 400 },
+    ));
+
+    const err = await quickbooksProvider
+      .voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' })
+      .catch((e: unknown) => e) as Error & { body?: string; qboPaymentLinked?: boolean };
+
+    // Not a 5010, so the provider does NOT re-read and retry — it propagates.
+    expect(err.message).toMatch(/failed with 400/);
+    expect(err.qboPaymentLinked).toBe(true);
+    expect(isQboPaymentLinkedRefusal(err)).toBe(true);
+    // The truncated copy stored for forensics still never carries Intuit's
+    // Detail past 500 characters, and the flag did not depend on it.
+    expect(err.body!.length).toBeLessThanOrEqual(500);
+  });
+
+  it('does NOT flag an ordinary 400 fault as payment-linked — an unrelated rejection keeps its retries', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6140', Message: 'Duplicate Document Number Error', Detail: 'DocNumber INV-1 already exists.' }] } }),
+      { status: 400 },
+    ));
+
+    const err = await quickbooksProvider
+      .voidInvoice(conn(), voidPayload(), { remoteEntityId: '310', remoteSyncToken: '4' })
+      .catch((e: unknown) => e) as Error & { qboPaymentLinked?: boolean };
+
+    expect(err.qboPaymentLinked).toBeUndefined();
+    expect(isQboPaymentLinkedRefusal(err)).toBe(false);
   });
 
   it('reads the live SyncToken FIRST when the mapping has none, instead of refusing the void', async () => {

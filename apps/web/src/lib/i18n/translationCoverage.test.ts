@@ -19,6 +19,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 25,
     'ai.json': 1,
+    // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
+    // identical cognates in pt-BR.
+    'aiOperator.json': 2,
     'alerts.json': 43,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -63,12 +66,13 @@ const namespaceDuplicateBaselines = {
     // product names, never translated) and dateFormat.iso's "ISO
     // (2026-12-31)" + mapping.fieldKeyPlaceholder "field_key" — both a
     // literal format token/example key, not wording.
-    'devices.json': 165,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
+    'devices.json': 174,
     'discovery.json': 17,
     'integrations.json': 23,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
-    'organizations.json': 4, // W01 #5075: cognates — "Sites", "{{count}} site(s)"
+    'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -115,6 +119,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 21,
     'ai.json': 4,
+    // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
+    // "chat" are identical cognates in es-419.
+    'aiOperator.json': 3,
     'alerts.json': 39,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -159,7 +166,8 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus one of dateFormat.iso / mapping.fieldKeyPlaceholder — both literal
     // format tokens, not wording.
-    'devices.json': 120,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
+    'devices.json': 125,
     'discovery.json': 17,
     'integrations.json': 31,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
@@ -209,6 +217,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-FR.
+    'aiOperator.json': 3,
     'alerts.json': 58,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -261,10 +272,11 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    'devices.json': 146,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 38,
-    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"
+    'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -322,6 +334,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 34,
     'ai.json': 9,
+    // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
+    // waitReason "information" are identical cognates in fr-CA.
+    'aiOperator.json': 3,
     'alerts.json': 59,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -368,10 +383,11 @@ const namespaceDuplicateBaselines = {
     // French, added when the Class/Type headers were moved off hardcoded English.
     // Re-measured after merging main on 2026-09-06 (main's W06/W09 additions
     // plus the unified-device-list branch).
-    'devices.json': 146,
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
+    'devices.json': 152,
     'discovery.json': 15,
     'integrations.json': 40,
-    'organizations.json': 6, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"
+    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
     'patches.json': 20,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -431,6 +447,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 31,
     'ai.json': 5,
+    // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
+    // "chat" and waitReason "information" are identical cognates in de-DE.
+    'aiOperator.json': 4,
     'alerts.json': 46,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -482,12 +501,16 @@ const namespaceDuplicateBaselines = {
     // — both spelled identically in German.
     // +1 (2026-09-06): deviceList.tableColumns.type "Type" arrived with the
     // unified-device-list branch; re-measured after merging main.
-    'devices.json': 155,
-    'discovery.json': 26,
+    // +1 (#5128 W2): queuedActions.system — "System" is the identical loanword
+    // in German.
+    // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
+    'devices.json': 164,
+    // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
+    'discovery.json': 27,
     'integrations.json': 43,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
-    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
     'patches.json': 23,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -530,6 +553,9 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 38,
     'ai.json': 12,
+    // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
+    // identical cognates in it-IT.
+    'aiOperator.json': 2,
     'alerts.json': 57,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -563,7 +589,7 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
-    'organizations.json': 1, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term
+    'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -602,6 +628,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 19,
     'ai.json': 1,
+    'aiOperator.json': 0,
     'alerts.json': 25,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
     // slash — no wording to translate.
@@ -628,7 +655,8 @@ const namespaceDuplicateBaselines = {
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
     // "field_key" — literal format tokens/example keys, not wording.
-    'devices.json': 83,
+    // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
+    'devices.json': 88,
     'discovery.json': 9,
     'integrations.json': 22,
     'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"

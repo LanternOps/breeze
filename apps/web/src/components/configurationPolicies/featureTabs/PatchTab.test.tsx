@@ -366,6 +366,60 @@ describe('PatchTab', () => {
     expect(payload.inlineSettings.rebootAllowDeferral).toBe(false);
   });
 
+  // #5128 W3 — offline behaviour for scheduled installs.
+  describe('offline behaviour (#5128 W3)', () => {
+    it('renders both options with queue selected by default', async () => {
+      render(<PatchTab {...baseProps} />);
+      const group = await screen.findByTestId('patch-offline-behavior');
+      expect(group).toHaveAttribute('role', 'radiogroup');
+      expect(screen.getByText('Queue for offline devices')).toBeInTheDocument();
+      expect(screen.getByText('Skip offline devices')).toBeInTheDocument();
+
+      const queue = screen.getByTestId('patch-offline-behavior-queue') as HTMLInputElement;
+      const skip = screen.getByTestId('patch-offline-behavior-skip') as HTMLInputElement;
+      expect(queue.checked).toBe(true);
+      expect(skip.checked).toBe(false);
+    });
+
+    it("sends offlineBehavior 'queue' on an untouched policy", async () => {
+      render(<PatchTab {...baseProps} />);
+      await screen.findByTestId('patch-offline-behavior');
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0];
+      expect(payload.inlineSettings.offlineBehavior).toBe('queue');
+    });
+
+    it("persists a switch to 'skip' in the save payload", async () => {
+      render(<PatchTab {...baseProps} />);
+      fireEvent.click(await screen.findByTestId('patch-offline-behavior-skip'));
+      fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0];
+      expect(payload.inlineSettings.offlineBehavior).toBe('skip');
+    });
+
+    it('hydrates from a stored offlineBehavior', async () => {
+      render(
+        <PatchTab
+          {...baseProps}
+          existingLink={{
+            id: 'link-1',
+            featureType: 'patch',
+            featurePolicyId: null,
+            inlineSettings: { offlineBehavior: 'skip' },
+          }}
+        />
+      );
+      const skip = (await screen.findByTestId(
+        'patch-offline-behavior-skip'
+      )) as HTMLInputElement;
+      expect(skip.checked).toBe(true);
+    });
+  });
+
   describe('inline ring editor', () => {
     it('creates a ring inline, refetches, and auto-selects it', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {
