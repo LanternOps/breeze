@@ -68,6 +68,24 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 	return nil, nil
 }
 
+// LastCaptureError implements lastCaptureErrorReporter by delegating to the
+// GDI fallback, which is the only capturer here that reports a failed frame as
+// (nil, nil). DXGI itself returns real errors, so there is nothing to recover
+// on that path.
+//
+// This is what carries a secure-desktop capture failure out to the technician:
+// StartSession calls describeCaptureFailure with session.capturer, which is
+// this object, not the fallback (#5284).
+func (c *dxgiCapturer) LastCaptureError() error {
+	c.mu.Lock()
+	fallback := c.gdiFallback
+	c.mu.Unlock()
+	if fallback == nil {
+		return nil
+	}
+	return fallback.LastCaptureError()
+}
+
 // Capture acquires the next desktop frame via DXGI.
 // Returns nil, nil when no new frame is available (AccumulatedFrames==0).
 func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
@@ -574,3 +592,5 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 	defer c.mu.Unlock()
 	return c.context
 }
+
+var _ lastCaptureErrorReporter = (*dxgiCapturer)(nil)
