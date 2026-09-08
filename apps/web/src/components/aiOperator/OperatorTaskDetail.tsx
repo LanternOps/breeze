@@ -98,6 +98,7 @@ function dispatchStateLabel(t: Translator, state: AiOperatorOperationDispatchSta
     case 'reserved': return t('operatorTaskDetail.dispatchState.reserved');
     case 'dispatched': return t('operatorTaskDetail.dispatchState.dispatched');
     case 'dispatch_failed': return t('operatorTaskDetail.dispatchState.dispatchFailed');
+    case 'cancelled': return t('operatorTaskDetail.dispatchState.cancelled');
     case 'abandoned': return t('operatorTaskDetail.dispatchState.abandoned');
     default: return state;
   }

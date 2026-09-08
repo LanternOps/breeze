@@ -89,6 +89,7 @@
       "reserved": "Ayrıldı",
       "dispatched": "Gönderildi",
       "dispatchFailed": "Gönderim başarısız",
+      "cancelled": "İptal edildi",
       "abandoned": "Terk edildi"
     },
     "resultState": {

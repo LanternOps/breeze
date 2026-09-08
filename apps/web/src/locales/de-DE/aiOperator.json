@@ -89,6 +89,7 @@
       "reserved": "Reserviert",
       "dispatched": "Gesendet",
       "dispatchFailed": "Versand fehlgeschlagen",
+      "cancelled": "Abgebrochen",
       "abandoned": "Abgebrochen"
     },
     "resultState": {

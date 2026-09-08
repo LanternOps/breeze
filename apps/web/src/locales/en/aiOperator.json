@@ -89,6 +89,7 @@
       "reserved": "Reserved",
       "dispatched": "Dispatched",
       "dispatchFailed": "Dispatch failed",
+      "cancelled": "Cancelled",
       "abandoned": "Abandoned"
     },
     "resultState": {
