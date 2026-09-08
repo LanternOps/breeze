@@ -4502,7 +4502,8 @@
       "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
       "saveOrganization": "Impossibile salvare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
-      "deleteSite": "Impossibile eliminare il sito"
+      "deleteSite": "Impossibile eliminare il sito",
+      "loadSites": "Impossibile caricare i siti di questa organizzazione."
     },
     "status": {
       "active": "Attiva",

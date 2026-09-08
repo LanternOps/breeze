@@ -4454,7 +4454,8 @@
       "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
       "saveOrganization": "Impossible d’enregistrer l’organisation",
       "saveSite": "Impossible d’enregistrer le site ({{status}})",
-      "deleteSite": "Impossible de supprimer le site"
+      "deleteSite": "Impossible de supprimer le site",
+      "loadSites": "Impossible de charger les sites de cette organisation."
     },
     "status": {
       "active": "Active",

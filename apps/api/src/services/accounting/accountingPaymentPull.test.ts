@@ -626,6 +626,20 @@ describe('applyAccountingPayment', () => {
     }));
   });
 
+  it('reports a failed fire-and-forget audit write to Sentry with allowlisted tag keys (#5126)', async () => {
+    writeAuditEventMock.mockImplementationOnce(() => { throw new Error('audit sink unavailable'); });
+
+    // The audit failure must never undo the already-committed payment.
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+    expect(result).toMatchObject({ outcome: 'applied' });
+
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'accountingPaymentPull',
+      accounting_audit_action: 'accounting.payment.pulled',
+      accounting_audit_resource_id: INVOICE_ID,
+    });
+  });
+
   it('falls back to the QBO payment id as the reference when PaymentRefNum is absent', async () => {
     const result = await applyAccountingPayment(conn(), { ...LINE, paymentRefNum: null }, runCtx, REALM_FP);
 
@@ -689,6 +703,14 @@ describe('applyAccountingPayment', () => {
     expect(mappingUpdate.set).not.toHaveProperty('linkStatus');
     expect(stmts.some((s) => s.kind === 'insert')).toBe(false);
     expect(recomputeMock).not.toHaveBeenCalled();
+
+    // #5126: tag keys must be the allowlisted snake_case names, not the
+    // camelCase ones sentry.ts silently drops.
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'accountingPaymentPull',
+      remote_entity_id: QBO_PAYMENT_ID,
+      invoice_id: INVOICE_ID,
+    });
   });
 
   it('refuses a payment against a voided invoice and marks the invoice mapping instead', async () => {
@@ -714,6 +736,14 @@ describe('applyAccountingPayment', () => {
       lastError: 'Payment pull: Payment received in QuickBooks against a voided invoice',
     });
     expect(mappingUpdate.set).not.toHaveProperty('remoteEntityId');
+
+    // #5126: tag keys must be the allowlisted snake_case names, not the
+    // camelCase ones sentry.ts silently drops.
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      service: 'accountingPaymentPull',
+      remote_entity_id: QBO_PAYMENT_ID,
+      invoice_id: INVOICE_ID,
+    });
   });
 
   it('refuses a voided invoice BEFORE consulting the payment mapping, so a replay cannot slip through', async () => {

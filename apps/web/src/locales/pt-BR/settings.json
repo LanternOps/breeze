@@ -4507,7 +4507,8 @@
       "saveOrder": "Falha ao salvar a ordem das organizações",
       "saveOrganization": "Falha ao salvar a organização",
       "saveSite": "Falha ao salvar site ({{status}})",
-      "deleteSite": "Falha ao excluir site"
+      "deleteSite": "Falha ao excluir site",
+      "loadSites": "Não foi possível carregar os sites desta organização."
     },
     "status": {
       "active": "Ativo",
