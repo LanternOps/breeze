@@ -172,10 +172,11 @@ function rigUpdate(row: unknown | undefined) {
   return { set, where };
 }
 
-function rigDelete() {
-  const where = vi.fn().mockResolvedValue(undefined);
+function rigDelete(deletedIds: string[] = ['deleted']) {
+  const returning = vi.fn().mockResolvedValue(deletedIds.map((id) => ({ id })));
+  const where = vi.fn().mockReturnValue({ returning });
   vi.mocked(db.delete).mockReturnValue({ where } as never);
-  return { where };
+  return { where, returning };
 }
 
 describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () => {
@@ -271,6 +272,47 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(body.warnings).toEqual([expect.objectContaining({ code: 'DUPLICATE_SERIAL' })]);
   });
 
+  it('translates a cross-org assigned-contact FK violation (23503) into a clean 400', async () => {
+    rigSelect([{ id: SITE_A }]); // site lookup succeeds
+    rigInsertThrows(Object.assign(new Error('insert or update on table "manual_assets" violates foreign key constraint'), {
+      code: '23503',
+      constraint_name: 'manual_assets_assigned_contact_org_fk',
+    }));
+
+    const res = await app.request('/devices/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ orgId: ORG_1, siteId: SITE_A, name: 'X', assignedContactId: DISC_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/assigned contact/i);
+  });
+
+  it('re-throws (500) an FK violation on a DIFFERENT constraint rather than mislabeling it as a contact error', async () => {
+    // #5255 review finding: a blanket `pgErrorCode === '23503'` cannot tell
+    // WHICH of the table's five FKs fired. This proves the fix checks the
+    // constraint name, not just the SQLSTATE.
+    rigSelect([{ id: SITE_A }]);
+    rigInsertThrows(Object.assign(new Error('insert or update on table "manual_assets" violates foreign key constraint'), {
+      code: '23503',
+      constraint_name: 'manual_assets_site_org_fk',
+    }));
+
+    // Hono's default error handler converts an uncaught throw into a 500
+    // response rather than rejecting the fetch promise — assert on that,
+    // not on the response body (which is deliberately not the clean,
+    // user-facing "assigned contact not found" message from the branch
+    // above).
+    const res = await app.request('/devices/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ orgId: ORG_1, siteId: SITE_A, name: 'X' }),
+    });
+    expect(res.status).toBe(500);
+  });
+
   // --- GET /devices/manual ---------------------------------------------------
 
   it('GET excludes retired, linked-to-device, and linked-to-discovered-asset rows via the query conditions (not enum matching)', async () => {
@@ -287,6 +329,54 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(sqlText).toMatch(/"retired_at" is null/);
     expect(sqlText).toMatch(/"linked_device_id" is null/);
     expect(sqlText).toMatch(/"linked_discovered_asset_id" is null/);
+  });
+
+  it('GET rejects an orgId outside accessibleOrgIds with 403', async () => {
+    const res = await app.request(`/devices/manual?orgId=${ORG_2}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('GET returns a total only when includeTotal=true', async () => {
+    // Two selects: the count query, then the row query.
+    let call = 0;
+    vi.mocked(db.select).mockImplementation(((arg: any) => {
+      const isCount = arg && typeof arg === 'object' && 'count' in arg && Object.keys(arg).length === 1;
+      call += 1;
+      if (isCount) {
+        const where = vi.fn().mockResolvedValue([{ count: 3 }]);
+        return { from: vi.fn().mockReturnValue({ where }) };
+      }
+      const orderBy = vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }) });
+      const where = vi.fn().mockReturnValue({ orderBy });
+      return { from: vi.fn().mockReturnValue({ where }) };
+    }) as never);
+
+    const res = await app.request('/devices/manual?includeTotal=true', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.pagination.total).toBe(3);
+    expect(call).toBeGreaterThanOrEqual(2);
+  });
+
+  it('403s a site-restricted GET caller requesting a site outside their allowlist', async () => {
+    allowedSiteIds = [SITE_A];
+    rigSelect([]);
+
+    const res = await app.request(`/devices/manual?siteId=${SITE_B}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/site denied/i);
   });
 
   it('GET DTO shape: deviceClass=manual, status=unknown, agent/network fields null, enrolledAt=createdAt', async () => {
@@ -317,6 +407,28 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
       body: JSON.stringify({ deviceId: DEVICE_ID, discoveredAssetId: DISC_ID }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('400s POST /:id/link when NEITHER deviceId nor discoveredAssetId is provided', async () => {
+    const res = await app.request(`/devices/manual/${ASSET_ID}/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('403s POST /:id/link for a site-scoped technician whose allowlist excludes the asset\'s own site', async () => {
+    allowedSiteIds = [SITE_B];
+    rigSelectSequence([[baseManualRow({ siteId: SITE_A })]]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ deviceId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(403);
   });
 
   it('404s POST /:id/link when the target device belongs to another org (never leaks existence)', async () => {
@@ -368,6 +480,22 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'manual_asset.link',
     }));
+  });
+
+  it('404s POST /:id/link on a 0-row write (lost race with a concurrent delete/re-org), not 500', async () => {
+    rigSelectSequence([
+      [baseManualRow()],
+      [{ id: DEVICE_ID, orgId: ORG_1, siteId: SITE_A }],
+    ]);
+    rigUpdate(undefined); // update matches nothing
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ deviceId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(404);
   });
 
   // --- PATCH /devices/manual/:id ----------------------------------------------
@@ -426,6 +554,81 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(res.status).toBe(400);
   });
 
+  it('403s PATCH for a site-scoped technician whose allowlist excludes the asset\'s CURRENT site', async () => {
+    allowedSiteIds = [SITE_B];
+    rigSelectSequence([[baseManualRow({ siteId: SITE_A })]]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ name: 'X' }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('400s a PATCH site move to a site belonging to a different org', async () => {
+    // First select: load the existing row. Second: target-site lookup (empty
+    // — the site does not belong to the row's org).
+    rigSelectSequence([[baseManualRow({ siteId: SITE_A })], []]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ siteId: SITE_B }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('403s a PATCH site move into a site outside a site-scoped technician\'s allowlist', async () => {
+    allowedSiteIds = [SITE_A]; // caller may see the CURRENT site...
+    rigSelectSequence([
+      [baseManualRow({ siteId: SITE_A })],
+      [{ id: SITE_B }], // ...but the TARGET site is a real site in the org
+    ]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ siteId: SITE_B }),
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('translates a cross-org assigned-contact FK violation on PATCH into a clean 400', async () => {
+    rigSelectSequence([[baseManualRow()]]);
+    const returning = vi.fn().mockRejectedValue(Object.assign(
+      new Error('insert or update on table "manual_assets" violates foreign key constraint'),
+      { code: '23503', constraint_name: 'manual_assets_assigned_contact_org_fk' },
+    ));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }) } as never);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ assignedContactId: DISC_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/assigned contact/i);
+  });
+
+  it('404s a PATCH 0-row write (lost race), not a silent 200', async () => {
+    rigSelectSequence([[baseManualRow()]]);
+    rigUpdate(undefined);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ name: 'X' }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
   // --- DELETE /devices/manual/:id/link ---------------------------------------
 
   it('DELETE /:id/link clears both link columns', async () => {
@@ -444,6 +647,30 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     }));
   });
 
+  it('403s DELETE /:id/link for a site-scoped technician outside the asset\'s allowlist', async () => {
+    allowedSiteIds = [SITE_B];
+    rigSelectSequence([[baseManualRow({ siteId: SITE_A, linkedDeviceId: DEVICE_ID })]]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}/link`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('404s DELETE /:id/link on a 0-row write (lost race), not a silent 200', async () => {
+    rigSelectSequence([[baseManualRow({ linkedDeviceId: DEVICE_ID })]]);
+    rigUpdate(undefined);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}/link`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
   // --- DELETE /devices/manual/:id ---------------------------------------------
 
   it('DELETE /:id hard-deletes and writes manual_asset.delete audit', async () => {
@@ -460,6 +687,31 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
       action: 'manual_asset.delete',
       resourceId: ASSET_ID,
     }));
+  });
+
+  it('403s DELETE /:id for a site-scoped technician outside the asset\'s allowlist', async () => {
+    allowedSiteIds = [SITE_B];
+    rigSelectSequence([[baseManualRow({ siteId: SITE_A })]]);
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('404s DELETE /:id on a 0-row delete (lost race with a concurrent delete) instead of reporting success', async () => {
+    rigSelectSequence([[baseManualRow()]]);
+    rigDelete([]); // the DELETE matches nothing
+
+    const res = await app.request(`/devices/manual/${ASSET_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   // --- No MFA step-up (deliberate omission) -----------------------------------

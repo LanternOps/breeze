@@ -6,7 +6,7 @@ import { manualAssets, sites, devices, discoveredAssets } from '../../db/schema'
 import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import {
   listManualAssetsSchema,
   createManualAssetSchema,
@@ -44,6 +44,20 @@ manualRoutes.use('*', authMiddleware);
 // asset by id and verifies the caller can access its org WITHOUT leaking
 // whether a same-id row exists in another org — a wrong-org lookup and a
 // missing row both resolve to the identical 404.
+// `manual_assets` carries FIVE FK constraints that can raise 23503 on the
+// insert/update statements below (org_id, the composite site FK, the
+// composite assigned-contact FK, created_by, updated_by). A blanket
+// `pgErrorCode(err) === '23503'` cannot tell which one fired, so it would
+// mislabel e.g. a site-deleted-mid-request race as "assigned contact not
+// found" — checking the specific constraint NAME keeps the 400 message
+// honest and lets every other FK violation fall through to `throw err`
+// (500 + logging), which is correct: those are not user-correctable input
+// errors at this point in the flow.
+function isAssignedContactFkViolation(err: unknown): boolean {
+  return pgErrorCode(err) === '23503'
+    && pgErrorConstraint(err) === 'manual_assets_assigned_contact_org_fk';
+}
+
 async function loadAccessibleManualAsset(
   auth: { canAccessOrg: (orgId: string) => boolean },
   id: string,
@@ -286,8 +300,9 @@ manualRoutes.post(
     } catch (err: unknown) {
       // The composite (assigned_contact_id, org_id) FK makes a cross-org
       // assignment unrepresentable at the DB layer — surface it as a clean
-      // 400 rather than a raw 500.
-      if (pgErrorCode(err) === '23503') {
+      // 400 rather than a raw 500. Every OTHER FK on this table falls
+      // through to `throw err` (see isAssignedContactFkViolation).
+      if (isAssignedContactFkViolation(err)) {
         return c.json({ error: 'Assigned contact not found in this organization' }, 400);
       }
       throw err;
@@ -380,7 +395,7 @@ manualRoutes.patch(
         .where(eq(manualAssets.id, id))
         .returning();
     } catch (err: unknown) {
-      if (pgErrorCode(err) === '23503') {
+      if (isAssignedContactFkViolation(err)) {
         return c.json({ error: 'Assigned contact not found in this organization' }, 400);
       }
       throw err;
@@ -423,7 +438,17 @@ manualRoutes.delete(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    await db.delete(manualAssets).where(eq(manualAssets.id, id));
+    // Check the rowcount: under forced RLS, or a race with a concurrent
+    // delete of the same row, a DELETE that matches nothing is a silent
+    // no-op, not an error — reporting success (and auditing a delete that
+    // never happened) would be a lie (mirrors routes/backup/profiles.ts).
+    const deletedRows = await db.delete(manualAssets)
+      .where(eq(manualAssets.id, id))
+      .returning({ id: manualAssets.id });
+
+    if (deletedRows.length === 0) {
+      return c.json({ error: 'Manual asset not found' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: existing.orgId,
@@ -461,7 +486,8 @@ manualRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    let targetOrgId: string;
+    // orgId is checked inline below (never stored) — only siteId needs to
+    // survive past the branch to the same-site check.
     let targetSiteId: string;
     let linkUpdate: Partial<typeof manualAssets.$inferInsert>;
     let auditDetails: Record<string, unknown>;
@@ -476,7 +502,6 @@ manualRoutes.post(
       if (!targetDevice || targetDevice.orgId !== existing.orgId) {
         return c.json({ error: 'Device not found' }, 404);
       }
-      targetOrgId = targetDevice.orgId;
       targetSiteId = targetDevice.siteId;
       linkUpdate = { linkedDeviceId: body.deviceId, linkedDiscoveredAssetId: null };
       auditDetails = { linkedDeviceId: body.deviceId };
@@ -489,7 +514,6 @@ manualRoutes.post(
       if (!targetAsset || targetAsset.orgId !== existing.orgId) {
         return c.json({ error: 'Discovered asset not found' }, 404);
       }
-      targetOrgId = targetAsset.orgId;
       targetSiteId = targetAsset.siteId;
       linkUpdate = { linkedDiscoveredAssetId: body.discoveredAssetId, linkedDeviceId: null };
       auditDetails = { linkedDiscoveredAssetId: body.discoveredAssetId };
@@ -505,15 +529,18 @@ manualRoutes.post(
         400,
       );
     }
-    void targetOrgId;
 
     const [updated] = await db.update(manualAssets)
       .set({ ...linkUpdate, updatedBy: auth.user.id, updatedAt: new Date() })
       .where(eq(manualAssets.id, id))
       .returning();
 
+    // 0-row write despite the prior access-checked load => RLS rejection or a
+    // race with a concurrent delete/re-org of this row. Same classification
+    // as PATCH and DELETE /:id/link below — a lost race is "not found", not
+    // a server fault.
     if (!updated) {
-      return c.json({ error: 'Failed to link manual asset' }, 500);
+      return c.json({ error: 'Manual asset not found' }, 404);
     }
 
     writeRouteAudit(c, {
