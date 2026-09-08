@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -25,6 +25,7 @@ vi.mock('../../db/schema', async (importOriginal) => {
 
 let accessibleOrgIds: string[] = ['org-1'];
 let allowedSiteIds: string[] | undefined = undefined;
+let mfaSatisfied = true;
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -36,7 +37,7 @@ vi.mock('../../middleware/auth', () => ({
       accessibleOrgIds,
       canAccessOrg: (orgId: string) => accessibleOrgIds.includes(orgId),
       orgCondition: () => undefined,
-      token: { mfa: false },
+      token: { mfa: mfaSatisfied },
     });
     c.set('permissions', {
       permissions: [
@@ -60,13 +61,13 @@ vi.mock('../../middleware/auth', () => ({
     if (!c.get('auth')) return c.json({ error: 'Not authenticated' }, 401);
     return next();
   }),
-  // Deliberately NOT re-exporting requireMfa's real behavior distinctly —
-  // manual.ts must never import/call requireMfa at all (spec: manual asset
-  // writes are ordinary inventory edits, no step-up). If manual.ts ever
-  // imports requireMfa, this mock still resolves it as a no-op middleware,
-  // so the only way to catch a regression is the source-inspection test
-  // below (`does not import requireMfa`).
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirrors the real gate's contract (middleware/auth.ts requireMfa): a session
+  // whose token lacks the `mfa` claim is refused with the coded 403 body, so
+  // the tests below can prove every mutator is gated and the read is not.
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    if (!c.get('auth')?.token?.mfa) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    return next();
+  }),
 }));
 
 const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
@@ -714,10 +715,42 @@ describe('devices/manual — manual asset CRUD + link/unlink (#4622 W02)', () =>
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
-  // --- No MFA step-up (deliberate omission) -----------------------------------
+  // --- MFA gate on every mutator (matches device edit + discovery mutators) ---
 
-  it('does not import or call requireMfa anywhere in the module (deliberate: no step-up for manual asset writes)', () => {
+  it('carries requireMfa() on exactly the five mutators and not on the read', () => {
     const src = readFileSync(join(__dirname, 'manual.ts'), 'utf8');
-    expect(src).not.toMatch(/requireMfa/);
+    expect((src.match(/^\s*requireMfa\(\),$/gm) ?? []).length).toBe(5);
+    const getBlock = src.slice(src.indexOf('manualRoutes.get('), src.indexOf('manualRoutes.post('));
+    expect(getBlock).not.toMatch(/requireMfa/);
+  });
+
+  describe('without a completed-MFA session', () => {
+    beforeEach(() => {
+      mfaSatisfied = false;
+    });
+    afterEach(() => {
+      mfaSatisfied = true;
+    });
+
+    it.each([
+      ['POST /devices/manual', 'POST', '/devices/manual', { orgId: 'org-1', siteId: 'site-1', name: 'x' }],
+      ['PATCH /devices/manual/:id', 'PATCH', '/devices/manual/11111111-1111-4111-8111-111111111111', { name: 'y' }],
+      ['DELETE /devices/manual/:id', 'DELETE', '/devices/manual/11111111-1111-4111-8111-111111111111', undefined],
+      ['POST /devices/manual/:id/link', 'POST', '/devices/manual/11111111-1111-4111-8111-111111111111/link', { deviceId: '22222222-2222-4222-8222-222222222222' }],
+      ['DELETE /devices/manual/:id/link', 'DELETE', '/devices/manual/11111111-1111-4111-8111-111111111111/link', undefined],
+    ])('%s is refused with MFA_REQUIRED', async (_label, method, path, body) => {
+      const res = await app.request(path, {
+        method,
+        headers: body ? { 'content-type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    });
+
+    it('GET /devices/manual still answers (reads are not step-up gated)', async () => {
+      const res = await app.request('/devices/manual?orgId=org-1');
+      expect(res.status).not.toBe(403);
+    });
   });
 });

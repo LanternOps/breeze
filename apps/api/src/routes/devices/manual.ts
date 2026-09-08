@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { manualAssets, sites, devices, discoveredAssets } from '../../db/schema';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
@@ -27,9 +27,11 @@ manualRoutes.use('*', authMiddleware);
  * tagged `deviceClass: 'manual'`.
  *
  * Deliberate omissions, matching the design spec:
- *   - No MFA step-up middleware anywhere in this file. Manual asset writes
- *     are ordinary inventory edits with no blast radius beyond the org's own
- *     records — matching device edit, not the discovery mutators.
+ *   - Every mutator carries `requireMfa()` (session completed MFA), matching
+ *     both sibling classes: device edit (`core.ts` PATCH /:id) and the
+ *     discovery mutators (`discovery.ts`). The read does not. The spec's
+ *     original "no step-up" line rested on the false claim that device edit
+ *     is ungated; corrected on merge of W02 (#5255).
  *   - `GET` excludes retired rows and rows already linked to a device or a
  *     discovered asset — a linked row already surfaces through the arm it
  *     was linked to, so including it here would double-count one physical
@@ -228,6 +230,7 @@ manualRoutes.post(
   '/manual',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', createManualAssetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -333,6 +336,7 @@ manualRoutes.patch(
   '/manual/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', updateManualAssetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -425,6 +429,7 @@ manualRoutes.delete(
   '/manual/:id',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
@@ -471,6 +476,7 @@ manualRoutes.post(
   '/manual/:id/link',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   zValidator('json', linkManualAssetSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -561,6 +567,7 @@ manualRoutes.delete(
   '/manual/:id/link',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id')!;
