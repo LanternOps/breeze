@@ -2772,6 +2772,144 @@
       "docs": [
         "features/configuration-policies.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/commandOfflinePolicy.ts",
+      "docs": [
+        "features/devices.mdx",
+        "deploy/environment.mdx",
+        "features/patch-management.mdx",
+        "features/automations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/commandClaimEligibility.ts",
+      "docs": [
+        "features/devices.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/readiness.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/readinessConfig.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workerReadinessRegistry.ts",
+      "docs": [
+        "monitoring/health.mdx",
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingPaymentPush.ts",
+      "docs": [
+        "features/accounting-integrations.mdx",
+        "features/invoices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/accountingReconcileWorker.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/monitorWorker.ts",
+      "docs": [
+        "features/network-monitors.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/serviceManagement.ts",
+      "docs": [
+        "reference/partner-management.mdx",
+        "features/ticketing.mdx",
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/PartnerModulesCard.tsx",
+      "docs": [
+        "reference/partner-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/organizations/record/**",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiOperator/**",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiOperatorTasks.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiOperatorTaskWorker.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiOperatorTaskOutboxPublisher.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/aiOperator/**",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/attestation/playIntegrity.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/approval-security.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/mfaPolicyActivation.ts",
+      "docs": [
+        "reference/users-and-roles.mdx",
+        "security/hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/agentapp/service_install.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/watchdog.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/winsvcinstall/**",
+      "docs": [
+        "agents/installation.mdx",
+        "agents/advanced-install.mdx"
+      ]
     }
   ]
 }

@@ -147,6 +147,11 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/billing/quotes', docsPath: '/features/quotes/', label: 'Quotes' },
   { pattern: '/billing', docsPath: '/features/invoices/', label: 'Billing' },
   { pattern: '/contracts', docsPath: '/features/contracts/', label: 'Recurring Contracts' },
+  {
+    pattern: '/organizations',
+    docsPath: '/reference/organizations-and-sites/#the-organisation-record-page',
+    label: 'Organization Record',
+  },
   { pattern: '/scripts', docsPath: '/features/scripts/', label: 'Scripts' },
   { pattern: '/patches', docsPath: '/features/patch-management/', label: 'Patch Management' },
   { pattern: '/vulnerabilities', docsPath: '/features/vulnerability-management/', label: 'Vulnerability Management' },
@@ -220,6 +225,8 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/fleet', docsPath: '/features/fleet-hygiene/', label: 'Fleet Hygiene Findings' },
   { pattern: '/ai-agents/impact', docsPath: '/features/ai-impact/', label: 'AI Impact' },
   { pattern: '/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
+  { pattern: '/operator/tasks', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator Tasks' },
+  { pattern: '/operator', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
 

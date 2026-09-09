@@ -106,6 +106,8 @@ Setting these once per customer means invoices carry the right tax and address w
 
 If an issued invoice needs to be cancelled, **void** it with a reason. You can optionally **reissue** at the same time, which creates a fresh draft you can correct and issue anew -- keeping the original on record for audit purposes.
 
+**An invoice with payments applied to it cannot be voided.** Breeze refuses the void and tells you how much is applied, rather than silently un-applying the payments and leaving the money unaccounted for: *"This invoice has &lt;amount&gt; of payments applied to it. Remove those payments first (and in QuickBooks, if it is synced there), then void the invoice."* Remove the payments, then void. This applies to every invoice, whether or not it is synced to an accounting integration -- see [Accounting Integrations](/features/accounting-integrations/#payment-push).
+
 ## Billed devices
 
 Every auto-counted line on a contract-generated invoice can be expanded to show the exact devices it billed, including each device's role and how it was counted: **Included**, **Overage** or **Flagged, not billed**. A device deleted or moved to another organization afterwards still appears on the past invoice by hostname and is marked **Device removed**. Reissuing an invoice copies this recorded evidence to the replacement instead of counting the fleet again.

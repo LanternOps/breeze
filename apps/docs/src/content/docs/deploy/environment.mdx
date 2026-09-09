@@ -174,6 +174,17 @@ Push notifications to the Android app go through Firebase Cloud Messaging.
 | Variable | Default | Description |
 |---|---|---|
 | `FIREBASE_SERVICE_ACCOUNT` | — | Firebase service-account credentials JSON for the project that owns the Android app. Optional — leave it unset and Android devices simply receive no push notifications; nothing else changes and the API still boots. iOS push is unaffected either way. |
+| `PLAY_INTEGRITY_SERVICE_ACCOUNT` | — | Google service-account credentials for decoding **Play Integrity** verdicts when an Android phone registers as an approver device for [high-assurance approvals](/features/approval-security/). Accepts the raw JSON or a base64-encoded copy of it. Optional: leave it unset and Android approver registration is verified by hardware **Key Attestation** alone. |
+
+<Aside type="caution" title="A mangled Play Integrity credential stops the boot">
+  `PLAY_INTEGRITY_SERVICE_ACCOUNT` is validated at startup, and a value that
+  cannot be read as a service account — bad base64, truncated JSON, a missing
+  client email or private key, a private key without its PEM header — **stops the
+  API from starting** and names the problem. That is deliberate: the alternative
+  is an install that reports "Play Integrity not configured" forever while an
+  operator believes it is on. The check is structural only, so a well-formed but
+  wrong key still boots and fails at the first verdict decode instead.
+</Aside>
 
 ## Binary Distribution
 
@@ -362,6 +373,26 @@ Like event-loop lag, these figures are kept off the unauthenticated
 `/health/ready` for the same reason — they describe how close the instance is to
 falling over.
 
+### Readiness probe tuning
+
+`/ready` and `/health/ready` answer a real readiness question — are Postgres,
+Redis and the background consumers this process needs actually up — as distinct
+from `/health`, which is liveness only and answers 200 well before that. Point a
+load balancer or Compose healthcheck that should hold traffic back at `/ready`.
+See [Health Monitoring](/monitoring/health/) for the response shapes and for the
+worker container's own variant of the endpoint.
+
+Neither of these needs setting; the defaults suit every deployment we know of.
+
+| Variable | Default | Description |
+|---|---|---|
+| `READINESS_CACHE_TTL_MS` | `5000` | How long a readiness verdict is reused before the probes run again, so a busy load balancer cannot turn a healthcheck into a database workload. Accepted range is `0`–`10000` minus the probe timeout below. |
+| `READINESS_PROBE_TIMEOUT_MS` | `3000` | Hard bound on each individual Postgres and Redis probe. Clamped to `100`–`5000` — a wedged dependency reports not-ready rather than hanging the healthcheck. |
+
+| Variable | Default | Description |
+|---|---|---|
+| `OFFLINE_DETECTOR_WORKER_CONCURRENCY` | `5` | How many offline-sweep jobs the offline detector processes at once. Clamped to `1`–`20`; anything unparseable falls back to `5`. Raise it only if offline detection visibly lags on a very large fleet. |
+
 ## Sentry
 
 Both API and web Sentry integrations are off by default. Leave the DSN variables blank to disable. See [Error Tracking & Privacy](/security/error-tracking/) for what gets collected and how scrubbing works.
@@ -449,7 +480,14 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
 | `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Enabling the flag does not by itself let an agent change anything: every agent starts in **Off**, and moving one to **Act** is a separate, MFA-confirmed opt-in per agent. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 | `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` | `false` | Sub-flag of `BREEZE_AI_AGENTS_ENABLED` for the policy-decide capability, which is **not yet generally available** — leave it off. When enabled it lets an agent authorise a supervised-scope action on its own policy decision instead of sending it to a human approver, and it is what allows an operation to be **promoted** to that status from the Graduation panel. Automatic **demotion** is not gated by this flag and is always on. An operation only ever goes live on the organization's own agent — a partner-wide list is a ceiling, not a grant, so grant each organization explicitly before enabling this. See [AI Agents → Graduation](/features/ai-agents/#graduation-feedback-loop). An unrecognised value stops the API at boot rather than silently reading as off. |
-| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | `true` | Fire-and-forget device actions (scripts, patch installs, patch scans, software installs, reboots, automations, …) issued against an offline device are queued and delivered on its next successful heartbeat, up to a per-action-type deadline. Most action types — including scripts, patch installs, and patch scans — get **7 days**; a narrower set of self-superseding actions (device inventory/config-sync commands, plus reboot/shutdown/scheduled-restart) get **24 hours** instead, since a week-old copy of one of those would be stale by the time it lands. Set `false` to go back to the pre-#5128 behavior of rejecting the action outright when the device is offline. |
+| `DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED` | `true` | Fire-and-forget device actions (scripts, patch installs, patch scans, software installs, reboots, automations, …) issued against an offline device are queued and delivered on its next successful heartbeat, up to a per-action-type deadline. Most action types — including scripts, patch installs, and patch scans — get **7 days**; a narrower set of self-superseding actions (device inventory/config-sync commands, plus reboot/shutdown/scheduled-restart) get **24 hours** instead, since a week-old copy of one of those would be stale by the time it lands. Set `false` to go back to the pre-#5128 behavior of rejecting the action outright when the device is offline. This escape hatch is temporary and is removed in a later release, so treat `false` as a window to adjust your automations, not a permanent setting. |
+| `DEVICE_COMMAND_QUEUE_TTL_HOURS` | `168` (7 days) | How long a queued **standard** action may wait for its device before it expires undelivered. Covers scripts, patch installs, patch scans, software installs, and automation actions. |
+| `DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS` | `24` | Deadline for **self-superseding** queued work — inventory refreshes, log-level changes, agent auto-update and rollback, browser-policy application, and the audit, security, reliability, hardware and encryption-key collections. The next run of any of these replaces the last, so a week-old copy would be stale by the time it landed. |
+| `DEVICE_COMMAND_QUEUE_POWER_STATE_TTL_HOURS` | `24` | Deadline for queued **power-state** work: reboot, shutdown, and scheduled restart. |
+
+<Aside type="note" title="Queue deadlines are per action type">
+  All three deadlines are read per queued action when it is created, in hours, and any value that is not a positive number falls back to the default. Lowering one does not shorten rows that are already queued — the deadline is stamped at queue time. A row that reaches its deadline without the device coming back expires **undelivered**, and the action reports as expired rather than sitting pending forever. See [Devices → Queued actions](/features/devices/) for what a technician sees.
+</Aside>
 
 <Aside>
   Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
@@ -647,6 +685,24 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `ANTHROPIC_BASE_URL` | — | **Self-hosted only.** Point the AI Agent at an Anthropic-compatible `/v1/messages` backend (vLLM 0.23+, LiteLLM). Must be an `http(s)` URL. Permitted only when `IS_HOSTED` is explicitly `false` (or `0`/`no`/`off`); refused at boot if `IS_HOSTED` is `true`, unset, or invalid. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-4-6` → your model. |
+
+### AI Operator (preview, off by default)
+
+[AI Operator](/features/ai-agents/#ai-operator-preview) hands a long-running task
+to an agent that keeps working after the browser is closed. It is gated
+separately from the rest of the AI-agent subsystem, and `BREEZE_AI_AGENTS_ENABLED`
+still has to be on above it.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_OPERATOR_TASKS_ENABLED` | `false` | Admit AI Operator tasks and their continuation runs. With this off, the **Delegate to Operator** action does not appear and no task can be created. |
+| `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` | `false` | Allow the one shipped recipe, **service recovery**. Task admission needs this as well as the flag above. |
+
+With both flags off the whole subsystem is inert. Its two background workers —
+the task coordinator (15-second tick) and the task-event publisher (5-second
+tick) — are still registered so that a task already in flight when you turn the
+feature off can finish cleanly, but with no tasks being admitted neither has
+anything to do. No new queue is added.
 
 ### Self-hosted: alternative Anthropic-compatible backends
 
