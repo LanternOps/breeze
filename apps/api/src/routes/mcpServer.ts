@@ -42,6 +42,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import {
   beginMcpToolExecutionLedger,
@@ -1128,11 +1129,24 @@ async function handleToolsCall(
   c?: Context,
   sessionId?: string,
 ): Promise<JsonRpcResponse> {
-  const toolName = params.name as string;
+  const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
 
-  if (!toolName) {
+  if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // Resolve deprecated tool names ONCE, here, before any name-keyed gate below
+  // (tier lookup, guardrails, MCP approval gate, production execute allowlist,
+  // RBAC permission check, schema validation, dispatch) — so an aliased call is
+  // authorized as the canonical tool and cannot pick up a different gate than
+  // the real name. Aliases are dispatch-only and are never returned by
+  // `tools/list`; see services/aiToolAliases.ts for why (#5362).
+  const toolName = resolveDeprecatedToolAlias(requestedToolName);
+  if (toolName !== requestedToolName) {
+    console.warn(
+      `[MCP] Deprecated tool name "${requestedToolName}" called; dispatching as "${toolName}". Re-run tools/list — the old name is removed next release.`,
+    );
   }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
