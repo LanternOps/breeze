@@ -99,6 +99,8 @@ x-api-env: &api-env
   # already-mounted api_data volume instead. Mapped here explicitly (not just
   # set in .env) per the compose-interpolation rule above.
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
+  # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
+  BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).

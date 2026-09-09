@@ -425,6 +425,23 @@ describe('sweepUnreferencedBackupObjects', () => {
     expect(BACKUP_GC_GRACE_MS).toBe(48 * 60 * 60 * 1000);
   });
 
+  it('BACKUP_GC_GRACE_MS env override is honoured only when a positive number (lab knob)', async () => {
+    const prev = process.env.BACKUP_GC_GRACE_MS;
+    try {
+      process.env.BACKUP_GC_GRACE_MS = '1000';
+      vi.resetModules();
+      const fresh = await import('./backupRetention');
+      expect(fresh.BACKUP_GC_GRACE_MS).toBe(1000);
+      process.env.BACKUP_GC_GRACE_MS = 'nope';
+      vi.resetModules();
+      const bad = await import('./backupRetention');
+      expect(bad.BACKUP_GC_GRACE_MS).toBe(48 * 60 * 60 * 1000);
+    } finally {
+      if (prev === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prev;
+      vi.resetModules();
+    }
+  });
+
   it('skips an identity whose provider has no GC listing support, without touching storage', async () => {
     const unsupported = { id: 'cfg-azure', provider: 'azure_blob', providerConfig: {} };
     selectQueue.push([]);

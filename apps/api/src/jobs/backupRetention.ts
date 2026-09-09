@@ -435,7 +435,16 @@ export function computeExpiresAt(
 //             normalizeStorageIdentity and its belt-and-braces collision
 //             check, detectSuspiciousStorageIdentityCollisions.
 
-export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
+const BACKUP_GC_GRACE_MS_DEFAULT = 48 * 60 * 60 * 1000;
+// Test/lab knob only (2026-09-09 assurance campaign, cell R1/R4): the grace is a
+// production safety margin and must never be lowered on a real deployment.
+function resolveBackupGcGraceMs(): number {
+  const raw = process.env.BACKUP_GC_GRACE_MS;
+  if (raw === undefined || raw.trim() === '') return BACKUP_GC_GRACE_MS_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : BACKUP_GC_GRACE_MS_DEFAULT;
+}
+export const BACKUP_GC_GRACE_MS = resolveBackupGcGraceMs();
 
 // Must stay STRICTLY LARGER than agent/internal/backup/journal.go's
 // journalMaxAge (7 days) — the agent trusts its checkpoint journal (and
