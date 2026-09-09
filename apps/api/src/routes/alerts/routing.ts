@@ -9,6 +9,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { ensureOrgAccess, resolveWriteOrgId } from './helpers';
 import {
   canManagePartnerWidePolicies,
+  canReadPartnerWideRows,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
@@ -104,9 +105,14 @@ async function getRoutingRuleWithAccess(
     return null;
   }
 
+  // Dual-axis access (#2130): partner-wide rules (orgId NULL) via
+  // canReadPartnerWideRows (system scope, or the owning partner's own
+  // PARTNER-scoped token). Org tokens carry a partnerId too, so matching on
+  // partnerId alone (sweep 2026-09-08 G6-4) handed every partner-wide rule's
+  // existence to every org user under that partner.
   const hasAccess = rule.orgId !== null
     ? ensureOrgAccess(rule.orgId, auth)
-    : auth.scope === 'system' || (!!auth.partnerId && rule.partnerId === auth.partnerId);
+    : canReadPartnerWideRows({ scope: auth.scope ?? '', partnerId: auth.partnerId ?? null }, rule.partnerId);
   return hasAccess ? rule : null;
 }
 
@@ -135,7 +141,19 @@ routingRoutes.get(
         if (!ensureOrgAccess(query.orgId, auth)) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        orgFilter = eq(notificationRoutingRules.orgId, query.orgId);
+        // Per-org view must also surface this partner's own partner-wide
+        // rules (org_id NULL, #2130) — they apply to every org under the
+        // partner, including this one (sweep 2026-09-08 G6-4). Org-scoped
+        // callers never take this branch: an org token carries a partnerId
+        // too, but must not see partner-wide rows at the app layer (RLS is
+        // stricter than the app layer here; never claim parity) — the
+        // `auth.scope === 'organization'` arm above already returned before
+        // reaching here, so this branch only runs for partner/system scope.
+        const orgCondition = eq(notificationRoutingRules.orgId, query.orgId);
+        const partnerCondition = auth.scope === 'partner' && auth.partnerId
+          ? and(isNull(notificationRoutingRules.orgId), eq(notificationRoutingRules.partnerId, auth.partnerId))
+          : undefined;
+        orgFilter = partnerCondition ? or(orgCondition, partnerCondition) : orgCondition;
       } else if (auth.scope === 'partner') {
         // "All orgs" view: org-owned rules across accessible orgs PLUS this
         // partner's own partner-wide rules (org_id NULL, #2130).
