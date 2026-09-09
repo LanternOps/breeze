@@ -6,6 +6,7 @@ import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
 import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 
 // ============================================
 // Mocks
@@ -3142,6 +3143,89 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       { id: 'intent-plan-revalidate-fail', orgId: 'org-1', taskId: null },
       'intent_failed',
     );
+  });
+
+  // #5326: a pre-execution terminal-CAS loss (this one on the revalidation
+  // -failure path) used to be a bare console.warn — invisible to Prometheus.
+  // It now bumps breeze_action_intents_total{outcome="cas_lost"} so contention
+  // on the pre-execution terminalization paths is countable and alertable.
+  it('bumps the cas_lost action-intent metric when a PRE-EXECUTION terminal CAS loses (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-lost' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-lost',
+          approvalRequestIds: ['appr-plan-revalidate-cas-lost'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // Wins the approved -> executing release CAS; LOSES the terminal
+      // executing -> failed CAS that the revalidation failure drives.
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+      expect(onEvent).toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+      // Discriminating control: the tool never ran, so this must NOT be
+      // counted as an execution.
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'executed');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
+  // Control for the test above: when the terminal CAS WINS there is no
+  // contention to report, so nothing may be counted as cas_lost.
+  it('does NOT bump cas_lost when the pre-execution terminal CAS wins (#5326)', async () => {
+    const onEvent = vi.fn();
+    setActionIntentMetricsRecorder({ onEvent });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-revalidate-cas-won' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-revalidate-cas-won',
+          approvalRequestIds: ['appr-plan-revalidate-cas-won'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(onEvent).not.toHaveBeenCalledWith('chat', 'execute_command', 'cas_lost');
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
   });
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1): the
