@@ -370,11 +370,15 @@ principal is a group are expanded to members; nested groups are not followed
 
 `m365.sync.signin_activity` returns `{ userId, lastSuccessfulSignInAt }` only.
 `lastSignInDateTime` (which counts failed interactive attempts) is not
-projected. The `continuation` is the Graph `@odata.nextLink` skip token
-encrypted and HMAC-bound by the executor (AES-GCM under a key derived from the
-executor's signing key, with `tenantId` and action id in the AAD) so the API
-stores an opaque blob and cannot forge or replay it against another tenant.
-Continuations expire after 1 hour.
+projected. The `continuation` is the whole Graph `@odata.nextLink` sealed by
+the executor (AES-256-GCM, `tenantId` and action id in the AAD, 1 hour expiry,
+base64url) so the API stores an opaque blob and cannot forge or replay it
+against another tenant; resume re-validates the link through the existing
+host/path guard. The key is `M365_SYNC_CONTINUATION_KEY` (optional, 32-byte
+base64). The executor holds only the public verification JWK, so nothing can
+be derived from a signing key; when the variable is absent an ephemeral
+per-process key is used, continuations die on restart, and the API restarts
+the walk on `continuation_invalid` (never a Sentry event).
 
 Projection lists remain the only fields that leave the executor; computed
 fields are listed explicitly.
@@ -410,11 +414,10 @@ Sync actions are served on `POST /v1/sync-action` in
 
 Reason for the split route: bulk pulls must never sit in front of, or starve,
 an AI tool call; the two get independent caps, timeouts, and metrics.
-"Never starve" is a soft guarantee under shared CPU and heap; if it must be
-hard, run sync-only replicas behind a second URL
-(`M365_GRAPH_SYNC_EXECUTOR_URL`, optional, defaults to the read URL). Memory
-is measured under 4 concurrent maximum-size snapshots as a plan task and the
-deploy doc records the result.
+"Never starve" is a soft guarantee under shared CPU and heap. A sync-only
+replica pool behind a second executor URL is the escalation if it must be
+hard; it is not in v1. Memory is measured under 4 concurrent maximum-size
+snapshots as a plan task and the deploy doc records the result.
 
 ### 4.3 Wire contract, API side
 
@@ -544,10 +547,14 @@ disconnect/rebind during the fetch). Then per domain:
   chunk** (idempotent upserts; a failure mid-way leaves a consistent partial
   state that the next run finishes). Unchanged rows are not written.
 - Final transaction: stale marking (`UPDATE … SET is_stale = true, stale_since
-  = now() WHERE org_id = $1 AND graph_id = ANY($2)`), domain extras (§5.5,
-  §5.6), the sync-state completion (`last_*`, `truncated`, `sources`,
-  `last_counts`, `continuation`, `lease_until = NULL`, `next_sync_at = now() +
-  interval + jitter`), and the rollup upsert (§5.9).
+  = now() WHERE org_id = $1 AND graph_id = ANY($2)`), the sync-state
+  completion (`last_*`, `truncated`, `sources`, `last_counts`, `continuation`,
+  `lease_until = NULL`, `next_sync_at = now() + interval + jitter`), the
+  `m365.sync.run` audit event, and one structured log line.
+- After that transaction commits: the post-persist hook runs in its own short
+  system context — rollup upsert (§5.9) and, for `intune_devices`, link
+  reconciliation (§5.6). It reads the committed `last_counts`; a failure there
+  is logged and counted, never rolls back the completion.
 
 ### 5.4 Freshness contract and change-only writes
 
@@ -611,8 +618,10 @@ After each completed run the service adjusts `interval_seconds` within
   `next_sync_at = now()` for unscheduled domains.
 
 Sign-in activity is additionally governed by the executor's app-wide limiter:
-a run that returns a `continuation` re-claims itself immediately at priority
-10 (new generation) until the continuation is exhausted, then completes.
+a run that returns a `continuation` stores it, finishes as the control-flow
+result `partial-continue` (never persisted as a status), and re-claims itself
+immediately at priority 10 (new generation) until the continuation is
+exhausted, then completes.
 **Hard ceiling, stated honestly:** at Graph's 10 requests/min the whole
 installation can fetch ≈14 400 pages/day; with two regions at 4/min each,
 ≈5 760 pages/day/region. At one page per tenant that bounds daily sign-in
@@ -690,7 +699,8 @@ the run.
 | Result truncated | Persist; no stale marking; interval ×2 | `partial`, `truncated` | "partial, tenant exceeds cap" |
 | Continuation returned (sign-in) | Persist page set; re-claim immediately | unchanged until exhausted | |
 | Graph throttled / executor `sync_capacity` | BullMQ backoff, 3 attempts; then interval ×1.5 | `throttled` | Next run proceeds |
-| Connection auth failure (cert/tenant revoked) | Run stops; not sent to Sentry (Huntress rule); connection health left to retest | `error`, unscheduled | Existing degraded card + retest |
+| Connection auth failure (cert/tenant revoked) | Run records the terminal state and RETURNS (never throws: the worker observability wrapper reports every thrown failure to Sentry); connection health left to retest | `error`, unscheduled | Existing degraded card + retest |
+| `continuation_invalid` (executor restarted, key rotated, expired) | Clear `continuation`, re-claim, restart the walk; not a Sentry event | unchanged | |
 | Executor unreachable / bad signature | Run fails; Sentry, deduped per org per hour | `error` | |
 | Persist failure | Chunk transaction rolls back; job error; lease expires; next tick reclaims | `error` | |
 | Generation / connection / tenant mismatch at Phase C | Result discarded silently, metric incremented | unchanged | |
@@ -781,9 +791,12 @@ denial without a Redis signal is a denial (fail-closed), retried next tick.
 
 1. One release ships: migration, manifest v3, DTO/card changes, executor
    `/v1/sync-action`, worker. **Every** sync entry point (ticker, consent
-   seeding, on-demand route, disconnect hook's seeding side) is gated by
-   `M365_TENANT_SYNC_ENABLED` (default `false`, boot-validated). The executor
-   accepts sync actions unconditionally (only reachable by the API).
+   seeding, upgrade re-seeding, on-demand route) is gated by
+   `M365_TENANT_SYNC_ENABLED` (default `false`, boot-validated). The disconnect
+   hook's erasure side is deliberately ungated: rows that exist must go when
+   the connection goes. The executor accepts sync actions unconditionally (only
+   reachable by the API). The retention job is ungated (a sweep over empty
+   tables is a no-op).
 2. With the flag on, the ticker's reconciliation step inserts state rows for
    every existing executable connection (`active` or `degraded`) that lacks
    them, `next_sync_at = now()` staggered over the first hour, `backfill:
@@ -796,9 +809,9 @@ denial without a Redis signal is a denial (fail-closed), retried next tick.
    domains needing new scopes stay `needs_consent` until approval.
 5. Self-hosters: release notes list the four app roles and the env vars
    (`M365_TENANT_SYNC_ENABLED`, `M365_SYNC_CONCURRENCY`,
-   `M365_SYNC_MAX_BACKLOG`; executor `M365_SYNC_MAX_IN_FLIGHT`,
-   `M365_MAX_IN_FLIGHT`, `M365_SIGNIN_ACTIVITY_RPM`,
-   `M365_SIGNIN_PAGES_PER_CALL`; optional `M365_GRAPH_SYNC_EXECUTOR_URL`).
+   `M365_SYNC_MAX_BACKLOG`, `M365_SYNC_TICK_BATCH`; executor
+   `M365_SYNC_MAX_IN_FLIGHT`, `M365_MAX_IN_FLIGHT`, `M365_SIGNIN_ACTIVITY_RPM`,
+   `M365_SIGNIN_PAGES_PER_CALL`, optional `M365_SYNC_CONTINUATION_KEY`).
 
 ## 11. Open questions
 
