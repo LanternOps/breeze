@@ -367,7 +367,11 @@ export function CreateTicketScreen() {
           // does not silently drop a deliberate choice.
           setContactId((current) => contactSelectionForOrg({ orgId, contactId: current }, id));
           setContactSearch('');
-          setContactsForbidden(false);
+          // Only a REAL org change re-opens the question of whether contacts
+          // are readable. Reselecting the same org changes no state the effect
+          // below keys on, so clearing the flag unconditionally would unhide
+          // the row without ever refetching it.
+          if (id !== orgId) setContactsForbidden(false);
           setOrgId(id);
           setOrgSheetVisible(false);
         }}
