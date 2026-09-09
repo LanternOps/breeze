@@ -13,6 +13,8 @@ import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
 import { DevicesListScreen } from '../screens/devices/DevicesListScreen';
 import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
+import { FindingsListScreen } from '../screens/systems/FindingsListScreen';
+import { FindingDetailScreen } from '../screens/systems/FindingDetailScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
 import { CreateTicketScreen } from '../screens/tickets/CreateTicketScreen';
@@ -31,6 +33,16 @@ export type SystemsStackParamList = {
   SystemsDevices: { orgId?: string | null; orgName?: string | null } | undefined;
   SystemsAlertDetail: { alert: Alert };
   SystemsDeviceDetail: { device: Device };
+  /**
+   * #5365. `SystemsFindings` carries `orgName` alongside `orgId` because the
+   * ACTIVE ISSUES row the tap comes from already resolved the name — refetching
+   * the org list just to title the screen would leave the header blank on the
+   * way in. The detail screen carries only the id: everything else it needs
+   * comes from `GET /fleet/findings/:id`, and a stale copied-down title is
+   * exactly what a lifecycle action would invalidate.
+   */
+  SystemsFindings: { orgId: string; orgName: string };
+  SystemsFindingDetail: { findingId: string };
 };
 
 /**
@@ -194,6 +206,18 @@ function SystemsStackNavigator() {
         name="SystemsDeviceDetail"
         component={DeviceDetailScreen}
         options={{ title: 'Device Details' }}
+      />
+      <SystemsStack.Screen
+        name="SystemsFindings"
+        component={FindingsListScreen}
+        // The org name replaces this at mount (`navigation.setOptions`); the
+        // static value is what shows during the push transition.
+        options={{ title: 'Findings' }}
+      />
+      <SystemsStack.Screen
+        name="SystemsFindingDetail"
+        component={FindingDetailScreen}
+        options={{ title: 'Finding' }}
       />
     </SystemsStack.Navigator>
   );
