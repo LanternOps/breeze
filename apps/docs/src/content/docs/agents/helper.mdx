@@ -430,13 +430,18 @@ The Helper communicates with the agent service over a local IPC connection (Unix
 | GET | `/helper/chat/sessions` | List chat sessions for this device |
 | POST | `/helper/chat/sessions/:id/messages` | Send a message and receive SSE response stream |
 | GET | `/helper/chat/sessions/:id/messages` | Load message history for a session |
+| POST | `/helper/chat/sessions/:id/tool-results` | Report the outcome of a client-declared tool call (see below) |
+| POST | `/helper/chat/sessions/:id/flag` | Flag a session for admin review, with an optional `reason` |
 | DELETE | `/helper/chat/sessions/:id` | Close a chat session |
+
+Some tools run on the end-user's machine rather than the server -- for example, a client-side confirmation dialog. For those, the SSE stream's `tool_use` event parks the call instead of resolving it immediately, and the Helper process reports the result back via `POST /helper/chat/sessions/:id/tool-results` with `{ toolUseId, output }` (or `{ toolUseId, error }` on failure). The server persists the outcome as a `tool_result` message so it renders the same way on reload as a server-executed tool.
 
 ### Helper Configuration & Screenshots
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/helper/config` | Get Helper configuration for this device |
+| GET | `/helper/device-info` | Get basic device details (hostname, OS, status, agent version) for the authenticated device |
 | POST | `/helper/screenshots` | Upload a screenshot for AI analysis |
 
 <Aside>

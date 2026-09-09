@@ -124,6 +124,10 @@ The scores list includes summary statistics:
 | `page` | Number | Page number (default: 1) |
 | `limit` | Number | Results per page (1-200, default: 25) |
 
+<Aside type="caution">
+  The `siteId` filter is opt-in only: a site-restricted technician who omits it still sees risk scores for every user in the organization, not just their assigned site. Site-scoped visibility for this feature is not yet enforced -- tracked in issue [#5428](https://github.com/LanternOps/breeze/issues/5428).
+</Aside>
+
 ### User Risk Detail
 
 Click on any user to view their full risk profile, including:
@@ -323,6 +327,7 @@ All endpoints require authentication with `organization`, `partner`, or `system`
 | `GET` | `/scores` | `users:read` | List risk scores with filters and summary stats |
 | `GET` | `/users/:userId` | `users:read` | Get detailed risk profile for a specific user |
 | `GET` | `/events` | `users:read` | List risk events with filters |
+| `GET` | `/evaluation` | `users:read` | Scoring-quality summary over a window (`days`, default 30): true/false positive counts and precision from reviewer feedback, training assignment/completion rates, and repeat-risk-signal rates |
 | `GET` | `/policy` | `users:read` | Get the current risk policy for the organization |
 | `PUT` | `/policy` | `users:write` | Update the risk policy (weights, thresholds, interventions) |
 | `POST` | `/assign-training` | `users:write` | Assign security training to a user |

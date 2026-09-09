@@ -119,6 +119,34 @@ Connection status is one of:
 
 ---
 
+## Importing Companies
+
+Ticket sync is not implemented yet, but you can still bring a PSA's company list into Breeze as organizations, one connection at a time.
+
+On the PSA tab, each connection for a provider with a company/account object shows an **Import companies** button. ConnectWise, Autotask, Freshservice, ServiceNow, and Zendesk support this; Jira does not, because it has no company object to map onto an organization, so the button is not shown for a Jira connection.
+
+<Steps>
+
+1. Click **Import companies** on the connection you want to pull from.
+
+2. Click **Fetch** to pull the company list from the PSA. This is a live request — up to 1,000 companies are fetched per import, and nothing is created yet.
+
+3. Review the preview. Each row is auto-checked to be imported unless it already matches an existing organization; uncheck any row you don't want to bring in.
+
+4. Choose what to do with a row that matches an org already imported from this connection: **Skip** it, or **Update** it with the PSA's current data.
+
+5. Click **Import** to create or update the selected organizations.
+
+</Steps>
+
+The preview calls out anything that affects the result:
+
+- **Partial company list** — if the PSA connection responded too slowly, paged too many times, or the listing hit the 1,000-company cap, the warning names which of those three happened and how many companies were actually fetched. Any company that was never read is not linked, and importing again later is the way to catch up on a company list larger than the cap.
+- **Already linked** — companies already imported from this connection are called out, not treated as an error.
+- **Malformed records** — companies the PSA returned without a usable ID or name are skipped and counted separately; this reflects a data-quality issue on the PSA's side, not a failed import.
+
+---
+
 ## Ticket Sync Settings
 
 Each connection carries sync settings, configured under **Sync settings** when you create or edit it -- but syncing itself is not implemented yet (see the caution at the top of this page), so these fields have no effect today.

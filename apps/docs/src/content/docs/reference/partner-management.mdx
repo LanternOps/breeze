@@ -55,6 +55,7 @@ Every API query automatically scopes data to the caller's position in this hiera
 | `active` | Fully operational partner with API access. |
 | `suspended` | Temporarily suspended (e.g., payment failure). Blocked from API access. |
 | `churned` | Permanently inactive partner. Blocked from API access. |
+| `offboarding` | Terminal-intent drain in progress across every organization under the partner. See [Offboarding a Partner](#offboarding-a-partner). |
 
 ### Organization Access Levels
 
@@ -208,6 +209,10 @@ Platform admins are exempt from the allowlist entirely, on every check, so a loc
 
 ## Managing Partners
 
+<Aside type="note" title="MFA on writes">
+  Creating, updating, and deleting a partner (system-scoped create/update/delete, and the partner's own `PATCH /partners/me`) additionally requires the caller's session to have completed an **MFA challenge**, on top of the scope shown for each endpoint. A partner service-principal key (`brz_sp_…`) is not subject to this gate.
+</Aside>
+
 <Aside type="tip" title="Provisioning tenancy unattended">
   Organizations, sites, and enrollment keys can all be created by a partner service principal rather than a signed-in user, which is how a migration script or an onboarding integration stands a customer up end to end. `POST /partner-api/v1/enrollment-keys` completes that set — see [Partner API (Service Principals)](/reference/api/#partner-api-service-principals) for the routes, scopes, and the tighter mint limits that apply to enrollment keys specifically.
 </Aside>
@@ -323,6 +328,24 @@ Partners use soft deletes. When deleted via `DELETE /partners/:id`, the `deleted
 <Aside type="caution">
   Soft-deleting a partner does **not** cascade to its organizations, sites, or devices. Those records remain active in the database. Clean them up separately before or after deleting the partner.
 </Aside>
+
+### Offboarding a Partner
+
+Setting a partner's status to `offboarding` starts a terminal-intent **drain** across every organization it owns -- it is not an instant cutoff. The moment it starts:
+
+- Every organization's users, API keys, and OAuth grants under the partner are revoked **immediately**.
+- Agents across the entire fleet are **not** severed right away. They stay authenticated in a narrowed mode (heartbeat + claiming a queued `self_uninstall` command only; the WebSocket channel is refused) so each device can self-uninstall cleanly.
+- A background reaper finalizes the drain once every device has uninstalled or the drain window closes (`OFFBOARDING_DRAIN_WINDOW_HOURS`, default 72h) -- whichever comes first -- then severs any remaining agent credentials and flips the partner to `churned`.
+- The transition is reversible up until the reaper finalizes it: setting `status` back to `active` cancels any un-collected uninstalls and restores agent access partner-wide.
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/:id \
+  -H "Authorization: Bearer <system-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "status": "offboarding" }'
+```
+
+This requires system scope and a satisfied MFA challenge, same as any other partner update.
 
 ---
 

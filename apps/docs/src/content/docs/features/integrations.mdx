@@ -30,6 +30,10 @@ Breeze supports three categories of integrations, each served by a dedicated set
   Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
 </Aside>
 
+<Aside type="note">
+  Every write route across communication, monitoring, ticketing, and PSA integrations -- saving or testing a provider, and creating, updating, or testing a PSA connection -- requires an **MFA-verified session**. If your account signed in without completing MFA, these actions are rejected until you do.
+</Aside>
+
 ---
 
 ## Communication Integrations
@@ -356,68 +360,9 @@ TD SYNNEX provides live product price and availability you can import straight i
 
 ## UniFi Network
 
-The UniFi integration discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view -- so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. It's a **partner-level** integration set up once for your practice, and it's strictly read-only: Breeze never changes your UniFi configuration.
+UniFi is a **partner-level**, strictly read-only integration that discovers your Ubiquiti network fleet across every customer site and reconciles it into Breeze's unified network view, so gateways, switches, and access points show up alongside your agent-discovered assets without duplicating them. Configure it on the **UniFi** tab of the Integrations page, either through Ubiquiti's cloud (**Site Manager**), optionally paired with on-site deep telemetry agents, or fully **self-hosted** with a Breeze agent talking directly to your on-prem controller and no Ubiquiti cloud account at all.
 
-There are two ways to connect it: through Ubiquiti's cloud (**Site Manager**), optionally paired with on-site deep telemetry agents for richer per-port and per-client detail, or fully **self-hosted** with no Ubiquiti cloud account at all, where a Breeze agent talks directly to your on-prem controller and is the only path Breeze uses to reach it.
-
-<Aside type="note">
-  UniFi is configured on the **UniFi** tab of the Integrations page and is available to partner accounts only. Connecting, mapping sites, registering controllers, and managing collectors are MFA-gated actions.
-</Aside>
-
-### Cloud connection (Site Manager)
-
-Paste a single Ubiquiti **Site Manager API key** that covers your whole account, and Breeze discovers every UniFi console and its sites. After you map each UniFi site to a Breeze site, Breeze syncs device inventory -- model, MAC, type, firmware version and whether an upgrade is available, uptime, and adoption state -- plus the latest WAN/ISP health per site.
-
-<Steps>
-
-1. Open **Integrations → UniFi**.
-2. Generate a **Site Manager API key** in your Ubiquiti account (at unifi.ui.com / UniFi Site Manager).
-3. Paste it into the **UniFi Site Manager API key** field and click **Connect to UniFi**. Breeze validates the key before saving -- a bad key is rejected with a clear message, and a UniFi outage is reported separately so a working key isn't wrongly blamed.
-4. In the **Site mapping** card, choose the matching **Breeze site** (grouped by organization) for each discovered UniFi site, then **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced.
-5. Inventory syncs automatically about every half hour. Use **Sync now** to pull immediately, and review per-run created / updated / unchanged / removed counts in the **Sync history** table.
-
-</Steps>
-
-The cloud key is read-only -- it can only ever read your UniFi account, never change it -- and reaches behind customer NAT through Ubiquiti's cloud, so there's nothing to install on site.
-
-### Deep telemetry (optional, per console)
-
-The cloud key is deliberately shallow: it can't see per-port PoE, throughput, or the clients attached to each device. To get that depth, designate a Breeze **agent already running at the site** as a collector for a given console. That agent polls the console's local **Network Integration API** (read-only, requires controller firmware **9.3 or newer**) and reports back per-port PoE detail (power draw, link speed, mode), device health (uptime, CPU/memory, throughput, client count), and the currently-connected clients (hostname, IP, which AP or switch, wired vs Wi-Fi and SSID, signal strength).
-
-<Steps>
-
-1. In the **Deep telemetry collectors** card, for each console set the **Breeze site** it serves, a **collector agent** (only online agents at that site can be selected), the **Controller URL** (for example `https://192.168.1.1`), and the console's **local Network Integration API key**.
-2. Click **Enable deep telemetry**. Breeze encrypts the local key, pushes the configuration to the chosen agent, and the agent begins polling on schedule (about once a minute).
-3. Open the **Deep telemetry** card and select a site to view its device table (PoE ports and total watts, client counts) and connected-clients table.
-
-</Steps>
-
-The collector's status badge shows reachability (pending, connected, unreachable, error, or firmware-too-old). This layer is also strictly read-only -- restart, PoE-cycle, and client-block actions are planned for a future release. Deep telemetry requires an agent build that includes the UniFi collector, so promote your fleet to a current agent version before relying on it.
-
-<Aside>
-  UniFi devices and connected clients flow into Breeze's [Network Intelligence](/features/network-intelligence/) discovered-assets view, matched by MAC (then IP), enriching existing assets rather than creating duplicates.
-</Aside>
-
-### Self-hosted controllers (no cloud account)
-
-If you'd rather not create a Ubiquiti cloud account at all, connect UniFi in **self-hosted mode** instead. In this mode there's no Site Manager API key anywhere -- a Breeze agent that already has network access to your on-prem UniFi Network controller polls it directly over the same read-only local **Network Integration API** used for deep telemetry (controller firmware **9.3 or newer**). The agent is the primary, and only, path Breeze uses to reach the controller.
-
-<Steps>
-
-1. Open **Integrations → UniFi**. On the not-yet-connected screen, choose **Self-hosted controller** instead of **Cloud (Site Manager API key)**, optionally give it an **account label** (for example, "Acme HQ controllers"), and click **Connect**. This just creates the self-hosted integration -- there's nothing to validate yet since no controller has been registered.
-2. In the **Controllers** card, register each controller: pick the **Breeze site** it primarily serves, a **collector agent** (an existing enrolled agent at that site that can reach the controller over the LAN), the **Controller URL** (for example `https://192.168.1.1`), and the controller's **local API key**, then click **Register controller**. The local key is encrypted before storage and pushed to the chosen agent.
-3. Once the assigned agent reaches the controller (within about a minute), the controller's own local sites are discovered automatically and appear in the **Site mapping** card. Map each discovered site to whichever **Breeze site** it corresponds to, then save.
-4. Devices and clients polled from each mapped site are reconciled into that site's discovered assets, with the same per-port PoE, throughput, uptime, and connected-client detail as agent-collected deep telemetry above -- self-hosted controllers use the same telemetry pipeline.
-
-</Steps>
-
-Because sites are mapped individually rather than the whole controller, **one self-hosted controller can feed many UniFi sites across several different Breeze organizations** -- for example, an MSP running a single controller that manages several clients' networks only needs one collector agent and one controller registration; each of the controller's discovered local sites is then mapped to whichever organization it actually belongs to.
-
-Breeze polls the controller on an interval you can tune via the API (`pollIntervalSeconds`, roughly 15–3600 seconds); the default is about once a minute, matching the deep telemetry cadence.
-
-<Aside type="note">
-  In self-hosted mode the collector agent isn't an optional enhancement -- it's the only way Breeze reaches your controller. If the assigned agent goes offline, polling for that controller stops until it reconnects or you point the registration at a different agent.
-</Aside>
+The full connection walkthrough for both modes, deep telemetry, and what Breeze pulls from UniFi is documented on its own page: see [UniFi Network Integration](/features/unifi-integration/).
 
 ---
 

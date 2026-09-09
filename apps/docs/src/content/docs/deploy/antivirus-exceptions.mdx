@@ -88,6 +88,17 @@ Use the platform sections below to unblock the fleet while the vendor submission
 | macOS | `/usr/local/bin/breeze-agent` |
 | Windows | `C:\Program Files\Breeze\breeze-agent.exe` |
 
+### Companion Windows Executables
+
+The agent installer also stages a watchdog, a per-user helper, and a backup binary in the **same directory** as the agent (`C:\Program Files\Breeze\`). Exclude these by process name alongside `breeze-agent.exe`:
+
+| Binary | Purpose |
+|---|---|
+| `breeze-watchdog.exe` | Runs as its own service (`BreezeWatchdog`) and restarts the agent if it stops responding |
+| `breeze-user-helper.exe` | GUI-subsystem sibling of the agent, spawned into the interactive user session for prompts and remote-desktop UI |
+| `breeze-desktop-helper.exe` | Per-user desktop-session helper process used by remote access |
+| `breeze-backup.exe` | Enterprise backup binary (Hyper-V, MSSQL, system image) — see [Binary Distribution](/deploy/binaries/#backup-binary) |
+
 ### Configuration Directory
 
 | OS | Path |
@@ -123,6 +134,10 @@ Use the platform sections below to unblock the fleet while the vendor submission
     ```powershell
     # Process exclusions
     Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-agent.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-watchdog.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-user-helper.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-desktop-helper.exe"
+    Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze\breeze-backup.exe"
     Add-MpPreference -ExclusionProcess "C:\Program Files\Breeze Helper\breeze-helper.exe"
 
     # Path exclusions (config, logs, working directories)
@@ -147,6 +162,10 @@ Use the platform sections below to unblock the fleet while the vendor submission
          - `C:\ProgramData\Breeze`
       4. Under **Process Exclusions**, add:
          - `C:\Program Files\Breeze\breeze-agent.exe`
+         - `C:\Program Files\Breeze\breeze-watchdog.exe`
+         - `C:\Program Files\Breeze\breeze-user-helper.exe`
+         - `C:\Program Files\Breeze\breeze-desktop-helper.exe`
+         - `C:\Program Files\Breeze\breeze-backup.exe`
          - `C:\Program Files\Breeze Helper\breeze-helper.exe`
       5. Run `gpupdate /force` on target machines or wait for the next policy refresh.
     </Steps>
@@ -162,6 +181,10 @@ Use the platform sections below to unblock the fleet while the vendor submission
          | Type | Value |
          |---|---|
          | Process | `C:\Program Files\Breeze\breeze-agent.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-watchdog.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-user-helper.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-desktop-helper.exe` |
+         | Process | `C:\Program Files\Breeze\breeze-backup.exe` |
          | Process | `C:\Program Files\Breeze Helper\breeze-helper.exe` |
          | Folder | `C:\Program Files\Breeze` |
          | Folder | `C:\Program Files\Breeze Helper` |
@@ -188,6 +211,10 @@ For products like CrowdStrike, SentinelOne, Sophos, Bitdefender, etc., add **bot
 | Exclusion Type | Value |
 |---|---|
 | Process / Application | `C:\Program Files\Breeze\breeze-agent.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-watchdog.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-user-helper.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-desktop-helper.exe` |
+| Process / Application | `C:\Program Files\Breeze\breeze-backup.exe` |
 | Process / Application | `C:\Program Files\Breeze Helper\breeze-helper.exe` |
 | Directory | `C:\Program Files\Breeze\` |
 | Directory | `C:\Program Files\Breeze Helper\` |
@@ -368,6 +395,10 @@ For quick reference, here are the minimum exclusions needed per platform:
   <TabItem label="Windows">
     **Processes:**
     - `C:\Program Files\Breeze\breeze-agent.exe`
+    - `C:\Program Files\Breeze\breeze-watchdog.exe`
+    - `C:\Program Files\Breeze\breeze-user-helper.exe`
+    - `C:\Program Files\Breeze\breeze-desktop-helper.exe`
+    - `C:\Program Files\Breeze\breeze-backup.exe`
     - `C:\Program Files\Breeze Helper\breeze-helper.exe`
 
     **Directories:**

@@ -62,6 +62,19 @@ Breeze ships with a Grafana dashboard (`monitoring/grafana/dashboards/breeze-ove
 | **Redis Memory** | Memory usage, evictions, and hit rate |
 | **PostgreSQL Connections** | Active connection count vs. max pool size |
 
+Four panel groups shipped after the table above was originally written and aren't reflected in it:
+
+| Panel | What It Shows |
+|---|---|
+| **Requests by Response Class** | Request rate broken down by status class over time, alongside the status-code pie chart |
+| **Redis Operations** | Redis commands processed per second |
+| **Active Alerts** | Count of currently open in-app alerts |
+| **Agent Heartbeats** | Agent heartbeat rate over time |
+| **Script Executions** | Script execution rate over time |
+| **Backup Operations — Start Failures (24h)** | Backup, restore, or verification start failures in the last 24 hours |
+| **Backup Operations — Restore Timeouts (24h)** | Restore command timeouts in the last 24 hours |
+| **Backup Operations — Verification Skips (24h)** | Scheduled backup verification runs skipped in the last 24 hours |
+
 ### Adding Custom Dashboards
 
 To add your own dashboards:
@@ -106,9 +119,14 @@ global:
 |---|---|---|---|
 | `prometheus` | `localhost:9090` | 15s (default) | None |
 | `breeze-api` | `api:3001` at `/metrics/scrape` | 10s | Bearer token |
+| `breeze-worker` | `worker:3001` at `/metrics` | 10s | Bearer token |
 | `redis` | `redis-exporter:9121` | 15s (default) | None |
 | `postgres` | `postgres-exporter:9187` | 15s (default) | None |
 | `node` | `node-exporter:9100` (optional) | 15s (default) | None |
+
+<Aside type="tip">
+  The `breeze-worker` target is only present when the [worker-split](/deploy/worker-split/) Compose profile is running (`docker compose --profile worker-split up -d worker`). Outside a split deployment the target is simply reported `DOWN`, same as the optional Redis/Postgres/node exporters — this is expected. Unlike `breeze-api`, the worker exposes `/metrics` directly from a slim raw-node:http server rather than the Hono route graph, and it publishes only the role-agnostic runtime series (event-loop lag, DB pool health) — not the HTTP/business/fleet series `breeze-api` exposes. Filter dashboards and alerts on `job="breeze-worker"` vs `job="breeze-api"` rather than assuming a single source, or the two roles' series can be double-counted once both report.
+</Aside>
 
 The API metrics endpoint is protected by a bearer token. Store the token in `monitoring/secrets/metrics_scrape_token` and reference it in `prometheus.yml`:
 
@@ -136,6 +154,12 @@ Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60
 | `breeze:devices:active_count` | Total active device count |
 | `breeze:redis_ops:rate5m` | Redis operations per second |
 | `breeze:postgres_query_duration:avg5m` | Average PostgreSQL query duration |
+| `breeze:backup_dispatch_failures:increase15m` | Backup/restore/verification start failures over the last 15 minutes, by operation and reason |
+| `breeze:restore_timeouts:increase15m` | Restore command timeouts over the last 15 minutes, by command type |
+| `breeze:backup_verification_skips:increase1h` | Scheduled backup verification skips over the last hour, by verification type and reason |
+| `breeze:failed_logins:increase5m` | Failed logins over the last 5 minutes, by reason and tenant |
+| `breeze:agent_enrollments:increase10m` | Agent enrollments over the last 10 minutes, by result and tenant |
+| `breeze:commands_dispatched:increase5m` | Commands dispatched over the last 5 minutes, by type, actor, and tenant |
 
 ## Key Metrics
 

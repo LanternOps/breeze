@@ -11,6 +11,23 @@ This feature is essential for incident response (answering "which device had IP 
 
 ---
 
+## Viewing IP History in the Console
+
+Open a device's detail page and select the **IP History** tab to browse its address history without querying the API directly. The table lists Interface, IP Address, Type, Assignment, First Seen, Last Seen, and Status (active/inactive) for every recorded assignment.
+
+Above the table:
+
+- A **search** box matches against interface name, IP address, MAC address, gateway, or DNS servers.
+- **Assignment** filters to `dhcp`, `static`, `vpn`, `link-local`, or `unknown`.
+- **Interface** filters to one of the interfaces seen on this device.
+- **IP Type** filters to IPv4 or IPv6.
+- **Active only** limits the list to currently-assigned addresses.
+- **Since** / **Until** date fields narrow the list to assignments last seen on or after, or first seen on or before, the chosen dates.
+
+Use **Clear filters** to reset all of the above, and **Refresh** to re-fetch the latest history from the API. Results are paginated in the console (25 rows per page); the underlying fetch pulls up to 500 records at a time.
+
+---
+
 ## Key Concepts
 
 ### IP Assignment Types

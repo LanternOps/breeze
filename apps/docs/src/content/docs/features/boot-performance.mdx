@@ -182,6 +182,10 @@ The response includes:
 
 You can enable or disable startup items directly through the API. Both operations require the device to be online and dispatch a `manage_startup_item` command to the agent.
 
+<Aside type="note">
+  Triggering an on-demand collection (above) and enabling or disabling a startup item all require an MFA-verified session. If your account has MFA enrolled, you may be prompted to step up before the action completes.
+</Aside>
+
 ### Disabling a Startup Item
 
 ```bash

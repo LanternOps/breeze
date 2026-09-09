@@ -35,6 +35,7 @@ Tenant isolation is enforced by row-level security on every query. Site-restrict
 |---|---|---|
 | `GET` | `/pam/elevation-requests` | List and filter elevation requests (Requests and Audit tabs). |
 | `GET` | `/pam/active` | List currently-active (unexpired, approved) elevations. |
+| `POST` | `/pam/elevation-requests/:id/assertion-challenge` | Issue a short-lived WebAuthn assertion challenge for a step-up (Windows Hello / Touch ID) approval. |
 | `POST` | `/pam/elevation-requests/:id/respond` | Approve or deny a pending request. |
 | `POST` | `/pam/elevation-requests/:id/revoke` | Revoke an active elevation before it expires. |
 
@@ -96,6 +97,18 @@ Returns up to 500 elevations whose status is `approved`, `auto_approved`, or `ac
 { "success": true, "active": [ { "id": "…", "expiresAt": "2026-06-13T14:17:00Z", "…": "…" } ] }
 ```
 
+### Assertion challenge (step-up)
+
+`POST /pam/elevation-requests/:id/assertion-challenge` — requires `devices:execute`.
+
+Issues a short-lived (120s) WebAuthn assertion challenge bound to the elevation request and the caller, so the approving technician can satisfy a platform authenticator (Windows Hello / Touch ID) step-up before calling Respond. `allowCredentials` lists the caller's active platform approver devices; if none are registered, the options carry no `allowCredentials` and the console falls back to a plain session-tap (L1) approval — this step is opt-in.
+
+```json
+{ "options": { "challenge": "…", "allowCredentials": [ { "id": "…", "type": "public-key" } ], "…": "…" } }
+```
+
+The resulting WebAuthn assertion is then passed as `proof` on the Respond call below.
+
 ### Respond (approve / deny)
 
 `POST /pam/elevation-requests/:id/respond` — requires `devices:execute` + MFA.
@@ -115,14 +128,24 @@ Request body:
 | `decision` | enum | `approve` or `deny` (required) |
 | `reason` | string | Optional on approve, recommended on deny; max 2000 chars |
 | `durationMinutes` | int | Approval window, 1–1440 (24h max). Defaults to 15 |
+| `proof` | object | Optional WebAuthn assertion (from [Assertion challenge](#assertion-challenge-step-up) above) satisfying a step-up approval. Absent → plain session-tap (L1) approval. Present but invalid → `401`, never a silent downgrade. When partner policy enforces step-up, an under-assured approve is rejected with `403` (a deny is never blocked) |
+| `reauthPassword` | string | Critical-tier (L4) re-authentication: the technician's current account password, verified server-side. Only required when the elevation's tier demands it |
+| `reauthMfaCode` | string | Login-MFA (TOTP) fallback for SSO-only / passwordless accounts that can't supply `reauthPassword`, verified server-side |
 
-Only a `pending` request can be decided. The transition is an atomic compare-and-swap on `pending`, so concurrent decisions are safe.
+Only a `pending` request can be decided. The transition is an atomic compare-and-swap on `pending`, so concurrent decisions are safe. A missing `reauthPassword`/`reauthMfaCode` on a critical approve that requires one returns `401` with `code: "reauth_required"` so the client can retry with the factor supplied.
+
+```json
+{ "success": true, "id": "…", "status": "approved", "enforcementStatus": "pending_dispatch" }
+```
+
+`enforcementStatus` reflects the device-side actuation of the approval (see [Device actuation](#device-actuation)) — e.g. `pending_dispatch` once approved, progressing to `active` as the agent applies it.
 
 | Status | Meaning |
 |---|---|
-| `200` | `{ "success": true, "id": "…", "status": "approved" \| "denied" }` |
+| `200` | `{ "success": true, "id": "…", "status": "approved" \| "denied", "enforcementStatus": "…" }` |
 | `400` | Invalid id or body |
-| `403` | Site access denied, or MFA not satisfied |
+| `401` | Invalid `proof`, or `reauthPassword`/`reauthMfaCode` missing or incorrect for a critical approve (`code: "reauth_required"`) |
+| `403` | Site access denied, MFA not satisfied, or an under-assured approve rejected by partner step-up policy |
 | `404` | Request not found (or outside the caller's org) |
 | `409` | Request is no longer pending (lost the race), or a linked AI tool execution already timed out |
 
@@ -143,8 +166,10 @@ Ends an active elevation early.
 `reason` is **required** (1–2000 chars). Only an active elevation (`approved`, `auto_approved`, or `actuating`) can be revoked; a stale or already-finished row returns `409`.
 
 ```json
-{ "success": true, "id": "…", "status": "revoked" }
+{ "success": true, "id": "…", "status": "revoked", "enforcementStatus": "cleanup_pending" }
 ```
+
+`enforcementStatus` is always `cleanup_pending` on a successful revoke — the agent-side cleanup is dispatched asynchronously (see [Device actuation](#device-actuation)); the time-bound expiry enforcer is the safety net if cleanup doesn't confirm.
 
 ---
 
@@ -183,6 +208,7 @@ Ends an active elevation early.
 | `siteId` | uuid \| null | Narrow to one site; null = org-wide |
 | `matchSigner` | string | Code-signer (executable rule). Mutually exclusive with `matchSignerGroupId` |
 | `matchSignerGroupId` | uuid \| null | Reference a reusable [signer group](#signer-groups) instead of a single `matchSigner` (executable rule) |
+| `matchSignerThumbprint` | string \| null | SHA-256 hex thumbprint of the code-signing certificate (executable rule). Combinable with `matchSigner`, but mutually exclusive with `matchSignerGroupId` |
 | `matchHash` | string | SHA-256 hex digest (executable rule) |
 | `matchPathGlob` | string | File-path glob (executable rule) |
 | `matchParentImage` | string | Parent process (executable rule) |
@@ -199,7 +225,7 @@ Rule-shape validation (enforced on create and on the merged result of an update)
 
 - A rule must carry **at least one identifying criterion** (signer / signer group / hash / path / parent / command line / user / group / tool / tier). A rule scoped only by time window -- or nothing -- is rejected with `400`.
 - A rule is either **executable-shaped** (signer / signer group / hash / path / parent / command line) or **tool-action-shaped** (tool name / risk tier). Mixing the two is rejected, because no single observation carries both.
-- `matchSigner` and `matchSignerGroupId` are **mutually exclusive** -- a rule references a single signer *or* a signer group, not both.
+- `matchSigner`/`matchSignerThumbprint` and `matchSignerGroupId` are **mutually exclusive** -- a rule references a signer (by name and/or thumbprint) *or* a signer group, not both.
 - A negated criterion never turns missing data into a match: if the observation didn't report the value a negated criterion checks, the rule does not match.
 - `verdict: "ignore"` is not valid for tool-action rules -- a tool action must be decided.
 - `matchRiskTier` must be a tier the rule's tool selector can actually resolve to. A rule pinned to a tier no tool produces can never match, so create and update reject it with `400` and a body carrying `code: "pam_rule_risk_tier_unreachable"` plus a `validTiers` array of the tiers that selector currently resolves to. A rule naming a tool the API doesn't recognise (an extension tool, for example) is **not** rejected -- the check fails open rather than blocking a legitimate write.

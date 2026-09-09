@@ -210,6 +210,10 @@ When incremental scans run after a baseline, the results are merged with the exi
 
 Disk cleanup follows a strict two-phase workflow: **preview** first, then **execute**. This ensures that no files are deleted without explicit review.
 
+<Aside type="note">
+  Starting a filesystem scan and both cleanup phases below (preview and execute) all require an MFA-verified session. If your account has MFA enrolled, you may be prompted to step up before the action completes.
+</Aside>
+
 ### Safe Cleanup Categories
 
 Only items in the following categories are eligible for automated cleanup:

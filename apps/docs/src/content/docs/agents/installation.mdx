@@ -170,6 +170,19 @@ The installer parses this block at runtime using a regex search anywhere in the 
   If you rename the MSI before deploying it, preserve the `(TOKEN@HOST)` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
 </Aside>
 
+### Linux/macOS One-Liner (CLI Commands Tab)
+
+There is no downloadable pre-configured installer for Linux, so the **Add Device** dialog's **CLI Commands** tab generates a copy-paste install command instead.
+
+<Steps>
+1. Open **Add Device** from the Devices page and switch to the **CLI Commands** tab (this is the default tab when Linux is the detected platform).
+2. Under **Step 1 — Copy your installation token**, set **Number of devices** and **Link expires in**, then click **Generate new token** if you change either.
+3. Under **Step 2 — Run the install command**, copy the one-liner shown for the Linux/macOS tab.
+4. Paste and run it on the target machine.
+</Steps>
+
+The generated command downloads and runs the same `install.sh` used by [Quick Install](#quick-install) above, with `--token` and `--server` filled in for you. Generating a token requires MFA on your account. Behind the scenes, the token is a short-lived **enrollment key** minted specifically for this dialog (`POST /devices/onboarding-token`) — not the same bootstrap-token mechanism the macOS GUI installer uses above — scoped to the device count and expiry you chose, up to 1000 devices and 365 days.
+
 ---
 
 ## Pre-Provisioning Devices

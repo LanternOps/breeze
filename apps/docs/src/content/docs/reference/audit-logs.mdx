@@ -279,17 +279,31 @@ The `device_event_logs` table has a unique index on `(deviceId, source, eventId)
 
 #### Event Submission
 
-Agents submit event logs via `PUT /agents/:id/eventlogs` with a JSON body containing an `events` array. Each event must include:
+Agents submit event logs via `PUT /agents/:id/eventlogs` with a JSON body containing an `events` array (max **5000** events per request). Each event must include:
 
 - `timestamp` (string, required)
 - `level` (`info`, `warning`, `error`, `critical`)
 - `category` (`security`, `hardware`, `application`, `system`)
 - `source` (string, required)
 - `eventId` (string, optional)
-- `message` (string, required)
-- `details` (optional object)
+- `message` (string, required, max 2000 characters)
+- `details` (optional object, max 64KB serialized)
 
 Events are batch-inserted in groups of 100. The submission is also recorded as an audit event with action `agent.eventlogs.submit`.
+
+**Level filtering.** Before insertion, events are filtered against the org's `minimumLevel` event-log setting (configured via the Event Log configuration policy feature). Events below the configured minimum are dropped and counted separately rather than stored. The response reflects this:
+
+```json
+{ "success": true, "count": 42, "filtered": 8 }
+```
+
+`count` is the number of events actually inserted (after level filtering and deduplication); `filtered` is the number dropped by the level filter. A request whose events are entirely filtered out still returns `200` with `count: 0`.
+
+**Rate limiting.** After filtering, the remaining events are checked against the org's `rateLimitPerHour` event-log setting. If the request would exceed the hourly limit, the whole request is rejected with `429`:
+
+```json
+{ "error": "Rate limit exceeded", "remaining": 120, "resetAt": "2026-09-09T18:00:00.000Z" }
+```
 
 #### Querying Stored Event Logs
 

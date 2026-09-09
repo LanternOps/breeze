@@ -156,6 +156,22 @@ GET /api/v1/agents/download/:os/:arch
 | `os` | `linux`, `darwin`, `windows` |
 | `arch` | `amd64`, `arm64` |
 
+### Raw Agent MSI (Windows)
+
+```
+GET /api/v1/agents/download/windows/amd64/msi
+```
+
+Serves the staged `breeze-agent.msi` verbatim, with no per-download bootstrap token embedded — unlike the enrollment-installer routes, so the file has a stable checksum. The automatic edition-migration flow pins its own download to a sha256 computed from this same file and verifies before touching an installed agent. Disk-only: unlike the routes above, it does **not** redirect to GitHub or S3, so a `BINARY_SOURCE=github` deployment gets a `404` here.
+
+### macOS Installer Package
+
+```
+GET /api/v1/agents/download/:os/:arch/pkg
+```
+
+`os` must be `darwin`. Serves the notarized `.pkg` used by `install.sh`'s macOS path, which verifies the download via Apple notarization (`spctl --assess`) rather than a checksum comparison against `/agent-versions/latest`.
+
 ### Viewer Installers
 
 ```
@@ -181,6 +197,32 @@ GET /api/v1/agents/download/helper/:os/:arch
 
 Helper binaries are companion processes used for remote desktop in headless/service contexts (Session 0 on Windows, LaunchDaemon on macOS, systemd on Linux).
 
+### Watchdog Binary
+
+```
+GET /api/v1/agents/download/watchdog/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+`breeze-watchdog` runs as its own service (`BreezeWatchdog` on Windows) alongside the agent and restarts it if it stops responding. The agent's own self-update and failover logic fetch replacement watchdog builds through this same route.
+
+### User-Helper Binary
+
+```
+GET /api/v1/agents/download/user-helper/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `linux`, `darwin`, `windows` |
+| `arch` | `amd64`, `arm64` |
+
+`breeze-user-helper` is a distinct binary from the Helper installers above (`/viewers/download` and the **Helper Binaries** section) — it's the GUI-subsystem sibling of the agent that the agent's session broker spawns into the interactive user session (prompts and remote-desktop UI in headless/service contexts), not the standalone Helper app.
+
 ### Backup Binary
 
 The `breeze-backup` binary handles enterprise backup operations (Hyper-V, MSSQL, system image, cloud-to-cloud). It is bundled in installers **and** served through the download API:
@@ -202,6 +244,14 @@ GET /api/v1/agents/install.sh
 ```
 
 One-line agent installer that auto-detects OS/arch, downloads the binary, enrolls, and installs as a system service.
+
+### Uninstall Script
+
+```
+GET /api/v1/agents/uninstall.sh
+```
+
+Companion to the install script, for Linux and macOS. Stops and removes the agent, watchdog, and backup services and binaries. Windows agents are removed through the MSI's own uninstall (Apps & Features / `msiexec /x`), not this endpoint.
 
 ## Decision Guide
 

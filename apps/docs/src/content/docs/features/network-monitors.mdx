@@ -13,6 +13,15 @@ Network Monitors let you define recurring checks against IP addresses, hostnames
 
 All monitor operations require authentication and one of the `organization`, `partner`, or `system` scopes. Organization-scoped users are automatically restricted to monitors within their own organization.
 
+## In the console
+
+Network Monitors are managed from **Network Monitor** in the sidebar (`/monitoring`), under the **Network Checks** tab.
+
+- The tab lists every monitor for the current organization with its type, target, last status, and last response time, and refreshes automatically.
+- **Add Monitor** opens a form to pick a monitor type (ICMP Ping, TCP Port, HTTP/Endpoint, or DNS), enter the name, target, polling interval, and timeout, and set the type-specific options (e.g. expected HTTP status, DNS record type).
+- Each row has actions to run an on-demand check now, open the monitor's detail view, or delete it.
+- The detail view shows recent check results and response times, and lets you edit the monitor's name, polling interval, timeout, and active status.
+
 ## Monitor Types
 
 Breeze supports four monitor types, stored in the `monitor_type` PostgreSQL enum:

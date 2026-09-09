@@ -29,6 +29,10 @@ Partner (MSP)
 
 Every entity in the hierarchy uses a UUID primary key and carries `createdAt` / `updatedAt` timestamps. Partners and organisations support soft deletes via a `deletedAt` column; sites are hard-deleted.
 
+<Aside type="note" title="MFA on writes">
+  Every create, update, and delete below -- partners, organisations, and sites alike -- additionally requires the caller's session to have completed an **MFA challenge**, on top of the scope and permission shown for each endpoint. This makes a plain JWT without a recent MFA step-up a poor fit for unattended scripts against these endpoints; a partner service-principal key (`brz_sp_…`) is not subject to this gate.
+</Aside>
+
 ---
 
 ## Partners
@@ -268,6 +272,26 @@ Restoring is the undo, available any time before the purge runs.
 | `POST` | `/orgs/organizations/:id/restore` | Restore an archived organisation to `active`. |
 
 Both require partner scope, `organizations:write`, **and a satisfied MFA challenge** — an API key or session without MFA is rejected.
+
+### Offboarding an Organisation
+
+`offboarding` is a terminal-intent **drain** state, not an instant delete. The moment an organisation enters it:
+
+- Its users, API keys, and OAuth grants are revoked **immediately** — nobody can sign in or call the API as that organisation from this point on.
+- Agents are **not** severed right away. They stay authenticated in a narrowed mode (heartbeat + claiming a queued `self_uninstall` command only; the WebSocket channel is refused) so each device gets a chance to self-uninstall cleanly.
+- A background reaper finalizes the drain once every device has uninstalled or the drain window closes (`OFFBOARDING_DRAIN_WINDOW_HOURS`, default 72h) — whichever comes first — cancelling any leftover uninstalls and severing agent credentials.
+- Where the drain lands depends on how it was started: [archiving](#archiving-an-organisation) an organisation routes it through `offboarding` and finalizes to `archived`; setting `status: "offboarding"` directly (e.g. via the API, outside the Archive flow) finalizes to `churned` instead.
+- The transition is reversible up until the reaper finalizes it — set `status` back to `active` (or `trial`) to abort the drain, cancel any un-collected uninstalls, and restore agent access.
+
+In the dashboard, the only way to reach `offboarding` is the **Archive** action described above — there is no separate "offboard" button. A churn-only drain (no archive) is only reachable directly via the API:
+
+```json
+PATCH /api/v1/orgs/organizations/:id
+
+{ "status": "offboarding" }
+```
+
+This requires partner scope, `organizations:write`, and a satisfied MFA challenge, same as archiving.
 
 ### Merging Organisations
 

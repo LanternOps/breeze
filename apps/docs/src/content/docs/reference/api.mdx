@@ -1267,6 +1267,17 @@ Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `res
 |---|---|---|
 | `GET` | `/partner/dashboard` | Partner dashboard data |
 
+## Other Route Groups
+
+A few mounted route groups are documented on their feature pages rather than repeated here:
+
+| Prefix | Purpose |
+|---|---|
+| `/backup` | Device backup, restore, boot-media, and SLA endpoints. See [Backup Overview](/backup/overview/). |
+| `/ai/agents`, `/ai/agents/schedules`, `/ai/operator` | Autonomous scheduled AI agents (triage, sweeps, reports) — distinct from the interactive `/ai` chat assistant above. See [AI Agents](/features/ai-agents/). |
+| `/s1`, `/huntress` | SentinelOne and Huntress EDR integration endpoints (credentials, mappings, webhooks, sync). See [EDR Integrations](/features/edr-integrations/). |
+| `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Identity Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
+
 ## Search
 
 | Method | Path | Description |

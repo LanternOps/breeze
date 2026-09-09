@@ -39,6 +39,34 @@ Agent                                 API Server
   │                                      │
 ```
 
+### Full Enrollment Response
+
+The `201` response carries more than the `authToken` shown in the diagram above. In full, it is:
+
+```json
+{
+  "agentId": "uuid",
+  "deviceId": "uuid",
+  "authToken": "brz_...",
+  "watchdogAuthToken": "brz_...",
+  "helperAuthToken": "brz_...",
+  "orgId": "uuid",
+  "siteId": "uuid",
+  "backupServerUrl": "https://backup.example.com",
+  "config": { "heartbeatIntervalSeconds": 60, "metricsCollectionIntervalSeconds": 30 },
+  "mtls": { "...": "..." },
+  "manifestTrustKeys": [ "..." ],
+  "manifestKeyDelegations": [ "..." ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `watchdogAuthToken` | Separate `brz_` token for [`breeze-watchdog`](/agents/building/#other-agent-binaries) to authenticate its own restart-monitoring calls. |
+| `helperAuthToken` | Separate token for the [Helper](/agents/helper/) process -- distinct from the agent's own `authToken`. |
+| `backupServerUrl` | Present only when `AGENT_BACKUP_SERVER_URL` is configured server-side; tells `breeze-backup` where to ship vault data. |
+| `manifestTrustKeys` / `manifestKeyDelegations` | The current release-artifact signing trust keyset and any active key delegations, used to verify signed agent updates. See [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/). |
+
 ## Token Security
 
 Agent tokens follow the `brz_` prefix convention:
