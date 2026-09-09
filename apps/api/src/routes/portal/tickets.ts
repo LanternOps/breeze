@@ -466,6 +466,12 @@ ticketRoutes.post(
       .returning({
         id: ticketComments.id,
         authorName: ticketComments.authorName,
+        // authorType (sweep 2026-09-08 G5-5) — GET /tickets/:id's comments
+        // query selects it (used by the portal UI's `c.authorType !== 'portal'`
+        // "Your IT team" badge check), but this insert's `.returning()` used
+        // to omit it, so a customer's own reply showed that badge until the
+        // next full reload re-fetched the comment from GET.
+        authorType: ticketComments.authorType,
         content: ticketComments.content,
         createdAt: ticketComments.createdAt
       });
