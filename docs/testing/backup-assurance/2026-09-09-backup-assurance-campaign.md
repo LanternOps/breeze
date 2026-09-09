@@ -306,3 +306,44 @@ Filled in as cells execute. One row per cell per rig.
 4. **In-place overwrite restores on WIN-B** (prod-enrolled). Default: alternate-path only on WIN-B.
 5. **Real cloud credentials** (S3 / B2 / Azure) and an **M365 test tenant** for provider and C2C cells.
    Default: skipped, listed as out of scope.
+
+## 10. Issues filed (2026-09-09)
+
+One issue per root cause, each carrying the campaign evidence and the fix commit where one exists.
+
+| Issue | Title |
+|---|---|
+| [#5384](https://github.com/LanternOps/breeze/issues/5384) | [Agent][Backup] Concurrent backup_run fails when file + system_image dispatch together (helper spawn race) |
+| [#5385](https://github.com/LanternOps/breeze/issues/5385) | [Agent][Backup] Non-injective object keys silently overwrite same-named .gz siblings (report vs report.gz) |
+| [#5386](https://github.com/LanternOps/breeze/issues/5386) | [Agent][Backup] Watchdog restarts the agent mid-backup on a busy host, killing the helper and failing the job |
+| [#5387](https://github.com/LanternOps/breeze/issues/5387) | [Agent][Backup] Restore silently drops files whose staged filename exceeds the OS path-length limit |
+| [#5388](https://github.com/LanternOps/breeze/issues/5388) | [Agent][Backup] Selective restore matches unselected sibling paths by string prefix, overwriting them |
+| [#5389](https://github.com/LanternOps/breeze/issues/5389) | [Agent][Backup] Incremental dedupe picks its base snapshot bucket-wide, so runs never dedupe (and can cross devices) |
+| [#5390](https://github.com/LanternOps/breeze/issues/5390) | [API][Backup] BMR bundle/ISO build fails with ENOSPC on every shipped deployment (64 MB /tmp) |
+| [#5391](https://github.com/LanternOps/breeze/issues/5391) | [Agent][Backup] Windows file restore lands under the VSS shadow-copy device path instead of the real path |
+| [#5392](https://github.com/LanternOps/breeze/issues/5392) | [API][Backup] Bare-metal recovery token authentication has been broken since 2026-04-11 (RLS blocks the token lookup) |
+| [#5393](https://github.com/LanternOps/breeze/issues/5393) | [API][Backup] Restore progress writes flood the API log and burn CPU (10k lines / 3 min) |
+| [#5394](https://github.com/LanternOps/breeze/issues/5394) | [Agent][Backup] Symlinks and empty directories are silently skipped on backup and restore |
+| [#5395](https://github.com/LanternOps/breeze/issues/5395) | [Agent][Backup] setuid/setgid/sticky bits are stripped on restore |
+| [#5396](https://github.com/LanternOps/breeze/issues/5396) | [API][Backup] A backup run can silently drop up to 10% of files and still report `completed` |
+| [#5397](https://github.com/LanternOps/breeze/issues/5397) | [Agent][Backup] Windows system-state backup silently drops the SECURITY hive and triggers a Defender malware alert |
+| [#5398](https://github.com/LanternOps/breeze/issues/5398) | [Agent][Backup] system_image backup logs a false-alarm certs failure on servers without the AD CS role |
+| [#5399](https://github.com/LanternOps/breeze/issues/5399) | [Agent][Backup] system_image artifacts are written under a random temp path with no system-state manifest — BMR has nothing to restore |
+| [#5400](https://github.com/LanternOps/breeze/issues/5400) | [API][Backup] GFS `keepDaily` silently overrides the configured `retentionDays`, shortening snapshot lifetime |
+| [#5401](https://github.com/LanternOps/breeze/issues/5401) | [Agent][Backup] BMR helper downloads from the server's public URL instead of the --server the operator gave it |
+| [#5402](https://github.com/LanternOps/breeze/issues/5402) | [Agent][Backup] A backup run that correctly fails loud gets masked behind "Malformed backup result payload" |
+| [#5403](https://github.com/LanternOps/breeze/issues/5403) | [API][Backup] Windows selective restore is unusable under VSS — browse root shows "?" and real paths are rejected |
+| [#5404](https://github.com/LanternOps/breeze/issues/5404) | [API][Backup] BMR download rate limit stops recovery after ~134 files |
+| [#5405](https://github.com/LanternOps/breeze/issues/5405) | [API][Backup] BMR completion report is rejected as too large, so recovery outcome is never recorded |
+| [#5406](https://github.com/LanternOps/breeze/issues/5406) | [Agent][Backup] BMR-restored files have no mode or mtime applied |
+| [#5407](https://github.com/LanternOps/breeze/issues/5407) | [Agent][Backup] Windows Hidden/System/Sparse file attributes are not restored |
+| [#5408](https://github.com/LanternOps/breeze/issues/5408) | [API][Backup] A failed recovery attempt burns the single-use BMR token, forcing a console round-trip to retry |
+| [#5409](https://github.com/LanternOps/breeze/issues/5409) | [API][Backup] BMR public rate limit falls back to a shared IP bucket behind a proxy, with no retry-after guidance |
+| [#5410](https://github.com/LanternOps/breeze/issues/5410) | [API][Backup] transferredSize is wrong in two ways — includes referenced (not just transferred) bytes, and goes stale during an API outage |
+| [#5411](https://github.com/LanternOps/breeze/issues/5411) | [API][Backup] A rebuilt recovery-media row keeps its old error message next to a ready status |
+| [#5412](https://github.com/LanternOps/breeze/issues/5412) | [Agent/API][Backup] Bare-metal recovery of a system_image snapshot applies no OS state, yet reports completed/validated |
+| [#5413](https://github.com/LanternOps/breeze/issues/5413) | [API][Backup] Strict queue-result schema rejected originalPath, dropping every Windows backup result and hanging the job forever |
+| [#5414](https://github.com/LanternOps/breeze/issues/5414) | [Agent][Backup] Agent logs a 404 on every WS-direct backup_run command-result submission |
+| [#5415](https://github.com/LanternOps/breeze/issues/5415) | [Agent][Backup] Failed system_image job's errorLog duplicates the failure reason and omits the hive name |
+| [#5416](https://github.com/LanternOps/breeze/issues/5416) | [Agent][Backup] bmr-recover may hang silently with no timeout during an API outage (unconfirmed) |
+| [#5417](https://github.com/LanternOps/breeze/issues/5417) | [Agent][Backup] No in-file progress reporting — the UI progress bar freezes during a single large file upload |
