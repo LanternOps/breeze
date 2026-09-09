@@ -369,15 +369,22 @@ function RunItem({
     try {
       // Real shape from apps/api/src/routes/automations.ts's
       // POST /runs/:runId/cancel (#4766/W05): { success, run: {id, status},
-      // alreadyCancelling, actionsCancelled, executionsCancelled, executions,
-      // uncancellableActions }.
+      // alreadyCancelling, actionsCancelled, executionsStopped,
+      // executionsRequested, executions, uncancellableActions }.
+      // NOTE: `executionsStopped`, NOT `executionsCancelled` — the field
+      // name the API never sends (sweep 2026-09-08 row 18: this previously
+      // read `executionsCancelled`, which is always undefined, so the
+      // pluralised i18n key rendered as its own raw key).
       const result = await runAction<{
-        executionsCancelled: number;
+        executionsStopped: number;
         uncancellableActions?: UncancellableAction[];
       }>({
         request: () => fetchWithAuth(`/automations/runs/${run.id}/cancel`, { method: 'POST' }),
         errorFallback: t('automationRunHistory.errors.cancelRun'),
-        successMessage: (data) => t('automationRunHistory.actions.cancelRunSuccess', { count: data.executionsCancelled }),
+        // `?? 0`: a missing/undefined count must still resolve to the
+        // `_other` plural form via i18next, never leave `count` undefined
+        // (which is how the raw key rendered in the first place).
+        successMessage: (data) => t('automationRunHistory.actions.cancelRunSuccess', { count: data.executionsStopped ?? 0 }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       setUncancellableActions(result.uncancellableActions ?? []);
