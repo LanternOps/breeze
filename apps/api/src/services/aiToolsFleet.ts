@@ -75,6 +75,7 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
+import { scanProjectedAutomationRuns } from './automationReadProjection';
 import { assertReportExecutionPreflight } from './reportGenerationService';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import {
@@ -1670,7 +1671,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const rows = await db.select({
+        const selectRows = () => db.select({
           id: automations.id,
           name: automations.name,
           description: automations.description,
@@ -1685,18 +1686,37 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           partnerId: automations.partnerId,
           conditions: automations.conditions,
         }).from(automations)
-          .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(desc(automations.createdAt))
-          .limit(limit);
+          .where(conditions.length > 0 ? and(...conditions) : undefined);
 
         // Site axis: omit automations whose resolvable target set escapes the
         // caller's site allowlist (only queries the DB for restricted callers).
-        let visible = rows;
-        if (auth.allowedSiteIds) {
-          const checks = await Promise.all(
-            rows.map((r) => checkAutomationTargetsWithinSiteScope(r as any, siteScopePerms(auth))),
-          );
-          visible = rows.filter((_, i) => checks[i]!.ok);
+        let visible: any[];
+        if (auth.allowedSiteIds !== undefined) {
+          visible = [];
+          const scanSize = 100;
+          let databaseOffset = 0;
+          while (visible.length < limit) {
+            const batch = await selectRows()
+              .orderBy(desc(automations.createdAt), desc(automations.id))
+              .limit(scanSize).offset(databaseOffset);
+            if (batch.length === 0) break;
+            for (const row of batch) {
+              if ((await checkAutomationTargetsWithinSiteScope(row as any, siteScopePerms(auth))).ok) {
+                visible.push(row);
+                if (visible.length === limit) break;
+              }
+            }
+            databaseOffset += batch.length;
+            if (batch.length < scanSize) break;
+          }
+          visible = visible.map((automation: any) => {
+            const { lastRunAt: _lastRunAt, runCount: _runCount, ...row } = automation;
+            return row;
+          });
+        } else {
+          visible = await selectRows()
+            .orderBy(desc(automations.createdAt), desc(automations.id))
+            .limit(limit);
         }
 
         return JSON.stringify({ automations: visible, showing: visible.length });
@@ -1714,6 +1734,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
+        if (auth.allowedSiteIds !== undefined) {
+          const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
+          return JSON.stringify({ automation: restricted });
+        }
         return JSON.stringify({ automation: auto });
       }
 
@@ -1730,13 +1754,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (historyDenied) return JSON.stringify({ error: historyDenied });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
-        const runs = await db.select()
-          .from(automationRuns)
-          .where(eq(automationRuns.automationId, auto.id))
-          .orderBy(desc(automationRuns.startedAt))
-          .limit(limit);
+        const page = auth.allowedSiteIds === undefined
+          ? await db.select()
+            .from(automationRuns)
+            .where(eq(automationRuns.automationId, auto.id))
+            .orderBy(desc(automationRuns.startedAt))
+            .limit(limit)
+          : (await scanProjectedAutomationRuns({
+            automationId: auto.id,
+            allowedSiteIds: auth.allowedSiteIds,
+            limit,
+          })).rows;
 
-        return JSON.stringify({ automationId: auto.id, runs, showing: runs.length });
+        return JSON.stringify({ automationId: auto.id, runs: page, showing: page.length });
       }
 
       if (action === 'create') {

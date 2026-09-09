@@ -54,7 +54,10 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/alertConditions', () => ({ retiredConditionTypeError: vi.fn(() => null) }));
 vi.mock('../services/permissions', () => ({
-  PERMISSIONS: { ALERTS_WRITE: { resource: 'alerts', action: 'write' } },
+  PERMISSIONS: {
+    ALERTS_READ: { resource: 'alerts', action: 'read' },
+    ALERTS_WRITE: { resource: 'alerts', action: 'write' },
+  },
 }));
 vi.mock('../utils/pagination', () => ({
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
