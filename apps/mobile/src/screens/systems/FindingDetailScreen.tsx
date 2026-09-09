@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { safeReportInternalError as safeReport } from '../../lib/errorReporting';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
 import { getDevice } from '../../services/api';
@@ -50,7 +50,7 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
   const navigation = useNavigation<Nav>();
   const [state, dispatch] = useReducer(findingDetailReducer, initialFindingDetailState);
   const [dismissing, setDismissing] = useState(false);
-  const [toast, setToast] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
+  const { show: showToast } = useToast();
   const [openingDeviceId, setOpeningDeviceId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -99,7 +99,7 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
           type: 'actionFailed',
           message: err instanceof Error ? err.message : `Could not ${action} this finding`,
         });
-        setToast({ text: `Could not ${action} this finding`, kind: 'error' });
+        showToast({ kind: 'error', text: `Could not ${action} this finding` });
         safeReport(err, 'finding-action');
         return;
       }
@@ -114,7 +114,7 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
       // focus refresh is debounced to 60s; without this the tab would keep
       // claiming "1 open finding" for up to a minute after it was cleared.
       markFindingsChanged();
-      setToast({ text: findingActionSuccessMessage(action), kind: 'success' });
+      showToast({ kind: 'success', text: findingActionSuccessMessage(action) });
 
       try {
         // PATCH answers with the finding row only — no members — so prefer a
@@ -156,7 +156,7 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
         const device = await getDevice(member.deviceId);
         navigation.navigate('SystemsDeviceDetail', { device });
       } catch (err) {
-        setToast({ text: 'That device is no longer available', kind: 'error' });
+        showToast({ kind: 'error', text: 'That device is no longer available' });
         safeReport(err, 'finding-member-open');
       } finally {
         setOpeningDeviceId(null);
@@ -332,13 +332,6 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
           setDismissing(false);
           void runAction('dismiss', notes);
         }}
-      />
-
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
       />
     </View>
   );
