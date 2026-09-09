@@ -537,8 +537,12 @@ async function transitionIntentAndPublish(
  *   this intent. There is no side effect to reconcile and no result to lose —
  *   the intent is terminal either way. Mirrors `intentReleaseWorker.ts`'s
  *   `failIntent`, which returns quietly on the same race rather than writing
- *   a duplicate audit row for an event that already happened once. A single
- *   warn line, because "which writer won" is still worth being able to grep.
+ *   a duplicate audit row for an event that already happened once. A warn
+ *   line, because "which writer won" is still worth being able to grep, plus
+ *   (#5326) a `breeze_action_intents_total{outcome="cas_lost"}` bump so the
+ *   contention rate is countable — the warn alone left this path invisible to
+ *   Prometheus. Still no Sentry event and no audit row: expected contention
+ *   with no side effect to reconcile is not an error.
  *
  * - `executed: true` — the CAS is attempted AFTER the tool had its real-world
  *   side effect. The effect happened and cannot be undone, but the intent now
@@ -594,6 +598,23 @@ function reportLostTerminalCas(opts: {
       `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
       + 'another writer already terminalized it; the tool never ran',
     );
+    // #5326: metric only — no Sentry, no audit marker. The tool never ran, so
+    // nothing was lost but the transition itself, and losing it to a reaper or
+    // the durable worker is expected under contention. It still has to be
+    // COUNTABLE: a rising cas_lost rate means the pre-execution paths are
+    // racing something, and a console.warn cannot carry that signal.
+    try {
+      recordActionIntentMetric('chat', toolName, 'cas_lost');
+    } catch (err) {
+      // Mirrors the `executed: true` branch's guard below, for the same
+      // reason: every caller of this helper is reporting SOME other failure
+      // (a revalidation stop, a digest mismatch, the tier-3 catch), and a
+      // throw out of the metrics layer here would unwind into that caller's
+      // outer catch — replacing the specific reason it had already computed
+      // with a generic `execution_error`. Observability must never be able
+      // to overwrite the diagnosis it exists to support.
+      console.error(`[AI-SDK] Failed to record the cas_lost metric for intent ${intentId}:`, err);
+    }
     return;
   }
 

@@ -59,7 +59,24 @@ export type ActionIntentOutcome =
   | 'self_approved_sole_operator'
   | 'digest_mismatch'
   | 'approver_unauthorized'
-  | 'effect_digest_unpinned';
+  | 'effect_digest_unpinned'
+  /**
+   * #5326: a compare-and-swap into a terminal state (`executing -> completed`
+   * / `executing -> failed`) was LOST — another writer (a reaper, the durable
+   * release worker, a duplicate delivery) had already terminalized the intent.
+   * Emitted by the PRE-execution loss sites in services/aiAgentSdk.ts, where
+   * the tool never ran: nothing is wrong with the intent, so it is neither a
+   * failure of the action nor Sentry-worthy (contention here is expected),
+   * but it was previously a bare `console.warn` and therefore uncountable.
+   * A POST-execution loss is materially different — the side effect already
+   * happened — and stays on `executed` plus its own Sentry event and audit
+   * marker; do not merge the two.
+   *
+   * Metric-only by design: this outcome never flows through
+   * `recordActionIntentEvent`, so it deliberately has no
+   * `action_intent.cas_lost` audit action and no `FAILURE_OUTCOMES` entry.
+   */
+  | 'cas_lost';
 
 interface ActionIntentMetricsRecorder {
   onEvent: (source: ActionIntentSource, action: string, outcome: ActionIntentOutcome) => void;
