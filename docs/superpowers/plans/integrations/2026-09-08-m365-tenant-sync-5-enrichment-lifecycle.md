@@ -2,15 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every task's code steps carry real code — nothing here is a sketch.
 
-**Goal:** finish the sync worker W04 started. Users gain their MFA/role enrichment written only from sources that actually succeeded; `signin_activity` becomes a resumable domain that re-claims itself until its continuation is exhausted; `secure_score` persists Graph-dated snapshots with a first-run 90-day backfill; every completed run assembles the daily posture rollup and (for Intune) reconciles Breeze device links; adaptive cadence sets the next due time; and the connection lifecycle (consent, disconnect, upgrade) plus an MFA-gated on-demand route drive the schedule from the product surface.
+**Goal:** finish the sync worker W04 started. Users gain their MFA/role enrichment written only from sources that actually succeeded; `signin_activity` becomes a resumable domain that re-claims itself until its continuation is exhausted; `secure_score` persists Graph-dated snapshots with a first-run 90-day backfill; every completed run assembles the daily posture rollup and (for Intune) reconciles Breeze device links; adaptive cadence sets the next due time; the two remaining domains are switched on in `DOMAIN_PERSISTERS` and `M365_SYNC_IMPLEMENTED_DOMAINS`; and the connection lifecycle (consent, disconnect, upgrade) plus an MFA-gated on-demand route drive the schedule from the product surface. This wave also owns **every** change to the Customer Graph Read card — the "Sync now" button, the last-synced line and the per-domain chips.
 
-**Architecture:** W04 owns the three-phase `sync-domain` job and two extension seams — `applyCadence(state, outcome, signals)` (what the completion transaction writes to `interval_seconds` / `next_sync_at`) and `afterDomainPersisted(ctx)` (called inside the completion transaction, after the sync-state completion write). This wave fills both seams and adds four domain persisters/extensions plus `lifecycle.ts`. Everything that can schedule work is gated by `M365_TENANT_SYNC_ENABLED`. Persisters stay change-only and set-based; the worker holds a system DB context, so every statement filters by the `org_id` it was enqueued with.
+**Architecture:** W04 owns the three-phase `sync-domain` job and two extension seams it ships as tested stubs:
+
+- `applyCadence(domain, state, outcome, signals)` in `services/m365Sync/cadence.ts` — what the completion transaction writes to `interval_seconds` / `next_sync_at`.
+- `afterDomainPersisted(ctx)` in `services/m365Sync/hooks.ts` — invoked **after `writeCompletion` has committed**, on its own `withSystemDbAccessContext`. It is not part of the completion transaction and cannot roll it back.
+
+Both files already exist; this wave **modifies** them, it never creates them. It adds four domain persisters/extensions, registers the two missing ones in `DOMAIN_PERSISTERS`, widens `M365_SYNC_IMPLEMENTED_DOMAINS` to all six, and adds `lifecycle.ts`. Everything that can schedule work is gated by `M365_TENANT_SYNC_ENABLED`. Persisters stay change-only and set-based; the worker holds a system DB context, so every statement filters by the `org_id` it was enqueued with.
 
 **Tech stack:** TypeScript, Hono (API routes), Drizzle ORM + hand-written SQL (`sql` fragments, data-modifying CTEs), BullMQ + Redis (`claimAndEnqueue`, on-demand limiter), Zod (`@breeze/shared/m365`), Vitest (unit + integration), React + i18next (web card).
 
 **Spec:** `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` — this wave implements §5.5, §5.6, §5.7, §5.8, §5.9, §5.2 (on-demand + seeding), §6 (enrichment/continuation/unlicensed rows), §3.3 (Secure Score keying), §10 (flag gating of every entry point).
 
-**Plan overview + shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`.
+**Plan overview + shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`. **The contract is the orchestrator's file: this wave does not edit it.** Every name this plan uses is already in it; if the shipped code diverges, follow the code and record the delta in the PR body.
+
+**Depends on W01 and W04.** W01 because Task 12 turns W01's `// W05: onConnectionUpgraded(...)` seam comment into a call and Tasks 14-16 edit the route, DTO and card W01 has already changed; W04 because every module below extends one of its.
 
 ## Global constraints (copied from the overview; this wave inherits them)
 
@@ -32,10 +39,11 @@
   `pnpm … test -- --run`).
 - Executor projection allowlists are the only fields that leave the executor.
 
-## Execution baseline — verify W02/W03/W04 shipped before Task 1
+## Execution baseline — verify W01/W02/W03/W04 shipped before Task 1
 
-This wave consumes W04's modules by name. Run this block first; every line must
-succeed. If one fails, W04 is not on your base branch — rebase, do not stub.
+This wave consumes W04's modules and W01's callback restructure by name. Run this
+block first; every line must succeed. If one fails, that wave is not on your base
+branch — rebase, do not stub.
 
 ```bash
 test -f apps/api/src/db/schema/m365Sync.ts                          # W02
@@ -46,65 +54,122 @@ test -f apps/api/src/services/m365Sync/claim.ts                     # W04
 test -f apps/api/src/services/m365Sync/run.ts                       # W04
 test -f apps/api/src/services/m365Sync/hash.ts                      # W04
 test -f apps/api/src/services/m365Sync/metrics.ts                   # W04
+test -f apps/api/src/services/m365Sync/cadence.ts                   # W04 stub — this wave MODIFIES it
+test -f apps/api/src/services/m365Sync/hooks.ts                     # W04 stub — this wave MODIFIES it
 test -f apps/api/src/services/m365Sync/domains/users.ts             # W04
 test -f apps/api/src/services/m365Sync/domains/intuneDevices.ts     # W04
+grep -q "usersPrimaryProjection" apps/api/src/services/m365Sync/domains/users.ts   # W04 exports it
 grep -q "applyCadence"          apps/api/src/services/m365Sync/cadence.ts
-grep -q "afterDomainPersisted"  apps/api/src/services/m365Sync/run.ts
+grep -q "CadenceSignals"        apps/api/src/services/m365Sync/cadence.ts
+grep -q "afterDomainPersisted"  apps/api/src/services/m365Sync/hooks.ts
+grep -q "partial-continue"      apps/api/src/services/m365Sync/types.ts        # M365SyncRunResult already has it
+grep -q "M365_SYNC_IMPLEMENTED_DOMAINS" apps/api/src/services/m365Sync/types.ts
+grep -rq "export function m365SyncActionFor" apps/api/src/services/m365Sync/   # types.ts in W04
+grep -q "DOMAIN_PERSISTERS"     apps/api/src/services/m365Sync/run.ts
+grep -q "recordM365SyncLinkAmbiguous" apps/api/src/services/m365Sync/metrics.ts
 grep -q "isM365TenantSyncEnabled" apps/api/src/config/env.ts        # W04
+grep -q "W05: onConnectionUpgraded" apps/api/src/routes/m365ConsentCallback.ts  # W01 seam comment
+grep -q "applyUpgradeResult"    apps/api/src/routes/m365ConsentCallback.ts     # W01
+grep -q "grantHealth"           apps/api/src/routes/m365CustomerGraphRead.ts   # W01 DTO
+grep -q "upgrade-consent"       apps/api/src/routes/m365CustomerGraphRead.ts   # W01 route
 ```
 
-**Seam contract this wave assumes** (verify by reading, and reconcile against
-the code if W04 diverged — the code is the authority, the contract is the
-intent):
+**Seam contract this wave assumes** (it is the overview's, verbatim; verify by
+reading, and reconcile against the code if a wave diverged — the code is the
+authority, the contract is the intent):
 
 ```ts
-// cadence.ts (W04 ships a stub; Task 5 replaces the body)
-export interface CadenceSignals { truncated: boolean; latencyMs: number; capacity: boolean }
+// types.ts (W04) — do NOT redeclare any of these in this wave. The contract
+// lists m365SyncActionFor under run.ts and W04 shipped it in types.ts; import it
+// from wherever it actually lives rather than writing a second one.
+export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue';
+export let M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[];   // W04: four; Task 4 widens to six
+export function m365SyncActionFor(
+  domain: M365SyncDomain,
+  opts: { continuation?: string | null; backfill?: boolean },
+): M365SyncAction;
+
+// run.ts (W04)
+export interface SyncRunContext {
+  snapshot: M365ConnectionExecutionSnapshot;
+  state: {
+    intervalSeconds: number;
+    continuation: string | null;
+    lastCompleteSnapshotAt: Date | null;
+    lastSuccessAt: Date | null;          // selected by W04's Phase A — drives Task 5's backfill flag
+  };
+  existing: Map<string, { coreHash: string; isStale: boolean }>;
+}
+export const DOMAIN_PERSISTERS: Record<M365SyncDomain, Persister | undefined>;
+// writeCompletion(ctx, …) is ONE short system transaction. It supports a
+// continuation mode: writeCompletion(ctx, { mode: 'continuation', continuation }).
+
+// cadence.ts (W04 ships the interface, the jitter helper and a stub body;
+// Task 6 replaces the applyCadence body and adds nextInterval)
+export interface CadenceSignals {
+  truncated: boolean; latencyMs: number; capacity: boolean;
+  unlicensed: boolean; authFailure: boolean; now: Date;
+}
+export function nextSyncAt(now: Date, intervalSeconds: number, rng?: () => number): Date; // ±10% jitter
 export function applyCadence(
-  state: { domain: M365SyncDomain; intervalSeconds: number },
+  domain: M365SyncDomain,
+  state: { intervalSeconds: number },
   outcome: M365SyncOutcome,
   signals: CadenceSignals,
+  rng?: () => number,        // W04's injectable jitter source; the 4-arg contract call still type-checks
 ): { intervalSeconds: number; nextSyncAt: Date | null };
 
-// run.ts — invoked INSIDE the completion transaction, AFTER the sync-state
-// completion UPDATE (so the rollup sees this run's last_counts).
-export interface AfterDomainPersistedContext extends PersistContext {
-  domain: M365SyncDomain;
-  persisted: DomainPersistResult;
-}
-export async function afterDomainPersisted(ctx: AfterDomainPersistedContext): Promise<void>;
+// hooks.ts (W04 ships a no-op; Task 7 replaces the body)
+export async function afterDomainPersisted(
+  ctx: PersistContext & {
+    domain: M365SyncDomain;
+    outcome: M365SyncOutcome;
+    persisted: DomainPersistResult;
+  },
+): Promise<void>;
+
+// metrics.ts (W04)
+export function recordM365SyncLinkAmbiguous(count: number): void;   // no orgId label
 ```
 
-**If `afterDomainPersisted` is called BEFORE the state-completion write in
-W04's `run.ts`, move the call after it in Task 6** — the rollup reads
-`m365_sync_state.last_counts` and would otherwise assemble yesterday's numbers
-for the domain that just ran. Task 6 step 1 has the regression test that
-catches this.
+**`afterDomainPersisted` runs AFTER `writeCompletion` commits, not inside it.**
+It opens its own `withSystemDbAccessContext`, so the rollup reads a
+`m365_sync_state` row that is already durable — including this run's
+`last_counts` — and a throw inside the hook is logged and metered but cannot
+undo the completion. Task 7 step 1 pins both halves of that: the ordering, and
+the fact that a hook failure leaves the persisted state unchanged.
 
 ## Decisions this plan makes (each is a recorded deviation or an open item resolved)
 
-1. **`runSyncDomain`'s return union gains `'partial-continue'`; `M365SyncOutcome`
-   does not.** `m365_sync_status` is a shipped Postgres enum (W02) whose values
-   are `success | partial | needs_consent | throttled | error`; a seventh value
-   would need a migration, and spec §6 explicitly says the sync state is
-   "unchanged until exhausted" while a continuation is outstanding. So
-   `'partial-continue'` is a control-flow/metrics value only: it never reaches
-   `last_status`. Signature becomes
-   `Promise<M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue'>`.
-   **Contract deviation — the overview is updated in the same PR (Task 3).**
-2. **`CadenceSignals` gains `unlicensed: boolean`, `authFailure: boolean` and
-   `now: Date`.** Spec §6 needs `unlicensed` → interval to max and auth failure
-   → `next_sync_at = NULL`; neither is derivable from the outcome alone
-   (`unlicensed` is a `success`, and an auth failure is an `error` just like a
-   persist fault). `now` makes the jitter test deterministic.
-   **Contract deviation — overview updated in Task 5.**
+1. **`'partial-continue'` is consumed, not introduced.** `M365SyncRunResult` in
+   `types.ts` already carries it (W04, per the contract): it is a
+   control-flow/metrics value that never reaches `last_status`, because
+   `m365_sync_status` is a shipped Postgres enum (W02) whose values are
+   `success | partial | needs_consent | throttled | error` and spec §6 keeps the
+   sync state "unchanged until exhausted" while a continuation is outstanding.
+   **This wave imports the type from `types.ts` and never redefines it**, and it
+   does not touch the overview.
+2. **`CadenceSignals` is imported from `cadence.ts`, never redeclared.** The
+   six-field shape (`truncated`, `latencyMs`, `capacity`, `unlicensed`,
+   `authFailure`, `now`) is already in the contract and in W04's stub: spec §6
+   needs `unlicensed` → interval to max and auth failure → `next_sync_at = NULL`,
+   neither derivable from the outcome alone (`unlicensed` is a `success`, and an
+   auth failure is an `error` just like a persist fault), and `now` makes the
+   jitter test deterministic. Task 6 replaces the function body only.
 3. **Enrichment counters are omitted from `last_counts`, not zeroed, when their
    source is not `ok`.** The in-memory items carry `mfaRegistered: null` for
    every user when the registration report failed, but the stored column keeps
    yesterday's value — counting the items would report "0 registered" for a
    tenant that is fully registered. Omitted key → the rollup writes NULL →
    the "unknown" columns spec §3.3 exists for. No extra count query is issued
-   (spec §5.9's "zero count queries" holds).
+   (spec §5.9's "zero count queries" holds). Every key this wave writes into
+   `counts` is one of the contract's snake_case rollup column names:
+   `users_total`, `users_enabled`, `users_mfa_registered`, `users_mfa_unknown`,
+   `users_admin`, `admins_without_mfa`, `admins_mfa_unknown`, `devices_total`,
+   `devices_compliant`, `devices_noncompliant`, `devices_in_grace`,
+   `devices_unknown`, `ca_policies_enabled`, `ca_policies_report_only`,
+   `ca_policies_disabled`, `seats_purchased`, `seats_consumed`, `secure_score`,
+   `secure_score_max`. No other key is ever written.
 4. **`is_admin` is derived from `admin_roles` inside the same statement.** On
    the conflict branch it is
    `jsonb_array_length(coalesce(excluded.admin_roles, '[]'::jsonb)) > 0`; on the
@@ -113,9 +178,11 @@ catches this.
    exactly one array.
 5. **`backfill` travels as no column at all.** The state row's
    `last_success_at IS NULL` is the first-run test (spec §5.8: "the first
-   `secure_score` run passes `backfill: true`"). After a disconnect the state
-   rows are deleted, so a rebind re-backfills — which is what we want, the
-   tenant changed.
+   `secure_score` run passes `backfill: true`"), and W04's Phase A already
+   selects `lastSuccessAt` into `SyncRunContext.state`, so `run.ts` builds the
+   action with `m365SyncActionFor(domain, { backfill: state.lastSuccessAt === null })`.
+   After a disconnect the state rows are deleted, so a rebind re-backfills —
+   which is what we want, the tenant changed.
 6. **Lifecycle hooks differ in DB-context posture, deliberately.**
    `onConnectionDisconnected` runs on the **ambient** system context (the caller
    — `disconnectConnection` — already holds one, so the entity deletes commit in
@@ -131,11 +198,13 @@ catches this.
    shipped convention for a disabled M365 feature
    (`m365CustomerGraphRead.ts:216-218` returns 404 for onboarding-disabled), and
    checks the flag *before* the limiter so a disabled feature never burns a slot.
-8. **The DTO's `sync` block is added by this wave; W06 renders the "last synced"
-   line from it.** This wave ships `syncEnabled` + `sync` on the read envelope
-   and the "Sync now" button that uses `syncEnabled`. W06 owns the presentation
-   of `sync.domains` beyond the button's gate. Say so in the PR body so W06 does
-   not re-add the fields.
+8. **This wave owns the ENTIRE card change set, and the DTO fields sit on the
+   ENVELOPE.** `syncEnabled` and `sync` are added to `CustomerGraphReadEnvelope`
+   (not to the connection DTO), so the web parser change is in `parseEnvelope`.
+   Task 16 ships the "Sync now" button, the "Last synced … · N users · M devices"
+   line, the per-domain chips, `formatRelativeTime`, and every locale key for all
+   of it. **W06 adds no card code** — say so in the PR body so it does not
+   re-add any of it.
 9. **Link reconciliation writes only `breeze_device_id`.** It never touches
    `last_changed_at` or `core_hash`: a link is Breeze-side state, not a Graph
    change, and bumping the change timestamp would make sub-project 3's change
@@ -158,13 +227,15 @@ already there and must not be re-implemented.
   `DomainPersistResult` (`m365Sync/types.ts`, W04); `m365Users`
   (`db/schema/m365Sync.ts`, W02); `M365SyncActionResult`,
   `M365SyncSourceState` (`@breeze/shared/m365`, W03); `db` (`../../db`).
-  W04's users primary projection: use `usersPrimaryProjection(item)` if
-  `domains/users.ts` exports it; **if it does not, define and export it in this
-  task** from the primary `/users` fields only (`id`,
-  `userPrincipalName`, `displayName`, `mail`, `accountEnabled`, `jobTitle`,
-  `department`, `usageLocation`, `onPremisesSyncEnabled`, `createdDateTime`,
-  `assignedLicenses`) — enrichment is never in `core_hash` (§5.4).
-- Produces (consumed by Task 6 and W06):
+  `usersPrimaryProjection(item)` — **W04 already exports it from this same
+  module** (it is in the contract). Import and call it; never redefine it and
+  never inline an equivalent field list. It projects the primary `/users` fields
+  only (`id`, `userPrincipalName`, `displayName`, `mail`, `accountEnabled`,
+  `jobTitle`, `department`, `usageLocation`, `onPremisesSyncEnabled`,
+  `createdDateTime`, `assignedLicenses`), because enrichment is never in
+  `core_hash` (§5.4).
+- Produces (consumed by `persistUsers` in this file, and read back through
+  `last_counts` by Task 7's rollup):
   - `export function usersEnrichmentInsertColumns(item, sources): Partial<M365UserInsert>`
   - `export function usersEnrichmentUpdateSet(sources): Record<string, SQL>`
   - `export function usersEnrichmentCounts(items, sources): Record<string, number>`
@@ -537,7 +608,8 @@ Spec §5.5 (last paragraph), §6 rows 3 and 5, §4.1.
   table `m365_users` (W02).
 - Produces: `persistSigninActivity(ctx, result): Promise<SigninPersistResult>`
   where `SigninPersistResult = DomainPersistResult & { continuation: string | null; unlicensed: boolean }`.
-  Consumed by Task 3 (`run.ts`) and Task 5 (cadence signals).
+  Consumed by Task 4 (persister registration), Task 5 (`run.ts`) and Task 6
+  (cadence signals).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -762,268 +834,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 3: `run.ts` — the sign-in continuation loop and `'partial-continue'`
-
-Spec §5.7 ("a run that returns a continuation re-claims itself immediately at
-priority 10, new generation"), §6 row 5, §5.2 priority lanes.
-
-**Files:**
-- Modify: `apps/api/src/services/m365Sync/run.ts`
-- Modify: `apps/api/src/services/m365Sync/run.test.ts`
-- Modify: `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`
-
-**Interfaces:**
-- Consumes: `M365SyncJobData`, `M365SyncOutcome` (`m365Sync/types.ts`, W04);
-  `claimAndEnqueue` (`m365Sync/claim.ts`, W04); `persistSigninActivity`
-  (Task 2); `m365SyncState` (W02).
-- Produces: `runSyncDomain(data): Promise<M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue'>`
-  — the added union member is **Decision 1**, a contract deviation recorded in
-  the overview by this task.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `apps/api/src/services/m365Sync/run.test.ts` (extend the existing
-mocks in that file; do not add a second `vi.mock` for the same module):
-
-```ts
-import { claimAndEnqueue } from './claim';
-import { persistSigninActivity } from './domains/signinActivity';
-
-// add to the file's existing vi.mock list:
-vi.mock('./domains/signinActivity', () => ({ persistSigninActivity: vi.fn() }));
-
-const claimAndEnqueueMock = vi.mocked(claimAndEnqueue);
-const persistSigninMock = vi.mocked(persistSigninActivity);
-
-const SIGNIN_JOB = {
-  orgId: '11111111-1111-4111-8111-111111111111',
-  domain: 'signin_activity' as const,
-  generation: 3,
-  connectionId: '33333333-3333-4333-8333-333333333333',
-  tenantId: '22222222-2222-4222-8222-222222222222',
-  consentGeneration: 1,
-  priority: 10 as const,
-};
-
-describe('sign-in continuation loop', () => {
-  it('returns partial-continue and re-claims a NEW generation at priority 10', async () => {
-    persistSigninMock.mockResolvedValue({
-      inserted: 0, updated: 5, stale: 0, unchanged: 0, counts: {},
-      complete: false, continuation: 'blob-2', unlicensed: false,
-    });
-    installExecutableSnapshot({ continuation: 'blob-1' });   // helper in this file
-    installExecutorResult({ continuation: 'blob-2', items: [], sources: { signInActivity: 'ok' } });
-
-    const outcome = await runSyncDomain(SIGNIN_JOB);
-
-    expect(outcome).toBe('partial-continue');
-    expect(claimAndEnqueueMock).toHaveBeenCalledWith(SIGNIN_JOB.orgId, ['signin_activity'], 10);
-    // last_status / last_success_at / next_sync_at are untouched while a
-    // continuation is outstanding (spec §6 "unchanged until exhausted").
-    const set = capturedStateCompletionSet();
-    expect(set).toHaveProperty('continuation', 'blob-2');
-    expect(set).toHaveProperty('leaseUntil', null);
-    expect(set).not.toHaveProperty('lastStatus');
-    expect(set).not.toHaveProperty('lastSuccessAt');
-    expect(set).not.toHaveProperty('nextSyncAt');
-  });
-
-  it('clears the continuation and completes normally on the last page', async () => {
-    persistSigninMock.mockResolvedValue({
-      inserted: 0, updated: 1, stale: 0, unchanged: 0, counts: {},
-      complete: true, continuation: null, unlicensed: false,
-    });
-    installExecutableSnapshot({ continuation: 'blob-1' });
-    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
-
-    const outcome = await runSyncDomain(SIGNIN_JOB);
-
-    expect(outcome).toBe('success');
-    expect(claimAndEnqueueMock).not.toHaveBeenCalled();
-    const set = capturedStateCompletionSet();
-    expect(set).toHaveProperty('continuation', null);
-    expect(set).toHaveProperty('lastStatus', 'success');
-    expect(set).toHaveProperty('nextSyncAt');
-  });
-
-  it('passes the stored continuation into the executor action', async () => {
-    persistSigninMock.mockResolvedValue({
-      inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {},
-      complete: true, continuation: null, unlicensed: false,
-    });
-    installExecutableSnapshot({ continuation: 'stored-blob' });
-    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
-
-    await runSyncDomain(SIGNIN_JOB);
-
-    expect(capturedExecutorAction()).toEqual({
-      type: 'm365.sync.signin_activity',
-      continuation: 'stored-blob',
-    });
-  });
-
-  it('omits continuation from the action when none is stored', async () => {
-    persistSigninMock.mockResolvedValue({
-      inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {},
-      complete: true, continuation: null, unlicensed: false,
-    });
-    installExecutableSnapshot({ continuation: null });
-    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
-
-    await runSyncDomain(SIGNIN_JOB);
-
-    expect(capturedExecutorAction()).toEqual({ type: 'm365.sync.signin_activity' });
-  });
-
-  it('does NOT re-claim when the re-claim itself would run under a stale generation', async () => {
-    // Fencing already returns before Phase C; prove no enqueue leaks from a
-    // fenced run (a late job must never resurrect the loop).
-    installFencedSnapshot();
-    const outcome = await runSyncDomain(SIGNIN_JOB);
-    expect(outcome).toBe('fenced');
-    expect(claimAndEnqueueMock).not.toHaveBeenCalled();
-  });
-});
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `cd apps/api && npx vitest run src/services/m365Sync/run.test.ts`
-Expected: FAIL — `runSyncDomain` never returns `'partial-continue'` and never
-calls `claimAndEnqueue`.
-
-- [ ] **Step 3: Implement**
-
-In `apps/api/src/services/m365Sync/run.ts`:
-
-1. Widen the return type and add the domain branch:
-
-```ts
-import { claimAndEnqueue } from './claim';
-import { persistSigninActivity } from './domains/signinActivity';
-
-export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue';
-
-export async function runSyncDomain(data: M365SyncJobData): Promise<M365SyncRunResult> { … }
-```
-
-2. Phase B — build the `signin_activity` action from the stored continuation
-   (the snapshot loaded in Phase A already carries the state row):
-
-```ts
-function buildSyncAction(domain: M365SyncDomain, state: SyncStateSnapshot): M365SyncAction {
-  switch (domain) {
-    case 'signin_activity':
-      return state.continuation
-        ? { type: 'm365.sync.signin_activity', continuation: state.continuation }
-        : { type: 'm365.sync.signin_activity' };
-    case 'secure_score':
-      // Task 4: the first run of a (re)connected tenant backfills 90 days.
-      return { type: 'm365.sync.secure_score', backfill: state.lastSuccessAt === null };
-    default:
-      return { type: `m365.sync.${domain}` } as M365SyncAction;
-  }
-}
-```
-
-3. Phase C — the completion write for a continuation run is deliberately
-   narrower than a normal completion:
-
-```ts
-if (data.domain === 'signin_activity') {
-  const persisted = await persistSigninActivity(ctx, executorResult);
-
-  if (persisted.continuation !== null) {
-    // Spec §6: the sync state is "unchanged until exhausted". Only the
-    // continuation, last_run_at and the lease move; last_status,
-    // last_success_at, last_complete_snapshot_at and next_sync_at are left
-    // exactly as the previous completed run set them, so a mid-loop crash
-    // still leaves an honest "as of" for the UI.
-    await tx.update(m365SyncState).set({
-      continuation: persisted.continuation,
-      lastRunAt: ctx.now,
-      lastItemCount: executorResult.items.length,
-      sources: executorResult.sources,
-      leaseUntil: null,
-      updatedAt: ctx.now,
-    }).where(and(
-      eq(m365SyncState.orgId, data.orgId),
-      eq(m365SyncState.domain, data.domain),
-      eq(m365SyncState.runGeneration, data.generation),
-    ));
-    recordSyncRun(data.domain, 'partial-continue');
-    // Enqueue AFTER the transaction commits — an enqueue inside the tx that
-    // then rolls back would run a job against a generation that never
-    // existed. claimAndEnqueue bumps the generation itself.
-    scheduleAfterCommit = () => claimAndEnqueue(data.orgId, ['signin_activity'], 10);
-    return 'partial-continue';
-  }
-  // exhausted: fall through to the normal completion path with
-  // `continuation: null` in the set.
-}
-```
-
-   `scheduleAfterCommit` is a `(() => Promise<void>) | null` declared outside
-   the transaction callback and awaited immediately after the transaction
-   returns, inside a `try { … } catch` that logs and swallows: a failed
-   re-enqueue is recovered by the ticker (the row's `next_sync_at` is still in
-   the past and the lease is cleared).
-
-4. `applyCadence` is **not** called on the `'partial-continue'` path — the
-   continuation loop must not stretch the interval for making progress. Guard
-   the existing call site:
-
-```ts
-if (outcome !== 'partial-continue') {
-  const cadence = applyCadence({ domain: data.domain, intervalSeconds: state.intervalSeconds }, outcome, signals);
-  …
-}
-```
-
-5. Record the deviation in the overview. In
-   `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`,
-   replace the `run.ts` block with:
-
-```ts
-// run.ts
-export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue';
-export async function runSyncDomain(data: M365SyncJobData): Promise<M365SyncRunResult>;
-// 'partial-continue' (W05): a signin_activity run that returned a continuation.
-// It is a control-flow/metrics value only and NEVER reaches
-// m365_sync_state.last_status — that column is the shipped m365_sync_status
-// enum (W02), and spec §6 keeps the state "unchanged until exhausted".
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `cd apps/api && npx vitest run src/services/m365Sync/run.test.ts`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/api/src/services/m365Sync/run.ts \
-        apps/api/src/services/m365Sync/run.test.ts \
-        docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md
-git commit -m "feat(m365): sign-in continuation loop with 'partial-continue'
-
-Spec §5.7/§6. A signin_activity run that comes back with a continuation stores
-the opaque blob, leaves last_status/last_success_at/next_sync_at untouched,
-clears its lease, and re-claims itself at priority 10 for a new generation.
-The loop ends when the executor returns no continuation, and only then does the
-run complete and advance cadence.
-
-Contract deviation, recorded in the overview: runSyncDomain's return union
-gains 'partial-continue'. M365SyncOutcome is unchanged — m365_sync_status is a
-shipped Postgres enum and the spec keeps the state unchanged until exhausted.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
-```
-
----
-
-### Task 4: `domains/secureScore.ts` — Graph-dated snapshots with first-run backfill
+### Task 3: `domains/secureScore.ts` — Graph-dated snapshots with first-run backfill
 
 Spec §3.3, §4.1 (`$top` 90 vs 3), §5.9 counts.
 
@@ -1034,8 +845,9 @@ Spec §3.3, §4.1 (`$top` 90 vs 3), §5.9 counts.
 **Interfaces:**
 - Consumes: `PersistContext`, `DomainPersistResult` (W04); `db`;
   `M365SyncActionResult` (W03); table `m365_secure_score_snapshots` (W02).
-  The `backfill` flag is set by `buildSyncAction` in Task 3 from
-  `state.lastSuccessAt === null` — this module never sees it.
+  The `backfill` flag never reaches this module: `run.ts` builds the action with
+  W04's `m365SyncActionFor(domain, { backfill: state.lastSuccessAt === null })`
+  (Task 5), and `state.lastSuccessAt` is already selected by W04's Phase A.
 - Produces: `persistSecureScore(ctx, result): Promise<DomainPersistResult>`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1296,8 +1108,9 @@ backfill therefore lands on the days it describes, not the fetch day. Two
 scores for one Graph day collapse newest-wins before the insert, because the
 unique key would otherwise make the order of a single VALUES list decide.
 
-The backfill flag itself carries no column: run.ts sets it from the state row's
-last_success_at IS NULL, so a rebind (which deletes state) re-backfills.
+The backfill flag itself carries no column: run.ts passes
+m365SyncActionFor(domain, { backfill: state.lastSuccessAt === null }), so a
+rebind (which deletes the state rows) re-backfills.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -1305,36 +1118,585 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 5: `cadence.ts` — adaptive interval and the `applyCadence` seam
+### Task 4: switch the last two domains on — `DOMAIN_PERSISTERS` and `M365_SYNC_IMPLEMENTED_DOMAINS`
+
+Spec §5.2 (the ticker only claims what it can run), §10.2. W04 deliberately
+shipped four of six: `signin_activity` and `secure_score` had no persister, so
+`DOMAIN_PERSISTERS` left them `undefined` (every run returns `'noop'`) and
+`M365_SYNC_IMPLEMENTED_DOMAINS` excluded them (`reconcileEligibleConnections`
+never seeded them, so they could not be claimed with nothing to run and burn a
+ticker slot every minute forever). Tasks 2 and 3 landed both persisters; this
+task is the single switch that turns the two domains on, and it is deliberately
+its own task so the flip is one reviewable commit rather than a line buried in a
+persister.
+
+**Files:**
+- Modify: `apps/api/src/services/m365Sync/run.ts` (the `DOMAIN_PERSISTERS` map)
+- Modify: `apps/api/src/services/m365Sync/run.test.ts`
+- Modify: `apps/api/src/services/m365Sync/types.ts` (`M365_SYNC_IMPLEMENTED_DOMAINS`)
+- Modify: `apps/api/src/services/m365Sync/claim.sql.test.ts`
+- Modify: `apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts`
+
+**Interfaces:**
+- Consumes: `persistSigninActivity` (Task 2), `persistSecureScore` (Task 3),
+  `M365_SYNC_DOMAINS` (`@breeze/shared/m365`, W03).
+- Produces: no new export. `DOMAIN_PERSISTERS` becomes total over
+  `M365SyncDomain`, and `M365_SYNC_IMPLEMENTED_DOMAINS` becomes
+  `M365_SYNC_DOMAINS`.
+
+**Two W04 assertions are inverted here, not deleted.** Both are marked in W04's
+plan as "W05 inverts this"; they exist precisely so this flip cannot happen by
+accident. Inverting them in the same commit as the constant is what keeps the
+constant and the SQL that reads it in step.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `apps/api/src/services/m365Sync/run.test.ts` (extend the file's
+existing mocks; do not add a second `vi.mock` for a module it already mocks):
+
+```ts
+import { persistSecureScore } from './domains/secureScore';
+import { persistSigninActivity } from './domains/signinActivity';
+
+// add to the file's existing vi.mock list:
+vi.mock('./domains/signinActivity', () => ({ persistSigninActivity: vi.fn() }));
+vi.mock('./domains/secureScore', () => ({ persistSecureScore: vi.fn() }));
+
+describe('every domain has a persister', () => {
+  const persisted = {
+    inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {}, complete: true,
+  };
+
+  it.each([
+    ['signin_activity', () => vi.mocked(persistSigninActivity).mockResolvedValue({
+      ...persisted, continuation: null, unlicensed: false,
+    })],
+    ['secure_score', () => vi.mocked(persistSecureScore).mockResolvedValue(persisted)],
+  ] as const)('runs %s instead of returning noop', async (domain, arm) => {
+    arm();
+    installExecutableSnapshot({});                 // helpers already in this file
+    installExecutorResult({ items: [], sources: {} });
+
+    const outcome = await runSyncDomain({ ...USERS_JOB, domain });
+
+    // 'noop' is what W04 returns when DOMAIN_PERSISTERS[domain] is undefined —
+    // the exact regression this task exists to close.
+    expect(outcome).not.toBe('noop');
+  });
+
+  it('has an entry for all six contracted domains', () => {
+    expect(Object.keys(DOMAIN_PERSISTERS).sort()).toEqual([...M365_SYNC_DOMAINS].sort());
+    for (const domain of M365_SYNC_DOMAINS) {
+      expect(DOMAIN_PERSISTERS[domain]).toBeTypeOf('function');
+    }
+  });
+});
+
+describe('M365_SYNC_IMPLEMENTED_DOMAINS', () => {
+  it('is now the full contracted domain set', () => {
+    expect([...M365_SYNC_IMPLEMENTED_DOMAINS].sort()).toEqual([...M365_SYNC_DOMAINS].sort());
+    expect(M365_SYNC_IMPLEMENTED_DOMAINS).toHaveLength(6);
+  });
+});
+```
+
+with `DOMAIN_PERSISTERS`, `M365_SYNC_IMPLEMENTED_DOMAINS` and `M365_SYNC_DOMAINS`
+added to the file's imports.
+
+Then **invert** W04's two exclusions in
+`apps/api/src/services/m365Sync/claim.sql.test.ts` — the case is currently named
+`'seeds ONLY the domains this wave can persist'` and its last two lines are the
+ones marked "W05 inverts this":
+
+```ts
+  it('seeds every contracted domain', () => {
+    const { params } = dialect.sqlToQuery(buildReconcileEligibleSql(NOW));
+    expect(params).toContain('users');
+    expect(params).toContain('intune_devices');
+    expect(params).toContain('ca_policies');
+    expect(params).toContain('skus');
+    // W05 inverted these two: both domains now have persisters, so seeding them
+    // gives the ticker work to do rather than a row it can only re-claim.
+    expect(params).toContain('signin_activity');
+    expect(params).toContain('secure_score');
+  });
+```
+
+and update the interval assertion in the sibling case so the sign-in floor is
+covered:
+
+```ts
+  it('seeds each domain with its own default interval', () => {
+    const { params } = dialect.sqlToQuery(buildReconcileEligibleSql(NOW));
+    expect(params).toContain(6 * 3600);   // users, intune_devices
+    expect(params).toContain(24 * 3600);  // ca_policies, skus, secure_score, signin_activity
+  });
+```
+
+Then update W04's real-Postgres reconcile case in
+`apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts` — the
+count and the domain list both move:
+
+```ts
+  runDb('reconcile seeds all six domains once and is idempotent', async () => {
+    const t = await seedConnection();
+
+    expect(await reconcileEligibleConnections()).toBe(6);
+    expect(await reconcileEligibleConnections()).toBe(0);
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select().from(m365SyncState).where(eq(m365SyncState.orgId, t.orgId)));
+    expect(rows.map((r) => r.domain).sort()).toEqual([
+      'ca_policies', 'intune_devices', 'secure_score', 'signin_activity', 'skus', 'users',
+    ]);
+    for (const row of rows) {
+      const ahead = row.nextSyncAt!.getTime() - Date.now();
+      expect(ahead).toBeGreaterThanOrEqual(-5_000);
+      expect(ahead).toBeLessThanOrEqual(3_600_000 + 5_000);
+    }
+    expect(rows.find((r) => r.domain === 'users')!.intervalSeconds).toBe(21600);
+    expect(rows.find((r) => r.domain === 'skus')!.intervalSeconds).toBe(86400);
+    expect(rows.find((r) => r.domain === 'signin_activity')!.intervalSeconds).toBe(86400);
+  });
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+```bash
+cd apps/api && npx vitest run \
+  src/services/m365Sync/run.test.ts \
+  src/services/m365Sync/claim.sql.test.ts
+```
+
+Expected: FAIL — `runSyncDomain` returns `'noop'` for both new domains,
+`DOMAIN_PERSISTERS` has four keys, `M365_SYNC_IMPLEMENTED_DOMAINS` has four
+entries, and the reconcile SQL still omits the two domain literals.
+
+- [ ] **Step 3: Register the persisters**
+
+In `apps/api/src/services/m365Sync/run.ts`, import both and add them to the map
+W04 left partial:
+
+```ts
+import { persistSecureScore } from './domains/secureScore';
+import { persistSigninActivity } from './domains/signinActivity';
+
+// Total over M365SyncDomain as of W05. An `undefined` entry means the worker
+// answers 'noop' and the state row is completed as domain_not_implemented, so
+// a missing key here is a silently dead domain, not a type error.
+export const DOMAIN_PERSISTERS: Record<M365SyncDomain, M365DomainPersister | undefined> = {
+  users: persistUsers,
+  signin_activity: persistSigninActivity,
+  intune_devices: persistIntuneDevices,
+  ca_policies: persistCaPolicies,
+  skus: persistSkus,
+  secure_score: persistSecureScore,
+};
+```
+
+`persistSigninActivity` returns `SigninPersistResult`, a structural superset of
+`DomainPersistResult`, so it satisfies `M365DomainPersister` without a cast;
+Task 5 narrows it back to the richer type at its own call site, which is where
+the continuation is actually read.
+
+- [ ] **Step 4: Widen the implemented set**
+
+In `apps/api/src/services/m365Sync/types.ts`, replace W04's four-entry literal:
+
+```ts
+/**
+ * Domains the worker can actually persist. `reconcileEligibleConnections` seeds
+ * exactly these. W04 shipped four because `signin_activity` and `secure_score`
+ * had no persister and would have been re-claimed every tick with nothing to
+ * run; W05 landed both persisters (see DOMAIN_PERSISTERS in run.ts), so the set
+ * is now the whole contracted domain list.
+ */
+export const M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[] = M365_SYNC_DOMAINS;
+```
+
+with `M365_SYNC_DOMAINS` imported from `@breeze/shared/m365`. Assigning the
+shared constant rather than retyping the six literals is deliberate: a seventh
+domain added to the contract then cannot be silently left unseeded.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+```bash
+cd apps/api && npx vitest run \
+  src/services/m365Sync/run.test.ts \
+  src/services/m365Sync/claim.sql.test.ts \
+  src/services/m365Sync/claim.test.ts
+```
+Expected: PASS.
+
+The integration case is verified with the rest of the real-database work in
+Task 17 (it needs `DATABASE_URL`); run it now if your test database is already
+up:
+
+```bash
+cd apps/api && npx vitest run --config vitest.integration.config.ts \
+  src/__tests__/integration/m365SyncClaim.integration.test.ts
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/api/src/services/m365Sync/run.ts \
+        apps/api/src/services/m365Sync/run.test.ts \
+        apps/api/src/services/m365Sync/types.ts \
+        apps/api/src/services/m365Sync/claim.sql.test.ts \
+        apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts
+git commit -m "feat(m365): enable signin_activity and secure_score sync domains
+
+W04 shipped four of the six contracted domains: the other two had no persister,
+so DOMAIN_PERSISTERS left them undefined (every run answered 'noop') and
+M365_SYNC_IMPLEMENTED_DOMAINS excluded them so the ticker would not seed rows it
+could only re-claim forever. Both persisters landed in this wave, so this
+registers them and widens the constant to M365_SYNC_DOMAINS — assigning the
+shared list rather than retyping six literals, so a future seventh domain cannot
+be silently left unseeded.
+
+The two W04 assertions marked 'W05 inverts this' are inverted here rather than
+deleted, and the real-Postgres reconcile case moves from four rows to six.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
+```
+
+---
+
+### Task 5: `run.ts` — the sign-in continuation loop
+
+Spec §5.7 ("a run that returns a continuation re-claims itself immediately at
+priority 10, new generation"), §6 row 5, §5.2 priority lanes.
+
+**Files:**
+- Modify: `apps/api/src/services/m365Sync/run.ts`
+- Modify: `apps/api/src/services/m365Sync/run.test.ts`
+
+**Interfaces:**
+- Consumes: `M365SyncJobData`, `M365SyncOutcome`, **`M365SyncRunResult`** and
+  `m365SyncActionFor` (`m365Sync/types.ts`, W04); `claimAndEnqueue`
+  (`m365Sync/claim.ts`, W04); `writeCompletion` and `SyncRunContext`
+  (`m365Sync/run.ts`, W04); `persistSigninActivity` (Task 2); `m365SyncState`
+  (W02).
+- Produces: **no new export and no signature change.** `runSyncDomain` already
+  returns `Promise<M365SyncRunResult>`, and `M365SyncRunResult` already includes
+  `'partial-continue'` (contract; Decision 1). **Do not redeclare the type in
+  this file** — import it from `./types`. This task only makes `runSyncDomain`
+  actually *return* the value on the sign-in path.
+
+**Two W04 helpers do the work; this task writes no new plumbing.**
+
+- The action is built by `m365SyncActionFor(data.domain, { continuation: loaded.state.continuation, backfill: loaded.state.lastSuccessAt === null })`.
+  There is **no local `buildSyncAction`** — W04 owns the domain→action map, and a
+  second builder would drift from `M365_SYNC_DOMAIN_ACTION_ID`.
+  `loaded.state.lastSuccessAt` is already selected by W04's Phase A, so nothing
+  extra is queried for the Secure Score backfill flag.
+- The narrow completion write is `writeCompletion(ctx, { mode: 'continuation', continuation })`,
+  W04's documented continuation mode. **Do not open a transaction or hand-write
+  a `tx.update(m365SyncState)` here** — the completion write is W04's single
+  place for lease release, audit event and structured log, and a second writer
+  would bypass all three.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `apps/api/src/services/m365Sync/run.test.ts` (extend the existing
+mocks in that file; Task 4 already added the `./domains/signinActivity` mock —
+do not add a second `vi.mock` for the same module):
+
+```ts
+import { claimAndEnqueue } from './claim';
+import { persistSigninActivity } from './domains/signinActivity';
+
+const claimAndEnqueueMock = vi.mocked(claimAndEnqueue);
+const persistSigninMock = vi.mocked(persistSigninActivity);
+
+const SIGNIN_JOB = {
+  orgId: '11111111-1111-4111-8111-111111111111',
+  domain: 'signin_activity' as const,
+  generation: 3,
+  connectionId: '33333333-3333-4333-8333-333333333333',
+  tenantId: '22222222-2222-4222-8222-222222222222',
+  consentGeneration: 1,
+  priority: 10 as const,
+};
+
+describe('sign-in continuation loop', () => {
+  it('returns partial-continue and re-claims a NEW generation at priority 10', async () => {
+    persistSigninMock.mockResolvedValue({
+      inserted: 0, updated: 5, stale: 0, unchanged: 0, counts: {},
+      complete: false, continuation: 'blob-2', unlicensed: false,
+    });
+    installExecutableSnapshot({ continuation: 'blob-1' });   // helper in this file
+    installExecutorResult({ continuation: 'blob-2', items: [], sources: { signInActivity: 'ok' } });
+
+    const outcome = await runSyncDomain(SIGNIN_JOB);
+
+    expect(outcome).toBe('partial-continue');
+    expect(claimAndEnqueueMock).toHaveBeenCalledWith(SIGNIN_JOB.orgId, ['signin_activity'], 10);
+    // last_status / last_success_at / next_sync_at are untouched while a
+    // continuation is outstanding (spec §6 "unchanged until exhausted"), which
+    // is exactly what writeCompletion's continuation mode guarantees: it stores
+    // the blob, clears the lease, and writes no audit event.
+    const set = capturedStateCompletionSet();
+    expect(set).toHaveProperty('continuation', 'blob-2');
+    expect(set).toHaveProperty('leaseUntil', null);
+    expect(set).not.toHaveProperty('lastStatus');
+    expect(set).not.toHaveProperty('lastSuccessAt');
+    expect(set).not.toHaveProperty('nextSyncAt');
+    expect(recordRunEventMock).not.toHaveBeenCalled();
+  });
+
+  it('does not advance cadence or run the post-commit hook on a continuation page', async () => {
+    persistSigninMock.mockResolvedValue({
+      inserted: 0, updated: 5, stale: 0, unchanged: 0, counts: {},
+      complete: false, continuation: 'blob-2', unlicensed: false,
+    });
+    installExecutableSnapshot({ continuation: 'blob-1' });
+    installExecutorResult({ continuation: 'blob-2', items: [], sources: { signInActivity: 'ok' } });
+
+    await runSyncDomain(SIGNIN_JOB);
+
+    // Making progress must not stretch the interval, and there is no complete
+    // snapshot to roll up yet.
+    expect(applyCadenceMock).not.toHaveBeenCalled();
+    expect(afterDomainPersistedMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the continuation and completes normally on the last page', async () => {
+    persistSigninMock.mockResolvedValue({
+      inserted: 0, updated: 1, stale: 0, unchanged: 0, counts: {},
+      complete: true, continuation: null, unlicensed: false,
+    });
+    installExecutableSnapshot({ continuation: 'blob-1' });
+    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
+
+    const outcome = await runSyncDomain(SIGNIN_JOB);
+
+    expect(outcome).toBe('success');
+    expect(claimAndEnqueueMock).not.toHaveBeenCalled();
+    const set = capturedStateCompletionSet();
+    expect(set).toHaveProperty('continuation', null);
+    expect(set).toHaveProperty('lastStatus', 'success');
+    expect(set).toHaveProperty('nextSyncAt');
+    expect(applyCadenceMock).toHaveBeenCalledOnce();
+    expect(afterDomainPersistedMock).toHaveBeenCalledOnce();
+  });
+
+  it('passes the stored continuation into the executor action', async () => {
+    persistSigninMock.mockResolvedValue({
+      inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {},
+      complete: true, continuation: null, unlicensed: false,
+    });
+    installExecutableSnapshot({ continuation: 'stored-blob' });
+    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
+
+    await runSyncDomain(SIGNIN_JOB);
+
+    expect(capturedExecutorAction()).toEqual({
+      type: 'm365.sync.signin_activity',
+      continuation: 'stored-blob',
+    });
+  });
+
+  it('restarts from page 1 once W04 has cleared an invalid continuation', async () => {
+    // The executor answering { code: 'continuation_invalid' } is handled ENTIRELY
+    // by W04: run.ts clears m365_sync_state.continuation and re-claims the
+    // domain. This wave adds no branch for that code. All it must guarantee is
+    // that the re-claimed run — whose state row now carries continuation NULL —
+    // asks for page 1 instead of resending a blob the executor rejected.
+    persistSigninMock.mockResolvedValue({
+      inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {},
+      complete: true, continuation: null, unlicensed: false,
+    });
+    installExecutableSnapshot({ continuation: null });
+    installExecutorResult({ items: [], sources: { signInActivity: 'ok' } });
+
+    await runSyncDomain(SIGNIN_JOB);
+
+    expect(capturedExecutorAction()).toEqual({ type: 'm365.sync.signin_activity' });
+  });
+
+  it('builds the secure_score action with backfill on a never-succeeded state row', async () => {
+    installExecutableSnapshot({ lastSuccessAt: null });
+    installExecutorResult({ items: [], sources: { secureScores: 'ok' } });
+
+    await runSyncDomain({ ...SIGNIN_JOB, domain: 'secure_score' });
+
+    expect(capturedExecutorAction()).toEqual({ type: 'm365.sync.secure_score', backfill: true });
+  });
+
+  it('does NOT re-claim from a fenced run', async () => {
+    // Fencing already returns before Phase C; prove no enqueue leaks from a
+    // fenced run (a late job must never resurrect the loop).
+    installFencedSnapshot();
+    const outcome = await runSyncDomain(SIGNIN_JOB);
+    expect(outcome).toBe('fenced');
+    expect(claimAndEnqueueMock).not.toHaveBeenCalled();
+  });
+});
+```
+
+`writeCompletion` is module-private in W04's `run.ts`, so do **not** try to spy
+on it. `capturedStateCompletionSet()` is a small helper next to the file's
+existing `installExecutorResult` that reads the `m365_sync_state` update payload
+out of the `../../db` mock `run.test.ts` already installs — the completion write
+is observable there. `applyCadenceMock`, `afterDomainPersistedMock` and
+`recordRunEventMock` are the mocks W04's own seam test already installs for
+`./cadence`, `./hooks` and `./audit`. Reuse all of them rather than adding new
+ones.
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd apps/api && npx vitest run src/services/m365Sync/run.test.ts`
+Expected: FAIL — `runSyncDomain` never returns `'partial-continue'`, never calls
+`claimAndEnqueue`, and never uses `writeCompletion`'s continuation mode.
+
+- [ ] **Step 3: Implement**
+
+In `apps/api/src/services/m365Sync/run.ts`:
+
+1. Import the loop's two collaborators. **Nothing about the signature changes** —
+   `runSyncDomain` already returns `Promise<M365SyncRunResult>` and that type
+   already contains `'partial-continue'`:
+
+```ts
+import { claimAndEnqueue } from './claim';
+import { persistSigninActivity } from './domains/signinActivity';
+// M365SyncRunResult stays imported from './types' — do not redeclare it here.
+```
+
+2. Phase B — build the action with W04's builder. There is no local
+   `buildSyncAction`; both options come straight off the snapshot Phase A
+   already loaded:
+
+```ts
+    const action = m365SyncActionFor(data.domain, {
+      continuation: loaded.state.continuation,
+      backfill: loaded.state.lastSuccessAt === null,
+    });
+```
+
+   `m365SyncActionFor` ignores `continuation` for every domain but
+   `signin_activity` and `backfill` for every domain but `secure_score`, so one
+   call site covers all six.
+
+3. Phase C — a continuation page takes W04's narrow completion mode instead of
+   the normal one:
+
+```ts
+if (data.domain === 'signin_activity') {
+  const persisted = await persistSigninActivity(ctx, executorResult);
+
+  if (persisted.continuation !== null) {
+    // Spec §6: the sync state is "unchanged until exhausted". writeCompletion's
+    // continuation mode moves only the continuation, last_run_at and the lease;
+    // last_status, last_success_at, last_complete_snapshot_at and next_sync_at
+    // are left exactly as the previous completed run set them, so a mid-loop
+    // crash still leaves an honest "as of" for the UI. It is still ONE short
+    // system transaction, with the same lease release, audit event and log line
+    // as any other completion — which is why this path must not hand-write its
+    // own UPDATE.
+    await writeCompletion(ctx, { mode: 'continuation', continuation: persisted.continuation });
+    recordM365SyncRun(data.domain, 'partial-continue');
+    // Enqueue AFTER the completion write commits — an enqueue that raced a
+    // rollback would run a job against a generation that never existed.
+    // claimAndEnqueue bumps the generation itself.
+    scheduleAfterCommit = () => claimAndEnqueue(data.orgId, ['signin_activity'], 10);
+    return 'partial-continue';
+  }
+  // Exhausted: fall through to the normal completion path, which writes
+  // continuation: null along with the rest of the completion.
+}
+```
+
+   `scheduleAfterCommit` is a `(() => Promise<void>) | null` declared outside the
+   completion call and awaited immediately after it returns, inside a
+   `try { … } catch` that logs and swallows: a failed re-enqueue is recovered by
+   the ticker (the row's `next_sync_at` is still in the past and the lease is
+   cleared).
+
+4. `applyCadence` and `afterDomainPersisted` are **not** reached on the
+   `'partial-continue'` path — the loop must not stretch the interval for making
+   progress, and there is no complete snapshot to roll up. The early `return`
+   above is what guarantees it; the second test in Step 1 pins it so a later
+   refactor that moves the cadence call earlier fails loudly.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cd apps/api && npx vitest run src/services/m365Sync/run.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/api/src/services/m365Sync/run.ts \
+        apps/api/src/services/m365Sync/run.test.ts
+git commit -m "feat(m365): sign-in continuation loop
+
+Spec §5.7/§6. A signin_activity run that comes back with a continuation stores
+the opaque blob through writeCompletion's continuation mode — which leaves
+last_status/last_success_at/next_sync_at untouched, clears the lease and keeps
+the single audit event and log line — then re-claims itself at priority 10 for a
+new generation. The loop ends when the executor returns no continuation, and
+only then does the run complete, advance cadence and run the post-commit hook.
+
+The action is built by W04's m365SyncActionFor from the Phase A snapshot, so
+there is no second domain-to-action map, and secure_score's backfill flag comes
+from the same call via state.lastSuccessAt === null.
+
+A continuation the executor rejects is W04's path: it clears the stored blob and
+re-claims, and the re-claimed run simply asks for page 1.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
+```
+
+---
+
+### Task 6: `cadence.ts` — adaptive interval behind the `applyCadence` seam
 
 Spec §5.7, §6 (rows: truncated ×2, throttled/capacity ×1.5, unlicensed → max,
 needs_consent / auth failure → `next_sync_at NULL`).
 
 **Files:**
-- Modify: `apps/api/src/services/m365Sync/cadence.ts`
-- Create: `apps/api/src/services/m365Sync/cadence.test.ts`
+- Modify: `apps/api/src/services/m365Sync/cadence.ts` (W04 stub — **modify, never create**)
+- Modify: `apps/api/src/services/m365Sync/cadence.test.ts` (W04 created it for the stub)
 - Modify: `apps/api/src/services/m365Sync/run.ts` (signal assembly)
-- Modify: `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`
 
 **Interfaces:**
 - Consumes: `M365_SYNC_DOMAIN_INTERVAL_BOUNDS`,
   `M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS`, `M365SyncDomain`
-  (`@breeze/shared/m365`, W03); `M365SyncOutcome` (W04).
-- Produces: `nextInterval(domain, current, outcome, signals): number`;
-  `applyCadence(state, outcome, signals): { intervalSeconds; nextSyncAt: Date | null }`;
-  `export interface CadenceSignals { truncated: boolean; latencyMs: number; capacity: boolean; unlicensed: boolean; authFailure: boolean; now: Date }`
-  (**Decision 2**, contract deviation recorded here).
+  (`@breeze/shared/m365`, W03); `M365SyncOutcome` (W04); **`CadenceSignals`,
+  already declared in this file by W04** — import the type at the `run.ts` call
+  site, do not redeclare it anywhere (Decision 2).
+- Produces: `nextInterval(domain, current, outcome, signals): number` (new);
+  a real body for the contracted
+  `applyCadence(domain, state, outcome, signals, rng?): { intervalSeconds; nextSyncAt: Date | null }`.
+  Neither the signature nor `CadenceSignals` changes — this task is a body
+  replacement, so there is nothing to record in the overview. **W04's exported
+  `nextSyncAt(now, intervalSeconds, rng?)` (±10 % jitter) and the optional `rng`
+  parameter stay exactly as they are**: `applyCadence` computes its due time by
+  calling that helper, so there is one jitter implementation and the tests
+  inject `rng` instead of stubbing `Math.random`.
+
+**W04's `describe('applyCadence (W04 stub — W05 replaces the body)')` block is
+replaced by this task's cases** — its "returns the STORED interval unchanged on
+every outcome" assertion becomes false the moment the body is real. Keep W04's
+`describe('nextSyncAt')` block untouched.
 
 - [ ] **Step 1: Write the failing test**
 
-`apps/api/src/services/m365Sync/cadence.test.ts`:
+In `apps/api/src/services/m365Sync/cadence.test.ts`, widen the import to pick up
+`nextInterval` and reuse W04's existing `NOW` / `signals()` helpers rather than
+declaring second copies — the snippet below shows them for reference only:
 
 ```ts
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyCadence, nextInterval, type CadenceSignals } from './cadence';
+import { describe, expect, it } from 'vitest';
+import { applyCadence, nextInterval, nextSyncAt, type CadenceSignals } from './cadence';
 
+// Already in the file (W04) — do not duplicate:
 const NOW = new Date('2026-09-08T12:00:00.000Z');
-
 function signals(overrides: Partial<CadenceSignals> = {}): CadenceSignals {
   return {
     truncated: false, latencyMs: 1_000, capacity: false,
@@ -1342,8 +1704,6 @@ function signals(overrides: Partial<CadenceSignals> = {}): CadenceSignals {
     ...overrides,
   };
 }
-
-afterEach(() => { vi.restoreAllMocks(); });
 
 describe('nextInterval', () => {
   const cases: Array<[string, Parameters<typeof nextInterval>, number]> = [
@@ -1387,34 +1747,39 @@ describe('nextInterval', () => {
 });
 
 describe('applyCadence', () => {
-  it('schedules now + interval + jitter for a completed run', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0);
-    const out = applyCadence({ domain: 'users', intervalSeconds: 21_600 }, 'success', signals());
+  it('schedules the new interval through the shared jitter helper', () => {
+    const out = applyCadence('users', { intervalSeconds: 21_600 }, 'success', signals(), () => 0.5);
     expect(out.intervalSeconds).toBe(21_600);
+    // rng 0.5 is the midpoint of nextSyncAt's ±10% band, i.e. no offset.
     expect(out.nextSyncAt).toEqual(new Date(NOW.getTime() + 21_600_000));
   });
 
-  it('adds at most 10% jitter, never negative', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.999_999);
-    const out = applyCadence({ domain: 'users', intervalSeconds: 21_600 }, 'success', signals());
-    const delta = out.nextSyncAt!.getTime() - NOW.getTime();
-    expect(delta).toBeGreaterThanOrEqual(21_600_000);
-    expect(delta).toBeLessThanOrEqual(21_600_000 * 1.1);
+  it('spreads a cohort across the full ±10% band', () => {
+    const early = applyCadence('users', { intervalSeconds: 21_600 }, 'success', signals(), () => 0);
+    const late = applyCadence('users', { intervalSeconds: 21_600 }, 'success', signals(), () => 1);
+    expect(early.nextSyncAt!.getTime() - NOW.getTime()).toBe(21_600_000 * 0.9);
+    expect(late.nextSyncAt!.getTime() - NOW.getTime()).toBe(21_600_000 * 1.1);
+  });
+
+  it('decays the interval BEFORE scheduling, so the new value is what is stored and used', () => {
+    const out = applyCadence('users', { intervalSeconds: 43_200 }, 'success', signals(), () => 0.5);
+    expect(out.intervalSeconds).toBe(37_800);
+    expect(out.nextSyncAt).toEqual(new Date(NOW.getTime() + 37_800_000));
   });
 
   it('unschedules on needs_consent', () => {
-    const out = applyCadence({ domain: 'ca_policies', intervalSeconds: 86_400 }, 'needs_consent', signals());
+    const out = applyCadence('ca_policies', { intervalSeconds: 86_400 }, 'needs_consent', signals(), () => 0.5);
     expect(out.nextSyncAt).toBeNull();
     expect(out.intervalSeconds).toBe(86_400);
   });
 
   it('unschedules on a connection auth failure', () => {
-    const out = applyCadence({ domain: 'users', intervalSeconds: 21_600 }, 'error', signals({ authFailure: true }));
+    const out = applyCadence('users', { intervalSeconds: 21_600 }, 'error', signals({ authFailure: true }), () => 0.5);
     expect(out.nextSyncAt).toBeNull();
   });
 
   it('still schedules a non-auth terminal error so the ticker retries on cadence', () => {
-    const out = applyCadence({ domain: 'users', intervalSeconds: 21_600 }, 'error', signals());
+    const out = applyCadence('users', { intervalSeconds: 21_600 }, 'error', signals(), () => 0.5);
     expect(out.nextSyncAt).not.toBeNull();
   });
 });
@@ -1423,12 +1788,18 @@ describe('applyCadence', () => {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cd apps/api && npx vitest run src/services/m365Sync/cadence.test.ts`
-Expected: FAIL — the W04 stub returns the default interval unconditionally and
-has no `unlicensed`/`authFailure`/`now` signals.
+Expected: FAIL — `nextInterval` does not exist, and W04's `applyCadence` stub
+returns `state.intervalSeconds` unchanged and schedules `now + interval + jitter`
+for every outcome, so it ignores `truncated`, `capacity`, `unlicensed`,
+`authFailure` and `needs_consent`.
 
 - [ ] **Step 3: Implement**
 
-Replace the body of `apps/api/src/services/m365Sync/cadence.ts`:
+Replace the two function bodies in
+`apps/api/src/services/m365Sync/cadence.ts`. **`CadenceSignals` is already
+declared in this file by W04 with exactly these six fields — leave the interface
+and its doc comments alone**; only `nextInterval` (new) and `applyCadence`'s body
+change:
 
 ```ts
 import {
@@ -1437,23 +1808,11 @@ import {
   type M365SyncDomain,
 } from '@breeze/shared/m365';
 import type { M365SyncOutcome } from './types';
-
-export interface CadenceSignals {
-  /** The executor hit its item/page cap: the tenant is bigger than one run. */
-  truncated: boolean;
-  /** Wall time of the executor call. >60s means we are stressing the tenant. */
-  latencyMs: number;
-  /** Executor answered 503 sync_capacity for this run. */
-  capacity: boolean;
-  /** Sub-source reported `unlicensed` (sign-in activity without Entra P1). */
-  unlicensed: boolean;
-  /** Connection credential/tenant is no longer usable — stop scheduling. */
-  authFailure: boolean;
-  now: Date;
-}
+// CadenceSignals and nextSyncAt(now, intervalSeconds, rng?) are declared above
+// this line by W04. Do not redeclare either, and do not inline a second jitter
+// calculation.
 
 const SLOW_EXECUTOR_MS = 60_000;
-const JITTER_FRACTION = 0.1;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -1497,26 +1856,26 @@ export function nextInterval(
  * successful (upgrade-)consent or retest re-seeds it (spec §5.7, §5.8).
  */
 export function applyCadence(
-  state: { domain: M365SyncDomain; intervalSeconds: number },
+  domain: M365SyncDomain,
+  state: { intervalSeconds: number },
   outcome: M365SyncOutcome,
   signals: CadenceSignals,
+  rng: () => number = Math.random,
 ): { intervalSeconds: number; nextSyncAt: Date | null } {
-  const intervalSeconds = nextInterval(state.domain, state.intervalSeconds, outcome, signals);
+  const intervalSeconds = nextInterval(domain, state.intervalSeconds, outcome, signals);
   if (outcome === 'needs_consent' || signals.authFailure) {
     return { intervalSeconds, nextSyncAt: null };
   }
-  // Jitter is additive and one-sided so a fleet that all completed in the same
-  // tick spreads forward, never backward into the tick that just ran.
-  const jitterSeconds = Math.floor(intervalSeconds * JITTER_FRACTION * Math.random());
-  return {
-    intervalSeconds,
-    nextSyncAt: new Date(signals.now.getTime() + (intervalSeconds + jitterSeconds) * 1_000),
-  };
+  // The NEW interval is what gets scheduled, not the old one, and the ±10%
+  // jitter comes from W04's shared helper so there is exactly one place that
+  // decides how a cohort spreads.
+  return { intervalSeconds, nextSyncAt: nextSyncAt(signals.now, intervalSeconds, rng) };
 }
 ```
 
-In `run.ts`, assemble the signals at the call site (Task 3 already guards the
-`'partial-continue'` path):
+In `run.ts`, assemble the signals at the call site (Task 5's early `return`
+already keeps the `'partial-continue'` path away from here), importing the type
+rather than restating it — `import { applyCadence, type CadenceSignals } from './cadence';`:
 
 ```ts
 const signals: CadenceSignals = {
@@ -1541,12 +1900,16 @@ const AUTH_FAILURE_CODES = new Set([
   'credential_unavailable',
   'application_token_invalid',
   'tenant_mismatch',
-  'graph_permission_missing',
 ]);
 ```
 
-Update the overview's `cadence.ts` block to the six-field `CadenceSignals` and
-note "W05: `unlicensed`, `authFailure`, `now` added — see W05 Decision 2".
+**`graph_permission_missing` is deliberately NOT in that set.** Per the contract
+it maps to the `needs_consent` outcome, and W04's run.ts already does that
+mapping: a tenant that has not granted a scope is a consent problem the
+administrator fixes from the card, not a dead credential. `applyCadence` then
+unschedules it through the `outcome === 'needs_consent'` branch, so adding the
+code here would only make an already-unscheduled domain unschedule twice — while
+mislabelling a consent gap as an auth failure everywhere the flag is read.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1558,8 +1921,7 @@ Expected: PASS (both files)
 ```bash
 git add apps/api/src/services/m365Sync/cadence.ts \
         apps/api/src/services/m365Sync/cadence.test.ts \
-        apps/api/src/services/m365Sync/run.ts \
-        docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md
+        apps/api/src/services/m365Sync/run.ts
 git commit -m "feat(m365): adaptive sync cadence (spec §5.7)
 
 Truncated or slow (>60s) runs double the interval; throttled or executor
@@ -1571,11 +1933,11 @@ never be pulled below its 24h floor.
 needs_consent and a connection auth failure return next_sync_at NULL, taking
 the row out of the ticker until a consent or retest re-seeds it. A non-auth
 terminal error still schedules — otherwise one bad run would silently retire a
-domain.
+domain. graph_permission_missing is not an auth failure: it maps to
+needs_consent, which unschedules through its own branch.
 
-Contract deviation, recorded in the overview: CadenceSignals gains unlicensed,
-authFailure and now. None is derivable from the outcome (unlicensed IS a
-success; an auth failure is an error like any other).
+This fills W04's stub body; the applyCadence signature and the six-field
+CadenceSignals are unchanged from the shared contract.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -1583,7 +1945,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 6: `rollup.ts` — daily posture rollup and the `afterDomainPersisted` seam
+### Task 7: `rollup.ts` — daily posture rollup behind the `afterDomainPersisted` seam
 
 Spec §3.3 (`m365_posture_rollups`), §5.9 (assembled from the six
 `last_counts` + `last_complete_snapshot_at`, one read + one upsert).
@@ -1591,14 +1953,30 @@ Spec §3.3 (`m365_posture_rollups`), §5.9 (assembled from the six
 **Files:**
 - Create: `apps/api/src/services/m365Sync/rollup.ts`
 - Create: `apps/api/src/services/m365Sync/rollup.test.ts`
-- Modify: `apps/api/src/services/m365Sync/run.ts` (seam body + call order)
+- Modify: `apps/api/src/services/m365Sync/hooks.ts` (W04 no-op seam — **modify, never create**)
+- Create: `apps/api/src/services/m365Sync/hooks.test.ts` (W04 shipped `hooks.ts` with no suite of its own)
+- Modify: `apps/api/src/services/m365Sync/run.test.ts` (the post-commit ordering proof)
 
 **Interfaces:**
 - Consumes: `M365_SYNC_DOMAINS`, `M365SyncDomain` (W03); `m365SyncState`,
-  `m365PostureRollups` (W02); `db`; `AfterDomainPersistedContext` (W04).
+  `m365PostureRollups` (W02); `db`, `withSystemDbAccessContext` (`../../db`);
+  the `afterDomainPersisted` context type — `PersistContext & { domain; outcome; persisted }`
+  (`m365Sync/hooks.ts`, W04); `reconcileDeviceLinks` (Task 8);
+  `recordM365SyncLinkAmbiguous` (`m365Sync/metrics.ts`, W04).
 - Produces: `upsertPostureRollup(orgId, tenantId, date): Promise<void>`;
   `export const ROLLUP_COUNTER_SOURCES` (the domain → column map, exported so
   W06's integration suite can assert it covers every rollup column).
+
+**Where the seam runs.** `afterDomainPersisted` is called by W04's `run.ts`
+**after `writeCompletion` has committed**, and it opens its **own**
+`withSystemDbAccessContext`. That is what makes the rollup correct: the
+`m365_sync_state` row it reads — including the `last_counts` the run just wrote —
+is already durable, so no read-your-own-uncommitted-write assumption is needed.
+It also means a throw here **cannot** roll the completion back: the run stays
+completed, the hook's failure is logged and metered, and the next run for that
+org rebuilds the rollup. Do not reintroduce a "throw rolls the completion back"
+rationale — a committed run whose hook failed is recoverable; a run that keeps
+un-completing because a rollup query is slow is not.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1728,15 +2106,68 @@ describe('upsertPostureRollup', () => {
 });
 ```
 
-Add to `run.test.ts` the ordering regression this seam depends on:
+Add to `run.test.ts` the two properties the seam depends on — that it is invoked
+only after the completion write has **resolved**, and that a throw inside it
+leaves the persisted state exactly as the completion wrote it:
 
 ```ts
-it('runs afterDomainPersisted AFTER the sync-state completion write', async () => {
+it('invokes afterDomainPersisted only after the completion write resolves', async () => {
   const order: string[] = [];
-  capturedStateCompletionHook(() => order.push('state'));
-  vi.mocked(upsertPostureRollup).mockImplementation(async () => { order.push('rollup'); });
-  await runSyncDomain(USERS_JOB);
-  expect(order).toEqual(['state', 'rollup']);
+  let releaseCompletion!: () => void;
+  writeCompletionMock.mockImplementation(async () => {
+    // Resolve on a later turn so an implementation that fires the hook
+    // concurrently with (rather than after) the completion is caught.
+    await new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    order.push('completion');
+  });
+  afterDomainPersistedMock.mockImplementation(async () => { order.push('hook'); });
+
+  const run = runSyncDomain(USERS_JOB);
+  await Promise.resolve();
+  expect(order).toEqual([]);            // nothing has run while the write is in flight
+  releaseCompletion();
+  await run;
+
+  expect(order).toEqual(['completion', 'hook']);
+});
+
+it('a throw inside afterDomainPersisted does not change the persisted state', async () => {
+  afterDomainPersistedMock.mockRejectedValue(new Error('rollup boom'));
+
+  const outcome = await runSyncDomain(USERS_JOB);
+
+  // The completion already committed: the run keeps its outcome, the state
+  // write is not retried or reverted, and the job does not fail.
+  expect(outcome).toBe('success');
+  expect(writeCompletionMock).toHaveBeenCalledOnce();
+  expect(writeCompletionMock.mock.calls[0]![1]).toMatchObject({ outcome: 'success' });
+});
+```
+
+and, in `hooks.test.ts`, the hook's own contract:
+
+```ts
+it('opens its own system context rather than inheriting one', async () => {
+  await afterDomainPersisted(hookCtx({ domain: 'users' }));
+  expect(withSystemDbAccessContextMock).toHaveBeenCalledOnce();
+});
+
+it('reconciles device links only for intune_devices, and reports ambiguity unlabelled', async () => {
+  reconcileDeviceLinksMock.mockResolvedValue({ linkedBySerial: 2, linkedByHostname: 1, ambiguous: 3 });
+
+  await afterDomainPersisted(hookCtx({ domain: 'users' }));
+  expect(reconcileDeviceLinksMock).not.toHaveBeenCalled();
+
+  await afterDomainPersisted(hookCtx({ domain: 'intune_devices' }));
+  expect(reconcileDeviceLinksMock).toHaveBeenCalledWith(ORG);
+  // One numeric argument — the metric carries no orgId label (cardinality).
+  expect(recordM365SyncLinkAmbiguousMock).toHaveBeenCalledWith(3);
+});
+
+it('does not record the ambiguity metric when there is none', async () => {
+  reconcileDeviceLinksMock.mockResolvedValue({ linkedBySerial: 1, linkedByHostname: 0, ambiguous: 0 });
+  await afterDomainPersisted(hookCtx({ domain: 'intune_devices' }));
+  expect(recordM365SyncLinkAmbiguousMock).not.toHaveBeenCalled();
 });
 ```
 
@@ -1809,9 +2240,9 @@ function counterOf(counts: unknown, key: string): number | null {
  * different facts, and reporting the second when the first is true is exactly
  * the false-negative the spec's `*_unknown` columns exist to prevent.
  *
- * Called from `afterDomainPersisted` inside the completion transaction, AFTER
- * the sync-state completion write, so the domain that just ran contributes its
- * fresh `last_counts`.
+ * Called from `afterDomainPersisted` after the completion transaction has
+ * committed, so the domain that just ran contributes its fresh, durable
+ * `last_counts`.
  */
 export async function upsertPostureRollup(
   orgId: string,
@@ -1868,20 +2299,40 @@ export async function upsertPostureRollup(
 }
 ```
 
-In `run.ts`, give the seam a body:
+In `apps/api/src/services/m365Sync/hooks.ts`, replace W04's no-op body — keep
+the exported name and the contracted parameter type exactly as they are:
 
 ```ts
-export async function afterDomainPersisted(ctx: AfterDomainPersistedContext): Promise<void> {
-  // Runs inside the completion transaction, after the sync-state completion
-  // write. Both hooks are best-effort in the sense that they cannot be
-  // partially applied — a throw rolls the whole completion back and the ticker
-  // reclaims the row on lease expiry, which is the correct failure mode: a
-  // committed completion with a stale rollup would lie to the org tab.
-  if (ctx.domain === 'intune_devices') {
-    const links = await reconcileDeviceLinks(ctx.orgId);       // Task 7
-    if (links.ambiguous > 0) recordSyncLinkAmbiguous(ctx.orgId, links.ambiguous);
-  }
-  await upsertPostureRollup(ctx.orgId, ctx.tenantId, utcDate(ctx.now));
+import { withSystemDbAccessContext } from '../../db';
+import { reconcileDeviceLinks } from './links';          // Task 8
+import { recordM365SyncLinkAmbiguous } from './metrics'; // W04
+import { upsertPostureRollup } from './rollup';
+
+/**
+ * Called by run.ts AFTER writeCompletion has COMMITTED, never inside it. That
+ * ordering is what lets the rollup read this run's own `last_counts` from a
+ * durable row, and it is why this hook opens its own system context instead of
+ * inheriting one — run.ts is holding no context by the time it calls here.
+ *
+ * A throw is logged and metered by the caller and cannot undo the completion:
+ * a committed run with a stale rollup is repaired by the next run of any domain
+ * in the org, whereas a run that keeps un-completing because a rollup query was
+ * slow would never make progress at all.
+ */
+export async function afterDomainPersisted(ctx: PersistContext & {
+  domain: M365SyncDomain;
+  outcome: M365SyncOutcome;
+  persisted: DomainPersistResult;
+}): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    if (ctx.domain === 'intune_devices') {
+      const links = await reconcileDeviceLinks(ctx.orgId);
+      // One numeric argument: the metric is m365_sync_link_ambiguous_total and
+      // carries no orgId label, by contract (cardinality).
+      if (links.ambiguous > 0) recordM365SyncLinkAmbiguous(links.ambiguous);
+    }
+    await upsertPostureRollup(ctx.orgId, ctx.tenantId, utcDate(ctx.now));
+  }, 'm365SyncAfterDomainPersisted');
 }
 
 /** UTC calendar day of the run, the key of `m365_posture_rollups`. */
@@ -1890,21 +2341,9 @@ function utcDate(now: Date): string {
 }
 ```
 
-**Verify the call order** in W04's `run.ts` completion transaction: the
-sync-state completion `UPDATE` must precede `await afterDomainPersisted(…)`.
-Move the call if it does not.
-
-`recordSyncLinkAmbiguous` is W04's `m365Sync/metrics.ts` recorder for the
-contracted metric `m365_sync_link_ambiguous_total`. If W04 named it
-differently, use its name — **the metric name is the contract, the function
-name is not.** If W04 shipped no recorder for it, add
-`export function recordSyncLinkAmbiguous(orgId: string, count: number): void`
-to `m365Sync/metrics.ts` following the counter pattern already in that file
-(labels must stay bounded: label by nothing, or by `domain`, never by `orgId`).
-
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd apps/api && npx vitest run src/services/m365Sync/rollup.test.ts src/services/m365Sync/run.test.ts`
+Run: `cd apps/api && npx vitest run src/services/m365Sync/rollup.test.ts src/services/m365Sync/hooks.test.ts src/services/m365Sync/run.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -1912,8 +2351,9 @@ Expected: PASS
 ```bash
 git add apps/api/src/services/m365Sync/rollup.ts \
         apps/api/src/services/m365Sync/rollup.test.ts \
-        apps/api/src/services/m365Sync/run.ts \
-        apps/api/src/services/m365Sync/metrics.ts
+        apps/api/src/services/m365Sync/hooks.ts \
+        apps/api/src/services/m365Sync/hooks.test.ts \
+        apps/api/src/services/m365Sync/run.test.ts
 git commit -m "feat(m365): daily posture rollup wired into afterDomainPersisted
 
 Spec §3.3/§5.9. One indexed read of the org's six m365_sync_state rows plus one
@@ -1923,9 +2363,11 @@ different facts and the *_unknown columns exist precisely so partial enrichment
 is never reported as absence. domains_fresh carries asOf/complete for all six
 domains, including ones with no state row yet.
 
-The seam runs inside the completion transaction AFTER the sync-state write, so
-the domain that just finished contributes its fresh last_counts; run.test.ts
-pins that ordering.
+The seam runs AFTER the completion transaction commits, on its own system
+context, so the domain that just finished contributes durable last_counts and a
+hook failure cannot un-complete a run that already succeeded. run.test.ts pins
+both: the hook fires only once the completion write has resolved, and a throw
+inside it leaves the persisted state unchanged.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -1933,7 +2375,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 7: `links.ts` — set-based Breeze↔Intune device link reconciliation
+### Task 8: `links.ts` — set-based Breeze↔Intune device link reconciliation
 
 Spec §5.6, §3.2 (`breeze_device_id` composite FK, column-specific `SET NULL`),
 §3.4 (device org move detaches — W02 owns that half).
@@ -1948,12 +2390,12 @@ Spec §5.6, §3.2 (`breeze_device_id` composite FK, column-specific `SET NULL`),
   is `varchar(100)`, `devices.hostname` is `varchar(255) NOT NULL`, `device_hardware`
   carries its own `org_id`, and `devices` has **no** soft-delete column).
 - Produces: `reconcileDeviceLinks(orgId): Promise<{ linkedBySerial: number; linkedByHostname: number; ambiguous: number }>`
-  — consumed by Task 6's `afterDomainPersisted`.
+  — consumed by Task 7's `afterDomainPersisted` hook body.
 
 - [ ] **Step 1: Write the failing test**
 
 `apps/api/src/services/m365Sync/links.test.ts` — the shape/statement-count
-proof; Task 8 is the behavioural proof against real Postgres.
+proof; Task 9 is the behavioural proof against real Postgres.
 
 ```ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2207,17 +2649,17 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 8: real-Postgres proof for device link reconciliation
+### Task 9: real-Postgres proof for device link reconciliation
 
 Spec §9 ("link reconciliation over unlinked rows, ambiguous serial skipped").
 Two set-based statements with four CTEs each are exactly the kind of SQL a
-mock cannot validate — this is the discriminating test for Task 7.
+mock cannot validate — this is the discriminating test for Task 8.
 
 **Files:**
 - Create: `apps/api/src/__tests__/integration/m365SyncLinks.integration.test.ts`
 
 **Interfaces:**
-- Consumes: `reconcileDeviceLinks` (Task 7); `createPartner`,
+- Consumes: `reconcileDeviceLinks` (Task 8); `createPartner`,
   `createOrganization`, `createSite` (`./db-utils`); `getTestDb` (`./setup`);
   `withSystemDbAccessContext` (`../../db`); `devices`, `deviceHardware`
   (`db/schema/devices.ts`); `m365IntuneDevices` (`db/schema/m365Sync.ts`, W02).
@@ -2442,7 +2884,7 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/m365SyncLinks.integration.test.ts
 ```
 
-Expected: FAIL before Task 7's implementation is complete. If Task 7 already
+Expected: FAIL before Task 8's implementation is complete. If Task 8 already
 landed, expect PASS here and confirm the suite actually **ran** (the reported
 file/test count must be non-zero — `it.runIf` silently skips everything when
 `DATABASE_URL` is unset, which reads as green).
@@ -2484,7 +2926,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 9: `lifecycle.ts` — consent seeding, disconnect erasure, upgrade re-seed, on-demand request
+### Task 10: `lifecycle.ts` — consent seeding, disconnect erasure, upgrade re-seed, on-demand request
 
 Spec §5.8, §5.2 (priority lanes), §10 (every entry point flag-gated).
 
@@ -2506,7 +2948,7 @@ Spec §5.8, §5.2 (priority lanes), §10 (every entry point flag-gated).
   - `onConnectionUpgraded(conn: { id; orgId }): Promise<void>`
   - `requestOnDemandSync(input: { orgId; connectionId }): Promise<void>`
   - `export const ON_DEMAND_SYNC_DOMAINS: readonly M365SyncDomain[]`
-  Consumed by Tasks 10, 11, 13.
+  Consumed by Tasks 11, 12 and 14.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2795,8 +3237,11 @@ export async function onConnectionDisconnected(conn: {
  * unscheduled for want of a scope are re-armed; domains that are already
  * scheduled keep their adaptive cadence (spec §5.7 last bullet).
  *
- * Idempotent, so it is safe to call from both the upgrade-consent promotion
- * branch and the ordinary identity-verification success branch.
+ * Called from W01's upgrade-apply branch in the consent callback (Task 12), at
+ * the `// W05: onConnectionUpgraded(...)` seam. Idempotent by construction: it
+ * only touches rows that are BOTH unscheduled and last_status = 'needs_consent',
+ * so an approval that granted nothing costs one indexed UPDATE of zero rows and
+ * a repeated call is free.
  */
 export async function onConnectionUpgraded(conn: {
   id: string;
@@ -2826,7 +3271,7 @@ export async function onConnectionUpgraded(conn: {
 /**
  * The on-demand route's effect. `claimAndEnqueue` sets `next_sync_at = now()`
  * and claims in one place, so nothing here duplicates the claim protocol.
- * Rate limiting, MFA and the connection check live in the route (Task 13).
+ * Rate limiting, MFA and the connection check live in the route (Task 14).
  */
 export async function requestOnDemandSync(input: {
   orgId: string;
@@ -2872,7 +3317,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 10: wire the disconnect hook into `connectionService.disconnectConnection`
+### Task 11: wire the disconnect hook into `connectionService.disconnectConnection`
 
 Spec §5.8 first bullet, §6 last rows. `disconnectConnection`
 (`connectionService.ts:715-757`) sets `revoked` and clears the tenant but keeps
@@ -2883,7 +3328,7 @@ the row, so no FK cascade fires — the erasure must be explicit.
 - Modify: `apps/api/src/services/m365ControlPlane/connectionService.test.ts`
 
 **Interfaces:**
-- Consumes: `onConnectionDisconnected` (Task 9).
+- Consumes: `onConnectionDisconnected` (Task 10).
 - Produces: no new export; `disconnectConnection`'s observable behaviour gains
   the erasure.
 
@@ -2939,11 +3384,34 @@ system context, after the CAS update produced its row:
 import { onConnectionDisconnected } from '../m365Sync/lifecycle';
 ```
 
+The shipped tail of `disconnectConnection` `return`s the CAS row directly. Bind
+it to a local first, call the hook, then return it — the whole change is those
+three lines plus the comment:
+
 ```ts
       const nextAttemptId = randomUUID();
-      const disconnected = requireCasRow(await db.update(m365Connections).set({
-        …unchanged…
-      }).where(attemptPredicate({ … })).returning());
+      const disconnected = await requireCasRow(await db.update(m365Connections).set({
+        consentAttemptId: nextAttemptId,
+        tenantId: null,
+        clientId: '',
+        displayName: null,
+        permissionManifestVersion: current.permissionManifestVersion,
+        observedGrants: [],
+        grantsVerifiedAt: null,
+        lastVerifiedAt: null,
+        consentedAt: null,
+        expiresAt: null,
+        status: 'revoked',
+        revokedAt: new Date(),
+        lastErrorCode: null,
+        updatedAt: new Date(),
+      }).where(attemptPredicate({
+        id: current.id,
+        orgId: current.orgId,
+        profile,
+        consentAttemptId: current.consentAttemptId,
+        status: current.status,
+      })).returning());
 
       // Spec §5.8: the row survives a disconnect (status 'revoked', tenant
       // cleared), so no FK cascade fires and the synced tenant snapshot would
@@ -2956,8 +3424,20 @@ import { onConnectionDisconnected } from '../m365Sync/lifecycle';
       return disconnected;
 ```
 
+Do not change any other field in that `set` object: the manifest version,
+attempt rotation and grant clearing are the shipped disconnect semantics, and
+W01's attempt-rotation fix (its Task 7) already touched the consent-session
+deletion just above it.
+
 Note the call is inside `withSystemDbAccessContext`, so `onConnectionDisconnected`
-must not open its own (Task 9 asserts it does not).
+must not open its own (Task 10 asserts it does not).
+
+**This task applies on top of W01's changes to `connectionService.ts`** (the
+upgrade-consent service functions `initiateCustomerGraphReadUpgradeConsent`,
+`transitionUpgradeConsentToIdentity`, `applyUpgradeVerificationResult`, the
+`manifest_current` lifecycle error code, and the consent-session supersede fix):
+re-read `disconnectConnection` before editing rather than applying the line
+numbers above verbatim.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2987,46 +3467,47 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 11: wire consent seeding and the upgrade re-seed into the consent callback
+### Task 12: wire consent seeding and the upgrade re-seed into W01's consent callback
 
-Spec §5.8 bullets 2-3, §10.1 (every entry point flag-gated). The callback
-already knows `applied.status` and the drift outcome at
-`m365ConsentCallback.ts:588-600`.
+Spec §5.8 bullets 2-3, §10.1 (every entry point flag-gated).
+
+**This task depends on W01 and targets its restructured callback.** W01's Task 10
+split the apply block into an explicit two-branch form and left this wave a seam:
+
+```ts
+      if (isUpgrade) {
+        applied = await dependencies.applyUpgradeResult(attempt, result);
+        // W05: onConnectionUpgraded(connection) is called here after in-place promotion
+        outcome = upgradeOutcome(applied, currentManifestVersion);
+      } else {
+        applied = await dependencies.applyIdentityResult(attempt, result);
+        outcome = outcomeFromConnection(applied);
+      }
+```
+
+The two hooks map one-to-one onto those two branches: `onConnectionUpgraded` at
+the seam comment in the upgrade branch, `onConnectionConsented` in the identity
+branch. **There is no `driftOutcome`-keyed fallback and no "works either landing
+order" alternative** — W05 is stacked on W01, so the branch exists. If the seam
+comment is not in the file, stop and rebase; do not re-derive the wiring point
+from `driftOutcome`.
 
 **Files:**
 - Modify: `apps/api/src/routes/m365ConsentCallback.ts`
 - Modify: `apps/api/src/routes/m365ConsentCallback.test.ts`
 
 **Interfaces:**
-- Consumes: `onConnectionConsented`, `onConnectionUpgraded` (Task 9);
-  `isM365TenantSyncEnabled` (W04).
+- Consumes: `onConnectionConsented`, `onConnectionUpgraded` (Task 10);
+  `isM365TenantSyncEnabled` (W04); W01's `readSessionPurpose`,
+  `applyUpgradeResult` and `applyIdentityResult` dependency members.
 - Produces: no new export.
-
-**W01 tolerance — this task works whether W01 lands before or after.** Decide
-the wiring point by inspection, not assumption:
-
-```bash
-# Does W01's dedicated upgrade-consent promotion branch exist yet?
-grep -n "upgrade-consent" apps/api/src/routes/m365CustomerGraphRead.ts
-grep -n "permissionManifestVersion" apps/api/src/routes/m365ConsentCallback.ts
-```
-
-- **W01 landed** (an explicit promotion branch exists): call
-  `onConnectionUpgraded` **from that branch**, immediately after
-  `permissionManifestVersion` is promoted, and keep the `onConnectionConsented`
-  call in the identity-verification success branch below.
-- **W01 not landed** (no promotion branch): put both calls in the
-  identity-verification success branch as written below, keyed on
-  `driftOutcome === 'manifest_stale'` being cleared. The hooks are idempotent,
-  so when W01 lands it can add its own `onConnectionUpgraded` call without
-  removing this one.
-
-Either way the call is a plain import of a hook, so nothing here breaks if
-W01's branch appears later.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `apps/api/src/routes/m365ConsentCallback.test.ts`:
+Append to `apps/api/src/routes/m365ConsentCallback.test.ts`, using the file's
+`createM365ConsentCallbackRoutes({ … })` override style — the same style W01's
+`upgrade consent callback` describe block already uses, so the upgrade cases
+below drive W01's real `applyUpgradeResult` path rather than a synthesised one:
 
 ```ts
 vi.mock('../services/m365Sync/lifecycle', () => ({
@@ -3043,51 +3524,143 @@ const consentedMock = vi.mocked(onConnectionConsented);
 const upgradedMock = vi.mocked(onConnectionUpgraded);
 const syncFlagMock = vi.mocked(isM365TenantSyncEnabled);
 
+/** Drives W01's identity branch: applyIdentityResult, purpose 'initial'. */
+async function completeInitialConsent(applied: {
+  status: 'active' | 'degraded' | 'pending-consent';
+  lastErrorCode: string | null;
+}) {
+  const routes = createM365ConsentCallbackRoutes({
+    verifyBindingCookie: vi.fn(() => identityBinding),
+    readSessionPurpose: vi.fn(async () => 'initial' as const),
+    loadAttempt: vi.fn(async () => ({
+      id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read' as const,
+      consentAttemptId: ATTEMPT_ID, status: 'verifying' as const,
+    })),
+    consumeSession: vi.fn(async () => ({
+      userId: USER_ID, purpose: 'initial',
+      tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
+    })),
+    completeIdentity: vi.fn(async () => ({ success: true, tenantId: TENANT_ID })),
+    applyIdentityResult: vi.fn(async () => ({
+      id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID,
+      status: applied.status, lastErrorCode: applied.lastErrorCode,
+      permissionManifestVersion: 3,
+    })),
+    audit: vi.fn(),
+    metric: vi.fn(),
+  });
+  const app = new Hono();
+  app.route('/api/v1/m365', routes);
+  return app.request('/api/v1/m365/consent/callback?state=identity-state&code=auth-code', {
+    headers: { cookie: bindingCookie(identityBinding) },
+  });
+}
+
+/** Drives W01's upgrade branch: applyUpgradeResult, purpose 'upgrade'. */
+async function completeUpgradeConsent(manifestVersion: number) {
+  const routes = createM365ConsentCallbackRoutes({
+    verifyBindingCookie: vi.fn(() => identityBinding),
+    readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+    loadAttempt: vi.fn(async () => ({
+      id: CONNECTION_ID, orgId: ORG_ID, profile: 'customer-graph-read' as const,
+      consentAttemptId: ATTEMPT_ID, status: 'active' as const,
+    })),
+    consumeSession: vi.fn(async () => ({
+      userId: USER_ID, purpose: 'upgrade',
+      tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
+    })),
+    completeIdentity: vi.fn(async () => ({ success: true, tenantId: TENANT_ID })),
+    applyUpgradeResult: vi.fn(async () => ({
+      id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID,
+      status: 'active' as const, lastErrorCode: null,
+      permissionManifestVersion: manifestVersion,
+    })),
+    applyIdentityResult: vi.fn(),
+    audit: vi.fn(),
+    metric: vi.fn(),
+  });
+  const app = new Hono();
+  app.route('/api/v1/m365', routes);
+  return app.request('/api/v1/m365/consent/callback?state=identity-state&code=auth-code', {
+    headers: { cookie: bindingCookie(identityBinding) },
+  });
+}
+
 describe('sync seeding on consent success', () => {
   beforeEach(() => { syncFlagMock.mockReturnValue(true); });
 
   it('seeds when the applied connection is active', async () => {
-    const response = await completeIdentityVerification({ appliedStatus: 'active', lastErrorCode: null });
+    const response = await completeInitialConsent({ status: 'active', lastErrorCode: null });
     expect(response.status).toBe(302);
     expect(consentedMock).toHaveBeenCalledWith({
-      id: CONNECTION_ID, orgId: ORG_ID, tenantId: VERIFIED_TENANT, status: 'active',
+      id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID, status: 'active',
     });
+    expect(upgradedMock).not.toHaveBeenCalled();
   });
 
   it('seeds when the applied connection is DEGRADED', async () => {
-    await completeIdentityVerification({ appliedStatus: 'degraded', lastErrorCode: 'grant_missing' });
+    await completeInitialConsent({ status: 'degraded', lastErrorCode: 'grant_missing' });
     expect(consentedMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'degraded' }));
   });
 
   it('does not seed when verification failed', async () => {
-    await completeIdentityVerification({ appliedStatus: 'pending-consent', lastErrorCode: 'consent_expired' });
+    await completeInitialConsent({ status: 'pending-consent', lastErrorCode: 'consent_expired' });
     expect(consentedMock).not.toHaveBeenCalled();
     expect(upgradedMock).not.toHaveBeenCalled();
   });
 
   it('does not seed when the flag is off', async () => {
     syncFlagMock.mockReturnValue(false);
-    await completeIdentityVerification({ appliedStatus: 'active', lastErrorCode: null });
+    await completeInitialConsent({ status: 'active', lastErrorCode: null });
     expect(consentedMock).not.toHaveBeenCalled();
-    expect(upgradedMock).not.toHaveBeenCalled();
   });
 
-  it('re-seeds unscheduled needs_consent domains once manifest_stale is cleared', async () => {
-    await completeIdentityVerification({ appliedStatus: 'active', lastErrorCode: null });
-    expect(upgradedMock).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID });
-  });
-
-  it('does NOT re-seed while the manifest is still stale', async () => {
-    await completeIdentityVerification({ appliedStatus: 'degraded', lastErrorCode: 'manifest_stale' });
-    expect(consentedMock).toHaveBeenCalledOnce();
-    expect(upgradedMock).not.toHaveBeenCalled();
-  });
-
-  it('still redirects successfully when a hook rejects', async () => {
+  it('still redirects successfully when the seeding hook rejects', async () => {
     consentedMock.mockRejectedValueOnce(new Error('seed boom'));
-    const response = await completeIdentityVerification({ appliedStatus: 'active', lastErrorCode: null });
+    const response = await completeInitialConsent({ status: 'active', lastErrorCode: null });
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toContain('active');
+  });
+});
+
+describe('sync re-seed on upgrade consent', () => {
+  beforeEach(() => { syncFlagMock.mockReturnValue(true); });
+
+  it('re-arms unscheduled needs_consent domains from W01 upgrade-apply branch', async () => {
+    const response = await completeUpgradeConsent(3);
+    expect(response.status).toBe(302);
+    expect(upgradedMock).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID });
+    // The upgrade branch is not a fresh consent: the six state rows already
+    // exist and their history must not be re-pointed.
+    expect(consentedMock).not.toHaveBeenCalled();
+  });
+
+  it('is called before the outcome is derived, so a promotion is never reported as stale', async () => {
+    const response = await completeUpgradeConsent(3);
+    expect(response.headers.get('location')).toContain('active');
+    expect(upgradedMock).toHaveBeenCalledOnce();
+  });
+
+  it('is still called when the version did not move — the hook is idempotent', async () => {
+    // An approval that granted nothing leaves the connection executable and the
+    // manifest stale. Re-arming is a no-op in that case (the domains are still
+    // needs_consent after the next run), and making the call unconditional
+    // keeps the seam a single line with no outcome logic in it.
+    const response = await completeUpgradeConsent(2);
+    expect(response.headers.get('location')).toContain('manifest_stale');
+    expect(upgradedMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-seed when the flag is off', async () => {
+    syncFlagMock.mockReturnValue(false);
+    await completeUpgradeConsent(3);
+    expect(upgradedMock).not.toHaveBeenCalled();
+  });
+
+  it('still redirects successfully when the upgrade hook rejects', async () => {
+    upgradedMock.mockRejectedValueOnce(new Error('reseed boom'));
+    const response = await completeUpgradeConsent(3);
+    expect(response.status).toBe(302);
   });
 });
 ```
@@ -3095,7 +3668,7 @@ describe('sync seeding on consent success', () => {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cd apps/api && npx vitest run src/routes/m365ConsentCallback.test.ts`
-Expected: FAIL — no hook is called.
+Expected: FAIL — no hook is called on either branch.
 
 - [ ] **Step 3: Implement**
 
@@ -3106,51 +3679,72 @@ import { isM365TenantSyncEnabled } from '../config/env';
 import { onConnectionConsented, onConnectionUpgraded } from '../services/m365Sync/lifecycle';
 ```
 
-Inside the existing success branch, after the audit events and before
-`return terminalRedirect(outcome);`:
+Add one small local helper next to `outcomeFromConnection`, so neither branch
+carries a try/catch of its own:
 
 ```ts
-        // Spec §5.8/§10.1. Seeding is gated by the tenant-sync flag, runs for
-        // `degraded` as well as `active` (a connection missing one optional
-        // grant still syncs every other domain), and is deliberately
-        // fire-and-await-with-swallow: a Microsoft consent that actually
-        // succeeded must never redirect the admin to a failure page because
-        // our scheduler had a bad minute. The hooks log and the ticker's
-        // reconciliation re-seeds on the next tick.
-        if (isM365TenantSyncEnabled() && applied.tenantId) {
-          try {
-            await onConnectionConsented({
-              id: applied.id,
-              orgId: applied.orgId,
-              tenantId: applied.tenantId,
-              status: applied.status,
-            });
-            // An upgrade-consent promotes the manifest in place; the domains
-            // that had been parked on `needs_consent` for want of a v3 scope
-            // are re-armed only once the stale-manifest drift is actually
-            // cleared. Idempotent, so W01's dedicated promotion branch may
-            // also call it.
-            if (driftOutcome !== 'manifest_stale') {
-              await onConnectionUpgraded({ id: applied.id, orgId: applied.orgId });
-            }
-          } catch (err) {
-            console.error(
-              `[m365ConsentCallback] Sync lifecycle hook failed for connection=${applied.id}:`,
-              err,
-            );
-          }
-        }
+/**
+ * Spec §10.1. Every sync entry point is flag-gated, and a Microsoft consent that
+ * actually succeeded must never redirect the administrator to a failure page
+ * because our scheduler had a bad minute. The lifecycle hooks already log; the
+ * ticker's reconciliation re-seeds on the next tick.
+ */
+async function runSyncLifecycleHook(label: string, run: () => Promise<void>): Promise<void> {
+  if (!isM365TenantSyncEnabled()) return;
+  try {
+    await run();
+  } catch (err) {
+    console.error(`[m365ConsentCallback] ${label} failed:`, err);
+  }
+}
 ```
 
-`applied.status` is narrowed to `'active' | 'degraded'` by the enclosing `if`;
-if TypeScript does not carry the narrowing through, assert with a local
-`const status = applied.status === 'active' ? 'active' as const : 'degraded' as const;`
-rather than casting the object.
+Then fill W01's two branches. The upgrade call replaces the seam comment
+verbatim, immediately after the in-place promotion and before the outcome is
+derived:
+
+```ts
+    try {
+      let applied: CallbackConnectionSnapshot;
+      let outcome: PublicOutcome;
+      if (isUpgrade) {
+        applied = await dependencies.applyUpgradeResult(attempt, result);
+        // Spec §5.8: an upgrade-consent promotes the manifest in place, so the
+        // domains parked on `needs_consent` for want of a v3 scope are re-armed.
+        // Unconditional and idempotent: onConnectionUpgraded only touches rows
+        // that are BOTH unscheduled and last_status = 'needs_consent', so an
+        // approval that granted nothing costs one indexed UPDATE of zero rows.
+        await runSyncLifecycleHook(
+          `sync re-seed for connection=${applied.id}`,
+          () => onConnectionUpgraded({ id: applied.id, orgId: applied.orgId }),
+        );
+        outcome = upgradeOutcome(applied, currentManifestVersion);
+      } else {
+        applied = await dependencies.applyIdentityResult(attempt, result);
+        // A verified first-time (or re-)consent seeds all six domains due now at
+        // priority 1, for `degraded` as well as `active` — a connection missing
+        // one optional grant still syncs every other domain.
+        if (applied.tenantId && (applied.status === 'active' || applied.status === 'degraded')) {
+          const status = applied.status;
+          await runSyncLifecycleHook(
+            `sync seeding for connection=${applied.id}`,
+            () => onConnectionConsented({
+              id: applied.id, orgId: applied.orgId, tenantId: applied.tenantId!, status,
+            }),
+          );
+        }
+        outcome = outcomeFromConnection(applied);
+      }
+```
+
+`applied.status` is narrowed to `'active' | 'degraded'` by the enclosing `if`; if
+TypeScript does not carry the narrowing into the closure, the local
+`const status = applied.status` above does it explicitly — never cast the object.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd apps/api && npx vitest run src/routes/m365ConsentCallback.test.ts`
-Expected: PASS
+Expected: PASS — including every pre-existing W01 upgrade case.
 
 - [ ] **Step 5: Commit**
 
@@ -3159,18 +3753,20 @@ git add apps/api/src/routes/m365ConsentCallback.ts \
         apps/api/src/routes/m365ConsentCallback.test.ts
 git commit -m "feat(m365): seed tenant sync from the consent callback
 
-Spec §5.8/§10.1. A verified consent that leaves the connection active OR
-degraded seeds all six sync domains due now at priority 1, so the org tab has
-data within a tick. When the stale-manifest drift is cleared in the same
-callback, the upgrade hook additionally re-arms domains that had been parked on
-needs_consent for want of a v3 scope.
+Spec §5.8/§10.1. W01 split the callback's apply block into an explicit
+isUpgrade ? applyUpgradeResult : applyIdentityResult form and left a seam
+comment in the upgrade branch; this fills both halves. The identity branch seeds
+all six sync domains due now at priority 1 whenever the applied connection is
+active OR degraded, so the org tab has data within a tick. The upgrade branch
+calls onConnectionUpgraded at the seam, right after the in-place manifest
+promotion, re-arming the domains that had been parked on needs_consent for want
+of a v3 scope.
 
-Both calls are flag-gated and wrapped: a Microsoft consent that actually
-succeeded must never redirect the admin to a failure page because our scheduler
-had a bad minute — the hooks log and the ticker reconciliation re-seeds.
-
-The upgrade hook is idempotent, so W01's dedicated upgrade-consent promotion
-branch can call it from there as well when it lands.
+Both calls are flag-gated and wrapped by one shared helper: a Microsoft consent
+that actually succeeded must never redirect the administrator to a failure page
+because our scheduler had a bad minute — the hooks log and the ticker
+reconciliation re-seeds. The upgrade hook is unconditional because it is
+idempotent: it only touches rows that are both unscheduled and needs_consent.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -3178,7 +3774,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 12: `onDemandLimiter.ts` — one sync per org per 15 minutes
+### Task 13: `onDemandLimiter.ts` — one sync per org per 15 minutes
 
 Spec §5.2 ("Redis-limited to one call per org per 15 min"), fail-closed
 discipline from `readActionBudget.ts`.
@@ -3347,12 +3943,18 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 13: `POST /m365/connections/:id/sync` — MFA-gated on-demand route
+### Task 14: `POST /m365/connections/:id/sync` — MFA-gated on-demand route
 
 Spec §5.2 ("MFA-gated like retest"), §10.1 (flag gates every entry point).
 Copies the retest route's middleware chain
 (`m365CustomerGraphRead.ts:252-298`) exactly: `requireOrgsWrite`,
 `requireMfa()`, `zValidator('param', idParam)`, then `mutationOrg(c)`.
+
+**This task applies on top of W01's changes to `m365CustomerGraphRead.ts`** —
+`toConnectionDto` already returns `grantHealth` / `manifestVersion` /
+`currentManifestVersion`, and `POST /connections/:id/upgrade-consent` is already
+mounted in this file. Re-read the file before editing and add this route beside
+that one; the line numbers above are pre-W01.
 
 **Files:**
 - Modify: `apps/api/src/routes/m365CustomerGraphRead.ts`
@@ -3362,7 +3964,7 @@ Copies the retest route's middleware chain
 
 **Interfaces:**
 - Consumes: `consumeOnDemandSyncSlot`, `ON_DEMAND_SYNC_WINDOW_SECONDS`
-  (Task 12); `requestOnDemandSync`, `ON_DEMAND_SYNC_DOMAINS` (Task 9);
+  (Task 13); `requestOnDemandSync`, `ON_DEMAND_SYNC_DOMAINS` (Task 10);
   `isM365TenantSyncEnabled` (W04); `listCustomerGraphReadConnections`,
   `requireMfa`, `requirePermission` (shipped).
 - Produces: the route; the audit event
@@ -3370,26 +3972,35 @@ Copies the retest route's middleware chain
 
 - [ ] **Step 1: Write the failing tests**
 
-First extend `apps/api/src/services/m365ControlPlane/metrics.test.ts` — the
-existing case asserts "exactly the seven fixed lifecycle events" and must be
-updated in the same commit, or the added event reds Test API:
+First extend `apps/api/src/services/m365ControlPlane/metrics.test.ts`. The case
+asserts the exact event array; the shipped seven became **eight** when W01
+inserted `upgrade_consent_initiated` immediately after `consent_initiated`, and
+this wave appends the ninth at the end. Order matters — the assertion is
+`toEqual` on an array, and the overview fixes both positions:
 
 ```ts
-  it('exposes exactly the eight fixed lifecycle events and a bounded outcome enum', () => {
+  it('exposes exactly the nine fixed lifecycle events and a bounded outcome enum', () => {
     expect(M365_CUSTOMER_GRAPH_READ_EVENTS).toEqual([
       'm365.customer_graph_read.consent_initiated',
+      // W01, position 2 — inserted directly after consent_initiated.
+      'm365.customer_graph_read.upgrade_consent_initiated',
       'm365.customer_graph_read.admin_consent_returned',
       'm365.customer_graph_read.tenant_binding_verified',
       'm365.customer_graph_read.verification_failed',
       'm365.customer_graph_read.grant_drift_detected',
       'm365.customer_graph_read.retested',
       'm365.customer_graph_read.disconnected',
+      // W05, appended last.
       'm365.customer_graph_read.sync_requested',
     ]);
+    expect(M365_CUSTOMER_GRAPH_READ_EVENTS).toHaveLength(9);
     expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
       .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);
   });
 ```
+
+If `upgrade_consent_initiated` is not already in the shipped array, W01 is not on
+your base branch — rebase rather than adding it here.
 
 Then append to `apps/api/src/routes/m365CustomerGraphRead.test.ts`:
 
@@ -3506,13 +4117,14 @@ describe('POST /m365/connections/:id/sync', () => {
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cd apps/api && npx vitest run src/routes/m365CustomerGraphRead.test.ts src/services/m365ControlPlane/metrics.test.ts`
-Expected: FAIL — the route 404s as an unknown path and the event list has seven
-entries.
+Expected: FAIL — the route 404s as an unknown path and the event list has W01's
+eight entries, not nine.
 
 - [ ] **Step 3: Implement**
 
 In `apps/api/src/services/m365ControlPlane/metrics.ts`, append to
-`M365_CUSTOMER_GRAPH_READ_EVENTS`:
+`M365_CUSTOMER_GRAPH_READ_EVENTS` (append only — W01 owns the position of
+`upgrade_consent_initiated` near the top of the array and it must not move):
 
 ```ts
   'm365.customer_graph_read.disconnected',
@@ -3617,7 +4229,8 @@ burns a slot, the connection is resolved before the limiter so probing a wrong
 id cannot lock a technician out for 15 minutes, and a limited call answers 429
 with both a retryAfter body field and a Retry-After header.
 
-Adds the eighth lifecycle audit event, m365.customer_graph_read.sync_requested.
+Adds the ninth lifecycle audit event, m365.customer_graph_read.sync_requested,
+appended after W01's eight.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -3625,12 +4238,20 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 14: read-envelope DTO — `syncEnabled` and the per-domain `sync` block
+### Task 15: read-envelope DTO — `syncEnabled` and the per-domain `sync` block
 
 Spec §6 "Surfaced" column (org tab "as of" per fact), §2.2 item 1's DTO
-precedent. **Coordination:** this wave adds the fields and the button's gate;
-**W06 renders the "last synced" line from `sync.domains`.** W06 must not
-re-add these fields — say so in the PR body.
+precedent. **The two fields go on the ENVELOPE, not on the connection DTO** —
+that is what the shared contract fixes, and it is why the web change in Task 16
+is a `parseEnvelope` change rather than a `parseConnection` one. Both the API
+shape and every pixel that renders it belong to this wave; **W06 adds no card
+code and re-adds no field.** Say so in the PR body.
+
+**This task applies on top of W01's changes to `m365CustomerGraphRead.ts`:**
+`toConnectionDto` already returns `grantHealth`, `manifestVersion` and
+`currentManifestVersion`, the envelope's `profile.manifestVersion` literal has
+already been widened from `2` to `number`, and `POST /connections/:id/upgrade-consent`
+is already mounted. Re-read the file before editing.
 
 **Files:**
 - Create: `apps/api/src/services/m365Sync/summary.ts`
@@ -3639,22 +4260,33 @@ re-add these fields — say so in the PR body.
 - Modify: `apps/api/src/routes/m365CustomerGraphRead.test.ts`
 
 **Interfaces:**
-- Consumes: `M365_SYNC_DOMAINS`, `M365SyncDomain` (W03); `m365SyncState` (W02);
+- Consumes: `M365_SYNC_DOMAINS`, `M365SyncDomain` (W03); `M365SyncOutcome`
+  (`m365Sync/types.ts`, W04); `m365SyncState`, `m365PostureRollups` (W02);
   `db`; `isM365TenantSyncEnabled` (W04).
-- Produces:
+- Produces — **exactly the contract's shape, no more and no less**:
   ```ts
   export interface M365SyncDomainSummary {
     domain: M365SyncDomain;
-    status: 'success' | 'partial' | 'needs_consent' | 'throttled' | 'error' | null;
-    lastSuccessAt: string | null;
+    status: M365SyncOutcome | 'never';   // 'never' when last_status IS NULL
+    asOf: string | null;                 // last_complete_snapshot_at
     truncated: boolean;
-    needsConsent: boolean;
+    unlicensed: boolean;                 // sources.signInActivity === 'unlicensed'
   }
-  export interface M365SyncSummary { lastSuccessAt: string | null; domains: M365SyncDomainSummary[] }
+  export interface M365SyncSummary {
+    lastSuccessAt: string | null;
+    users: number | null;                // m365_posture_rollups.users_total (latest row)
+    devices: number | null;              // m365_posture_rollups.devices_total (latest row)
+    domains: M365SyncDomainSummary[];
+  }
   export async function loadSyncSummary(orgId: string): Promise<M365SyncSummary | null>;
   ```
   plus `CustomerGraphReadEnvelope` gaining `syncEnabled: boolean` and
   `sync: M365SyncSummary | null`.
+
+  **There is no `needsConsent` field.** `needs_consent` is one of the five
+  `M365SyncOutcome` values `status` already carries; a separate boolean would be
+  a second encoding of the same fact and the card would have to decide which one
+  wins.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3671,9 +4303,32 @@ vi.mock('../../config/env', () => ({ isM365TenantSyncEnabled: vi.fn(() => true) 
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 
-function rows(values: unknown[]) {
-  const where = vi.fn(async () => values);
-  vi.mocked(db.select).mockReturnValue({ from: vi.fn(() => ({ where })) } as never);
+/**
+ * The service issues two selects: the org's sync-state rows, then the newest
+ * posture rollup. Queue the results in that order.
+ */
+function selects(stateRows: unknown[], rollupRows: unknown[]) {
+  const stateChain = { from: vi.fn(() => ({ where: vi.fn(async () => stateRows) })) };
+  const rollupChain = {
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rollupRows) })) })),
+    })),
+  };
+  vi.mocked(db.select)
+    .mockReturnValueOnce(stateChain as never)
+    .mockReturnValueOnce(rollupChain as never);
+}
+
+function state(overrides: Record<string, unknown>) {
+  return {
+    domain: 'users',
+    lastStatus: 'success',
+    lastSuccessAt: new Date('2026-09-08T06:00:00.000Z'),
+    lastCompleteSnapshotAt: new Date('2026-09-08T06:00:00.000Z'),
+    truncated: false,
+    sources: { users: 'ok' },
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -3688,53 +4343,106 @@ describe('loadSyncSummary', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('returns null when the org has no state rows at all', async () => {
-    rows([]);
+  it('returns null, and never reads the rollup, when the org has no state rows', async () => {
+    selects([], []);
     await expect(loadSyncSummary(ORG)).resolves.toBeNull();
+    expect(db.select).toHaveBeenCalledOnce();
   });
 
   it('lists all six domains in canonical order, filling gaps as never-synced', async () => {
-    rows([{ domain: 'users', lastStatus: 'success', lastSuccessAt: new Date('2026-09-08T06:00:00.000Z'), truncated: false }]);
+    selects([state({})], []);
     const summary = (await loadSyncSummary(ORG))!;
     expect(summary.domains.map((d) => d.domain)).toEqual([
       'users', 'signin_activity', 'intune_devices', 'ca_policies', 'skus', 'secure_score',
     ]);
     expect(summary.domains[0]).toEqual({
       domain: 'users', status: 'success',
-      lastSuccessAt: '2026-09-08T06:00:00.000Z', truncated: false, needsConsent: false,
+      asOf: '2026-09-08T06:00:00.000Z', truncated: false, unlicensed: false,
     });
     expect(summary.domains[1]).toEqual({
-      domain: 'signin_activity', status: null,
-      lastSuccessAt: null, truncated: false, needsConsent: false,
+      domain: 'signin_activity', status: 'never',
+      asOf: null, truncated: false, unlicensed: false,
     });
   });
 
+  it("reports status 'never' when last_status is NULL, and asOf from last_complete_snapshot_at", async () => {
+    selects([state({
+      lastStatus: null,
+      lastSuccessAt: null,
+      lastCompleteSnapshotAt: null,
+    })], []);
+    const summary = (await loadSyncSummary(ORG))!;
+    expect(summary.domains[0]!.status).toBe('never');
+    expect(summary.domains[0]!.asOf).toBeNull();
+  });
+
+  it('does NOT use last_success_at as asOf — asOf is the complete-snapshot time', async () => {
+    selects([state({
+      lastSuccessAt: new Date('2026-09-08T09:00:00.000Z'),
+      lastCompleteSnapshotAt: new Date('2026-09-08T06:00:00.000Z'),
+    })], []);
+    const summary = (await loadSyncSummary(ORG))!;
+    expect(summary.domains[0]!.asOf).toBe('2026-09-08T06:00:00.000Z');
+  });
+
   it('reports the NEWEST successful domain as the envelope lastSuccessAt', async () => {
-    rows([
-      { domain: 'users', lastStatus: 'success', lastSuccessAt: new Date('2026-09-08T06:00:00.000Z'), truncated: false },
-      { domain: 'skus', lastStatus: 'success', lastSuccessAt: new Date('2026-09-08T09:00:00.000Z'), truncated: false },
-      { domain: 'ca_policies', lastStatus: 'needs_consent', lastSuccessAt: null, truncated: false },
-    ]);
+    selects([
+      state({ domain: 'users', lastSuccessAt: new Date('2026-09-08T06:00:00.000Z') }),
+      state({ domain: 'skus', lastSuccessAt: new Date('2026-09-08T09:00:00.000Z') }),
+      state({ domain: 'ca_policies', lastStatus: 'needs_consent', lastSuccessAt: null, lastCompleteSnapshotAt: null }),
+    ], []);
     const summary = (await loadSyncSummary(ORG))!;
     expect(summary.lastSuccessAt).toBe('2026-09-08T09:00:00.000Z');
   });
 
-  it('flags needsConsent and truncated per domain', async () => {
-    rows([
-      { domain: 'ca_policies', lastStatus: 'needs_consent', lastSuccessAt: null, truncated: false },
-      { domain: 'users', lastStatus: 'partial', lastSuccessAt: new Date('2026-09-08T06:00:00.000Z'), truncated: true },
-    ]);
+  it('carries needs_consent, throttled and error through as statuses, not booleans', async () => {
+    selects([
+      state({ domain: 'ca_policies', lastStatus: 'needs_consent' }),
+      state({ domain: 'skus', lastStatus: 'throttled' }),
+      state({ domain: 'secure_score', lastStatus: 'error' }),
+    ], []);
     const summary = (await loadSyncSummary(ORG))!;
     const byDomain = Object.fromEntries(summary.domains.map((d) => [d.domain, d]));
-    expect(byDomain.ca_policies!.needsConsent).toBe(true);
-    expect(byDomain.users!.truncated).toBe(true);
-    expect(byDomain.users!.needsConsent).toBe(false);
+    expect(byDomain.ca_policies!.status).toBe('needs_consent');
+    expect(byDomain.skus!.status).toBe('throttled');
+    expect(byDomain.secure_score!.status).toBe('error');
+    expect(byDomain.ca_policies).not.toHaveProperty('needsConsent');
   });
 
-  it('is null-safe on an unknown stored status', async () => {
-    rows([{ domain: 'users', lastStatus: 'weird', lastSuccessAt: null, truncated: false }]);
+  it('flags truncated per domain and unlicensed only from sources.signInActivity', async () => {
+    selects([
+      state({ domain: 'users', lastStatus: 'partial', truncated: true }),
+      state({ domain: 'signin_activity', sources: { signInActivity: 'unlicensed' } }),
+      state({ domain: 'skus', sources: { subscribedSkus: 'unlicensed' } }),
+    ], []);
     const summary = (await loadSyncSummary(ORG))!;
-    expect(summary.domains[0]!.status).toBeNull();
+    const byDomain = Object.fromEntries(summary.domains.map((d) => [d.domain, d]));
+    expect(byDomain.users!.truncated).toBe(true);
+    expect(byDomain.signin_activity!.unlicensed).toBe(true);
+    // Only the signInActivity key means "the tenant has no Entra ID P1"; an
+    // unlicensed value on any other source key is not that fact.
+    expect(byDomain.skus!.unlicensed).toBe(false);
+  });
+
+  it('takes users and devices from the NEWEST posture rollup row', async () => {
+    selects([state({})], [{ usersTotal: 128, devicesTotal: 96 }]);
+    const summary = (await loadSyncSummary(ORG))!;
+    expect(summary.users).toBe(128);
+    expect(summary.devices).toBe(96);
+  });
+
+  it('reports users and devices as null when there is no rollup yet, or the counter is NULL', async () => {
+    selects([state({})], []);
+    await expect(loadSyncSummary(ORG)).resolves.toMatchObject({ users: null, devices: null });
+
+    selects([state({})], [{ usersTotal: 10, devicesTotal: null }]);
+    await expect(loadSyncSummary(ORG)).resolves.toMatchObject({ users: 10, devices: null });
+  });
+
+  it("is null-safe on an unknown stored status, reporting 'never' rather than leaking it", async () => {
+    selects([state({ lastStatus: 'weird' })], []);
+    const summary = (await loadSyncSummary(ORG))!;
+    expect(summary.domains[0]!.status).toBe('never');
   });
 });
 ```
@@ -3742,13 +4450,20 @@ describe('loadSyncSummary', () => {
 Append to `apps/api/src/routes/m365CustomerGraphRead.test.ts`:
 
 ```ts
-describe('GET /m365/connections exposes the sync block', () => {
+describe('GET /m365/connections exposes the sync block on the envelope', () => {
   it('carries syncEnabled true and the summary when the flag is on', async () => {
     syncFlagMock.mockReturnValue(true);
-    summaryMock.mockResolvedValue({ lastSuccessAt: '2026-09-08T09:00:00.000Z', domains: [] });
+    summaryMock.mockResolvedValue({
+      lastSuccessAt: '2026-09-08T09:00:00.000Z',
+      users: 128,
+      devices: 96,
+      domains: [],
+    });
     const body = await (await getConnections()).json();
     expect(body.syncEnabled).toBe(true);
-    expect(body.sync).toEqual({ lastSuccessAt: '2026-09-08T09:00:00.000Z', domains: [] });
+    expect(body.sync).toEqual({
+      lastSuccessAt: '2026-09-08T09:00:00.000Z', users: 128, devices: 96, domains: [],
+    });
   });
 
   it('carries syncEnabled false and a null sync block when the flag is off', async () => {
@@ -3759,11 +4474,26 @@ describe('GET /m365/connections exposes the sync block', () => {
     expect(body.sync).toBeNull();
   });
 
+  it('puts the fields on the ENVELOPE, never on the connection DTO', async () => {
+    const body = await (await getConnections()).json();
+    expect(body.connection).not.toHaveProperty('sync');
+    expect(body.connection).not.toHaveProperty('syncEnabled');
+  });
+
   it('keeps the envelope key set exact so the web parser stays strict', async () => {
     const body = await (await getConnections()).json();
     expect(Object.keys(body).sort()).toEqual([
       'connection', 'onboardingEnabled', 'profile', 'sync', 'syncEnabled',
     ]);
+  });
+
+  it("does not disturb W01's connection DTO fields", async () => {
+    const body = await (await getConnections()).json();
+    expect(body.connection).toMatchObject({
+      grantHealth: expect.any(String),
+      manifestVersion: expect.any(Number),
+      currentManifestVersion: expect.any(Number),
+    });
   });
 });
 ```
@@ -3778,33 +4508,39 @@ Expected: FAIL — module missing, envelope lacks the keys.
 `apps/api/src/services/m365Sync/summary.ts`:
 
 ```ts
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { M365_SYNC_DOMAINS, type M365SyncDomain } from '@breeze/shared/m365';
 import { isM365TenantSyncEnabled } from '../../config/env';
 import { db } from '../../db';
-import { m365SyncState } from '../../db/schema/m365Sync';
+import { m365PostureRollups, m365SyncState } from '../../db/schema/m365Sync';
+import type { M365SyncOutcome } from './types';
 
 const STATUSES = ['success', 'partial', 'needs_consent', 'throttled', 'error'] as const;
-export type M365SyncDomainStatus = typeof STATUSES[number];
 
 export interface M365SyncDomainSummary {
   domain: M365SyncDomain;
-  status: M365SyncDomainStatus | null;
-  lastSuccessAt: string | null;
+  /** The stored m365_sync_status, or 'never' when the domain has not run. */
+  status: M365SyncOutcome | 'never';
+  /** last_complete_snapshot_at — the honest "as of" for this fact (spec §6). */
+  asOf: string | null;
   truncated: boolean;
-  needsConsent: boolean;
+  /** sources.signInActivity === 'unlicensed': the tenant has no Entra ID P1. */
+  unlicensed: boolean;
 }
 
 export interface M365SyncSummary {
   /** Newest successful run across all domains — the card's "last synced". */
   lastSuccessAt: string | null;
+  /** users_total / devices_total from the newest posture rollup, or null. */
+  users: number | null;
+  devices: number | null;
   domains: M365SyncDomainSummary[];
 }
 
-function status(value: unknown): M365SyncDomainStatus | null {
+function status(value: unknown): M365SyncOutcome | 'never' {
   return typeof value === 'string' && (STATUSES as readonly string[]).includes(value)
-    ? value as M365SyncDomainStatus
-    : null;
+    ? value as M365SyncOutcome
+    : 'never';
 }
 
 function iso(value: Date | string | null | undefined): string | null {
@@ -3812,14 +4548,31 @@ function iso(value: Date | string | null | undefined): string | null {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+function count(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isUnlicensed(sources: unknown): boolean {
+  return (
+    sources !== null && typeof sources === 'object'
+    && (sources as Record<string, unknown>).signInActivity === 'unlicensed'
+  );
+}
+
 /**
- * Per-domain freshness for the Integrations card and the org tab. Read on the
- * request's own DB context, so RLS (shape 1) is the tenant boundary — no
- * system context, no cross-org read.
+ * Per-domain freshness for the Integrations card. Read on the request's own DB
+ * context, so RLS (shape 1) is the tenant boundary — no system context, no
+ * cross-org read.
  *
  * Every domain is represented even when it has no state row, so the UI can say
  * "never synced" for one domain without implying the whole connection is idle;
  * that distinction is the whole point of per-domain "as of" (spec §6).
+ *
+ * `asOf` is `last_complete_snapshot_at`, NOT `last_success_at`: a partial run
+ * succeeds without having enumerated the tenant, and showing its timestamp as
+ * the "as of" would claim freshness the data does not have.
  */
 export async function loadSyncSummary(orgId: string): Promise<M365SyncSummary | null> {
   if (!isM365TenantSyncEnabled()) return null;
@@ -3829,46 +4582,70 @@ export async function loadSyncSummary(orgId: string): Promise<M365SyncSummary | 
       domain: m365SyncState.domain,
       lastStatus: m365SyncState.lastStatus,
       lastSuccessAt: m365SyncState.lastSuccessAt,
+      lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
       truncated: m365SyncState.truncated,
+      sources: m365SyncState.sources,
     })
     .from(m365SyncState)
     .where(eq(m365SyncState.orgId, orgId));
 
   if (rows.length === 0) return null;
 
+  // The entity counts come from the rollup rather than a COUNT over m365_users /
+  // m365_intune_devices: the rollup is already the one place those totals are
+  // assembled (spec §5.9), and the card must not add two table scans to a page
+  // load. One indexed read of the newest row.
+  const [rollup] = await db
+    .select({ users: m365PostureRollups.usersTotal, devices: m365PostureRollups.devicesTotal })
+    .from(m365PostureRollups)
+    .where(eq(m365PostureRollups.orgId, orgId))
+    .orderBy(desc(m365PostureRollups.rollupDate))
+    .limit(1);
+
   const byDomain = new Map(rows.map((row) => [row.domain as M365SyncDomain, row]));
   const domains: M365SyncDomainSummary[] = M365_SYNC_DOMAINS.map((domain) => {
     const row = byDomain.get(domain);
-    const value = status(row?.lastStatus);
     return {
       domain,
-      status: value,
-      lastSuccessAt: iso(row?.lastSuccessAt ?? null),
+      status: status(row?.lastStatus),
+      asOf: iso(row?.lastCompleteSnapshotAt ?? null),
       truncated: row?.truncated === true,
-      needsConsent: value === 'needs_consent',
+      unlicensed: isUnlicensed(row?.sources ?? null),
     };
   });
 
-  const successes = domains
-    .map((d) => d.lastSuccessAt)
+  const successes = rows
+    .map((row) => iso(row.lastSuccessAt))
     .filter((value): value is string => value !== null)
     .sort();
 
-  return { lastSuccessAt: successes.at(-1) ?? null, domains };
+  return {
+    lastSuccessAt: successes.at(-1) ?? null,
+    users: count(rollup?.users),
+    devices: count(rollup?.devices),
+    domains,
+  };
 }
 ```
 
-In `m365CustomerGraphRead.ts`, extend the envelope (it becomes async — the
-only caller is the GET route):
+In `m365CustomerGraphRead.ts`, extend the envelope. It becomes `async` — the GET
+handler is its only caller — and the `profile` block is reproduced in full so
+W01's widened `manifestVersion` type is carried through verbatim:
 
 ```ts
 export interface CustomerGraphReadEnvelope {
-  profile: { … unchanged … };
+  profile: {
+    id: typeof PROFILE_ID;
+    displayName: string;
+    /** W01 widened this from the literal `2`; it is the current manifest version. */
+    manifestVersion: number;
+    requiredGrants: M365ApplicationGrant[];
+  };
   onboardingEnabled: boolean;
   connection: CustomerGraphReadConnectionDto | null;
   /** W05: tenant sync is available in this deployment. Gates the Sync now button. */
   syncEnabled: boolean;
-  /** W05: per-domain freshness. Null when the flag is off or nothing is seeded. W06 renders it. */
+  /** W05: per-domain freshness plus entity counts. Null when the flag is off or nothing is seeded. */
   sync: M365SyncSummary | null;
 }
 
@@ -3877,7 +4654,12 @@ async function envelope(
   connection: ConnectionWithHealth | null,
 ): Promise<CustomerGraphReadEnvelope> {
   return {
-    profile: { … unchanged … },
+    profile: {
+      id: PROFILE_ID,
+      displayName: PROFILE_DISPLAY_NAME,
+      manifestVersion: profileManifest.version,
+      requiredGrants: [...(profileManifest.applicationPermissionAssignments ?? [])],
+    },
     onboardingEnabled: isM365CustomerGraphReadOnboardingEnabledForOrg(orgId),
     connection: connection ? toConnectionDto(connection) : null,
     syncEnabled: isM365TenantSyncEnabled(),
@@ -3886,7 +4668,10 @@ async function envelope(
 }
 ```
 
-and in the GET handler: `return c.json(await envelope(resolved.orgId, connections[0] ?? null));`
+`toConnectionDto` is W01's and is **not** touched — the sync fields are
+envelope-level by contract.
+
+In the GET handler: `return c.json(await envelope(resolved.orgId, connections[0] ?? null));`
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -3900,18 +4685,22 @@ git add apps/api/src/services/m365Sync/summary.ts \
         apps/api/src/services/m365Sync/summary.test.ts \
         apps/api/src/routes/m365CustomerGraphRead.ts \
         apps/api/src/routes/m365CustomerGraphRead.test.ts
-git commit -m "feat(m365): expose syncEnabled and per-domain sync freshness on the read DTO
+git commit -m "feat(m365): expose syncEnabled and per-domain sync freshness on the read envelope
 
-Spec §6. The read envelope gains syncEnabled (gates the Sync now button) and a
-sync block listing all six domains with status, lastSuccessAt, truncated and
-needsConsent, plus the newest successful run across domains. Every domain is
-represented even with no state row, so the UI can say 'never synced' for one
-domain without implying the whole connection is idle — that per-fact 'as of' is
-the point of the spec's error table.
+Spec §6. The read ENVELOPE — not the connection DTO — gains syncEnabled (gates
+the Sync now button) and a sync block: the newest successful run across domains,
+users/devices from the newest m365_posture_rollups row, and all six domains with
+status, asOf, truncated and unlicensed. Every domain is represented even with no
+state row, so the UI can say 'never synced' for one domain without implying the
+whole connection is idle — that per-fact 'as of' is the point of the spec's
+error table.
+
+asOf is last_complete_snapshot_at, not last_success_at: a partial run succeeds
+without enumerating the tenant, and its timestamp would claim freshness the data
+does not have. needs_consent is a status, not a separate boolean, so the card
+cannot end up with two encodings of one fact.
 
 Read on the request's own DB context, so shape-1 RLS is the tenant boundary.
-
-W06 renders the 'last synced' line from these fields; it should not re-add them.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -3919,28 +4708,106 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 15: web — "Sync now" button on the Customer Graph Read card
+### Task 16: web — the whole Customer Graph Read card change set
 
-Spec §2.2 item 3's card, §5.2 on-demand. The card's `parseEnvelope` uses
-`hasExactKeys`, so the two new DTO fields are a **required** parser change, not
-an optional one — without it the whole card falls to its "unavailable" state.
+Spec §2.2 item 3 (card presentation), §5.2 (on-demand), §6 (what each state
+surfaces). **This wave owns every card change for the tenant-sync feature**: the
+"Sync now" button, the "Last synced … · N users · M devices" line, the
+per-domain chips, and `formatRelativeTime`. It absorbs what an earlier draft had
+put in W06 Task 13 — **W06 adds no card code, no locale key and no
+`dateTimeFormat` change**, and the PR body says so.
+
+The card's `parseEnvelope` uses `hasExactKeys`, so the two new envelope fields
+are a **required** parser change, not an optional one: without it the whole card
+falls to its "unavailable" state the moment the API starts sending them. The
+change is in `parseEnvelope`, **not** `parseConnection` — Task 15 put the fields
+on the envelope.
+
+**This task applies on top of W01's card changes**: `parseConnection` already
+validates `grantHealth` and `currentManifestVersion`, `ActionName` already
+includes `"upgrade"`, and the amber `manifest-stale` banner and "Approve new
+permissions" button already exist. Re-read the file and extend those lists
+rather than retyping them.
 
 **Files:**
+- Modify: `apps/web/src/lib/dateTimeFormat.ts`
+- Modify: `apps/web/src/lib/dateTimeFormat.test.ts`
 - Modify: `apps/web/src/components/integrations/M365CustomerGraphReadCard.tsx`
 - Modify: `apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx`
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/integrations.json`
 
 **Interfaces:**
-- Consumes: the Task 14 DTO fields; `runAction`, `handleActionError`
-  (`lib/runAction`); `fetchWithAuth`.
-- Produces: no exports; `data-testid` is not used by this card (it queries by
-  role/name), so follow the existing convention and keep it that way.
+- Consumes: the Task 15 envelope fields; `runAction`, `handleActionError`
+  (`lib/runAction`); `fetchWithAuth`; the card's existing `scopedRequest` /
+  `perform` / `isCurrent` scope discipline.
+- Produces: `formatRelativeTime` in `lib/dateTimeFormat.ts`. No other export;
+  `data-testid` is used for the two new blocks (`m365-sync-summary`,
+  `m365-sync-chip`) because a chip list has no accessible name to query by,
+  while the buttons keep the file's role/name convention.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `M365CustomerGraphReadCard.test.tsx` (the file's `envelope()` helper
-must gain the two keys or every existing test fails on `hasExactKeys` — do that
-first, in the same edit):
+Add to `apps/web/src/lib/dateTimeFormat.test.ts`:
+
+```ts
+import { formatRelativeTime } from './dateTimeFormat';
+
+describe('formatRelativeTime', () => {
+  const now = new Date('2026-09-08T12:00:00.000Z');
+
+  it('renders recent timestamps in minutes and hours', () => {
+    expect(formatRelativeTime('2026-09-08T11:58:00.000Z', { now, locale: 'en-US' })).toBe('2 minutes ago');
+    expect(formatRelativeTime('2026-09-08T09:00:00.000Z', { now, locale: 'en-US' })).toBe('3 hours ago');
+  });
+
+  it('renders older timestamps in days', () => {
+    expect(formatRelativeTime('2026-09-05T12:00:00.000Z', { now, locale: 'en-US' })).toBe('3 days ago');
+  });
+
+  it('treats anything under a minute as just now', () => {
+    expect(formatRelativeTime('2026-09-08T11:59:40.000Z', { now, locale: 'en-US' })).toBe('now');
+  });
+
+  it('returns the fallback for an unparseable or null value', () => {
+    expect(formatRelativeTime(null, { now, fallback: '—' })).toBe('—');
+    expect(formatRelativeTime('not a date', { now, fallback: '—' })).toBe('—');
+  });
+});
+```
+
+In `M365CustomerGraphReadCard.test.tsx`, first extend the existing
+`@/lib/dateTimeFormat` mock — the card imports a second symbol from it and the
+current factory returns only `formatDateTime`, which would break every test in
+the file:
+
+```ts
+vi.mock("@/lib/dateTimeFormat", () => ({
+  formatDateTime: vi.fn((value: string) => `formatted ${value}`),
+  formatRelativeTime: vi.fn((value: string) => `relative ${value}`),
+}));
+```
+
+Then extend the file's `envelope()` helper with the two ENVELOPE-level keys —
+do this first, in the same edit, or every existing test fails on `hasExactKeys`:
+
+```ts
+    syncEnabled: true,
+    sync: {
+      lastSuccessAt: "2026-09-08T11:30:00.000Z",
+      users: 128,
+      devices: 96,
+      domains: [
+        { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+        { domain: "signin_activity", status: "success", asOf: "2026-09-08T06:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "secure_score", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+      ],
+    },
+```
+
+Then the new cases:
 
 ```ts
 describe("Sync now", () => {
@@ -4012,6 +4879,94 @@ describe("Sync now", () => {
     await expectScopeIsolation("sync", "Sync now");
   });
 });
+
+describe("sync summary line and chips", () => {
+  it("shows the last-synced line with user and device counts", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({ syncEnabled: true })));
+    render(<M365CustomerGraphReadCard />);
+
+    const summary = await screen.findByTestId("m365-sync-summary");
+    expect(summary).toHaveTextContent("Last synced relative 2026-09-08T11:30:00.000Z");
+    expect(summary).toHaveTextContent("128 users");
+    expect(summary).toHaveTextContent("96 devices");
+    expect(screen.queryAllByTestId("m365-sync-chip")).toHaveLength(0);
+  });
+
+  it("says not synced yet before the first successful run", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({
+      syncEnabled: true,
+      sync: { lastSuccessAt: null, users: null, devices: null, domains: [] },
+    })));
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("Not synced yet");
+  });
+
+  it("renders a chip per degraded domain, in a fixed precedence, and none for healthy ones", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({
+      syncEnabled: true,
+      sync: {
+        lastSuccessAt: "2026-09-08T11:30:00.000Z",
+        users: 10,
+        devices: 5,
+        domains: [
+          { domain: "users", status: "partial", asOf: "2026-09-08T11:30:00.000Z", truncated: true, unlicensed: false },
+          { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+          { domain: "intune_devices", status: "throttled", asOf: null, truncated: false, unlicensed: false },
+          { domain: "ca_policies", status: "needs_consent", asOf: null, truncated: false, unlicensed: false },
+          { domain: "skus", status: "error", asOf: null, truncated: false, unlicensed: false },
+          { domain: "secure_score", status: "never", asOf: null, truncated: false, unlicensed: false },
+        ],
+      },
+    })));
+    render(<M365CustomerGraphReadCard />);
+
+    const chips = await screen.findAllByTestId("m365-sync-chip");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "Users: partial",
+      "Sign-in activity needs Entra ID P1",
+      "Intune devices: throttled",
+      "Conditional Access: needs consent",
+      "Licenses: error",
+    ]);
+    // 'never' and 'success' are not problems; a domain nobody has run yet is
+    // reported by the summary line, not by a warning chip.
+  });
+
+  it("hides the sync summary entirely when tenant sync is off", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({ syncEnabled: false, sync: null })));
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
+  });
+
+  it("rejects an envelope whose sync block has an unknown domain", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({
+      syncEnabled: true,
+      sync: {
+        lastSuccessAt: null, users: null, devices: null,
+        domains: [{ domain: "mailboxes", status: "success", asOf: null, truncated: false, unlicensed: false }],
+      },
+    })));
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+  });
+
+  it("rejects an envelope whose sync block has an unknown status", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({
+      syncEnabled: true,
+      sync: {
+        lastSuccessAt: null, users: null, devices: null,
+        domains: [{ domain: "users", status: "weird", asOf: null, truncated: false, unlicensed: false }],
+      },
+    })));
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+  });
+});
 ```
 
 Also extend the existing parameterised action tables in the file
@@ -4021,88 +4976,184 @@ scope-isolation matrices cover the new action.
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd apps/web && npx vitest run src/components/integrations/M365CustomerGraphReadCard.test.tsx`
-Expected: FAIL — no such button; and, before the helper is updated, the existing
-tests fail on `hasExactKeys` once the API sends the new keys.
+```bash
+cd apps/web && npx vitest run src/lib/dateTimeFormat.test.ts
+cd apps/web && npx vitest run src/components/integrations/M365CustomerGraphReadCard.test.tsx
+```
+Expected: FAIL — `formatRelativeTime` does not exist, there is no such button or
+summary block, and the existing tests fail on `hasExactKeys` until the envelope
+helper and the parser both carry the new keys.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement `formatRelativeTime`**
 
-In `M365CustomerGraphReadCard.tsx`:
+Append to `apps/web/src/lib/dateTimeFormat.ts`:
 
 ```ts
-type SyncDomainStatus = "success" | "partial" | "needs_consent" | "throttled" | "error";
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 3_600_000],
+  ['month', 30 * 24 * 3_600_000],
+  ['day', 24 * 3_600_000],
+  ['hour', 3_600_000],
+  ['minute', 60_000],
+];
+
+/**
+ * "3 hours ago" / "in 5 minutes", in the user's formatting locale.
+ *
+ * Anything inside a minute renders as the locale's "now" rather than
+ * "0 seconds ago", because a sync that finished 12 seconds ago and one that
+ * finished 50 seconds ago are the same fact to the reader.
+ */
+export function formatRelativeTime(
+  value: DateInput,
+  options: { now?: Date; locale?: Intl.LocalesArgument; fallback?: string } = {},
+): string {
+  const date = parseDate(value);
+  if (!date) return fallbackFor(value, options.fallback);
+  const locale = options.locale ?? resolvedFormattingLocale();
+  const deltaMs = date.getTime() - (options.now ?? new Date()).getTime();
+  try {
+    const formatter = new Intl.RelativeTimeFormat(locale as Intl.LocalesArgument, { numeric: 'auto' });
+    for (const [unit, ms] of RELATIVE_UNITS) {
+      if (Math.abs(deltaMs) >= ms) return formatter.format(Math.round(deltaMs / ms), unit);
+    }
+    return formatter.format(0, 'second');
+  } catch {
+    return fallbackFor(value, options.fallback);
+  }
+}
+```
+
+- [ ] **Step 4: Types and parsers (defined ONCE, at envelope level)**
+
+In `M365CustomerGraphReadCard.tsx`, next to the existing `STATUSES` /
+`GRANT_HEALTH_STATES` constants:
+
+```tsx
 const SYNC_DOMAINS = [
   "users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score",
 ] as const;
 type SyncDomain = (typeof SYNC_DOMAINS)[number];
 
-type SyncDomainSummary = {
-  domain: SyncDomain;
-  status: SyncDomainStatus | null;
-  lastSuccessAt: string | null;
-  truncated: boolean;
-  needsConsent: boolean;
-};
-type SyncSummary = { lastSuccessAt: string | null; domains: SyncDomainSummary[] };
+const SYNC_STATUSES = [
+  "success", "partial", "needs_consent", "throttled", "error", "never",
+] as const;
+type SyncStatus = (typeof SYNC_STATUSES)[number];
 
-type ActionName = "consent" | "retest" | "disconnect" | "sync";
+type SyncDomainState = {
+  domain: SyncDomain;
+  status: SyncStatus;
+  asOf: string | null;
+  truncated: boolean;
+  unlicensed: boolean;
+};
+type SyncSummary = {
+  lastSuccessAt: string | null;
+  users: number | null;
+  devices: number | null;
+  domains: SyncDomainState[];
+};
 ```
 
-Parsers, in the same defensive style as `parseConnection` (an unparseable
-block degrades to `null`, never to a thrown render):
+and widen the existing `ActionName` union (W01 already added `"upgrade"`) with
+`"sync"`.
 
-```ts
-function parseSyncDomain(value: unknown): SyncDomainSummary | null {
-  const keys = ["domain", "status", "lastSuccessAt", "truncated", "needsConsent"];
-  if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
-  const lastSuccessAt = parseTimestamp(value.lastSuccessAt);
+The two parsers are written **once**, in the same defensive style as
+`parseConnection` — an unparseable block fails the envelope rather than throwing
+during render, and closed unions mean an unknown domain or status is a rejection,
+not a silently rendered string:
+
+```tsx
+function parseCount(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
+  return value;
+}
+
+function parseSyncDomain(value: unknown): SyncDomainState | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["domain", "status", "asOf", "truncated", "unlicensed"])) return null;
+  const asOf = parseTimestamp(value.asOf);
   if (
     typeof value.domain !== "string" || !(SYNC_DOMAINS as readonly string[]).includes(value.domain)
-    || (value.status !== null && typeof value.status !== "string")
-    || lastSuccessAt === undefined
+    || typeof value.status !== "string" || !(SYNC_STATUSES as readonly string[]).includes(value.status)
+    || asOf === undefined
     || typeof value.truncated !== "boolean"
-    || typeof value.needsConsent !== "boolean"
+    || typeof value.unlicensed !== "boolean"
   ) return null;
   return {
     domain: value.domain as SyncDomain,
-    status: (value.status as SyncDomainStatus | null),
-    lastSuccessAt,
+    status: value.status as SyncStatus,
+    asOf,
     truncated: value.truncated,
-    needsConsent: value.needsConsent,
+    unlicensed: value.unlicensed,
   };
 }
 
+/** `null` is a legitimate value (flag off / nothing seeded); `undefined` is a parse failure. */
 function parseSync(value: unknown): SyncSummary | null | undefined {
   if (value === null) return null;
-  if (!isRecord(value) || !hasExactKeys(value, ["lastSuccessAt", "domains"])) return undefined;
+  if (!isRecord(value) || !hasExactKeys(value, ["lastSuccessAt", "users", "devices", "domains"])) return undefined;
   const lastSuccessAt = parseTimestamp(value.lastSuccessAt);
-  if (lastSuccessAt === undefined || !Array.isArray(value.domains) || value.domains.length > 16) return undefined;
+  const users = parseCount(value.users);
+  const devices = parseCount(value.devices);
+  if (
+    !Array.isArray(value.domains) || value.domains.length > SYNC_DOMAINS.length
+    || lastSuccessAt === undefined || users === undefined || devices === undefined
+  ) return undefined;
   const domains = value.domains.map(parseSyncDomain);
   if (domains.some((domain) => domain === null)) return undefined;
-  return { lastSuccessAt, domains: domains as SyncDomainSummary[] };
+  return { lastSuccessAt, users, devices, domains: domains as SyncDomainState[] };
 }
 ```
 
-In `parseEnvelope`, widen the key set and add the two fields:
+In `parseEnvelope` — **not** `parseConnection` — widen the key set, add two
+checks and return two fields. The whole function after this task, with W01's
+`manifestVersion: TRUSTED_PROFILE.version` already in place:
 
-```ts
+```tsx
+function parseEnvelope(value: unknown): Envelope | null {
   if (!isRecord(value) || !hasExactKeys(value, [
     "profile", "onboardingEnabled", "connection", "syncEnabled", "sync",
   ])) return null;
-  …
+  if (!isRecord(value.profile) || !hasExactKeys(value.profile, ["id", "displayName", "manifestVersion", "requiredGrants"])) return null;
+  const grants = parseGrants(value.profile.requiredGrants);
+  const connection = parseConnection(value.connection);
   const sync = parseSync(value.sync);
   if (
-    …existing checks…
+    value.profile.id !== "customer-graph-read"
+    || typeof value.profile.displayName !== "string"
+    || value.profile.manifestVersion !== TRUSTED_PROFILE.version
+    || grants === null || !matchesTrustedManifest(grants)
+    || typeof value.onboardingEnabled !== "boolean"
+    || connection === undefined
     || typeof value.syncEnabled !== "boolean"
     || sync === undefined
   ) return null;
-  return { …, syncEnabled: value.syncEnabled, sync };
+  return {
+    profile: {
+      id: "customer-graph-read",
+      displayName: value.profile.displayName,
+      manifestVersion: TRUSTED_PROFILE.version,
+      requiredGrants: grants,
+    },
+    onboardingEnabled: value.onboardingEnabled,
+    connection,
+    syncEnabled: value.syncEnabled,
+    sync,
+  };
+}
 ```
+
+and add `syncEnabled: boolean; sync: SyncSummary | null;` to the `Envelope` type.
+`parseConnection` is untouched: W01's `grantHealth` / `manifestVersion` /
+`currentManifestVersion` stay where they are.
+
+- [ ] **Step 5: The action, the summary line and the chips**
 
 The handler, cloned from `retest` (same scoped-request/`perform` discipline, so
 a deferred Org A call cannot land on Org B):
 
-```ts
+```tsx
   const syncNow = useCallback(() => {
     if (
       !orgId || !data?.connection || !canWrite || !data.syncEnabled
@@ -4133,6 +5184,35 @@ a deferred Org A call cannot land on Org B):
   }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 ```
 
+The chips, next to the card's other `useMemo` blocks. The precedence is fixed
+and ordered worst-first per domain, so exactly one chip can come from one domain
+and the rendered list is deterministic:
+
+```tsx
+  const syncChips = useMemo(() => {
+    const chips: { key: string; label: string }[] = [];
+    for (const entry of data?.sync?.domains ?? []) {
+      const domain = t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`);
+      if (entry.unlicensed) {
+        // Its own sentence, not "{{domain}}: unlicensed": the actionable fact is
+        // that the TENANT needs Entra ID P1, not that a sync went wrong.
+        chips.push({ key: `${entry.domain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
+      } else if (entry.status === "throttled") {
+        chips.push({ key: `${entry.domain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
+      } else if (entry.status === "needs_consent") {
+        chips.push({ key: `${entry.domain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
+      } else if (entry.status === "error") {
+        chips.push({ key: `${entry.domain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
+      } else if (entry.status === "partial" || entry.truncated) {
+        chips.push({ key: `${entry.domain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
+      }
+      // 'success' and 'never' get no chip: the summary line already says whether
+      // anything has ever synced, and a chip per healthy domain is noise.
+    }
+    return chips;
+  }, [data, t]);
+```
+
 The button, beside Retest inside the `connection &&` fragment:
 
 ```tsx
@@ -4146,43 +5226,276 @@ The button, beside Retest inside the `connection &&` fragment:
 with `RefreshCcwDot` added to the `lucide-react` import (a different glyph from
 Retest's `RefreshCw`, so the two buttons are distinguishable at a glance).
 
-Add three keys under `m365CustomerGraphRead.actions` in **all eight** locale
-files — `localeParity.test.ts` asserts an exact key match per locale, so a
-missing one reds Test Web:
+The summary block, immediately after the connection details `</dl>`'s closing
+`</div>`:
+
+```tsx
+          {data.syncEnabled && data.sync && (
+            <div className="border-t pt-5" data-testid="m365-sync-summary">
+              <p className="text-sm text-foreground">
+                {data.sync.lastSuccessAt
+                  ? `${t("m365CustomerGraphRead.sync.lastSynced", {
+                      relative: formatRelativeTime(data.sync.lastSuccessAt),
+                    })} · ${t("m365CustomerGraphRead.sync.counts", {
+                      users: data.sync.users ?? 0,
+                      devices: data.sync.devices ?? 0,
+                    })}`
+                  : t("m365CustomerGraphRead.sync.never")}
+              </p>
+              {syncChips.length > 0 && (
+                <ul className="mt-3 flex flex-wrap gap-2">
+                  {syncChips.map((chip) => (
+                    <li
+                      key={chip.key}
+                      data-testid="m365-sync-chip"
+                      className="inline-flex items-center rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-foreground"
+                    >
+                      {chip.label}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+```
+
+with `formatRelativeTime` added to the `@/lib/dateTimeFormat` import.
+
+- [ ] **Step 6: Add the i18n keys to all eight catalogs**
+
+`localeParity.test.ts` asserts an exact key match per locale, so a missing key in
+any one of the eight reds Test Web. Every locale gets both blocks under
+`m365CustomerGraphRead`: three `actions.*` keys and the whole `sync` block.
+Translate rather than copying English, and keep the repo's terminology
+(`apps/web/src/locales/TERMINOLOGY.md`).
+
+`en`:
 
 ```json
-"syncNow": "Sync now",
-"syncFailed": "Tenant sync could not be requested.",
-"syncSucceeded": "Tenant sync requested."
+"actions": { "syncNow": "Sync now", "syncFailed": "Tenant sync could not be requested.", "syncSucceeded": "Tenant sync requested." },
+"sync": {
+  "lastSynced": "Last synced {{relative}}",
+  "counts": "{{users}} users · {{devices}} devices",
+  "never": "Not synced yet",
+  "chips": {
+    "partial": "{{domain}}: partial",
+    "needsConsent": "{{domain}}: needs consent",
+    "throttled": "{{domain}}: throttled",
+    "error": "{{domain}}: error",
+    "unlicensed": "Sign-in activity needs Entra ID P1"
+  },
+  "domains": {
+    "users": "Users",
+    "signin_activity": "Sign-in activity",
+    "intune_devices": "Intune devices",
+    "ca_policies": "Conditional Access",
+    "skus": "Licenses",
+    "secure_score": "Secure Score"
+  }
+}
 ```
 
-Translate for the seven non-`en` locales rather than copying English; keep the
-repo's existing terminology (`apps/web/src/locales/TERMINOLOGY.md`).
+`pt-BR`:
 
-- [ ] **Step 4: Run the tests to verify they pass**
+```json
+"actions": { "syncNow": "Sincronizar agora", "syncFailed": "Não foi possível solicitar a sincronização do locatário.", "syncSucceeded": "Sincronização do locatário solicitada." },
+"sync": {
+  "lastSynced": "Última sincronização {{relative}}",
+  "counts": "{{users}} usuários · {{devices}} dispositivos",
+  "never": "Ainda não sincronizado",
+  "chips": {
+    "partial": "{{domain}}: parcial",
+    "needsConsent": "{{domain}}: precisa de consentimento",
+    "throttled": "{{domain}}: limitado",
+    "error": "{{domain}}: erro",
+    "unlicensed": "A atividade de entrada exige o Entra ID P1"
+  },
+  "domains": {
+    "users": "Usuários",
+    "signin_activity": "Atividade de entrada",
+    "intune_devices": "Dispositivos do Intune",
+    "ca_policies": "Acesso Condicional",
+    "skus": "Licenças",
+    "secure_score": "Pontuação de segurança"
+  }
+}
+```
+
+`es-419`:
+
+```json
+"actions": { "syncNow": "Sincronizar ahora", "syncFailed": "No se pudo solicitar la sincronización del inquilino.", "syncSucceeded": "Sincronización del inquilino solicitada." },
+"sync": {
+  "lastSynced": "Última sincronización {{relative}}",
+  "counts": "{{users}} usuarios · {{devices}} dispositivos",
+  "never": "Aún no sincronizado",
+  "chips": {
+    "partial": "{{domain}}: parcial",
+    "needsConsent": "{{domain}}: requiere consentimiento",
+    "throttled": "{{domain}}: limitado",
+    "error": "{{domain}}: error",
+    "unlicensed": "La actividad de inicio de sesión requiere Entra ID P1"
+  },
+  "domains": {
+    "users": "Usuarios",
+    "signin_activity": "Actividad de inicio de sesión",
+    "intune_devices": "Dispositivos de Intune",
+    "ca_policies": "Acceso condicional",
+    "skus": "Licencias",
+    "secure_score": "Puntuación de seguridad"
+  }
+}
+```
+
+`fr-FR` and `fr-CA` (identical values; both catalogs still need their own copy):
+
+```json
+"actions": { "syncNow": "Synchroniser maintenant", "syncFailed": "Impossible de demander la synchronisation du locataire.", "syncSucceeded": "Synchronisation du locataire demandée." },
+"sync": {
+  "lastSynced": "Dernière synchronisation {{relative}}",
+  "counts": "{{users}} utilisateurs · {{devices}} appareils",
+  "never": "Pas encore synchronisé",
+  "chips": {
+    "partial": "{{domain}} : partiel",
+    "needsConsent": "{{domain}} : consentement requis",
+    "throttled": "{{domain}} : limité",
+    "error": "{{domain}} : erreur",
+    "unlicensed": "L'activité de connexion nécessite Entra ID P1"
+  },
+  "domains": {
+    "users": "Utilisateurs",
+    "signin_activity": "Activité de connexion",
+    "intune_devices": "Appareils Intune",
+    "ca_policies": "Accès conditionnel",
+    "skus": "Licences",
+    "secure_score": "Niveau de sécurité"
+  }
+}
+```
+
+`de-DE`:
+
+```json
+"actions": { "syncNow": "Jetzt synchronisieren", "syncFailed": "Die Mandantensynchronisierung konnte nicht angefordert werden.", "syncSucceeded": "Mandantensynchronisierung angefordert." },
+"sync": {
+  "lastSynced": "Zuletzt synchronisiert {{relative}}",
+  "counts": "{{users}} Benutzer · {{devices}} Geräte",
+  "never": "Noch nicht synchronisiert",
+  "chips": {
+    "partial": "{{domain}}: unvollständig",
+    "needsConsent": "{{domain}}: Zustimmung erforderlich",
+    "throttled": "{{domain}}: gedrosselt",
+    "error": "{{domain}}: Fehler",
+    "unlicensed": "Anmeldeaktivität erfordert Entra ID P1"
+  },
+  "domains": {
+    "users": "Benutzer",
+    "signin_activity": "Anmeldeaktivität",
+    "intune_devices": "Intune-Geräte",
+    "ca_policies": "Bedingter Zugriff",
+    "skus": "Lizenzen",
+    "secure_score": "Sicherheitsbewertung"
+  }
+}
+```
+
+`it-IT`:
+
+```json
+"actions": { "syncNow": "Sincronizza ora", "syncFailed": "Non è stato possibile richiedere la sincronizzazione del tenant.", "syncSucceeded": "Sincronizzazione del tenant richiesta." },
+"sync": {
+  "lastSynced": "Ultima sincronizzazione {{relative}}",
+  "counts": "{{users}} utenti · {{devices}} dispositivi",
+  "never": "Non ancora sincronizzato",
+  "chips": {
+    "partial": "{{domain}}: parziale",
+    "needsConsent": "{{domain}}: consenso richiesto",
+    "throttled": "{{domain}}: limitato",
+    "error": "{{domain}}: errore",
+    "unlicensed": "L'attività di accesso richiede Entra ID P1"
+  },
+  "domains": {
+    "users": "Utenti",
+    "signin_activity": "Attività di accesso",
+    "intune_devices": "Dispositivi Intune",
+    "ca_policies": "Accesso condizionale",
+    "skus": "Licenze",
+    "secure_score": "Punteggio sicuro"
+  }
+}
+```
+
+`tr-TR`:
+
+```json
+"actions": { "syncNow": "Şimdi eşitle", "syncFailed": "Kiracı eşitlemesi istenemedi.", "syncSucceeded": "Kiracı eşitlemesi istendi." },
+"sync": {
+  "lastSynced": "Son eşitleme {{relative}}",
+  "counts": "{{users}} kullanıcı · {{devices}} cihaz",
+  "never": "Henüz eşitlenmedi",
+  "chips": {
+    "partial": "{{domain}}: kısmi",
+    "needsConsent": "{{domain}}: onay gerekiyor",
+    "throttled": "{{domain}}: kısıtlandı",
+    "error": "{{domain}}: hata",
+    "unlicensed": "Oturum açma etkinliği Entra ID P1 gerektirir"
+  },
+  "domains": {
+    "users": "Kullanıcılar",
+    "signin_activity": "Oturum açma etkinliği",
+    "intune_devices": "Intune cihazları",
+    "ca_policies": "Koşullu Erişim",
+    "skus": "Lisanslar",
+    "secure_score": "Güvenlik Puanı"
+  }
+}
+```
+
+The three `actions.*` keys go **into** the existing `m365CustomerGraphRead.actions`
+object in each catalog — do not add a second `actions` key. Every translated
+value differs from its English counterpart, so no `translationCoverage.test.ts`
+duplicate baseline needs bumping; if one trips the duplicate check, translate it
+further rather than raising the baseline.
+
+- [ ] **Step 7: Run the tests to verify they pass**
 
 ```bash
-cd apps/web && npx vitest run src/components/integrations/M365CustomerGraphReadCard.test.tsx
+cd apps/web && npx vitest run \
+  src/lib/dateTimeFormat.test.ts \
+  src/components/integrations/M365CustomerGraphReadCard.test.tsx
 cd apps/web && npx vitest run src/lib/i18n
 ```
-Expected: PASS (the second run must include `localeParity` and `keyUsage`).
+Expected: PASS (the second run must include `localeParity`, `keyUsage`,
+`translationCoverage` and `terminologyQuality`).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add apps/web/src/components/integrations/M365CustomerGraphReadCard.tsx \
+git add apps/web/src/lib/dateTimeFormat.ts \
+        apps/web/src/lib/dateTimeFormat.test.ts \
+        apps/web/src/components/integrations/M365CustomerGraphReadCard.tsx \
         apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx \
         apps/web/src/locales/*/integrations.json
-git commit -m "feat(m365): Sync now button on the Customer Graph Read card
+git commit -m "feat(m365): Sync now, last-synced line and per-domain chips on the Customer Graph Read card
 
-Posts the on-demand sync through runAction, so a 429 from the limiter surfaces
-as a toast instead of a silent no-op, and reuses the card's scoped-request
-discipline so a deferred Org A call cannot land on Org B. Shown only when the
-DTO reports syncEnabled and the connection is active or degraded.
+The whole card change set for tenant sync, in one wave. 'Sync now' posts the
+on-demand request through runAction, so a 429 from the limiter surfaces as a
+toast instead of a silent no-op, and reuses the card's scoped-request discipline
+so a deferred Org A call cannot land on Org B. The summary line renders
+'Last synced <relative> · N users · M devices' from the envelope's sync block,
+and a chip appears per degraded domain — unlicensed sign-in, throttled, needs
+consent, error, partial — in a fixed precedence so at most one chip comes from
+one domain. Healthy and never-run domains get no chip; the line already says
+whether anything has synced.
 
-The card's parseEnvelope uses hasExactKeys, so the two new DTO fields are a
-required parser change: without it the whole card would fall to its unavailable
-state the moment the API starts sending them.
+The envelope parser gains the two new fields with closed unions for the six
+domains and six statuses, so an unknown domain or status fails the envelope
+rather than rendering. It is parseEnvelope, not parseConnection: the fields are
+envelope-level, and without the parser change the whole card would fall to its
+unavailable state the moment the API started sending them.
+
+Adds formatRelativeTime to the shared date helpers and both key blocks to all
+eight locale catalogs.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
@@ -4190,7 +5503,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ---
 
-### Task 16: full verification and the pull request
+### Task 17: full verification and the pull request
 
 **Files:**
 - No production changes. Fix whatever the runs below surface, in the task that
@@ -4213,12 +5526,17 @@ cd apps/api && npx vitest run \
 
 Check the reported **file count**, not just the colour: vitest's path filter is
 a plain substring match, so `src/services/m365Sync` picks up every file under
-that directory — if the count is smaller than the number of test files you
-added plus W04's, a file is not being matched and a green run means nothing.
+that directory. It must include W04's files plus this wave's
+`cadence.test.ts`, `hooks.test.ts`, `rollup.test.ts`, `links.test.ts`,
+`lifecycle.test.ts`, `onDemandLimiter.test.ts`, `summary.test.ts`,
+`domains/signinActivity.test.ts` and `domains/secureScore.test.ts`, and the
+edited `run.test.ts`, `claim.sql.test.ts` and `domains/users.test.ts`. If the
+count is lower, a file is not being matched and a green run means nothing.
 
 ```bash
-# Web card + i18n parity
+# Web card, date helpers and i18n parity
 cd apps/web && npx vitest run \
+  src/lib/dateTimeFormat.test.ts \
   src/components/integrations/M365CustomerGraphReadCard.test.tsx \
   src/lib/i18n
 ```
@@ -4228,11 +5546,15 @@ cd apps/web && npx vitest run \
 ```bash
 cd apps/api && pnpm test:docker:up
 cd apps/api && npx vitest run --config vitest.integration.config.ts \
-  src/__tests__/integration/m365SyncLinks.integration.test.ts
+  src/__tests__/integration/m365SyncLinks.integration.test.ts \
+  src/__tests__/integration/m365SyncClaim.integration.test.ts
 ```
 
-Expected: PASS with 9 tests **executed**. `it.runIf(!!process.env.DATABASE_URL)`
-skips silently without a database, and an all-skipped file reports green.
+Expected: PASS with 9 link tests and W04's 13 claim tests **executed** —
+`it.runIf(!!process.env.DATABASE_URL)` skips silently without a database, and an
+all-skipped file reports green. `m365SyncClaim.integration.test.ts` is W04's
+suite; Task 4 edited its reconcile case from four rows to six, so confirm that
+case in particular passes rather than trusting the file's overall colour.
 
 This wave adds no table and no column, so the tenancy contract suites
 (`rls-coverage`, `tenantCascade`, `tenant-export-policy`,
@@ -4251,28 +5573,45 @@ pnpm lint
 Run both in the foreground with a generous timeout; a backgrounded typecheck is
 how these stall.
 
-- [ ] **Step 4: Merge main and re-verify**
+- [ ] **Step 4: Confirm the plan file is the only doc this wave touched**
+
+```bash
+git diff --stat origin/main... -- docs/
+```
+
+The overview
+(`docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`)
+must **not** appear: contract edits are the orchestrator's, and every name this
+wave uses is already in the contract. If something genuinely diverged, leave the
+file alone and describe the delta in the PR body instead.
+
+- [ ] **Step 5: Merge main and re-verify**
 
 PR CI tests the merge commit, not your branch tip, so a locally green branch on
 a stale base still reds CI:
 
 ```bash
 git fetch origin main && git merge origin/main
-cd apps/api && npx vitest run src/services/m365Sync src/routes/m365CustomerGraphRead.test.ts
+cd apps/api && npx vitest run src/services/m365Sync src/routes/m365CustomerGraphRead.test.ts src/routes/m365ConsentCallback.test.ts
 ```
 
 If W01, W02, W03 or W04 moved under you, reconcile against the code (it is the
-authority) and note any contract delta in the PR body.
+authority) and note any contract delta in the PR body. Pay particular attention
+to W01's callback seam and DTO — Tasks 12, 14, 15 and 16 all build on them.
 
-- [ ] **Step 5: Open the PR**
+- [ ] **Step 6: Open the PR**
 
 ```bash
 git push -u origin HEAD
-gh pr create --title "feat(m365): tenant sync W05 — enrichment, continuation, Secure Score, rollup, cadence, links, lifecycle, on-demand" --body "$(cat <<'BODY'
-Wave 5 of the M365 tenant sync foundation. Finishes the sync worker W04 started.
+gh pr create --title "feat(m365): tenant sync W05 — enrichment, continuation, Secure Score, rollup, cadence, links, lifecycle, on-demand, card" --body "$(cat <<'BODY'
+Wave 5 of the M365 tenant sync foundation. Finishes the sync worker W04 started
+and ships the whole product surface for it.
 
 Spec: `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` (§5.5–§5.9, §3.3, §6, §10)
 Plan: `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-5-enrichment-lifecycle.md`
+
+Depends on **W01** (the consent-callback restructure and the connection DTO) and
+**W04** (the worker, its seams and its types).
 
 ## What ships
 
@@ -4285,61 +5624,80 @@ Plan: `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-5-enrichm
 - **Sign-in activity (§5.5, §6).** Its own domain: one set-based, change-only
   UPDATE by `(org_id, graph_id)`; unknown users ignored; `unlicensed` is a
   complete zero-update success that pushes the interval to its ceiling; a
-  returned continuation stores the opaque blob, leaves the state otherwise
-  untouched, and re-claims at priority 10 for a new generation until exhausted.
+  returned continuation is stored through `writeCompletion`'s continuation mode,
+  leaving the state otherwise untouched, and the run re-claims at priority 10 for
+  a new generation until exhausted.
 - **Secure Score (§3.3).** Snapshots keyed on the UTC day of Graph's own
   `createdDateTime`, computed in SQL; two scores for one Graph day collapse
   newest-wins; the 90-day backfill is driven by the state row's
-  `last_success_at IS NULL`, so no flag column exists.
-- **Rollup (§5.9)** into `afterDomainPersisted`: one indexed read of the six
-  `last_counts` plus one upsert, no COUNT queries. Counters no domain reported
-  stay **NULL, not 0**.
-- **Adaptive cadence (§5.7)** into `applyCadence`, with the domain bounds;
-  `needs_consent` and connection auth failure unschedule.
+  `last_success_at IS NULL` through `m365SyncActionFor`, so no flag column exists.
+- **Both remaining domains switched on.** `DOMAIN_PERSISTERS` gains
+  `signin_activity` and `secure_score`, and `M365_SYNC_IMPLEMENTED_DOMAINS`
+  becomes `M365_SYNC_DOMAINS`, so the ticker seeds and claims all six. W04's two
+  assertions marked "W05 inverts this" are inverted, and its real-Postgres
+  reconcile case moves from four rows to six.
+- **Rollup (§5.9)** in `hooks.ts`: one indexed read of the six `last_counts`
+  plus one upsert, no COUNT queries, run **after** the completion transaction
+  commits on the hook's own system context. Counters no domain reported stay
+  **NULL, not 0**.
+- **Adaptive cadence (§5.7)** as the body of W04's `applyCadence` seam, with the
+  domain bounds; `needs_consent` and connection auth failure unschedule.
+  `graph_permission_missing` is not an auth failure — it maps to `needs_consent`.
 - **Device links (§5.6).** Two data-modifying-CTE statements per Intune run,
-  1:1 on both sides, ambiguity counted and skipped, hostname fallback, relink on
-  mismatch — proven against real Postgres.
+  1:1 on both sides, ambiguity counted through `recordM365SyncLinkAmbiguous` and
+  skipped, hostname fallback, relink on mismatch — proven against real Postgres.
 - **Lifecycle (§5.8).** Consent success (active **or** degraded) seeds all six
-  domains at priority 1; disconnect erases state and the four entity tables in
-  the caller's transaction and keeps the tenant-stamped history; upgrade-consent
-  re-arms `needs_consent` domains.
+  domains at priority 1 from W01's identity branch; disconnect erases state and
+  the four entity tables in the caller's transaction and keeps the tenant-stamped
+  history; W01's upgrade-apply seam calls `onConnectionUpgraded`, re-arming
+  `needs_consent` domains.
 - **On-demand (§5.2).** `POST /m365/connections/:id/sync`, MFA-gated like
   retest, Redis-limited to one per org per 15 min (429 + `Retry-After`), flag
   first so a disabled feature never burns a slot, sign-in excluded because its
-  Graph budget is app-wide. Plus the `syncEnabled` / `sync` DTO fields and the
-  card's "Sync now" button.
+  Graph budget is app-wide. Ninth lifecycle audit event `sync_requested`,
+  appended after W01's eight.
+- **DTO + card.** The read **envelope** gains `syncEnabled` and
+  `sync: { lastSuccessAt, users, devices, domains[] }`, and the card gains the
+  "Sync now" button, the "Last synced … · N users · M devices" line, per-domain
+  chips, `formatRelativeTime` and all eight locale catalogs.
 
-## Contract deviations (overview updated in this PR)
+## Contract conformance
 
-1. `runSyncDomain`'s return union gains `'partial-continue'`. `M365SyncOutcome`
-   is unchanged — `m365_sync_status` is a shipped Postgres enum (W02) and spec
-   §6 keeps the sync state "unchanged until exhausted", so the value is
-   control-flow and metrics only and never reaches `last_status`.
-2. `CadenceSignals` gains `unlicensed`, `authFailure` and `now`. Neither of the
-   first two is derivable from the outcome (`unlicensed` *is* a success; an auth
-   failure is an `error` like any other), and `now` makes the jitter testable.
-3. Lifecycle hooks differ in DB-context posture on purpose:
-   `onConnectionDisconnected` runs on the caller's ambient system context and
-   **throws**; `onConnectionConsented` / `onConnectionUpgraded` open their own
-   and **never throw**. Rationale in the plan's Decision 6.
+No contract deviations, and the overview is **not** edited by this PR. Every
+name used here is already in the shared contract:
+
+- `M365SyncRunResult` (with `'partial-continue'`), `M365_SYNC_IMPLEMENTED_DOMAINS`
+  and `m365SyncActionFor` are imported from `types.ts`, never redeclared.
+- `CadenceSignals` (six fields) is imported from `cadence.ts`; `applyCadence`
+  and `afterDomainPersisted` keep their contracted signatures — this wave
+  replaces bodies in files W04 created.
+- `afterDomainPersisted` runs after `writeCompletion` commits, on its own system
+  context; a throw there cannot roll a completion back.
+- `recordM365SyncLinkAmbiguous(count)` takes one numeric argument, no `orgId`
+  label.
+- The `sync` block sits on `CustomerGraphReadEnvelope`, so the web change is in
+  `parseEnvelope`; `needs_consent` is a `status`, not a separate boolean.
 
 ## Coordination
 
-- **W06:** this PR adds `syncEnabled` and `sync: { lastSuccessAt, domains[] }`
-  to the read envelope and the "Sync now" button. W06 renders the "last synced"
-  line from those fields — do not re-add them.
-- **W01:** `onConnectionUpgraded` is wired from the identity-verification
-  success branch keyed on `manifest_stale` being cleared. It is idempotent, so
-  W01's dedicated upgrade-consent promotion branch can also call it without
-  removing this call.
+- **W06:** this PR owns the ENTIRE card change set — button, last-synced line,
+  chips, `formatRelativeTime`, locale keys — and the `syncEnabled` / `sync`
+  envelope fields. **W06 adds no card code and re-adds no field**; it tests them.
+- **W01:** `onConnectionUpgraded` is wired at W01's
+  `// W05: onConnectionUpgraded(...)` seam inside the upgrade-apply branch, and
+  `onConnectionConsented` in the identity branch. The route and DTO edits in
+  Tasks 14–16 sit on top of W01's `grantHealth` / `manifestVersion` /
+  `currentManifestVersion` and its upgrade-consent route.
 
 ## Verification
 
 - `apps/api`: `m365Sync`, `m365ControlPlane`, `routes/m365CustomerGraphRead`,
   `routes/m365ConsentCallback` unit suites.
-- `apps/api` integration: `m365SyncLinks.integration.test.ts` (9 tests, real
-  Postgres — confirmed executed, not skipped).
-- `apps/web`: card suite + `localeParity` / `keyUsage` across all eight locales.
+- `apps/api` integration: `m365SyncLinks.integration.test.ts` (9 tests) and
+  W04's `m365SyncClaim.integration.test.ts` (13 tests, reconcile now 6 rows) —
+  both confirmed executed against real Postgres, not skipped.
+- `apps/web`: card suite, `dateTimeFormat`, and `localeParity` / `keyUsage` /
+  `translationCoverage` across all eight locales.
 - `tsc --noEmit` for `apps/api` and `apps/web`; `pnpm lint`.
 - No migration, no schema change: the tenancy contract suites are W02's surface.
 
@@ -4356,7 +5714,7 @@ The wave sub-issue is #5332 (already substituted above).
 `get_feature_status` before running the command — `Closes` is what auto-closes
 the wave on merge.
 
-- [ ] **Step 6: Confirm CI actually ran**
+- [ ] **Step 7: Confirm CI actually ran**
 
 ```bash
 gh pr checks --watch ; true
@@ -4364,6 +5722,7 @@ gh pr checks --watch ; true
 
 `gh pr checks` exits non-zero while checks are pending, so a `&&`/`|| continue`
 poll loop never fires — parse the text, and do not trust a "green" that is
-really "nothing ran". If this PR is stacked on a sibling branch rather than
-`main`, `ci.yml`'s `pull_request: branches: [main]` trigger means **no CI runs
-at all**; dispatch it explicitly with `gh workflow run CI --ref <branch>`.
+really "nothing ran". This wave is stacked on W01/W04, so if the PR targets a
+sibling branch rather than `main`, `ci.yml`'s `pull_request: branches: [main]`
+trigger means **no CI runs at all**; dispatch it explicitly with
+`gh workflow run CI --ref <branch>`.

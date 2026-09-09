@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` — this wave implements §5.1–5.4, §5.9 (counts only), §5.10, §6, §7, §10 steps 1–2. Sections are cited per task.
 
-**Overview / shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md` (tracking issue `LanternOps/breeze#5327`). Module names, function signatures, job/queue names, env names and metric names in that file are **fixed**; every deviation this plan takes is listed under "Contract deltas" below and MUST be reflected in the overview file in the same PR.
+**Overview / shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md` (tracking issue `LanternOps/breeze#5327`). Module names, function signatures, job/queue names, env names and metric names in that file are **fixed**. **Contract edits are the orchestrator's — this wave does NOT edit the overview file.** Every deviation this plan takes is listed under "Contract deltas" below and is restated in the PR body; the orchestrator folds them into the overview.
 
 ## Global constraints (inherited from the overview; every task obeys them)
 
@@ -39,9 +39,23 @@ test -f apps/api/src/db/schema/m365Sync.ts \
 
 **From W02** (`apps/api/src/db/schema/m365Sync.ts`, re-exported from `apps/api/src/db/schema/index.ts`): `m365SyncState`, `m365Users`, `m365IntuneDevices`, `m365CaPolicies`, `m365LicenseSkus`, `m365SecureScoreSnapshots`, `m365PostureRollups`; enums `m365_sync_domain`, `m365_sync_status`; unique `(org_id, domain)` on `m365_sync_state`, unique `(org_id, graph_id)` on every entity table, partial index on `next_sync_at WHERE next_sync_at IS NOT NULL`, and `m365_connections (id, org_id)` unique.
 
-**From W03**: `@breeze/shared/m365` exports `M365_SYNC_DOMAINS`, `M365SyncDomain`, `M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS`, `M365_SYNC_DOMAIN_INTERVAL_BOUNDS`, `M365_SYNC_ACTION_IDS`, `M365SyncActionId`, `isM365SyncActionId`, `M365SyncSourceState`, `M365SyncActionResult`, `m365SyncActionResultSchema`, and the six sync branches inside `m365ReadActionSchema` / `M365ReadAction`. `GraphReadExecutorClient` gains `syncAction(input: { correlationId; tenantId; action })` returning `Promise<M365SyncActionResult | GraphReadExecutorFailure>` where `GraphReadExecutorFailure = { success: false; errorCode: ReadActionFailureCode | 'sync_capacity'; retryAfterSeconds?: number }`.
+**From W03**: `@breeze/shared/m365` exports `M365_SYNC_DOMAINS`, `M365SyncDomain`, `M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS`, `M365_SYNC_DOMAIN_INTERVAL_BOUNDS`, `M365_SYNC_ACTION_IDS`, `M365SyncActionId`, `isM365SyncActionId`, `M365SyncSourceState`, `M365SyncActionResult`, `m365SyncActionResultSchema`, **`M365SyncFailureCode`**, **`m365SyncFailureCodeSchema`**, **`m365SyncActionResponseSchema`**, and the six sync branches inside `m365ReadActionSchema` / `M365ReadAction`. `GraphReadExecutorClient` gains `syncAction(input: { correlationId; tenantId; action })` returning `Promise<M365SyncActionResult | GraphReadExecutorFailure>` where
 
-## Contract deltas this wave takes (mirror these into the overview in the same PR)
+```ts
+// W03 owns this type. The discriminant field is `code`, NOT `errorCode` —
+// `errorCode` is the shape of the three shipped INTERACTIVE operations, and
+// /v1/sync-action deliberately uses `code` so it matches the 400/503 bodies
+// the executor already emits (`{ error, code }`). Nothing in this wave may
+// read `.errorCode` off a sync response.
+export interface GraphReadExecutorFailure {
+  success: false;
+  code: M365SyncFailureCode | 'sync_capacity';
+  retryAfterSeconds?: number;
+}
+// M365SyncFailureCode = ReadActionFailureCode | 'continuation_invalid' | 'graph_throttled'
+```
+
+## Contract deltas this wave takes (restate in the PR body; the ORCHESTRATOR folds them into the overview)
 
 1. **`callGraphReadExecutor`'s audit stays on the read route only.** The contract says the helper does "budget check, client call, metrics, audit event". Verified against `apps/api/src/services/auditService.ts:54-79`: `recordM365ReadActionEvent` → `writeAuditEvent` → `void writeAuditEventAsync` → `createAuditLogAsync` → `persistAuditLog`, which is fire-and-forget and opens its **own** `runOutsideDbContext(() => withSystemDbAccessContext(...))`. So the helper never opens, inherits, or holds a DB context — the "DB-free" property in spec §5.1 holds with the audit call left in place, and the read path stays byte-identical. But spec §7 requires **exactly one** audit event per `sync-domain` run carrying counts and outcome, neither of which exists at executor-call time. Therefore: route `'read'` records `recordM365ReadActionEvent` exactly as today; route `'sync'` records only the `m365_sync_executor_seconds` histogram, and `run.ts` writes the single `m365.sync.run` event after Phase C. `opts` gains an optional `recordEvent` injection point so a future caller can override without forking the helper.
 2. **`opts` gains `auditRequest?: RequestLike` and `recordEvent?`** (both optional, additive) so `executeM365ReadAction` can forward its existing `auditRequest` parameter unchanged.
@@ -49,7 +63,7 @@ test -f apps/api/src/db/schema/m365Sync.ts \
 4. **`runSyncDomain(data, opts?)`** takes an optional second argument `{ isFinalAttempt?, now?, rng?, callExecutor? }` — needed for BullMQ's final-attempt semantics and for test injection. Additive; the one-argument call in the contract still type-checks.
 5. **`claimDueDomains(opts)`** gains optional `orgId`, `domains`, `priority` so `claimAndEnqueue` reuses the same statement (spec §5.2: "On-demand sync and post-consent seeding use the same claim function"). Additive.
 6. **New leaf module `apps/api/src/jobs/m365SyncQueue.ts`** holds the `Queue` accessor and the enqueue helper. `services/m365Sync/claim.ts` needs to enqueue and `jobs/m365SyncWorker.ts` needs to claim; without the leaf they import each other. The contract names only `jobs/m365SyncWorker.ts`; this is additive and prevents an import cycle.
-7. **`applyCadence` lives in `services/m365Sync/cadence.ts`; `afterDomainPersisted` lives in `services/m365Sync/hooks.ts`.** Both are W04 no-op seams with headers naming W05 as their owner. The contract already assigns `cadence.ts` to W05 (`nextInterval`); W05 edits these files rather than creating them.
+7. **`applyCadence` lives in `services/m365Sync/cadence.ts`; `afterDomainPersisted` lives in `services/m365Sync/hooks.ts`.** Both are W04 seams with headers naming W05 as their owner; W05 edits these files rather than creating them. `applyCadence` takes an **optional fifth argument `rng?: () => number`** (default `Math.random`) so the ±10 % jitter is injectable from a test; the contract's four-argument call still type-checks. `cadence.ts` also owns and exports `nextSyncAt(now, intervalSeconds, rng?)` — `run.ts` never computes a due time itself, it stores the `{ intervalSeconds, nextSyncAt }` pair `applyCadence` returns.
 8. **`reconcileEligibleConnections()` seeds only `M365_SYNC_IMPLEMENTED_DOMAINS` (the four this wave persists).** Seeding all six now would make `signin_activity` and `secure_score` claimable with no persister, so they would be re-claimed every tick forever and burn ticker slots. W05 widens the constant to all six when it lands their persisters.
 9. **Metric names carry no `breeze_` prefix** (`m365_sync_runs_total`, not `breeze_m365_sync_runs_total`), departing from the neighbouring `breeze_m365_graph_read_actions_total`. The contract and spec §7 both pin the unprefixed names; they win.
 10. **Auth failure does not throw.** The prompt/spec reach for `UnrecoverableError`, but `attachWorkerObservability`'s `failed` handler captures **every** failure to Sentry unconditionally (`apps/api/src/jobs/workerObservability.ts:231-241`) and the required-attach contract test forbids skipping it. So a connection auth failure is recorded terminally inside `runSyncDomain` (`last_status='error'`, `next_sync_at=NULL`, lease cleared) and **returned**, never thrown — which is what spec §6 actually asks for ("Run stops; not sent to Sentry"). `UnrecoverableError` is still used, for a malformed `sync-domain` payload, where retrying three times is pure waste and a Sentry report is wanted.
@@ -536,15 +550,22 @@ export interface M365ConnectionExecutionSnapshot {
   status: 'active' | 'degraded'; permissionManifestVersion: number;
   vaultRef: string; credentialVersion: string;
 }
+// M365SyncFailureCode (from @breeze/shared/m365) already carries
+// 'continuation_invalid' and 'graph_throttled'; using it here rather than the
+// narrower ReadActionFailureCode is what makes the continuation-restart branch
+// in Task 13 type-check.
 export type M365SyncCallFailureCode =
-  | M365ReadActionRefusalCode | ReadActionFailureCode | 'sync_capacity';
+  | M365ReadActionRefusalCode | M365SyncFailureCode | 'sync_capacity';
 export type M365SyncCallResult =
   | { ok: true; kind: 'sync'; result: M365SyncActionResult; executorMs: number }
   | { ok: false; code: M365SyncCallFailureCode; message: string; retryAfterSeconds?: number; executorMs: number };
+export function syncFailureMessage(code: M365SyncCallFailureCode): string;   // total over the union
 export interface CallGraphReadExecutorOptions {
   route: 'read' | 'sync';
   correlationId: string;
   actorId?: string;
+  /** route 'sync' only: the label for m365_sync_executor_seconds{domain}. */
+  domain?: M365SyncDomain;
   auditRequest?: RequestLike;
   recordEvent?: (request: RequestLike, input: M365ReadActionAuditInput) => void;
 }
@@ -560,7 +581,14 @@ export function connectionExecutionSnapshot(
 
 > **The audit decision (contract delta 1), restated where the implementer will read it:** `recordM365ReadActionEvent` DOES reach the database, but only through `writeAuditEvent`, which is fire-and-forget and whose `persistAuditLog` opens its own `runOutsideDbContext(() => withSystemDbAccessContext(...))` (`services/auditService.ts:54-79`). The helper therefore opens no context, inherits none, and holds none — safe to call from inside `runOutsideDbContext`. It stays in place for `route: 'read'` so the request path is unchanged, and is **omitted** for `route: 'sync'` because spec §7 wants exactly one `m365.sync.run` event per run, carrying counts that only exist after Phase C. `run.ts` writes that event (Task 13).
 
-- [ ] **Step 1: Write the failing tests** — `readActionService.syncRoute.test.ts` (new). Clone the `vi.hoisted` / `vi.mock` preamble from `readActionService.test.ts` verbatim (same `../../db`, `../../middleware/auth`, `../aiTools`, `./runtimeConfig`, `./graphReadExecutorClient`, `../auditEvents` mocks), add `./readActionBudget`'s sync export to that mock, then:
+- [ ] **Step 1: Write the failing tests** — `readActionService.syncRoute.test.ts` (new). Clone the `vi.hoisted` / `vi.mock` preamble from `readActionService.test.ts` verbatim (same `../../db`, `../../middleware/auth`, `../aiTools`, `./runtimeConfig`, `./graphReadExecutorClient`, `../auditEvents` mocks), add `./readActionBudget`'s sync export to that mock, and add one more:
+
+```ts
+const { metricMocks } = vi.hoisted(() => ({ metricMocks: { executorSeconds: vi.fn() } }));
+vi.mock('../m365Sync/metrics', () => ({ recordM365SyncExecutorSeconds: metricMocks.executorSeconds }));
+```
+
+then:
 
 ```ts
 import { callGraphReadExecutor } from './readActionService';
@@ -625,15 +653,35 @@ describe('callGraphReadExecutor', () => {
     expect((result as { executorMs: number }).executorMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('maps sync_capacity and graph_throttled to typed failures carrying retryAfterSeconds', async () => {
-    executorMocks.syncAction.mockResolvedValue({ success: false, errorCode: 'sync_capacity', retryAfterSeconds: 30 });
+  it('reads the failure discriminant off `code`, never off `errorCode` (W03 shape)', async () => {
+    // A sync failure body is `{ success: false, code, retryAfterSeconds? }`.
+    // Reading `.errorCode` here would silently produce `code: undefined` and a
+    // "undefined" message — this test is the one that catches that.
+    executorMocks.syncAction.mockResolvedValue({ success: false, code: 'sync_capacity', retryAfterSeconds: 30 });
     const capacity = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5' });
     expect(capacity).toMatchObject({ ok: false, code: 'sync_capacity', retryAfterSeconds: 30 });
     expect((capacity as { message: string }).message).not.toContain('undefined');
 
-    executorMocks.syncAction.mockResolvedValue({ success: false, errorCode: 'graph_throttled', retryAfterSeconds: 12 });
+    executorMocks.syncAction.mockResolvedValue({ success: false, code: 'graph_throttled', retryAfterSeconds: 12 });
     const throttled = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-6' });
     expect(throttled).toMatchObject({ ok: false, code: 'graph_throttled', retryAfterSeconds: 12 });
+  });
+
+  it('maps continuation_invalid without inventing a message', async () => {
+    executorMocks.syncAction.mockResolvedValue({ success: false, code: 'continuation_invalid' });
+    const result = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5b' });
+    expect(result).toMatchObject({ ok: false, code: 'continuation_invalid' });
+    expect((result as { message: string }).message).not.toContain('undefined');
+  });
+
+  it('labels the executor histogram with opts.domain, falling back to the action id', async () => {
+    executorMocks.syncAction.mockResolvedValue(SYNC_OK);
+    await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5c', domain: 'users' });
+    expect(metricMocks.executorSeconds.mock.calls[0]![0]).toBe('users');
+
+    metricMocks.executorSeconds.mockClear();
+    await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5d' });
+    expect(metricMocks.executorSeconds.mock.calls[0]![0]).toBe('m365.sync.users');
   });
 
   it('collapses a transport-level executor error to executor_unavailable on the sync route', async () => {
@@ -687,6 +735,42 @@ describe('connectionExecutionSnapshot', () => {
     expect(snap).toMatchObject({ status: 'degraded', vaultRef: '', credentialVersion: '' });
   });
 });
+
+/**
+ * The message map is TOTAL over M365SyncCallFailureCode. A code with no entry
+ * would surface to an operator as the literal string "undefined", and `sources`
+ * / `last_error` would then carry it into the audit trail — so the union is
+ * pinned here, and the `_exhaustive` line makes ADDING a code to the union a
+ * compile error until its message exists.
+ */
+describe('syncFailureMessage', () => {
+  const ALL_CODES = [
+    // M365ReadActionRefusalCode
+    'tools_disabled', 'site_scope_denied', 'org_context_required',
+    'connection_not_ready', 'read_rate_limited', 'executor_unavailable',
+    // M365SyncFailureCode (= ReadActionFailureCode + continuation_invalid)
+    'credential_unavailable', 'application_token_invalid', 'graph_permission_missing',
+    'graph_license_required', 'graph_not_found', 'graph_throttled',
+    'graph_response_too_large', 'graph_request_timeout', 'graph_transport_failed',
+    'graph_response_invalid', 'continuation_invalid',
+    // sync-only
+    'sync_capacity',
+  ] as const satisfies readonly M365SyncCallFailureCode[];
+
+  // Compile-time half: if the union gains a member absent from ALL_CODES this
+  // assignment stops type-checking, so the runtime loop below cannot go stale.
+  type Missing = Exclude<M365SyncCallFailureCode, (typeof ALL_CODES)[number]>;
+  const _exhaustive: Missing extends never ? true : never = true;
+
+  it('has a non-empty, non-"undefined" message for EVERY code in the union', () => {
+    expect(_exhaustive).toBe(true);
+    for (const code of ALL_CODES) {
+      const message = syncFailureMessage(code);
+      expect(message, code).toBeTruthy();
+      expect(message, code).not.toContain('undefined');
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: Run — must FAIL** (`callGraphReadExecutor is not a function`):
@@ -698,7 +782,12 @@ cd apps/api && npx vitest run src/services/m365ControlPlane/readActionService.sy
 - [ ] **Step 3: Implement** in `readActionService.ts`. Keep everything above `executeM365ReadAction` as-is; add:
 
 ```ts
-import { isM365SyncActionId, type M365SyncActionResult } from '@breeze/shared/m365';
+import {
+  isM365SyncActionId,
+  type M365SyncActionResult,
+  type M365SyncDomain,
+  type M365SyncFailureCode,
+} from '@breeze/shared/m365';
 import { consumeM365SyncBudget } from './readActionBudget';
 import { recordM365SyncExecutorSeconds } from '../m365Sync/metrics';   // added in Task 5
 import type { M365ReadActionAuditInput } from './readActionMetrics';
@@ -748,18 +837,38 @@ export function connectionExecutionSnapshot(
 
 export type M365SyncCallFailureCode =
   | M365ReadActionRefusalCode
-  | ReadActionFailureCode
+  | M365SyncFailureCode
   | 'sync_capacity';
 
 export type M365SyncCallResult =
   | { ok: true; kind: 'sync'; result: M365SyncActionResult; executorMs: number }
   | { ok: false; code: M365SyncCallFailureCode; message: string; retryAfterSeconds?: number; executorMs: number };
 
-const SYNC_CAPACITY_MESSAGE =
-  'The Microsoft 365 sync executor is at capacity. The sync will retry shortly.';
+/**
+ * Messages for the codes FAILURE_MESSAGES does not cover: the six refusal codes
+ * (which the read path answers inline rather than through a map) plus the two
+ * sync-only codes. Typed as a total Record over exactly that complement, so
+ * adding a member to M365SyncCallFailureCode is a COMPILE error here rather
+ * than an "undefined" shown to an operator and written into last_error.
+ */
+const SYNC_ONLY_MESSAGES: Record<
+  Exclude<M365SyncCallFailureCode, ReadActionFailureCode>,
+  string
+> = {
+  sync_capacity: 'The Microsoft 365 sync executor is at capacity. The sync will retry shortly.',
+  continuation_invalid: 'The Microsoft 365 sign-in activity page cursor expired. The next run restarts the walk.',
+  read_rate_limited: 'Microsoft 365 sync is rate limited for this connection. It will retry shortly.',
+  executor_unavailable: 'Microsoft 365 Graph read is temporarily unavailable. Try again shortly.',
+  tools_disabled: 'Microsoft 365 tenant sync is not enabled for this organization.',
+  site_scope_denied: 'This Microsoft 365 connection is out of scope for the current site.',
+  org_context_required: 'A Microsoft 365 sync run requires an organization context.',
+  connection_not_ready: 'The Microsoft 365 connection is not ready to run — run Retest on the Microsoft 365 card.',
+};
 
-function syncFailureMessage(code: ReadActionFailureCode | 'sync_capacity'): string {
-  return code === 'sync_capacity' ? SYNC_CAPACITY_MESSAGE : FAILURE_MESSAGES[code];
+export function syncFailureMessage(code: M365SyncCallFailureCode): string {
+  return code in SYNC_ONLY_MESSAGES
+    ? SYNC_ONLY_MESSAGES[code as keyof typeof SYNC_ONLY_MESSAGES]
+    : FAILURE_MESSAGES[code as ReadActionFailureCode];
 }
 
 export interface CallGraphReadExecutorOptions {
@@ -767,6 +876,12 @@ export interface CallGraphReadExecutorOptions {
   route: 'read' | 'sync';
   correlationId: string;
   actorId?: string;
+  /**
+   * route 'sync' only. `m365_sync_executor_seconds` is labelled by DOMAIN, not
+   * by action id, so the histogram lines up with `m365_sync_runs_total{domain}`
+   * on one dashboard. Falls back to the action id when a caller omits it.
+   */
+  domain?: M365SyncDomain;
   auditRequest?: RequestLike;
   /**
    * Overrides the per-call recorder. The read route defaults to
@@ -815,7 +930,7 @@ export async function callGraphReadExecutor(
       ok: false as const,
       code: 'read_rate_limited' as const,
       message: isSync
-        ? 'Microsoft 365 sync is rate limited for this connection. It will retry shortly.'
+        ? syncFailureMessage('read_rate_limited')
         : 'Microsoft 365 Graph read actions are rate limited for this connection. Try again shortly.',
       retryAfterSeconds: budget.retryAfterSeconds,
     };
@@ -840,27 +955,33 @@ export async function callGraphReadExecutor(
   } catch (error) {
     if (!(error instanceof GraphReadExecutorClientError)) throw error;
     const executorMs = Date.now() - startedAt;
-    if (isSync) recordM365SyncExecutorSeconds(action.type, executorMs / 1000);
+    if (isSync) recordM365SyncExecutorSeconds(opts.domain ?? action.type, executorMs / 1000);
     record?.(request, { ...auditBase, outcome: 'executor_unavailable', itemCount: 0, truncated: false });
     const failure = {
       ok: false as const,
       code: 'executor_unavailable' as const,
-      message: 'Microsoft 365 Graph read is temporarily unavailable. Try again shortly.',
+      message: syncFailureMessage('executor_unavailable'),
     };
     return isSync ? { ...failure, executorMs } : failure;
   }
 
   const executorMs = Date.now() - startedAt;
-  if (isSync) recordM365SyncExecutorSeconds(action.type, executorMs / 1000);
+  if (isSync) recordM365SyncExecutorSeconds(opts.domain ?? action.type, executorMs / 1000);
 
   if (!executorResult.success) {
-    const code = executorResult.errorCode;
+    // The SYNC response discriminates on `code` (W03's GraphReadExecutorFailure);
+    // the three interactive operations still discriminate on `errorCode`. Reading
+    // the wrong one yields `undefined` with no type error at the `as never` edge,
+    // which is why the sync-route test asserts the message has no "undefined".
+    const code = isSync
+      ? (executorResult as { code: M365SyncFailureCode | 'sync_capacity' }).code
+      : (executorResult as { errorCode: ReadActionFailureCode }).errorCode;
     record?.(request, { ...auditBase, outcome: code as never, itemCount: 0, truncated: false });
     if (isSync) {
       return {
         ok: false,
         code: code as M365SyncCallFailureCode,
-        message: syncFailureMessage(code as ReadActionFailureCode | 'sync_capacity'),
+        message: syncFailureMessage(code as M365SyncCallFailureCode),
         retryAfterSeconds: executorResult.retryAfterSeconds,
         executorMs,
       };
@@ -954,6 +1075,12 @@ executor-call time. The helper opens no DB context — the audit path it does
 use is fire-and-forget and opens its own (auditService.ts:54-79) — so the
 sync worker can call it inside runOutsideDbContext.
 
+A sync failure discriminates on `code` (W03's GraphReadExecutorFailure), not
+on the `errorCode` the three interactive operations use; reading the wrong
+field would surface as the literal string "undefined" in last_error, so a test
+pins it. syncFailureMessage is TOTAL over M365SyncCallFailureCode, enforced at
+compile time by a Record over the union's complement.
+
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
 EOF
@@ -981,17 +1108,30 @@ export interface M365SyncJobData { orgId: string; domain: M365SyncDomain; genera
   connectionId: string; tenantId: string; consentGeneration: number; priority: 1 | 10 }
 export const m365SyncJobDataSchema: z.ZodType<M365SyncJobData>;
 export type M365SyncOutcome = 'success' | 'partial' | 'needs_consent' | 'throttled' | 'error';
-export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop';
+/** Defined ONCE, here. Nothing else in the wave may redeclare it. */
+export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue';
 export interface PersistContext { orgId: string; tenantId: string; connectionId: string;
   generation: number; existing: Map<string, { coreHash: string; isStale: boolean }>; now: Date }
 export interface DomainPersistResult { inserted: number; updated: number; stale: number;
   unchanged: number; counts: Record<string, number>; complete: boolean }
 export type M365DomainPersister = (ctx: PersistContext, result: M365SyncActionResult) => Promise<DomainPersistResult>;
+/** Signals `applyCadence` reads. All six fields are always populated by run.ts. */
+export interface CadenceSignals { truncated: boolean; latencyMs: number; capacity: boolean;
+  unlicensed: boolean; authFailure: boolean; now: Date }
 export const M365_SYNC_LEASE_MINUTES = 20;
 export const M365_SYNC_PERSIST_CHUNK_SIZE = 1000;
+// W04 value: ['users','intune_devices','ca_policies','skus'].
+// W05 SETS THIS TO `M365_SYNC_DOMAINS` when it registers persistSigninActivity
+// and persistSecureScore, and inverts the two claim-SQL assertions in
+// claim.sql.test.ts that currently assert those two domains are NOT seeded.
 export const M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[];
 export const M365_SYNC_PRIMARY_SOURCE_KEY: Record<M365SyncDomain, string>;
 export const M365_SYNC_DOMAIN_ACTION_ID: Record<M365SyncDomain, M365SyncActionId>;
+/**
+ * The SINGLE action builder. Nothing else in the wave constructs an
+ * `m365.sync.*` action literal — Phase B calls this with both options and lets
+ * the builder drop the ones the action does not accept.
+ */
 export function m365SyncActionFor(domain: M365SyncDomain, opts?: { continuation?: string | null; backfill?: boolean }): M365ReadAction;
 // hash.ts
 export function canonicalHash(record: Record<string, unknown>): string;   // SHA-256 hex
@@ -1158,10 +1298,18 @@ export const m365SyncJobDataSchema: z.ZodType<M365SyncJobData> = z.object({
   priority: z.union([z.literal(1), z.literal(10)]),
 }).strict();
 
-/** Spec §6's outcome vocabulary, mirroring the `m365_sync_status` enum. */
+/** Spec §6's outcome vocabulary, mirroring the `m365_sync_status` enum. Persisted. */
 export type M365SyncOutcome = 'success' | 'partial' | 'needs_consent' | 'throttled' | 'error';
-/** `fenced` = discarded at Phase C; `noop` = nothing to do (flag off, row gone, domain not implemented). */
-export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop';
+/**
+ * Control flow only — NEVER persisted to `last_status`, which is the
+ * `m365_sync_status` enum above. `fenced` = discarded at Phase C; `noop` =
+ * nothing to do (flag off, row gone, domain not implemented);
+ * `partial-continue` = the continuation cursor was rejected, the walk has been
+ * restarted, and the completion writer deliberately left `last_status` alone.
+ *
+ * Declared HERE and nowhere else in the wave.
+ */
+export type M365SyncRunResult = M365SyncOutcome | 'fenced' | 'noop' | 'partial-continue';
 
 export interface PersistContext {
   orgId: string;
@@ -1189,6 +1337,27 @@ export type M365DomainPersister = (
   result: M365SyncActionResult,
 ) => Promise<DomainPersistResult>;
 
+/**
+ * What `applyCadence` gets to reason about (spec §5.7). Declared here rather
+ * than in cadence.ts so run.ts can build it without importing the seam's module
+ * for a type, and re-exported from cadence.ts for W05's convenience.
+ *
+ * All six fields are ALWAYS populated — `unlicensed` and `authFailure` are
+ * `false` rather than absent on the paths where they cannot apply, so W05
+ * cannot accidentally read `undefined` as "not unlicensed" on one branch and as
+ * a missing signal on another.
+ */
+export interface CadenceSignals {
+  truncated: boolean;
+  latencyMs: number;
+  capacity: boolean;
+  /** `sources.signInActivity === 'unlicensed'`; always false for non-sign-in domains. */
+  unlicensed: boolean;
+  /** Failure code is in the auth-failure set. Deliberately EXCLUDES `graph_permission_missing`, which is `needs_consent`, not a dead credential. */
+  authFailure: boolean;
+  now: Date;
+}
+
 export const M365_SYNC_LEASE_MINUTES = 20;
 export const M365_SYNC_PERSIST_CHUNK_SIZE = 1000;
 
@@ -1196,8 +1365,11 @@ export const M365_SYNC_PERSIST_CHUNK_SIZE = 1000;
  * Domains this wave can actually persist. `reconcileEligibleConnections` seeds
  * ONLY these: seeding `signin_activity`/`secure_score` before W05 lands their
  * persisters would make them claimable with nothing to run, so they would be
- * re-claimed every tick forever and burn ticker slots. W05 widens this to
- * `M365_SYNC_DOMAINS`.
+ * re-claimed every tick forever and burn ticker slots.
+ *
+ * W05 SETS THIS TO `M365_SYNC_DOMAINS` and, in the same PR, inverts the two
+ * `expect(params).not.toContain(...)` assertions in `claim.sql.test.ts` that
+ * are marked "W05 inverts this".
  */
 export const M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[] = [
   'users', 'intune_devices', 'ca_policies', 'skus',
@@ -1226,7 +1398,15 @@ export const M365_SYNC_DOMAIN_ACTION_ID: Record<M365SyncDomain, M365SyncActionId
   secure_score: 'm365.sync.secure_score',
 };
 
-/** Builds the typed action for a domain. The two resumable/backfill options are W05's. */
+/**
+ * The SINGLE action builder for every `m365.sync.*` call. Phase B always passes
+ * BOTH options and lets this function drop the ones an action does not accept,
+ * so no caller has to know which domain is resumable and which is backfillable.
+ *
+ * `backfill` is therefore already wired in W04 even though `secure_score` has
+ * no persister yet: it is harmless while the domain is unregistered, and W05
+ * gets a working builder rather than a call site to go and edit.
+ */
 export function m365SyncActionFor(
   domain: M365SyncDomain,
   opts: { continuation?: string | null; backfill?: boolean } = {},
@@ -1286,7 +1466,7 @@ Spec §7 (exact names). Recorder-seam pattern copied from `services/retentionMet
 ```ts
 export function recordM365SyncRun(domain: M365SyncDomain, outcome: M365SyncOutcome): void;
 export function recordM365SyncItems(domain: M365SyncDomain, kind: 'insert'|'update'|'stale'|'unchanged', count: number): void;
-export function recordM365SyncExecutorSeconds(action: string, seconds: number): void;
+export function recordM365SyncExecutorSeconds(domain: string, seconds: number): void;   // label is the DOMAIN
 export function setM365SyncDueBacklog(value: number): void;
 export function setM365SyncQueueDepth(value: number): void;
 export function setM365SyncTickerUtilisation(value: number): void;
@@ -1294,10 +1474,12 @@ export function recordM365SyncTickerSkipped(): void;
 export function recordM365SyncFenced(): void;
 export function recordM365SyncLinkAmbiguous(count: number): void;
 export function setM365SyncMetricsRecorder(next: Partial<M365SyncMetricsRecorder> | null | undefined): void;
-export function registerM365SyncPrometheusMetrics(registry: Registry): void;
+export function registerM365SyncMetrics(registry: Registry): void;
 ```
 
 > Metric names are the contract's, unprefixed (`m365_sync_runs_total`), deliberately unlike the neighbouring `breeze_m365_graph_read_actions_total`. Do not "fix" the prefix — spec §7 and the shared contract both pin these strings and W06's dashboards are written against them.
+>
+> **`metrics.test.ts` is the SINGLE name-contract suite for this surface.** W06 adds its `breeze_`-prefixed-twin negative assertion (no `breeze_m365_sync_*` series is ever registered) to THIS file — it does not create a second metrics suite. Keep the exact-name `toEqual([...])` list intact so that addition has something to attach to.
 >
 > Known limitation, unchanged by this wave: `routes/metrics.ts` is the only registration site, and `src/worker.ts` renders a scrape without importing it, so on a split `BREEZE_ROLE=worker` process these series are no-ops. Every existing `register*PrometheusMetrics` has the same shape and `BREEZE_ROLE` defaults to `all`. Not in scope here.
 
@@ -1308,7 +1490,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Registry } from 'prom-client';
 import {
   recordM365SyncFenced, recordM365SyncItems, recordM365SyncRun, recordM365SyncTickerSkipped,
-  registerM365SyncPrometheusMetrics, setM365SyncDueBacklog, setM365SyncMetricsRecorder,
+  registerM365SyncMetrics, setM365SyncDueBacklog, setM365SyncMetricsRecorder,
   setM365SyncQueueDepth, setM365SyncTickerUtilisation, recordM365SyncExecutorSeconds,
   recordM365SyncLinkAmbiguous,
 } from './metrics';
@@ -1328,7 +1510,7 @@ describe('m365 sync metrics (spec §7)', () => {
 
   it('registers exactly the nine contract series under their exact names', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     const names = (await registry.getMetricsAsJSON()).map((m) => m.name).sort();
     expect(names).toEqual([
       'm365_sync_due_backlog',
@@ -1345,13 +1527,13 @@ describe('m365 sync metrics (spec §7)', () => {
 
   it('is idempotent: registering twice against the same registry does not throw', () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
-    expect(() => registerM365SyncPrometheusMetrics(registry)).not.toThrow();
+    registerM365SyncMetrics(registry);
+    expect(() => registerM365SyncMetrics(registry)).not.toThrow();
   });
 
   it('labels runs by domain and outcome, and items by domain and kind', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     recordM365SyncRun('intune_devices', 'partial');
     recordM365SyncItems('intune_devices', 'stale', 7);
     const scrape = await registry.metrics();
@@ -1361,7 +1543,7 @@ describe('m365 sync metrics (spec §7)', () => {
 
   it('publishes the gauges as SET values, not increments', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     setM365SyncQueueDepth(11);
     setM365SyncQueueDepth(4);
     setM365SyncTickerUtilisation(0.25);
@@ -1372,17 +1554,20 @@ describe('m365 sync metrics (spec §7)', () => {
     expect(scrape).toContain('m365_sync_due_backlog 120');
   });
 
-  it('observes executor latency into a histogram keyed by action', async () => {
+  it('observes executor latency into a histogram labelled by DOMAIN, so it joins m365_sync_runs_total', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
-    recordM365SyncExecutorSeconds('m365.sync.users', 2.5);
+    registerM365SyncMetrics(registry);
+    recordM365SyncExecutorSeconds('users', 2.5);
     const scrape = await registry.metrics();
-    expect(scrape).toContain('m365_sync_executor_seconds_count{domain="m365.sync.users"} 1');
+    expect(scrape).toContain('m365_sync_executor_seconds_count{domain="users"} 1');
+    // An action id would split the series away from every other m365_sync_*
+    // metric, which are all labelled by domain.
+    expect(scrape).not.toContain('domain="m365.sync.users"');
   });
 
   it('drops a non-finite or negative count rather than poisoning a counter', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     recordM365SyncItems('users', 'insert', Number.NaN);
     recordM365SyncItems('users', 'insert', -3);
     recordM365SyncItems('users', 'insert', 2);
@@ -1391,7 +1576,7 @@ describe('m365 sync metrics (spec §7)', () => {
 
   it('counts ticker skips and fences', async () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     recordM365SyncTickerSkipped();
     recordM365SyncFenced();
     recordM365SyncFenced();
@@ -1433,7 +1618,8 @@ export type M365SyncItemKind = 'insert' | 'update' | 'stale' | 'unchanged';
 export interface M365SyncMetricsRecorder {
   onRun: (domain: M365SyncDomain, outcome: M365SyncOutcome) => void;
   onItems: (domain: M365SyncDomain, kind: M365SyncItemKind, count: number) => void;
-  onExecutorSeconds: (action: string, seconds: number) => void;
+  /** `domain` is an M365SyncDomain string; the histogram label is the domain, never the action id. */
+  onExecutorSeconds: (domain: string, seconds: number) => void;
   onDueBacklog: (value: number) => void;
   onQueueDepth: (value: number) => void;
   onTickerUtilisation: (value: number) => void;
@@ -1469,10 +1655,10 @@ export function recordM365SyncItems(domain: M365SyncDomain, kind: M365SyncItemKi
   if (safe === null || safe === 0) return;
   recorder.onItems(domain, kind, safe);
 }
-export function recordM365SyncExecutorSeconds(action: string, seconds: number): void {
+export function recordM365SyncExecutorSeconds(domain: string, seconds: number): void {
   const safe = safeCount(seconds);
   if (safe === null) return;
-  recorder.onExecutorSeconds(action, safe);
+  recorder.onExecutorSeconds(domain, safe);
 }
 export function setM365SyncDueBacklog(value: number): void {
   const safe = safeCount(value);
@@ -1504,13 +1690,13 @@ const TICKER_SKIPPED = 'm365_sync_ticker_skipped_total';
 const FENCED = 'm365_sync_fenced_total';
 const LINK_AMBIGUOUS = 'm365_sync_link_ambiguous_total';
 
-export function registerM365SyncPrometheusMetrics(registry: Registry): void {
+export function registerM365SyncMetrics(registry: Registry): void {
   const runs = (registry.getSingleMetric(RUNS) as Counter<'domain' | 'outcome'> | undefined)
     ?? new Counter({ name: RUNS, help: 'Completed m365 sync-domain runs by domain and outcome', labelNames: ['domain', 'outcome'] as const, registers: [registry] });
   const items = (registry.getSingleMetric(ITEMS) as Counter<'domain' | 'kind'> | undefined)
     ?? new Counter({ name: ITEMS, help: 'Entity rows written by an m365 sync run, by domain and kind (insert|update|stale|unchanged)', labelNames: ['domain', 'kind'] as const, registers: [registry] });
   const executorSeconds = (registry.getSingleMetric(EXECUTOR_SECONDS) as Histogram<'domain'> | undefined)
-    ?? new Histogram({ name: EXECUTOR_SECONDS, help: 'Round-trip seconds for one m365 sync executor call', labelNames: ['domain'] as const, buckets: [0.5, 1, 2.5, 5, 10, 20, 40, 60, 90, 120], registers: [registry] });
+    ?? new Histogram({ name: EXECUTOR_SECONDS, help: 'Round-trip seconds for one m365 sync executor call, labelled by domain', labelNames: ['domain'] as const, buckets: [0.5, 1, 2.5, 5, 10, 20, 40, 60, 90, 120], registers: [registry] });
   const dueBacklog = (registry.getSingleMetric(DUE_BACKLOG) as Gauge<string> | undefined)
     ?? new Gauge({ name: DUE_BACKLOG, help: 'm365_sync_state rows whose next_sync_at is in the past at the last tick', registers: [registry] });
   const queueDepth = (registry.getSingleMetric(QUEUE_DEPTH) as Gauge<string> | undefined)
@@ -1527,7 +1713,7 @@ export function registerM365SyncPrometheusMetrics(registry: Registry): void {
   setM365SyncMetricsRecorder({
     onRun: (domain, outcome) => runs.labels(domain, outcome).inc(),
     onItems: (domain, kind, count) => items.labels(domain, kind).inc(count),
-    onExecutorSeconds: (action, seconds) => executorSeconds.labels(action).observe(seconds),
+    onExecutorSeconds: (domain, seconds) => executorSeconds.labels(domain).observe(seconds),
     onDueBacklog: (value) => dueBacklog.set(value),
     onQueueDepth: (value) => queueDepth.set(value),
     onTickerUtilisation: (value) => tickerUtilisation.set(value),
@@ -1543,14 +1729,14 @@ In `apps/api/src/routes/metrics.ts`, add the import beside `registerM365GraphAct
 Import line (beside the other `register*` imports, around line 57):
 
 ```ts
-import { registerM365SyncPrometheusMetrics } from '../services/m365Sync/metrics';
+import { registerM365SyncMetrics } from '../services/m365Sync/metrics';
 ```
 
 Call site (in the block that already reads `registerActionIntentPrometheusCounter(register);`
 / `registerRetentionPrometheusMetrics(register);`, around line 106):
 
 ```ts
-registerM365SyncPrometheusMetrics(register);
+registerM365SyncMetrics(register);
 ```
 
 - [ ] **Step 4: Run — must PASS**
@@ -1568,8 +1754,11 @@ feat(m365): add the m365_sync_* Prometheus surface
 
 All nine series from spec §7 behind the retentionMetrics recorder seam, so
 services/ and jobs/ emit without importing routes/metrics. Names are
-unprefixed by contract. Counts that arithmetic could have made NaN are
-dropped rather than poisoning a monotonic counter.
+unprefixed by contract and registerM365SyncMetrics is the single registrar;
+metrics.test.ts is the single name-contract suite (W06 adds its breeze_-twin
+negative assertion there). m365_sync_executor_seconds is labelled by DOMAIN so
+it joins m365_sync_runs_total on one dashboard. Counts that arithmetic could
+have made NaN are dropped rather than poisoning a monotonic counter.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -1658,8 +1847,11 @@ describe('reconcile eligibility (compiled SQL)', () => {
     expect(params).toContain('intune_devices');
     expect(params).toContain('ca_policies');
     expect(params).toContain('skus');
-    expect(params).not.toContain('signin_activity');
-    expect(params).not.toContain('secure_score');
+    // W05 inverts this: when M365_SYNC_IMPLEMENTED_DOMAINS becomes
+    // M365_SYNC_DOMAINS these two flip to `toContain`. They are the only two
+    // assertions in the wave that W05 must edit rather than extend.
+    expect(params).not.toContain('signin_activity');   // W05 inverts this
+    expect(params).not.toContain('secure_score');      // W05 inverts this
   });
 
   it('seeds each domain with its own default interval', () => {
@@ -2377,6 +2569,13 @@ export async function writeEntityChunks<TRow>(rows: TRow[], write: (chunk: TRow[
 export async function markEntitiesStale(table: AnyPgTable, orgId: string, graphIds: string[], now: Date): Promise<number>;
 // users.ts
 export async function persistUsers(ctx: PersistContext, result: M365SyncActionResult): Promise<DomainPersistResult>;
+/**
+ * EXPORTED, not module-private: it is the definition of "primary user fields"
+ * and `core_hash`'s input. W05's enrichment persister must hash exactly the
+ * same projection or every user row would be rewritten on the first enrichment
+ * run, so it imports this rather than re-deriving the field list.
+ */
+export function usersPrimaryProjection(item: Record<string, unknown>): Record<string, unknown>;
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -2743,7 +2942,12 @@ interface UserItem {
   assignedLicenses?: string[] | null;
 }
 
-function primaryProjection(item: UserItem): Record<string, unknown> {
+/**
+ * The canonical primary-field projection. Exported so W05's enrichment pass
+ * hashes the identical field set — a second definition would drift and rewrite
+ * every user row.
+ */
+export function usersPrimaryProjection(item: UserItem): Record<string, unknown> {
   return {
     userPrincipalName: item.userPrincipalName ?? null,
     displayName: item.displayName ?? null,
@@ -2768,7 +2972,7 @@ export async function persistUsers(
 
   const plan = planEntityWrites(ctx, items, complete, (item) => {
     if (!item.id) return null;
-    const projection = primaryProjection(item);
+    const projection = usersPrimaryProjection(item);
     return {
       graphId: item.id,
       coreHash: canonicalHash(projection),
@@ -3246,7 +3450,7 @@ describe('persistCaPolicies', () => {
     expect(dbMocks.inserted).toHaveLength(1);
   });
 
-  it('counts by state, mapping enabledForReportingButNotEnforced to report-only', async () => {
+  it('counts by state under the ROLLUP column names, mapping enabledForReportingButNotEnforced to report-only', async () => {
     const out = await persistCaPolicies(ctx(), okResult([
       policy({ id: 'a', state: 'enabled' }),
       policy({ id: 'b', state: 'disabled' }),
@@ -3254,9 +3458,12 @@ describe('persistCaPolicies', () => {
       policy({ id: 'd', state: 'enabled' }),
       policy({ id: 'e', state: null }),
     ]));
+    // EXACTLY the three m365_posture_rollups column names, nothing else:
+    // last_counts is read straight into the rollup by key, so a key with no
+    // column (a `ca_policies_total`, say) is silently dropped there and reads
+    // as an invented counter here.
     expect(out.counts).toEqual({
-      ca_policies_total: 5, ca_policies_enabled: 2,
-      ca_policies_report_only: 1, ca_policies_disabled: 1,
+      ca_policies_enabled: 2, ca_policies_report_only: 1, ca_policies_disabled: 1,
     });
   });
 
@@ -3401,8 +3608,10 @@ export async function persistCaPolicies(
     ? await markEntitiesStale(m365CaPolicies as never, ctx.orgId, plan.staleIds, ctx.now)
     : 0;
 
+  // Keys are m365_posture_rollups COLUMN names (spec §5.9). The rollup reads
+  // last_counts by key, so a key without a matching column is dead weight —
+  // there is deliberately no `ca_policies_total`.
   const counts: Record<string, number> = {
-    ca_policies_total: items.length,
     ca_policies_enabled: 0,
     ca_policies_report_only: 0,
     ca_policies_disabled: 0,
@@ -3412,7 +3621,7 @@ export async function persistCaPolicies(
       case 'enabled': counts.ca_policies_enabled += 1; break;
       case 'enabledForReportingButNotEnforced': counts.ca_policies_report_only += 1; break;
       case 'disabled': counts.ca_policies_disabled += 1; break;
-      default: break;   // an unrecognised state counts in the total only, never guessed into a bucket
+      default: break;   // an unrecognised state lands in NO bucket, never guessed into one
     }
   }
 
@@ -3448,7 +3657,9 @@ EOF
 
 ### Task 11: `domains/skus.ts`
 
-Spec §3.2 (`m365_license_skus`, keyed on `sku_id`), §5.9 (`seats_purchased` = Σ `prepaidUnits.enabled`, `seats_consumed` = Σ `consumedUnits`).
+Spec §3.2 (`m365_license_skus`), §5.9 (`seats_purchased` = Σ `prepaidUnits.enabled`, `seats_consumed` = Σ `consumedUnits`).
+
+> **There is NO `sku_id` column on `m365_license_skus`.** `graph_id` holds the Graph `skuId`, exactly as it holds the Graph `id` on the other three entity tables — that is what lets one `(org_id, graph_id)` unique key, one `PersistContext.existing` map shape and one stale planner serve every domain. Writing `skuId` into the row object or `sqlExcluded('sku_id')` into the conflict SET is a column that does not exist: a 42703 at runtime that no mocked test can see.
 
 **Files:**
 - Create: `apps/api/src/services/m365Sync/domains/skus.ts`
@@ -3475,13 +3686,16 @@ const okResult = (items: unknown[], over = {}) => ({
 describe('persistSkus', () => {
   beforeEach(() => { vi.clearAllMocks(); dbMocks.inserted = []; dbMocks.setPayloads = []; dbMocks.updates = []; });
 
-  it('keys the row on skuId, not on an `id` field the payload does not have', async () => {
+  it('keys the row on graph_id = the Graph skuId, and writes NO sku_id column', async () => {
     await persistSkus(ctx(), okResult([sku()]));
     expect(dbMocks.inserted[0]).toMatchObject({
       graphId: '33333333-3333-4333-8333-333333333333',
-      skuId: '33333333-3333-4333-8333-333333333333',
       skuPartNumber: 'ENTERPRISEPACK',
     });
+    // m365_license_skus has no sku_id column — writing one is a 42703 that a
+    // mocked db would happily accept, so pin its absence here.
+    expect(dbMocks.inserted[0]).not.toHaveProperty('skuId');
+    expect(dbMocks.setPayloads[0]).not.toHaveProperty('skuId');
   });
 
   it('flattens prepaidUnits into three integer columns', async () => {
@@ -3501,7 +3715,7 @@ describe('persistSkus', () => {
       sku(),
       sku({ skuId: '44444444-4444-4444-8444-444444444444', consumedUnits: 3, prepaidUnits: { enabled: 10, suspended: 2, warning: 0 } }),
     ]));
-    expect(out.counts).toEqual({ skus_total: 2, seats_purchased: 35, seats_consumed: 15 });
+    expect(out.counts).toEqual({ seats_purchased: 35, seats_consumed: 15 });   // rollup column names only
   });
 
   it('does not let a non-numeric unit count poison the sums', async () => {
@@ -3602,15 +3816,15 @@ export async function persistSkus(
     if (!item.skuId) return null;
     const p = projection(item);
     return {
-      // `sku_id` IS the Graph key for this domain (spec §3.2); graph_id carries
-      // the same value so the shared (org_id, graph_id) unique key and the
-      // stale/plan machinery work unchanged across all four domains.
+      // graph_id carries the Graph `skuId` (spec §3.2). There is NO separate
+      // sku_id column: one column shape across all four domains is what lets
+      // planEntityWrites, markEntitiesStale and PersistContext.existing be
+      // written once.
       graphId: item.skuId,
       coreHash: canonicalHash(p),
       row: {
         orgId: ctx.orgId,
         graphId: item.skuId,
-        skuId: item.skuId,
         skuPartNumber: p.skuPartNumber as string | null,
         consumedUnits: p.consumedUnits as number,
         prepaidEnabled: p.prepaidEnabled as number,
@@ -3631,7 +3845,6 @@ export async function persistSkus(
     await db.insert(m365LicenseSkus).values(chunk).onConflictDoUpdate({
       target: [m365LicenseSkus.orgId, m365LicenseSkus.graphId],
       set: {
-        skuId: sqlExcluded('sku_id'),
         skuPartNumber: sqlExcluded('sku_part_number'),
         consumedUnits: sqlExcluded('consumed_units'),
         prepaidEnabled: sqlExcluded('prepaid_enabled'),
@@ -3660,7 +3873,8 @@ export async function persistSkus(
 
   return {
     inserted: plan.inserted, updated: plan.updated, unchanged: plan.unchanged, stale, complete,
-    counts: { skus_total: items.length, seats_purchased: seatsPurchased, seats_consumed: seatsConsumed },
+    // Rollup column names only (spec §5.9) — there is no `skus_total` column.
+    counts: { seats_purchased: seatsPurchased, seats_consumed: seatsConsumed },
   };
 }
 ```
@@ -3678,8 +3892,9 @@ git add apps/api/src/services/m365Sync/domains/skus.ts apps/api/src/services/m36
 git commit -m "$(cat <<'EOF'
 feat(m365): add the license SKU persister
 
-Keyed on skuId (mirrored into graph_id so the shared unique key and the stale
-planner work unchanged), prepaidUnits flattened into three integer columns,
+Keyed on graph_id, which holds the Graph skuId (there is no sku_id column), so
+the shared unique key and the stale planner work unchanged across all four
+domains. prepaidUnits is flattened into three integer columns,
 and seat sums computed in memory. A non-numeric unit count becomes 0 rather
 than NaN — one NaN would blank seats_purchased for the whole org.
 
@@ -3699,6 +3914,7 @@ Spec §5.3 Phase A: "Exit as a no-op, clearing the lease, if: the state row is g
 - Create: `apps/api/src/services/m365Sync/run.ts` (Phase A only; Task 13 completes it)
 - Create: `apps/api/src/services/m365Sync/run.phaseA.test.ts`
 - Create: `apps/api/src/services/m365Sync/cadence.ts`
+- Create: `apps/api/src/services/m365Sync/cadence.test.ts`
 - Create: `apps/api/src/services/m365Sync/hooks.ts`
 
 **Interfaces:**
@@ -3709,7 +3925,13 @@ Spec §5.3 Phase A: "Exit as a no-op, clearing the lease, if: the state row is g
 // run.ts
 export interface SyncRunContext {
   snapshot: M365ConnectionExecutionSnapshot;
-  state: { intervalSeconds: number; continuation: string | null; lastCompleteSnapshotAt: Date | null };
+  state: {
+    intervalSeconds: number;
+    continuation: string | null;
+    lastCompleteSnapshotAt: Date | null;
+    /** Drives `backfill` for secure_score in Phase B. Selected in Phase A. */
+    lastSuccessAt: Date | null;
+  };
   existing: Map<string, { coreHash: string; isStale: boolean }>;
 }
 export type FenceReason = 'state_missing' | 'generation_mismatch' | 'connection_not_executable'
@@ -3717,12 +3939,23 @@ export type FenceReason = 'state_missing' | 'generation_mismatch' | 'connection_
 export async function loadSyncRunContext(data: M365SyncJobData): Promise<SyncRunContext | { fenced: FenceReason }>;
 export async function assertStillFenced(data: M365SyncJobData): Promise<FenceReason | null>;  // Phase C re-check, FOR UPDATE
 export async function releaseLease(data: M365SyncJobData): Promise<void>;
-// cadence.ts  (W05 replaces the body and adds nextInterval per the contract)
-export function applyCadence(state: { domain: M365SyncDomain; intervalSeconds: number },
-  outcome: M365SyncOutcome, signals: { truncated: boolean; latencyMs: number; capacity: boolean }): number;
-// hooks.ts  (W05 fills these)
-export async function afterDomainPersisted(ctx: { orgId: string; tenantId: string;
-  domain: M365SyncDomain; outcome: M365SyncOutcome; now: Date }): Promise<void>;
+
+// cadence.ts — W04 CREATES it; W05 replaces the applyCadence BODY (spec §5.7).
+// Returns the PAIR, so run.ts never computes a due time itself.
+export function applyCadence(
+  domain: M365SyncDomain,
+  state: { intervalSeconds: number },
+  outcome: M365SyncOutcome,
+  signals: CadenceSignals,
+  rng?: () => number,          // optional, additive: injectable jitter for tests
+): { intervalSeconds: number; nextSyncAt: Date | null };
+export function nextSyncAt(now: Date, intervalSeconds: number, rng?: () => number): Date;  // +/-10% jitter
+export type { CadenceSignals };   // re-exported from types.ts for W05's convenience
+
+// hooks.ts — W04 CREATES it as a no-op; W05 fills the BODY.
+export async function afterDomainPersisted(
+  ctx: PersistContext & { domain: M365SyncDomain; outcome: M365SyncOutcome; persisted: DomainPersistResult },
+): Promise<void>;
 ```
 
 - [ ] **Step 1: Write the failing test** — `run.phaseA.test.ts`:
@@ -3756,7 +3989,7 @@ const JOB = {
 };
 const stateRow = (over = {}) => ({
   runGeneration: 5, intervalSeconds: 21600, continuation: null, lastCompleteSnapshotAt: null,
-  connectionId: 'conn-1', ...over,
+  lastSuccessAt: null, connectionId: 'conn-1', ...over,
 });
 const connRow = (over = {}) => ({
   id: 'conn-1', orgId: 'org-1', tenantId: 'tenant-1', consentGeneration: 2, status: 'active',
@@ -3808,11 +4041,21 @@ describe('loadSyncRunContext (Phase A, spec §5.3)', () => {
       [{ ...stateRow(), ...connRow() }],
       [{ graphId: 'u1', coreHash: 'h1', isStale: false }, { graphId: 'u2', coreHash: 'h2', isStale: true }],
     ];
-    const ctx = await loadSyncRunContext(JOB) as { snapshot: unknown; state: { intervalSeconds: number }; existing: Map<string, unknown> };
+    const ctx = await loadSyncRunContext(JOB) as { snapshot: unknown; state: { intervalSeconds: number; lastSuccessAt: Date | null }; existing: Map<string, unknown> };
     expect(ctx.snapshot).toMatchObject({ id: 'conn-1', orgId: 'org-1', tenantId: 'tenant-1', consentGeneration: 2 });
     expect(ctx.state.intervalSeconds).toBe(21600);
+    // last_success_at is what Phase B turns into `backfill` for secure_score;
+    // omitting it from the SELECT would make every secure_score run a backfill.
+    expect(ctx.state.lastSuccessAt).toBeNull();
     expect(ctx.existing.get('u1')).toEqual({ coreHash: 'h1', isStale: false });
     expect(ctx.existing.get('u2')).toEqual({ coreHash: 'h2', isStale: true });
+  });
+
+  it('carries a non-null last_success_at through, so a repeat run is not treated as a backfill', async () => {
+    const lastSuccess = new Date('2026-09-01T00:00:00.000Z');
+    dbMocks.rows = [[{ ...stateRow({ lastSuccessAt: lastSuccess }), ...connRow() }], []];
+    const ctx = await loadSyncRunContext(JOB) as { state: { lastSuccessAt: Date | null } };
+    expect(ctx.state.lastSuccessAt).toEqual(lastSuccess);
   });
 
   it('does NOT read the entity hash map when it fenced — one wasted 25k-row scan per late job', async () => {
@@ -3852,7 +4095,7 @@ describe('releaseLease', () => {
 - [ ] **Step 2: Run — must FAIL**
 
 ```bash
-cd apps/api && npx vitest run src/services/m365Sync/run.phaseA.test.ts
+cd apps/api && npx vitest run src/services/m365Sync/run.phaseA.test.ts src/services/m365Sync/cadence.test.ts
 ```
 
 - [ ] **Step 3: Implement**
@@ -3861,55 +4104,128 @@ cd apps/api && npx vitest run src/services/m365Sync/run.phaseA.test.ts
 
 ```ts
 import type { M365SyncDomain } from '@breeze/shared/m365';
-import type { M365SyncOutcome } from './types';
+import type { CadenceSignals, M365SyncOutcome } from './types';
+
+export type { CadenceSignals };
 
 /**
- * SEAM — owned by W05 (spec §5.7 adaptive cadence).
+ * next run = now + interval, jittered +/-10%. Without the jitter every org
+ * seeded in the same tick would stay in lockstep forever and the fleet would
+ * re-converge into the same minute every six hours.
  *
- * W04 deliberately returns the stored interval unchanged, so a run's cadence is
- * exactly what `m365_sync_state.interval_seconds` says. W05 replaces this body
- * with `nextInterval(domain, current, outcome, signals)` clamped to
+ * Lives HERE rather than in run.ts because it is the second half of the cadence
+ * decision: W05 needs to change the interval and the due time together, and a
+ * jitter helper on the other side of that seam would be edited from two places.
+ */
+export function nextSyncAt(now: Date, intervalSeconds: number, rng: () => number = Math.random): Date {
+  const jitter = 0.9 + rng() * 0.2;
+  return new Date(now.getTime() + Math.round(intervalSeconds * 1000 * jitter));
+}
+
+/**
+ * SEAM — the BODY is owned by W05 (spec §5.7 adaptive cadence).
+ *
+ * W04 returns the stored interval unchanged, so a run's cadence is exactly what
+ * `m365_sync_state.interval_seconds` says, plus the jittered due time. W05
+ * replaces the interval computation with the clamped ladder from
  * `M365_SYNC_DOMAIN_INTERVAL_BOUNDS` (x2 on truncated or >60 s latency, x1.5 on
- * throttled/capacity, 25 % decay toward the default on success).
+ * throttled/capacity, 25 % decay toward the default on success) and may return
+ * `nextSyncAt: null` to unschedule.
  *
- * It exists NOW, called from the one place that decides `next_sync_at`, so W05
- * changes one function body rather than threading a new call into run.ts's
- * completion transaction.
+ * It returns the PAIR, not just a number: `next_sync_at` and `interval_seconds`
+ * are written in the same statement and must be decided together, and run.ts
+ * having its own due-time helper is exactly how the two drift apart. `rng` is
+ * an optional fifth argument purely so a test can pin the jitter; the
+ * four-argument contract call still type-checks.
  */
 export function applyCadence(
-  state: { domain: M365SyncDomain; intervalSeconds: number },
+  _domain: M365SyncDomain,
+  state: { intervalSeconds: number },
   _outcome: M365SyncOutcome,
-  _signals: { truncated: boolean; latencyMs: number; capacity: boolean },
-): number {
-  return state.intervalSeconds;
+  signals: CadenceSignals,
+  rng?: () => number,
+): { intervalSeconds: number; nextSyncAt: Date | null } {
+  return {
+    intervalSeconds: state.intervalSeconds,
+    nextSyncAt: nextSyncAt(signals.now, state.intervalSeconds, rng),
+  };
 }
+```
+
+`apps/api/src/services/m365Sync/cadence.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { applyCadence, nextSyncAt } from './cadence';
+
+const NOW = new Date('2026-09-08T00:00:00.000Z');
+const signals = (over = {}) => ({
+  truncated: false, latencyMs: 1200, capacity: false,
+  unlicensed: false, authFailure: false, now: NOW, ...over,
+});
+
+describe('nextSyncAt', () => {
+  it('applies at most +/-10% jitter around the interval', () => {
+    expect(nextSyncAt(NOW, 3600, () => 0).getTime() - NOW.getTime()).toBe(3600 * 1000 * 0.9);
+    expect(nextSyncAt(NOW, 3600, () => 1).getTime() - NOW.getTime()).toBe(3600 * 1000 * 1.1);
+    expect(nextSyncAt(NOW, 3600, () => 0.5).getTime() - NOW.getTime()).toBe(3600 * 1000);
+  });
+
+  it('spreads two orgs on the same interval, so a cohort does not re-converge', () => {
+    expect(nextSyncAt(NOW, 3600, () => 0.1).getTime()).not.toBe(nextSyncAt(NOW, 3600, () => 0.9).getTime());
+  });
+});
+
+describe('applyCadence (W04 stub — W05 replaces the body)', () => {
+  it('returns the STORED interval unchanged on every outcome', () => {
+    for (const outcome of ['success', 'partial', 'needs_consent', 'throttled', 'error'] as const) {
+      expect(applyCadence('users', { intervalSeconds: 21600 }, outcome, signals(), () => 0.5))
+        .toEqual({ intervalSeconds: 21600, nextSyncAt: new Date(NOW.getTime() + 21600 * 1000) });
+    }
+  });
+
+  it('derives next_sync_at from signals.now, not from a clock read inside the seam', () => {
+    const other = new Date('2027-01-01T00:00:00.000Z');
+    const { nextSyncAt: due } = applyCadence('skus', { intervalSeconds: 3600 }, 'success', signals({ now: other }), () => 0.5);
+    expect(due!.getTime()).toBe(other.getTime() + 3600 * 1000);
+  });
+
+  it('accepts all six signals, so W05 has every one of them available', () => {
+    expect(() => applyCadence('signin_activity', { intervalSeconds: 86400 }, 'partial',
+      signals({ truncated: true, capacity: true, unlicensed: true, authFailure: true }))).not.toThrow();
+  });
+});
 ```
 
 `apps/api/src/services/m365Sync/hooks.ts`:
 
 ```ts
 import type { M365SyncDomain } from '@breeze/shared/m365';
-import type { M365SyncOutcome } from './types';
+import type { DomainPersistResult, M365SyncOutcome, PersistContext } from './types';
 
 /**
- * SEAM — owned by W05.
+ * SEAM — the BODY is owned by W05.
  *
- * Called once per domain immediately after its completion transaction commits,
- * with no DB context held. W05 fills it with `upsertPostureRollup` (spec §5.9)
- * and, for `intune_devices`, `reconcileDeviceLinks` (spec §5.6).
+ * Called once per domain immediately AFTER its completion transaction has
+ * COMMITTED, with no DB context held: W05's implementation opens its own. It
+ * fills this with `upsertPostureRollup` (spec §5.9) and, for `intune_devices`,
+ * `reconcileDeviceLinks` (spec §5.6) — which is why it takes the full
+ * `PersistContext` plus the outcome and the `DomainPersistResult`, everything
+ * a rollup needs without a second read.
  *
- * It runs AFTER the commit on purpose: a rollup upsert or a link-reconciliation
- * pass inside the completion transaction would hold that transaction open for
- * an org-wide scan, and a failure in either would roll back the completion —
- * losing `next_sync_at` and re-running the whole domain next tick.
+ * Post-commit on purpose: a rollup upsert or a link-reconciliation pass inside
+ * the completion transaction would hold it open for an org-wide scan, and a
+ * failure in either would roll back the completion — losing `next_sync_at` and
+ * re-running the whole domain next tick. run.ts therefore wraps the call in
+ * try/catch and only LOGS; this function must never be relied on to throw.
  */
-export async function afterDomainPersisted(_ctx: {
-  orgId: string;
-  tenantId: string;
-  domain: M365SyncDomain;
-  outcome: M365SyncOutcome;
-  now: Date;
-}): Promise<void> {
+export async function afterDomainPersisted(
+  _ctx: PersistContext & {
+    domain: M365SyncDomain;
+    outcome: M365SyncOutcome;
+    persisted: DomainPersistResult;
+  },
+): Promise<void> {
   // W05.
 }
 ```
@@ -3942,7 +4258,18 @@ export type FenceReason =
 
 export interface SyncRunContext {
   snapshot: M365ConnectionExecutionSnapshot;
-  state: { intervalSeconds: number; continuation: string | null; lastCompleteSnapshotAt: Date | null };
+  state: {
+    intervalSeconds: number;
+    continuation: string | null;
+    lastCompleteSnapshotAt: Date | null;
+    /**
+     * NULL means this domain has never completed for this org. Phase B turns
+     * that into `backfill: true` for `secure_score` (spec §5.5). Selecting it
+     * here rather than re-reading in Phase B keeps the whole decision inside
+     * the one short transaction that already holds the row.
+     */
+    lastSuccessAt: Date | null;
+  };
   existing: Map<string, { coreHash: string; isStale: boolean }>;
 }
 
@@ -3951,6 +4278,7 @@ interface StateAndConnection {
   intervalSeconds: number;
   continuation: string | null;
   lastCompleteSnapshotAt: Date | null;
+  lastSuccessAt: Date | null;
   connectionId: string;
   id: string;
   orgId: string | null;
@@ -3984,6 +4312,7 @@ function selectStateAndConnection(data: M365SyncJobData, forUpdate: boolean) {
     intervalSeconds: m365SyncState.intervalSeconds,
     continuation: m365SyncState.continuation,
     lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
+    lastSuccessAt: m365SyncState.lastSuccessAt,
     connectionId: m365SyncState.connectionId,
     id: m365Connections.id,
     orgId: m365Connections.orgId,
@@ -4047,6 +4376,7 @@ export async function loadSyncRunContext(
         intervalSeconds: Number(row!.intervalSeconds),
         continuation: row!.continuation,
         lastCompleteSnapshotAt: row!.lastCompleteSnapshotAt,
+        lastSuccessAt: row!.lastSuccessAt,
       },
       existing,
     };
@@ -4089,13 +4419,13 @@ export { DOMAIN_ENTITY_TABLE, sql };
 - [ ] **Step 4: Run — must PASS**
 
 ```bash
-cd apps/api && npx vitest run src/services/m365Sync/run.phaseA.test.ts
+cd apps/api && npx vitest run src/services/m365Sync/run.phaseA.test.ts src/services/m365Sync/cadence.test.ts
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/m365Sync/run.ts apps/api/src/services/m365Sync/run.phaseA.test.ts apps/api/src/services/m365Sync/cadence.ts apps/api/src/services/m365Sync/hooks.ts
+git add apps/api/src/services/m365Sync/run.ts apps/api/src/services/m365Sync/run.phaseA.test.ts apps/api/src/services/m365Sync/cadence.ts apps/api/src/services/m365Sync/cadence.test.ts apps/api/src/services/m365Sync/hooks.ts
 git commit -m "$(cat <<'EOF'
 feat(m365): add sync Phase A snapshot and the shared fencing predicate
 
@@ -4107,8 +4437,11 @@ Phase A and the Phase C FOR UPDATE re-check share ONE fenceReason(), so they
 cannot drift: a Phase C checking one fewer condition would be a hole exactly
 in the window the fence exists for.
 
-Adds the two W05 seams (applyCadence, afterDomainPersisted) as documented
-no-ops, called from the places that will need them.
+Adds the two W05 seams. applyCadence owns BOTH halves of the cadence decision
+(interval and the +/-10%-jittered due time) so run.ts never computes a due
+time itself; afterDomainPersisted is a documented post-commit no-op taking the
+full PersistContext + outcome + DomainPersistResult, so W05 fills a body
+rather than threading new calls into the completion path.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -4136,14 +4469,64 @@ export async function runSyncDomain(
   data: M365SyncJobData,
   opts?: { isFinalAttempt?: boolean; now?: Date; rng?: () => number;
     callExecutor?: typeof callGraphReadExecutor },
-): Promise<M365SyncRunResult>;
-export function outcomeForFailure(code: M365SyncCallFailureCode): { outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean };
-export function nextSyncAt(now: Date, intervalSeconds: number, rng?: () => number): Date;   // ±10% jitter
+): Promise<M365SyncRunResult>;      // M365SyncRunResult is types.ts's — NOT redeclared here
+export function outcomeForFailure(code: M365SyncCallFailureCode): {
+  outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean; restartWalk: boolean;
+};
+/**
+ * The SINGLE completion writer. Nothing else in the wave updates
+ * `m365_sync_state` on the completion path.
+ *
+ *   mode 'complete'     — one short system transaction: last_* fields, sources,
+ *                         last_counts, continuation, lease NULL, the
+ *                         next_sync_at/interval_seconds pair from `cadence`,
+ *                         and ONE structured log line for the run.
+ *   mode 'continuation' — stores the continuation and clears the lease, and
+ *                         deliberately does NOT touch next_sync_at,
+ *                         last_status, last_counts, or write an audit event.
+ *                         Used by the 'partial-continue' restart, where the run
+ *                         has not finished and must not look as if it had.
+ */
+async function writeCompletion(
+  ctx: { data: M365SyncJobData; now: Date; correlationId: string },
+  args:
+    | { mode: 'complete'; outcome: M365SyncOutcome; persisted: DomainPersistResult;
+        cadence: { intervalSeconds: number; nextSyncAt: Date | null };
+        itemCount: number; truncated: boolean; sources: Record<string, string> | null;
+        continuation: string | null; lastError: string | null }
+    | { mode: 'continuation'; continuation: string | null },
+): Promise<void>;
+/**
+ * All six domains, four with a persister and two `undefined`. A total Record
+ * (not a Partial) so W05 adding a domain to `M365SyncDomain` cannot silently
+ * leave it unregistered.
+ *
+ * W05 registers `persistSigninActivity` and `persistSecureScore` here, in the
+ * same PR that sets `M365_SYNC_IMPLEMENTED_DOMAINS = M365_SYNC_DOMAINS`.
+ */
+export const DOMAIN_PERSISTERS: Record<M365SyncDomain, M365DomainPersister | undefined>;
+/**
+ * The service's one structured-log call: `console.log('[M365Sync] <event>',
+ * JSON.stringify(fields))`. `apps/api` has no logger module (verified: the
+ * grep for createLogger/pino/logger across `services/m365ControlPlane/*.ts`
+ * finds nothing); this matches the repo convention in
+ * `jobs/dnsSyncJob.ts:123-146`. The ticker in Task 14 uses it too, so the whole
+ * subsystem logs under one tag and one shape.
+ */
+export function logSync(event: string, fields: Record<string, unknown>): void;
 // audit.ts
 export function recordM365SyncRunEvent(input: { orgId: string; connectionId: string; domain: M365SyncDomain;
   generation: number; outcome: M365SyncRunResult; correlationId: string; truncated: boolean;
   inserted: number; updated: number; stale: number; unchanged: number }): void;
 ```
+
+**Ordering of the two seams, stated once so it cannot be re-derived wrongly:**
+`applyCadence` is called BEFORE `writeCompletion` (its result is what
+`writeCompletion` stores). `afterDomainPersisted` is called AFTER
+`writeCompletion` has COMMITTED, outside any DB context — the hook opens its
+own — wrapped in try/catch that logs `{orgId, domain, generation, error}` via
+the structured logger and never rethrows. **W05 fills the body; it runs
+post-commit.** A hook failure must never roll back or re-run a completed sync.
 
 Outcome mapping (spec §6), implemented once in `outcomeForFailure` and pinned by a table test:
 
@@ -4155,9 +4538,20 @@ Outcome mapping (spec §6), implemented once in `outcomeForFailure` and pinned b
 | success, primary source `permission_missing` | `needs_consent` | **NULL** | — |
 | success, primary source `unlicensed` | `success`, zero updates | now + interval ± jitter | — |
 | `graph_permission_missing` | `needs_consent` | **NULL** | — |
+| `continuation_invalid` | `partial-continue` (control flow only; `last_status` untouched) | **unchanged** — the row is still due, and the domain is re-claimed immediately | **no** |
 | `sync_capacity`, `graph_throttled`, `read_rate_limited` | `throttled` | unchanged until the final attempt | — |
 | `credential_unavailable`, `application_token_invalid` | `error` | **NULL** | **no** (Huntress rule) |
-| every other `graph_*` / `executor_unavailable` | `error` | now + interval ± jitter | yes (Task 14 throws) |
+| every other `graph_*` / refusal / `executor_unavailable` | `error` | now + interval ± jitter | yes (Task 14 throws) |
+
+**`continuation_invalid` is not an error.** The executor's continuation seal is
+AES-GCM with a 1 h expiry and, when `M365_SYNC_CONTINUATION_KEY` is unset, an
+ephemeral per-process key — so an executor restart mid-walk invalidates every
+outstanding cursor. That is an expected, self-healing condition: clear
+`m365_sync_state.continuation`, re-claim the same domain (which mints a fresh
+generation so the abandoned attempt fences), and restart the walk. Recording it
+as `error` would unschedule sign-in activity for a whole tenant every time the
+executor was redeployed. W04 owns this mapping; W05 owns the sign-in persister
+that actually produces continuations.
 
 - [ ] **Step 1: Write the failing test** — `run.test.ts` (mock `./domains/*`, `../m365ControlPlane/readActionService`, `../../db`, and `./metrics`; keep `run.phaseA.test.ts` as the Phase A proof):
 
@@ -4170,7 +4564,12 @@ const { mocks } = vi.hoisted(() => ({
     persistUsers: vi.fn(), callExecutor: vi.fn(),
     completion: [] as Record<string, unknown>[],
     audit: vi.fn(), metricRun: vi.fn(), metricFenced: vi.fn(), metricItems: vi.fn(),
-    hook: vi.fn(), cadence: vi.fn((s: { intervalSeconds: number }) => s.intervalSeconds),
+    hook: vi.fn(),
+    cadence: vi.fn((_d: string, st: { intervalSeconds: number }, _o: string, sig: { now: Date }) => ({
+      intervalSeconds: st.intervalSeconds,
+      nextSyncAt: new Date(sig.now.getTime() + st.intervalSeconds * 1000),
+    })),
+    claim: vi.fn(async () => []), enqueue: vi.fn(async () => 'job-1'),
     executorDepth: -1, depth: 0,
   },
 }));
@@ -4193,15 +4592,17 @@ vi.mock('./metrics', () => ({
 vi.mock('./audit', () => ({ recordM365SyncRunEvent: mocks.audit }));
 vi.mock('./hooks', () => ({ afterDomainPersisted: mocks.hook }));
 vi.mock('./cadence', () => ({ applyCadence: mocks.cadence }));
+vi.mock('./claim', () => ({ claimDueDomains: mocks.claim }));
+vi.mock('../../jobs/m365SyncQueue', () => ({ enqueueSyncDomain: mocks.enqueue }));
 
-import { nextSyncAt, outcomeForFailure, runSyncDomain } from './run';
+import { outcomeForFailure, runSyncDomain } from './run';   // nextSyncAt lives in cadence.ts (Task 12) and is covered by cadence.test.ts
 
 const JOB = { orgId: 'org-1', domain: 'users' as const, generation: 5, connectionId: 'conn-1',
   tenantId: 'tenant-1', consentGeneration: 2, priority: 10 as const };
 const CTX = {
   snapshot: { id: 'conn-1', orgId: 'org-1', tenantId: 'tenant-1', consentGeneration: 2,
     status: 'active', permissionManifestVersion: 3, vaultRef: 'v', credentialVersion: 'c' },
-  state: { intervalSeconds: 21600, continuation: null, lastCompleteSnapshotAt: null },
+  state: { intervalSeconds: 21600, continuation: null, lastCompleteSnapshotAt: null, lastSuccessAt: null },
   existing: new Map(),
 };
 const SYNC_OK = {
@@ -4217,6 +4618,7 @@ const run = (over: Record<string, unknown> = {}) =>
 describe('runSyncDomain', () => {
   beforeEach(() => {
     vi.clearAllMocks(); mocks.completion = []; mocks.depth = 0; mocks.executorDepth = -1;
+    mocks.claim.mockResolvedValue([]); mocks.enqueue.mockResolvedValue('job-1');
     vi.doMock('./run', async (a) => a());
     mocks.loadContext.mockResolvedValue(CTX);
     mocks.assertFence.mockResolvedValue(null);
@@ -4229,9 +4631,21 @@ describe('runSyncDomain', () => {
     expect(mocks.executorDepth).toBe(0);
   });
 
-  it('routes the executor call through opts.route = sync', async () => {
+  it('routes the executor call through opts.route = sync and labels the histogram by DOMAIN', async () => {
     await run();
-    expect(mocks.callExecutor.mock.calls[0]![2]).toMatchObject({ route: 'sync' });
+    expect(mocks.callExecutor.mock.calls[0]![2]).toMatchObject({ route: 'sync', domain: 'users' });
+  });
+
+  it('builds the action through m365SyncActionFor, passing the stored continuation and the backfill flag', async () => {
+    await run();
+    expect(mocks.callExecutor.mock.calls[0]![1]).toEqual({ type: 'm365.sync.users' });
+
+    // last_success_at NULL means "never completed" -> backfill for secure_score.
+    // Harmless for users (the builder drops the option), but the SAME call site
+    // has to serve both, which is why it is asserted here rather than in W05.
+    mocks.loadContext.mockResolvedValue({ ...CTX, state: { ...CTX.state, lastSuccessAt: new Date('2026-09-01T00:00:00.000Z') } });
+    await run();
+    expect(mocks.callExecutor.mock.calls[1]![1]).toEqual({ type: 'm365.sync.users' });
   });
 
   it('completes: success outcome, next_sync_at advanced, lease cleared, counts stored', async () => {
@@ -4313,13 +4727,121 @@ describe('runSyncDomain', () => {
     expect(mocks.audit).not.toHaveBeenCalled();
   });
 
-  it('calls the W05 seams: applyCadence for the interval, afterDomainPersisted after the commit', async () => {
+  it('calls applyCadence with the domain first and ALL SIX signals populated', async () => {
     await run();
     expect(mocks.cadence).toHaveBeenCalledWith(
-      { domain: 'users', intervalSeconds: 21600 }, 'success',
-      expect.objectContaining({ truncated: false, capacity: false }),
+      'users', { intervalSeconds: 21600 }, 'success',
+      {
+        truncated: false, latencyMs: 1200, capacity: false,
+        unlicensed: false, authFailure: false, now: new Date('2026-09-08T00:00:00.000Z'),
+      },
+      expect.any(Function),
     );
-    expect(mocks.hook).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', domain: 'users', outcome: 'success' }));
+  });
+
+  it('stores the {intervalSeconds, nextSyncAt} PAIR applyCadence returned, computing neither itself', async () => {
+    mocks.cadence.mockReturnValue({ intervalSeconds: 999, nextSyncAt: new Date('2027-01-01T00:00:00.000Z') });
+    await run();
+    expect(mocks.completion.at(-1)).toMatchObject({
+      intervalSeconds: 999,
+      nextSyncAt: new Date('2027-01-01T00:00:00.000Z'),
+    });
+  });
+
+  it('marks unlicensed from sources.signInActivity, and authFailure only for a DEAD CREDENTIAL', async () => {
+    mocks.callExecutor.mockResolvedValue({ ...SYNC_OK, result: { ...SYNC_OK.result,
+      sources: { users: 'ok', signInActivity: 'unlicensed' } } });
+    await run();
+    expect(mocks.cadence.mock.calls[0]![3]).toMatchObject({ unlicensed: true, authFailure: false });
+
+    mocks.cadence.mockClear();
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'application_token_invalid', message: 'm', executorMs: 5 });
+    await run();
+    expect(mocks.cadence.mock.calls[0]![3]).toMatchObject({ authFailure: true });
+
+    // graph_permission_missing is needs_consent, NOT a dead credential — if it
+    // fed authFailure, W05's cadence would back off a tenant that simply needs
+    // a re-consent click.
+    mocks.cadence.mockClear();
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_permission_missing', message: 'm', executorMs: 5 });
+    await run();
+    expect(mocks.cadence.mock.calls[0]![3]).toMatchObject({ authFailure: false });
+  });
+
+  it('calls afterDomainPersisted AFTER the completion commit, with the full persist context', async () => {
+    const order: string[] = [];
+    mocks.hook.mockImplementation(async () => { order.push('hook'); });
+    mocks.persistUsers.mockImplementation(async () => { order.push('persist'); return PERSISTED; });
+    await run();
+    expect(order).toEqual(['persist', 'hook']);
+    expect(mocks.completion).toHaveLength(1);           // the commit happened first
+    expect(mocks.hook).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1', tenantId: 'tenant-1', connectionId: 'conn-1', generation: 5,
+      domain: 'users', outcome: 'success', persisted: PERSISTED,
+    }));
+  });
+
+  it('a THROWING hook is logged and swallowed — a completed sync is never rolled back or re-run', async () => {
+    mocks.hook.mockRejectedValue(new Error('rollup exploded'));
+    await expect(run()).resolves.toBe('success');
+    expect(mocks.completion).toHaveLength(1);
+  });
+
+  it('continuation_invalid CLEARS the cursor, re-claims the domain, and returns partial-continue', async () => {
+    mocks.loadContext.mockResolvedValue({ ...CTX, state: { ...CTX.state, continuation: 'stale-cursor' } });
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'continuation_invalid', message: 'm', executorMs: 5 });
+    mocks.claim.mockResolvedValue([{ ...JOB, generation: 6 }]);
+
+    await expect(run()).resolves.toBe('partial-continue');
+
+    // continuation-only write: cursor cleared, lease released, and NOTHING that
+    // would make a half-finished walk look like a finished run.
+    const completion = mocks.completion.at(-1)!;
+    expect(completion).toMatchObject({ continuation: null, leaseUntil: null });
+    expect(completion).not.toHaveProperty('lastStatus');
+    expect(completion).not.toHaveProperty('nextSyncAt');
+    expect(completion).not.toHaveProperty('lastCounts');
+
+    // Re-claimed on the SAME domain at the normal lane, then enqueued, so the
+    // restarted run gets a fresh generation and the abandoned one fences.
+    expect(mocks.claim).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-1', domains: ['users'], priority: 10 }),
+    );
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ domain: 'users', generation: 6 }));
+  });
+
+  it('continuation_invalid writes NO audit event and NO run metric — the run has not finished', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'continuation_invalid', message: 'm', executorMs: 5 });
+    await run();
+    expect(mocks.audit).not.toHaveBeenCalled();
+    expect(mocks.metricRun).not.toHaveBeenCalled();
+  });
+
+  it('a failed re-claim after continuation_invalid is survivable: still partial-continue, cursor still cleared', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'continuation_invalid', message: 'm', executorMs: 5 });
+    mocks.claim.mockRejectedValue(new Error('redis blip'));
+    // The row keeps its past next_sync_at, so the next tick reclaims it anyway.
+    await expect(run()).resolves.toBe('partial-continue');
+    expect(mocks.completion.at(-1)).toMatchObject({ continuation: null });
+  });
+
+  it('emits exactly ONE structured log line per completed run, carrying counts and no row content', async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args) => { logged.push(args.join(' ')); });
+    try {
+      await run();
+    } finally {
+      spy.mockRestore();
+    }
+    const lines = logged.filter((line) => line.includes('m365.sync.run'));
+    expect(lines).toHaveLength(1);
+    const payload = JSON.parse(lines[0]!.slice(lines[0]!.indexOf('{')));
+    expect(payload).toMatchObject({
+      orgId: 'org-1', domain: 'users', connectionId: 'conn-1', generation: 5,
+      outcome: 'success', inserted: 1, updated: 0, stale: 0, unchanged: 0, truncated: false,
+    });
+    expect(payload.correlationId).toEqual(expect.any(String));
+    expect(JSON.stringify(payload)).not.toContain('u1');
   });
 
   it('is a no-op that unschedules a domain with no persister, so it cannot spin every tick', async () => {
@@ -4342,34 +4864,25 @@ describe('runSyncDomain', () => {
 
 describe('outcomeForFailure (spec §6)', () => {
   it.each([
-    ['graph_permission_missing', 'needs_consent', true, false],
-    ['sync_capacity', 'throttled', false, false],
-    ['graph_throttled', 'throttled', false, false],
-    ['read_rate_limited', 'throttled', false, false],
-    ['credential_unavailable', 'error', true, false],
-    ['application_token_invalid', 'error', true, false],
-    ['graph_transport_failed', 'error', false, true],
-    ['executor_unavailable', 'error', false, true],
-    ['graph_response_invalid', 'error', false, true],
-  ])('%s -> %s (unschedule=%s, sentry=%s)', (code, outcome, unschedule, sentryWorthy) => {
-    expect(outcomeForFailure(code as never)).toEqual({ outcome, unschedule, sentryWorthy });
-  });
-});
-
-describe('nextSyncAt', () => {
-  it('applies at most +/-10% jitter around the interval', () => {
-    const now = new Date('2026-09-08T00:00:00.000Z');
-    const low = nextSyncAt(now, 3600, () => 0).getTime() - now.getTime();
-    const high = nextSyncAt(now, 3600, () => 1).getTime() - now.getTime();
-    const mid = nextSyncAt(now, 3600, () => 0.5).getTime() - now.getTime();
-    expect(low).toBe(3600 * 1000 * 0.9);
-    expect(high).toBe(3600 * 1000 * 1.1);
-    expect(mid).toBe(3600 * 1000);
+    ['graph_permission_missing', 'needs_consent', true, false, false],
+    ['sync_capacity', 'throttled', false, false, false],
+    ['graph_throttled', 'throttled', false, false, false],
+    ['read_rate_limited', 'throttled', false, false, false],
+    ['credential_unavailable', 'error', true, false, false],
+    ['application_token_invalid', 'error', true, false, false],
+    ['continuation_invalid', 'partial', false, false, true],
+    ['graph_transport_failed', 'error', false, true, false],
+    ['executor_unavailable', 'error', false, true, false],
+    ['graph_response_invalid', 'error', false, true, false],
+    ['connection_not_ready', 'error', false, true, false],
+  ])('%s -> %s (unschedule=%s, sentry=%s, restartWalk=%s)', (code, outcome, unschedule, sentryWorthy, restartWalk) => {
+    expect(outcomeForFailure(code as never)).toEqual({ outcome, unschedule, sentryWorthy, restartWalk });
   });
 
-  it('spreads two orgs on the same interval, so a cohort does not re-converge', () => {
-    const now = new Date('2026-09-08T00:00:00.000Z');
-    expect(nextSyncAt(now, 3600, () => 0.1).getTime()).not.toBe(nextSyncAt(now, 3600, () => 0.9).getTime());
+  it('never reports a dead credential OR an expired cursor to Sentry', () => {
+    for (const code of ['credential_unavailable', 'application_token_invalid', 'continuation_invalid'] as const) {
+      expect(outcomeForFailure(code).sentryWorthy).toBe(false);
+    }
   });
 });
 ```
@@ -4438,14 +4951,27 @@ export function recordM365SyncRunEvent(input: {
 
 Append to `apps/api/src/services/m365Sync/run.ts`:
 
+> **On the logger.** There is no `createLogger`/pino module in `apps/api` —
+> `grep -rn 'createLogger\|pino\|logger' apps/api/src/services/m365ControlPlane/*.ts`
+> returns nothing. The repo's structured-logging convention is a tagged
+> `console.*` plus one `JSON.stringify(fields)` argument (see
+> `apps/api/src/jobs/dnsSyncJob.ts:123-146`). This wave follows it through a
+> single module-local `logSync` helper so the run line, the hook-failure line
+> and the ticker lines all share one shape and one tag — and so that swapping in
+> a real logger later is one function body, not a grep.
+
 ```ts
 import { randomUUID } from 'node:crypto';
+import { M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS } from '@breeze/shared/m365';
 import { runOutsideDbContext } from '../../db';
+import { enqueueSyncDomain } from '../../jobs/m365SyncQueue';
 import {
   callGraphReadExecutor, type M365SyncCallFailureCode, type M365SyncCallResult,
 } from '../m365ControlPlane/readActionService';
+import { redactLogMessage } from '../logRedaction';
 import { recordM365SyncRunEvent } from './audit';
 import { applyCadence } from './cadence';
+import { claimDueDomains } from './claim';
 import { afterDomainPersisted } from './hooks';
 import { persistCaPolicies } from './domains/caPolicies';
 import { persistIntuneDevices } from './domains/intuneDevices';
@@ -4456,103 +4982,197 @@ import {
 } from './metrics';
 import {
   M365_SYNC_PRIMARY_SOURCE_KEY, m365SyncActionFor,
-  type DomainPersistResult, type M365DomainPersister, type M365SyncOutcome, type M365SyncRunResult,
+  type CadenceSignals, type DomainPersistResult, type M365DomainPersister,
+  type M365SyncOutcome, type M365SyncRunResult, type PersistContext,
 } from './types';
 
-const DOMAIN_PERSISTERS: Partial<Record<M365SyncDomain, M365DomainPersister>> = {
+/**
+ * Every domain, four with a persister and two explicitly `undefined`. A TOTAL
+ * Record rather than a Partial on purpose: when W05 registers
+ * `persistSigninActivity` and `persistSecureScore` it edits two `undefined`s
+ * into two functions, and a domain added to `M365SyncDomain` later is a compile
+ * error here instead of a silent `noop` in production.
+ */
+export const DOMAIN_PERSISTERS: Record<M365SyncDomain, M365DomainPersister | undefined> = {
   users: persistUsers,
   intune_devices: persistIntuneDevices,
   ca_policies: persistCaPolicies,
   skus: persistSkus,
+  signin_activity: undefined,   // W05
+  secure_score: undefined,      // W05
 };
+
+/**
+ * The one structured log call for this service. Tagged + JSON payload, matching
+ * jobs/dnsSyncJob.ts:123-146 — there is no logger module in apps/api. Messages
+ * are run through redactLogMessage because an executor error string is the one
+ * field here that did not originate in our own code.
+ */
+export function logSync(event: string, fields: Record<string, unknown>): void {
+  console.log(`[M365Sync] ${event}`, JSON.stringify(fields));
+}
+
+/** Codes that mean the CREDENTIAL is dead, for `CadenceSignals.authFailure`. */
+const AUTH_FAILURE_CODES = new Set<M365SyncCallFailureCode>([
+  'credential_unavailable',
+  'application_token_invalid',
+  // NOT graph_permission_missing: that is a missing GRANT, answered by a
+  // re-consent click, and treating it as a dead credential would have W05's
+  // cadence back off a tenant that is one button away from working.
+]);
 
 /**
  * Spec §6, in one place. `unschedule` sets next_sync_at NULL (the domain waits
  * for a re-consent or a retest to re-seed it); `sentryWorthy` tells the worker
  * whether to throw, because a dead credential is a config issue already
  * recorded on the row and capturing it once per scheduled run is exactly what
- * flooded the Sentry quota for Huntress (BREEZE-1).
+ * flooded the Sentry quota for Huntress (BREEZE-1); `restartWalk` means the
+ * page cursor is gone and the walk must be restarted from the beginning.
  */
 export function outcomeForFailure(code: M365SyncCallFailureCode): {
-  outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean;
+  outcome: M365SyncOutcome; unschedule: boolean; sentryWorthy: boolean; restartWalk: boolean;
 } {
   switch (code) {
     case 'graph_permission_missing':
-      return { outcome: 'needs_consent', unschedule: true, sentryWorthy: false };
+      return { outcome: 'needs_consent', unschedule: true, sentryWorthy: false, restartWalk: false };
     case 'sync_capacity':
     case 'graph_throttled':
     case 'read_rate_limited':
-      return { outcome: 'throttled', unschedule: false, sentryWorthy: false };
+      return { outcome: 'throttled', unschedule: false, sentryWorthy: false, restartWalk: false };
     case 'credential_unavailable':
     case 'application_token_invalid':
-      return { outcome: 'error', unschedule: true, sentryWorthy: false };
+      return { outcome: 'error', unschedule: true, sentryWorthy: false, restartWalk: false };
+    case 'continuation_invalid':
+      // Expected and self-healing: the executor's continuation seal expires
+      // after an hour and dies outright on an executor restart when
+      // M365_SYNC_CONTINUATION_KEY is unset. Recording it as `error` would
+      // unschedule a tenant's sign-in activity every time we redeployed.
+      // `outcome` is unused on this branch — the run returns 'partial-continue'
+      // and writes no last_status at all.
+      return { outcome: 'partial', unschedule: false, sentryWorthy: false, restartWalk: true };
     default:
-      return { outcome: 'error', unschedule: false, sentryWorthy: true };
+      return { outcome: 'error', unschedule: false, sentryWorthy: true, restartWalk: false };
   }
-}
-
-/**
- * next run = now + interval, jittered +/-10%. Without the jitter every org
- * seeded in the same tick would stay in lockstep forever and the fleet would
- * re-converge into the same minute every six hours.
- */
-export function nextSyncAt(now: Date, intervalSeconds: number, rng: () => number = Math.random): Date {
-  const jitter = 0.9 + rng() * 0.2;
-  return new Date(now.getTime() + Math.round(intervalSeconds * 1000 * jitter));
 }
 
 /** Sanitized, bounded error text for `last_error`. Never row content (spec §3.1). */
 function sanitizedError(code: string, message: string): string {
-  return `${code}: ${message}`.slice(0, 500);
+  return `${code}: ${redactLogMessage(message)}`.slice(0, 500);
 }
 
-interface CompletionInput {
+interface WriteCompletionContext {
   data: M365SyncJobData;
   now: Date;
-  outcome: M365SyncOutcome;
-  complete: boolean;
-  unschedule: boolean;
-  intervalSeconds: number;
-  itemCount: number;
-  truncated: boolean;
-  sources: Record<string, string> | null;
-  counts: Record<string, number> | null;
-  continuation: string | null;
-  lastError: string | null;
-  rng?: () => number;
+  correlationId: string;
 }
 
+type CompletionArgs =
+  | {
+      mode: 'complete';
+      outcome: M365SyncOutcome;
+      persisted: DomainPersistResult;
+      /** Both halves come from applyCadence; run.ts computes neither. */
+      cadence: { intervalSeconds: number; nextSyncAt: Date | null };
+      itemCount: number;
+      truncated: boolean;
+      sources: Record<string, string> | null;
+      continuation: string | null;
+      lastError: string | null;
+    }
+  | { mode: 'continuation'; continuation: string | null };
+
+/** A persist that did not happen, for the failure branches. */
+const NO_PERSIST: DomainPersistResult = {
+  inserted: 0, updated: 0, stale: 0, unchanged: 0, counts: {}, complete: false,
+};
+
 /**
- * The completion transaction. Guarded on run_generation as a SECOND fence
- * beyond the Phase C FOR UPDATE re-read: between that read and this write the
- * transaction is open, so this is belt-and-braces, and it costs one predicate.
+ * The SINGLE completion writer — nothing else updates m365_sync_state on the
+ * completion path, which is what keeps "one run, one state write, one audit
+ * event, one log line" true by construction.
+ *
+ * Guarded on run_generation as a SECOND fence beyond the Phase C FOR UPDATE
+ * re-read: between that read and this write the transaction is open, so this is
+ * belt-and-braces, and it costs one predicate.
+ *
+ * `mode: 'continuation'` exists for the 'partial-continue' restart. It stores
+ * the cursor and releases the lease and NOTHING else: touching next_sync_at,
+ * last_status or last_counts there would make a half-finished walk look like a
+ * finished run to the card, the rollup and the operator.
  */
-async function writeCompletion(input: CompletionInput): Promise<void> {
-  const { data, now } = input;
+async function writeCompletion(ctx: WriteCompletionContext, args: CompletionArgs): Promise<void> {
+  const { data, now } = ctx;
+  const set = args.mode === 'continuation'
+    ? { continuation: args.continuation, leaseUntil: null, updatedAt: now }
+    : {
+      lastRunAt: now,
+      lastStatus: args.outcome,
+      ...(args.outcome === 'success' || args.outcome === 'partial' ? { lastSuccessAt: now } : {}),
+      ...(args.persisted.complete ? { lastCompleteSnapshotAt: now } : {}),
+      lastError: args.lastError,
+      lastItemCount: args.itemCount,
+      truncated: args.truncated,
+      ...(args.sources ? { sources: args.sources } : {}),
+      ...(Object.keys(args.persisted.counts).length ? { lastCounts: args.persisted.counts } : {}),
+      continuation: args.continuation,
+      intervalSeconds: args.cadence.intervalSeconds,
+      nextSyncAt: args.cadence.nextSyncAt,
+      leaseUntil: null,
+      updatedAt: now,
+    };
+
   await withSystemDbAccessContext(async () => {
     await db.update(m365SyncState)
-      .set({
-        lastRunAt: now,
-        lastStatus: input.outcome,
-        ...(input.outcome === 'success' || input.outcome === 'partial' ? { lastSuccessAt: now } : {}),
-        ...(input.complete ? { lastCompleteSnapshotAt: now } : {}),
-        lastError: input.lastError,
-        lastItemCount: input.itemCount,
-        truncated: input.truncated,
-        ...(input.sources ? { sources: input.sources } : {}),
-        ...(input.counts ? { lastCounts: input.counts } : {}),
-        continuation: input.continuation,
-        intervalSeconds: input.intervalSeconds,
-        nextSyncAt: input.unschedule ? null : nextSyncAt(now, input.intervalSeconds, input.rng),
-        leaseUntil: null,
-        updatedAt: now,
-      })
+      .set(set)
       .where(and(
         eq(m365SyncState.orgId, data.orgId),
         eq(m365SyncState.domain, data.domain),
         eq(m365SyncState.runGeneration, data.generation),
       ));
   }, 'm365SyncCompletion');
+
+  if (args.mode === 'complete') {
+    // ONE line per run. Everything an operator needs to explain a run without
+    // opening the database, and nothing that could carry a UPN or a device name.
+    logSync('m365.sync.run', {
+      orgId: data.orgId,
+      domain: data.domain,
+      connectionId: data.connectionId,
+      generation: data.generation,
+      correlationId: ctx.correlationId,
+      outcome: args.outcome,
+      inserted: args.persisted.inserted,
+      updated: args.persisted.updated,
+      stale: args.persisted.stale,
+      unchanged: args.persisted.unchanged,
+      truncated: args.truncated,
+    });
+  }
+}
+
+/**
+ * Post-commit seam call (spec §5.6/§5.9, filled by W05). Runs OUTSIDE any DB
+ * context — the hook opens its own — and a throw here is logged and swallowed:
+ * the sync is already committed, and rolling it back or re-running it because a
+ * rollup failed would turn a cosmetic failure into a re-fetch of the whole
+ * tenant.
+ */
+async function runAfterDomainPersisted(
+  ctx: PersistContext,
+  domain: M365SyncDomain,
+  outcome: M365SyncOutcome,
+  persisted: DomainPersistResult,
+): Promise<void> {
+  try {
+    await afterDomainPersisted({ ...ctx, domain, outcome, persisted });
+  } catch (error) {
+    logSync('hook-failed', {
+      orgId: ctx.orgId,
+      domain,
+      generation: ctx.generation,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    });
+  }
 }
 
 /**
@@ -4581,17 +5201,25 @@ export async function runSyncDomain(
   const callExecutor = opts.callExecutor ?? callGraphReadExecutor;
   const correlationId = randomUUID();
   const persister = DOMAIN_PERSISTERS[data.domain];
+  const completionCtx = { data, now, correlationId };
 
   return runOutsideDbContext(async () => {
     // A domain with no persister must be UNSCHEDULED, not merely skipped: a
     // skipped row keeps its past next_sync_at and would be re-claimed every
     // tick forever, burning ticker slots against the §5.9 capacity budget.
     if (!persister) {
-      await writeCompletion({
-        data, now, outcome: 'error', complete: false, unschedule: true,
-        intervalSeconds: 0, itemCount: 0, truncated: false, sources: null, counts: null,
-        continuation: null, lastError: sanitizedError('domain_not_implemented', `no persister for ${data.domain}`),
-        rng,
+      await writeCompletion(completionCtx, {
+        mode: 'complete', outcome: 'error', persisted: NO_PERSIST,
+        // next_sync_at NULL unschedules it; interval_seconds keeps the domain's
+        // DEFAULT rather than 0, so when W05 registers the persister and
+        // re-seeds, the row already carries a sane cadence instead of a zero
+        // that would make the first completion schedule it for `now`.
+        cadence: {
+          intervalSeconds: M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS[data.domain],
+          nextSyncAt: null,
+        },
+        itemCount: 0, truncated: false, sources: null, continuation: null,
+        lastError: sanitizedError('domain_not_implemented', `no persister for ${data.domain}`),
       });
       return 'noop';
     }
@@ -4604,11 +5232,23 @@ export async function runSyncDomain(
       return 'fenced';
     }
 
+    const persistCtx: PersistContext = {
+      orgId: data.orgId, tenantId: data.tenantId, connectionId: data.connectionId,
+      generation: data.generation, existing: loaded.existing, now,
+    };
+
     // ---- Phase B: NO DB context held --------------------------------------
+    // ONE action builder, always given both options. `backfill` is true only
+    // when this domain has never completed for this org, which is exactly what
+    // secure_score's initial 90-day pull needs; the builder drops the option
+    // for the domains whose action does not accept it.
     const call = await callExecutor(
       loaded.snapshot,
-      m365SyncActionFor(data.domain, { continuation: loaded.state.continuation }),
-      { route: 'sync', correlationId },
+      m365SyncActionFor(data.domain, {
+        continuation: loaded.state.continuation,
+        backfill: loaded.state.lastSuccessAt === null,
+      }),
+      { route: 'sync', correlationId, domain: data.domain },
     ) as M365SyncCallResult;
 
     // ---- Phase C ----------------------------------------------------------
@@ -4618,20 +5258,60 @@ export async function runSyncDomain(
       return 'fenced';
     }
 
+    /** Six always-populated signals for the cadence seam (spec §5.7). */
+    const signalsFor = (over: Partial<CadenceSignals>): CadenceSignals => ({
+      truncated: false,
+      latencyMs: call.executorMs,
+      capacity: false,
+      unlicensed: false,
+      authFailure: false,
+      now,
+      ...over,
+    });
+
     if (!call.ok) {
-      const { outcome, unschedule } = outcomeForFailure(call.code);
+      const { outcome, unschedule, restartWalk } = outcomeForFailure(call.code);
+
+      // The continuation seal expired or died with an executor restart. Clear
+      // the cursor, leave every completion field alone (the walk did NOT
+      // finish), and re-claim the same domain so the restart runs under a fresh
+      // generation — which is also what fences the attempt we are abandoning.
+      if (restartWalk) {
+        await writeCompletion(completionCtx, { mode: 'continuation', continuation: null });
+        try {
+          const reclaimed = await claimDueDomains({
+            limit: 1, orgId: data.orgId, domains: [data.domain], priority: 10,
+          });
+          for (const job of reclaimed) await enqueueSyncDomain(job);
+        } catch (error) {
+          // Survivable: next_sync_at was never advanced, so the row is still
+          // due and the next 60 s tick reclaims it.
+          logSync('continuation-restart-failed', {
+            orgId: data.orgId, domain: data.domain, generation: data.generation,
+            error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+          });
+        }
+        return 'partial-continue';
+      }
+
       // A throttle mid-retry writes nothing: the lease is still ours (20 min vs
       // a 10.5-minute retry ladder) and BullMQ will bring the job back.
       if (outcome === 'throttled' && !opts.isFinalAttempt) return 'throttled';
-      const intervalSeconds = applyCadence(
-        { domain: data.domain, intervalSeconds: loaded.state.intervalSeconds }, outcome,
-        { truncated: false, latencyMs: call.executorMs, capacity: call.code === 'sync_capacity' },
+
+      const cadence = applyCadence(
+        data.domain, { intervalSeconds: loaded.state.intervalSeconds }, outcome,
+        signalsFor({
+          capacity: call.code === 'sync_capacity',
+          authFailure: AUTH_FAILURE_CODES.has(call.code),
+        }),
+        rng,
       );
-      await writeCompletion({
-        data, now, outcome, complete: false, unschedule, intervalSeconds,
-        itemCount: 0, truncated: false, sources: null, counts: null,
+      await writeCompletion(completionCtx, {
+        mode: 'complete', outcome, persisted: NO_PERSIST,
+        cadence: unschedule ? { intervalSeconds: cadence.intervalSeconds, nextSyncAt: null } : cadence,
+        itemCount: 0, truncated: false, sources: null,
         continuation: loaded.state.continuation,
-        lastError: sanitizedError(call.code, call.message), rng,
+        lastError: sanitizedError(call.code, call.message),
       });
       recordM365SyncRun(data.domain, outcome);
       recordM365SyncRunEvent({
@@ -4639,22 +5319,28 @@ export async function runSyncDomain(
         generation: data.generation, outcome, correlationId, truncated: false,
         inserted: 0, updated: 0, stale: 0, unchanged: 0,
       });
-      await afterDomainPersisted({ orgId: data.orgId, tenantId: data.tenantId, domain: data.domain, outcome, now });
+      await runAfterDomainPersisted(persistCtx, data.domain, outcome, NO_PERSIST);
       return outcome;
     }
 
     const result = call.result;
     const primaryKey = M365_SYNC_PRIMARY_SOURCE_KEY[data.domain];
     const primaryState = result.sources[primaryKey];
+    const unlicensed = result.sources.signInActivity === 'unlicensed';
 
     // A primary source that is not granted is needs_consent even on a 200 —
     // the executor reports it as a `sources` entry, not an error code.
     if (primaryState === 'permission_missing') {
-      await writeCompletion({
-        data, now, outcome: 'needs_consent', complete: false, unschedule: true,
-        intervalSeconds: loaded.state.intervalSeconds, itemCount: 0, truncated: result.truncated,
-        sources: result.sources, counts: null, continuation: result.continuation ?? null,
-        lastError: sanitizedError('graph_permission_missing', `primary source ${primaryKey} not granted`), rng,
+      const cadence = applyCadence(
+        data.domain, { intervalSeconds: loaded.state.intervalSeconds }, 'needs_consent',
+        signalsFor({ truncated: result.truncated, unlicensed }), rng,
+      );
+      await writeCompletion(completionCtx, {
+        mode: 'complete', outcome: 'needs_consent', persisted: NO_PERSIST,
+        cadence: { intervalSeconds: cadence.intervalSeconds, nextSyncAt: null },
+        itemCount: 0, truncated: result.truncated, sources: result.sources,
+        continuation: result.continuation ?? null,
+        lastError: sanitizedError('graph_permission_missing', `primary source ${primaryKey} not granted`),
       });
       recordM365SyncRun(data.domain, 'needs_consent');
       recordM365SyncRunEvent({
@@ -4662,26 +5348,24 @@ export async function runSyncDomain(
         generation: data.generation, outcome: 'needs_consent', correlationId,
         truncated: result.truncated, inserted: 0, updated: 0, stale: 0, unchanged: 0,
       });
+      await runAfterDomainPersisted(persistCtx, data.domain, 'needs_consent', NO_PERSIST);
       return 'needs_consent';
     }
 
-    const persisted: DomainPersistResult = await persister({
-      orgId: data.orgId, tenantId: data.tenantId, connectionId: data.connectionId,
-      generation: data.generation, existing: loaded.existing, now,
-    }, result);
+    const persisted: DomainPersistResult = await persister(persistCtx, result);
 
     // partial when anything was less than whole: truncated, or ANY source not ok.
     const allSourcesOk = Object.values(result.sources).every((state) => state === 'ok' || state === 'unlicensed');
     const outcome: M365SyncOutcome = persisted.complete && allSourcesOk ? 'success' : 'partial';
-    const intervalSeconds = applyCadence(
-      { domain: data.domain, intervalSeconds: loaded.state.intervalSeconds }, outcome,
-      { truncated: result.truncated, latencyMs: call.executorMs, capacity: false },
+    const cadence = applyCadence(
+      data.domain, { intervalSeconds: loaded.state.intervalSeconds }, outcome,
+      signalsFor({ truncated: result.truncated, unlicensed }), rng,
     );
 
-    await writeCompletion({
-      data, now, outcome, complete: persisted.complete, unschedule: false, intervalSeconds,
-      itemCount: result.items.length, truncated: result.truncated, sources: result.sources,
-      counts: persisted.counts, continuation: result.continuation ?? null, lastError: null, rng,
+    await writeCompletion(completionCtx, {
+      mode: 'complete', outcome, persisted, cadence,
+      itemCount: result.items.length, truncated: result.truncated,
+      sources: result.sources, continuation: result.continuation ?? null, lastError: null,
     });
 
     recordM365SyncRun(data.domain, outcome);
@@ -4695,7 +5379,8 @@ export async function runSyncDomain(
       inserted: persisted.inserted, updated: persisted.updated,
       stale: persisted.stale, unchanged: persisted.unchanged,
     });
-    await afterDomainPersisted({ orgId: data.orgId, tenantId: data.tenantId, domain: data.domain, outcome, now });
+    // AFTER the completion commit, outside any DB context. W05 fills the body.
+    await runAfterDomainPersisted(persistCtx, data.domain, outcome, persisted);
     return outcome;
   });
 }
@@ -4720,12 +5405,20 @@ discards on any of the four fencing conditions, counting m365_sync_fenced.
 
 Outcome mapping lives in one outcomeForFailure() pinned by a table test
 (spec §6): a primary permission_missing unschedules, a throttle mid-retry
-writes nothing at all, and a dead credential unschedules WITHOUT throwing so
-it never reaches Sentry (the Huntress BREEZE-1 rule).
+writes nothing at all, a dead credential unschedules WITHOUT throwing so it
+never reaches Sentry (the Huntress BREEZE-1 rule), and continuation_invalid
+clears the cursor and re-claims the domain instead of unscheduling a tenant's
+sign-in activity every time the executor is redeployed.
 
-next_sync_at is jittered +/-10% so a cohort seeded in one tick does not stay
-in lockstep. One m365.sync.run audit event per run carries shape and outcome
-only, never row content.
+writeCompletion is the single completion writer, with a continuation-only mode
+for that restart so a half-finished walk never looks finished. It takes the
+{intervalSeconds, nextSyncAt} pair from applyCadence — run.ts computes no due
+time itself — and emits ONE structured log line per run. afterDomainPersisted
+runs post-commit, outside any context, and a throw there is logged, never
+rethrown: a rollup failure must not re-fetch a whole tenant.
+
+One m365.sync.run audit event per run carries shape and outcome only, never
+row content.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -4797,7 +5490,7 @@ vi.mock('./m365SyncQueue', async (actual) => ({
   ...(await actual<typeof import('./m365SyncQueue')>()),
   enqueueSyncDomain: mocks.enqueue,
 }));
-vi.mock('../services/m365Sync/run', () => ({ runSyncDomain: mocks.run }));
+vi.mock('../services/m365Sync/run', () => ({ runSyncDomain: mocks.run, logSync: vi.fn() }));
 vi.mock('../services/m365Sync/metrics', () => ({
   setM365SyncQueueDepth: mocks.metricDepth, setM365SyncTickerUtilisation: mocks.metricUtil,
   recordM365SyncTickerSkipped: mocks.metricSkipped, setM365SyncDueBacklog: mocks.metricBacklog,
@@ -4933,7 +5626,7 @@ import {
   recordM365SyncTickerSkipped, setM365SyncDueBacklog, setM365SyncQueueDepth,
   setM365SyncTickerUtilisation,
 } from '../services/m365Sync/metrics';
-import { runSyncDomain } from '../services/m365Sync/run';
+import { logSync, runSyncDomain } from '../services/m365Sync/run';
 import { m365SyncJobDataSchema } from '../services/m365Sync/types';
 import {
   closeM365SyncQueue, enqueueSyncDomain, getM365SyncQueue, m365SyncBackoff,
@@ -4994,7 +5687,7 @@ export async function runM365SyncTick(now: Date = new Date()): Promise<M365SyncT
 
   if (depth > m365SyncMaxBacklog()) {
     recordM365SyncTickerSkipped();
-    console.warn(`[M365Sync] tick skipped: queue depth ${depth} above M365_SYNC_MAX_BACKLOG`);
+    logSync('tick-skipped', { reason: 'backpressure', depth, maxBacklog: m365SyncMaxBacklog() });
     // Due rows keep their past next_sync_at, so nothing is lost — the next tick
     // picks them up (spec §5.2 step 1).
     return { claimed: 0, depth, seeded: 0, due: 0, skipped: 'backpressure' };
@@ -5015,10 +5708,10 @@ export async function runM365SyncTick(now: Date = new Date()): Promise<M365SyncT
       // One failed enqueue must not abandon the rest of the batch. The row is
       // already claimed with a lease; when the lease expires the next tick
       // reclaims it with a fresh generation (spec §5.2 "Recovery").
-      console.error(
-        `[M365Sync] enqueue failed for org=${job.orgId} domain=${job.domain} gen=${job.generation}:`,
-        error,
-      );
+      logSync('enqueue-failed', {
+        orgId: job.orgId, domain: job.domain, generation: job.generation,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -5084,7 +5777,7 @@ async function scheduleTick(): Promise<void> {
     if (repeatable.name === 'tick') await queue.removeRepeatableByKey(repeatable.key);
   }
   if (!isM365TenantSyncEnabled()) {
-    console.log('[M365Sync] M365_TENANT_SYNC_ENABLED is off — no tick registered');
+    logSync('tick-not-registered', { reason: 'M365_TENANT_SYNC_ENABLED is off' });
     return;
   }
   await queue.add('tick', {}, {
@@ -5121,13 +5814,13 @@ export async function initializeM365SyncWorker(): Promise<void> {
   attachWorkerObservability(worker, M365_SYNC_WORKER_NAME, { classifyFailure: classifyM365SyncFailure });
 
   await scheduleTick();
-  console.log('[M365Sync] worker initialized');
+  logSync('worker-initialized', { concurrency: m365SyncConcurrency() });
 }
 
 export async function shutdownM365SyncWorker(): Promise<void> {
   if (worker) { await worker.close(); worker = null; }
   await closeM365SyncQueue();
-  console.log('[M365Sync] worker shut down');
+  logSync('worker-shut-down', {});
 }
 ```
 
@@ -5176,17 +5869,31 @@ Three separate contracts must all be satisfied in the SAME commit or CI reds in 
 
 **Interfaces:** consumes Task 14's `initializeM365SyncWorker` / `shutdownM365SyncWorker` / `M365_SYNC_WORKER_NAME`.
 
+> **Depends on W02 landing first.** `WORKER_REGISTRY.length` is asserted
+> EXACTLY and both waves add an entry, so the number is only correct in landing
+> order (overview, "Count assertions"): **128 on main today → W02 sets 129
+> (`m365SyncRetention`) → W04 sets 130 (`m365SyncWorker`)**. If the base branch
+> does not already carry W02's 129, W04 is on the wrong base — stop and rebase
+> rather than "fixing" the number, or the two waves will fight over it and main
+> will red after the second merge.
+>
+> The same ordering applies to `WORKER_READINESS_MANIFEST`: W02 adds
+> `consumers('m365SyncRetention')`, W04 adds `consumers('m365SyncWorker')`.
+> Both entries must be present after this wave.
+>
 > The three contracts, and what each one fails on:
-> 1. `workerRegistry.test.ts:72` asserts `WORKER_REGISTRY.length` **exactly** (128 today) — bump it to 129.
+> 1. `workerRegistry.test.ts:72` asserts `WORKER_REGISTRY.length` **exactly** — with W02 on the base it reads 129; this wave bumps it to **130**.
 > 2. `workerReadinessCoverage.test.ts` AST-scans every `new Worker(...)` site and requires exactly one `attachWorkerObservability` per construction (Task 14 satisfies this) **and** an exact set match between every attached name and `WORKER_READINESS_MANIFEST` — so `consumers('m365SyncWorker')` must be added, spelled identically to the string passed to `attachWorkerObservability`.
 > 3. `workerEntrypointClosure.contract.test.ts` classifies placement by walking the module's runtime import closure. `placement: 'global'` is the claim that nothing it imports reaches `routes/agentWs.ts` or `services/agentCommandAwait.ts`. **Do not assume it — run the suite.** If it fails, flip to `'socket-owner'` and say so in the PR.
 
 - [ ] **Step 1: Write the failing assertions**
 
-In `apps/api/src/services/workerRegistry.test.ts`, bump the count and pin the new entry:
+In `apps/api/src/services/workerRegistry.test.ts`, bump the count and pin the new entry.
+**Read the current value first** — it must already be 129 (W02's
+`m365SyncRetention`). If it says 128, W02 is not on this base; stop.
 
 ```ts
-    expect(WORKER_REGISTRY.length).toBe(129);
+    expect(WORKER_REGISTRY.length).toBe(130);   // 129 with W02 on the base, +1 for m365SyncWorker
 ```
 
 and add:
@@ -5220,7 +5927,7 @@ In `apps/api/src/services/workerRegistry.ts`, immediately after the `huntressSyn
   },
 ```
 
-In `apps/api/src/jobs/workerReadinessManifest.ts`, immediately after `consumers('huntressSyncWorker')`:
+In `apps/api/src/jobs/workerReadinessManifest.ts`, immediately after `consumers('huntressSyncWorker')` (W02's `consumers('m365SyncRetention')` is already present on this base):
 
 ```ts
   // The Worker is constructed unconditionally and attached unconditionally;
@@ -5244,8 +5951,9 @@ git add apps/api/src/services/workerRegistry.ts apps/api/src/services/workerRegi
 git commit -m "$(cat <<'EOF'
 feat(m365): register the sync worker in the registry and readiness manifest
 
-Three separate contracts, all in one commit: the exact WORKER_REGISTRY count,
-the attach-name/manifest set match, and the entrypoint-closure placement
+Three separate contracts, all in one commit: the exact WORKER_REGISTRY count
+(129 with W02's m365SyncRetention on the base, 130 after this entry), the
+attach-name/manifest set match, and the entrypoint-closure placement
 classification. Placement was verified by running the closure contract, not
 reasoned about.
 
@@ -5265,6 +5973,8 @@ Spec §9 "Claim protocol tests (real Postgres)". Everything asserted here is inv
 - Create: `apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts`
 
 **Interfaces:** consumes the real `claimDueDomains`, `reconcileEligibleConnections`, `countDueDomains`, `syncJobId` and the W02 schema. No new production code.
+
+> **W06 appends to this file.** Its end-to-end suite adds the two-ticker case (two concurrent ticks against one seeded fleet, asserting disjoint claims and no double-enqueue) using the helpers defined below — `seedConnection`, `seedState`, `readState`, spelled exactly like that. Keep those three names and their signatures stable; W06 imports nothing from here, it appends `describe` blocks in the same file.
 
 > `src/__tests__/integration/**/*.test.ts` is already in `vitest.integration.config.ts`'s `include` and excluded from the unit config, so no dual-listing is needed. The suite needs a live database: `DATABASE_URL` + `DATABASE_URL_APP` come from the repo-root `.env.test` via `setup.ts`'s `loadEnv`. Bring a stack up with `pnpm test-stack up` (worktree-private) or `pnpm --filter @breeze/api test:docker:up` first.
 >
@@ -5534,7 +6244,7 @@ EOF
 cd apps/api && npx vitest run src/services/m365Sync src/services/m365ControlPlane src/jobs/m365SyncWorker
 ```
 
-Check the reported FILE count covers: `hash`, `metrics`, `claim`, `claim.sql`, the four `domains/*`, `domains/persist`, `run.phaseA`, `run`, every pre-existing `m365ControlPlane/*` suite, and `m365SyncWorker`. Vitest's filter is a substring match — if a file you expect is missing from the list, it was never run.
+Check the reported FILE count covers: `hash`, `metrics`, `claim`, `claim.sql`, `cadence`, the four `domains/*`, `domains/persist`, `run.phaseA`, `run`, every pre-existing `m365ControlPlane/*` suite (including the new `readActionService.syncRoute`), and `m365SyncWorker`. Vitest's filter is a substring match — if a file you expect is missing from the list, it was never run.
 
 - [ ] **Step 2: Run the contract suites this wave touches**
 
@@ -5565,17 +6275,20 @@ cd apps/api && npx tsc --noEmit -p tsconfig.json
 cd apps/api && npx eslint src/services/m365Sync src/jobs/m365SyncWorker.ts src/jobs/m365SyncQueue.ts src/services/m365ControlPlane/readActionService.ts src/config/env.ts src/config/validate.ts
 ```
 
-- [ ] **Step 5: Update the overview's contract section**
+> **Do NOT edit the overview file.** Contract edits are the orchestrator's
+> (overview: "Waves do not edit this file"). The contract deltas at the top of
+> this plan go in the PR body — Step 7's `gh pr create` already carries them —
+> and the orchestrator folds them into
+> `2026-09-08-m365-tenant-sync-0-overview.md`. A wave editing that file is how
+> two waves land conflicting contract text in the same paragraph.
 
-Edit `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md` to reflect the ten contract deltas at the top of this plan (the `opts` additions on `callGraphReadExecutor` and `runSyncDomain`/`claimDueDomains`, the `jobs/m365SyncQueue.ts` module, the `applyCadence`/`afterDomainPersisted` seams, and `M365_SYNC_IMPLEMENTED_DOMAINS`). The contract says a deviating wave updates that file in the same PR.
-
-- [ ] **Step 6: Full API suite, once, before opening the PR**
+- [ ] **Step 5: Full API suite, once, before opening the PR**
 
 ```bash
 cd apps/api && npx vitest run
 ```
 
-- [ ] **Step 7: Merge main and push**
+- [ ] **Step 6: Merge main and push**
 
 ```bash
 git fetch origin && git merge origin/main    # PR CI tests the MERGE COMMIT, not your branch tip
@@ -5583,7 +6296,7 @@ cd apps/api && npx vitest run src/services/m365Sync src/jobs/m365SyncWorker.test
 git push -u origin HEAD
 ```
 
-- [ ] **Step 8: Open the PR**
+- [ ] **Step 7: Open the PR**
 
 ```bash
 gh pr create --base main --title "feat(m365): tenant sync core — claim ticker, three-phase sync job, four domains (W04)" --body "$(cat <<'EOF'
@@ -5618,24 +6331,36 @@ schema and W03's shared types + executor `syncAction`.
 
 Users enrichment, `signin_activity`, `secure_score`, the rollup, adaptive
 cadence, device link reconciliation, the lifecycle hooks and the on-demand
-route are all W05. Two named seams (`cadence.applyCadence`,
-`hooks.afterDomainPersisted`) are called from the right places and return/do
-nothing, so W05 changes function bodies rather than threading new calls in.
+route are all W05. Two named seams are called from the right places, so W05
+changes function bodies rather than threading new calls in:
+`cadence.applyCadence` already returns the `{ intervalSeconds, nextSyncAt }`
+pair (stored interval + jitter) and W05 replaces only the interval ladder;
+`hooks.afterDomainPersisted` is a post-commit no-op receiving the full
+`PersistContext` + outcome + `DomainPersistResult`. `M365_SYNC_IMPLEMENTED_DOMAINS`
+and `DOMAIN_PERSISTERS` are the two constants W05 widens, and the two
+claim-SQL assertions it must invert are marked "W05 inverts this" in place.
 
-## Contract deltas (mirrored into the overview in this PR)
+## Contract deltas (for the orchestrator to fold into the overview — this PR does not edit that file)
 
 1. The per-call audit event stays on the READ route only — spec §7 wants
    exactly one `m365.sync.run` event per run and its counts do not exist at
    executor-call time. Verified that `recordM365ReadActionEvent` is
    fire-and-forget and opens its own context
    (`services/auditService.ts:54-79`), so the helper is still DB-free.
-2. `callGraphReadExecutor` `opts` gains optional `auditRequest` and
-   `recordEvent`; `runSyncDomain` gains an optional second argument;
-   `claimDueDomains` gains optional `orgId`/`domains`/`priority`. All additive.
+2. `callGraphReadExecutor` `opts` gains optional `auditRequest`, `recordEvent`
+   and `domain` (the `m365_sync_executor_seconds{domain}` label, falling back
+   to the action id); `runSyncDomain` gains an optional second argument;
+   `claimDueDomains` gains optional `orgId`/`domains`/`priority`;
+   `applyCadence` gains an optional fifth `rng`. All additive.
 3. New leaf module `jobs/m365SyncQueue.ts` holds the Queue, so `claim.ts` and
    `m365SyncWorker.ts` do not import each other.
 4. `applyCadence` lives in `cadence.ts` and `afterDomainPersisted` in
-   `hooks.ts` — both W05-owned files, created here as documented no-ops.
+   `hooks.ts` — both W05-owned files, created here. `applyCadence` returns the
+   `{ intervalSeconds, nextSyncAt }` PAIR and owns the ±10 % jitter, so `run.ts`
+   computes no due time itself and W05 changes one function body.
+   `afterDomainPersisted` takes `PersistContext & { domain, outcome, persisted }`
+   and runs POST-COMMIT, outside any DB context; a throw is logged and
+   swallowed.
 5. `reconcileEligibleConnections` seeds only the four implemented domains;
    seeding all six now would make two of them claimable with no persister and
    they would burn a ticker slot every 60 s forever.
@@ -5645,7 +6370,29 @@ nothing, so W05 changes function bodies rather than threading new calls in.
    forbids skipping it, so returning is the only way to honour spec §6's "not
    sent to Sentry". `UnrecoverableError` is used for an unparseable payload.
 7. Metric names are unprefixed per the contract, unlike the neighbouring
-   `breeze_m365_graph_read_actions_total`.
+   `breeze_m365_graph_read_actions_total`. `m365_sync_executor_seconds` is
+   labelled by DOMAIN, not by action id, so it joins `m365_sync_runs_total` on
+   one dashboard.
+8. `continuation_invalid` is NOT an error. The executor's continuation seal
+   expires after an hour and dies on an executor restart when
+   `M365_SYNC_CONTINUATION_KEY` is unset, so recording it as `error` would
+   unschedule a tenant's sign-in activity on every redeploy. It clears
+   `m365_sync_state.continuation`, re-claims the same domain (fresh generation,
+   so the abandoned attempt fences) and returns `'partial-continue'` — a
+   control-flow value that never reaches `last_status`. W04 owns the mapping;
+   W05 owns the sign-in persister that produces continuations.
+9. `writeCompletion` is the single completion writer and carries a
+   continuation-only mode for that restart: it stores the cursor and clears the
+   lease and touches nothing else, so a half-finished walk never looks like a
+   finished run. It also emits the one structured log line per run.
+10. `DOMAIN_PERSISTERS` is a TOTAL `Record<M365SyncDomain, Persister | undefined>`
+   with two explicit `undefined`s, so W05 edits two entries rather than adding
+   keys, and a future domain is a compile error instead of a silent `noop`.
+11. `WORKER_REGISTRY.length` is 130 after this wave — it depends on W02 having
+   landed 129 first (overview, "Count assertions").
+12. `apps/api` has no logger module (verified by grep), so the structured log
+   line uses the repo's tagged-`console` + `JSON.stringify` convention
+   (`jobs/dnsSyncJob.ts:123-146`) behind one `logSync` helper.
 
 ## Tenancy
 
@@ -5660,9 +6407,13 @@ enqueued with, plus generation/connection/tenant/consent fencing at Phase C.
 Unit: canonical-hash key/array/nesting stability, compiled-SQL assertions on
 the claim and reconcile statements (`PgDialect().sqlToQuery`), change-only
 writes, stale-only-on-complete, the four fencing discards, chunking at 1 000,
-per-domain outcome mapping, ticker backpressure counting `prioritized` +
-`delayed`, colon-free job ids, flag-off registering no tick, and budget
-independence + fail-closed.
+per-domain outcome mapping (including `continuation_invalid` clearing the
+cursor, re-claiming and returning `partial-continue` without touching
+`last_status`), a message map proven TOTAL over the failure union at compile
+time, the six cadence signals, the post-commit hook ordering and its swallowed
+throw, one structured log line per run, ticker backpressure counting
+`prioritized` + `delayed`, colon-free job ids, flag-off registering no tick,
+and budget independence + fail-closed.
 
 Real Postgres (`m365SyncClaim.integration.test.ts`, 13 tests): due selection,
 `next_sync_at` untouched by a claim, lease-expiry reclaim, generation
@@ -5678,7 +6429,7 @@ EOF
 
 The wave sub-issue is #5331 (already substituted above).
 
-- [ ] **Step 9: Confirm CI actually ran**
+- [ ] **Step 8: Confirm CI actually ran**
 
 ```bash
 gh pr checks --watch ; true    # `gh pr checks` exits non-zero while PENDING

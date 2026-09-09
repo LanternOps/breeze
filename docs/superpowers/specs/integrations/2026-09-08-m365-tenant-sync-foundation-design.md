@@ -210,8 +210,9 @@ NOT NULL` for the ticker.
 
 ### 3.2 Entity tables
 
-Common columns: `id uuid PK`, `org_id`, `graph_id` (Graph object id; `sku_id`
-for SKUs), `core_hash char(64)` (SHA-256 of the canonical **primary-source**
+Common columns: `id uuid PK`, `org_id`, `graph_id` (Graph object id; for SKUs
+it holds the Graph `skuId`, there is no separate `sku_id` column, so one
+persist path serves every entity table), `core_hash char(64)` (SHA-256 of the canonical **primary-source**
 projection, arrays sorted, §5.4), `first_seen_at`, `last_changed_at`,
 `is_stale boolean default false`, `stale_since timestamptz`. Unique
 `(org_id, graph_id)`. Indexes `(org_id, is_stale)` and a partial
@@ -245,7 +246,7 @@ nature, bounded by device count.
 `session_controls jsonb`, `definition_hash char(64)` = hash of `state` +
 conditions + grant + session (a rename is not a policy change; disabling is).
 
-**`m365_license_skus`** — `sku_id` (uuid, the key), `sku_part_number`,
+**`m365_license_skus`** — `graph_id` (the Graph `skuId`, the key), `sku_part_number`,
 `consumed_units int`, `prepaid_enabled int`, `prepaid_suspended int`,
 `prepaid_warning int`, `capability_status`, `applies_to`.
 

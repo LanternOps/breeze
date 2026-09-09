@@ -571,7 +571,15 @@ In the table config, after `phaseFieldsCheck` (line 168):
 
 - [ ] **Step 5: Register the column in the export policy**
 
-In `apps/api/src/services/tenantExportPolicyRegistry.ts` line 295, add `"purpose"` to the `included` array of the `m365_consent_sessions` entry (a two-value enum naming a flow, not a secret and not an open container):
+In `apps/api/src/services/tenantExportPolicyRegistry.ts`, add `"purpose"` to the `included` array of the `m365_consent_sessions` entry (a two-value enum naming a flow, not a secret and not an open container).
+
+**Locate the entry by key name, not by line number.** W02 inserts seven more entries into this same registry, and this wave's own edits shift it too, so any line number quoted in a plan is stale by the time it is read:
+
+```bash
+grep -n '"m365_consent_sessions"' apps/api/src/services/tenantExportPolicyRegistry.ts
+```
+
+Edit the single line that grep reports:
 
 ```ts
   "m365_consent_sessions": tablePolicy("org_id", {"included":["id","phase","purpose","connection_id","org_id","profile","consent_attempt_id","user_id","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":["state_hash","tenant_hint_hash","nonce","code_verifier"],"excludedOpen":[]}),
@@ -911,7 +919,7 @@ export const initiateCustomerGraphReadUpgradeConsent =
   Consumed by Task 9 (`m365CustomerGraphRead.ts`).
 - Consumes: `createAdminConsentSessionInTransaction` and `deleteConsentSessionsForAttemptInTransaction` (already imported at `connectionService.ts:17-22`), now with `purpose: 'upgrade'` from Task 4.
 
-**Contract deviation, recorded:** the overview's shared contract writes the signature as `(input: { connectionId; orgId; auth; returnTo? })`. `returnTo` is dropped — the callback's terminal redirect is a fixed `/integrations#m365/<profile>` base (`m365ConsentCallback.ts:348`), there is no return-to plumbing anywhere in the two-phase flow, and adding a caller-supplied redirect target to a consent callback is an open-redirect surface that would need its own allowlist. Task 14's PR body records the deviation.
+**Contract deviation, already folded into the overview — do not edit the overview:** an earlier draft of the shared contract wrote the signature as `(input: { connectionId; orgId; auth; returnTo? })`. `returnTo` is dropped — the callback's terminal redirect is a fixed `/integrations#m365/<profile>` base (`m365ConsentCallback.ts:348`), there is no return-to plumbing anywhere in the two-phase flow, and adding a caller-supplied redirect target to a consent callback is an open-redirect surface that would need its own allowlist. The overview now already carries the corrected signature (`{ connectionId; orgId; auth }`, annotated *no returnTo: callback redirect base is fixed*), so **this wave must not touch `2026-09-08-m365-tenant-sync-0-overview.md`** — contract edits are the orchestrator's, and no task in this plan edits that file. Task 14's PR body keeps the deviation note so a reviewer sees it without opening the overview.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1962,7 +1970,26 @@ describe('POST /m365/connections/:id/upgrade-consent', () => {
 
 Add `upgrade: vi.fn(),` to the hoisted `mocks` object (lines 22-31) and `initiateCustomerGraphReadUpgradeConsent: mocks.upgrade,` to the `vi.mock('../services/m365ControlPlane/connectionService', …)` factory (lines 68-74).
 
-Also extend the exact-events assertion in `apps/api/src/services/m365ControlPlane/metrics.test.ts:28` with `'m365.customer_graph_read.upgrade_consent_initiated'` in its declared position.
+Also extend the exact-events assertion in `apps/api/src/services/m365ControlPlane/metrics.test.ts` (the `exposes exactly the seven fixed lifecycle events …` case). After this wave the assertion lists **exactly eight** entries with `'m365.customer_graph_read.upgrade_consent_initiated'` in **position 2** — index 1, immediately after `'m365.customer_graph_read.consent_initiated'`. Rename the case and assert the whole ordered array, never `toContain`:
+
+```ts
+  it('exposes exactly the eight fixed lifecycle events and a bounded outcome enum', () => {
+    expect(M365_CUSTOMER_GRAPH_READ_EVENTS).toEqual([
+      'm365.customer_graph_read.consent_initiated',
+      'm365.customer_graph_read.upgrade_consent_initiated',
+      'm365.customer_graph_read.admin_consent_returned',
+      'm365.customer_graph_read.tenant_binding_verified',
+      'm365.customer_graph_read.verification_failed',
+      'm365.customer_graph_read.grant_drift_detected',
+      'm365.customer_graph_read.retested',
+      'm365.customer_graph_read.disconnected',
+    ]);
+    expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
+      .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);
+  });
+```
+
+Eight is this wave's value and only this wave's: W05 later appends `'m365.customer_graph_read.sync_requested'` as the **ninth** entry and re-lands this same assertion at nine (overview, *Count assertions touched by more than one wave*). Do not pre-empt it here.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1973,11 +2000,13 @@ Expected: FAIL — every case returns 404 (no route is mounted at that path).
 
 - [ ] **Step 3: Register the audit event**
 
-In `apps/api/src/services/m365ControlPlane/metrics.ts`, add to `M365_CUSTOMER_GRAPH_READ_EVENTS` after `'m365.customer_graph_read.consent_initiated'`:
+In `apps/api/src/services/m365ControlPlane/metrics.ts`, insert into `M365_CUSTOMER_GRAPH_READ_EVENTS` immediately after `'m365.customer_graph_read.consent_initiated'` — i.e. as the second entry, taking the array from seven to eight:
 
 ```ts
   'm365.customer_graph_read.upgrade_consent_initiated',
 ```
+
+The position is load-bearing: the assertion in Step 1 pins the whole ordered array, and W05 appends its ninth entry at the end, so an out-of-order insert here reddens both waves.
 
 - [ ] **Step 4: Add the route**
 
@@ -2066,6 +2095,7 @@ Spec §2.2 item 2 (the callback half).
 
 **Interfaces:**
 - Produces: no new export. Three new `CallbackDependencies` members (`readSessionPurpose`, `transitionUpgradePhase`, `applyUpgradeResult`) that `createM365ConsentCallbackRoutes` overrides accept, so the existing DI test style covers the new branch without a database.
+- Produces the **W05 seam** (overview: `onConnectionUpgraded` is *called from W01's upgrade-apply block*): Step 5's apply block is written as an explicit `if (isUpgrade) { … }` — not a ternary — and carries the comment line `// W05: onConnectionUpgraded(connection) is called here after in-place promotion` on the line immediately after `applyUpgradeResult` returns. W05 replaces that comment with the real call. **W01 imports nothing from `services/m365Sync`**: the seam is one comment inside one branch, not a stub function, an interface member, a no-op import, or a dependency-injection slot. A grep for `m365Sync` in this wave's diff must return nothing.
 - Consumes: `readConsentSessionPurpose` and `ConsentSessionPurposeLookup` and `M365ConsentPurpose` (Task 4); `transitionUpgradeConsentToIdentity` and `applyUpgradeVerificationResult` (Task 6).
 
 **The four behavioural differences an upgrade callback has:**
@@ -2456,17 +2486,23 @@ Gate the executor-unavailable branch (lines 582-589):
     }
 ```
 
-And the apply block (lines 591-593):
+And the apply block (lines 591-593). Write it as an explicit `if`/`else`, not a pair of ternaries — the upgrade branch is the named seam W05 extends, and a ternary leaves nowhere to put the marker:
 
 ```ts
     try {
-      const applied = isUpgrade
-        ? await dependencies.applyUpgradeResult(attempt, result)
-        : await dependencies.applyIdentityResult(attempt, result);
-      const outcome = isUpgrade
-        ? upgradeOutcome(applied, currentManifestVersion)
-        : outcomeFromConnection(applied);
+      let applied: CallbackConnectionSnapshot;
+      let outcome: PublicOutcome;
+      if (isUpgrade) {
+        applied = await dependencies.applyUpgradeResult(attempt, result);
+        // W05: onConnectionUpgraded(connection) is called here after in-place promotion
+        outcome = upgradeOutcome(applied, currentManifestVersion);
+      } else {
+        applied = await dependencies.applyIdentityResult(attempt, result);
+        outcome = outcomeFromConnection(applied);
+      }
 ```
+
+The comment is the whole seam. Do **not** import `onConnectionUpgraded`, add a `CallbackDependencies` member for it, or stub it — `services/m365Sync/` does not exist until W02/W04 and W01 must not reference it. W05 depends on W01 precisely so it can turn this comment into a call.
 
 The rest of the success block (the `driftOutcome` derivation and the two audit writes, lines 594-624) is unchanged: an upgrade that lands with missing grants sets `lastErrorCode = 'grant_missing'`, which is exactly the drift event those lines already emit.
 
@@ -2879,6 +2915,8 @@ grep -n '<VERIFIED' docs/deploy/m365-customer-graph-read-executor.md
 ```
 Expected: no output.
 
+**These four rows land here, in W01, and nowhere else. W06 must not re-add these rows** — W06's deploy-doc work is the operational sections and the benchmark runbook only (overview: *no duplicated docs blocks*). A second copy of the table would drift from the manifest and defeat Step 2's cross-check, which asserts the doc's role set equals the code's exactly.
+
 - [ ] **Step 2: Cross-check the doc against the code manifest**
 
 ```bash
@@ -2897,7 +2935,8 @@ Expected: `OK: 13 roles agree …`.
 
 - [ ] **Step 3: Write the release note**
 
-Create `docs/release-notes/m365-customer-graph-read-manifest-v3.md`, following the format of `docs/release-notes/m365-ticket-mailbox-reconsent.md`:
+Create `docs/release-notes/m365-customer-graph-read-manifest-v3.md`, following the format of `docs/release-notes/m365-ticket-mailbox-reconsent.md`. This file is the single source for the manifest-v3 re-consent story: **W06's `docs/release-notes/m365-tenant-sync.md` links to this note rather than restating the scopes, the app role IDs, or the self-hoster steps**, so anything a reader needs about the v3 bump belongs here and not duplicated there.
+
 
 ```markdown
 # Microsoft 365 Customer Graph Read permission manifest v3
@@ -2980,6 +3019,8 @@ Spec §9 ("Re-consent tests: v2 row derives `manifest-stale`, DTO exposes it, sy
 - Consumes: `initiateCustomerGraphReadUpgradeConsent`, `transitionUpgradeConsentToIdentity`, `applyUpgradeVerificationResult` (Tasks 5, 6), `readConsentSessionPurpose` (Task 4).
 
 **Why real Postgres.** Three of the properties here cannot be proven against a Drizzle mock: that binding a session to the existing attempt satisfies the composite FK; that the `purpose` CHECK rejects a third value; and that `retestConnection` no longer raises 23503 with an upgrade session live. The file already replays against the migrated schema through `./setup` and runs in the **Integration Tests** job.
+
+**These are the canonical cases for this file.** Session bound to the existing attempt with status unchanged, in-place promotion with a `consent_generation` bump, and an abandoned upgrade leaving v2 executing are owned by W01 and live only here. W06 appends to the same file but adds **only** the DTO-exposure case (a v2 row surfacing `grantHealth: 'manifest-stale'` through the route envelope) and the sync-on-v2 case (sync still running against a stale-manifest connection) — it does not restate, re-parametrise, or duplicate the three above.
 
 - [ ] **Step 1: Write the failing integration cases**
 
@@ -3242,7 +3283,7 @@ Plan: `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-1-manifes
 
 ## Deviations from the shared interface contract
 
-- `initiateCustomerGraphReadUpgradeConsent` drops the contract's `returnTo?` parameter. The consent callback's terminal redirect is a fixed `/integrations#m365/<profile>` base with no return-to plumbing anywhere in the two-phase flow, and a caller-supplied redirect target on a consent callback is an open-redirect surface that would need its own allowlist. Nothing in W02–W06 consumes it.
+- `initiateCustomerGraphReadUpgradeConsent` drops the `returnTo?` parameter an earlier draft of the contract carried. The consent callback's terminal redirect is a fixed `/integrations#m365/<profile>` base with no return-to plumbing anywhere in the two-phase flow, and a caller-supplied redirect target on a consent callback is an open-redirect surface that would need its own allowlist. Nothing in W02–W06 consumes it. The overview's shared contract already reflects this signature, so this PR changes no plan-contract file.
 
 ## Testing
 

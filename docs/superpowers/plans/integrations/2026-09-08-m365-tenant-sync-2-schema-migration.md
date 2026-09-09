@@ -12,7 +12,7 @@
 
 **Overview / shared contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md` (tracking issue `LanternOps/breeze#5327`). Table, column, enum and Drizzle export names below are the fixed contract; W04 and W05 code against them.
 
-**Branch:** `feature/5327-m365-tenant-sync/wave-<subissue#>`, based on `main`. W02 is file-disjoint from W01 and W03 and can run in parallel with both.
+**Branch:** `feature/5327-m365-tenant-sync/wave-5329`, based on `main` (parent `LanternOps/breeze#5327`, W02 sub-issue `#5329`). W02 is file-disjoint from W01 and W03 and can run in parallel with both.
 
 ---
 
@@ -38,7 +38,7 @@ Copied from the overview; every step inherits them.
 
 Three points where this plan resolves an ambiguity in spec §3. Each is deliberate; do not silently re-decide them.
 
-1. **`m365_license_skus` keys on `graph_id`, not `sku_id`.** §3.2's common-column list says "`graph_id` (Graph object id; `sku_id` for SKUs)" while the per-table bullet lists a `sku_id` column. The shared persist machinery in the overview's contract is `PersistContext = { …, existing: Map<graphId, …> }` — one code path over all four entity tables — so a per-table key name would force a special case in every domain module. This plan uses `graph_id` on all four entity tables, holding the SKU GUID for SKUs. **Update the overview's "Tables" paragraph in the same PR** and say so in the PR body, per the overview's deviation rule.
+1. **`m365_license_skus` keys on `graph_id`, not `sku_id`.** §3.2's common-column list says "`graph_id` (Graph object id; `sku_id` for SKUs)" while the per-table bullet lists a `sku_id` column. The shared persist machinery in the overview's contract is `PersistContext = { …, existing: Map<graphId, …> }` — one code path over all four entity tables — so a per-table key name would force a special case in every domain module. This plan uses `graph_id` on all four entity tables, holding the SKU GUID for SKUs. The overview's "Tables (spec §3, exact names)" paragraph **already records this** ("for `m365_license_skus` the `graph_id` column holds the Graph `skuId` … so one `PersistContext.existing` map shape serves every domain"), so there is nothing to change there — **waves never edit the overview**; contract edits are the orchestrator's. Record the decision in the PR body only.
 2. **`m365_sync_state` gets a surrogate `id uuid PRIMARY KEY` plus `UNIQUE (org_id, domain)`,** rather than a composite primary key. Every other table in the repo is surrogate-keyed; Drizzle ergonomics and the `SKIP LOCKED` claim in W04 are unaffected either way.
 3. **The org-merge disposition for the five entity/state tables is `custom` with a resolve-phase DELETE, not `leave-for-erasure`.** Spec §3.5 says "delete source rows" for all five, and that is what this implements — but two of them (`m365_sync_state`, `m365_intune_devices`) *cannot* use the passive `leave-for-erasure` kind, because their composite FKs point at tables that the merge repoints out from under them (`m365_connections` is `repoint-dedupe`, `devices` is a plain `repoint`), which is a 23503 at COMMIT. `ticket_drafts` is the exact structural precedent (`orgMergeCustomExecutors.ts:250`, registry note at `orgMergeRegistry.ts:290`). The other three are given the same `custom` treatment for uniformity and because `leave-for-erasure` makes `previewOrgMerge` print its "audit and provenance trail is PERMANENTLY DESTROYED" warning (`orgMerge.ts:1375`) — false for a re-derivable Graph snapshot.
 
@@ -51,7 +51,7 @@ Three points where this plan resolves an ambiguity in spec §3. Each is delibera
 3. **Tasks 3, 4, 5, 6** — the four registration lists. Each depends on Task 2 (the Drizzle exports and/or the live schema). They are mutually independent and may be done in any order.
 4. **Task 7** — device org-move detach. Depends on Task 1.
 5. **Task 8** — RLS + live-catalog integration suite. Depends on Tasks 1 and 2.
-6. **Tasks 9, 10, 11** — retention job (schedule slot → worker → boot wiring), in that order.
+6. **Tasks 9, 10, 11** — retention job (schedule slot → worker → boot wiring + readiness manifest), in that order. Task 11 depends on Task 10's `attachWorkerObservability(retentionWorker, 'm365SyncRetention')` call, which is what its manifest row must match.
 7. **Task 12** — full contract-suite run, typecheck, PR.
 
 ---
@@ -1155,7 +1155,7 @@ EOF
 Spec §3.5 bullet 2, §8. Enforced by `tenant-export-policy.integration.test.ts` and `tenantExportErasureRoundtrip.integration.test.ts` (**Integration Tests** job — neither can fail in Test API, so run them explicitly).
 
 **Files:**
-- Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` — insert seven entries in key order beside `"m365_connections"` (line 294) and `"m365_consent_sessions"` (line 295)
+- Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` — insert seven entries in key order immediately after the `"m365_consent_sessions"` entry. **Locate that entry by key name (`grep -n '"m365_consent_sessions"' apps/api/src/services/tenantExportPolicyRegistry.ts`), never by line number.** W01 edits the contents of that same entry in this same region (it adds the `purpose` column to `m365_consent_sessions`), so any line number quoted here is stale the moment W01 lands, and a line-addressed insert would land inside the wrong entry or produce a needless conflict. The key-ordered neighbours are `"m365_connections"` (before) and `"m365_consent_sessions"` (the anchor)
 - Read: `apps/api/src/services/tenantExportPolicy.ts:35-55` (`SUSPICIOUS_NAME_PARTS`), `:57-69` (`OPEN_CONTAINER_TYPES`), `:203-236` (the validator)
 
 **Interfaces:**
@@ -1222,7 +1222,7 @@ describe('m365 tenant sync export classifications', () => {
 });
 ```
 
-Add `getTenantExportPolicyRegistry` to the existing import from `./tenantExportPolicyRegistry` if it is not already imported.
+`tenantExportPolicy.test.ts` imports nothing from `./tenantExportPolicyRegistry` today (its only source imports are `../db` and `../../scripts/check-tenant-export-policy`), so add a new line: `import { getTenantExportPolicyRegistry } from './tenantExportPolicyRegistry';`. Use the getter, not the raw `CORE_TENANT_EXPORT_POLICY` constant — the getter is what merges in extension-registered columns, and it is what the live contract suites read.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -1231,7 +1231,7 @@ Expected: FAIL — every m365 sync table is `undefined` in the registry.
 
 - [ ] **Step 3: Add the seven entries**
 
-In `apps/api/src/services/tenantExportPolicyRegistry.ts`, insert after line 295 (`"m365_consent_sessions": …`), keeping the file's existing key order:
+In `apps/api/src/services/tenantExportPolicyRegistry.ts`, insert immediately after the `"m365_consent_sessions": tablePolicy(…)` line — **found by key name, not by line number** (W01 rewrites that entry to add `purpose`, so its line number moves and its text changes; anchoring on the key survives either landing order) — keeping the file's existing key order:
 
 ```ts
   // M365 tenant sync (spec §3, §8). Every jsonb column is excludedOpen: a CA
@@ -1307,43 +1307,64 @@ Spec §3.5 bullet 3. Enforced by `orgMergeRegistry.integration.test.ts` (complet
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `apps/api/src/services/orgMergeCustomExecutors.test.ts`:
+First widen the imports at the top of `apps/api/src/services/orgMergeCustomExecutors.test.ts`. Today it imports only `CUSTOM_EXECUTORS` (`orgMergeCustomExecutors.test.ts:25`); change that line and add one new import beneath it:
+
+```ts
+import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS, CUSTOM_WOULD_DROP_COUNTS } from './orgMergeCustomExecutors';
+import { getOrgMergePolicies } from './orgMergeRegistry';
+```
+
+`getOrgMergePolicies()` is the real export — there is no `ORG_MERGE_POLICIES` constant; it returns a `ReadonlyMap<string, OrgMergePolicy>` built from `SPECIAL` plus `REPOINT_TABLES`, so read it with `.get(table)`. It is safe to import into a mocked-DB unit test: `db/schema/aiAlertVerdicts.test.ts` already does exactly this.
+
+Then append:
 
 ```ts
 describe('m365 tenant sync merge disposition', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
   it('classifies all seven tables, deleting snapshots and preserving history', () => {
-    const registry = ORG_MERGE_POLICIES;
+    const policies = getOrgMergePolicies();
     for (const table of [
       'm365_sync_state', 'm365_users', 'm365_intune_devices',
       'm365_ca_policies', 'm365_license_skus',
     ]) {
-      expect(registry[table]?.kind, `${table} must be custom`).toBe('custom');
+      expect(policies.get(table)?.kind, `${table} must be custom`).toBe('custom');
       expect(CUSTOM_EXECUTORS[table], `${table} needs a move half`).toBeDefined();
       expect(CUSTOM_RESOLVE_EXECUTORS[table], `${table} needs a resolve half`).toBeDefined();
       expect(CUSTOM_WOULD_DROP_COUNTS[table], `${table} must be visible in the preview`).toBeDefined();
     }
-    expect(registry['m365_secure_score_snapshots']).toEqual({
+    expect(policies.get('m365_secure_score_snapshots')).toEqual({
       kind: 'repoint-dedupe', key: ['score_date'],
     });
-    expect(registry['m365_posture_rollups']).toEqual({
+    expect(policies.get('m365_posture_rollups')).toEqual({
       kind: 'repoint-dedupe', key: ['rollup_date'],
     });
   });
 
   it('the resolve half deletes every loser-org row and the move half is a no-op', async () => {
-    const executed: string[] = [];
-    withCapturedSql(executed, async () => {
-      const resolved = await CUSTOM_RESOLVE_EXECUTORS['m365_sync_state']!(LOSER, SURVIVOR);
-      expect(resolved.moved).toBe(0);
-      const moved = await CUSTOM_EXECUTORS['m365_sync_state']!(LOSER, SURVIVOR);
-      expect(moved).toEqual({ moved: 0, dropped: 0, notes: [] });
-    });
-    expect(executed.join('\n')).toContain('delete from m365_sync_state where org_id =');
+    executeMock.mockResolvedValueOnce({ rowCount: 3 });
+
+    const resolved = await CUSTOM_RESOLVE_EXECUTORS.m365_sync_state!(L, S);
+    expect(resolved).toMatchObject({ moved: 0, dropped: 3 });
+
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    expect(compiled.sql).toMatch(/delete from "?m365_sync_state"?/i);
+    expect(compiled.sql).toMatch(/org_id\s*=/i);
+    // Assert on the BOUND param, not on the SQL text — the org id is a
+    // placeholder in the compiled statement, so a text-only assertion would
+    // pass against a statement that deletes the survivor's rows.
+    expect(compiled.params).toContain(L);
+
+    const moved = await CUSTOM_EXECUTORS.m365_sync_state!(L, S);
+    expect(moved).toEqual({ moved: 0, dropped: 0, notes: [] });
+    expect(executeMock, 'the move half must issue no SQL').toHaveBeenCalledTimes(1);
   });
 });
 ```
 
-Reuse whatever registry export name and SQL-capture helper the file already uses (`ORG_MERGE_POLICIES` / `withCapturedSql` / `LOSER` / `SURVIVOR` are placeholders — read the existing describes at the top of `orgMergeCustomExecutors.test.ts` and match their style rather than introducing a second mocking idiom).
+This reuses the file's own idiom verbatim — the module-level `executeMock` that `vi.mock('../db', …)` forwards to (`:19-23`), the `PgDialect` instance `dialect` (`:27`), and the loser/survivor uuid constants `L` / `S` (`:28-29`). `run()` inside the executors reads the row count through `extractRowCount`, which is why the mock resolves `{ rowCount: 3 }`, matching every other describe in the file. Do not introduce a second mocking idiom.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -2065,7 +2086,7 @@ it('allocates the m365 sync retention slot in the daily lane', () => {
 });
 ```
 
-Import `jobSchedule` from `./scheduleRegistry` in the contract test if it is not already imported.
+`jobSchedule` is already imported in that file (`scheduleRegistry.contract.test.ts:37-43`, the multi-name import from `./scheduleRegistry`); no import change is needed.
 
 - [ ] **Step 2: Run both to verify they fail**
 
@@ -2400,21 +2421,55 @@ EOF
 
 ---
 
-### Task 11: Start the retention worker at boot
+### Task 11: Start the retention worker at boot — registry, count assertion, readiness manifest
 
 **Files:**
-- Modify: `apps/api/src/services/workerRegistry.ts` — add an entry beside `deviceMetricsRetention` (lines 408-414)
+- Modify: `apps/api/src/services/workerRegistry.ts` — add an entry immediately after the `deviceMetricsRetention` entry (which spans lines 408-415)
+- Modify: `apps/api/src/services/workerRegistry.test.ts` — the name list and the four exact-count assertions
+- Modify: `apps/api/src/jobs/workerReadinessManifest.ts` — one `consumers('m365SyncRetention')` row
 
 **Interfaces:**
 - Consumes: `initializeM365SyncRetention` / `shutdownM365SyncRetention` from Task 10.
-- Produces: a `global`-placement registry entry.
+- Produces: a `global`-placement registry entry, declared in the readiness manifest.
+
+> **Four contracts must be satisfied in the SAME commit** or the required **Test API** job reds:
+> 1. `workerRegistry.test.ts` pins the registry contents **exactly**: a name list compared with `toEqual` (`EXPECTED_128_NAMES`, `:29-65`) and four hard-coded `128` literals (`:72`, `:92`, `:99`, `:107`). Adding an entry without touching all five fails four tests.
+> 2. `workerReadinessCoverage.test.ts` requires an **exact set match** between every name passed to `attachWorkerObservability` anywhere under `jobs/`, `services/`, `workers/` and the `consumers` names in `WORKER_READINESS_MANIFEST`. Task 10 Step 3 calls `attachWorkerObservability(retentionWorker, 'm365SyncRetention')`, so `consumers('m365SyncRetention')` must exist, spelled identically.
+> 3. `workerReadinessManifest.test.ts:138` ("classifies every initializeWorkers group exactly once") compares the manifest's `initializer` keys against `WORKER_REGISTRY.map(e => e.name)` — a registry entry with no manifest row fails it too. Its `expectedDeclaredCount()` is derived from `WORKER_REGISTRY.length`, so no count literal there needs editing.
+> 4. `workerEntrypointClosure.contract.test.ts` classifies placement by walking the module's runtime import closure. `placement: 'global'` is the claim that nothing it imports reaches `routes/agentWs.ts` or `services/agentCommandAwait.ts`. **Do not assume it — run the suite.**
+>
+> **This wave sets the count to 129. W04 then sets it to 130** when it registers `m365SyncWorker` (overview: "`WORKER_REGISTRY.length` … 128 → W02 sets 129 (`m365SyncRetention`) → W04 sets 130 (`m365SyncWorker`)"). If a rebase shows the literal is already 129, W04 landed first — reconcile to 130 rather than re-bumping to 129, and say so in the PR body.
 
 `placement: 'global'` is the correct classification and is not a guess: the worker's runtime import closure is `db`, `db/rowCount`, `services/redis`, `services/retentionMetrics`, `services/sentry`, `jobs/scheduleRegistry`, `jobs/workerObservability` — the same set `deviceMetricsRetention` has, none of which reaches `routes/agentWs.ts` or `services/agentCommandAwait.ts`. `workerEntrypointClosure.contract.test.ts` is the final authority and will flip it if this is wrong; do not relitigate by reasoning, let the test decide.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing assertions**
 
-Append to `apps/api/src/services/workerRegistry.test.ts`:
+Three edits to `apps/api/src/services/workerRegistry.test.ts`, all in this step.
 
+**(a) The name list.** `WORKER_REGISTRY.map((e) => e.name)` is compared with `toEqual`, so the new name must appear at the same ordinal as the registry insertion — immediately after `'deviceMetricsRetention'` (Step 3 inserts the entry right after `deviceMetricsRetention`'s, which ends at `workerRegistry.ts:415`). That name sits at the end of `:39`.
+
+before:
+```ts
+  'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
+```
+after:
+```ts
+  'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
+  'm365SyncRetention',
+```
+
+**(b) The four count literals.** Every `128` in this file is the registry size; each becomes `129`.
+
+| line | before | after |
+|---|---|---|
+| `:72` | `    expect(WORKER_REGISTRY.length).toBe(128);` | `    expect(WORKER_REGISTRY.length).toBe(129);` |
+| `:92` | `    expect(selectWorkers('all').length).toBe(128);` | `    expect(selectWorkers('all').length).toBe(129);` |
+| `:99` | `    expect(api.length + worker.length).toBe(128);` | `    expect(api.length + worker.length).toBe(129);` |
+| `:107` | `    expect(union.size).toBe(128);` | `    expect(union.size).toBe(129);` |
+
+The two `it` titles that spell the count (`:67` "contains exactly the 128 known names, in order" and `:71` "has exactly 128 entries") and the list constant's own name (`EXPECTED_128_NAMES`, declared `:29`, referenced `:68`) also read `128`. Rename the constant to `EXPECTED_WORKER_NAMES` and drop the number from both titles ("contains exactly the known names, in order" / "has exactly the expected number of entries") — a count baked into an identifier has to be renamed on every future worker, and W04 has to bump this same file again. If you would rather not rename, at minimum keep title and literal consistent; a title saying 128 over an assertion of 129 is how the next reader mis-edits it. Also extend the provenance comment above the list (`:12-28`) with `` `m365SyncRetention`, M365 tenant sync W02, #5329 ``, matching the existing entries' style.
+
+**(c) The new placement assertion**, appended to the `workerRegistry: losslessness` describe:
 ```ts
 it('registers the m365 sync retention worker as global placement', async () => {
   const entry = WORKER_REGISTRY.find((w) => w.name === 'm365SyncRetention');
@@ -2426,14 +2481,20 @@ it('registers the m365 sync retention worker as global placement', async () => {
 });
 ```
 
-Match the file's existing export name for the registry array if it differs from `WORKER_REGISTRY`.
+`WORKER_REGISTRY` is the real exported name (`workerRegistry.ts`, re-exported and already imported at `workerRegistry.test.ts:3`); no import change is needed.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run all four contracts to verify they fail**
 
-Run: `cd apps/api && npx vitest run src/services/workerRegistry.test.ts`
-Expected: FAIL — no entry named `m365SyncRetention`.
+Run:
+```
+cd apps/api && npx vitest run \
+  src/services/workerRegistry.test.ts \
+  src/jobs/workerReadinessCoverage.test.ts \
+  src/jobs/workerReadinessManifest.test.ts
+```
+Expected: FAIL, and read *which* failures you get — `workerRegistry.test.ts` fails on the name list, the four counts and the missing entry; `workerReadinessCoverage.test.ts` fails the attached-name/manifest set match (Task 10 already attaches `'m365SyncRetention'`, which nothing declares yet); `workerReadinessManifest.test.ts` is still green at this point because the registry entry does not exist yet — it starts failing the moment Step 3 adds it and is fixed by Step 4. If `workerReadinessCoverage.test.ts` is green here, Task 10's `attachWorkerObservability(retentionWorker, 'm365SyncRetention')` call is missing or misspelled — fix that before continuing.
 
-- [ ] **Step 3: Add the entry**
+- [ ] **Step 3: Add the registry entry**
 
 In `apps/api/src/services/workerRegistry.ts`, after the `deviceMetricsRetention` entry (ends line 415):
 
@@ -2448,21 +2509,44 @@ In `apps/api/src/services/workerRegistry.ts`, after the `deviceMetricsRetention`
   },
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Declare the consumer in the readiness manifest**
 
-Run: `cd apps/api && npx vitest run src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts`
-Expected: both PASS. If the closure test demands `socket-owner`, change the entry to match it — the tool is the authority, not the reasoning above.
+In `apps/api/src/jobs/workerReadinessManifest.ts`, immediately after `consumers('deviceMetricsRetention'),` (`:77`) — mirroring that entry exactly, since this worker has the same shape: one unconditionally-constructed `Worker`, one queue, one stable name equal to its registry key, and no feature flag:
 
-- [ ] **Step 5: Commit**
+```ts
+  consumers('m365SyncRetention'),
+```
+
+No second argument and no `requiredWhen` override: the default `names = [initializer]` is already the string Task 10 attaches, and the default rule `'redis'` is right because the Worker is constructed unconditionally (the retention sweep is deliberately NOT gated on `M365_TENANT_SYNC_ENABLED` — see Task 10). A row with a different consumer name (the `consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker'])` shape) would break contract 2.
+
+- [ ] **Step 5: Run the tests**
+
+Run:
+```
+cd apps/api && npx vitest run \
+  src/services/workerRegistry.test.ts \
+  src/jobs/workerReadinessCoverage.test.ts \
+  src/jobs/workerReadinessManifest.test.ts \
+  src/services/workerEntrypointClosure.contract.test.ts
+```
+Expected: all PASS. If the closure test demands `socket-owner`, change the entry to match it — the tool is the authority, not the reasoning above.
+
+- [ ] **Step 6: Commit**
 
 ```
-git add apps/api/src/services/workerRegistry.ts apps/api/src/services/workerRegistry.test.ts
+git add apps/api/src/services/workerRegistry.ts apps/api/src/services/workerRegistry.test.ts apps/api/src/jobs/workerReadinessManifest.ts
 git commit -m "$(cat <<'EOF'
 feat(m365): start the tenant sync retention worker at boot
 
 Global placement — the module's runtime import closure matches
 deviceMetricsRetention's and reaches neither routes/agentWs.ts nor
-services/agentCommandAwait.ts.
+services/agentCommandAwait.ts; verified by running the closure contract, not
+reasoned about.
+
+Four contracts in one commit: the exact WORKER_REGISTRY name list, the four
+exact-count assertions (128 -> 129; W04 takes it to 130 for m365SyncWorker),
+the attach-name/readiness-manifest set match, and the placement
+classification.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -2505,6 +2589,8 @@ cd apps/api && npx vitest run \
   src/services/retentionMetrics.test.ts \
   src/services/workerRegistry.test.ts \
   src/services/workerEntrypointClosure.contract.test.ts \
+  src/jobs/workerReadinessCoverage.test.ts \
+  src/jobs/workerReadinessManifest.test.ts \
   src/jobs/scheduleRegistry.contract.test.ts \
   src/jobs/m365SyncRetentionWorker.test.ts \
   src/routes/devices/cascadeDelete.test.ts \
@@ -2553,35 +2639,7 @@ Expected: the merge is clean, and the migration diff shows only the one new file
 
 Run: `docker compose -f docker-compose.test.yml down -v` (then `docker compose ls -a` to confirm nothing is left running).
 
-- [ ] **Step 7: Update the overview's shared contract**
-
-The `graph_id`-not-`sku_id` decision at the top of this plan changes a name W04 and W05 code against. Edit `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`, in the "### Tables (spec §3, exact names)" paragraph, appending:
-
-```
-Entity tables are keyed `(org_id, graph_id)` — including `m365_license_skus`,
-whose `graph_id` holds the subscribedSku `skuId` GUID (W02 decision: one
-persist/hash code path over all four entity tables, so no per-table key name).
-```
-
-Commit it with the wave:
-
-```
-git add docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md
-git commit -m "$(cat <<'EOF'
-docs(m365): pin graph_id as the entity key in the tenant sync contract
-
-W02 keys m365_license_skus on graph_id (holding the skuId GUID) rather than a
-per-table sku_id, so the shared PersistContext/hash path covers all four
-entity tables with no special case. Recorded here because W04 and W05 code
-against these names.
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
-EOF
-)"
-```
-
-- [ ] **Step 8: Push and open the PR**
+- [ ] **Step 7: Push and open the PR**
 
 ```
 git push -u origin HEAD
@@ -2609,7 +2667,8 @@ LanternOps/breeze#5327). Plan:
 - **Device org move** detaches `m365_intune_devices.breeze_device_id` before the
   org flip.
 - **Retention**: `m365-sync-retention` daily slot `3 19 * * *`, worker, boot
-  wiring.
+  wiring — `WORKER_REGISTRY` 128 -> 129 (W04 takes it to 130) plus the matching
+  `consumers('m365SyncRetention')` readiness-manifest row.
 
 ## Tenancy notes for review
 
@@ -2629,7 +2688,8 @@ LanternOps/breeze#5327). Plan:
 
 1. `m365_license_skus` keys on `graph_id`, not `sku_id` — one persist/hash code
    path over all four entity tables (the overview's `PersistContext` keys on
-   `graphId`). The overview is updated in this PR.
+   `graphId`). Already pinned in the overview's shared contract; no plan-doc
+   edit is part of this PR.
 2. `m365_sync_state` uses a surrogate `id` PK plus `UNIQUE (org_id, domain)`.
 3. The live-catalog assertions spec §9 assigns to "the migration test" live in
    `m365TenantSyncRls.integration.test.ts`, not `src/db/migration-*.test.ts` —
@@ -2655,7 +2715,7 @@ EOF
 
 The wave sub-issue is #5329 (already substituted above).
 
-- [ ] **Step 9: Confirm CI is green on the merge commit**
+- [ ] **Step 8: Confirm CI is green on the merge commit**
 
 Run: `gh pr checks --watch; true`
 Expected: `test-api`, `test-web`, `test-agent`, `integration-test` (4 shards) and `ci-success` all green. `gh pr checks` exits non-zero while checks are still pending, so never chain it with `&&`. The PR targets `main`, so the integration job runs automatically — do **not** hand-dispatch CI.

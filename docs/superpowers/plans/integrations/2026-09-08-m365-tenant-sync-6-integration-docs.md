@@ -1,14 +1,14 @@
-# M365 Tenant Sync — Wave 6: End-to-end integration suite, re-consent proof, benchmark harness, docs, card "last synced"
+# M365 Tenant Sync — Wave 6: End-to-end integration suite, re-consent proof, benchmark harness, docs, card verification
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** prove the whole sync path end to end against real Postgres with an in-process fake executor (all six domains, continuation, change-only writes, truncation, fencing, disconnect); prove the non-interrupting re-consent transition; add the concurrency case the claim protocol is missing; register a metric-name contract; ship a repeatable capacity benchmark (not CI) with pass criteria written before the run; and finish the operator- and customer-facing surface — deploy doc, runbook acceptance checklist, release notes, product docs, and the Integrations card's "Last synced … · N users · M devices" line with per-domain chips.
+**Goal:** prove the whole sync path end to end against real Postgres with an in-process fake executor (all six domains, continuation, change-only writes, truncation, fencing, disconnect); prove the non-interrupting re-consent transition; add the multi-domain concurrency case W04's claim suite is missing; close the metric-name contract's one gap; ship a repeatable capacity benchmark (not CI) with pass criteria written before the run; and finish the operator- and customer-facing surface — deploy doc, runbook acceptance checklist, release notes, product docs, and a rendering check that W05's card really does show its "Last synced …" line and its per-domain chips.
 
 **Architecture:** the suite drives `runSyncDomain` directly (never through BullMQ — the ticker/queue path is W04's own claim suite) against a node `http` server that verifies the API's EdDSA internal-auth JWT exactly as `apps/m365-graph-read-executor/src/internalAuth.ts` does, and returns canned `M365SyncActionResult` payloads keyed by `action.type`. The API is pointed at it by stubbing `globalThis.fetch` for the configured executor origin only, so signing, `bodySha256` binding, response bounding, and result-schema parsing all run for real. The benchmark reuses the same fake executor with injected latency and a seeded size distribution, and reports drain time, ticker utilisation, queue depth, WAL delta, pool occupancy, and foreground probe p95.
 
-**Tech Stack:** TypeScript, Vitest (`vitest.integration.config.ts` against Postgres `:5433` + Redis `:6380`), Drizzle + raw `sql` for verification reads, `jose` (EdDSA), `prom-client`, `tsx` scripts, React + react-i18next (web), Astro/Starlight MDX (`apps/docs`).
+**Tech Stack:** TypeScript, Vitest (`vitest.integration.config.ts` against Postgres `:5433` + Redis `:6380`), Drizzle + raw `sql` for verification reads, `jose` (EdDSA), `prom-client`, `tsx` scripts, React + Testing Library (web), Astro/Starlight MDX (`apps/docs`).
 
-**Spec:** `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` — this wave implements §9 (testing, all bullets from "End-to-end integration" down, plus the claim-protocol concurrency case and the metric registration), §5.11 (benchmark), §10.5 (self-hoster rollout notes), and the card half of §2.2.
+**Spec:** `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` — this wave implements §9 (testing, all bullets from "End-to-end integration" down, plus the claim-protocol concurrency case and the metric registration), §5.11 (benchmark), §10.5 (self-hoster rollout notes), and a read-only verification of the card half of §2.2 (W05 owns every line of card code).
 
 **Wave issue:** `LanternOps/breeze#5333` (parent `#5327`). Branch: `feature/5327-m365-tenant-sync/wave-5333`.
 
@@ -35,7 +35,8 @@
 - **Verification reads use the superuser client** (`getTestDb()`), never the `breeze_app` proxy — these are assertions about rows the worker wrote under a system context, not RLS probes. RLS itself is `rls-coverage.integration.test.ts`'s contract (W02).
 - **Bind `Date` values as `toISOString()` inside raw `sql`` fragments.** A `Date` passed straight into a drizzle raw fragment throws `Buffer.byteLength` at bind time under postgres.js; compiled-SQL tests never see it, only real Postgres does.
 - **No real tenant ids, client ids, hostnames or secrets in fixtures.** Use the all-1s/2s/3s GUID style already used by `m365ConnectionLifecycle.integration.test.ts`.
-- **i18n:** every new `t()` key must exist in all 8 catalogs (`en` + `pt-BR`, `es-419`, `fr-FR`, `fr-CA`, `de-DE`, `it-IT`, `tr-TR`). `localeParity.test.ts` demands exact key parity; `translationCoverage.test.ts` fails on new exact-English duplicates beyond the per-namespace baseline. Dynamic keys need the `/* i18n-dynamic */` marker.
+- **No card code, no new locale keys.** W05 owns every change to `M365CustomerGraphReadCard.tsx` and to `apps/web/src/locales/*/integrations.json` (its Task 15: the `Sync now` button, the `Last synced …` line, the per-domain chips, and the `m365CustomerGraphRead.sync.*` keys in all eight catalogs). This wave only *renders* that card in a test and asserts the text it already produces. If an assertion fails because a key, a parser branch, or a line is missing, that is a W05 gap: fix it in W05's files and say so in the PR body — never add a second copy of the card's parser, chips or copy here.
+- **No duplicated docs blocks.** W01 owns the manifest-v3 app-role table rows in `docs/deploy/m365-customer-graph-read-executor.md` and the whole re-consent story in `docs/release-notes/m365-customer-graph-read-manifest-v3.md`; W03 owns the executor env-var rows and the executor metric names; W04 owns `apps/api/src/services/m365Sync/metrics.test.ts`. Link to them or append to them — do not restate them.
 - **Docs jobs:** any `apps/docs/**` edit must pass `pnpm --filter @breeze/docs check` and `pnpm --filter @breeze/docs build` (the `docs-check` CI job runs both).
 
 ## Baseline verification — run before Task 1
@@ -66,14 +67,14 @@ test -f apps/api/src/services/m365Sync/rollup.ts
 grep -q "syncEnabled" apps/api/src/routes/m365CustomerGraphRead.ts
 ```
 
-Also record the exported names actually shipped, because two of them are not pinned by the overview's contract:
+Also confirm the two names this wave leans on actually shipped:
 
 ```bash
-grep -rn "export function registerM365Sync" apps/api/src/services/m365Sync/
+grep -rn "export function registerM365SyncMetrics" apps/api/src/services/m365Sync/metrics.ts
 grep -rn "m365_sync_actions_total" apps/m365-graph-read-executor/src/
 ```
 
-Tasks 4, 8 and 9 assume `registerM365SyncPrometheusMetrics(registry)` in `apps/api/src/services/m365Sync/metrics.ts`. If W04 shipped a different name, use the shipped one, update the overview's contract block in the same PR, and say so in the PR body (the overview's rule for deviations).
+`registerM365SyncMetrics(registry)` is the registrar the overview's contract pins, and W04's `apps/api/src/services/m365Sync/metrics.test.ts` is the single metric-name contract suite — Tasks 4 and 8 both use them. An empty grep means W04 has not landed: stop and land it rather than inventing a second registrar or a second name-contract suite.
 
 ## Local stack
 
@@ -92,13 +93,13 @@ docker compose ls -a      # the only reliable "is it actually down" check
 4. **Task 4** — truncated run + fenced run (needs 1, 2)
 5. **Task 5** — disconnect deletes entities, keeps history (needs 1, 2)
 6. **Task 6** — re-consent / upgrade-consent integration cases (needs 1)
-7. **Task 7** — claim protocol two-ticker `SKIP LOCKED` disjointness (independent)
-8. **Task 8** — metric-name registration contract (independent)
+7. **Task 7** — two-ticker `SKIP LOCKED` completeness, appended to W04's claim suite (independent)
+8. **Task 8** — metric-name guards: one case appended to W04's `metrics.test.ts`, one executor source scan (independent)
 9. **Task 9** — benchmark harness + its runbook (needs 1's fixture builders)
 10. **Task 10** — deploy doc operational sections (docs only)
 11. **Task 11** — runbook sync acceptance checklist (docs only)
 12. **Task 12** — release notes + `apps/docs` feature page + `environment.mdx` (docs only)
-13. **Task 13** — card "last synced" line, chips, i18n, web tests
+13. **Task 13** — card rendering check against W05's card (one web test, no card code)
 14. **Task 14** — full verification, CI-shard proof, PR
 
 Tasks 2–5 all edit `m365TenantSync.integration.test.ts`; run them in order in one session. Tasks 6–13 are file-disjoint from each other. One PR, one commit per task.
@@ -601,8 +602,11 @@ export function syncSecureScoreResult(
       activeUserCount: 42,
       licensedUserCount: 50,
       controlScores: [
-        { controlName: 'MfaRegistrationV2', score: 30, maxScore: 30, implementationStatus: 'Implemented' },
-        { controlName: 'BlockLegacyAuthentication', score: 0, maxScore: 20, implementationStatus: 'Not implemented' },
+        // `title` is part of the projected controlScores shape in the contract
+        // (string | null) — the executor joins it from controlProfiles, and a
+        // profile it could not resolve arrives as null.
+        { controlName: 'MfaRegistrationV2', title: 'Ensure all users can complete multi-factor authentication', score: 30, maxScore: 30, implementationStatus: 'Implemented' },
+        { controlName: 'BlockLegacyAuthentication', title: null, score: 0, maxScore: 20, implementationStatus: 'Not implemented' },
       ],
     };
   });
@@ -791,12 +795,18 @@ describe('m365 tenant sync — first run across all six domains', () => {
     ]));
     executor.enqueue('m365.sync.secure_score', syncSecureScoreResult('2026-09-08', 90));
 
-    // Drive every claimed domain, re-claiming sign-in while a continuation remains.
+    // Drive every claimed domain. The sign-in fixture hands back
+    // `continuation: 'page-2-token'` on its first call, so THAT run resolves
+    // 'partial-continue' — a control-flow-only M365SyncRunResult that never
+    // reaches last_status. Every other domain completes in one pass.
     for (const job of await claimFor(fixture)) {
-      await expect(runSyncDomain(job)).resolves.toBe('success');
+      await expect(runSyncDomain(job), job.domain).resolves.toBe(
+        job.domain === 'signin_activity' ? 'partial-continue' : 'success',
+      );
     }
     const [signinAgain] = (await claimFor(fixture)).filter((job) => job.domain === 'signin_activity');
     expect(signinAgain, 'a continuation must leave signin_activity due immediately').toBeDefined();
+    // Second page: the fixture carries no continuation, so the walk completes.
     await expect(runSyncDomain(signinAgain!)).resolves.toBe('success');
 
     // Entity rows
@@ -848,8 +858,14 @@ describe('m365 tenant sync — first run across all six domains', () => {
       expect(state.next_sync_at, state.domain).not.toBeNull();
       expect(Object.values(state.sources), state.domain).not.toContain('error');
     }
+    // last_counts holds the snake_case ROLLUP column names (contract: "counts
+    // keys are snake_case rollup column names"), not the persister's
+    // inserted/updated/unchanged tally — that lives on DomainPersistResult and
+    // is asserted in Task 3.
     const users = states.find((state) => state.domain === 'users')!;
-    expect(users.last_counts).toMatchObject({ total: 3, enabled: 2, mfaUnknown: 1, admins: 1 });
+    expect(users.last_counts).toMatchObject({
+      users_total: 3, users_enabled: 2, users_mfa_unknown: 1, users_admin: 1,
+    });
 
     // Rollup row for today, with per-domain freshness.
     const [rollup] = await rows<{
@@ -943,7 +959,9 @@ Spec §5.4 ("Unchanged rows are not written"), §9 ("run again with one changed 
 - Modify: `apps/api/src/__tests__/integration/m365TenantSync.integration.test.ts`
 
 **Interfaces:**
-- Consumes: as Task 2, plus `canonicalHash` (`apps/api/src/services/m365Sync/hash.ts`, W04) — imported only to document intent in a comment, not asserted directly.
+- Consumes: as Task 2, plus `DOMAIN_PERSISTERS` (`apps/api/src/services/m365Sync/run.ts`, W04) — wrapped for the duration of one run so the `DomainPersistResult` the users persister returns can be asserted directly. `canonicalHash` (`apps/api/src/services/m365Sync/hash.ts`, W04) is referenced in a comment only, never asserted.
+
+Add `DOMAIN_PERSISTERS` to the existing `../../services/m365Sync/run` import at the top of the file (it already imports `runSyncDomain` from there).
 
 **Technique (stated explicitly, because "no writes" is the assertion that is easiest to fake):** Postgres stamps every new tuple version with the id of the transaction that produced it, readable as the system column `xmin`. An `UPDATE` always writes a new tuple version, so `xmin` changes for exactly the rows that were written, whether or not the new values differ. Snapshot `(graph_id, xmin)` for the org before the second run, snapshot again after, and assert the multiset difference is exactly one row. `last_changed_at` is asserted alongside it because `xmin` alone would also move for a spurious "touch" write — which is precisely what §5.4 forbids.
 
@@ -977,8 +995,24 @@ describe('m365 tenant sync — change-only writes', () => {
     await getTestDb().execute(sql`
       UPDATE m365_sync_state SET next_sync_at = now(), lease_until = NULL
       WHERE org_id = ${fixture.orgId}::uuid AND domain = 'users'`);
-    const [secondJob] = await claimFor(fixture);
-    await expect(runSyncDomain(secondJob!)).resolves.toBe('success');
+    // The inserted/updated/unchanged tally is the persister's
+    // DomainPersistResult, NOT last_counts — last_counts carries the
+    // snake_case rollup columns (users_total, users_enabled, …). Observe the
+    // real returned value by wrapping the registered persister for this run.
+    type PersistResult = Awaited<ReturnType<NonNullable<(typeof DOMAIN_PERSISTERS)['users']>>>;
+    const persisted: PersistResult[] = [];
+    const realPersistUsers = DOMAIN_PERSISTERS.users!;
+    DOMAIN_PERSISTERS.users = async (context, actionResult) => {
+      const outcome = await realPersistUsers(context, actionResult);
+      persisted.push(outcome);
+      return outcome;
+    };
+    try {
+      const [secondJob] = await claimFor(fixture);
+      await expect(runSyncDomain(secondJob!)).resolves.toBe('success');
+    } finally {
+      DOMAIN_PERSISTERS.users = realPersistUsers;
+    }
 
     const after = await tupleVersions();
     const rewritten = after.filter((row, index) => row.xmin !== before[index]!.xmin);
@@ -987,10 +1021,15 @@ describe('m365 tenant sync — change-only writes', () => {
     expect(after[0]!.last_changed_at.getTime()).toBe(before[0]!.last_changed_at.getTime());
     expect(after[2]!.last_changed_at.getTime()).toBe(before[2]!.last_changed_at.getTime());
 
+    expect(persisted, 'the users persister ran exactly once on the second pass').toHaveLength(1);
+    expect(persisted[0]).toMatchObject({ inserted: 0, updated: 1, unchanged: 2 });
+
+    // And the state row's last_counts still carries only rollup columns.
     const [state] = await rows<{ last_counts: Record<string, number> }>(sql`
       SELECT last_counts FROM m365_sync_state
       WHERE org_id = ${fixture.orgId}::uuid AND domain = 'users'`);
-    expect(state!.last_counts).toMatchObject({ updated: 1, inserted: 0, unchanged: 2 });
+    expect(state!.last_counts).toMatchObject({ users_total: 3, users_enabled: 3 });
+    expect(Object.keys(state!.last_counts)).not.toContain('updated');
   });
 
   runDb('writes nothing at all when the tenant is unchanged', async () => {
@@ -1057,13 +1096,13 @@ Spec §5.3 (Phase C fencing), §5.4 (complete run gates stale marking), §6 (gen
 - Modify: `apps/api/src/__tests__/integration/m365TenantSync.integration.test.ts`
 
 **Interfaces:**
-- Consumes: `registerM365SyncPrometheusMetrics` (`apps/api/src/services/m365Sync/metrics.ts`, W04 — confirm the name with the baseline grep); metric `m365_sync_fenced_total`; `Registry` from `prom-client`.
+- Consumes: `registerM365SyncMetrics` (`apps/api/src/services/m365Sync/metrics.ts`, W04 — the registrar the contract pins); metric `m365_sync_fenced_total`; `Registry` from `prom-client`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 import { Registry } from 'prom-client';
-import { registerM365SyncPrometheusMetrics } from '../../services/m365Sync/metrics';
+import { registerM365SyncMetrics } from '../../services/m365Sync/metrics';
 
 async function counterValue(registry: Registry, name: string): Promise<number> {
   const metric = registry.getSingleMetric(name);
@@ -1142,7 +1181,7 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
   runDb('a run whose generation was superseded discards its result and counts a fence', async () => {
     process.env.M365_TENANT_SYNC_ENABLED = 'true';
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
     const fixture = await seedConnectedOrg();
     await seedDueStateRows(fixture, ['skus']);
 
@@ -1159,7 +1198,7 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
     await expect(runSyncDomain(job!)).resolves.toBe('fenced');
     expect(await counterValue(registry, 'm365_sync_fenced_total')).toBe(fencedBefore + 1);
 
-    expect(await rows(sql`SELECT sku_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
+    expect(await rows(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
     const [state] = await rows<{ last_status: string | null; last_run_at: Date | null }>(sql`
       SELECT last_status, last_run_at FROM m365_sync_state
       WHERE org_id = ${fixture.orgId}::uuid AND domain = 'skus'`);
@@ -1243,7 +1282,7 @@ describe('m365 tenant sync — disconnect', () => {
 
     // Entities and schedule: gone.
     expect(await rows(sql`SELECT graph_id FROM m365_users WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
-    expect(await rows(sql`SELECT sku_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
+    expect(await rows(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
     expect(await rows(sql`SELECT domain FROM m365_sync_state WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
 
     // History: kept, still stamped with the tenant it came from.
@@ -1302,7 +1341,9 @@ MSG
 
 ### Task 6: Re-consent integration cases
 
-Spec §2.2 (upgrade consent), §9 ("v2 row derives manifest-stale, DTO exposes it, sync still runs; simulated upgrade callback promotes to v3; abandoned upgrade leaves v2 executing").
+Spec §2.2 (upgrade consent), §9 ("v2 row derives manifest-stale, DTO exposes it, sync still runs").
+
+**Scope, deliberately narrow.** W01's own suite already proves the consent-session mechanics: that a new upgrade session binds to the existing consent attempt, that a successful callback promotes the manifest in place and bumps `consentGeneration`, and that an abandoned upgrade leaves the connection executing on v2. Re-asserting them here would be a second copy of W01's contract that drifts the first time W01 changes. What is left — and what only this wave can see, because it needs both W01's DTO and W04/W05's sync path in one process — is the **DTO exposure** of `grantHealth`, and the fact that **sync keeps running on v2 grants** while the upgrade is pending.
 
 **Files:**
 - Modify: `apps/api/src/__tests__/integration/m365ConnectionLifecycle.integration.test.ts`
@@ -1310,7 +1351,7 @@ Spec §2.2 (upgrade consent), §9 ("v2 row derives manifest-stale, DTO exposes i
 That suite is 266 lines and already carries the `runtimeConfig` mock, the org/partner/user fixture, and the connection helper these cases need; a new file would clone all three. Add a `describe` block at the end.
 
 **Interfaces:**
-- Consumes: `deriveGrantHealth` and `initiateCustomerGraphReadUpgradeConsent` (`connectionService.ts`, W01); `consumeConsentSession` (`consentSessionService.ts`); the read DTO builder in `apps/api/src/routes/m365CustomerGraphRead.ts` (W01's `grantHealth` / `currentManifestVersion`); `M365_PERMISSION_PROFILES['customer-graph-read']` v3 grants; `runSyncDomain` + `claimDueDomains` + the fake executor from Task 1.
+- Consumes: `deriveGrantHealth` and `initiateCustomerGraphReadUpgradeConsent` (`connectionService.ts`, W01); the read DTO builder in `apps/api/src/routes/m365CustomerGraphRead.ts` (W01's `grantHealth` / `currentManifestVersion`); `M365_PERMISSION_PROFILES['customer-graph-read']` v3 grants; `runSyncDomain` + `claimDueDomains` + the fake executor from Task 1.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1395,51 +1436,8 @@ describe('customer Graph-read upgrade consent (manifest v2 → v3)', () => {
     ]));
     const [job] = (await claimDueDomains({ limit: 20 })).filter((claimed) => claimed.orgId === owner.orgId);
     await expect(runSyncDomain(job!)).resolves.toBe('success');
-    const skus = await admin.execute(sql`SELECT sku_id FROM m365_license_skus WHERE org_id = ${owner.orgId}::uuid`);
+    const skus = await admin.execute(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${owner.orgId}::uuid`);
     expect(skus as unknown as unknown[]).toHaveLength(1);
-  });
-
-  runDb('promotes to v3 in place and bumps the consent generation on a successful upgrade callback', async () => {
-    const { owner, connectionId } = await v2Connection();
-    const initiated = await initiateCustomerGraphReadUpgradeConsent({
-      connectionId, orgId: owner.orgId,
-      auth: { scope: 'organization', orgId: owner.orgId, accessibleOrgIds: [owner.orgId], partnerId: null, user: { id: owner.actorId } } as never,
-    });
-    const session = await consumeConsentSession({
-      rawState: initiated.rawState,
-      phase: 'admin_consent',
-      connectionId,
-      orgId: owner.orgId,
-      consentAttemptId: initiated.connection.consentAttemptId,
-      profile: 'customer-graph-read',
-    });
-    expect(session).toMatchObject({ connectionId });
-
-    await withSystemDbAccessContext(() => db.update(m365Connections).set({
-      permissionManifestVersion: 3,
-      observedGrants: [...M365_PERMISSION_PROFILES['customer-graph-read'].applicationPermissionAssignments],
-      grantsVerifiedAt: new Date('2026-09-08T11:00:00.000Z'),
-      consentGeneration: 2,
-    }).where(eq(m365Connections.id, connectionId)));
-
-    const promoted = await currentConnection(owner.orgId);
-    expect(promoted).toMatchObject({ status: 'active', permissionManifestVersion: 3, consentGeneration: 2 });
-    expect(deriveGrantHealth(promoted!, M365_PERMISSION_PROFILES['customer-graph-read']).state).toBe('active');
-  });
-
-  runDb('leaves the connection executing on v2 when the admin abandons the upgrade', async () => {
-    const { owner, connectionId } = await v2Connection();
-    await initiateCustomerGraphReadUpgradeConsent({
-      connectionId, orgId: owner.orgId,
-      auth: { scope: 'organization', orgId: owner.orgId, accessibleOrgIds: [owner.orgId], partnerId: null, user: { id: owner.actorId } } as never,
-    });
-    // No callback ever arrives.
-    const abandoned = await currentConnection(owner.orgId);
-    expect(abandoned).toMatchObject({
-      status: 'active', permissionManifestVersion: 2, consentGeneration: 1, lastErrorCode: null,
-    });
-    expect(deriveGrantHealth(abandoned!, M365_PERMISSION_PROFILES['customer-graph-read']).state)
-      .toBe('manifest-stale');
   });
 });
 ```
@@ -1466,7 +1464,7 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/m365ConnectionLifecycle.integration.test.ts
 ```
 
-- [ ] **Step 3: Implement** — W01 owns the behaviour; expect no production change. The one legitimate fix here is wiring `onConnectionUpgraded` if the promotion path does not re-seed `needs_consent` domains.
+- [ ] **Step 3: Implement** — W01 owns the DTO fields and W04/W05 own the sync path; expect no production change. The two failures worth chasing are a DTO that omits `grantHealth`/`currentManifestVersion` (fix in W01's route) and a claim or run that refuses a v2 connection (fix in W04's `claim.ts`/`run.ts` — a manifest-stale connection is executable by design).
 
 - [ ] **Step 4: Run — expect green.**
 
@@ -1477,11 +1475,13 @@ git add apps/api/src/__tests__/integration/m365ConnectionLifecycle.integration.t
 git commit -m "$(cat <<'MSG'
 test(m365): upgrade-consent keeps a v2 connection executing throughout
 
-Four real-DB cases for §2.2: a v2 row derives manifest-stale and the read DTO
-exposes grantHealth + manifestVersion + currentManifestVersion; sync still
-runs on v2 grants while the upgrade is pending; a successful callback promotes
-the manifest in place and bumps consentGeneration; an abandoned upgrade leaves
-the connection active on v2 with no error code.
+Two real-DB cases for §2.2, the two that need W01's DTO and the sync path in
+one process: a v2 row derives manifest-stale and the read DTO exposes
+grantHealth + manifestVersion + currentManifestVersion, and a skus sync still
+completes on v2 grants while the upgrade is pending. The consent-session
+mechanics (attempt binding, in-place promotion with a consentGeneration bump,
+abandoned upgrade leaving v2) stay in W01's own suite rather than being
+re-asserted here.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -1491,114 +1491,97 @@ MSG
 
 ---
 
-### Task 7: Claim protocol — two concurrent tickers, `SKIP LOCKED` disjointness
+### Task 7: Claim protocol — two concurrent tickers over a multi-domain batch
 
 Spec §5.2, §9 ("two concurrent tickers with SKIP LOCKED").
 
 **Files:**
-- Modify **or** create: `apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts`
+- Modify: `apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts` (W04 creates this file in its Task 16; this task is **append-only**)
 
-- [ ] **Step 1: Decide the file**
+**What W04 already proves, and what this adds.** W04's suite covers a single-domain disjointness case over six tenants, the live-lease skip and the lease-expiry reclaim, `next_sync_at` surviving a claim, batch limits, and oldest-due-first ordering. Do not restate any of them. What it does not cover — and what a rolling deploy actually produces — is two tickers racing over a batch that spans **several domains per org**, where the failure mode is not an overlap but a *lost* row: `SKIP LOCKED` silently drops a row that a concurrent transaction holds, so a claimer that stops at its limit can leave due rows unclaimed by either side. This task asserts the union is complete.
 
-```bash
-test -f apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts && echo APPEND || echo CREATE
-grep -n "SKIP LOCKED\|concurrent" apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts 2>/dev/null
-```
+**Interfaces:**
+- Consumes W04's module-local helpers in that file — `seedConnection(status?)`, `seedState(tenant, overrides?)`, `readState(orgId, domain?)` — plus `claimDueDomains`. Add no second copy of them, and add no second claim suite.
 
-If the file exists, append only the `describe` block below and reuse its seeding helper. If it does not, create the file with the header + helper + block. Do not create a second claim suite.
+- [ ] **Step 1: Write the failing test**
 
-- [ ] **Step 2: Write the failing test**
+Append this `describe` block to `apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts`:
 
 ```ts
-/**
- * Integration test — m365 sync claim protocol under concurrency (real PG).
- *
- * The ticker is single-instance by design, but a rolling deploy runs two for a
- * few seconds. The claim must therefore be disjoint by construction, not by
- * deployment discipline: SELECT … FOR UPDATE OF s SKIP LOCKED.
- *
- * Run:
- *   cd apps/api && npx vitest run --config vitest.integration.config.ts \
- *     src/__tests__/integration/m365SyncClaim.integration.test.ts
- */
-describe('m365 sync claim — concurrent tickers', () => {
-  runDb('two simultaneous claims partition the due rows with no overlap', async () => {
-    process.env.M365_TENANT_SYNC_ENABLED = 'true';
-    const fixtures = await Promise.all([seedConnectedOrg(), seedConnectedOrg()]);
-    for (const fixture of fixtures) await seedDueStateRows(fixture);  // 6 domains each = 12 due rows
-    const orgIds = new Set(fixtures.map((fixture) => fixture.orgId));
+describe('m365 sync claim — two concurrent tickers over a multi-domain batch', () => {
+  runDb('partition the due rows completely: no overlap and nothing lost', async () => {
+    // Six tenants × two domains = twelve due rows, so each claimer's limit is
+    // reachable and SKIP LOCKED has something to skip.
+    const tenants = await Promise.all(Array.from({ length: 6 }, () => seedConnection()));
+    for (const tenant of tenants) {
+      await seedState(tenant, { domain: 'users' });
+      await seedState(tenant, { domain: 'skus' });
+    }
+    const orgIds = new Set(tenants.map((tenant) => tenant.orgId));
 
     const [left, right] = await Promise.all([
       claimDueDomains({ limit: 12 }),
       claimDueDomains({ limit: 12 }),
     ]);
-    const mine = (claimed: typeof left) =>
-      claimed.filter((job) => orgIds.has(job.orgId)).map((job) => `${job.orgId}:${job.domain}`);
+    const mine = (claimed: typeof left) => claimed
+      .filter((job) => orgIds.has(job.orgId))
+      .map((job) => `${job.orgId}:${job.domain}`);
     const leftKeys = mine(left);
     const rightKeys = mine(right);
 
     expect(new Set(leftKeys).size, 'a single claim never returns a duplicate').toBe(leftKeys.length);
     expect(leftKeys.filter((key) => rightKeys.includes(key)), 'claims must be disjoint').toEqual([]);
-    expect(new Set([...leftKeys, ...rightKeys]).size).toBe(12);
+    expect(
+      new Set([...leftKeys, ...rightKeys]).size,
+      'SKIP LOCKED must not lose a row: the union of both claims covers all twelve',
+    ).toBe(12);
 
-    // Every claimed row carries a fresh lease and an untouched due time.
-    const states = await rows<{ domain: string; run_generation: number; lease_until: Date | null; next_sync_at: Date }>(sql`
-      SELECT domain, run_generation, lease_until, next_sync_at FROM m365_sync_state
-      WHERE org_id = ANY(ARRAY[${sql.join([...orgIds].map((id) => sql`${id}::uuid`), sql`, `)}])`);
-    expect(states).toHaveLength(12);
-    for (const state of states) {
-      expect(state.run_generation, state.domain).toBe(1);
-      expect(state.lease_until, state.domain).not.toBeNull();
-      expect(state.next_sync_at.getTime(), 'the claim must not advance next_sync_at')
-        .toBeLessThanOrEqual(Date.now());
+    // Every row was claimed exactly once: one generation bump, a live lease,
+    // and a due time the claim did not advance.
+    for (const tenant of tenants) {
+      for (const domain of ['users', 'skus'] as const) {
+        const state = await readState(tenant.orgId, domain);
+        expect(state.runGeneration, `${tenant.orgId}:${domain}`).toBe(1);
+        expect(state.leaseUntil, `${tenant.orgId}:${domain}`).not.toBeNull();
+        expect(
+          state.nextSyncAt!.getTime(),
+          'the claim must not advance next_sync_at',
+        ).toBeLessThanOrEqual(Date.now());
+      }
     }
-  });
-
-  runDb('a claimed row is not re-claimed until its lease expires', async () => {
-    process.env.M365_TENANT_SYNC_ENABLED = 'true';
-    const fixture = await seedConnectedOrg();
-    await seedDueStateRows(fixture, ['users']);
-
-    const first = (await claimDueDomains({ limit: 5 })).filter((job) => job.orgId === fixture.orgId);
-    expect(first).toHaveLength(1);
-    const second = (await claimDueDomains({ limit: 5 })).filter((job) => job.orgId === fixture.orgId);
-    expect(second, 'a live lease hides the row').toEqual([]);
-
-    await getTestDb().execute(sql`
-      UPDATE m365_sync_state SET lease_until = now() - interval '1 minute'
-      WHERE org_id = ${fixture.orgId}::uuid AND domain = 'users'`);
-    const third = (await claimDueDomains({ limit: 5 })).filter((job) => job.orgId === fixture.orgId);
-    expect(third).toHaveLength(1);
-    expect(third[0]!.generation, 'reclaim increments the generation').toBe(first[0]!.generation + 1);
   });
 });
 ```
 
-If the file is being created, copy `seedConnectedOrg` / `seedDueStateRows` / `rows` from `m365TenantSync.integration.test.ts` (they are ~40 lines; duplicating them keeps the two suites independently runnable, which the repo prefers over a shared fixture module for integration tests).
+`seedState`'s default `runGeneration` is 0, so a single claim leaves it at 1; a row claimed twice would read 2 and fail the loop above — which is the same overlap the key comparison catches, asserted a second way from the database side.
 
-- [ ] **Step 3: Run — expect red**
+- [ ] **Step 2: Run — expect red**
 
 ```bash
 cd apps/api && npx vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/m365SyncClaim.integration.test.ts
 ```
 
-- [ ] **Step 4: Implement** — expect no production change; a red here means the claim is not using `FOR UPDATE … SKIP LOCKED` or is advancing `next_sync_at`, both of which are W04 defects worth fixing in `claim.ts`.
+Check the reported test count: `it.runIf(!!process.env.DATABASE_URL)` reports a green run of zero tests when the stack is down, which is a skip, not a pass.
 
-- [ ] **Step 5: Run — expect green.**
+- [ ] **Step 3: Implement** — expect no production change. A red here means the claim is not using `FOR UPDATE … SKIP LOCKED`, is advancing `next_sync_at`, or is stopping short of its limit when it skips a locked row — all W04 defects worth fixing in `claim.ts`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Run — expect green.**
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/__tests__/integration/m365SyncClaim.integration.test.ts
 git commit -m "$(cat <<'MSG'
-test(m365): concurrent ticker claims are disjoint and leave next_sync_at alone
+test(m365): concurrent ticker claims lose no row across a multi-domain batch
 
-Two simultaneous claimDueDomains() calls over 12 due rows must partition them
-with no overlap (SKIP LOCKED), bump run_generation once each, take a lease,
-and never advance next_sync_at — the property that makes a failed enqueue
-recoverable. A live lease hides the row until it expires, after which the
-reclaim increments the generation again.
+W04 covers single-domain disjointness; this adds the case a rolling deploy
+actually produces — two tickers racing over twelve due rows spanning two
+domains per org. The interesting failure is not an overlap but a lost row:
+SKIP LOCKED silently drops rows held by the other transaction, so the union of
+both claims, not just their intersection, is what has to be asserted. Each row
+ends with exactly one generation bump, a live lease, and an unadvanced
+next_sync_at.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -1610,53 +1593,44 @@ MSG
 
 ### Task 8: Metric-name registration contract
 
-Spec §7. The overview's contract fixes nine API metric names and five executor ones; nothing today asserts they exist, and a renamed or never-registered series is invisible to every alert rule.
+Spec §7. The overview's contract fixes nine API metric names and five executor ones. W04 already owns the API half: `apps/api/src/services/m365Sync/metrics.ts` and its `metrics.test.ts`, which the contract names as **the single name-contract suite**. This task adds the one assertion that suite is missing — that no `breeze_`-prefixed twin has crept in — and pins the executor's five names, which nothing asserts at all.
 
 **Files:**
-- Create: `apps/api/src/services/m365Sync/metrics.contract.test.ts`
+- Modify: `apps/api/src/services/m365Sync/metrics.test.ts` (W04's suite — append one case; do **not** create a second contract file)
 - Create: `apps/m365-graph-read-executor/src/syncMetricNames.contract.test.ts`
 
 **Interfaces:**
-- Consumes: `registerM365SyncPrometheusMetrics` (`apps/api/src/services/m365Sync/metrics.ts`, W04).
+- Consumes: `registerM365SyncMetrics` (`apps/api/src/services/m365Sync/metrics.ts`, W04) — already imported by that suite.
 
 - [ ] **Step 1: Write the failing tests**
 
-`apps/api/src/services/m365Sync/metrics.contract.test.ts`:
+Append to `apps/api/src/services/m365Sync/metrics.test.ts`, inside its existing top-level `describe`:
 
 ```ts
-/**
- * Contract: every metric named in the wave overview's shared interface
- * contract (spec §7) is actually registered. A series that is never
- * registered is absent from a scrape — not stale, not zero — and no alert
- * rule can see it.
- *
- * The names are UNPREFIXED on purpose, departing from the neighbouring
- * `breeze_m365_graph_read_actions_total`: the contract and spec §7 both pin
- * the bare names, and W04's plan (decision 9) records that choice. This test
- * is what keeps a later hand from quietly adding the prefix to half of them.
- */
-import { describe, expect, it } from 'vitest';
-import { Registry } from 'prom-client';
-import { registerM365SyncPrometheusMetrics } from './metrics';
-
-const CONTRACT_NAMES = [
-  'm365_sync_runs_total',
-  'm365_sync_items',
-  'm365_sync_executor_seconds',
-  'm365_sync_due_backlog',
-  'm365_sync_queue_depth',
-  'm365_sync_ticker_utilisation',
-  'm365_sync_ticker_skipped_total',
-  'm365_sync_fenced_total',
-  'm365_sync_link_ambiguous_total',
-] as const;
-
-describe('m365 sync Prometheus contract', () => {
-  it('registers all nine series from the shared interface contract', () => {
+  /**
+   * The nine sync series are UNPREFIXED on purpose, departing from the
+   * neighbouring `breeze_m365_graph_read_actions_total`: the shared interface
+   * contract and spec §7 both pin the bare names, and W04's plan (decision 9)
+   * records that choice. The positive "is it registered" assertions live in
+   * the cases above; this one is the guard against a later hand adding the
+   * house prefix to some of them, which would leave the dashboards and alert
+   * rules pointing at a series that no longer exists.
+   */
+  it('registers no breeze_-prefixed twin of any sync series', () => {
     const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
+    registerM365SyncMetrics(registry);
 
-    for (const name of CONTRACT_NAMES) {
+    for (const name of [
+      'm365_sync_runs_total',
+      'm365_sync_items',
+      'm365_sync_executor_seconds',
+      'm365_sync_due_backlog',
+      'm365_sync_queue_depth',
+      'm365_sync_ticker_utilisation',
+      'm365_sync_ticker_skipped_total',
+      'm365_sync_fenced_total',
+      'm365_sync_link_ambiguous_total',
+    ]) {
       expect(registry.getSingleMetric(name), `${name} is not registered`).toBeDefined();
       expect(
         registry.getSingleMetric(`breeze_${name}`),
@@ -1664,25 +1638,18 @@ describe('m365 sync Prometheus contract', () => {
       ).toBeUndefined();
     }
   });
-
-  it('labels the run counter by domain and outcome', async () => {
-    const registry = new Registry();
-    registerM365SyncPrometheusMetrics(registry);
-    const described = await registry.getSingleMetric('m365_sync_runs_total')!.get();
-    expect(described.type).toBe('counter');
-    expect(JSON.stringify(described)).toContain('domain');
-  });
-});
 ```
+
+Both `Registry` and `registerM365SyncMetrics` are already imported by that file; add nothing. If the nine names are already listed in a `const` in that suite, reuse it rather than retyping the array.
 
 `apps/m365-graph-read-executor/src/syncMetricNames.contract.test.ts`:
 
 ```ts
 /**
- * The executor has no prom-client dependency and no /metrics route (verified
- * 2026-09-08), so its five sync counters are emitted through whatever
- * mechanism W03 chose. What can still be pinned mechanically is the SPELLING:
- * the contract's names must appear verbatim in the source, so a rename cannot
+ * The executor has no prom-client dependency; it hand-rolls Prometheus text on
+ * GET /metrics (contract, executor section). So there is no registry to
+ * interrogate — what can still be pinned mechanically is the SPELLING: the
+ * contract's five names must appear verbatim in the source, so a rename cannot
  * silently orphan a dashboard.
  */
 import { describe, expect, it } from 'vitest';
@@ -1719,27 +1686,28 @@ describe('m365 sync executor metric names', () => {
 - [ ] **Step 2: Run — expect red**
 
 ```bash
-cd apps/api && npx vitest run src/services/m365Sync/metrics.contract.test.ts
+cd apps/api && npx vitest run src/services/m365Sync/metrics.test.ts
 cd apps/m365-graph-read-executor && npx vitest run src/syncMetricNames.contract.test.ts
 ```
 
-- [ ] **Step 3: Implement** — register any missing series in W04's `metrics.ts` / emit any missing executor name. Do not delete a name from the list to make it pass; if a name is genuinely wrong, change it in the overview's contract block too and say so in the PR body.
+- [ ] **Step 3: Implement** — register any missing series in W04's `metrics.ts`, or emit any missing name in W03's executor. Do not delete a name from either list to make it pass; if a name is genuinely wrong, change it in the overview's contract block too and say so in the PR body.
 
 - [ ] **Step 4: Run — expect green.**
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/services/m365Sync/metrics.contract.test.ts \
+git add apps/api/src/services/m365Sync/metrics.test.ts \
         apps/m365-graph-read-executor/src/syncMetricNames.contract.test.ts
 git commit -m "$(cat <<'MSG'
-test(m365): pin the nine API and five executor sync metric names
+test(m365): guard the unprefixed sync metric names on both sides
 
-An unregistered series is absent from a scrape rather than zero, so no alert
-rule can see it. The API test registers the sync metrics on a fresh Registry
-and asserts all nine contract names resolve under one consistent spelling; the
-executor test scans its own source for the five names it emits, since that app
-has no prom-client dependency or /metrics route.
+W04's metrics.test.ts is the single name-contract suite, so the missing
+assertion goes there rather than into a second file: no breeze_-prefixed twin
+of any of the nine sync series may be registered, because half-prefixed names
+would leave every dashboard and alert rule pointing at a series that no longer
+exists. The executor has no prom-client registry to interrogate, so its five
+names are pinned by scanning its own source for the exact spellings.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -2006,6 +1974,8 @@ export interface BenchmarkReport {
   options: BenchmarkOptions;
   ticks: number;
   runsCompleted: number;
+  /** Sign-in continuation pages: work done, but NOT completed domain runs. */
+  pagesCompleted: number;
   tickDrainSecondsP95: number;
   tickerUtilisation: number;
   maxQueueDepth: number;
@@ -2024,7 +1994,8 @@ export function formatReport(report: BenchmarkReport): string {
     `orgs=${report.options.orgs} window=${report.options.windowMinutes}m ` +
       `latency=${report.options.executorLatencyMs}ms concurrency=${report.options.concurrency} ` +
       `tickBatch=${report.options.tickBatch} seed=${report.options.seed}`,
-    `ticks=${report.ticks} runsCompleted=${report.runsCompleted} walBytes=${report.walBytes}`,
+    `ticks=${report.ticks} runsCompleted=${report.runsCompleted} ` +
+      `pagesCompleted=${report.pagesCompleted} walBytes=${report.walBytes}`,
     '',
     pass('tick drain p95 (s)', report.tickDrainSecondsP95, BENCHMARK_PASS_CRITERIA.tickDrainSecondsMax),
     pass('ticker utilisation', Number(report.tickerUtilisation.toFixed(3)), BENCHMARK_PASS_CRITERIA.tickerUtilisationMax),
@@ -2208,6 +2179,7 @@ async function main(): Promise<void> {
   const tickDrainSeconds: number[] = [];
   let ticks = 0;
   let runsCompleted = 0;
+  let pagesCompleted = 0;
   let maxQueueDepth = 0;
 
   while (Date.now() < deadline) {
@@ -2220,7 +2192,26 @@ async function main(): Promise<void> {
         const index = orgIndex.get(job.orgId);
         if (index === undefined) continue;
         executor.enqueue(`m365.sync.${job.domain}`, fixtureFor(index, `m365.sync.${job.domain}`) as never);
-        await runSyncDomain(job);
+        const outcome = await runSyncDomain(job);
+        // 'noop' means the domain has no registered persister. After W05 all
+        // six are registered, so a noop here is a wiring regression — and it
+        // would flatter every number in the report, because a domain that does
+        // no work drains instantly and invents utilisation headroom.
+        if (outcome === 'noop') {
+          throw new Error(
+            `domain ${job.domain} returned 'noop' — no persister registered, so this run measures nothing`,
+          );
+        }
+        // A sign-in run that still holds a continuation completed a PAGE, not a
+        // run: the same row comes back due immediately, so counting it as a run
+        // would understate ticker utilisation.
+        if (outcome === 'partial-continue') {
+          if (job.domain !== 'signin_activity') {
+            throw new Error(`domain ${job.domain} returned 'partial-continue'; only signin_activity paginates`);
+          }
+          pagesCompleted += 1;
+          continue;
+        }
         runsCompleted += 1;
       }
     }));
@@ -2255,6 +2246,7 @@ async function main(): Promise<void> {
     options,
     ticks,
     runsCompleted,
+    pagesCompleted,
     tickDrainSecondsP95: Number(percentile(tickDrainSeconds, 95).toFixed(2)),
     tickerUtilisation: runsCompleted / Math.max(options.tickBatch * ticks, 1),
     maxQueueDepth,
@@ -2328,6 +2320,13 @@ the fleet's org count roughly doubles or the sync cadence defaults change.
 The pass criteria are fixed in `apps/api/scripts/m365-sync-benchmark.lib.ts`
 (`BENCHMARK_PASS_CRITERIA`) and were written before the first run. Do not edit
 them to make a run pass; a failure is a capacity finding.
+
+Ticker utilisation counts **completed runs**. A `signin_activity` call that
+comes back with a continuation is reported separately as `pagesCompleted`: it
+did real work, but its row is due again immediately, so counting it as a run
+would understate utilisation. The driver also aborts if any domain returns
+`'noop'` — that means no persister is registered for it, and a domain doing no
+work drains instantly and invents headroom that does not exist.
 
 `intune_devices` and `signin_activity` are excluded from the steady-state
 zero-write criterion by design (spec §5.9): device rows carry
@@ -2414,43 +2413,23 @@ MSG
 
 ### Task 10: Deploy doc — sync route, capacity, sign-in RPM split, memory
 
-Spec §4.2, §5.11, §10.5. **Coordinate with W03:** that wave adds the executor env-var *table rows* to this file. This task adds the operational sections around them and cross-checks the rows exist; if a row is missing, add it here and say so in the PR body.
+Spec §4.2, §5.11, §10.5. **This task adds only the operational sections.** W01 adds the four manifest-v3 app-role rows to this file (its own task), and W03 adds the executor env-var *table rows*. Cross-check both exist; if a row is missing, add it here and say so in the PR body — but never restate the app-role table or the manifest-v3 re-consent story, which live in W01's rows and in `docs/release-notes/m365-customer-graph-read-manifest-v3.md`.
 
 **Files:**
 - Modify: `docs/deploy/m365-customer-graph-read-executor.md`
 
-- [ ] **Step 1: Cross-check what W03 already added**
+- [ ] **Step 1: Cross-check what W01 and W03 already added**
 
 ```bash
 grep -n "M365_SYNC_MAX_IN_FLIGHT\|M365_MAX_IN_FLIGHT\|M365_SIGNIN_ACTIVITY_RPM\|M365_SIGNIN_PAGES_PER_CALL\|M365_SYNC_MAX_ITEMS" docs/deploy/m365-customer-graph-read-executor.md
-grep -n "M365_TENANT_SYNC_ENABLED\|M365_SYNC_CONCURRENCY\|M365_SYNC_MAX_BACKLOG\|M365_SYNC_TICK_BATCH\|M365_GRAPH_SYNC_EXECUTOR_URL" docs/deploy/m365-customer-graph-read-executor.md
+grep -n "M365_TENANT_SYNC_ENABLED\|M365_SYNC_CONCURRENCY\|M365_SYNC_MAX_BACKLOG\|M365_SYNC_TICK_BATCH" docs/deploy/m365-customer-graph-read-executor.md
+# W01 owns these four rows; they must already be here.
+grep -c "AuditLogsQuery.Read.All\|Policy.Read.All\|RoleManagement.Read.Directory\|SecurityEvents.Read.All" docs/deploy/m365-customer-graph-read-executor.md
 ````
 
-- [ ] **Step 2: Add the four permission rows to the manifest table**
+If the Step 1 grep shows the four app-role rows are missing, W01 has not landed — stop rather than adding them here; duplicated rows with hand-typed GUIDs are exactly the drift this split avoids.
 
-Under `## Entra application and permission manifest`, extend the app-role table with the v3 additions (values must match `packages/shared/src/m365/profiles.ts` — read them from the file, never from memory):
-
-```markdown
-| `AuditLogsQuery.Read.All` | `<value from profiles.ts>` |
-| `Policy.Read.All` | `<value from profiles.ts>` |
-| `RoleManagement.Read.Directory` | `<value from profiles.ts>` |
-| `SecurityEvents.Read.All` | `<value from profiles.ts>` |
-```
-
-and add, immediately after the table:
-
-```markdown
-Manifest version 3 adds the four roles above. **Self-hosters running their own
-read-app registration must add all four to the app registration before their
-customers' administrators can approve them.** Existing v2 connections keep
-executing on their old grants: the Integrations card shows an amber "New
-Microsoft 365 permissions are required" banner with an **Approve new
-permissions** button, and the sync domains that need the new scopes stay
-`needs_consent` until an administrator approves. Nothing breaks while that is
-pending, and abandoning the flow leaves the connection exactly as it was.
-```
-
-- [ ] **Step 3: Add the sync operational sections**
+- [ ] **Step 2: Add the sync operational sections**
 
 After `## Runtime configuration`, add:
 
@@ -2486,10 +2465,12 @@ Beyond the sync in-flight cap the route returns
 header and does **not** queue internally; the API retries with BullMQ backoff
 (30 s, 2 min, 8 min) and then lengthens that domain's interval by 1.5×.
 
-If "never starve" must be a hard guarantee rather than a soft one under shared
-CPU and heap, run sync-only executor replicas behind a second URL and point the
-API at it with `M365_GRAPH_SYNC_EXECUTOR_URL` (optional; defaults to
-`M365_GRAPH_READ_EXECUTOR_URL`).
+There is no separate sync-executor origin in v1. Sync and interactive calls
+share `M365_GRAPH_READ_EXECUTOR_URL`, and the isolation between them is the
+two routes' independent caps, timeouts and metrics — not deployment topology.
+Making that a hard guarantee instead would mean a new variable and a second
+executor deployment, which is a decision for a later wave, not a dial that
+already exists.
 
 ### Sign-in activity is app-wide limited — split the RPM across regions
 
@@ -2520,50 +2501,35 @@ executor for `M365_SYNC_MAX_IN_FLIGHT` concurrent maximum-size snapshots:
 
 | Concurrent max-size snapshots | Measured RSS ceiling | Recommended container limit |
 |---|---|---|
-| 4 × 25 000 users | _record the measured value here after the first canary_ | ≥ 1.5× the measured ceiling |
+| 4 × 25 000 users | the value measured by scenario **S7** below — write it into this cell | ≥ 1.5× the measured ceiling |
 
-Measure it once on the canary with `M365_SYNC_MAX_IN_FLIGHT=4` against the
-largest available tenant and record the number in this table; do not carry a
-guess into a limit. The 64 MiB cumulative response cap and the 25 000-item cap
+The number is measured before the first canary, not after it: scenario S7 in
+`docs/runbooks/m365-customer-graph-read-real-tenant.md` drives four concurrent
+25 000-user snapshots through the executor in fake-executor mode and records
+peak RSS. Fill this cell from that run and do not carry a guess into a
+container limit. The 64 MiB cumulative response cap and the 25 000-item cap
 bound a single snapshot, so the ceiling is a product of those two and the
 in-flight cap, not of tenant count.
 ```
 
-- [ ] **Step 4: Extend the operational-signals section**
+- [ ] **Step 3: Verify and commit**
 
-Append to `## Operational signals`:
-
-```markdown
-Tenant sync adds its own series. API side:
-`m365_sync_runs_total{domain,outcome}`, `m365_sync_items{domain,kind}`,
-`m365_sync_executor_seconds{domain}`, `m365_sync_due_backlog`,
-`m365_sync_queue_depth`, `m365_sync_ticker_utilisation`,
-`m365_sync_ticker_skipped_total`, `m365_sync_fenced_total`,
-`m365_sync_link_ambiguous_total`. Executor side:
-`m365_sync_actions_total{action,outcome}`, sync and total in-flight gauges,
-the `503` counter, and the sign-in limiter token gauge.
-
-The three to watch during a rollout are `m365_sync_ticker_utilisation` (the
-capacity headroom), `m365_sync_due_backlog` (whether freshness is slipping),
-and the executor's `503` counter (whether the sync cap is the binding
-constraint). One audit event is written per `sync-domain` run carrying org,
-domain, generation, outcome, counts, truncation and correlation id — never row
-content.
-```
-
-- [ ] **Step 5: Verify and commit**
+W03 adds the executor's metric names to `## Operational signals` in this same
+file. Do not add a second list; confirm it landed and move on.
 
 ```bash
-grep -n "M365_GRAPH_SYNC_EXECUTOR_URL" docs/deploy/m365-customer-graph-read-executor.md
+grep -n "m365_sync_actions_total" docs/deploy/m365-customer-graph-read-executor.md
+! grep -n "M365_GRAPH_SYNC_EXECUTOR_URL" docs/deploy/m365-customer-graph-read-executor.md  # struck from v1
 git add docs/deploy/m365-customer-graph-read-executor.md
 git commit -m "$(cat <<'MSG'
 docs(m365): deploy guidance for the tenant-sync route, caps and sign-in RPM
 
-Adds the four manifest-v3 app roles and the self-hoster instruction, the
-/v1/sync-action route contract and Graph sync profile, the four capacity dials
-with when to raise each, the app-wide sign-in limiter and how to split
-M365_SIGNIN_ACTIVITY_RPM across regions and replicas, a memory sizing table to
-fill in from the canary, and the new metric names.
+Adds the /v1/sync-action route contract and Graph sync profile, the four
+capacity dials with when to raise each, the app-wide sign-in limiter and how to
+split M365_SIGNIN_ACTIVITY_RPM across regions and replicas, and a memory
+sizing table filled from the runbook's S7 measurement. The manifest-v3 app-role
+rows are W01's and the executor metric names are W03's; this change links to
+them rather than restating either.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -2580,7 +2546,7 @@ Spec §9 last bullet: "v3 consent on a fresh tenant, upgrade-consent on an exist
 **Files:**
 - Modify: `docs/runbooks/m365-customer-graph-read-real-tenant.md`
 
-The file already ends with a `## Read-action acceptance` section (prerequisites → acceptance matrix → numbered scenarios `R1`–`R5`). Add a parallel `## Tenant-sync acceptance` section in the same shape, with scenarios `S1`–`S6`.
+The file already ends with a `## Read-action acceptance` section (prerequisites → acceptance matrix → numbered scenarios `R1`–`R5`). Add a parallel `## Tenant-sync acceptance` section in the same shape, with scenarios `S1`–`S7`.
 
 - [ ] **Step 1: Append the section**
 
@@ -2605,6 +2571,8 @@ on for the acceptance window and record the flag state in the evidence record.
   group → add one member → assign the group a directory role.
 - `psql` access to the API's database as an administrator for the row
   assertions, and the Prometheus scrape URL for the metric assertions.
+- Scenario **S7** needs none of the above — it measures the executor's memory
+  ceiling against a fake Graph and can be run before any tenant is available.
 
 ### Acceptance matrix
 
@@ -2616,6 +2584,7 @@ on for the acceptance window and record the flag state in the evidence record.
 | S4 | On-demand sync | Five non-sign-in domains re-run at priority 1; a second call within 15 minutes is refused |
 | S5 | Non-P1 tenant | `sources.signInActivity = "unlicensed"`, domain status `success`, interval at its maximum, UI says sign-in needs Entra ID P1 |
 | S6 | Role via a role-assignable group | The member's `admin_roles` entry carries `viaGroupId`; `is_admin` is true |
+| S7 | Executor memory ceiling | Peak RSS under four concurrent 25 000-user snapshots is measured, and the deploy doc's memory-table cell is filled with it |
 
 ### S1. v3 consent on a fresh tenant
 
@@ -2723,6 +2692,43 @@ carrying `viaGroupId` set to the group's object id. Nested groups are **not**
 followed by design; a member of a group nested inside the role-assignable
 group must not appear. Record both observations.
 
+### S7. Executor memory ceiling under four concurrent maximum-size snapshots
+
+The one scenario here that needs **no customer tenant**: it measures the
+executor, not Microsoft. Run it before the first canary, because the memory
+table in `docs/deploy/m365-customer-graph-read-executor.md` has a cell that
+must hold a measured number rather than a guess, and a 25 000-seat tenant is
+not something an acceptance window can conjure on demand. The ceiling is a
+function of the item cap and the in-flight cap, not of who the users are.
+
+1. Start the executor on its own, with the sync cap at its default and a
+   container limit high enough that the limit is not what you are measuring:
+
+```bash
+M365_SYNC_MAX_IN_FLIGHT=4 M365_SYNC_MAX_ITEMS_USERS=25000 \
+  node apps/m365-graph-read-executor/dist/index.js &
+EXECUTOR_PID=$!
+```
+
+2. Point its Graph base URL at a local server that serves 25 000 projected
+   users per pull. The payload shape is the one
+   `apps/api/src/__tests__/integration/m365SyncFakeExecutor.ts` builds with
+   `syncUsersResult` — generate it once and serve the same body to every call.
+3. Issue four `m365.sync.users` calls concurrently and sample RSS throughout:
+
+```bash
+( while kill -0 "$EXECUTOR_PID" 2>/dev/null; do ps -o rss= -p "$EXECUTOR_PID"; sleep 0.25; done ) \
+  | sort -n | tail -1     # peak RSS in kilobytes
+```
+
+4. Convert the peak to MiB and write it into the "4 × 25 000 users" row of the
+   memory table in `docs/deploy/m365-customer-graph-read-executor.md`, then set
+   the container limit to at least 1.5× that figure.
+5. Repeat once with `M365_SYNC_MAX_IN_FLIGHT=1`. The peak should scale roughly
+   linearly with the in-flight cap. If it does not, a snapshot is being
+   retained after its response is written — that is a leak to fix, not a sizing
+   number to record.
+
 ### Evidence to record
 
 For each scenario: date, tenant display name (never the tenant id), operator,
@@ -2738,12 +2744,14 @@ git add docs/runbooks/m365-customer-graph-read-real-tenant.md
 git commit -m "$(cat <<'MSG'
 docs(m365): real-tenant acceptance checklist for tenant sync
 
-Six scenarios in the same shape as the existing read-action acceptance
+Seven scenarios in the same shape as the existing read-action acceptance
 section: v3 consent on a fresh tenant with the Graph-dated 90-day backfill,
 upgrade-consent proving reads and sync never stop (including the abandoned
 flow), first-sync population plus the change-only re-run, on-demand sync and
-its 15-minute limit, a non-P1 tenant reporting unlicensed rather than error,
-and a directory role granted through a role-assignable group.
+its 15-minute limit, a non-P1 tenant reporting unlicensed rather than error, a
+directory role granted through a role-assignable group, and a tenant-free
+measurement of the executor's RSS ceiling under four concurrent 25 000-user
+snapshots, which is what fills the deploy doc's memory-table cell.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -2764,6 +2772,8 @@ Spec §10.4–§10.5, §2.2.
 
 `docs/release-notes/` files are named by topic, not by date (`m365-ticket-mailbox-reconsent.md`, `remote-session-consent.md`, `native-consent-fallback.md`), so this follows that convention.
 
+**W01 owns the manifest-v3 story.** Its own note, `docs/release-notes/m365-customer-graph-read-manifest-v3.md`, is the single source for the four new app roles, their GUIDs, and the non-interrupting re-consent behaviour — W01's plan says so explicitly. This note links to it and restates none of it; what belongs here is the sync-specific half: the environment variables, the flag-on rollout order, verification, and rollback.
+
 - [ ] **Step 1: Write the release note**
 
 `docs/release-notes/m365-tenant-sync.md`:
@@ -2777,44 +2787,21 @@ This release adds a scheduled snapshot of each connected Microsoft 365 tenant
 (users, sign-in activity, Intune devices, Conditional Access policies, license
 SKUs, Secure Score) with a daily posture rollup. **It ships switched off.**
 
-### 1. Add four application permissions to your read app registration
+### 1. Read the manifest v3 note first
 
 The `customer-graph-read` permission manifest moves from version 2 to
-version 3. If you run your own Entra app registration for Customer Graph Read
-(hosted Breeze customers do not — Breeze owns that registration), add these
-four Microsoft Graph **application** permissions to it before your customers'
-administrators can approve them:
+version 3 in this same release. Everything you must do about that — the four
+Microsoft Graph application permissions to add to your own app registration,
+their app-role GUIDs, and why existing connections keep working through the
+amber **Approve new permissions** banner instead of stopping — is in
+[Customer Graph Read manifest v3](./m365-customer-graph-read-manifest-v3.md).
 
-| Permission | What it unlocks |
-|---|---|
-| `Policy.Read.All` | Conditional Access policies and named locations |
-| `RoleManagement.Read.Directory` | Directory role assignments, so Breeze can show who is an admin |
-| `SecurityEvents.Read.All` | Microsoft Secure Score and control profiles |
-| `AuditLogsQuery.Read.All` | Unified audit log queries (granted now so there is only one re-consent) |
+The only sync-specific consequence: a domain whose scope has not been approved
+yet stays `needs_consent` and is simply not scheduled. Every other domain keeps
+running on the old grants, and turning sync on does not force the re-consent to
+happen any sooner.
 
-The app-role GUIDs are listed in
-`docs/deploy/m365-customer-graph-read-executor.md`.
-
-### 2. Existing connections keep working — nothing breaks on deploy
-
-Every existing connection is at manifest version 2. From the moment the API
-deploys, its Integrations card shows an amber banner:
-
-> New Microsoft 365 permissions are required for Conditional Access, Secure
-> Score, and admin role visibility. A Global Administrator must approve them.
-
-with an **Approve new permissions** button. Until an administrator approves:
-
-- Reads and AI tools keep working on the version 2 grants.
-- Sync keeps working for every domain that does not need a new scope.
-- Domains that do need one stay `needs_consent` and are simply not scheduled.
-
-The upgrade does **not** move the connection to `pending-consent`. If the
-administrator abandons the Microsoft flow, nothing changes and the connection
-keeps executing exactly as before. This is deliberate: the old re-consent path
-stopped reads the moment it started, and this one does not.
-
-### 3. Set the environment variables
+### 2. Set the environment variables
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
@@ -2826,7 +2813,10 @@ stopped reads the moment it started, and this one does not.
 | `M365_MAX_IN_FLIGHT` | executor | `32` | Total concurrent operations per executor instance; sync may use at most the sync cap out of this, so interactive AI-tool calls always keep headroom. |
 | `M365_SIGNIN_ACTIVITY_RPM` | executor | `4` | Token bucket for sign-in-activity Graph requests. Microsoft limits these to **10 per minute per application across all tenants** — divide this value across regions and replicas that share one app registration. |
 | `M365_SIGNIN_PAGES_PER_CALL` | executor | `5` | Pages per sign-in call before returning a continuation. |
-| `M365_GRAPH_SYNC_EXECUTOR_URL` | API | falls back to `M365_GRAPH_READ_EXECUTOR_URL` | Optional. Point sync at dedicated executor replicas if you want a hard isolation guarantee rather than a soft one. |
+
+Sync and interactive calls share one executor origin
+(`M365_GRAPH_READ_EXECUTOR_URL`); there is no separate sync-executor URL. The
+two routes are isolated by their independent caps, timeouts and metrics.
 
 ## Deployment
 
@@ -2944,7 +2934,6 @@ sync variables and add a short subsection for the executor-side ones:
 | `M365_SYNC_CONCURRENCY` | No | Positive integer (default `4`) | Sync jobs processed concurrently per API instance. The Graph fetch holds no database connection, so this bounds persist work, not fetch work. |
 | `M365_SYNC_MAX_BACKLOG` | No | Positive integer (default `500`) | Queue depth (`waiting + prioritized + delayed + active`) above which the ticker skips a tick. Due rows keep their past due time and are picked up next tick. |
 | `M365_SYNC_TICK_BATCH` | No | Positive integer (default `200`) | Rows claimed per 60-second tick. This is the capacity dial: target at most 50 % utilisation of `batch × 1440` runs per day. |
-| `M365_GRAPH_SYNC_EXECUTOR_URL` | No | Origin-only HTTPS (defaults to `M365_GRAPH_READ_EXECUTOR_URL`) | Optional dedicated executor origin for sync pulls, if you want bulk snapshots physically isolated from interactive AI-tool calls rather than sharing per-route caps. |
 
 ### Executor: tenant sync
 
@@ -2978,13 +2967,14 @@ git add docs/release-notes/m365-tenant-sync.md \
 git commit -m "$(cat <<'MSG'
 docs(m365): release note, feature page, and env reference for tenant sync
 
-Release note covers the four new app roles self-hosters must add, why existing
-v2 connections keep working through the upgrade banner, every new environment
-variable with its default, the flag-on rollout order, a verification query,
-and a rollback that explicitly keeps the tables (Secure Score history cannot be
-regenerated). Feature page gains the per-domain cadence table, the "as of"
-semantics, the Entra P1 note for sign-in activity, and what disconnect keeps.
-Environment reference gains the API and executor variable rows.
+Release note links to W01's manifest-v3 note for the four new app roles and the
+re-consent behaviour rather than restating them, and covers the sync-specific
+half: every new environment variable with its default, the flag-on rollout
+order, a verification query, and a rollback that explicitly keeps the tables
+(Secure Score history cannot be regenerated). Feature page gains the per-domain
+cadence table, the "as of" semantics, the Entra P1 note for sign-in activity,
+and what disconnect keeps. Environment reference gains the API and executor
+variable rows.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -2994,23 +2984,21 @@ MSG
 
 ---
 
-### Task 13: Card — "Last synced …" line and per-domain chips
+### Task 13: Card verification — W05's "Last synced …" line and chips actually render
 
 Spec §2.2 point 3 (card presentation), §6 (what each state surfaces).
 
+**W05 owns the card. This task adds no card code.** The parser widening (`parseEnvelope`), the `Sync now` button, the "Last synced …" line, the per-domain chips, `formatRelativeTime`, and the `m365CustomerGraphRead.sync.*` keys in all eight locale catalogs are W05's Task 15. What is missing after W05 is only a check that the envelope shape the API actually sends — the `sync` block on the **envelope**, not on the connection — reaches the screen. That is one test.
+
 **Files:**
-- Modify: `apps/web/src/lib/dateTimeFormat.ts`
-- Modify: `apps/web/src/lib/dateTimeFormat.test.ts`
-- Modify: `apps/web/src/components/integrations/M365CustomerGraphReadCard.tsx`
-- Modify: `apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx`
-- Modify: `apps/web/src/locales/{en,pt-BR,es-419,fr-FR,fr-CA,de-DE,it-IT,tr-TR}/integrations.json`
+- Modify: `apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx` (W05's suite — append one `describe`; add no imports, no mocks, no locale keys, no component code)
 
 **Interfaces:**
-- Consumes (from W05's read DTO, `apps/api/src/routes/m365CustomerGraphRead.ts`):
+- Consumes: the file's existing `envelope()` helper, `fetchWithAuthMock`, `render`, `screen`. Nothing new is imported. The envelope fields come from the overview's contract:
 
 ```ts
 syncEnabled: boolean;
-sync: {
+sync: null | {
   lastSuccessAt: string | null;
   users: number | null;
   devices: number | null;
@@ -3019,531 +3007,84 @@ sync: {
     status: 'success' | 'partial' | 'needs_consent' | 'throttled' | 'error' | 'never';
     asOf: string | null;      // last_complete_snapshot_at
     truncated: boolean;
-    unlicensed: boolean;      // sources[...] === 'unlicensed'
+    unlicensed: boolean;      // sources.signInActivity === 'unlicensed'
   }>;
 };
 ```
 
-- [ ] **Step 0: Confirm the DTO shape actually shipped**
+- [ ] **Step 1: Write the verification test**
 
-```bash
-grep -n "syncEnabled" apps/api/src/routes/m365CustomerGraphRead.ts
-grep -n "lastSuccessAt\|unlicensed\|domains" apps/api/src/routes/m365CustomerGraphRead.ts
-```
-
-If the shipped shape differs, use the shipped one here, update the overview's contract block in the same PR, and say so in the PR body. Do not add a second shape.
-
-- [ ] **Step 1: Write the failing tests**
-
-Add to `apps/web/src/lib/dateTimeFormat.test.ts`:
+Append to `apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx`:
 
 ```ts
-import { formatRelativeTime } from './dateTimeFormat';
+/**
+ * Verification, not TDD: W05 built this card and its own suite covers the
+ * button, the parser and the hidden states. What only this wave can see is
+ * that the envelope shape the API really sends — `syncEnabled` and `sync` on
+ * the ENVELOPE, beside `connection`, not inside it — survives the card's
+ * strict `hasExactKeys` parser and reaches the screen. A drift between the
+ * DTO and the parser degrades the whole card to "unavailable" silently, which
+ * is exactly the failure no other test in this wave would notice.
+ */
+describe("sync summary renders from the envelope", () => {
+  it("shows the last-synced line, the counts, and a chip for the unlicensed domain", async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(envelope({
+      syncEnabled: true,
+      sync: {
+        lastSuccessAt: "2026-09-08T11:30:00.000Z",
+        users: 128,
+        devices: 96,
+        domains: [
+          { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+          { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+          { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
+          { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+          { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+          { domain: "secure_score", status: "never", asOf: null, truncated: false, unlicensed: false },
+        ],
+      },
+    })));
 
-describe('formatRelativeTime', () => {
-  const now = new Date('2026-09-08T12:00:00.000Z');
+    render(<M365CustomerGraphReadCard />);
 
-  it('renders recent timestamps in minutes and hours', () => {
-    expect(formatRelativeTime('2026-09-08T11:58:00.000Z', { now, locale: 'en-US' })).toBe('2 minutes ago');
-    expect(formatRelativeTime('2026-09-08T09:00:00.000Z', { now, locale: 'en-US' })).toBe('3 hours ago');
-  });
-
-  it('renders older timestamps in days', () => {
-    expect(formatRelativeTime('2026-09-05T12:00:00.000Z', { now, locale: 'en-US' })).toBe('3 days ago');
-  });
-
-  it('treats anything under a minute as just now', () => {
-    expect(formatRelativeTime('2026-09-08T11:59:40.000Z', { now, locale: 'en-US' })).toBe('now');
-  });
-
-  it('returns the fallback for an unparseable or null value', () => {
-    expect(formatRelativeTime(null, { now, fallback: '—' })).toBe('—');
-    expect(formatRelativeTime('not a date', { now, fallback: '—' })).toBe('—');
+    // The card parsed the envelope rather than degrading to its
+    // "Connection details are unavailable." state.
+    expect(await screen.findByText(/Last synced/)).toBeInTheDocument();
+    expect(screen.getByText(/128 users/)).toBeInTheDocument();
+    expect(screen.getByText(/96 devices/)).toBeInTheDocument();
+    // At least one chip: sign-in activity on a tenant without Entra ID P1.
+    expect(screen.getByText(/Entra ID P1/)).toBeInTheDocument();
   });
 });
 ```
 
-Add to `apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx`. First extend the existing `@/lib/dateTimeFormat` mock — the card will import a second symbol from it and the current factory returns only `formatDateTime`, which would break every test in the file:
+Two things to check against the code before running, because both are W05's and this test only asserts what W05 shipped:
 
-```ts
-vi.mock("@/lib/dateTimeFormat", () => ({
-  formatDateTime: vi.fn((value: string) => `formatted ${value}`),
-  formatRelativeTime: vi.fn((value: string) => `relative ${value}`),
-}));
-```
+- The English copy. Read `apps/web/src/locales/en/integrations.json` under `m365CustomerGraphRead.sync` and assert the strings that are actually there. Do not add, rename or translate a key here — that is W05's Task 15, in all eight catalogs at once.
+- Whether the counts render in one node with the relative time or in a separate one. If they share a node, assert with `toHaveTextContent` on that node instead of three separate `getByText` calls.
 
-Extend the `connection()` fixture with the new fields:
+If the file's `envelope()` helper does not already carry `syncEnabled` and `sync`, W05's parser change landed without its fixture update and every test in the file is failing already — fix the helper in W05's file and say so in the PR body.
 
-```ts
-    syncEnabled: true,
-    sync: {
-      lastSuccessAt: "2026-09-08T11:30:00.000Z",
-      users: 128,
-      devices: 96,
-      domains: [
-        { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
-        { domain: "signin_activity", status: "success", asOf: "2026-09-08T06:00:00.000Z", truncated: false, unlicensed: false },
-        { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
-        { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
-        { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
-        { domain: "secure_score", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
-      ],
-    },
-```
-
-Then the new cases:
-
-```ts
-  it("shows the last-synced line with user and device counts", async () => {
-    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
-    render(<M365CustomerGraphReadCard />);
-
-    const summary = await screen.findByTestId("m365-sync-summary");
-    expect(summary).toHaveTextContent("Last synced relative 2026-09-08T11:30:00.000Z");
-    expect(summary).toHaveTextContent("128 users");
-    expect(summary).toHaveTextContent("96 devices");
-    expect(screen.queryAllByTestId("m365-sync-chip")).toHaveLength(0);
-  });
-
-  it("says not synced yet before the first successful run", async () => {
-    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
-      connection: connection({ sync: { lastSuccessAt: null, users: null, devices: null, domains: [] } }),
-    })));
-    render(<M365CustomerGraphReadCard />);
-
-    expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("Not synced yet");
-  });
-
-  it("renders a chip per degraded domain and none for healthy ones", async () => {
-    const base = connection();
-    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
-      connection: connection({
-        sync: {
-          ...base.sync,
-          domains: [
-            { domain: "users", status: "partial", asOf: "2026-09-08T11:30:00.000Z", truncated: true, unlicensed: false },
-            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
-            { domain: "ca_policies", status: "needs_consent", asOf: null, truncated: false, unlicensed: false },
-            { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
-          ],
-        },
-      }),
-    })));
-    render(<M365CustomerGraphReadCard />);
-
-    const chips = await screen.findAllByTestId("m365-sync-chip");
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      "Users: partial",
-      "Sign-in activity needs Entra ID P1",
-      "Conditional Access: needs consent",
-    ]);
-  });
-
-  it("hides the sync summary entirely when tenant sync is off", async () => {
-    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
-      connection: connection({ syncEnabled: false }),
-    })));
-    render(<M365CustomerGraphReadCard />);
-
-    expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
-    expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
-  });
-
-  it("rejects an envelope whose sync block has an unknown domain", async () => {
-    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
-      connection: connection({
-        sync: {
-          lastSuccessAt: null, users: null, devices: null,
-          domains: [{ domain: "mailboxes", status: "success", asOf: null, truncated: false, unlicensed: false }],
-        },
-      }),
-    })));
-    render(<M365CustomerGraphReadCard />);
-
-    expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
-  });
-```
-
-- [ ] **Step 2: Run — expect red**
+- [ ] **Step 2: Run**
 
 ```bash
-cd apps/web && npx vitest run src/lib/dateTimeFormat.test.ts
 cd apps/web && npx vitest run src/components/integrations/M365CustomerGraphReadCard.test.tsx
 ```
 
-- [ ] **Step 3: Implement `formatRelativeTime`**
+Expected: PASS. This one is deliberately not red-first — the behaviour already exists. **A red here is the finding**, not a step in the process: either the DTO and the card's parser have drifted apart (fix whichever is wrong, in W05's files), or the card never renders the line for an envelope-level `sync` block. Either way it is a W05 defect fixed in W05's files, with the reason in the PR body — never patched around by relaxing this assertion or by adding a second parser here.
 
-Append to `apps/web/src/lib/dateTimeFormat.ts`:
-
-```ts
-const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-  ['year', 365 * 24 * 3_600_000],
-  ['month', 30 * 24 * 3_600_000],
-  ['day', 24 * 3_600_000],
-  ['hour', 3_600_000],
-  ['minute', 60_000],
-];
-
-/**
- * "3 hours ago" / "in 5 minutes", in the user's formatting locale.
- *
- * Anything inside a minute renders as the locale's "now" rather than
- * "0 seconds ago", because a sync that finished 12 seconds ago and one that
- * finished 50 seconds ago are the same fact to the reader.
- */
-export function formatRelativeTime(
-  value: DateInput,
-  options: { now?: Date; locale?: Intl.LocalesArgument; fallback?: string } = {},
-): string {
-  const date = parseDate(value);
-  if (!date) return fallbackFor(value, options.fallback);
-  const locale = options.locale ?? resolvedFormattingLocale();
-  const deltaMs = date.getTime() - (options.now ?? new Date()).getTime();
-  try {
-    const formatter = new Intl.RelativeTimeFormat(locale as Intl.LocalesArgument, { numeric: 'auto' });
-    for (const [unit, ms] of RELATIVE_UNITS) {
-      if (Math.abs(deltaMs) >= ms) return formatter.format(Math.round(deltaMs / ms), unit);
-    }
-    return formatter.format(0, 'second');
-  } catch {
-    return fallbackFor(value, options.fallback);
-  }
-}
-```
-
-- [ ] **Step 4: Implement the card**
-
-In `M365CustomerGraphReadCard.tsx`:
-
-1. Import the helper: `import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";`
-2. Add the closed unions and types next to `STATUSES`:
-
-```tsx
-const SYNC_DOMAINS = [
-  "users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score",
-] as const;
-type SyncDomain = (typeof SYNC_DOMAINS)[number];
-
-const SYNC_STATUSES = [
-  "success", "partial", "needs_consent", "throttled", "error", "never",
-] as const;
-type SyncStatus = (typeof SYNC_STATUSES)[number];
-
-type SyncDomainState = {
-  domain: SyncDomain;
-  status: SyncStatus;
-  asOf: string | null;
-  truncated: boolean;
-  unlicensed: boolean;
-};
-
-type SyncState = {
-  lastSuccessAt: string | null;
-  users: number | null;
-  devices: number | null;
-  domains: SyncDomainState[];
-};
-```
-
-3. Extend `type Connection` with `syncEnabled: boolean;` and `sync: SyncState;`.
-4. Add the parsers next to `parseGrants`:
-
-```tsx
-function parseCount(value: unknown): number | null | undefined {
-  if (value === null) return null;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
-  return value;
-}
-
-function parseSyncDomain(value: unknown): SyncDomainState | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["domain", "status", "asOf", "truncated", "unlicensed"])) return null;
-  const asOf = parseTimestamp(value.asOf);
-  if (
-    typeof value.domain !== "string" || !(SYNC_DOMAINS as readonly string[]).includes(value.domain)
-    || typeof value.status !== "string" || !(SYNC_STATUSES as readonly string[]).includes(value.status)
-    || asOf === undefined
-    || typeof value.truncated !== "boolean"
-    || typeof value.unlicensed !== "boolean"
-  ) return null;
-  return {
-    domain: value.domain as SyncDomain,
-    status: value.status as SyncStatus,
-    asOf,
-    truncated: value.truncated,
-    unlicensed: value.unlicensed,
-  };
-}
-
-function parseSync(value: unknown): SyncState | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, ["lastSuccessAt", "users", "devices", "domains"])) return undefined;
-  const lastSuccessAt = parseTimestamp(value.lastSuccessAt);
-  const users = parseCount(value.users);
-  const devices = parseCount(value.devices);
-  if (!Array.isArray(value.domains) || value.domains.length > SYNC_DOMAINS.length) return undefined;
-  const domains = value.domains.map(parseSyncDomain);
-  if (
-    lastSuccessAt === undefined || users === undefined || devices === undefined
-    || domains.some((domain) => domain === null)
-  ) return undefined;
-  return { lastSuccessAt, users, devices, domains: domains as SyncDomainState[] };
-}
-```
-
-5. In `parseConnection`, append `"syncEnabled"` and `"sync"` to the `keys` array (W01 already added `grantHealth` and `currentManifestVersion` — re-read the array before editing rather than retyping it), add to the guard:
-
-```tsx
-    || typeof value.syncEnabled !== "boolean"
-    || sync === undefined
-```
-
-with `const sync = parseSync(value.sync);` above it, and return `syncEnabled: value.syncEnabled, sync,`.
-
-6. Build the chips next to the other `useMemo` blocks:
-
-```tsx
-  const syncChips = useMemo(() => {
-    const chips: { key: string; label: string }[] = [];
-    for (const entry of connection?.sync.domains ?? []) {
-      const domain = t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`);
-      if (entry.unlicensed) {
-        chips.push({ key: `${entry.domain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
-      } else if (entry.status === "needs_consent") {
-        chips.push({ key: `${entry.domain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
-      } else if (entry.status === "partial" || entry.truncated) {
-        chips.push({ key: `${entry.domain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
-      }
-    }
-    return chips;
-  }, [connection, t]);
-```
-
-7. Render it immediately after the `</dl>`'s closing `</div>` in the connection details block:
-
-```tsx
-          {connection?.syncEnabled && (
-            <div className="border-t pt-5" data-testid="m365-sync-summary">
-              <p className="text-sm text-foreground">
-                {connection.sync.lastSuccessAt
-                  ? `${t("m365CustomerGraphRead.sync.lastSynced", {
-                      relative: formatRelativeTime(connection.sync.lastSuccessAt),
-                    })} · ${t("m365CustomerGraphRead.sync.counts", {
-                      users: connection.sync.users ?? 0,
-                      devices: connection.sync.devices ?? 0,
-                    })}`
-                  : t("m365CustomerGraphRead.sync.never")}
-              </p>
-              {syncChips.length > 0 && (
-                <ul className="mt-3 flex flex-wrap gap-2">
-                  {syncChips.map((chip) => (
-                    <li
-                      key={chip.key}
-                      data-testid="m365-sync-chip"
-                      className="inline-flex items-center rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-foreground"
-                    >
-                      {chip.label}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-```
-
-- [ ] **Step 5: Add the i18n keys to all eight catalogs**
-
-`apps/web/src/locales/en/integrations.json`, inside `m365CustomerGraphRead`:
-
-```json
-"sync": {
-  "lastSynced": "Last synced {{relative}}",
-  "counts": "{{users}} users · {{devices}} devices",
-  "never": "Not synced yet",
-  "chips": {
-    "partial": "{{domain}}: partial",
-    "needsConsent": "{{domain}}: needs consent",
-    "unlicensed": "Sign-in activity needs Entra ID P1"
-  },
-  "domains": {
-    "users": "Users",
-    "signin_activity": "Sign-in activity",
-    "intune_devices": "Intune devices",
-    "ca_policies": "Conditional Access",
-    "skus": "Licenses",
-    "secure_score": "Secure Score"
-  }
-}
-```
-
-`pt-BR`:
-
-```json
-"sync": {
-  "lastSynced": "Última sincronização {{relative}}",
-  "counts": "{{users}} usuários · {{devices}} dispositivos",
-  "never": "Ainda não sincronizado",
-  "chips": {
-    "partial": "{{domain}}: parcial",
-    "needsConsent": "{{domain}}: precisa de consentimento",
-    "unlicensed": "A atividade de entrada exige o Entra ID P1"
-  },
-  "domains": {
-    "users": "Usuários",
-    "signin_activity": "Atividade de entrada",
-    "intune_devices": "Dispositivos do Intune",
-    "ca_policies": "Acesso Condicional",
-    "skus": "Licenças",
-    "secure_score": "Pontuação de segurança"
-  }
-}
-```
-
-`es-419`:
-
-```json
-"sync": {
-  "lastSynced": "Última sincronización {{relative}}",
-  "counts": "{{users}} usuarios · {{devices}} dispositivos",
-  "never": "Aún no sincronizado",
-  "chips": {
-    "partial": "{{domain}}: parcial",
-    "needsConsent": "{{domain}}: requiere consentimiento",
-    "unlicensed": "La actividad de inicio de sesión requiere Entra ID P1"
-  },
-  "domains": {
-    "users": "Usuarios",
-    "signin_activity": "Actividad de inicio de sesión",
-    "intune_devices": "Dispositivos de Intune",
-    "ca_policies": "Acceso condicional",
-    "skus": "Licencias",
-    "secure_score": "Puntuación de seguridad"
-  }
-}
-```
-
-`fr-FR` and `fr-CA` (identical values; both catalogs still need their own copy):
-
-```json
-"sync": {
-  "lastSynced": "Dernière synchronisation {{relative}}",
-  "counts": "{{users}} utilisateurs · {{devices}} appareils",
-  "never": "Pas encore synchronisé",
-  "chips": {
-    "partial": "{{domain}} : partiel",
-    "needsConsent": "{{domain}} : consentement requis",
-    "unlicensed": "L'activité de connexion nécessite Entra ID P1"
-  },
-  "domains": {
-    "users": "Utilisateurs",
-    "signin_activity": "Activité de connexion",
-    "intune_devices": "Appareils Intune",
-    "ca_policies": "Accès conditionnel",
-    "skus": "Licences",
-    "secure_score": "Niveau de sécurité"
-  }
-}
-```
-
-`de-DE`:
-
-```json
-"sync": {
-  "lastSynced": "Zuletzt synchronisiert {{relative}}",
-  "counts": "{{users}} Benutzer · {{devices}} Geräte",
-  "never": "Noch nicht synchronisiert",
-  "chips": {
-    "partial": "{{domain}}: unvollständig",
-    "needsConsent": "{{domain}}: Zustimmung erforderlich",
-    "unlicensed": "Anmeldeaktivität erfordert Entra ID P1"
-  },
-  "domains": {
-    "users": "Benutzer",
-    "signin_activity": "Anmeldeaktivität",
-    "intune_devices": "Intune-Geräte",
-    "ca_policies": "Bedingter Zugriff",
-    "skus": "Lizenzen",
-    "secure_score": "Sicherheitsbewertung"
-  }
-}
-```
-
-`it-IT`:
-
-```json
-"sync": {
-  "lastSynced": "Ultima sincronizzazione {{relative}}",
-  "counts": "{{users}} utenti · {{devices}} dispositivi",
-  "never": "Non ancora sincronizzato",
-  "chips": {
-    "partial": "{{domain}}: parziale",
-    "needsConsent": "{{domain}}: consenso richiesto",
-    "unlicensed": "L'attività di accesso richiede Entra ID P1"
-  },
-  "domains": {
-    "users": "Utenti",
-    "signin_activity": "Attività di accesso",
-    "intune_devices": "Dispositivi Intune",
-    "ca_policies": "Accesso condizionale",
-    "skus": "Licenze",
-    "secure_score": "Punteggio sicuro"
-  }
-}
-```
-
-`tr-TR`:
-
-```json
-"sync": {
-  "lastSynced": "Son eşitleme {{relative}}",
-  "counts": "{{users}} kullanıcı · {{devices}} cihaz",
-  "never": "Henüz eşitlenmedi",
-  "chips": {
-    "partial": "{{domain}}: kısmi",
-    "needsConsent": "{{domain}}: onay gerekiyor",
-    "unlicensed": "Oturum açma etkinliği Entra ID P1 gerektirir"
-  },
-  "domains": {
-    "users": "Kullanıcılar",
-    "signin_activity": "Oturum açma etkinliği",
-    "intune_devices": "Intune cihazları",
-    "ca_policies": "Koşullu Erişim",
-    "skus": "Lisanslar",
-    "secure_score": "Güvenlik Puanı"
-  }
-}
-```
-
-Every translated value differs from its English counterpart, so no
-`translationCoverage.test.ts` duplicate baseline needs bumping. If any of them
-does trip the duplicate check, translate it further rather than raising the
-baseline.
-
-- [ ] **Step 6: Run — expect green**
+- [ ] **Step 3: Commit**
 
 ```bash
-cd apps/web && npx vitest run src/lib/dateTimeFormat.test.ts \
-  src/components/integrations/M365CustomerGraphReadCard.test.tsx \
-  src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts \
-  src/lib/i18n/terminologyQuality.test.ts
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add apps/web/src/lib/dateTimeFormat.ts apps/web/src/lib/dateTimeFormat.test.ts \
-        apps/web/src/components/integrations/M365CustomerGraphReadCard.tsx \
-        apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx \
-        apps/web/src/locales/*/integrations.json
+git add apps/web/src/components/integrations/M365CustomerGraphReadCard.test.tsx
 git commit -m "$(cat <<'MSG'
-feat(m365): show last-synced time, entity counts and per-domain chips on the card
+test(m365): prove the envelope sync block reaches the card
 
-Renders "Last synced <relative> · N users · M devices" from the read DTO's sync
-block, plus a chip per degraded domain: partial (or truncated), needs consent,
-and the unlicensed sign-in case which says the tenant needs Entra ID P1 rather
-than showing a zero. The whole block is hidden when tenant sync is off. The
-card's strict envelope parser gains closed unions for the six domains and six
-statuses, so an unknown domain fails the envelope instead of rendering.
-Adds formatRelativeTime to the shared date helpers and all eight locale
-catalogs.
+W05 owns the card; this adds the one case its suite cannot have: the exact
+envelope shape the API sends, with syncEnabled and sync as siblings of
+connection rather than fields inside it, driven through the card's strict
+hasExactKeys parser. A drift between the DTO and that parser degrades the whole
+card to its "unavailable" state without failing anything else in this wave.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb
@@ -3584,17 +3125,17 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
   src/__tests__/integration/m365SyncClaim.integration.test.ts \
   src/__tests__/integration/m365ConnectionLifecycle.integration.test.ts
 
-# Unit tests added here
-cd apps/api && npx vitest run src/services/m365Sync/metrics.contract.test.ts \
+# Unit tests touched here (metrics.test.ts is W04's suite, appended to)
+cd apps/api && npx vitest run src/services/m365Sync/metrics.test.ts \
   scripts/m365-sync-benchmark.lib.test.ts
 cd apps/m365-graph-read-executor && npx vitest run src/syncMetricNames.contract.test.ts
-cd apps/web && npx vitest run src/lib/dateTimeFormat.test.ts \
-  src/components/integrations/M365CustomerGraphReadCard.test.tsx \
-  src/lib/i18n
+cd apps/web && npx vitest run src/components/integrations/M365CustomerGraphReadCard.test.tsx
 
 # Tenancy contract suites — this wave adds no table, but it touched the
 # lifecycle/disconnect path, so prove the cascade contracts still hold.
-cd apps/api && pnpm test:integration -- --shard=1/1 2>/dev/null || true
+# Run the WHOLE integration suite through the package script with no path
+# arguments; `test:integration -- <path>` silently runs everything anyway.
+pnpm --filter=@breeze/api test:integration
 pnpm --filter=@breeze/api test:rls-coverage
 
 # Typecheck + lint
@@ -3609,11 +3150,7 @@ pnpm --filter @breeze/docs check && pnpm --filter @breeze/docs build
 pnpm test-stack down && docker compose ls -a
 ```
 
-Note the `pnpm test:integration -- --shard=1/1` line above is deliberately not how a single file is scoped — for one file always use `npx vitest run --config vitest.integration.config.ts <path>`. Prefer running the whole integration suite once through the package script with no extra path arguments:
-
-```bash
-pnpm --filter=@breeze/api test:integration
-```
+Scoping one integration file always means `npx vitest run --config vitest.integration.config.ts <path>` — never `pnpm … test:integration -- <path>`, which forwards the `--` into the script's argv and runs the entire suite regardless.
 
 - [ ] **Step 2b: Merge main and re-verify before pushing**
 
@@ -3632,9 +3169,8 @@ gh pr create --base main --title "test(m365): tenant sync end-to-end suite, benc
 ## Summary
 
 Wave 6 of the M365 tenant sync foundation (`#5327`). No new tables, no
-migration, no new runtime surface except the card's sync summary — this wave is
-the proof, the capacity tooling, and the operator/customer documentation for
-what W01–W05 built.
+migration, and no runtime code at all — this wave is the proof, the capacity
+tooling, and the operator/customer documentation for what W01–W05 built.
 
 - **End-to-end integration suite** (`m365TenantSync.integration.test.ts`,
   real Postgres): seeds an org with an active manifest-v3 connection, runs all
@@ -3654,13 +3190,16 @@ what W01–W05 built.
 - **Disconnect** drops entities and schedule while keeping tenant-stamped
   Secure Score history and rollups.
 - **Re-consent** cases in `m365ConnectionLifecycle.integration.test.ts`: a v2
-  row derives `manifest-stale` and the DTO exposes it, sync keeps running on v2
-  grants during the upgrade, a successful callback promotes in place and bumps
-  `consentGeneration`, and an abandoned upgrade leaves v2 executing.
-- **Claim concurrency:** two simultaneous `claimDueDomains` calls partition the
-  due rows with no overlap and leave `next_sync_at` untouched.
-- **Metric-name contract:** the nine API series and the five executor names are
-  pinned mechanically.
+  row derives `manifest-stale` and the read DTO exposes it, and sync keeps
+  running on v2 grants while the upgrade is pending. The consent-session
+  mechanics stay in W01's suite.
+- **Claim concurrency:** two simultaneous `claimDueDomains` calls over twelve
+  due rows spanning two domains per org partition them with no overlap and
+  **nothing lost**, each with one generation bump and an unadvanced
+  `next_sync_at`. Appended to W04's claim suite.
+- **Metric names:** the `breeze_`-prefixed-twin guard is appended to W04's
+  `metrics.test.ts` (the single name-contract suite), and the executor's five
+  names are pinned by a source scan.
 - **Benchmark harness** (`pnpm --filter @breeze/api m365-sync:benchmark`, not
   CI) with pass criteria fixed before the first run, plus
   `docs/runbooks/m365-sync-benchmark.md` on running it against a
@@ -3670,9 +3209,10 @@ what W01–W05 built.
   six-scenario sync acceptance checklist; a self-hoster release note; the
   feature page gains cadences, "as of" semantics and the Entra P1 note; the
   environment reference gains every new variable.
-- **Card:** "Last synced … · N users · M devices" with per-domain chips
-  (partial / needs consent / sign-in needs Entra ID P1), hidden entirely when
-  the flag is off, across all eight locales.
+- **Card verification:** one test proving the envelope-level `syncEnabled` /
+  `sync` block survives the card's strict parser and renders W05's "Last
+  synced …" line, counts, and the unlicensed sign-in chip. No card code here —
+  W05 owns all of it.
 
 ## Testing
 
@@ -3680,7 +3220,7 @@ what W01–W05 built.
 - `pnpm --filter=@breeze/api test:rls-coverage`
 - `pnpm --filter=@breeze/api test:integration-suite-coverage` — confirms the new
   suite is matched by the config the CI shards run
-- `cd apps/web && npx vitest run src/components/integrations src/lib/i18n src/lib/dateTimeFormat.test.ts`
+- `cd apps/web && npx vitest run src/components/integrations`
 - `cd apps/m365-graph-read-executor && npx vitest run`
 - `pnpm lint`, `tsc --noEmit` in api / web / executor
 - `pnpm --filter @breeze/docs check && build`
@@ -3689,9 +3229,9 @@ what W01–W05 built.
 
 ## Risk
 
-Test- and docs-only on the API side. The one runtime change is the card's sync
-summary, which is inert until `M365_TENANT_SYNC_ENABLED` is on and which fails
-the envelope closed (the card renders "unavailable") if the DTO shape drifts.
+Test- and docs-only: no production TypeScript changes in any app, no migration,
+no new table, no new locale key. The only executable additions are test files,
+the (not-CI) benchmark script, and one `package.json` script entry.
 
 Closes #5333
 

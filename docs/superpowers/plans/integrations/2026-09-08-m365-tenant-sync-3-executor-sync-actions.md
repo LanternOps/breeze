@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/integrations/2026-09-08-m365-tenant-sync-foundation-design.md` — this plan implements §4.1–§4.4 in full, plus the executor half of §4.3 and the executor rows of §7. Sections are cited per task.
 
-**Plan overview / shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`. Every name in its "Shared interface contract" section is fixed; this plan's deviations are listed under *Contract deviations* below and must be mirrored into that file in the same PR.
+**Plan overview / shared interface contract:** `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`. Every name in its "Shared interface contract" section is fixed. The overview **already reflects every contract point this wave needed** — they are restated under *Contract notes* below so the implementer can check each one as it lands. **This wave does not edit the overview file.** If implementation turns up a genuinely NEW deviation not listed there, record it in the PR body and stop for the orchestrator; do not edit the overview yourself.
 
 ## Global Constraints (inherited from the overview)
 
@@ -26,18 +26,25 @@
 
 ## Additional constraints specific to this wave
 
-- **The executor holds no private key.** `config.ts:119-134` loads `M365_GRAPH_READ_EXECUTOR_SIGNING_PUBLIC_JWK` — the *public* verification JWK only; the Ed25519 private signing key lives on the API side (`M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE`, deploy doc line 101). The spec's "AES-GCM under a key derived from the executor's signing key" is therefore not implementable as written. See *Contract deviations*.
+- **The executor holds no private key.** `config.ts:119-134` loads `M365_GRAPH_READ_EXECUTOR_SIGNING_PUBLIC_JWK` — the *public* verification JWK only; the Ed25519 private signing key lives on the API side (`M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE`, deploy doc line 101). The spec's "AES-GCM under a key derived from the executor's signing key" is therefore not implementable as written. See *Contract notes* below.
 - **No new npm dependency in the executor.** It is the process that holds the only customer credential; its dependency set is deliberately minimal and Trivy-scanned per release. Metrics are hand-rolled Prometheus text, not `prom-client`.
 - **No blocking.** The sign-in limiter never sleeps a request; capacity rejection never queues. The only sleeps in this wave are Graph throttle backoffs, and they are injectable seams in tests (`dependencies.sleep`).
 - **No network in tests.** `fetch`, the clock, and sleep are constructor seams, matching `graphClient.test.ts:1-70`'s route-table style. No `vi.mock` module mocking anywhere.
 - **Never commit** real tenant ids, client ids, secrets, or infra hostnames. Fixtures use the shipped all-1s/2s/3s GUID style.
 
-## Contract deviations (mirror these into the overview file in the same PR)
+## Contract notes (already reflected in the overview)
+
+The eight points below are where this wave's contract carries detail beyond the
+original spec text. **All eight are already written into the overview's "Shared
+interface contract" section — there is nothing to mirror and the overview file
+must not be edited by this wave.** They are restated here because each one is a
+decision the implementer has to honour, and because they are the load-bearing
+"why" behind several tasks.
 
 1. **Continuation key is a dedicated env var, not derived from the signing key.** The executor never holds private signing material (evidence above), so HKDF-from-signing-key is impossible. `M365_SYNC_CONTINUATION_KEY` (32-byte base64) is **optional**: when absent the executor derives an ephemeral per-process key with `randomBytes(32)`, so continuations simply do not survive a restart or cross a replica — the API sees `continuation_invalid` and restarts the sign-in domain from page 1, which is self-healing and keeps the var optional for existing deployments. HKDF-SHA-256 is still applied to whichever 32-byte secret is in hand, with `info` binding the purpose string.
 2. **The continuation wraps the whole `@odata.nextLink` URL, not the bare skip token.** Re-validating a full URL through the existing `fixedCollectionNextLink` host/path guard (`graphClient.ts:95-115`) is strictly stronger than re-assembling a URL from a token; the URL carries nothing but the token.
-3. **A sync response body is a union, and `continuation_invalid` is a new code.** The overview specifies only the success shape. Failures need a wire shape, so `m365SyncActionResponseSchema = z.union([success, failure])` is added with `m365SyncFailureCodeSchema` = the ten `readActionFailureCodeSchema` codes plus `continuation_invalid`. `ReadActionFailureCode` itself is **not** widened — widening it would break the exhaustive `FAILURE_MESSAGES` record at `readActionService.ts:35-46`, a file this wave must not touch.
-4. **`GraphReadExecutorFailure` is new, not "gained".** No such type exists today (`graphReadExecutorClient.ts` only throws `GraphReadExecutorClientError`). It is introduced here as `{ success: false; code: M365SyncFailureCode | 'sync_capacity'; retryAfterSeconds?: number }`. Genuine transport/parse/timeout problems still **throw** `GraphReadExecutorClientError` exactly as the other three client methods do; only executor-reported outcomes are returned.
+3. **A sync response body is a union, and `continuation_invalid` is a code of its own.** Failures need a wire shape, so `m365SyncActionResponseSchema = z.union([success, failure])` carries `m365SyncFailureCodeSchema` = the ten `readActionFailureCodeSchema` codes plus `continuation_invalid`. **Both names are in the overview contract verbatim and W04 imports them by exactly these names — do not rename either.** The failure arm's key is **`code`**, never `errorCode`. `ReadActionFailureCode` itself is **not** widened — widening it would break the exhaustive `FAILURE_MESSAGES` record at `readActionService.ts:35-46`, a file this wave must not touch.
+4. **`GraphReadExecutorFailure` is a new type, not a widening of an existing one.** No such type exists today (`graphReadExecutorClient.ts` only throws `GraphReadExecutorClientError`). It is introduced in Task 12 as exactly `{ success: false; code: M365SyncFailureCode | 'sync_capacity'; retryAfterSeconds?: number }` — the field is `code`, never `errorCode`. Genuine transport/parse/timeout problems still **throw** `GraphReadExecutorClientError` exactly as the other three client methods do; only executor-reported outcomes are returned.
 5. **The 400/503 bodies carry both `error` and `code`.** The overview fixes `{ code: 'action_not_allowed' }` and `{ code: 'sync_capacity', retryAfterSeconds: 30 }`; every shipped executor response uses an `error` envelope (`app.ts:79-156`). Both keys are emitted with the same value so neither contract bends.
 6. **Route timeout surfaces as `504 { error: 'sync_timeout' }`.** The spec fixes the 120 s route timeout but not its code. The client throws `executor_unavailable` for it — W04 retries via BullMQ, which is the intended handling for "executor did not answer".
 7. **A truncated *secondary* source is reported as `error` and its partial data is discarded.** Applying half a registration report would produce exactly the false-absent enrichment the advisor quorum rejected (spec §0.1, "Partial enrichment must not produce false 'absent'"). Primary truncation still persists (`truncated: true`).
@@ -243,6 +250,8 @@ Spec §4.1 (the action table and item shapes), §4.3 (the wire result). Overview
 - Modify: `apps/m365-graph-read-executor/src/microsoft/readActions.ts` — narrow the interactive signature; export `project`
 - Modify: `apps/m365-graph-read-executor/src/microsoft/readActions.test.ts` — iterate the interactive ids, not all ids
 
+⚠️ **Three of these names are load-bearing for W04, which lands on top of this wave and imports them from `packages/shared/src/m365/readActions.ts` by name: `m365SyncFailureCodeSchema`, `m365SyncActionResponseSchema`, and `type M365SyncFailureCode`.** They are in the overview's shared interface contract verbatim. Do not rename, do not move them to `sync.ts`, and keep the barrel re-export (`packages/shared/src/m365/index.ts` already does `export * from './readActions'`, so no barrel edit is needed).
+
 **Interfaces:**
 - Consumes: `z` from `zod`.
 - Produces:
@@ -255,7 +264,7 @@ Spec §4.1 (the action table and item shapes), §4.3 (the wire result). Overview
   - `syncActionRequestSchema` / `type SyncActionRequest`
   - `type M365SyncSourceState`, `m365SyncSourceStateSchema`
   - `interface M365SyncActionResult`, `m365SyncActionResultSchema: z.ZodType<M365SyncActionResult>`
-  - `m365SyncFailureCodeSchema` / `type M365SyncFailureCode`, `m365SyncActionFailureSchema`, `m365SyncActionResponseSchema` / `type M365SyncActionResponse`
+  - `m365SyncFailureCodeSchema` / `type M365SyncFailureCode` (= `ReadActionFailureCode | 'continuation_invalid' | 'graph_throttled'`), `m365SyncActionFailureSchema` (failure key `code`), `m365SyncActionResponseSchema` / `type M365SyncActionResponse`
   - `M365_SYNC_CONTINUATION_MAX_CHARS = 4096`
   - `export function project(...)` from the executor's `readActions.ts` (re-used by `syncActions.ts`)
 
@@ -272,6 +281,7 @@ import {
   M365_READ_ACTION_IDS,
   M365_READ_ACTION_FIELDS,
   M365_INTERACTIVE_READ_ACTION_IDS,
+  type M365InteractiveReadActionId,
   M365_SYNC_ACTION_IDS,
   M365_SYNC_CONTINUATION_MAX_CHARS,
   isM365SyncActionId,
@@ -343,6 +353,11 @@ describe('m365 read action contracts', () => {
     expect(readActionResultSchema.safeParse({
       success: true, kind: 'resource', resource: { id: GUID },
     }).success).toBe(true);
+    // The SHIPPED interactive failure shape keeps its `errorCode` key. This wave
+    // must not rename it — readActionResultSchema is consumed by the executor's
+    // interactive path and by readActionService. The SYNC failure shape uses
+    // `code` instead (see m365SyncActionFailureSchema); the asymmetry is
+    // deliberate and asserted both ways below.
     expect(readActionResultSchema.safeParse({
       success: false, errorCode: 'graph_throttled', retryAfterSeconds: 30,
     }).success).toBe(true);
@@ -418,6 +433,52 @@ describe('m365 sync action contracts', () => {
     }).success).toBe(true);
   });
 
+  it('keeps all twelve interactive branches, each still .strict()', () => {
+    // The interactive branches move wholesale from m365ReadActionSchema into
+    // INTERACTIVE_BRANCHES. A branch dropped in that cut, or a `.strict()` lost
+    // to a retype, is invisible to every other assertion here: the id arrays are
+    // edited by hand and would still read correctly. Assert the union's actual
+    // shape instead.
+    const branchIds = (m365ReadActionSchema.options as readonly {
+      shape: { type: { value: string } };
+    }[]).map((branch) => branch.shape.type.value);
+
+    expect(branchIds).toHaveLength(18);
+    expect(branchIds.filter((id) => !isM365SyncActionId(id)))
+      .toEqual([...M365_INTERACTIVE_READ_ACTION_IDS]);   // all twelve, in order
+    expect(branchIds.filter((id) => isM365SyncActionId(id)))
+      .toEqual([...M365_SYNC_ACTION_IDS]);
+
+    // .strict() is the only thing stopping an unknown key riding into the
+    // executor. Prove it per branch: a minimal VALID payload parses, and the
+    // same payload plus one extra key must not.
+    const MINIMAL: Record<M365InteractiveReadActionId, Record<string, unknown>> = {
+      'm365.user.list': {},
+      'm365.user.get': { userIdOrUpn: 'ada@contoso.com' },
+      'm365.signins.list': {},
+      'm365.intune.device.list': {},
+      'm365.intune.device.get': { deviceId: GUID },
+      'm365.group.list': {},
+      'm365.group.get': { groupId: GUID },
+      'm365.group.members.list': { groupId: GUID },
+      'm365.org.get': {},
+      'm365.org.skus.list': {},
+      'm365.sites.list': { search: 'intranet' },
+      'm365.site.get': { siteId: 'contoso.sharepoint.com,111,222' },
+    };
+    for (const id of M365_INTERACTIVE_READ_ACTION_IDS) {
+      expect(m365ReadActionSchema.safeParse({ type: id, ...MINIMAL[id] }).success, id).toBe(true);
+      expect(
+        m365ReadActionSchema.safeParse({ type: id, ...MINIMAL[id], breezeUnknownKey: 1 }).success,
+        `${id} accepted an unknown key — its .strict() was dropped`,
+      ).toBe(false);
+    }
+    // Same guarantee on the sync half, which is authored fresh in this task.
+    for (const id of M365_SYNC_ACTION_IDS) {
+      expect(m365ReadActionSchema.safeParse({ type: id, breezeUnknownKey: 1 }).success, id).toBe(false);
+    }
+  });
+
   it('narrows a parsed read action to the sync half', () => {
     const sync = m365ReadActionSchema.parse({ type: 'm365.sync.ca_policies' });
     const interactive = m365ReadActionSchema.parse({ type: 'm365.org.get' });
@@ -442,15 +503,26 @@ describe('m365 sync action contracts', () => {
 
     expect(m365SyncActionResponseSchema.safeParse(result).success).toBe(true);
     expect(m365SyncActionResponseSchema.safeParse({
-      success: false, errorCode: 'continuation_invalid',
+      success: false, code: 'continuation_invalid',
     }).success).toBe(true);
     expect(m365SyncActionResponseSchema.safeParse({
-      success: false, errorCode: 'graph_throttled', retryAfterSeconds: 45,
+      success: false, code: 'graph_throttled', retryAfterSeconds: 45,
     }).success).toBe(true);
+    // The sync failure key is `code`, NEVER `errorCode`. The shipped interactive
+    // key must not leak in: m365SyncActionFailureSchema is .strict() and requires
+    // `code`, so an errorCode-shaped body is rejected outright.
+    expect(m365SyncActionResponseSchema.safeParse({
+      success: false, errorCode: 'continuation_invalid',
+    }).success).toBe(false);
     // continuation_invalid is sync-only; the read failure enum stays unchanged.
     expect(m365SyncFailureCodeSchema.safeParse('continuation_invalid').success).toBe(true);
     expect(readActionFailureCodeSchema.safeParse('continuation_invalid').success).toBe(false);
     expect(m365SyncFailureCodeSchema.safeParse('sync_capacity').success).toBe(false);
+    // The sync enum is exactly the read enum plus one code — asserted by
+    // derivation so a future read-enum addition cannot silently skip sync.
+    expect(m365SyncFailureCodeSchema.options).toEqual([
+      ...readActionFailureCodeSchema.options, 'continuation_invalid',
+    ]);
   });
 });
 ```
@@ -536,11 +608,58 @@ Append the six projection entries inside `M365_READ_ACTION_FIELDS` (after `'m365
   ],
 ```
 
-Replace the `m365ReadActionSchema` declaration (line 40) so both unions share one branch list. Keep the twelve shipped branch objects verbatim inside `INTERACTIVE_BRANCHES`:
+Four of those top-level keys hold **objects or arrays of objects**, and
+`M365_READ_ACTION_FIELDS` cannot express their inner keys — it is a flat list of
+top-level names. The nested shapes are therefore allowlisted *by construction*
+in `syncActions.ts` (Tasks 8 and 9): the executor builds each nested object key
+by key and never spreads a raw Graph object. Put this comment block immediately ABOVE the six
+entries you just appended, so both halves of the allowlist read together. The
+inner keys are the overview's item shapes verbatim — do not invent or drop one:
+
+```ts
+// Nested shapes are NOT expressible in this flat list. They are built key by
+// key in syncActions.ts; anything not named here must never be emitted:
+//   m365.sync.users     adminRoles[]:    { roleTemplateId, displayName, viaGroupId? }
+//                                        (null = unknown, never [])
+//   m365.sync.skus      prepaidUnits:    { enabled, suspended, warning }
+//                                        (Graph's lockedOut is DROPPED)
+//   m365.sync.ca_policies  conditions / grantControls / sessionControls pass
+//                                        through as opaque Graph objects
+//   m365.sync.secure_score  controlScores[]: { controlName, title, score,
+//                                        maxScore, implementationStatus }
+//                                        title and maxScore are joined from
+//                                        /security/secureScoreControlProfiles
+//                                        and are `null` when that source fails
+//                                        or the control has no profile;
+//                                        Graph's `description` is DROPPED.
+```
+
+Replace the `m365ReadActionSchema` declaration so both unions share one branch list.
+
+**Do this as a cut-and-paste, not a retype.** In
+`packages/shared/src/m365/readActions.ts`, `z.discriminatedUnion('type', [`
+opens on **line 40** and its `]);` closes on **line 92**; the twelve
+`z.object(...).strict()` branches are therefore **lines 41–91**. Cut lines
+41–91 exactly as they stand and paste them verbatim between the
+`INTERACTIVE_BRANCHES` brackets below — same order, same trailing commas, same
+`.strict()` on every branch. Do not retype them, do not reformat them, and do
+not "tidy" the two single-line branches (`m365.org.get`, `m365.org.skus.list`).
+Re-check the numbers before cutting — if `sed -n '40p;92p' packages/shared/src/m365/readActions.ts`
+does not print the `z.discriminatedUnion(` line and the `]);` line, the file
+moved and you must re-locate them with
+`grep -n "z.discriminatedUnion\|^]);" packages/shared/src/m365/readActions.ts`.
+
+Retyping is how a `.strict()` gets dropped: it is a two-token suffix on a
+51-line block, nothing else in the file changes shape without it, and a missing
+one silently lets unknown keys through the executor's only input guard. Step 1's
+`keeps all twelve interactive branches, each still .strict()` test exists
+precisely to catch that.
 
 ```ts
 const INTERACTIVE_BRANCHES = [
-  /* the twelve shipped z.object(...).strict() branches, unchanged */
+  // ↓ lines 41-91 of the shipped file, pasted verbatim: the twelve
+  //   z.object({ type: z.literal('m365.…'), … }).strict() branches, in order
+  //   from 'm365.user.list' through 'm365.site.get'.
 ] as const;
 
 const SYNC_BRANCHES = [
@@ -623,6 +742,15 @@ export const m365SyncActionResultSchema: z.ZodType<M365SyncActionResult> = z.obj
  * into readActionFailureCodeSchema: that enum keys the exhaustive
  * FAILURE_MESSAGES record in the API's readActionService, which this contract
  * has no business widening.
+ *
+ * The member list is spelled out rather than spread from
+ * `readActionFailureCodeSchema.options` because `z.enum` needs a literal tuple
+ * and a spread of `.options` degrades to `string[]`. The duplication is held
+ * honest two ways: the `_AssertSyncFailureCodeParity` line below fails `tsc` if
+ * the schema and the exported type drift apart, and `readActions.test.ts`
+ * asserts `m365SyncFailureCodeSchema.options` equals
+ * `[...readActionFailureCodeSchema.options, 'continuation_invalid']`, so adding
+ * a read code without adding it here is a red test, not a silent gap.
  */
 export const m365SyncFailureCodeSchema = z.enum([
   'credential_unavailable',
@@ -638,11 +766,38 @@ export const m365SyncFailureCodeSchema = z.enum([
   'continuation_invalid',
 ]);
 
-export type M365SyncFailureCode = z.infer<typeof m365SyncFailureCodeSchema>;
+/**
+ * Written exactly as the overview's shared interface contract states it. W04
+ * imports this name, `m365SyncFailureCodeSchema`, and
+ * `m365SyncActionResponseSchema` from this module — none of the three may be
+ * renamed or re-homed.
+ *
+ * `graph_throttled` is already a member of `ReadActionFailureCode`, so the
+ * third arm is redundant by construction; it is written out because the
+ * contract names it and because sync callers reason about throttling
+ * explicitly.
+ */
+export type M365SyncFailureCode = ReadActionFailureCode | 'continuation_invalid' | 'graph_throttled';
 
+/** Compile-time proof the hand-written enum and the contract type are one set. */
+type _Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _AssertSyncFailureCodeParity: _Same<
+  z.infer<typeof m365SyncFailureCodeSchema>,
+  M365SyncFailureCode
+> = true;
+void _AssertSyncFailureCodeParity;
+
+/**
+ * The failure arm's key is `code`, NOT `errorCode`. The shipped interactive
+ * `readActionResultSchema` uses `errorCode` and stays that way; the sync wire
+ * contract in the overview fixes `code`, the API client's
+ * `GraphReadExecutorFailure` re-exposes `code`, and W04 branches on `code`.
+ * `.strict()` makes an errorCode-shaped body a parse failure rather than a
+ * silently-undefined field.
+ */
 export const m365SyncActionFailureSchema = z.object({
   success: z.literal(false),
-  errorCode: m365SyncFailureCodeSchema,
+  code: m365SyncFailureCodeSchema,
   retryAfterSeconds: z.number().int().min(1).max(300).optional(),
 }).strict();
 
@@ -1671,7 +1826,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ### Task 6: Continuation codec
 
-Spec §4.1 ("encrypted and HMAC-bound by the executor … with `tenantId` and action id in the AAD … expire after 1 hour"). Deviations 1 and 2 above.
+Spec §4.1 ("encrypted and HMAC-bound by the executor … with `tenantId` and action id in the AAD … expire after 1 hour"). Contract notes 1 and 2 above.
 
 **Files:**
 - Create: `apps/m365-graph-read-executor/src/syncContinuation.ts`
@@ -2292,7 +2447,7 @@ describe('executeGraphSyncAction — m365.sync.users', () => {
   it('fails the whole action when the PRIMARY source fails', async () => {
     const { client } = stubClient({ ...HAPPY, '/users': new GraphClientError('graph_permission_missing') });
     await expect(executeGraphSyncAction({ type: 'm365.sync.users' }, context(client)))
-      .resolves.toEqual({ success: false, errorCode: 'graph_permission_missing' });
+      .resolves.toEqual({ success: false, code: 'graph_permission_missing' });
   });
 
   it('degrades a failed registration report to a source state and null enrichment', async () => {
@@ -2448,14 +2603,17 @@ function sourceStateFor(error: unknown): M365SyncSourceState {
 
 function failureResponse(error: unknown): M365SyncActionResponse {
   if (error instanceof SyncContinuationError) {
-    return { success: false, errorCode: 'continuation_invalid' };
+    return { success: false, code: 'continuation_invalid' };
   }
   if (error instanceof GraphClientError) {
     const parsed = m365SyncFailureCodeSchema.safeParse(error.code);
-    const errorCode = parsed.success ? parsed.data : 'graph_response_invalid' as const;
+    // NB: `code` is both GraphClientError's own field name and the sync wire
+    // field name. They are the same value but different contracts — the
+    // safeParse is what stops an unmapped client code reaching the wire.
+    const code = parsed.success ? parsed.data : 'graph_response_invalid' as const;
     return error.retryAfterSeconds === undefined
-      ? { success: false, errorCode }
-      : { success: false, errorCode, retryAfterSeconds: error.retryAfterSeconds };
+      ? { success: false, code }
+      : { success: false, code, retryAfterSeconds: error.retryAfterSeconds };
   }
   throw error;
 }
@@ -2795,7 +2953,7 @@ describe('m365.sync.signin_activity', () => {
     await expect(executeGraphSyncAction(
       { type: 'm365.sync.signin_activity', continuation: foreign },
       { ...context(client), continuations: codec, tenantId: TENANT_ID },
-    )).resolves.toEqual({ success: false, errorCode: 'continuation_invalid' });
+    )).resolves.toEqual({ success: false, code: 'continuation_invalid' });
     expect(calls).toHaveLength(0);   // nothing is fetched on a bad continuation
   });
 
@@ -2867,7 +3025,7 @@ describe('m365.sync.intune_devices', () => {
       '/deviceManagement/managedDevices': new GraphClientError('graph_throttled', 42),
     });
     await expect(executeGraphSyncAction({ type: 'm365.sync.intune_devices' }, context(client)))
-      .resolves.toEqual({ success: false, errorCode: 'graph_throttled', retryAfterSeconds: 42 });
+      .resolves.toEqual({ success: false, code: 'graph_throttled', retryAfterSeconds: 42 });
   });
 });
 
@@ -2980,7 +3138,7 @@ describe('m365.sync.secure_score', () => {
 });
 ```
 
-⚠️ `M365_READ_ACTION_FIELDS['m365.sync.secure_score']` lists `controlScores` but the nested `title` key is new here. Add `title` to the **nested** shape only — the top-level allowlist is unchanged, and the nested projection is by construction. Note it in the PR body; the overview's item-shape comment for `secure_score` gains `title: string | null` in the same PR.
+⚠️ `M365_READ_ACTION_FIELDS['m365.sync.secure_score']` lists `controlScores` as one top-level key; `title` lives **inside** it. The top-level allowlist is unchanged — `title` is allowlisted by construction in the projector below, and it is documented in Task 2's nested-shape comment. The overview's item shape for `secure_score` already reads `controlScores: { controlName, title: string|null, score, maxScore, implementationStatus }[]`, so there is **nothing to add to the overview**. `title` is `null` when the control profiles source fails or the control has no profile — never an empty string, and never omitted.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -3248,7 +3406,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ### Task 10: In-flight gate and `syncActionOperation`
 
-Spec §4.2 (capacity), §4.3. Deviation 8.
+Spec §4.2 (capacity), §4.3. Contract note 8.
 
 **Files:**
 - Create: `apps/m365-graph-read-executor/src/inFlight.ts`
@@ -3343,7 +3501,7 @@ describe('syncActionOperation', () => {
     await expect(syncActionOperation(
       { correlationId: CORRELATION_ID, tenantId: 'not-a-uuid', action: { type: 'm365.sync.skus' } } as never,
       { ...baseDependencies({ certificateProvider }), sync: syncDependencies() },
-    )).resolves.toEqual({ success: false, errorCode: 'graph_response_invalid' });
+    )).resolves.toEqual({ success: false, code: 'graph_response_invalid' });
     expect(certificateProvider.getConfiguredCertificate).not.toHaveBeenCalled();
   });
 
@@ -3351,7 +3509,7 @@ describe('syncActionOperation', () => {
     await expect(syncActionOperation(validSyncRequest(), {
       ...baseDependencies({ certificateProvider: { getConfiguredCertificate: async () => { throw new Error('kv down'); } } }),
       sync: syncDependencies(),
-    })).resolves.toEqual({ success: false, errorCode: 'credential_unavailable' });
+    })).resolves.toEqual({ success: false, code: 'credential_unavailable' });
   });
 
   it('zeroes the credential material after the call, success or failure', async () => {
@@ -3455,7 +3613,7 @@ export async function syncActionOperation(
   dependencies: ExecutorOperationDependencies & { sync: SyncOperationDependencies },
 ): Promise<M365SyncActionResponse> {
   const outcome = await runSyncAction(request, dependencies);
-  incrementSyncAction(request.action.type, outcome.success ? 'ok' : outcome.errorCode);
+  incrementSyncAction(request.action.type, outcome.success ? 'ok' : outcome.code);
   return outcome;
 }
 
@@ -3464,13 +3622,13 @@ async function runSyncAction(
   dependencies: ExecutorOperationDependencies & { sync: SyncOperationDependencies },
 ): Promise<M365SyncActionResponse> {
   if (!CANONICAL_UUID.test(request.tenantId)) {
-    return { success: false, errorCode: 'graph_response_invalid' };
+    return { success: false, code: 'graph_response_invalid' };
   }
   const credential = await fetchCredential(dependencies);
   if (typeof credential === 'string') {
     return {
       success: false,
-      errorCode: credential === 'credential_unavailable' ? 'credential_unavailable' : 'application_token_invalid',
+      code: credential === 'credential_unavailable' ? 'credential_unavailable' : 'application_token_invalid',
     };
   }
   let tokenClient: MicrosoftTokenClient | undefined;
@@ -3478,13 +3636,13 @@ async function runSyncAction(
     try {
       tokenClient = dependencies.createTokenClient(credential);
     } catch {
-      return { success: false, errorCode: 'credential_unavailable' };
+      return { success: false, code: 'credential_unavailable' };
     }
     let accessToken;
     try {
       accessToken = await tokenClient.acquireGraphAppToken({ tenantId: request.tenantId });
     } catch {
-      return { success: false, errorCode: 'application_token_invalid' };
+      return { success: false, code: 'application_token_invalid' };
     }
     return m365SyncActionResponseSchema.parse(await executeGraphSyncAction(request.action, {
       accessToken,
@@ -3510,6 +3668,8 @@ Also add the sync-id guard to `readActionOperation`, immediately after the tenan
   // The route already rejects these with 400 action_not_allowed; this keeps the
   // narrowing honest and survives a future caller that bypasses the route.
   if (isM365SyncAction(request.action)) {
+    // readActionOperation returns the INTERACTIVE failure shape, so this one
+    // keeps `errorCode` — it is a ReadActionResult, not a sync response.
     return { success: false, errorCode: 'graph_response_invalid' };
   }
 ```
@@ -3548,7 +3708,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ### Task 11: `POST /v1/sync-action`, the `internalAuth` operation, `GET /metrics`, `index.ts` wiring
 
-Spec §4.2 (route, cross-rejection, 503, timeouts), §4.4. Deviations 5, 6, 8.
+Spec §4.2 (route, cross-rejection, 503, timeouts), §4.4. Contract notes 5, 6, 8.
 
 **Files:**
 - Modify: `apps/m365-graph-read-executor/src/internalAuth.ts` — one union member
@@ -3917,7 +4077,7 @@ Claude-Session: https://claude.ai/code/session_01Uy7n1p7JUTxD7DUA7WDSsb"
 
 ### Task 12: API client `sync-action` operation
 
-Spec §4.3. Overview contract, "API client". Deviations 3, 4, 6.
+Spec §4.3. Overview contract, "API client". Contract notes 3, 4, 6.
 
 **Files:**
 - Modify: `apps/api/src/services/m365ControlPlane/graphReadExecutorClient.ts`
@@ -3997,7 +4157,7 @@ describe('Graph-read executor client — sync-action', () => {
 
   it('returns a typed graph_throttled failure carrying retryAfterSeconds', async () => {
     const fetchMock = vi.fn(async () => new Response(
-      JSON.stringify({ success: false, errorCode: 'graph_throttled', retryAfterSeconds: 45 }),
+      JSON.stringify({ success: false, code: 'graph_throttled', retryAfterSeconds: 45 }),
       { headers: { 'content-type': 'application/json' } },
     ));
     const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
@@ -4007,7 +4167,7 @@ describe('Graph-read executor client — sync-action', () => {
 
   it('returns continuation_invalid so the caller can restart the walk', async () => {
     const fetchMock = vi.fn(async () => new Response(
-      JSON.stringify({ success: false, errorCode: 'continuation_invalid' }),
+      JSON.stringify({ success: false, code: 'continuation_invalid' }),
       { headers: { 'content-type': 'application/json' } },
     ));
     const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
@@ -4176,7 +4336,7 @@ Add the method to the returned object and to `GraphReadExecutorClient`:
       if (parsedResponse.data.success) return parsedResponse.data;
       return {
         success: false,
-        code: parsedResponse.data.errorCode,
+        code: parsedResponse.data.code,
         ...(parsedResponse.data.retryAfterSeconds === undefined
           ? {}
           : { retryAfterSeconds: parsedResponse.data.retryAfterSeconds }),
@@ -4247,6 +4407,8 @@ Spec §4.2 (memory measurement recorded in the deploy doc), §7.
 **Files:**
 - Modify: `docs/deploy/m365-customer-graph-read-executor.md`
 
+W06 adds the operational sections (capacity, RPM split, memory) and must not re-add these rows or metric names.
+
 - [ ] **Step 1: Add the env rows**
 
 In the **Executor** table (line 109, after `M365_GRAPH_READ_EXECUTOR_PORT`):
@@ -4268,7 +4430,7 @@ In the **Executor** table (line 109, after `M365_GRAPH_READ_EXECUTOR_PORT`):
 After the "Managed identity may use `AZURE_CLIENT_ID`…" paragraph:
 
 ```markdown
-**Sizing.** Sync actions buffer a whole domain in memory before projecting it: at the default caps a maximum-size tenant is roughly 25 000 users plus 25 000 devices. Size each replica at **512 MB** when `M365_SYNC_MAX_IN_FLIGHT` is at its default of 4 and tenants approach those caps; 256 MB is enough for read-only deployments with `M365_TENANT_SYNC_ENABLED` off on the API. Raising `M365_SYNC_MAX_IN_FLIGHT` raises peak memory roughly linearly — raise the memory limit with it. If bulk pulls must be guaranteed never to contend with interactive AI-tool reads, run sync-only replicas behind a second URL rather than raising the caps.
+**Sizing.** Sync actions buffer a whole domain in memory before projecting it: at the default caps a maximum-size tenant is roughly 25 000 users plus 25 000 devices. Size each replica at **512 MB** when `M365_SYNC_MAX_IN_FLIGHT` is at its default of 4 and tenants approach those caps; 256 MB is enough for read-only deployments with `M365_TENANT_SYNC_ENABLED` off on the API. Raising `M365_SYNC_MAX_IN_FLIGHT` raises peak memory roughly linearly — raise the memory limit with it. If bulk pulls must be guaranteed never to contend with interactive AI-tool reads, lower `M365_SYNC_MAX_IN_FLIGHT` to reserve more headroom, or scale the replica count out. Splitting sync onto a separate executor deployment is **not** available: v1 has exactly one executor URL (`M365_GRAPH_READ_EXECUTOR_URL`) and no sync-specific override.
 ```
 
 In **Operational signals**, after the `breeze_m365_graph_read_actions_total` paragraph:
@@ -4346,9 +4508,24 @@ cd apps/m365-graph-read-executor && npx vitest run
 cd packages/shared && npx vitest run
 ```
 
-- [ ] **Step 5: Mirror the deviations into the overview**
+- [ ] **Step 5: Prove the overview was NOT edited**
 
-Edit `docs/superpowers/plans/integrations/2026-09-08-m365-tenant-sync-0-overview.md`'s "Shared interface contract" section for deviations 1–8: the continuation key env var, `m365SyncFailureCodeSchema` / `m365SyncActionResponseSchema` / `continuation_invalid`, the `GraphReadExecutorFailure` shape, the `504 sync_timeout` route code, the dual `error`/`code` bodies, the interactive `capacity` refusal, and `title: string | null` inside `secure_score`'s `controlScores`. Commit as `docs(m365): record wave 3 contract deviations in the plan overview` with the same trailers.
+The overview already carries every contract point in *Contract notes* — the
+continuation key env var, `m365SyncFailureCodeSchema` /
+`m365SyncActionResponseSchema` / `continuation_invalid`, the
+`GraphReadExecutorFailure` shape, the `504 sync_timeout` route code, the dual
+`error`/`code` bodies, the interactive `capacity` refusal, and
+`title: string | null` inside `secure_score`'s `controlScores`. Contract edits
+belong to the orchestrator, and a wave that re-writes them conflicts with every
+sibling wave's branch.
+
+```bash
+git diff --stat main -- docs/superpowers/plans/   # must be EMPTY
+```
+
+If it is non-empty, revert those files before pushing. If implementation turned
+up a contract point that is genuinely absent from the overview, put it in the PR
+body under "New deviations for the orchestrator" and leave the file alone.
 
 - [ ] **Step 6: Open the PR**
 
@@ -4372,7 +4549,7 @@ Wave 3 of the M365 tenant sync foundation (spec §4). The executor gains six who
 4. **The total in-flight cap applies to the interactive routes too** (`503 { code: 'capacity' }`). Capping only sync would leave the "total" cap unbounded; the reserved-headroom guarantee holds because config validates `M365_SYNC_MAX_IN_FLIGHT <= M365_MAX_IN_FLIGHT`.
 5. **A truncated *secondary* source is discarded, not partially applied** — half a registration report manufactures false "no MFA" for every user it did not reach.
 
-All deviations are mirrored into the plan overview's shared interface contract in this PR.
+The plan overview's shared interface contract already carries every one of these; this PR does **not** edit the overview or any other plan file (`git diff --stat main -- docs/superpowers/plans/` is empty).
 
 ## Testing
 
