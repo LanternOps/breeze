@@ -45,7 +45,10 @@ import {
 import { weekStartFor } from '../screens/time/timesheetWeek';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../services/timeEntryAccess';
 import { stopRunningTimer } from '../screens/tickets/timerActions';
-import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
+import {
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from '../screens/tickets/timerOutcomeEffects';
 import {
   isQueueWedged,
   isRunningTimerLong,
@@ -57,6 +60,7 @@ import {
 import { useNetworkConnected } from '../lib/useNetworkConnected';
 import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
+import { navigateToTicket } from '../navigation/navigationRef';
 import { useToast } from './toast/ToastHost';
 
 /**
@@ -405,6 +409,20 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (effects.refreshNeedsAttention) await refreshNeedsAttention();
       if (mounted.current) showToast(effects.toast);
+      /**
+       * #5366. A stop that actually recorded a span opens the ticket with the
+       * internal-note composer focused, so what was just done is written while
+       * it is still in the technician's head — the entry used to land as
+       * `No description` because the only way back to the ticket was to find
+       * it again.
+       *
+       * `stopComposerTicketId` decides which ticket (or none) — shared with
+       * TicketDetailScreen's own stop handler, see timerOutcomeEffects.ts.
+       */
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (mounted.current && composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
+      }
     } finally {
       stopInFlight.current = false;
       if (mounted.current) setBusy(false);

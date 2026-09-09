@@ -5,6 +5,7 @@ import {
   COMMENT_MODES,
   composerPlaceholder,
   DEFAULT_COMMENT_MODE,
+  initialCommentMode,
   internalBannerText,
   isPublicForMode,
   modeTabLabel,
@@ -127,5 +128,29 @@ describe('every mode is total', () => {
       expect(composerPlaceholder(mode).length).toBeGreaterThan(0);
       expect(modeTabLabel(mode).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('initialCommentMode (#5366)', () => {
+  // TicketDetailScreen is a .tsx the node-only Vitest config can never import,
+  // so the param-seeding decision lives out here where it can be asserted —
+  // same reasoning as the rest of this module.
+  it('falls back to the safe default when the route carries no composeMode', () => {
+    expect(initialCommentMode(undefined)).toBe(DEFAULT_COMMENT_MODE);
+    expect(initialCommentMode({})).toBe(DEFAULT_COMMENT_MODE);
+  });
+
+  it('honours an explicit composeMode from the route', () => {
+    expect(initialCommentMode({ composeMode: 'reply' })).toBe('reply');
+    expect(initialCommentMode({ composeMode: 'internal' })).toBe('internal');
+  });
+
+  it('rejects a value that is not a mode rather than seeding the composer with it', () => {
+    // Params are typed at the navigate() call site, but a push payload or a
+    // stale JS bundle against a newer native shell can still deliver a string
+    // that no longer names a mode. Defaulting keeps the safe side (internal)
+    // rather than rendering a composer whose tabs match nothing and whose
+    // isPublic is decided by a string comparison against an unknown value.
+    expect(initialCommentMode({ composeMode: 'public' as CommentMode })).toBe(DEFAULT_COMMENT_MODE);
   });
 });
