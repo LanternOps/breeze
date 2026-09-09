@@ -25,7 +25,9 @@ import { deriveStripFleetSegments, formatFleetStripCopy } from './homeFleetStrip
  * strip entirely rather than showing a red banner above the composer — Home
  * is not the place to surface a Systems-tab data error. A findings rejection
  * does NOT hide it: findings are additive, so the strip degrades to the
- * alerts-only count it showed before #5364 rather than vanishing.
+ * alerts-only count it showed before #5364 rather than vanishing. Silent to
+ * the user is not silent to us: either rejection is reported to Sentry even
+ * when the strip has already unmounted.
  */
 export function HomeFleetStrip() {
   const theme = useApprovalTheme('dark');
@@ -42,19 +44,24 @@ export function HomeFleetStrip() {
     // sums the same two terms for the Systems hero (#5364).
     Promise.allSettled([getMobileSummary(), getFleetFindingCounts()]).then(
       ([summaryResult, findingsResult]) => {
-        if (cancelled) return;
-
-        if (findingsResult.status === 'fulfilled') {
-          setFindingsCount(findingsResult.value.total);
+        // Only the state writes are gated on `cancelled` — the reporting
+        // below is not. The strip unmounts the instant the first message
+        // lands, which is an ordinary and fast user action, so gating Sentry
+        // on it would mean a real outage on either endpoint produces zero
+        // signal for every user who types before the fetches settle.
+        if (!cancelled) {
+          if (findingsResult.status === 'fulfilled') {
+            setFindingsCount(findingsResult.value.total);
+          }
+          if (summaryResult.status === 'fulfilled') {
+            setSummary(summaryResult.value);
+          } else {
+            setFailed(true);
+          }
+          // Settled before any reporting below, which can itself throw: a
+          // Sentry hiccup must not strand the strip on its skeleton forever.
+          setLoading(false);
         }
-        if (summaryResult.status === 'fulfilled') {
-          setSummary(summaryResult.value);
-        } else {
-          setFailed(true);
-        }
-        // Settled before any reporting below, which can itself throw: a
-        // Sentry hiccup must not strand the strip on its skeleton forever.
-        setLoading(false);
 
         if (findingsResult.status === 'rejected') {
           // Findings are additive, so losing them costs accuracy, not the
@@ -62,7 +69,15 @@ export function HomeFleetStrip() {
           // `/fleet/findings/counts` 404s against an older API, which must
           // stay a silent degrade (#5177) — the breadcrumb is for us, not
           // for the user.
-          reportInternalError(findingsResult.reason, 'home-fleet-strip-findings');
+          try {
+            reportInternalError(findingsResult.reason, 'home-fleet-strip-findings');
+          } catch {
+            // Best-effort telemetry for the non-fatal path. Swallowed so it
+            // cannot cancel the summary report below, which is the more
+            // important of the two when both endpoints fail together — that
+            // one explains why the strip vanished. Same reason
+            // useSystemsData.ts guards its reporting loop.
+          }
         }
         if (summaryResult.status === 'rejected') {
           // Hidden from the user by design (never a red banner on Home), but
