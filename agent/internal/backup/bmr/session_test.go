@@ -16,7 +16,8 @@ import (
 
 func TestAuthenticateRecoverySession(t *testing.T) {
 	var gotToken string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/backup/bmr/recover/authenticate" {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
@@ -295,7 +296,7 @@ func TestRunRecoveryWithToken_RewritesUnreachableDescriptorOrigin(t *testing.T) 
 	}
 
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewServer( //nolint:staticcheck // S1021: the handler closure refers to serverhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/backup/bmr/recover/authenticate":
 			_ = json.NewEncoder(w).Encode(map[string]any{
