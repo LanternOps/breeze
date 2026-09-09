@@ -1298,6 +1298,104 @@ describe('createSessionPreToolUse', () => {
     });
 
     // ---------------------------------------------------------------------
+    // #5232: a LOST executing -> terminal CAS after the tool already ran.
+    // `transitionIntent` returns false and never throws, so before this the
+    // inline path executed a real side effect and then discarded its result
+    // with no log line, no Sentry event and no audit row — strictly more
+    // silent than jobs/intentReleaseWorker.ts, which handles the same race.
+    // ---------------------------------------------------------------------
+    async function runInlineTier3WithCasOutcome(opts: {
+      intentId: string;
+      execId: string;
+      casWon: boolean;
+    }) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: opts.execId });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: opts.intentId, approvalRequestIds: ['appr-cas'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      // The approved -> executing release CAS must WIN, otherwise the session
+      // never runs the tool and there is no post-execution race to test.
+      mockTransitionIntent.mockResolvedValue(true);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const pre = await createSessionPreToolUse(session)('execute_command', {});
+      expect(pre).toEqual({ allowed: true, intentId: opts.intentId });
+
+      // Only the TERMINAL CAS loses.
+      mockTransitionIntent.mockClear();
+      mockWriteAuditEvent.mockClear();
+      mockCaptureException.mockClear();
+      mockTransitionIntent.mockResolvedValue(opts.casWon);
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        {},
+        JSON.stringify({ status: 'completed' }),
+        false,
+        10,
+      );
+
+      expect(mockTransitionIntent).toHaveBeenCalledWith(
+        opts.intentId,
+        'executing',
+        'completed',
+        expect.anything(),
+      );
+      return mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'action_intent.executed',
+      );
+    }
+
+    it('records a CAS-lost marker + Sentry event when the terminal CAS loses after the tool ran (#5232)', async () => {
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-lost',
+        execId: 'exec-cas-lost',
+        casWon: false,
+      });
+
+      // The side effect already happened and cannot be undone — but the
+      // intent now carries someone else's terminal state, so the result this
+      // execution produced is recorded nowhere. That must be loud.
+      expect(marker).toBeDefined();
+      expect(marker![1]).toMatchObject({
+        orgId: 'org-1',
+        resourceType: 'action_intent',
+        resourceId: 'intent-cas-lost',
+        result: 'failure',
+        details: expect.objectContaining({
+          actionName: 'execute_command',
+          errorCode: 'execution_cas_lost',
+          intendedStatus: 'completed',
+          executed: true,
+        }),
+      });
+      expect(mockCaptureException).toHaveBeenCalled();
+    });
+
+    it('writes NO CAS-lost marker when the terminal CAS wins (#5232)', async () => {
+      // Discriminating control: without it, a helper that unconditionally
+      // wrote the marker would satisfy the test above.
+      const marker = await runInlineTier3WithCasOutcome({
+        intentId: 'intent-cas-won',
+        execId: 'exec-cas-won',
+        casWon: true,
+      });
+
+      expect(marker).toBeUndefined();
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    // ---------------------------------------------------------------------
     // approvalMethod audit fidelity for the tier-3 scope split
     // (tier3-supervised-four-eyes design §4.2). `supervised_self` had NO test
     // anywhere: grepping for it in the suite hit only the route-side audit

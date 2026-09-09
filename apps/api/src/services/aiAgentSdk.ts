@@ -53,6 +53,7 @@ import {
 } from './actionIntents/secretBearingTools';
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
+import { recordActionIntentMetric } from './actionIntents/metrics';
 import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -521,6 +522,106 @@ async function transitionIntentAndPublish(
     }
     return won;
   });
+}
+
+/**
+ * #5232: `transitionIntent` returns `false` on a lost compare-and-swap and
+ * never throws, so every `transitionIntentAndPublish` call site has to decide
+ * what a LOST race means for it. Two cases, and the difference is whether the
+ * tool already ran:
+ *
+ * - `executed: false` — the CAS is attempted BEFORE the tool runs (a
+ *   revalidation stop, an effect-digest mismatch, or the tier-3 catch's
+ *   self-heal). Losing means some other writer (the stale-executing reaper,
+ *   the durable release worker, or a duplicate delivery) already terminalized
+ *   this intent. There is no side effect to reconcile and no result to lose —
+ *   the intent is terminal either way. Mirrors `intentReleaseWorker.ts`'s
+ *   `failIntent`, which returns quietly on the same race rather than writing
+ *   a duplicate audit row for an event that already happened once. A single
+ *   warn line, because "which writer won" is still worth being able to grep.
+ *
+ * - `executed: true` — the CAS is attempted AFTER the tool had its real-world
+ *   side effect. The effect happened and cannot be undone, but the intent now
+ *   carries the winner's terminal state, so the result THIS execution produced
+ *   is recorded nowhere. That is the hole this helper exists to close, and it
+ *   is the exact posture `intentReleaseWorker.ts` already takes on its own
+ *   `executing -> completed` loss: log, `captureException`, and write an
+ *   `action_intent.executed` / `result: 'failure'` audit row carrying an
+ *   explicit `execution_cas_lost` marker.
+ *
+ * Never retries the tool: a lost CAS means another writer owns the intent, and
+ * re-running would double-execute a real side effect — the precise thing the
+ * `approved -> executing` CAS exists to prevent.
+ *
+ * Written as a direct `writeAuditEvent` rather than `recordActionIntentEvent`
+ * for the same reason `intentReleaseWorker.ts`'s `auditReleaseFailure` is:
+ * `ActionIntentOutcome` has no "outcome executed, but it failed" member, so
+ * routing through that helper would file this as `result: 'success'`. The
+ * Prometheus counter is bumped separately so `executed` totals still include
+ * this path.
+ *
+ * `actionName`/`source` are supplied by the caller rather than re-read from the
+ * intent row: every intent this file transitions was created by its own
+ * `createActionIntent(session.auth, { toolName, source: 'chat', ... })` call
+ * above, so both are known by construction and a DB read on an error path
+ * would only add a second way to fail.
+ */
+const INLINE_CAS_LOST_ERROR_CODE = 'execution_cas_lost';
+
+function reportLostTerminalCas(opts: {
+  intentId: string;
+  orgId: string;
+  toolName: string;
+  intendedStatus: 'completed' | 'failed';
+  /** Hardcoded string literal per call site; allowlisted Sentry tag. */
+  casLabel: string;
+  executed: boolean;
+}): void {
+  const { intentId, orgId, toolName, intendedStatus, casLabel, executed } = opts;
+
+  if (!executed) {
+    console.warn(
+      `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+      + 'another writer already terminalized it; the tool never ran',
+    );
+    return;
+  }
+
+  console.error(
+    `[AI-SDK] Lost the executing->${intendedStatus} CAS for intent ${intentId} (${casLabel}) — `
+    + 'a reaper or duplicate delivery likely already terminalized it; the tool DID execute',
+  );
+  captureException(
+    new Error(`intent ${intentId} executed but lost the executing->${intendedStatus} CAS`),
+    undefined,
+    { cas_label: casLabel },
+  );
+
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId,
+      action: 'action_intent.executed',
+      resourceType: 'action_intent',
+      resourceId: intentId,
+      actorType: 'system',
+      actorId: null,
+      result: 'failure',
+      details: {
+        actionName: toolName,
+        source: 'chat',
+        errorCode: INLINE_CAS_LOST_ERROR_CODE,
+        intendedStatus,
+        casLabel,
+        executed: true,
+      },
+    });
+    recordActionIntentMetric('chat', toolName, 'executed');
+  } catch (err) {
+    // The marker is the ONLY record that this execution's outcome exists at
+    // all, so losing it must not itself be silent.
+    console.error(`[AI-SDK] Failed to write the CAS-lost audit marker for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
 }
 
 // ============================================
@@ -1318,13 +1419,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
-            await transitionIntentAndPublish(
+            const revalidationCasWon = await transitionIntentAndPublish(
               intent.id,
               'failed',
               { errorCode: revalidation.errorCode },
               session.orgId,
               'intent_failed',
             );
+            if (!revalidationCasWon) {
+              reportLostTerminalCas({
+                intentId: intent.id,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_revalidation_failed',
+                executed: false,
+              });
+            }
             console.error(
               `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
             );
@@ -1369,13 +1480,23 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {
-              await transitionIntentAndPublish(
+              const digestCasWon = await transitionIntentAndPublish(
                 intent.id,
                 'failed',
                 { errorCode: 'content_changed' },
                 session.orgId,
                 'intent_failed',
               );
+              if (!digestCasWon) {
+                reportLostTerminalCas({
+                  intentId: intent.id,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_content_changed',
+                  executed: false,
+                });
+              }
               console.error(
                 `[AI-SDK] inline release effect-digest mismatch for intent ${intent.id}: content_changed`,
               );
@@ -1436,13 +1557,27 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // original error being handled.
           if (wonIntentId) {
             try {
-              await transitionIntentAndPublish(
+              const selfHealCasWon = await transitionIntentAndPublish(
                 wonIntentId,
                 'failed',
                 { errorCode: 'execution_error' },
                 session.orgId,
                 'intent_failed',
               );
+              if (!selfHealCasWon) {
+                reportLostTerminalCas({
+                  intentId: wonIntentId,
+                  orgId: session.orgId,
+                  toolName,
+                  intendedStatus: 'failed',
+                  casLabel: 'ai_sdk_inline_self_heal',
+                  // This catch wraps the tier-3 admission flow inside
+                  // preToolUse — it can only be reached BEFORE the handler
+                  // runs the tool, which is exactly why the self-heal is safe
+                  // to attempt at all.
+                  executed: false,
+                });
+              }
             } catch (transitionErr) {
               // #5205 W05 (#5210): transitionIntentAndPublish now couples the
               // CAS to a constraint-guarded intentOutbox insert in the SAME
@@ -1965,13 +2100,27 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
           captureException(err instanceof Error ? err : new Error(String(err)));
           plaintextGuardTripped = true;
           try {
-            await transitionIntentAndPublish(
+            const guardCasWon = await transitionIntentAndPublish(
               pendingIntentId,
               'failed',
               { executedAt: new Date(), errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE },
               session.orgId,
               'intent_failed',
             );
+            if (!guardCasWon) {
+              // The tool ALREADY ran (this is postToolUse) and the credential
+              // it produced is being refused persistence — losing the CAS on
+              // top of that means the intent records neither the execution nor
+              // the guard trip. Loudest possible case for the marker.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: 'failed',
+                casLabel: 'ai_sdk_inline_plaintext_guard',
+                executed: true,
+              });
+            }
           } catch (transitionErr) {
             // #5205 W05 (#5210): the CAS is now coupled to a constraint-
             // guarded intentOutbox insert in the SAME transaction — a
@@ -1988,7 +2137,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
 
         if (!plaintextGuardTripped) {
           try {
-            await transitionIntentAndPublish(
+            const completionCasWon = await transitionIntentAndPublish(
               pendingIntentId,
               isError ? 'failed' : 'completed',
               {
@@ -2003,6 +2152,21 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               session.orgId,
               isError ? 'intent_failed' : 'intent_completed',
             );
+            if (!completionCasWon) {
+              // #5232: the primary inline-execution completion write. The tool
+              // ran and had its real-world side effect; losing this CAS means
+              // the result it produced is recorded nowhere on the intent.
+              // Never retried — the winner owns the intent, and re-running
+              // would double-execute the side effect.
+              reportLostTerminalCas({
+                intentId: pendingIntentId,
+                orgId: session.orgId,
+                toolName,
+                intendedStatus: isError ? 'failed' : 'completed',
+                casLabel: 'ai_sdk_inline_completion',
+                executed: true,
+              });
+            }
           } catch (err) {
             // #5205 W05 (#5210): this is the primary inline-execution
             // completion write — every non-durable-release tier-3 tool call
