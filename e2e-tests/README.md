@@ -145,15 +145,19 @@ Set in the parent `.env` file. Playwright reads via `process.env`:
 
 ### Seeded admin and forced MFA (RMM-QA-164)
 
-A fresh stack seeds the system Partner Admin role with `force_mfa = true`, so the
-seeded `admin@breeze.local` (or your `BREEZE_BOOTSTRAP_ADMIN_EMAIL`) is minted
+A fresh stack seeds the system Partner Admin role with `force_mfa = true`, but
+enforcement of that flag is gated by `MFA_FORCE_FOR_PARTNER_ADMIN`, which
+**defaults to `false`** (#4491) — so a fresh stack's `.env` (matching
+`.env.example`) does NOT hit the 428 wall below unless you've explicitly set
+that var to `true`. If you have set it to `true`, the seeded
+`admin@breeze.local` (or your `BREEZE_BOOTSTRAP_ADMIN_EMAIL`) is minted
 `mfa: false` and receives `428 mfa_enrollment_required` on the first protected
-request — `globalSetup`'s login lands on `/auth/mfa/setup?forced=1` instead of the
-dashboard. Pick one before running the suite:
+request — `globalSetup`'s login lands on `/auth/mfa/setup?forced=1` instead of
+the dashboard. Pick one before running the suite:
 
 - enrol TOTP for that admin once (Settings → Security → Two-factor), or
-- set `MFA_FORCE_FOR_PARTNER_ADMIN=false` in the stack's `.env` (the documented
-  relief valve; it suppresses only the role-force component) and restart `api`.
+- unset (or set back to `false`) `MFA_FORCE_FOR_PARTNER_ADMIN` in the stack's
+  `.env` (it suppresses only the role-force component) and restart `api`.
 
 ### WebAuthn specs need `PUBLIC_APP_URL` to match the browser origin
 

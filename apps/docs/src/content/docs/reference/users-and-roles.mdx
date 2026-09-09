@@ -335,6 +335,8 @@ Roles can be **system** (built-in, immutable) or **custom** (created by administ
 
 Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enrol an MFA method. The enrolment screen offers whichever methods the organisation allows -- an authenticator app, SMS, or a passkey. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
 
+Enforcement of the Force MFA flag is itself gated by the `MFA_FORCE_FOR_PARTNER_ADMIN` environment variable, which **defaults to `false`** for this release: the Partner Admin role is seeded/reconciled with Force MFA on regardless, but the 428 wall above only fires once an operator sets `MFA_FORCE_FOR_PARTNER_ADMIN=true`. See `.env.example` for details. This default returns to `true` once a notification-period rollout ships.
+
 ### Permission Model
 
 Permissions are stored as `resource:action` pairs in the `permissions` table. Roles are linked to permissions through the `role_permissions` join table.
