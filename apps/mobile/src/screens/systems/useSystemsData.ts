@@ -23,6 +23,7 @@ import {
   resolveOrgName,
   type SystemsSlices,
 } from './mergeSystemsResults';
+import { findingsChangedRevision, shouldRefreshOnFocus } from './findingsRefreshSignal';
 import {
   buildFindingsSummary,
   foldFindingsIntoOrgRollups,
@@ -334,10 +335,32 @@ export function useSystemsData() {
 
   // Soft refresh on tab focus, debounced so a rapid Home → Systems →
   // Home → Systems doesn't fire four requests. Manual pull always wins.
+  //
+  // The debounce is bypassed when a finding was acknowledged/dismissed/reopened
+  // since this hook last fetched (#5365). Without that, coming back from the
+  // finding detail screen leaves the hero and the ACTIVE ISSUES findings rows
+  // claiming a count the tech just cleared, for up to a minute — the counts
+  // endpoint is the only source for those numbers and nothing else invalidates
+  // it. The revision is only marked as seen once a fetch actually landed, so a
+  // call that coalesced into an in-flight request does not consume the signal.
   const FOCUS_DEBOUNCE_MS = 60_000;
+  const seenFindingsRevision = useRef<number>(findingsChangedRevision());
   const refreshIfStale = useCallback(() => {
-    if (Date.now() - lastFetchAt.current < FOCUS_DEBOUNCE_MS) return;
-    fetchAll('refresh');
+    const signalRevision = findingsChangedRevision();
+    if (
+      !shouldRefreshOnFocus({
+        now: Date.now(),
+        lastFetchAt: lastFetchAt.current,
+        debounceMs: FOCUS_DEBOUNCE_MS,
+        signalRevision,
+        seenRevision: seenFindingsRevision.current,
+      })
+    ) {
+      return;
+    }
+    void fetchAll('refresh').then((arrived) => {
+      if (arrived) seenFindingsRevision.current = signalRevision;
+    });
   }, [fetchAll]);
 
   // Apply the local org filter if one is active.
