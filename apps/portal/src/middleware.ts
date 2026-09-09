@@ -85,6 +85,17 @@ export const onRequest = defineMiddleware(async (context, next) => {
     // check) rendered the API's raw "Account is not active" string inline. The
     // branding lookup is memoized per request (lib/server.ts), so the layout's
     // own branding load reuses this response rather than issuing a second one.
+    //
+    // This guard is a PRESENTATION gate, not the access-control boundary: the
+    // API refuses every portal data call from a disabled account on its own
+    // (PORTAL_ACCOUNT_INACTIVE), and this page never gets data without it. So
+    // it deliberately fails OPEN when the branding lookup itself fails or times
+    // out (loadPortalBrandingWithStatus falls back to defaultBranding with
+    // accountDisabled: false after 3s) — an unreachable API degrades the
+    // customer to the pre-#5320 experience, never to data they may not see.
+    // Failing closed here would instead bounce every healthy customer to
+    // "Account disabled" during a branding blip, which is the worse lie.
+    // middleware.test.ts locks both halves of that choice in.
     if (requiresAccountStatusGuard(pathname)) {
       const { accountDisabled } = await loadPortalBrandingWithStatus(context.request);
       if (accountDisabled) {

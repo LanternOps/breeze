@@ -105,6 +105,29 @@ describe('portal middleware — disabled account guard', () => {
     expect(response.status).toBe(200);
   });
 
+  // Deliberate fail-open, asserted so it stays deliberate: the API is the
+  // access-control boundary (it 403s every data call from a disabled account),
+  // this guard only decides which copy the customer reads. A branding blip must
+  // not bounce healthy customers to "Account disabled".
+  it('renders the page when the branding lookup fails outright', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+    const context = contextFor('/security', { signedIn: true });
+
+    const response = await run(context);
+
+    expect(response.status).toBe(200);
+  });
+
+  it('renders the page when the branding lookup times out', async () => {
+    const timeoutError = new DOMException('The operation timed out.', 'TimeoutError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutError));
+    const context = contextFor('/tickets', { signedIn: true });
+
+    const response = await run(context);
+
+    expect(response.status).toBe(200);
+  });
+
   it('sends a signed-out visitor to login without an account-status round trip', async () => {
     const fetchMock = accountDisabledFetch();
     vi.stubGlobal('fetch', fetchMock);
