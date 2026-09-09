@@ -350,16 +350,30 @@ describe('SR5-05 manage_automations — target site scoping', () => {
     expect(JSON.parse(r).automation.id).toBe('a1');
   });
 
+  it('get omits org-wide run metadata for a restricted caller', async () => {
+    mockCheck.mockResolvedValue({ ok: true, unbounded: false, outOfScopeDeviceIds: [] });
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+        ...autoRow, runCount: 99, lastRunAt: new Date('2026-09-05T00:00:00Z'),
+      }]) }) }),
+    });
+    const r = await handlerFor('manage_automations')({ action: 'get', automationId: 'a1' }, makeAuth(['site-A']));
+    expect(JSON.parse(r).automation).not.toHaveProperty('runCount');
+    expect(JSON.parse(r).automation).not.toHaveProperty('lastRunAt');
+  });
+
   it('list omits automations that fail the site-scope check', async () => {
     mockCheck.mockImplementation(async (a: any) => ({ ok: a.id === 'keep', unbounded: false, outOfScopeDeviceIds: [] }));
-    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([
-      { id: 'keep', name: 'K', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {} },
-      { id: 'drop', name: 'D', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {} },
-    ]) }) }) }) });
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([
+      { id: 'keep', name: 'K', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {}, runCount: 7, lastRunAt: new Date() },
+      { id: 'drop', name: 'D', trigger: {}, orgId: 'org-1', partnerId: null, conditions: {}, runCount: 9, lastRunAt: new Date() },
+    ]) }) }) }) }) });
     const r = await handlerFor('manage_automations')({ action: 'list' }, makeAuth(['site-A']));
     const parsed = JSON.parse(r);
     expect(parsed.showing).toBe(1);
     expect(parsed.automations[0].id).toBe('keep');
+    expect(parsed.automations[0]).not.toHaveProperty('runCount');
+    expect(parsed.automations[0]).not.toHaveProperty('lastRunAt');
   });
 });
 

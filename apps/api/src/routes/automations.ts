@@ -46,6 +46,7 @@ import {
   managedAutomationOwnerIsLive,
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
+import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -399,6 +400,11 @@ function shapeAutomationForResponse(automation: typeof automations.$inferSelect)
   };
 }
 
+function shapeRestrictedAutomationForResponse(automation: typeof automations.$inferSelect) {
+  const { runCount: _runCount, lastRunAt: _lastRunAt, ...safe } = shapeAutomationForResponse(automation);
+  return safe;
+}
+
 function toRunStatus(status: (typeof automationRuns.$inferSelect)['status']) {
   if (status === 'completed') return 'success';
   return status;
@@ -460,7 +466,12 @@ function takePreview(
  * context cannot see a partner-wide script (`scripts.org_id IS NULL`), so the
  * UI falls back to a generic label rather than dropping the output row.
  */
-async function fetchRunScriptExecutions(runId: string) {
+async function fetchRunScriptExecutions(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
+  const conditions: SQL[] = [eq(scriptExecutions.automationRunId, runId)];
+  const orgCondition = auth.orgCondition?.(scriptExecutions.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
+
   const rows = await db
     .select({
       executionId: scriptExecutions.id,
@@ -476,8 +487,9 @@ async function fetchRunScriptExecutions(runId: string) {
       createdAt: scriptExecutions.createdAt,
     })
     .from(scriptExecutions)
+    .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
     .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
-    .where(eq(scriptExecutions.automationRunId, runId))
+    .where(and(...conditions))
     .orderBy(scriptExecutions.createdAt);
 
   const byDevice = new Map<string, RunScriptResult[]>();
@@ -512,7 +524,9 @@ async function fetchRunScriptExecutions(runId: string) {
  * automation_run_device_results (org_id = device's org) already scopes rows to
  * the caller's tenancy, so no extra org filter is needed here.
  */
-async function fetchRunDeviceResults(runId: string) {
+async function fetchRunDeviceResults(runId: string, auth: AuthContext, allowedSiteIds?: string[]) {
+  const conditions: SQL[] = [eq(automationRunDeviceResults.runId, runId)];
+  if (allowedSiteIds !== undefined) conditions.push(inArray(devices.siteId, allowedSiteIds));
   const [rows, scriptExecutionsByDevice] = await Promise.all([
     db
       .select({
@@ -526,10 +540,10 @@ async function fetchRunDeviceResults(runId: string) {
         displayName: devices.displayName,
       })
       .from(automationRunDeviceResults)
-      .leftJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
-      .where(eq(automationRunDeviceResults.runId, runId))
+      .innerJoin(devices, eq(devices.id, automationRunDeviceResults.deviceId))
+      .where(and(...conditions))
       .orderBy(desc(automationRunDeviceResults.startedAt)),
-    fetchRunScriptExecutions(runId),
+    fetchRunScriptExecutions(runId, auth, allowedSiteIds),
   ]);
 
   return rows.map((row) => {
@@ -612,6 +626,7 @@ automationRoutes.get(
   zValidator('query', listAutomationsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
@@ -663,22 +678,54 @@ automationRoutes.get(
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automations)
-      .where(whereCondition);
-    const total = Number(countResult[0]?.count ?? 0);
+    let rows: Array<typeof automations.$inferSelect>;
+    let total: number;
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scanSize = 100;
+      let databaseOffset = 0;
+      total = 0;
+      rows = [];
+      while (true) {
+        const candidates = await db
+          .select()
+          .from(automations)
+          .where(whereCondition)
+          .orderBy(desc(automations.updatedAt), desc(automations.id))
+          .limit(scanSize)
+          .offset(databaseOffset);
+        if (candidates.length === 0) break;
+        // Dynamic/JSON targets require the canonical resolver. Keep resolution
+        // sequential and batch-bounded so a large definition catalog cannot
+        // fan out an unbounded Promise.all against PostgreSQL.
+        for (const automation of candidates) {
+          const check = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+          if (!check.ok) continue;
+          if (total >= offset && rows.length < limit) rows.push(automation);
+          total += 1;
+        }
+        databaseOffset += candidates.length;
+        if (candidates.length < scanSize) break;
+      }
+    } else {
+      const countResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automations)
+        .where(whereCondition);
+      total = Number(countResult[0]?.count ?? 0);
 
-    const rows = await db
-      .select()
-      .from(automations)
-      .where(whereCondition)
-      .orderBy(desc(automations.updatedAt), desc(automations.id))
-      .limit(limit)
-      .offset(offset);
+      rows = await db
+        .select()
+        .from(automations)
+        .where(whereCondition)
+        .orderBy(desc(automations.updatedAt), desc(automations.id))
+        .limit(limit)
+        .offset(offset);
+    }
 
     return c.json({
-      data: rows.map(shapeAutomationForResponse),
+      data: rows.map((automation) => permissions?.allowedSiteIds === undefined
+        ? shapeAutomationForResponse(automation)
+        : shapeRestrictedAutomationForResponse(automation)),
       pagination: { page, limit, total },
     });
   },
@@ -691,6 +738,7 @@ automationRoutes.get(
   requireValidRunId,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const runId = c.req.param('runId')!;
 
     const [run] = await db
@@ -723,11 +771,14 @@ automationRoutes.get(
         return c.json({ error: 'Automation run not found' }, 404);
       }
 
+      const [visibleRun] = await projectAutomationRunsToSites([run], permissions?.allowedSiteIds);
+      if (!visibleRun) return c.json({ error: 'Automation run not found' }, 404);
+
       return c.json({
-        ...run,
-        status: toRunStatus(run.status),
-        logs: serializeRunLogs(run.logs),
-        deviceResults: await fetchRunDeviceResults(run.id),
+        ...visibleRun,
+        status: toRunStatus(visibleRun.status),
+        logs: serializeRunLogs(visibleRun.logs),
+        deviceResults: await fetchRunDeviceResults(run.id, auth, permissions?.allowedSiteIds),
         automation: null,
         configPolicyId: run.configPolicyId,
         configItemName: run.configItemName,
@@ -739,11 +790,14 @@ automationRoutes.get(
       return c.json({ error: 'Automation run not found' }, 404);
     }
 
+    const [visibleRun] = await projectAutomationRunsToSites([run], permissions?.allowedSiteIds);
+    if (!visibleRun) return c.json({ error: 'Automation run not found' }, 404);
+
     return c.json({
-      ...run,
-      status: toRunStatus(run.status),
-      logs: serializeRunLogs(run.logs),
-      deviceResults: await fetchRunDeviceResults(run.id),
+      ...visibleRun,
+      status: toRunStatus(visibleRun.status),
+      logs: serializeRunLogs(visibleRun.logs),
+      deviceResults: await fetchRunDeviceResults(run.id, auth, permissions?.allowedSiteIds),
       automation: {
         id: automation.id,
         name: automation.name,
@@ -891,6 +945,7 @@ automationRoutes.get(
   requireValidAutomationId,
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const automationId = c.req.param('id')!;
 
     if (automationId === 'runs') {
@@ -900,6 +955,36 @@ automationRoutes.get(
     const automation = await getAutomationWithOrgCheck(automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    if (permissions?.allowedSiteIds !== undefined) {
+      const siteCheck = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+      if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scan = await scanProjectedAutomationRuns({
+        automationId,
+        allowedSiteIds: permissions.allowedSiteIds,
+        limit: 10,
+      });
+      const stats = {
+        totalRuns: scan.total,
+        completedRuns: scan.statusCounts.completed,
+        failedRuns: scan.statusCounts.failed,
+        partialRuns: scan.statusCounts.partial,
+      };
+      return c.json({
+        ...shapeAutomationForResponse(automation),
+        runCount: scan.total,
+        lastRunAt: scan.rows[0]?.startedAt ?? null,
+        recentRuns: scan.rows.map((run) => ({
+          ...run,
+          status: toRunStatus(run.status),
+          logs: serializeRunLogs(run.logs),
+        })),
+        statistics: stats,
+      });
     }
 
     const recentRuns = await db
@@ -944,6 +1029,7 @@ automationRoutes.get(
   zValidator('query', listRunsSchema),
   async (c) => {
     const auth = c.get('auth');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
     const automationId = c.req.param('id')!;
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
@@ -953,27 +1039,49 @@ automationRoutes.get(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
+    if (permissions?.allowedSiteIds !== undefined) {
+      const siteCheck = await checkAutomationTargetsWithinSiteScope(automation, permissions);
+      if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
+    }
+
     const conditions: SQL<unknown>[] = [eq(automationRuns.automationId, automationId)];
 
-    if (query.status) {
+    // Restricted callers' status is recomputed from visible child rows below;
+    // filtering on the stored org-wide status would both leak a hidden-device
+    // outcome and return rows under a contradictory status filter.
+    if (query.status && permissions?.allowedSiteIds === undefined) {
       conditions.push(eq(automationRuns.status, query.status));
     }
 
     const whereCondition = and(...conditions);
 
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(automationRuns)
-      .where(whereCondition);
-    const total = Number(countResult[0]?.count ?? 0);
+    let rows: Array<typeof automationRuns.$inferSelect>;
+    let total: number;
+    if (permissions?.allowedSiteIds !== undefined) {
+      const scan = await scanProjectedAutomationRuns({
+        automationId,
+        allowedSiteIds: permissions.allowedSiteIds,
+        offset,
+        limit,
+        status: query.status,
+      });
+      total = scan.total;
+      rows = scan.rows;
+    } else {
+      const countResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(automationRuns)
+        .where(whereCondition);
+      total = Number(countResult[0]?.count ?? 0);
 
-    const rows = await db
-      .select()
-      .from(automationRuns)
-      .where(whereCondition)
-      .orderBy(desc(automationRuns.startedAt), desc(automationRuns.id))
-      .limit(limit)
-      .offset(offset);
+      rows = await db
+        .select()
+        .from(automationRuns)
+        .where(whereCondition)
+        .orderBy(desc(automationRuns.startedAt), desc(automationRuns.id))
+        .limit(limit)
+        .offset(offset);
+    }
 
     return c.json({
       data: rows.map((run) => ({

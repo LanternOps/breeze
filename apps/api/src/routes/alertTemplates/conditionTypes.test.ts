@@ -163,7 +163,7 @@ describe('alert-template condition types (#2948)', () => {
       [{ partnerId: null }],
       // then the rule lookup — inactive, with all-custom override conditions
       [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID,
+        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
         overrideSettings: { conditions: [{ type: 'custom' }] },
       }],
     ];
@@ -179,7 +179,7 @@ describe('alert-template condition types (#2948)', () => {
   it('falls back to the template conditions when the rule carries no override', async () => {
     dbRef.current = [
       [{ partnerId: null }],
-      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, overrideSettings: {} }],
+      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1', overrideSettings: {} }],
       [{ conditions: [{ type: 'custom' }] }],
     ];
 
@@ -192,7 +192,7 @@ describe('alert-template condition types (#2948)', () => {
     dbRef.current = [
       [{ partnerId: null }],
       [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID,
+        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
         overrideSettings: { conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 85 }] },
       }],
       [{ id: RULE_ID, isActive: true }],
@@ -210,7 +210,7 @@ describe('alert-template condition types (#2948)', () => {
     // retired", or the gate waves through the rule it exists to stop.
     dbRef.current = [
       [{ partnerId: null }],
-      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, overrideSettings: {} }],
+      [{ id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1', overrideSettings: {} }],
       [], // template invisible
     ];
 
@@ -226,7 +226,7 @@ describe('alert-template condition types (#2948)', () => {
     dbRef.current = [
       [{ partnerId: null }],
       [{
-        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID,
+        id: RULE_ID, orgId: 'org-1', isActive: false, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
         overrideSettings: { conditions: [{ type: 'custom' }] },
       }],
     ];
@@ -241,7 +241,7 @@ describe('alert-template condition types (#2948)', () => {
     dbRef.current = [
       [{ partnerId: null }],
       [{
-        id: RULE_ID, orgId: 'org-1', isActive: true, templateId: TEMPLATE_ID,
+        id: RULE_ID, orgId: 'org-1', isActive: true, templateId: TEMPLATE_ID, targetType: 'org', targetId: 'org-1',
         overrideSettings: { conditions: [{ type: 'custom' }] },
       }],
       [{ id: RULE_ID, isActive: false }],

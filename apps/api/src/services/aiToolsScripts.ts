@@ -27,7 +27,7 @@ import {
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
@@ -1020,22 +1020,39 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 10), 50);
 
+      const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
+      const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+      if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+      }
+
       const results = await db
         .select({
           id: scriptExecutions.id,
           status: scriptExecutions.status,
           exitCode: scriptExecutions.exitCode,
-          stdout: scriptExecutions.stdout,
-          stderr: scriptExecutions.stderr,
+          stdout: sql<string | null>`left(${scriptExecutions.stdout}, 16385)`,
+          stderr: sql<string | null>`left(${scriptExecutions.stderr}, 8193)`,
           createdAt: scriptExecutions.createdAt,
           completedAt: scriptExecutions.completedAt,
         })
         .from(scriptExecutions)
-        .where(eq(scriptExecutions.scriptId, input.scriptId as string))
+        .innerJoin(devices, eq(devices.id, scriptExecutions.deviceId))
+        .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
         .limit(limit);
 
-      return JSON.stringify({ executions: results, count: results.length });
+      const executions = results.map((execution) => ({
+        ...execution,
+        ...(execution.stdout && execution.stdout.length > 16_384
+          ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
+          : {}),
+        ...(execution.stderr && execution.stderr.length > 8_192
+          ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
+          : {}),
+      }));
+      return JSON.stringify({ executions, count: executions.length });
     },
   });
 
