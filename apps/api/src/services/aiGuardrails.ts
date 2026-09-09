@@ -2082,6 +2082,23 @@ function nonEmptyText(value: unknown): string | null {
  * generic "Execute "<type>" command" wording below — so an unrecognised or
  * sparse call never regresses to something worse than what shipped before.
  */
+/**
+ * sweep 2026-09-08 row 19: `manage_services` exposes `serviceName` on ITS OWN
+ * input schema and normalizes it to `payload.name` before calling into
+ * commandQueue — but `execute_command`'s schema never documented a payload
+ * key for service commands, so a model calling it directly has been observed
+ * reusing the more visible `serviceName` name instead. A persisted approval's
+ * `action_arguments` looked like
+ * `{ commandType: 'restart_service', payload: { serviceName: 'Spooler' } }`,
+ * which the old `payload.name`-only read missed, falling back to the generic
+ * "Execute \"restart_service\" command" wording. Try `serviceName` first
+ * (the more likely source for a direct execute_command call) then `name`
+ * (manage_services' normalized shape) so either caller gets a named headline.
+ */
+function serviceNameFromPayload(payload: Record<string, unknown>): string | null {
+  return nonEmptyText(payload.serviceName) ?? nonEmptyText(payload.name);
+}
+
 const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string, unknown>) => string | null> = {
   kill_process: (payload) => {
     const processName = nonEmptyText(payload.processName);
@@ -2092,15 +2109,15 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
     return null;
   },
   start_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Start service "${name}"` : null;
   },
   stop_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Stop service "${name}"` : null;
   },
   restart_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Restart service "${name}"` : null;
   },
   list_services: () => 'List services',
