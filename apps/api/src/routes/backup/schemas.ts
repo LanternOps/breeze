@@ -310,8 +310,19 @@ export const bmrCompleteSchema = z.object({
     stateApplied: z.boolean().optional(),
     driversInjected: z.number().int().optional(),
     validated: z.boolean().optional(),
-    warnings: z.array(z.string()).optional(),
+    // D14: a completion report for a large recovery hit the global 1MB
+    // body-size limit ("Request body too large") over an unbounded warnings
+    // array — one 10,047-file bare-metal recovery sent ~9,900 entries. The
+    // agent-side helper is being capped at 51 entries, but the API contract
+    // needs its own hard ceiling independent of any given agent build: 200
+    // entries x 2000 chars is a generous multiple of that intended cap while
+    // keeping the worst case comfortably bounded.
+    warnings: z.array(z.string().max(2000)).max(200).optional(),
     error: z.string().optional(),
+    // Per-file restore failures in a partially-successful recovery, mirroring
+    // errorCount on the ordinary backup-result path (resultSchemas.ts). Optional
+    // and omitted (not zero) by an agent that doesn't report it.
+    failedFiles: z.number().int().nonnegative().optional(),
   }),
 });
 

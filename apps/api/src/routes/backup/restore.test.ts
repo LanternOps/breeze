@@ -332,6 +332,79 @@ describe('restore routes', () => {
     );
   });
 
+  // D12: once backupResultPersistence.ts indexes the agent's stable
+  // originalPath (e.g. C:\assure\src\content\prefix\pick.txt) instead of the
+  // transient VSS shadow-copy device path, a selective restore's selectedPaths
+  // — which the agent also matches by originalPath — must exact-match
+  // backup_snapshot_files.source_path and succeed, instead of 400ing with
+  // "Selected path is not available in this snapshot".
+  it('accepts a selective restore selection matching the indexed originalPath', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+      )
+      .mockReturnValueOnce(
+        chainMock([{ id: 'file-1', sourcePath: 'C:\\assure\\src\\content\\prefix\\pick.txt' }])
+      )
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+        status: 'pending',
+        targetPath: null,
+        startedAt: null,
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: null,
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+    queueCommandForExecutionMock.mockResolvedValueOnce({
+      command: { id: 'command-1', status: 'sent' },
+    });
+    updateMock.mockReturnValueOnce(
+      chainMock([{
+        id: 'restore-1',
+        snapshotId: 'snap-db-1',
+        deviceId: 'device-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+        status: 'running',
+        targetPath: null,
+        startedAt: new Date('2026-04-01T00:00:00Z'),
+        completedAt: null,
+        restoredSize: null,
+        restoredFiles: null,
+        targetConfig: null,
+        commandId: 'command-1',
+        createdAt: new Date('2026-04-01T00:00:00Z'),
+        updatedAt: new Date('2026-04-01T00:00:00Z'),
+      }])
+    );
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshotId: 'snap-db-1',
+        restoreType: 'selective',
+        selectedPaths: ['C:\\assure\\src\\content\\prefix\\pick.txt'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.commandId).toBe('command-1');
+  });
+
   it('fails the restore request when no backup destination config can be resolved for the snapshot', async () => {
     selectMock
       .mockReturnValueOnce(

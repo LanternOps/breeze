@@ -306,6 +306,36 @@ describe('snapshot routes', () => {
     expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
+  // D12: once backupResultPersistence.ts indexes the agent's stable
+  // originalPath (e.g. C:\assure\src\x) instead of the transient VSS
+  // shadow-copy device path, backup_snapshot_files.source_path for a Windows
+  // run is a normal Windows path, not \\?\GLOBALROOT\Device\
+  // HarddiskVolumeShadowCopyN\.... The browse tree must root it at the drive
+  // letter, never at "?" (which is what splitting the raw shadow path would
+  // have produced — normalizeSourcePath backslash-to-forward-slash turns
+  // `\\?\GLOBALROOT\...` into `//?/GLOBALROOT/...`, whose first non-empty
+  // segment is "?").
+  it('roots the browse tree at the drive letter for an indexed Windows path, never at "?"', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
+      .mockReturnValueOnce(chainMock([
+        { sourcePath: 'C:\\assure\\src\\content\\prefix\\pick.txt', size: 42, modifiedAt: null },
+      ]));
+
+    const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ name: 'C:', type: 'directory' });
+    expect(body.data[0].name).not.toBe('?');
+    const assure = body.data[0].children[0];
+    expect(assure).toMatchObject({ name: 'assure', type: 'directory' });
+  });
+
   it('returns protection fields in snapshot responses', async () => {
     selectMock.mockReturnValueOnce(chainMock([
       makeSnapshot({

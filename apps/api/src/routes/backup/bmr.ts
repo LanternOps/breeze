@@ -77,7 +77,19 @@ const idParamSchema = z.object({ id: z.string().guid() });
 const signingKeyParamSchema = z.object({ id: z.string().min(1) });
 const BMR_AUTHENTICATE_TOKEN_LIMIT = 3;
 const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
-const BMR_DOWNLOAD_TOKEN_LIMIT = 100;
+// D13: getAuthenticatedRecoveryDownloadTarget is fetched ONE OBJECT PER FILE, so
+// a legitimate bare-metal recovery of a 10,000+-file snapshot makes that many
+// requests against this per-token limit in the course of a normal restore — a
+// 10,047-file recovery hit 429 after ~134 objects at the old 100/minute limit.
+// Every request here is already authenticated (a valid, unrevoked recovery
+// token) and path-scoped to that one token's own snapshot by
+// getAuthenticatedRecoveryDownloadTarget, so the residual abuse case is a
+// stolen token brute-forcing paths within that same snapshot — a case the path
+// scoping already bounds regardless of how high this request-rate ceiling is.
+// 10,000/minute comfortably covers the largest recoveries seen while still
+// bounding runaway retry loops; the per-IP limiter (enforcePublicRateLimit,
+// used by authenticate/complete) is unchanged.
+const BMR_DOWNLOAD_TOKEN_LIMIT = 10_000;
 const BMR_DOWNLOAD_TOKEN_WINDOW_SECONDS = 60;
 const recoveryDownloadQuerySchema = z.object({
   token: z.string().min(1).optional(),
@@ -1771,6 +1783,10 @@ bmrPublicRoutes.post(
                 validated: result.validated ?? null,
                 warnings: result.warnings ?? [],
                 error: result.error ?? null,
+                // D14: per-file failure count for a partially-successful
+                // recovery. Optional and left null (not 0) when an older agent
+                // build doesn't report it.
+                failedFiles: result.failedFiles ?? null,
               },
             },
             recoveryTokenId: row.id,
