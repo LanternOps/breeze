@@ -1012,10 +1012,15 @@ func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID strin
 	return scoped, nil
 }
 
+// ensureGzipExtension derives the stored object-key suffix for an uploaded
+// (always-gzip-compressed) file. It ALWAYS appends ".gz", even when p
+// already ends in ".gz" (yielding ".gz.gz") — this keeps the derived key
+// injective over source snapshot paths. A conditional append (skip when p
+// already ends in ".gz") would map two distinct source paths — e.g. "report"
+// and "report.gz", or "a.tar" and "a.tar.gz" — onto the identical stored
+// key, so whichever upload lands last silently overwrites the other file's
+// bytes while the job still reports success (D2).
 func ensureGzipExtension(p string) string {
-	if strings.HasSuffix(p, ".gz") {
-		return p
-	}
 	return p + ".gz"
 }
 

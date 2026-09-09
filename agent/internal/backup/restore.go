@@ -145,7 +145,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 
 		// Download to staging
-		stagingFile := filepath.Join(stagingDir, sanitizeFileName(file.BackupPath))
+		stagingFile := filepath.Join(stagingDir, stagingFileName(file.BackupPath))
 		if err := os.MkdirAll(filepath.Dir(stagingFile), 0o755); err != nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
@@ -326,7 +326,7 @@ func downloadManifest(provider providers.BackupProvider, snapshotID string) (*Sn
 }
 
 // filterFiles returns only the files whose SourcePath matches at least one of
-// the selected path prefixes. If selectedPaths is empty, all files are returned.
+// the selected paths. If selectedPaths is empty, all files are returned.
 func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	if len(selectedPaths) == 0 {
 		return files
@@ -334,14 +334,38 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 
 	var matched []SnapshotFile
 	for _, f := range files {
-		for _, prefix := range selectedPaths {
-			if strings.HasPrefix(f.SourcePath, prefix) {
+		for _, selected := range selectedPaths {
+			if pathSelectionMatches(f.SourcePath, selected) {
 				matched = append(matched, f)
 				break
 			}
 		}
 	}
 	return matched
+}
+
+// pathSelectionMatches reports whether sourcePath was selected by selected:
+// either sourcePath IS selected (a single file was chosen), or sourcePath
+// lies inside the directory selected names (sourcePath starts with selected
+// plus a path separator). A bare strings.HasPrefix(sourcePath, selected) —
+// the old behavior — also matches any sibling that merely shares selected as
+// a leading substring: selecting "/x/prefix/pick.txt" wrongly also matched
+// "/x/prefix/pick.txt.bak", "/x/prefix/pick.txt2", and
+// "/x/prefix/pick.txtx/inner.txt", which an in-place restore then silently
+// overwrote even though the operator never selected them (D5).
+//
+// Both "/" and "\" are accepted as the directory-boundary separator
+// regardless of which one selected itself uses: manifests written on
+// Windows store SourcePath with backslashes, while a caller (e.g. a web UI
+// that always speaks forward slashes) may pass a selection in the other
+// convention. A trailing separator on selected is normalised away first so
+// "/x/prefix/" and "/x/prefix" select identically.
+func pathSelectionMatches(sourcePath, selected string) bool {
+	trimmed := strings.TrimRight(selected, `/\`)
+	if sourcePath == trimmed {
+		return true
+	}
+	return strings.HasPrefix(sourcePath, trimmed+"/") || strings.HasPrefix(sourcePath, trimmed+`\`)
 }
 
 // volumeName strips a leading volume/drive name (e.g. "C:") from a path. It
@@ -439,14 +463,27 @@ func copyAndDelete(src, dst string) error {
 	return nil
 }
 
-// sanitizeFileName converts a backup path to a safe local filename by
-// replacing path separators and removing leading dots.
-func sanitizeFileName(backupPath string) string {
-	safe := strings.ReplaceAll(backupPath, "/", "_")
-	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.TrimLeft(safe, ".")
-	if safe == "" {
-		safe = "unnamed"
-	}
-	return safe
+// stagingFileName derives a short, injective local filename for downloading
+// file.BackupPath into the staging directory. The object key can be
+// arbitrarily long (snapshot prefix + "files/" + the full original source
+// path — proven in production to exceed 400 characters for a nested,
+// long-named source file), and naively flattening it into one path
+// component (the old approach: replace every "/" with "_") easily exceeds
+// the filesystem's per-component name limit (~255 bytes on ext4/APFS/NTFS),
+// so opening the destination file fails with "file name too long" and the
+// file is silently dropped into failedFiles even though the object exists
+// in storage and both VerifyIntegrity and TestRestore — which restore under
+// the object's real, unflattened directory structure via resolveTargetPath,
+// not a single flattened component — read it back fine (D4).
+//
+// A hex-encoded SHA-256 digest of the BackupPath is both bounded (fixed 64
+// hex chars + ".gz" = 67, comfortably under any filesystem limit) and
+// collision-resistant, so distinct BackupPaths never share a staging file.
+// The ".gz" suffix is cosmetic only — nothing parses this name back into a
+// BackupPath; resume state (ResumeState.CompletedFiles, restore_resume.go)
+// and every restore-loop lookup key off file.BackupPath directly, never off
+// the staging filename, so this stays consistent with resume behavior.
+func stagingFileName(backupPath string) string {
+	sum := sha256.Sum256([]byte(backupPath))
+	return hex.EncodeToString(sum[:]) + ".gz"
 }

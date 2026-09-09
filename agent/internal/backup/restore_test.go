@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,6 +164,95 @@ func TestRestoreFromSnapshot_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRestoreFromSnapshot_LongSourcePath proves D4: a manifest entry whose
+// SourcePath is long enough that the object's BackupPath (snapshot prefix +
+// "files/" + the full original source path) exceeds the filesystem's
+// per-component name limit (~255 bytes on ext4/APFS/NTFS) once flattened
+// into a single staging filename must still restore successfully. The
+// object itself uploads fine (the source path keeps its real directory
+// structure — no single filesystem component here is longer than 150
+// bytes), matching the proven live scenario where the object existed in
+// storage and integrity/test-restore both passed it, but the real restore's
+// OLD staging filename (built by replacing every "/" in the BackupPath with
+// "_", collapsing it into one oversized path component) failed to open with
+// "file name too long" and the file was silently dropped into failedFiles.
+func TestRestoreFromSnapshot_LongSourcePath(t *testing.T) {
+	longDir := strings.Repeat("d", 150)
+	longFile := strings.Repeat("f", 150) + ".txt"
+	name := longDir + "/" + longFile
+
+	provider, snapID := setupRestoreTestSnapshot(t, map[string]string{
+		name: "long path content",
+	})
+
+	snapshot, err := downloadManifest(provider, snapID)
+	if err != nil {
+		t.Fatalf("download manifest: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file in manifest, got %d", len(snapshot.Files))
+	}
+	sourcePath := snapshot.Files[0].SourcePath
+	if len(sourcePath) < 300 {
+		t.Fatalf("test setup: SourcePath %q is only %d chars, want 300+", sourcePath, len(sourcePath))
+	}
+
+	targetDir := t.TempDir()
+	cfg := RestoreConfig{
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+	}
+
+	result, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q (failedFiles=%v, warnings=%v), want completed — a long source path must not be silently dropped",
+			result.Status, result.FailedFiles, result.Warnings)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("FilesRestored = %d, want 1", result.FilesRestored)
+	}
+
+	wantTarget := resolveTargetPath(targetDir, sourcePath)
+	data, err := os.ReadFile(wantTarget)
+	if err != nil {
+		t.Fatalf("restored file not found at expected target %q: %v", wantTarget, err)
+	}
+	if string(data) != "long path content" {
+		t.Errorf("restored content = %q, want %q", data, "long path content")
+	}
+}
+
+// TestStagingFileName_BoundedAndInjective proves the local staging filename
+// derived from a BackupPath (a) never exceeds a small, filesystem-safe
+// length regardless of how long the source path was, and (b) stays
+// injective — two distinct BackupPaths must never derive the same staging
+// filename, which would let one download's bytes land on top of another's
+// in the staging directory.
+func TestStagingFileName_BoundedAndInjective(t *testing.T) {
+	longBackupPath := "snapshots/" + strings.Repeat("s", 40) + "/files/" +
+		strings.Repeat("d", 150) + "/" + strings.Repeat("f", 150) + ".txt.gz"
+
+	got := stagingFileName(longBackupPath)
+	if len(got) > 80 {
+		t.Errorf("staging file name length = %d, want <= 80 (name: %q)", len(got), got)
+	}
+
+	other := stagingFileName(longBackupPath + "-different")
+	if got == other {
+		t.Errorf("distinct BackupPaths %q and %q produced the same staging file name %q", longBackupPath, longBackupPath+"-different", got)
+	}
+
+	// Stable/deterministic: the same BackupPath must always derive the same
+	// staging filename (resume and retry logic download to this path across
+	// multiple attempts within the same run).
+	if again := stagingFileName(longBackupPath); again != got {
+		t.Errorf("stagingFileName(%q) not deterministic: got %q then %q", longBackupPath, got, again)
+	}
+}
+
 func TestRestoreFromSnapshot_CancelledMidway(t *testing.T) {
 	testFiles := map[string]string{
 		"one.txt": "first\n",
@@ -213,9 +303,13 @@ func TestRestoreFromSnapshot_SelectivePaths(t *testing.T) {
 	targetDir := t.TempDir()
 
 	cfg := RestoreConfig{
-		SnapshotID:    snapID,
-		TargetPath:    targetDir,
-		SelectedPaths: []string{"/original/config", "/original/data"},
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+		// Exact file selections (not "/original/config" as a bare partial-name
+		// prefix — that string also prefix-matches "config.txt" under the old,
+		// pre-D5-fix strings.HasPrefix semantics, which is precisely the bug:
+		// a partial name is not a valid selection of a whole file or directory).
+		SelectedPaths: []string{"/original/config.txt", "/original/data.csv"},
 	}
 
 	result, err := RestoreFromSnapshot(provider, cfg, nil)
@@ -508,4 +602,73 @@ func TestFilterFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFilterFiles_SiblingCollisionAndSeparators proves D5: filterFiles must
+// match a selection against a manifest entry's SourcePath by exact equality
+// or a directory boundary (selected + separator) — never by a bare string
+// prefix. A plain strings.HasPrefix (the old behavior) also matched
+// unrelated siblings that merely share a leading substring, so selecting
+// one file silently pulled in — and, on an in-place restore, silently
+// overwrote — files the operator never chose.
+func TestFilterFiles_SiblingCollisionAndSeparators(t *testing.T) {
+	t.Run("selecting a single file does not match siblings sharing its name as a prefix", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: "/x/prefix/pick.txt"},
+			{SourcePath: "/x/prefix/pick.txt.bak"},
+			{SourcePath: "/x/prefix/pick.txt2"},
+			{SourcePath: "/x/prefix/pick.txtx/inner.txt"},
+		}
+
+		got := filterFiles(files, []string{"/x/prefix/pick.txt"})
+		if len(got) != 1 || got[0].SourcePath != "/x/prefix/pick.txt" {
+			gotPaths := make([]string, len(got))
+			for i, f := range got {
+				gotPaths[i] = f.SourcePath
+			}
+			t.Errorf("filterFiles selecting a single file = %v, want only [/x/prefix/pick.txt]", gotPaths)
+		}
+	})
+
+	t.Run("selecting the parent directory matches everything under it, siblings included", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: "/x/prefix/pick.txt"},
+			{SourcePath: "/x/prefix/pick.txt.bak"},
+			{SourcePath: "/x/prefix/pick.txt2"},
+			{SourcePath: "/x/prefix/pick.txtx/inner.txt"},
+		}
+
+		got := filterFiles(files, []string{"/x/prefix"})
+		if len(got) != 4 {
+			t.Errorf("filterFiles selecting the parent directory returned %d files, want 4 (all of them)", len(got))
+		}
+	})
+
+	t.Run("Windows-style backslash paths: single file selection excludes siblings", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: `C:\x\prefix\pick.txt`},
+			{SourcePath: `C:\x\prefix\pick.txt.bak`},
+		}
+
+		got := filterFiles(files, []string{`C:\x\prefix\pick.txt`})
+		if len(got) != 1 || got[0].SourcePath != `C:\x\prefix\pick.txt` {
+			gotPaths := make([]string, len(got))
+			for i, f := range got {
+				gotPaths[i] = f.SourcePath
+			}
+			t.Errorf("filterFiles (Windows-style) selecting a single file = %v, want only [C:\\x\\prefix\\pick.txt]", gotPaths)
+		}
+	})
+
+	t.Run("Windows-style backslash paths: directory selection includes siblings", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: `C:\x\prefix\pick.txt`},
+			{SourcePath: `C:\x\prefix\pick.txt.bak`},
+		}
+
+		got := filterFiles(files, []string{`C:\x\prefix`})
+		if len(got) != 2 {
+			t.Errorf("filterFiles (Windows-style) selecting the parent directory returned %d files, want 2 (both)", len(got))
+		}
+	})
 }
