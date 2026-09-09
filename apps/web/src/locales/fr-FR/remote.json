@@ -196,7 +196,7 @@
       "justNow": "À l’instant",
       "minutesAgo": "{{count}}m"
     },
-    "title": "Titre",
+    "title": "Activité des fichiers",
     "unverifiedHint": "Indice non vérifié"
   },
   "fileManager": {
@@ -236,7 +236,7 @@
       "scanned": "Numérisé : fichiers {{count}}",
       "selected": "Sélectionné : {{count}} · {{size}}",
       "threshold": "Seuil",
-      "title": "Titre",
+      "title": "Analyse du disque",
       "trigger": "Déclencheur : {{value}}"
     },
     "dismiss": "Fermer",
@@ -260,7 +260,7 @@
     "moveTo": "Passer à",
     "selectedCount": "Comte sélectionné",
     "size": "Taille",
-    "title": "Titre",
+    "title": "Gestionnaire de fichiers",
     "transfers": "Transferts",
     "trash": "Déchets",
     "selectedCount_one": "{{count}} sélectionné",
@@ -440,7 +440,7 @@
       "generic": "Une erreur s’est produite"
     },
     "refreshStatus": "Statut de rafraîchissement",
-    "title": "Titre"
+    "title": "Gestionnaire de fichiers"
   },
   "remoteTerminal": {
     "connectedBang": "Connecté !",
@@ -616,7 +616,7 @@
     "noServicesFound": "Aucun service trouvé",
     "ok": "Ok",
     "page": "Page {{current}} de {{total}}",
-    "refreshHint": "Astuce de rafraîchissement",
+    "refreshHint": "Actualisez pour vérifier les services.",
     "restartService": "Service de redémarrage",
     "searchPlaceholder": "Rechercher un service...",
     "serviceConfirm": "Voulez-vous vraiment {{action}} le service {{service}} ?",

@@ -196,7 +196,7 @@
       "justNow": "Az önce",
       "minutesAgo": "{{count}}m önce"
     },
-    "title": "Başlık",
+    "title": "Dosya Etkinliği",
     "unverifiedHint": "Doğrulanmamış İpucu"
   },
   "fileManager": {
@@ -236,7 +236,7 @@
       "scanned": "Taranan: {{count}} dosya",
       "selected": "Seçilen: {{count}} · {{size}}",
       "threshold": "Eşik",
-      "title": "Başlık",
+      "title": "Disk Analizi",
       "trigger": "Tetikleyici: {{value}}"
     },
     "dismiss": "Kapat",
@@ -260,7 +260,7 @@
     "moveTo": "Şuraya Taşı",
     "selectedCount": "Seçilen Sayı",
     "size": "Boyut",
-    "title": "Başlık",
+    "title": "Dosya Yöneticisi",
     "transfers": "Transferler",
     "trash": "Çöp Kutusu",
     "selectedCount_one": "{{count}} seçildi",
@@ -440,7 +440,7 @@
       "generic": "Bir hata oluştu"
     },
     "refreshStatus": "Durumu Yenile",
-    "title": "Başlık"
+    "title": "Dosya Yöneticisi"
   },
   "remoteTerminal": {
     "connectedBang": "Bağlandı!",
@@ -616,7 +616,7 @@
     "noServicesFound": "Hiçbir Hizmet Bulunamadı",
     "ok": "Tamam",
     "page": "Sayfa {{current}} / {{total}}",
-    "refreshHint": "Yenileme İpucu",
+    "refreshHint": "Hizmetleri kontrol etmek için yenilemeyi deneyin.",
     "restartService": "Hizmeti Yeniden Başlatın",
     "searchPlaceholder": "Arama Yer Tutucusu",
     "serviceConfirm": "{{action}} hizmetini {{service}} yapmak istediğinizden emin misiniz?",

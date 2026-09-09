@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defaultBranding, loadPortalBranding } from './server';
+import { defaultBranding, loadPortalBranding, loadPortalBrandingWithStatus } from './server';
 
 // Regression guard for the fix-round-1 finding on Task 3.4: loadPortalBranding
 // is awaited by the middleware on every '/' visit and auth-only-path redirect
@@ -42,5 +42,90 @@ describe('loadPortalBranding — bounded branding fetch (fix round 1)', () => {
 
     const [, init] = fetchMock.mock.calls[0];
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+// sweep 2026-09-08 G5-6 — the middleware's login-redirect guard needs to know
+// WHY a branding fetch failed, not just that it did, so it can send a
+// disabled account to its own page instead of computing a landing path from
+// (now-defaulted) branding that was never really loaded.
+describe('loadPortalBrandingWithStatus — account-disabled detection', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports accountDisabled when the authenticated branding call 403s with the inactive code', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),
+      { status: 403 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/login', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const { branding, accountDisabled } = await loadPortalBrandingWithStatus(request);
+
+    expect(accountDisabled).toBe(true);
+    expect(branding).toEqual(defaultBranding);
+  });
+
+  it('reports accountDisabled: false for a normal authenticated branding load', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Acme Support', enableDashboard: true } }),
+      { status: 200 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/login', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const { branding, accountDisabled } = await loadPortalBrandingWithStatus(request);
+
+    expect(accountDisabled).toBe(false);
+    expect(branding.enableDashboard).toBe(true);
+  });
+
+  // Review finding on qa/sweep-post-v0.110.0: `accountDisabled` was computed
+  // from the FIRST (session) response, before the 401-retry re-assigns
+  // `response` to the public-domain lookup. A session that 401s (expired)
+  // and then hits an account-disabled 403 on the retried public-domain call
+  // never surfaced as `accountDisabled: true` — it must be computed from the
+  // FINAL response, after the retry.
+  it('reports accountDisabled when the retried (post-401) domain lookup 403s with the inactive code', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),
+        { status: 403 }
+      ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/login', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const { accountDisabled } = await loadPortalBrandingWithStatus(request);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(accountDisabled).toBe(true);
+  });
+
+  it('loadPortalBranding still returns just the branding half (no behavior change)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),
+      { status: 403 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/login', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const branding = await loadPortalBranding(request);
+
+    expect(branding).toEqual(defaultBranding);
   });
 });

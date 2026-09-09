@@ -137,6 +137,13 @@ export type ScheduledTasksProps = {
   tasks?: ScheduledTask[];
   selectedTask?: TaskDetails;
   loading?: boolean;
+  /**
+   * Reason the last task-list fetch failed, or null/undefined for none.
+   * Rendered INSTEAD of the empty state so an offline device's 503 can never
+   * fall through and read as "no scheduled tasks" (mirrors ProcessManager
+   * post-#4935).
+   */
+  loadError?: string | null;
   onSelectFolder?: (folder: string) => void;
   onSelectTask?: (path: string) => Promise<TaskDetails>;
   onRunTask?: (path: string) => Promise<void>;
@@ -708,6 +715,7 @@ export default function ScheduledTasks({
   tasks: propTasks,
   selectedTask: propSelectedTask,
   loading: propLoading,
+  loadError,
   onSelectFolder,
   onSelectTask,
   onRunTask,
@@ -944,6 +952,22 @@ export default function ScheduledTasks({
           {loading ? (
             <div className="flex-1 flex items-center justify-center">
               <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+            </div>
+          ) : loadError ? (
+            // Checked BEFORE the empty state so a failed fetch (e.g. an
+            // offline device's 503) can never fall through and read as "no
+            // scheduled tasks" (#4935-style regression, same fix as
+            // ProcessManager).
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+              <AlertCircle className="h-12 w-12 mb-3 text-red-500" />
+              <p className="text-sm text-red-500">{loadError}</p>
+              <button
+                type="button"
+                onClick={handleRefresh}
+                className="mt-2 text-xs text-primary hover:underline"
+              >
+                {t('common:actions.retry')}
+              </button>
             </div>
           ) : filteredTasks.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">

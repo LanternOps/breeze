@@ -225,7 +225,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
+      description: 'Execute a system command on a device. Read-only command types (list_processes, file_list, event_logs_list) run without a durable approval step in auto-execute session modes (still audit logged); under the default per-step mode they still take a lightweight inline confirmation. list_services, event_logs_query, and all mutating/file_read command types always require full user approval. Use for process management, service control, file operations, etc. Paging/filter payload params: list_processes { page, limit (max 500; larger values reset to 50), search, sortBy, sortDesc }; event_logs_query (Windows only) { page (max 20), limit (max 500), logName, level, source, eventId }; file_list { path, limit (max 5000) } — no paging, narrow the path to see more. Other payload keys: start_service/stop_service/restart_service { serviceName } (same key manage_services takes; `name` also works — either key reaches the agent as `name`, which is what it actually reads); kill_process { processName, pid }; file_read { path }. Large results are compacted for chat — if the result carries stdoutTruncation/_chat metadata, page or narrow the payload rather than repeating the same call.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -247,15 +247,35 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
+      const commandType = input.commandType as string;
 
       // Verify device access
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const { device } = access;
 
+      const payload = { ...((input.payload as Record<string, unknown>) ?? {}) };
+
+      // The tool description tells the model to send { serviceName } for the
+      // three service commands — the same key manage_services' own input
+      // schema takes — but unlike manage_services (which normalizes it to
+      // `name` at ~L668 before calling executeCommand), this handler used to
+      // forward the payload verbatim. The agent only reads payload["name"]
+      // (agent/internal/remote/tools/services.go), so a model-issued
+      // serviceName call silently no-oped on the device while the approval
+      // headline still confidently named the service. Accept either key;
+      // `name` wins if a caller somehow sends both.
+      if (
+        (commandType === 'start_service' || commandType === 'stop_service' || commandType === 'restart_service') &&
+        payload.serviceName !== undefined
+      ) {
+        if (payload.name === undefined) payload.name = payload.serviceName;
+        delete payload.serviceName;
+      }
+
       // Import and use executeCommand from commandQueue
       const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, input.commandType as string, (input.payload as Record<string, unknown>) ?? {}, {
+      const result = await executeCommand(deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });

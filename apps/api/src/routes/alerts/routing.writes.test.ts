@@ -327,4 +327,32 @@ describe('routing-rule writes — partner-wide gating (#2130)', () => {
     const body = await res.json();
     expect(body).toEqual({ data: { id: RULE_ID, deleted: true } });
   });
+
+  // Sweep 2026-09-08 (G6-4) — getRoutingRuleWithAccess (local to routing.ts)
+  // granted access to a partner-wide rule on `rule.partnerId === auth.partnerId`
+  // alone, with no `auth.scope === 'partner'` gate. Org tokens carry a
+  // partnerId too, so an ORG-scoped caller whose partnerId happened to match
+  // the rule's owning partner could load the row (surfacing "requires full
+  // partner org access" instead of "not found" — an existence leak; mirrors
+  // the #4952 fix already applied to alert rules). canManagePartnerWidePolicies
+  // independently blocks the mutation either way, so this test asserts on the
+  // by-id lookup itself: 404, not 403.
+  it('hides a partner-wide routing rule from an ORG token that carries the same partnerId (existence leak)', async () => {
+    existingRowRef.current = { id: RULE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Fleet routing' };
+    authRef.current = {
+      scope: 'organization',
+      user: { id: 'u-2', name: 'Olive Org', email: 'olive@org.example' },
+      partnerId: PARTNER_ID,
+      orgId: 'org-1',
+      accessibleOrgIds: null,
+      canAccessOrg: () => true,
+    } as typeof authRef.current;
+
+    const res = await makeApp().request(`/alerts/routing-rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Hijacked' }),
+    });
+    expect(res.status).toBe(404);
+  });
 });

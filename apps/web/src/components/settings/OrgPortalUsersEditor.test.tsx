@@ -94,6 +94,24 @@ describe('OrgPortalUsersEditor', () => {
     }
   );
 
+  // sweep 2026-09-08 G5-4
+  it('warns instead of claiming success when the API reports emailSent: false', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(ok({ data: [] }))                                                                          // initial list
+      .mockResolvedValueOnce(ok({ data: { id: 'pu-new', email: 'new@acme.example', status: 'invited' }, emailSent: false })) // invite
+      .mockResolvedValueOnce(ok({ data: [] }));                                                                         // reload
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('portal-users-invite-open'));
+    fireEvent.change(screen.getByTestId('portal-users-invite-email'), { target: { value: 'new@acme.example' } });
+    fireEvent.click(screen.getByTestId('portal-users-invite-submit'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning', message: expect.stringContaining('could not be sent') })
+    ));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
   it('guards the invite email client-side: invalid disables Send, valid enables it', async () => {
     fetchWithAuth.mockResolvedValueOnce(ok({ data: [] }));
     render(<OrgPortalUsersEditor orgId={ORG_ID} />);

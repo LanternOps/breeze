@@ -196,7 +196,7 @@
       "justNow": "Gerade eben",
       "minutesAgo": "Vor {{count}}m"
     },
-    "title": "Titel",
+    "title": "Dateiaktivität",
     "unverifiedHint": "Unbestätigter Hinweis"
   },
   "fileManager": {
@@ -236,7 +236,7 @@
       "scanned": "Gescannt: {{count}} Dateien",
       "selected": "Ausgewählt: {{count}} · {{size}}",
       "threshold": "Schwelle",
-      "title": "Titel",
+      "title": "Datenträgeranalyse",
       "trigger": "Auslöser: {{value}}"
     },
     "dismiss": "Schließen",
@@ -260,7 +260,7 @@
     "moveTo": "Verschieben nach",
     "selectedCount": "Ausgewählte Anzahl",
     "size": "Größe",
-    "title": "Titel",
+    "title": "Dateimanager",
     "transfers": "Dateiübertragungen",
     "trash": "Papierkorb",
     "selectedCount_one": "{{count}} ausgewählt",
@@ -440,7 +440,7 @@
       "generic": "Es ist ein Fehler aufgetreten"
     },
     "refreshStatus": "Status aktualisieren",
-    "title": "Titel"
+    "title": "Dateimanager"
   },
   "remoteTerminal": {
     "connectedBang": "Verbunden!",
@@ -616,7 +616,7 @@
     "noServicesFound": "Keine Dienste gefunden",
     "ok": "Okay",
     "page": "Seite {{current}} von {{total}}",
-    "refreshHint": "Hinweis aktualisieren",
+    "refreshHint": "Aktualisieren, um nach Diensten zu suchen.",
     "restartService": "Dienst neu starten",
     "searchPlaceholder": "Dienste suchen...",
     "serviceConfirm": "Möchten Sie den Dienst {{service}} wirklich {{action}}?",

@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Convite enviado",
       "inviteSentAmbiguousContact": "Convite enviado, mas nenhum contato pôde ser vinculado — vários contatos compartilham este e-mail. Este usuário não verá os tickets recebidos por e-mail até que um contato seja vinculado.",
+      "inviteEmailFailed": "Usuário do portal criado, mas não foi possível enviar o e-mail de convite.",
       "pendingInvited": "{{count}} usuário(s) pendente(s) convidado(s)",
       "inviteResent": "Convite reenviado",
       "reactivated": "Usuário reativado",
@@ -3380,7 +3381,13 @@
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
     "passkeyIdpVerificationRequired": "Verifique com seu provedor de identidade antes de adicionar uma chave de acesso.",
     "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
-    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade."
+    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade.",
+    "passkeyStepUpHeading": "Verifique seu fator de login existente",
+    "passkeyStepUpIntro": "Esta conta já tem a autenticação multifator ativada. Confirme-a antes de adicionar outra chave de acesso.",
+    "passkeyStepUpNoUsableFactor": "O fator atual da sua conta não pode ser confirmado aqui. Entre em contato com um administrador para adicionar uma chave de acesso.",
+    "passkeyStepUpIncorrectCode": "Código incorreto. Tente novamente.",
+    "passkeyStepUpTooManyAttempts": "Muitas tentativas. Tente novamente em alguns minutos.",
+    "passkeyStepUpVerificationExpired": "A verificação expirou. Verifique novamente."
   },
   "roleManager": {
     "roles": "Funções",

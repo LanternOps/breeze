@@ -98,7 +98,19 @@ channelsRoutes.get(
         if (!hasAccess) {
           return c.json({ error: 'Access to this organization denied' }, 403);
         }
-        conditions.push(eq(notificationChannels.orgId, query.orgId));
+        // Per-org view must also surface this partner's own partner-wide
+        // channels (org_id NULL, #2130) — they apply to every org under the
+        // partner, including this one (sweep 2026-09-08 G6-4). Org-scoped
+        // callers never take this branch: an org token carries a partnerId
+        // too, but must not see partner-wide rows at the app layer (RLS is
+        // stricter than the app layer here; never claim parity).
+        const orgCondition = eq(notificationChannels.orgId, query.orgId);
+        const partnerCondition = auth.scope === 'partner' && auth.partnerId
+          ? and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, auth.partnerId))
+          : undefined;
+        conditions.push(
+          (partnerCondition ? or(orgCondition, partnerCondition) : orgCondition) as ReturnType<typeof eq>
+        );
       } else {
         // "All orgs" view: org-owned channels across accessible orgs PLUS
         // this partner's own partner-wide channels (org_id NULL, #2130).

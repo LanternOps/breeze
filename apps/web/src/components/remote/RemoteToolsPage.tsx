@@ -432,6 +432,9 @@ export default function RemoteToolsPage({
   // Services state
   const [services, setServices] = useState<WindowsService[]>([]);
   const [serviceLoading, setServiceLoading] = useState(false);
+  // Reason the last service-list fetch failed, or null — same "don't render
+  // an offline device as an empty list" contract as `processError` (#4935).
+  const [serviceError, setServiceError] = useState<string | null>(null);
 
   // Agent restart polling state
   const [agentRestarting, setAgentRestarting] = useState(false);
@@ -440,10 +443,12 @@ export default function RemoteToolsPage({
   // Event logs state
   const [eventLogs, setEventLogs] = useState<EventLog[]>([]);
   const [eventLoading, setEventLoading] = useState(false);
+  const [eventLogError, setEventLogError] = useState<string | null>(null);
 
   // Scheduled tasks state
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [taskLoading, setTaskLoading] = useState(false);
+  const [taskError, setTaskError] = useState<string | null>(null);
 
   const isWindows = resolvedDeviceOs === 'windows';
   const availableTabs = tabs.filter(tab => !tab.windowsOnly || isWindows);
@@ -653,12 +658,25 @@ export default function RemoteToolsPage({
       // 500 is the agent's max accepted page size (same as the Processes tab) and
       // covers realistic Windows service counts (the agent caps the list at 512).
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/services?limit=500`);
-      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchServices'));
+      if (!res.ok) {
+        // Same reasoning as fetchProcesses above (#4935): an offline device's
+        // 503 body carries `{ error, code: 'device_offline' }` — discarding it
+        // here made the Services tab read "0 of 0 / No Services Available",
+        // indistinguishable from a device that genuinely has none.
+        const body = await res.json().catch(() => null);
+        throw new Error(extractApiError(body, t('remoteToolsPage.errors.fetchServices')));
+      }
       const json = await res.json();
       const data: ApiService[] = Array.isArray(json.data) ? json.data : [];
       setServices(data.map(mapService));
+      setServiceError(null);
     } catch (err) {
       console.error('Failed to fetch services:', err);
+      // Drop any rows from an earlier successful fetch — see fetchProcesses.
+      setServices([]);
+      setServiceError(
+        err instanceof Error ? err.message : t('remoteToolsPage.errors.fetchServices')
+      );
     } finally {
       setServiceLoading(false);
     }
@@ -747,12 +765,21 @@ export default function RemoteToolsPage({
     setEventLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/eventlogs`);
-      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchEventLogs'));
+      if (!res.ok) {
+        // Same offline-vs-empty distinction as fetchProcesses (#4935).
+        const body = await res.json().catch(() => null);
+        throw new Error(extractApiError(body, t('remoteToolsPage.errors.fetchEventLogs')));
+      }
       const json = await res.json();
       const data: ApiEventLog[] = Array.isArray(json.data) ? json.data : [];
       setEventLogs(data.map(mapEventLog));
+      setEventLogError(null);
     } catch (err) {
       console.error('Failed to fetch event logs:', err);
+      setEventLogs([]);
+      setEventLogError(
+        err instanceof Error ? err.message : t('remoteToolsPage.errors.fetchEventLogs')
+      );
     } finally {
       setEventLoading(false);
     }
@@ -791,12 +818,21 @@ export default function RemoteToolsPage({
     setTaskLoading(true);
     try {
       const res = await fetchWithAuth(`/system-tools/devices/${deviceId}/tasks`);
-      if (!res.ok) throw new Error(t('remoteToolsPage.errors.fetchTasks'));
+      if (!res.ok) {
+        // Same offline-vs-empty distinction as fetchProcesses (#4935).
+        const body = await res.json().catch(() => null);
+        throw new Error(extractApiError(body, t('remoteToolsPage.errors.fetchTasks')));
+      }
       const json = await res.json();
       const data: ApiTask[] = Array.isArray(json.data) ? json.data : [];
       setTasks(data.map(mapTaskSummary));
+      setTaskError(null);
     } catch (err) {
       console.error('Failed to fetch tasks:', err);
+      setTasks([]);
+      setTaskError(
+        err instanceof Error ? err.message : t('remoteToolsPage.errors.fetchTasks')
+      );
     } finally {
       setTaskLoading(false);
     }
@@ -1047,6 +1083,7 @@ export default function RemoteToolsPage({
             deviceOs={resolvedDeviceOs}
             services={services}
             loading={serviceLoading}
+            loadError={serviceError}
             onRefresh={fetchServices}
             onStartService={handleStartService}
             onStopService={handleStopService}
@@ -1071,6 +1108,7 @@ export default function RemoteToolsPage({
             deviceName={resolvedDeviceName}
             logs={eventLogs}
             loading={eventLoading}
+            loadError={eventLogError}
             onQueryEvents={handleQueryEvents}
             onGetEvent={handleGetEvent}
           />
@@ -1081,6 +1119,7 @@ export default function RemoteToolsPage({
             deviceName={resolvedDeviceName}
             tasks={tasks}
             loading={taskLoading}
+            loadError={taskError}
             onRefresh={fetchTasks}
             onSelectTask={handleSelectTask}
             onGetHistory={handleGetTaskHistory}

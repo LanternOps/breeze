@@ -2070,6 +2070,23 @@ function nonEmptyText(value: unknown): string | null {
 }
 
 /**
+ * sweep 2026-09-08 row 19: `manage_services` exposes `serviceName` on ITS OWN
+ * input schema and normalizes it to `payload.name` before calling into
+ * commandQueue — but `execute_command`'s schema never documented a payload
+ * key for service commands, so a model calling it directly has been observed
+ * reusing the more visible `serviceName` name instead. A persisted approval's
+ * `action_arguments` looked like
+ * `{ commandType: 'restart_service', payload: { serviceName: 'Spooler' } }`,
+ * which the old `payload.name`-only read missed, falling back to the generic
+ * "Execute \"restart_service\" command" wording. Try `serviceName` first
+ * (the more likely source for a direct execute_command call) then `name`
+ * (manage_services' normalized shape) so either caller gets a named headline.
+ */
+function serviceNameFromPayload(payload: Record<string, unknown>): string | null {
+  return nonEmptyText(payload.serviceName) ?? nonEmptyText(payload.name);
+}
+
+/**
  * #5173: `execute_command`'s headline used to be the raw call signature
  * ('Execute "kill_process" command on device 74e15ef8...') for every
  * commandType, mutating or not. These builders read `input.payload` (the
@@ -2092,15 +2109,15 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
     return null;
   },
   start_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Start service "${name}"` : null;
   },
   stop_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Stop service "${name}"` : null;
   },
   restart_service: (payload) => {
-    const name = nonEmptyText(payload.name);
+    const name = serviceNameFromPayload(payload);
     return name ? `Restart service "${name}"` : null;
   },
   list_services: () => 'List services',
