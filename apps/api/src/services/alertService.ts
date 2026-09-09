@@ -173,6 +173,96 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 }
 
 /**
+ * Parameters for {@link createSourcedAlert}.
+ */
+export interface CreateSourcedAlertParams {
+  deviceId: string;
+  orgId: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  message: string;
+  /**
+   * Persisted to `alerts.context`. `source` names the producing subsystem and
+   * is also what the caller's own dedupe query keys on.
+   */
+  context: Record<string, unknown> & { source: string };
+  /** Event-bus publisher label, e.g. `'monitor-worker'`. */
+  publisher: string;
+  /** Extra fields merged into the `alert.triggered` payload. */
+  eventPayload?: Record<string, unknown>;
+  triggeredAt?: Date;
+}
+
+/**
+ * Create an alert that has no `alert_rules` row behind it and publish
+ * `alert.triggered` for it.
+ *
+ * Rule-less producers (network monitors, warranty, network baseline, …) cannot
+ * use {@link createAlert}: that path looks up `alertRules`/`alertTemplates` by
+ * `ruleId` for its cooldown + dedupe settings and bails when the rule does not
+ * exist. Inserting into `alerts` directly instead — which is what
+ * `monitorWorker` did before #5241 — makes the alert visible in the inbox but
+ * invisible to every `alert.triggered` consumer: no notifications, no
+ * escalation, no automations, no AI verdict.
+ *
+ * This helper is the shared insert + publish tail. Cooldown, dedupe and
+ * flap-suppression stay with the caller, whose keys are source-specific
+ * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
+ *
+ * @returns the new alert id, or null if the insert produced no row (in which
+ *          case nothing is published — the caller should not burn its cooldown).
+ */
+export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
+  const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
+
+  const [newAlert] = await db
+    .insert(alerts)
+    .values({
+      ruleId: null,
+      deviceId,
+      orgId,
+      severity,
+      title,
+      message,
+      context,
+      status: 'active',
+      triggeredAt: triggeredAt ?? new Date()
+    })
+    .returning({ id: alerts.id });
+
+  const alertId = newAlert?.id;
+  if (!alertId) {
+    console.error(
+      `[AlertService] Insert returned no row for ${context.source} alert (org=${orgId} device=${deviceId}); nothing published`
+    );
+    return null;
+  }
+
+  enqueueAlertCorrelationForDevice(orgId, deviceId);
+
+  // Attach the device's site so site-restricted users see it, same as createAlert.
+  const siteId = await resolveDeviceSiteId(deviceId);
+  await publishEvent(
+    'alert.triggered',
+    orgId,
+    {
+      alertId,
+      ruleId: null,
+      deviceId,
+      severity,
+      title,
+      message,
+      source: context.source,
+      ...eventPayload
+    },
+    publisher,
+    { siteId }
+  );
+
+  return alertId;
+}
+
+/**
  * Check if an alert should be auto-resolved
  * Evaluates auto-resolve conditions and resolves if met
  *

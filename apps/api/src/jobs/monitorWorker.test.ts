@@ -109,12 +109,13 @@ vi.mock('../services/alertCooldown', () => ({
 }));
 
 vi.mock('../services/alertService', () => ({
-  resolveAlert: vi.fn(async () => undefined)
+  resolveAlert: vi.fn(async () => undefined),
+  createSourcedAlert: vi.fn(async () => 'alert-1')
 }));
 
 import { db } from '../db';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
-import { resolveAlert } from '../services/alertService';
+import { resolveAlert, createSourcedAlert } from '../services/alertService';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import { buildMonitorCommand } from '../routes/monitors';
 
@@ -310,10 +311,64 @@ describe('recordMonitorCheckResult', () => {
       error: 'timeout'
     });
 
-    expect(vi.mocked(db.insert)).toHaveBeenCalledWith(expect.anything());
+    // #5241: the alert must go through the shared create+publish path so
+    // `alert.triggered` actually fires — never a raw insert into `alerts`.
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'device-1',
+      orgId: 'org-1',
+      severity: 'high',
+      publisher: 'monitor-worker',
+      context: expect.objectContaining({
+        source: 'network_monitor',
+        monitorId: 'monitor-1',
+        alertRuleId: 'rule-1',
+      }),
+      eventPayload: expect.objectContaining({
+        source: 'network_monitor',
+        monitorId: 'monitor-1',
+        alertRuleId: 'rule-1',
+      }),
+    }));
     expect(vi.mocked(isCooldownActive)).toHaveBeenCalledWith('rule-1', 'device-1');
     expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5);
     expect(vi.mocked(resolveAlert)).not.toHaveBeenCalled();
+  });
+
+  it('does not burn the cooldown when alert creation fails (#5241)', async () => {
+    vi.mocked(createSourcedAlert).mockResolvedValueOnce(null);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1',
+        orgId: 'org-1',
+        assetId: null,
+        name: 'Edge Ping',
+        target: '8.8.8.8',
+        monitorType: 'icmp_ping',
+        consecutiveFailures: 3
+      }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([{
+        id: 'rule-1',
+        monitorId: 'monitor-1',
+        condition: 'offline',
+        threshold: null,
+        severity: 'high',
+        message: null,
+        isActive: true
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResolved([{ id: 'device-1' }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1',
+      status: 'offline',
+      responseMs: 250,
+      error: 'timeout'
+    });
+
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
   });
 
   it('auto-resolves matching alerts when the monitor recovers', async () => {
@@ -350,6 +405,7 @@ describe('recordMonitorCheckResult', () => {
       expect.stringContaining('recovered from offline')
     );
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).not.toHaveBeenCalled();
     expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
   });
 

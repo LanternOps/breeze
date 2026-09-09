@@ -79,7 +79,8 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: enqueueAlertCorrelationMock }));
 
-import { createAlert } from './alertService';
+import { publishEvent } from './eventBus';
+import { createAlert, createSourcedAlert } from './alertService';
 
 describe('createAlert correlation enqueue boundary', () => {
   beforeEach(() => {
@@ -108,5 +109,72 @@ describe('createAlert correlation enqueue boundary', () => {
     expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
     expect(insertCalls).toHaveBeenCalledTimes(1);
     expect(insertCalls).not.toHaveBeenCalledWith(alertCorrelationsTable);
+  });
+});
+
+describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.triggered)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._selectResults.length = 0;
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([{ id: 'alert-9' }]);
+  });
+
+  it('inserts a rule-less alert and publishes exactly one alert.triggered carrying the source', async () => {
+    const triggeredAt = new Date('2026-01-02T03:04:05.000Z');
+
+    const alertId = await createSourcedAlert({
+      deviceId: 'device-1',
+      orgId: 'org-1',
+      severity: 'high',
+      title: 'Edge Ping offline',
+      message: 'Monitor Edge Ping is offline',
+      context: { source: 'network_monitor', monitorId: 'monitor-1' },
+      publisher: 'monitor-worker',
+      eventPayload: { source: 'network_monitor', monitorId: 'monitor-1' },
+      triggeredAt,
+    });
+
+    expect(alertId).toBe('alert-9');
+    expect(insertCalls).toHaveBeenCalledTimes(1);
+    expect(insertCalls).toHaveBeenCalledWith(alertsTable);
+
+    expect(vi.mocked(publishEvent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(publishEvent)).toHaveBeenCalledWith(
+      'alert.triggered',
+      'org-1',
+      expect.objectContaining({
+        alertId: 'alert-9',
+        ruleId: null,
+        deviceId: 'device-1',
+        severity: 'high',
+        title: 'Edge Ping offline',
+        message: 'Monitor Edge Ping is offline',
+        source: 'network_monitor',
+        monitorId: 'monitor-1',
+      }),
+      'monitor-worker',
+      { siteId: 'site-1' },
+    );
+
+    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
+  });
+
+  it('returns null and publishes nothing when the insert yields no row', async () => {
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([]);
+
+    const alertId = await createSourcedAlert({
+      deviceId: 'device-1',
+      orgId: 'org-1',
+      severity: 'low',
+      title: 't',
+      message: 'm',
+      context: { source: 'network_monitor' },
+      publisher: 'monitor-worker',
+    });
+
+    expect(alertId).toBeNull();
+    expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
   });
 });

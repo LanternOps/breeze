@@ -15,7 +15,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import { buildMonitorCommand } from '../services/monitorCommands';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
-import { resolveAlert } from '../services/alertService';
+import { resolveAlert, createSourcedAlert } from '../services/alertService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   monitorQueueJobDataSchema,
@@ -426,11 +426,16 @@ async function evaluateMonitorAlertRules(
     const message = rule.message
       ?? `${condition.detail}. Target: ${monitor.target}. Status: ${result.status}.`;
 
-    await db.insert(alerts).values({
-      ruleId: null,
+    // #5241: route through the shared create+publish path. A raw
+    // `db.insert(alerts)` here left the alert visible only in the inbox —
+    // notifications, escalation, automations and AI verdicts all hang off the
+    // `alert.triggered` event this publishes. Dedupe/cooldown stay above,
+    // keyed on the monitor alert rule rather than an `alertRules` row.
+    const alertId = await createSourcedAlert({
       deviceId: alertDeviceId,
+      // Alert rows always take the DEVICE's org; monitors are org-scoped and
+      // resolveMonitorAlertDevice only returns devices in monitor.orgId.
       orgId: monitor.orgId,
-      status: 'active',
       severity: rule.severity,
       title,
       message,
@@ -446,8 +451,25 @@ async function evaluateMonitorAlertRules(
         error: result.error ?? null,
         threshold: rule.threshold ?? null
       },
-      triggeredAt: new Date()
+      publisher: 'monitor-worker',
+      eventPayload: {
+        source: 'network_monitor',
+        monitorId: monitor.id,
+        alertRuleId: rule.id,
+        monitorType: monitor.monitorType,
+        target: monitor.target
+      }
     });
+
+    if (!alertId) {
+      // Insert produced no row, so nothing was published. Leave the cooldown
+      // unset so the next check retries instead of silently swallowing the
+      // breach for the whole cooldown window.
+      console.error(
+        `[MonitorWorker] Failed to create alert for monitor ${monitor.id} rule ${rule.id}; will retry on next check`
+      );
+      continue;
+    }
 
     await setCooldown(rule.id, alertDeviceId, MONITOR_ALERT_COOLDOWN_MINUTES);
   }
