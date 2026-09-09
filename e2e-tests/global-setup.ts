@@ -73,6 +73,48 @@ export default async function globalSetup(config: FullConfig) {
     await page.locator('[data-testid="login-email-input"]').fill(email);
     await page.locator('[data-testid="login-password-input"]').fill(password);
     await page.locator('[data-testid="login-submit"]').click();
+
+    // #5266 — read the login response itself rather than inferring from the URL.
+    // Two stack-level conditions leave this login unusable, and neither is
+    // visible in `waitForURL('/')`, which just burns its 30s timeout (or worse,
+    // matches `/` a moment before the app bounces to the enrolment wall) and
+    // reports "Timeout 30000ms exceeded" — two fixer sessions lost a stack to
+    // exactly that. The response says which one it is, immediately.
+    let mfaEnrollmentRequired = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await page.waitForResponse(
+        (r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/login'),
+        { timeout: 30_000 }
+      );
+      if (res.status() === 429) {
+        throw new Error(
+          `[globalSetup] login as ${email} was rate limited (429). A stale per-email window ` +
+            'survived; the limiter clear above needs REDIS_PASSWORD to reach an authenticated ' +
+            'redis (`pnpm wt-stack test` passes it for you). Wait for the window to expire or ' +
+            'clear `login:*` in redis by hand, then re-run.'
+        );
+      }
+      // 428 auth_binding_rotation_required: the app rotates and re-POSTs.
+      if (res.status() === 428) continue;
+      const body = (await res.json().catch(() => null)) as { mfaEnrollmentRequired?: boolean } | null;
+      mfaEnrollmentRequired = body?.mfaEnrollmentRequired === true;
+      break;
+    }
+    if (mfaEnrollmentRequired) {
+      // The seeded admin holds the system Partner Admin role, which stores
+      // `force_mfa = true` (#4491). With enforcement on, it is minted
+      // `mfa: false`, every protected request answers 428
+      // `mfa_enrollment_required`, and the app parks on /auth/mfa/setup.
+      throw new Error(
+        `[globalSetup] login as ${email} came back \`mfaEnrollmentRequired: true\`: this stack ` +
+          'enforces the Partner Admin force_mfa flag, so no spec can run. Set ' +
+          'MFA_FORCE_FOR_PARTNER_ADMIN=false in the stack env and restart the api container ' +
+          '(`pnpm wt-stack up` pins this for you — a stack brought up any other way does not), ' +
+          'or enrol TOTP for that account once. ' +
+          'See e2e-tests/README.md ("Seeded admin and forced MFA").'
+      );
+    }
+
     await page.waitForURL('/', { timeout: 30_000 });
     await ctx.storageState({ path: STORAGE_STATE });
   } finally {

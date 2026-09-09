@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { deriveProjectName, descriptorPath } from './project';
 import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
-import { writeEnvStack } from './env';
+import { writeEnvStack, readStackEnvValue } from './env';
 import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown } from './compose';
 
 const ADMIN = { email: 'admin@breeze.local', password: 'BreezeAdmin123!' };
@@ -65,6 +65,11 @@ function test(passthrough: string[]): void {
       E2E_BASE_URL: d.baseUrl,
       E2E_ADMIN_EMAIL: d.admin.email,
       E2E_ADMIN_PASSWORD: d.admin.password,
+      // #5266 — globalSetup clears the login rate limiter with
+      // `redis-cli -a $REDIS_PASSWORD`; this stack's redis requires auth, so
+      // without this the clear silently no-ops and a stale window 429s the one
+      // login the whole suite depends on.
+      REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? readStackEnvValue(worktreePath, 'REDIS_PASSWORD') ?? '',
     },
   });
 }
