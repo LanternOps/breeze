@@ -1064,11 +1064,20 @@ export interface UpdateTicketFieldsInput {
   submittedBy?: string | null;
   submitterName?: string | null;
   submitterEmail?: string | null;
+  /**
+   * #5367: name the requester CONTACT explicitly, instead of letting the link
+   * be derived from the login/address rules below. Tenant-validated against
+   * the ticket's org before any write; `null` clears the link.
+   */
+  requesterContactId?: string | null;
 }
 
-// Fields handled by the generic diff loop. The requester triple is excluded —
-// it's resolved/diffed separately (portal-user backfill, single "requester" label).
-type DiffFieldKey = Exclude<keyof UpdateTicketFieldsInput, 'submittedBy' | 'submitterName' | 'submitterEmail'>;
+// Fields handled by the generic diff loop. The requester fields are excluded —
+// they're resolved/diffed separately (portal-user backfill, single "requester" label).
+type DiffFieldKey = Exclude<
+  keyof UpdateTicketFieldsInput,
+  'submittedBy' | 'submitterName' | 'submitterEmail' | 'requesterContactId'
+>;
 
 /** Humanized labels for the system feed entry, in canonical field order. */
 const UPDATE_FIELD_LABELS: Record<DiffFieldKey, string> = {
@@ -1144,7 +1153,8 @@ export async function updateTicketFields(
   const requesterEdit =
     fields.submittedBy !== undefined ||
     fields.submitterName !== undefined ||
-    fields.submitterEmail !== undefined;
+    fields.submitterEmail !== undefined ||
+    fields.requesterContactId !== undefined;
   //
   // #3258 W03: `requester_contact_id` is kept COHERENT with that triple rather
   // than editable on its own — a requester edit either names a portal login
@@ -1203,6 +1213,34 @@ export async function updateTicketFields(
       }
       // A ticket that KEEPS its portal login keeps the link derived from it;
       // an address correction does not re-attribute a login-backed ticket.
+    }
+
+    // #5367: an explicitly named CONTACT overrides whatever the login/address
+    // rules above derived — the caller is stating who the requester IS, which
+    // is strictly more information than either derivation. Same precedence
+    // createTicket gives `namedContact`, and tenant-validated the same way
+    // (before any write, so a cross-org link never reaches the update).
+    if (fields.requesterContactId !== undefined) {
+      if (fields.requesterContactId === null) {
+        // Only the link is dropped. The name/email snapshot is what the notify
+        // worker mails and what threadMatcher binds on, so unlinking a person
+        // must not silently strip the ticket's reply-to identity as well.
+        requesterPatch.requesterContactId = null;
+      } else {
+        const contact = await assertRequesterContactInOrg(fields.requesterContactId, ticket.orgId);
+        requesterPatch.requesterContactId = contact.id;
+        // Backfill mirrors createTicket exactly: the snapshot comes from the
+        // contact only when no portal login owns it, and never over free text
+        // the caller supplied in the same patch.
+        const keepsLogin =
+          'submittedBy' in requesterPatch
+            ? requesterPatch.submittedBy !== null
+            : (tRow.submittedBy ?? null) !== null;
+        if (!keepsLogin) {
+          if (fields.submitterName === undefined) requesterPatch.submitterName = contact.name ?? null;
+          if (fields.submitterEmail === undefined) requesterPatch.submitterEmail = contact.email ?? null;
+        }
+      }
     }
   }
   const requesterChanged =

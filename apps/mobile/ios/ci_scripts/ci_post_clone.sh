@@ -162,6 +162,116 @@ echo "--- expo prebuild"
 cd "$REPO_ROOT/apps/mobile"
 npx expo prebuild --platform ios --no-install
 
+# ---------------------------------------------------------------------------
+# Hermes. react-native's hermes-engine.podspec decides at `pod install` time
+# whether to download a prebuilt Hermes or build it from source, by probing
+# Maven with a bare `curl -I -L`. When that probe fails for ANY reason — the
+# 2026-09-09 case: Maven Central now 301s the tarballs to repo.reactnative.dev,
+# where the .tar.gz files 404 while their .sha1 files do not — the podspec
+# silently falls back to a from-source build, which needs cmake, which the
+# Xcode Cloud image does not ship. The build then dies inside the podspec with
+#
+#     [!] Unable to locate the executable `cmake`
+#
+# So fetch the prebuilt tarball here, on our own terms: try Maven, then an
+# optional mirror the workflow can point at, verify the sha1 against Maven's
+# published checksum, and hand the file to the podspec via
+# HERMES_ENGINE_TARBALL_PATH. If every source fails, install cmake so the
+# from-source fallback can at least complete, and say so loudly — it adds
+# roughly half an hour to the build.
+#
+# Workflow variables (all optional):
+#   BREEZE_HERMES_TARBALL_URL   mirror URL for the exact release tarball
+#   BREEZE_HERMES_TARBALL_SHA1  its sha1, required only when Maven's .sha1 is
+#                               unreachable
+#   RCT_HERMES_V1_ENABLED=0     selects the legacy Hermes version name, same
+#                               switch the podspec reads
+# ---------------------------------------------------------------------------
+HERMES_PROPS="$REPO_ROOT/apps/mobile/node_modules/react-native/sdks/hermes-engine/version.properties"
+if [ "${RCT_HERMES_V1_ENABLED:-1}" = "0" ]; then
+  HERMES_VERSION="$(sed -n 's/^HERMES_VERSION_NAME=//p' "$HERMES_PROPS" 2>/dev/null || true)"
+else
+  HERMES_VERSION="$(sed -n 's/^HERMES_V1_VERSION_NAME=//p' "$HERMES_PROPS" 2>/dev/null || true)"
+fi
+if [ -z "$HERMES_VERSION" ]; then
+  echo "ci_post_clone: could not read the Hermes version from $HERMES_PROPS (missing file, or the key is absent)" >&2
+  exit 1
+fi
+echo "--- hermes: prebuilt version $HERMES_VERSION"
+
+HERMES_MAVEN_BASE="https://repo1.maven.org/maven2/com/facebook/hermes/hermes-ios/$HERMES_VERSION"
+HERMES_TARBALL_NAME="hermes-ios-$HERMES_VERSION-hermes-ios-release.tar.gz"
+HERMES_TARBALL="$(mktemp -d -t breeze_hermes)/$HERMES_TARBALL_NAME"
+
+# Expected checksum: the workflow's value wins; otherwise Maven's .sha1.
+HERMES_SHA1="${BREEZE_HERMES_TARBALL_SHA1:-}"
+if [ -z "$HERMES_SHA1" ]; then
+  HERMES_SHA1="$(curl -fsSL --retry 3 "$HERMES_MAVEN_BASE/$HERMES_TARBALL_NAME.sha1" 2>/dev/null | head -c 40 || true)"
+fi
+# A checksum that is not exactly 40 hex characters (an HTML error page, a
+# pasted value with whitespace) must read as "no checksum", not as a mismatch
+# that looks like a tampered tarball. Same guard react-native's own
+# fetch_maven_sha1 applies.
+HERMES_SHA1="$(printf '%s' "$HERMES_SHA1" | tr 'A-Z' 'a-z')"
+case "$HERMES_SHA1" in
+  ????????????????????????????????????????) case "$HERMES_SHA1" in *[!0-9a-f]*) HERMES_SHA1="" ;; esac ;;
+  *) HERMES_SHA1="" ;;
+esac
+[ -n "$HERMES_SHA1" ] || echo "--- hermes: no usable sha1 for $HERMES_TARBALL_NAME; any download will be refused" >&2
+
+# Google's Maven Central mirror serves the same bytes directly, without the
+# redirect that is broken on the primary. It is transport only: the sha1 gate
+# above still comes from Maven itself.
+HERMES_GCS_BASE="https://maven-central.storage-download.googleapis.com/maven2/com/facebook/hermes/hermes-ios/$HERMES_VERSION"
+
+hermes_fetch() {
+  # $1 = URL. Succeeds only when the download completes AND the sha1 matches.
+  rm -f "$HERMES_TARBALL"
+  if ! curl -fsSL --retry 3 --retry-all-errors -A "react-native-$HERMES_VERSION" -o "$HERMES_TARBALL" "$1"; then
+    echo "--- hermes: $1 unavailable"
+    return 1
+  fi
+  if [ -z "$HERMES_SHA1" ]; then
+    echo "--- hermes: downloaded $1 but no sha1 is known to verify it against; refusing it" >&2
+    return 1
+  fi
+  GOT="$(shasum -a 1 "$HERMES_TARBALL" | cut -d' ' -f1)"
+  if [ "$GOT" != "$HERMES_SHA1" ]; then
+    echo "--- hermes: sha1 mismatch for $1 (want $HERMES_SHA1, got $GOT); refusing it" >&2
+    return 1
+  fi
+  return 0
+}
+
+HERMES_READY=0
+if hermes_fetch "$HERMES_MAVEN_BASE/$HERMES_TARBALL_NAME"; then
+  HERMES_READY=1
+elif hermes_fetch "$HERMES_GCS_BASE/$HERMES_TARBALL_NAME"; then
+  HERMES_READY=1
+elif [ -n "${BREEZE_HERMES_TARBALL_URL:-}" ] && hermes_fetch "$BREEZE_HERMES_TARBALL_URL"; then
+  HERMES_READY=1
+fi
+
+if [ "$HERMES_READY" = "1" ]; then
+  # A local tarball is used verbatim for every configuration (the podspec only
+  # adds its per-configuration swap for Maven downloads). Correct for the
+  # Archive/Release action this workflow runs; a Debug action in the same
+  # workflow would link release Hermes, which builds and runs but has no CDP
+  # inspector. Gate this on CI_XCODEBUILD_ACTION if Debug actions are added.
+  echo "--- hermes: using verified prebuilt tarball ($HERMES_SHA1)"
+  HERMES_ENGINE_TARBALL_PATH="$HERMES_TARBALL"
+  export HERMES_ENGINE_TARBALL_PATH
+else
+  echo "--- WARNING: no prebuilt Hermes $HERMES_VERSION could be fetched and verified." >&2
+  echo "---          Falling back to building Hermes from source. This works but adds" >&2
+  echo "---          roughly 30 minutes. To skip it, host the release tarball somewhere" >&2
+  echo "---          reachable and set BREEZE_HERMES_TARBALL_URL on the workflow." >&2
+  if ! command -v cmake >/dev/null 2>&1; then
+    echo "--- installing cmake (required by the from-source Hermes build)"
+    brew install cmake
+  fi
+fi
+
 echo "--- pod install"
 cd "$REPO_ROOT/apps/mobile/ios"
 pod install

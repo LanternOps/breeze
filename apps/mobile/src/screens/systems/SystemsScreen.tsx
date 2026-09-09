@@ -14,7 +14,7 @@ import { acknowledgeAlerts } from '../../services/api';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { SearchSheet } from '../search/SearchSheet';
 import type { MobileSearchResult } from '../../services/search';
 import { haptic } from '../../lib/motion';
@@ -148,9 +148,7 @@ export function SystemsScreen() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [undo, setUndo] = useState(emptyUndo);
-  const [toast, setToast] = useState<
-    { kind: 'success' | 'error'; text: string } | null
-  >(null);
+  const { show: showToast } = useToast();
 
   const {
     summary,
@@ -274,7 +272,7 @@ export function SystemsScreen() {
         // acknowledge. The next authoritative fetch is what resolves them.
         toRestore = failed;
         if (unknown.length > 0) {
-          setToast({
+          showToast({
             kind: 'error',
             text: `Couldn't confirm ${unknown.length}. Checking again.`,
           });
@@ -284,10 +282,10 @@ export function SystemsScreen() {
           // later, after the operator has moved on, is noise announcing
           // something they were already told.
         } else if (acknowledged.length === 0) {
-          setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+          showToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
         } else {
           // Never claim the full count when some were refused.
-          setToast({
+          showToast({
             kind: 'error',
             text: `Acknowledged ${acknowledged.length}, ${failed.length} failed.`,
           });
@@ -338,7 +336,7 @@ export function SystemsScreen() {
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');
-        setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        showToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
         setPendingAcks((p) => endAck(p, toRestore));
       }
     },
@@ -508,7 +506,7 @@ export function SystemsScreen() {
     setSheetAlert(null);
     try {
       await dispatch(acknowledgeAlertAsync(targetId)).unwrap();
-      setToast({ kind: 'success', text: 'Acknowledged.' });
+      showToast({ kind: 'success', text: 'Acknowledged.' });
     } catch (err) {
       const msg =
         err instanceof Error
@@ -516,7 +514,7 @@ export function SystemsScreen() {
           : typeof err === 'string'
             ? err
             : 'Could not acknowledge alert.';
-      setToast({ kind: 'error', text: msg });
+      showToast({ kind: 'error', text: msg });
     }
   }, [dispatch, sheetAlert]);
 
@@ -524,7 +522,7 @@ export function SystemsScreen() {
     if (!sheetAlert) return;
     Clipboard.setString(sheetAlert.id);
     setSheetAlert(null);
-    setToast({ kind: 'success', text: 'Copied alert ID.' });
+    showToast({ kind: 'success', text: 'Copied alert ID.' });
   }, [sheetAlert]);
 
   const onSelectSearchResult = useCallback(
@@ -560,7 +558,7 @@ export function SystemsScreen() {
         reportInternalError(err, 'ai-session-open-from-search');
         const msg = 'Could not load that conversation.';
         dispatch(setChatError(msg));
-        setToast({ kind: 'error', text: msg });
+        showToast({ kind: 'error', text: msg });
       }
     },
     [dispatch, navigation],
@@ -768,6 +766,12 @@ export function SystemsScreen() {
                 key={finding.orgId}
                 orgName={finding.orgName}
                 count={finding.count}
+                onPress={() =>
+                  navigation.navigate('SystemsFindings', {
+                    orgId: finding.orgId,
+                    orgName: finding.orgName,
+                  })
+                }
                 showDivider={idx < activeFindingsSummary.length - 1}
                 dividerColor={theme.border}
               />
@@ -890,13 +894,6 @@ export function SystemsScreen() {
         onSelect={onSelectSearchResult}
       />
 
-      <Toast
-        visible={!!toast}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        bottomOffset={insets.bottom + spacing[16]}
-      />
       {undoBatch ? (
         <UndoToast
           // Keyed by token so a replacing batch remounts the timer instead of

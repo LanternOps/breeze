@@ -170,3 +170,44 @@ describe('backupCommandResultSchema — VSS metadata (#3027)', () => {
     expect(parsed.vssMetadata).toBeUndefined();
   });
 });
+
+describe('backupCommandResultSchema — snapshot file manifest originalPath (D12)', () => {
+  it('preserves originalPath on a snapshot file entry instead of stripping it', () => {
+    // Regression: zod strips unrecognized object keys by default, so without a
+    // modeled `originalPath` field the agent's stable, user-facing path for a
+    // Windows VSS-backed file (as opposed to the transient shadow-copy device
+    // path in sourcePath) was silently dropped at this parse — the very first
+    // hop the field crosses — before backupResultPersistence.ts ever saw it.
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [
+          {
+            sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+            originalPath: 'C:\\assure\\src\\x',
+            backupPath: 'snapshots/snap-1/files/x.gz',
+          },
+        ],
+      },
+    });
+
+    expect(parsed.snapshot?.files?.[0]?.originalPath).toBe('C:\\assure\\src\\x');
+    expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe(
+      '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x'
+    );
+  });
+
+  it('leaves originalPath undefined for a non-Windows / non-VSS run that omits it', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [{ sourcePath: '/home/user/file.txt', backupPath: 'snapshots/snap-1/files/file.txt.gz' }],
+      },
+    });
+
+    expect(parsed.snapshot?.files?.[0]?.originalPath).toBeUndefined();
+    expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe('/home/user/file.txt');
+  });
+});

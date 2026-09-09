@@ -39,10 +39,9 @@ Before going live, verify every item:
 
 ### Container Security
 
-- [ ] `no-new-privileges: true` on all containers (default in prod compose)
-- [ ] `cap_drop: ALL` on all containers
-- [ ] API and Web containers run with `read_only: true` rootfs
-- [ ] Resource limits (`cpus`, `mem_limit`, `pids_limit`) set
+- [ ] `no-new-privileges: true` and `cap_drop: ALL` set on the `api` and `worker` containers (default in prod compose) — other services (web, portal, billing, caddy, redis, etc.) do not carry these flags
+- [ ] Resource limits (`cpus`, `mem_limit`, `pids_limit`) are not set in the shipped compose file — add them per-service if your host needs the isolation
+- [ ] No container runs with a `read_only: true` rootfs by default (the `api` container's root filesystem is intentionally kept writable — see the comment in `deploy/docker-compose.prod.yml`); layer this on yourself if you need it
 - [ ] Non-root container users (UID 1001)
 
 ### Authentication
@@ -51,7 +50,7 @@ Before going live, verify every item:
 - [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available. **This enforcement defaults OFF** (`MFA_FORCE_FOR_PARTNER_ADMIN=false`) as of this release — set it to `true` to actually enforce Force MFA roles; see `.env.example`.
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
-- [ ] Session timeout configured (`SESSION_MAX_AGE`)
+- [ ] Session lifetime is a fixed 7 days (`SESSION_EXPIRY_DAYS` in `services/session.ts`) — there is no env var to configure it
 - [ ] Session revocation is fail-closed — revoked sessions stay revoked even if Redis is unavailable
 - [ ] Refresh tokens use family-based reuse detection — replaying a previously rotated refresh token immediately revokes every other token in that family, log out included.
 

@@ -186,45 +186,7 @@ You can override the interval using the `interval` query parameter (`1m`, `5m`, 
 
 ## Alerting
 
-Bandwidth metrics can be used with Breeze alert rules to notify you when throughput crosses a threshold. Common alerting scenarios include:
-
-### Bandwidth threshold alerts
-
-Create alert rules that fire when aggregate bandwidth exceeds a defined threshold:
-
-| Alert Scenario | Metric | Condition | Example Threshold |
-|---------------|--------|-----------|-------------------|
-| High inbound traffic | `bandwidthInBps` | Greater than | 100,000,000 (100 MB/s) |
-| High outbound traffic | `bandwidthOutBps` | Greater than | 50,000,000 (50 MB/s) |
-| Sustained high utilization | `bandwidthInBps + bandwidthOutBps` | Greater than for N minutes | 80% of link speed |
-| Interface errors | `interfaceStats[].inErrors` | Greater than | 100 errors per interval |
-
-### Setting up a bandwidth alert
-
-<Steps>
-
-1. **Navigate to Alerts** -- Open the alert rules configuration for your organization.
-
-2. **Create a new rule** -- Select the metric type (device performance metrics) and choose `bandwidthInBps` or `bandwidthOutBps` as the metric.
-
-3. **Set the threshold** -- Define the condition (greater than, less than) and the threshold value in bytes per second.
-
-4. **Configure scope** -- Apply the rule to specific devices, device groups, sites, or the entire organization.
-
-5. **Set notification** -- Choose notification channels (email, Slack, webhook) and severity level.
-
-</Steps>
-
-### Playbook integration
-
-Bandwidth alerts can trigger [Playbooks](/features/playbooks/) for automated remediation. For example, a playbook could:
-
-- Diagnose which process is consuming bandwidth
-- Restart a misbehaving service
-- Apply a QoS policy
-- Notify the network team
-
-Configure the playbook's `triggerConditions.alertTypes` to include your bandwidth alert type and set `autoExecute` based on your confidence in the remediation workflow.
+Bandwidth alerting is not yet configurable. Bandwidth is recorded in `device_metrics` for viewing and trending, but it is not one of the selectable metrics in an [alert rule](/features/alerts/#creating-alert-rules)'s metric-threshold condition -- those are limited to CPU, memory, disk usage, and process count. To catch throughput problems today, watch the aggregate throughput chart and historical trending on the device detail page.
 
 ---
 

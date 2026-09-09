@@ -88,7 +88,12 @@ pointing at a database the api container can actually reach.
 | `ENROLLMENT_KEY_CLEANUP_ENABLED` | `true` | | Set to `false` to disable the daily sweep that purges expired enrollment keys |
 | `ENROLLMENT_KEY_PURGE_AFTER_DAYS` | `7` | | Grace period (days past expiry) before an expired enrollment key is purged |
 | `SESSION_SECRET` | — | Yes | Session signing secret |
+| `BREEZE_BOOTSTRAP_ADMIN_EMAIL` | — | Yes (prod, first boot) | Email for the initial admin account, created automatically the first time the API starts against an empty `users` table. **Required in production** — without it, that first-boot auto-seed throws and the API crash-loops. Must not be the dev default (`admin@breeze.local`). |
+| `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` | — | Yes (prod, first boot) | Password for the initial admin account. **Required in production**, must be at least 16 characters, and must not be the dev default or look like a placeholder (`changeme`, `password`, `change-in-production`, etc.) — the API refuses to start otherwise. Generate a one-time secret (`openssl rand -base64 24`) and rotate it after first login. |
+| `BREEZE_BOOTSTRAP_ADMIN_NAME` | `Bootstrap Admin` (prod) / `Breeze Admin` (dev) | | Display name for the initial admin account. |
 | `BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED` | `true` | | Whether an approver device must have **server-verified** platform attestation before it counts as a level-4 authenticator for the most sensitive approvals. **On by default** — leave it alone unless you have a documented reason. Set it to `false` only to accept a device's own unverified claim that it is platform-bound. This is a fail-closed gate: an unrecognized value logs a warning and keeps enforcement on, and the API refuses to boot on a malformed value rather than silently disabling it. |
+| `APPLE_APP_ATTEST_APP_ID` | `D8W6N2JYMA.com.breeze.rmm` | | Apple's `<TeamID>.<bundle id>` App Attest identifier, checked when an iPhone registers as a level-4 approver device. It's hashed into the attestation, so a wrong value rejects every genuine attestation rather than accepting a foreign one. Only override it if you build your own signed iOS app. |
+| `APPLE_APP_ATTEST_ENVIRONMENT` | `production` | | Which App Attest environment's attestations are accepted. Only the exact value `development` opts into accepting development-build attestations; anything else (a typo, a stray space) is treated as `production` and logs a warning — the wrong value can only ever reject a genuine attestation, never admit a forged one. |
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
@@ -109,7 +114,7 @@ deployment env vars.
 | `BREEZE_ROLE` | `all` | | The role the process itself runs as. You normally set `BREEZE_API_ROLE` instead and let the compose file map it; the optional worker container fixes this to `worker` for you. |
 | `PUBLIC_API_URL` | `https://${BREEZE_DOMAIN}` (bundled compose only) | | Public API URL used for generated agent installers and shareable links. The bundled `docker-compose.yml` derives this from `BREEZE_DOMAIN`. If you use a custom compose file, you must set `PUBLIC_API_URL` in `.env` **and** map it into the `api` service `environment:` block, or **Generate Link** / **Download Installer** will fail with `Server URL not configured`. |
 | `API_URL` | — | | Legacy fallback for `PUBLIC_API_URL`, honored only by enrollment, installer, and MCP-invite code paths. Auto-update, dev-push, and a few other routes read `PUBLIC_API_URL` only — prefer setting `PUBLIC_API_URL`. |
-| `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning |
+| `BREEZE_DOMAIN` | — | Yes (prod) | Domain for Caddy TLS provisioning. Also the default source for `PUBLIC_API_URL` and `PUBLIC_PORTAL_URL` in the bundled compose file, so it's required even when you front TLS yourself. |
 | `ACME_EMAIL` | — | Yes (prod) | Email for Let's Encrypt certificate notifications |
 | `CADDY_LOCAL_CERTS` | — (empty) | | Set to the literal `local_certs` when `BREEZE_DOMAIN` is a domain Let's Encrypt cannot reach — an internal name that only resolves on a LAN/VPN, or a host whose ports 80/443 are closed to the internet. Caddy then issues from its own internal CA instead of failing the ACME order and aborting the TLS handshake, which browsers report as `ERR_SSL_PROTOCOL_ERROR` with no warning to click through. Browsers warn until the root from `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt` is trusted on each client. Leave empty for any internet-reachable deployment; not needed for `localhost` or a bare IP, which Caddy already self-signs. |
 | `CORS_ALLOWED_ORIGINS` | — | | Comma-separated allowed CORS origins. Requests the browser sends from the same origin as the API — including a browser reaching Breeze through an SSH tunnel or on a LAN address — are accepted whether or not that origin is listed, so you only need this for a genuinely cross-origin front end. |
@@ -272,6 +277,26 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `AGENT_LOG_RETENTION_DAYS` | `7` | Days to keep uploaded agent diagnostic logs, clamped to 1–365 |
 | `AGENT_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `AGENT_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `CHANGE_LOG_RETENTION_DAYS` | `90` | Days to keep processed device change-log entries, clamped to 1–365 |
+| `CHANGE_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `CHANGE_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `IP_HISTORY_RETENTION_DAYS` | `90` | Days to keep device IP-address history, clamped to 1–365 |
+| `IP_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `IP_HISTORY_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
+| `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `PROCESS_SAMPLE_RETENTION_DAYS` | `7` | Days to keep per-process monitoring samples, clamped to 1–14. Not batch/max-batches tunable — this sweep loops in fixed 10,000-row batches until caught up. |
+| `SERVICE_PROCESS_CHECK_RESULTS_RETENTION_DAYS` | `14` | Days to keep service/process watch check results, clamped to 1–365. Not batch/max-batches tunable — same fixed-batch-loop shape as the process-sample sweep above. |
+| `RELIABILITY_HISTORY_RETENTION_DAYS` | `120` | Days to keep device reliability-scoring history, floored at 30 |
+| `RELIABILITY_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
+| `RELIABILITY_HISTORY_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `ML_OUTPUT_RETENTION_DAYS` | `365` | Days to keep stored ML model outputs, floored at 30 |
+| `ML_OUTPUT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `ML_OUTPUT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
+| `USER_RISK_RETENTION_DAYS` | `90` | Days to keep resolved user-risk signal history, floored at 30 |
+| `USER_RISK_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `USER_RISK_RETENTION_MAX_BATCHES` | `50` | Maximum batches per nightly run |
 
 Audit-log retention is **not** set here — it is a per-organization policy an operator saves in the app. See [Audit Logs → Retention](/reference/audit-logs/#retention-policies).
 
@@ -409,13 +434,17 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 
 ## Rate Limiting
 
-Per-user and per-endpoint rate limits (login, MFA, dashboard usage) are fixed in code and not configurable via environment variables. The one deployment-tunable limit is the per-org agent cap, which bounds how much traffic a single tenant's fleet can generate, even with thousands of agents.
+Most per-endpoint rate limits (MFA, dashboard usage) are fixed in code and not configurable via environment variables. A few are deployment-tunable: the per-org agent cap, which bounds how much traffic a single tenant's fleet can generate even with thousands of agents, plus the account lockout and refresh-token limits on the login path.
 
 | Variable | Default | Description |
 |---|---|---|
 | `AGENT_ORG_RATE_LIMIT_PER_MIN` | `600` | **Floor** for the per-organization sliding-window rate limit on agent-authenticated endpoints. The effective ceiling scales with the org's enrolled device count (see `AGENT_ORG_RATE_LIMIT_PER_DEVICE`), so this value only applies to small orgs. Returns `429` with a `Retry-After` derived from the window reset. Not mapped in the stock compose file — to change it, add it to the `api` service `environment:` block as well as `.env`. |
 | `AGENT_ORG_RATE_LIMIT_PER_DEVICE` | `12` | Requests per minute allowed per enrolled device when sizing the per-organization ceiling. A steady-state agent uses ~2 req/min, so the default leaves roughly 6x headroom for synchronized bursts, manual scans and command traffic. |
 | `AGENT_ORG_RATE_LIMIT_MAX` | `20000` | Hard platform ceiling for the per-organization limit, regardless of device count. Keeps the per-tenant guardrail meaningful for very large fleets. |
+| `LOGIN_ACCOUNT_LOCKOUT_MAX` | `5` | Consecutive failed password attempts (keyed per account, not per IP) before the account is locked for the window below. Set to `0` to disable lockout entirely. Not mapped in the stock compose file — add it to the `api` service `environment:` block as well as `.env`. |
+| `LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS` | `900` | Lockout duration once `LOGIN_ACCOUNT_LOCKOUT_MAX` is reached. Not mapped in the stock compose file — add it to the `api` service `environment:` block as well as `.env`. |
+| `AUTH_REFRESH_RATE_LIMIT` | `60` | Requests per window allowed on `POST /auth/refresh`, keyed per refresh-token family (roughly one browser session chain). |
+| `AUTH_REFRESH_RATE_WINDOW_SECONDS` | `60` | Window for `AUTH_REFRESH_RATE_LIMIT`. |
 
 <Aside type="note">
   Earlier `.env.example` files carried `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_MAX_REQUESTS`, `SESSION_MAX_AGE`, and `ENABLE_API_DOCS` entries. None of these were ever read by the API — they are gone from `.env.example` as of v0.99.0 and can be safely deleted from your `.env`.
@@ -463,6 +492,8 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `AGENT_MTLS_BINDING_MODE` | `off` | `audit` counts certificate/device binding mismatches without denying; `enforce` denies them. Requires a validating proxy. Never inferred from `NODE_ENV`/`IS_HOSTED`/`CF_MTLS_*`. |
 | `MANAGED_SOFTWARE_POLICY_MODE` | `compat` | `enforce` requires an upgraded agent for every managed-software command, public destinations included. Check your not-yet-upgraded device count first — they are denied outright. |
 | `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` | `false` | Requires update manifests to carry a signing key ID. Not fleet-wide: older agent builds ignore the pushed value. Only enable once the missing-ID count has been zero for 7 consecutive days. |
+| `AUTH_BROWSER_TRANSITIONS_ENFORCED` | `false` | Phased rollout switch for a browser-session binding hardening mechanism that ties an issued session to a browser-generated binding value, so a stolen refresh token alone is not enough to move a session to a different browser. `true` requires every new session to carry the binding and disables legacy issuance. Validated at boot: must be a boolean (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`) when set. |
+| `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED` | `false` | Extends the same binding to terminal/native sessions. Requires `AUTH_BROWSER_TRANSITIONS_ENFORCED=true` — the API refuses to boot if this is `true` while that one is not. |
 
 ## Feature Flags
 
@@ -541,6 +572,12 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `CF_ACCESS_TEAM_DOMAIN` | — | Required when trust is enabled. Bare hostname of your Cloudflare team domain, e.g. `example.cloudflareaccess.com`. No scheme. |
 | `CF_ACCESS_AUD` | — | Required when trust is enabled. AUD tag for the Cloudflare Access application protecting Breeze. |
 | `CF_ACCESS_TRUSTS_MFA` | `false` | Treat a valid CF Access JWT as MFA-satisfied for the minted Breeze session. Only enable if your CF Access policy actually requires step-up MFA. |
+
+## Backup (Enterprise Agent Backup)
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_BACKUP_SERVER_URL` | — | Instance-level backup control-plane URL, pushed to every agent through its config, enrollment response, and heartbeat reply. Lets you point the [enterprise backup](/deploy/binaries/#backup-binary) subsystem (Hyper-V, MSSQL, system image) at a separate backup control plane instead of the main API. Must be `https://` in production; `http://` is accepted only for `localhost`/`127.0.0.1`. Leave unset to keep backups pointed at the main API. |
 
 ## Cloud-to-Cloud Backup (M365)
 
@@ -737,6 +774,12 @@ and an **unrecognized model id is priced at conservative Opus-tier
 cheap local model, not `$0`. For accurate accounting, add the served model id to
 `MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
+
+## Breeze AI for Office (add-ins, optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLIENT_AI_ENTRA_CLIENT_ID` | — | Entra application (client) ID for the multi-tenant **Breeze AI for Office** add-in app registration. The entire `/api/v1/client-ai/admin/*` admin surface (tenant mapping, org policy, usage, templates) answers `404` ("Breeze AI for Office is not enabled") until this is set. Leave unset if you don't use the Office add-ins' AI features. |
 
 ## Accounting (QuickBooks Online)
 

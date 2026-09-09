@@ -333,7 +333,7 @@ it at `/ready`.** See [Health Monitoring](/monitoring/health/).
 
 #### Database migrations
 
-**53 migrations. Take a database backup first.** All are idempotent and apply automatically on API startup (unless you have set `AUTO_MIGRATE=false`). Every index on a table that can be large is built **concurrently**, so writes are not blocked while they run — the trade-off is that an interrupted build leaves an invalid index behind. If that happens the next boot reports it loudly; recover with `DROP INDEX CONCURRENTLY <name>` and restart.
+**54 migrations. Take a database backup first.** All are idempotent and apply automatically on API startup (unless you have set `AUTO_MIGRATE=false`). Every index on a table that can be large is built **concurrently**, so writes are not blocked while they run — the trade-off is that an interrupted build leaves an invalid index behind. If that happens the next boot reports it loudly; recover with `DROP INDEX CONCURRENTLY <name>` and restart.
 
 Three migrations clean up or stamp existing rows and record what they touched as a Postgres `WARNING`. Read these in the API log after the first boot:
 
@@ -449,16 +449,18 @@ See [Binary Distribution](/deploy/binaries/) for details.
 
 Some devices — production database servers, devices in a change-controlled window — should not self-update on the normal heartbeat cadence. Toggle auto-update per device without editing config on the machine:
 
+This endpoint requires a signed-in user session with MFA satisfied, not an API key — `$TOKEN` below is a Breeze access token, not a partner API key.
+
 ```bash
 # Disable auto-update for one device
 curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
-  -H "Authorization: Bearer <api-key>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"enabled": false}'
 
 # Re-enable later
 curl -X POST "https://breeze.example.com/api/v1/devices/<device-id>/auto-update" \
-  -H "Authorization: Bearer <api-key>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"enabled": true}'
 ```
@@ -481,7 +483,7 @@ By default (`AGENT_AUTO_PROMOTE=true`), syncing a new agent release immediately 
 
    ```bash
    curl -X POST "https://breeze.example.com/api/v1/agent-versions/promote" \
-     -H "Authorization: Bearer <platform-admin-api-key>" \
+     -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"version": "0.84.0"}'
    ```
@@ -522,7 +524,7 @@ Agent update maintenance windows are set in **Settings → Org Defaults** (and o
 
 | Field | Description |
 |-------|-------------|
-| **Days** | Which days of the week updates are permitted (e.g., Tuesday and Thursday) |
+| **Day** | A single day of the week the window applies to, or left unset to apply the window every day — you cannot select more than one specific day |
 | **Start time** | Window start time in UTC |
 | **End time** | Window end time in UTC |
 
@@ -711,11 +713,11 @@ You can test a release candidate before making it available to users:
    docker compose up -d
    ```
 
-3. **Sync agents to the RC** using the `sync-github` endpoint. This fetches the release assets from GitHub and registers them in the Breeze database so agents know a new version is available.
+3. **Sync agents to the RC** using the `sync-github` endpoint. This fetches the release assets from GitHub and registers them in the Breeze database so agents know a new version is available. It requires a signed-in admin session with MFA satisfied — `$TOKEN` is a Breeze access token, not an API key.
 
    ```bash
    curl -X POST "https://your-domain/api/v1/agent-versions/sync-github?version=v0.11.3-rc.1" \
-     -H "Authorization: Bearer <api-key>"
+     -H "Authorization: Bearer $TOKEN"
    ```
 
    The response includes the version that was synced and the list of platform/architecture targets that were registered:

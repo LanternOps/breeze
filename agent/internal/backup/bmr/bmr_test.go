@@ -2,13 +2,19 @@ package bmr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -87,6 +93,7 @@ func TestRecoveryResultSerialization(t *testing.T) {
 		DriversInjected: 3,
 		Validated:       true,
 		Warnings:        []string{"minor warning 1"},
+		FailedFiles:     2,
 	}
 
 	data, err := json.Marshal(result)
@@ -119,6 +126,9 @@ func TestRecoveryResultSerialization(t *testing.T) {
 	}
 	if len(decoded.Warnings) != 1 {
 		t.Fatalf("Warnings length: got %d, want 1", len(decoded.Warnings))
+	}
+	if decoded.FailedFiles != 2 {
+		t.Errorf("FailedFiles: got %d, want 2", decoded.FailedFiles)
 	}
 }
 
@@ -413,5 +423,557 @@ func TestProviderFromAuthenticatedConfig_S3(t *testing.T) {
 	}
 	if provider == nil {
 		t.Fatal("expected provider")
+	}
+}
+
+// TestRestoreSourcePath_PrefersOriginalPathUnderVSS proves restoreFiles'
+// helper itself: OriginalPath wins whenever set, never the VSS
+// shadow-device SourcePath (D8) — mirrors backup's own restoreSourcePath.
+func TestRestoreSourcePath_PrefersOriginalPathUnderVSS(t *testing.T) {
+	const shadow = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x`
+	const original = `C:\assure\src\x`
+
+	f := manifestFile{SourcePath: shadow, OriginalPath: original}
+	if got := restoreSourcePath(f); got != original {
+		t.Fatalf("restoreSourcePath = %q, want the original path %q, not the shadow device path", got, original)
+	}
+
+	plain := manifestFile{SourcePath: "/data/plain.txt"}
+	if got := restoreSourcePath(plain); got != "/data/plain.txt" {
+		t.Fatalf("restoreSourcePath (no OriginalPath) = %q, want SourcePath %q", got, "/data/plain.txt")
+	}
+}
+
+// TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath is D8's core
+// proof for BMR's default (no --target-path override) restore destination:
+// a manifest entry whose SourcePath is a VSS shadow-copy device path must
+// land under its OriginalPath, never under the shadow path — before this
+// field existed, bmr's manifestFile silently dropped `originalPath` on
+// decode (no matching struct field), so every VSS-backed BMR recovery
+// restored under the literal shadow-device path.
+func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-vss-default"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("bmr-default-target-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	// restoreFiles writes directly to the (default or overridden) target
+	// path with no containment check of its own (unlike RestoreFromSnapshotContext),
+	// so both paths here live under an isolated temp root.
+	restoreRoot := t.TempDir()
+	originalPath := filepath.Join(restoreRoot, "assure", "src", "x")
+	shadowSourcePath := filepath.Join(restoreRoot, "vss-shadow-copy-1", "assure", "src", "x")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+
+	filesRestored, bytesRestored, warnings, _, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 {
+		t.Fatalf("filesRestored = %d, want 1 (warnings: %v)", filesRestored, warnings)
+	}
+	if bytesRestored != int64(len(content)) {
+		t.Fatalf("bytesRestored = %d, want %d", bytesRestored, len(content))
+	}
+
+	restored, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatalf("expected the file to land at the original path %q: %v", originalPath, err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+	if _, statErr := os.Stat(shadowSourcePath); statErr == nil {
+		t.Fatalf("file was restored under the shadow-copy path %q instead of the original path", shadowSourcePath)
+	}
+}
+
+// TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath proves D8's other
+// half: RecoveryConfig.TargetPaths overrides are documented as "original ->
+// target path overrides" (see that field's doc comment) and must actually
+// be looked up by the ORIGINAL path — a caller (the server, a human
+// operator) only ever knows the real, human-visible location, never the
+// per-run VSS shadow-device path, so a lookup keyed by SourcePath would
+// never hit under VSS.
+func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-vss-override"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("bmr-override-target-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	shadowSourcePath := filepath.Join(restoreRoot, "vss-shadow-copy-1", "assure", "src", "x")
+	originalPath := filepath.Join(restoreRoot, "assure", "src", "x")
+	overrideTarget := filepath.Join(t.TempDir(), "alt-restore-location", "x")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	cfg := RecoveryConfig{
+		TargetPaths: map[string]string{
+			originalPath: overrideTarget,
+		},
+	}
+
+	filesRestored, _, warnings, _, err := restoreFiles(context.Background(), manifest, cfg, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 {
+		t.Fatalf("filesRestored = %d, want 1 (warnings: %v)", filesRestored, warnings)
+	}
+
+	restored, err := os.ReadFile(overrideTarget)
+	if err != nil {
+		t.Fatalf("expected the file to land at the override target %q (keyed by the original path): %v", overrideTarget, err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+	if _, statErr := os.Stat(originalPath); statErr == nil {
+		t.Fatalf("file should not have landed at the un-overridden original path %q once an override was configured", originalPath)
+	}
+}
+
+// breakerFakeProvider is a minimal in-memory BackupProvider used to
+// exercise restoreFiles' consecutive-failure circuit breaker
+// (maxConsecutiveDownloadFailures, bmr.go) under scripted per-call
+// success/failure sequences. Unlike providers.NewLocalProvider (used by the
+// fixtures elsewhere in this file), it never touches disk, so tests can
+// assert an exact provider.Download call count.
+type breakerFakeProvider struct {
+	// downloadErr, given the 0-based index of this Download call, returns
+	// the error Download should return for that call (nil for success). A
+	// nil downloadErr means every call succeeds.
+	downloadErr func(callIndex int) error
+	calls       int
+}
+
+func (p *breakerFakeProvider) Download(_, _ string) error {
+	idx := p.calls
+	p.calls++
+	if p.downloadErr == nil {
+		return nil
+	}
+	return p.downloadErr(idx)
+}
+
+func (p *breakerFakeProvider) Upload(_, _ string) error        { return nil }
+func (p *breakerFakeProvider) List(_ string) ([]string, error) { return nil, nil }
+func (p *breakerFakeProvider) Delete(_ string) error           { return nil }
+
+// TestRestoreFiles_CapsWarningsAndCountsFailedFiles proves D14's fix: with
+// most files failing to restore (the observed shape once the download route's
+// per-token rate limiter starts returning 429s — see D13), restoreFiles must
+// not accumulate one warning string per failure. 9,900 such strings blew the
+// /bmr/recover/complete request past the API's default 1MB body-limit gate
+// ("Request body too large"), so the server never even learned the recovery's
+// outcome. Warnings are capped at 50 individual entries plus one summary
+// line; FailedFiles carries the true count for the caller/telemetry.
+//
+// Failures here are spread out — never more than
+// maxConsecutiveDownloadFailures-1 in a row — so this exercises D14's cap
+// without ALSO tripping the consecutive-failure circuit breaker added
+// alongside it (proven separately by
+// TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures): every file
+// in the manifest must still be attempted.
+func TestRestoreFiles_CapsWarningsAndCountsFailedFiles(t *testing.T) {
+	const cycles = 10
+	cycleLen := maxConsecutiveDownloadFailures // cycleLen-1 failures then 1 success, repeated
+	totalFiles := cycles * cycleLen
+
+	snapshotID := "bmr-mass-failure"
+	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(idx int) error {
+			if idx%cycleLen == cycleLen-1 {
+				return nil // one success per cycle resets the breaker
+			}
+			return errors.New("simulated download failure")
+		},
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err == nil {
+		t.Fatal("expected restoreFiles to report an error when most files fail")
+	}
+	if provider.calls != totalFiles {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must not trip on this cadence)", provider.calls, totalFiles)
+	}
+	wantFailed := totalFiles - cycles // one success per cycle
+	if failedFiles != wantFailed {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, wantFailed)
+	}
+	if filesRestored != cycles {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, cycles)
+	}
+	if len(warnings) > maxRecoveryWarnings+1 {
+		t.Fatalf("len(warnings) = %d, want <= %d", len(warnings), maxRecoveryWarnings+1)
+	}
+	last := warnings[len(warnings)-1]
+	wantMore := wantFailed - maxRecoveryWarnings
+	wantSubstr := fmt.Sprintf("%d more", wantMore)
+	if !strings.Contains(last, wantSubstr) {
+		t.Fatalf("last warning = %q, want it to mention %q", last, wantSubstr)
+	}
+}
+
+// TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures proves the
+// consecutive-failure circuit breaker (maxConsecutiveDownloadFailures,
+// bmr.go): with every download failing, restoreFiles must stop attempting
+// further files once it has accumulated maxConsecutiveDownloadFailures
+// failures in a row, rather than working through the whole manifest.
+// Without this, a large manifest against a server that has disappeared
+// mid-recovery would burn downloadWithRetry's full multi-minute retry
+// budget on every single remaining file.
+func TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures(t *testing.T) {
+	const totalFiles = 30 // > maxConsecutiveDownloadFailures, so the breaker must trip before the end
+	snapshotID := "bmr-breaker-all-fail"
+	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(int) error { return errors.New("simulated download failure") },
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err == nil {
+		t.Fatal("expected restoreFiles to return an error when the circuit breaker trips")
+	}
+	if !strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("err = %q, want it to mention 'consecutive'", err.Error())
+	}
+	if provider.calls != maxConsecutiveDownloadFailures {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must stop further attempts, not just stop counting)", provider.calls, maxConsecutiveDownloadFailures)
+	}
+	if failedFiles != maxConsecutiveDownloadFailures {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, maxConsecutiveDownloadFailures)
+	}
+	if filesRestored != 0 {
+		t.Fatalf("filesRestored = %d, want 0", filesRestored)
+	}
+	foundAbortWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "consecutive") && strings.Contains(w, "not attempted") {
+			foundAbortWarning = true
+			break
+		}
+	}
+	if !foundAbortWarning {
+		t.Fatalf("warnings = %v, want one mentioning consecutive failures and files not attempted", warnings)
+	}
+}
+
+// TestRestoreFiles_CircuitBreakerNotTrippedByAlternatingFailures proves the
+// breaker only counts a CONSECUTIVE run of failures: a fail/success
+// alternation that never strings together maxConsecutiveDownloadFailures
+// failures in a row must never trip the breaker, and every file in the
+// manifest gets attempted.
+func TestRestoreFiles_CircuitBreakerNotTrippedByAlternatingFailures(t *testing.T) {
+	const totalFiles = 41 // odd, so the run also ends on a failure
+	snapshotID := "bmr-breaker-alternating"
+	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(idx int) error {
+			if idx%2 == 0 {
+				return errors.New("simulated download failure")
+			}
+			return nil
+		},
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if provider.calls != totalFiles {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must not trip on alternating failures)", provider.calls, totalFiles)
+	}
+	wantFailed := totalFiles/2 + 1 // indices 0,2,4,...,40 fail
+	if failedFiles != wantFailed {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, wantFailed)
+	}
+	wantRestored := totalFiles - wantFailed
+	if filesRestored != wantRestored {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, wantRestored)
+	}
+	if err == nil {
+		t.Fatal("expected an error since not every file restored")
+	}
+	if strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("err = %q, must not mention 'consecutive' (breaker should not have tripped)", err.Error())
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "aborting after") {
+			t.Fatalf("warnings = %v, must not contain an abort/breaker warning", warnings)
+		}
+	}
+}
+
+// TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr proves
+// restoreFiles checks ctx at the very first loop iteration and, with zero
+// files downloaded, returns ctx.Err() itself — not a generic wrapped
+// message — so callers can distinguish cancellation from an ordinary
+// restore failure.
+func TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr(t *testing.T) {
+	restoreRoot := t.TempDir()
+	provider := &breakerFakeProvider{
+		downloadErr: func(int) error { return nil },
+	}
+
+	manifest := &snapshotManifest{
+		ID: "bmr-breaker-cancelled",
+		Files: []manifestFile{
+			{SourcePath: filepath.Join(restoreRoot, "f0"), BackupPath: "snapshots/x/files/f0.gz", Size: 10},
+		},
+		Size: 10,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	filesRestored, bytesRestored, _, failedFiles, err := restoreFiles(ctx, manifest, RecoveryConfig{}, provider)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled (ctx.Err() itself)", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider.Download call count = %d, want 0 (no downloads once ctx is already cancelled)", provider.calls)
+	}
+	if filesRestored != 0 || bytesRestored != 0 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d bytesRestored=%d failedFiles=%d, want all 0", filesRestored, bytesRestored, failedFiles)
+	}
+}
+
+// TestRestoreFiles_ReappliesModeAndModTime proves O20's fix: restoreFiles
+// must reapply the manifest's captured mode and modTime after a successful
+// download, mirroring backup.RestoreFromSnapshot's fidelity guarantee
+// (restore.go ~:241). Before this, manifestFile carried neither field, so
+// every file BMR actually restored during the live D13 run (134 of them)
+// landed with drifted permissions and mtimes.
+func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-metadata"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "secret.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "secret")
+	content := []byte("sensitive-bytes")
+	if err := os.WriteFile(srcPath, content, 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	wantMTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "secret")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content)), Mode: 0o600, ModTime: wantMTime},
+		},
+		Size: int64(len(content)),
+	}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+
+	info, statErr := os.Stat(targetPath)
+	if statErr != nil {
+		t.Fatalf("stat restored file: %v", statErr)
+	}
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %o, want 0600", info.Mode().Perm())
+		}
+	}
+	if !info.ModTime().Truncate(time.Second).Equal(wantMTime) {
+		t.Errorf("modTime = %v, want %v", info.ModTime(), wantMTime)
+	}
+}
+
+// TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles proves
+// the silent-failure review's item 2 fix: the chmod/chtimes post-restore
+// fidelity warnings (added alongside O20's mode/mtime reapply) bypassed
+// D14's cap by appending directly to warnings, so a systematic chmod
+// failure across a large recovery could still blow past the API's warnings
+// size limit the same way D14 fixed for download failures. Since the file's
+// BYTES are restored fine when only the metadata reapply fails, these
+// failures also must NOT count toward failedFiles/FailedFiles — that field
+// means "bytes not restored".
+func TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles(t *testing.T) {
+	const totalFiles = 10000
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-fidelity-mass-failure"
+	restoreRoot := t.TempDir()
+
+	// Upload one shared object and reference it from every manifest entry —
+	// exercises 10,000 real downloads (and therefore 10,000 real chmod
+	// calls) without the cost of 10,000 separate uploads.
+	srcPath := filepath.Join(t.TempDir(), "shared")
+	if err := os.WriteFile(srcPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "shared.gz"))
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: backupPath,
+			Size:       1,
+			Mode:       0o644,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: totalFiles}
+
+	origChmod := chmodFile
+	chmodFile = func(string, os.FileMode) error { return errors.New("injected chmod failure") }
+	defer func() { chmodFile = origChmod }()
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings head: %v)", err, warnings[:min(5, len(warnings))])
+	}
+	if filesRestored != totalFiles {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, totalFiles)
+	}
+	if failedFiles != 0 {
+		t.Fatalf("failedFiles = %d, want 0 (bytes were restored fine; only metadata reapply failed)", failedFiles)
+	}
+	if len(warnings) > maxRecoveryWarnings+2 {
+		t.Fatalf("len(warnings) = %d, want capped near %d (one summary line), not one entry per failure", len(warnings), maxRecoveryWarnings)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "more metadata failures") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a summary line mentioning 'more metadata failures', got %d warnings, tail: %v", len(warnings), warnings[max(0, len(warnings)-3):])
+	}
+}
+
+// TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped proves the
+// cap is on warning STRINGS, not files: a single chtimes failure below the
+// cap still produces a readable per-file warning (not silently dropped),
+// and the file still counts as restored.
+func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-fidelity-single"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("fidelity-single-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "x")
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content)), ModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		},
+		Size: int64(len(content)),
+	}
+
+	origChtimes := chtimesFile
+	chtimesFile = func(string, time.Time, time.Time) error { return errors.New("injected chtimes failure") }
+	defer func() { chtimesFile = origChtimes }()
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "could not reapply mtime") {
+		t.Fatalf("warnings = %v, want exactly one mtime-reapply warning", warnings)
 	}
 }

@@ -7,28 +7,25 @@ import {
   LONG_RUNNING_TIMER_WARNING_SECONDS,
   shouldReplayNow,
   shouldShowWaitingToSync,
-  toastClearanceOffset,
   WAITING_TO_SYNC_GRACE_MS,
   WEDGED_ATTEMPTS,
 } from './timerBarLogic';
 
 describe('isTimerBarVisible', () => {
-  it('stays mounted while a toast is pending even with an empty queue and no timer', () => {
-    // The replay result toast lives inside the bar. After a drain that empties
-    // the queue by DROPPING writes, remaining is 0 and running is null, so a
-    // visibility rule of "running || pending" unmounts the bar in the very
-    // render that would have shown "N offline time entries could not be saved".
-    // Discarded billable work would vanish with no signal anywhere.
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0, hasToast: true })).toBe(true);
-  });
-
-  it('is hidden only when there is nothing running, nothing queued and nothing to say', () => {
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0, hasToast: false })).toBe(false);
+  it('is hidden when there is nothing running and nothing queued', () => {
+    // #5368: the replay-result toast used to be a CHILD of the bar, so the rule
+    // carried a third `hasToast` input to keep the bar alive long enough to
+    // show "N offline time entries could not be saved" after a drain that
+    // dropped writes (remaining 0, nothing running). The toast now goes to the
+    // app-wide host, which outlives the bar, so the bar's own visibility is
+    // back to describing the bar. The dropped-writes case is still reported:
+    // TimerBar folds the standing needs-attention count into `pendingCount`.
+    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 0 })).toBe(false);
   });
 
   it('is visible for a running timer and for an unsent backlog', () => {
-    expect(isTimerBarVisible({ hasRunningTimer: true, pendingCount: 0, hasToast: false })).toBe(true);
-    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 2, hasToast: false })).toBe(true);
+    expect(isTimerBarVisible({ hasRunningTimer: true, pendingCount: 0 })).toBe(true);
+    expect(isTimerBarVisible({ hasRunningTimer: false, pendingCount: 2 })).toBe(true);
   });
 });
 
@@ -97,39 +94,6 @@ describe('shouldShowWaitingToSync', () => {
 
   it('never shows the label when nothing is pending, however long it has been', () => {
     expect(shouldShowWaitingToSync({ pendingCount: 0, elapsedMs: 100_000 })).toBe(false);
-  });
-});
-
-describe('toastClearanceOffset', () => {
-  it('clears a measured sibling element plus a margin', () => {
-    expect(toastClearanceOffset(120, 16)).toBe(136);
-  });
-
-  it('falls back to the margin alone before the sibling has been measured', () => {
-    // `onLayout` has not fired yet (height 0) or reported something bogus
-    // (negative) — either way the toast must not collapse to a negative
-    // offset, which would push it below the screen edge.
-    expect(toastClearanceOffset(0, 16)).toBe(16);
-    expect(toastClearanceOffset(-5, 16)).toBe(16);
-  });
-
-  // #5171: the composer's measured height clears it as a static card, but the
-  // keyboard LIFTS the composer off the bottom of the screen while the toast
-  // (rendered as a sibling of the KeyboardAvoidingView's scroll content, not
-  // inside it) is not lifted with it — so a toast sized only for the
-  // composer's height still paints mid-composer once the keyboard is up.
-  describe('with a keyboard height', () => {
-    it('adds the keyboard height on top of the measured element and margin', () => {
-      expect(toastClearanceOffset(120, 16, 300)).toBe(436);
-    });
-
-    it('defaults the keyboard height to 0 when omitted — unchanged behavior for existing callers', () => {
-      expect(toastClearanceOffset(120, 16)).toBe(toastClearanceOffset(120, 16, 0));
-    });
-
-    it('treats a negative keyboard height (should not happen, but guard it) as 0', () => {
-      expect(toastClearanceOffset(120, 16, -50)).toBe(136);
-    });
   });
 });
 

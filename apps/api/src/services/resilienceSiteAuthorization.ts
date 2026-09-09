@@ -188,6 +188,51 @@ async function resolveLineage(
   }
 }
 
+/**
+ * D17 (2026-10-15-140004): restore_jobs.snapshot_id and
+ * recovery_tokens.snapshot_id are now ON DELETE SET NULL, so a still-alive
+ * history row can point at a snapshot retention already deleted. A SOURCE-role
+ * lineage query that only ever resolves device/site THROUGH the snapshot
+ * (leftJoin on `backupSnapshots.id = <row>.snapshotId`) then gets
+ * deviceId: null / siteId: null, and `authorizeResilienceResources` denies a
+ * principal who plainly owns the row's own device.
+ *
+ * Resolves siteId for a device the caller already knows is this row's OWN
+ * device (never anything broader — this must not widen access past what the
+ * row itself is scoped to). Scoped by orgId, same as every other lineage
+ * lookup in this file.
+ */
+async function resolveOwnDeviceSiteId(orgId: string, deviceId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+    .limit(1);
+  return row?.siteId ?? null;
+}
+
+/**
+ * Applies the D17 own-device fallback to a SOURCE-role lineage row that
+ * selected `ownDeviceId` (the row's own device column, or — for media/boot
+ * media artifacts — its token's device column) alongside the
+ * snapshot-derived deviceId/siteId. When the snapshot resolved (deviceId AND
+ * siteId both present), returns it unchanged — no extra query. Otherwise
+ * falls back to ownDeviceId and a fresh siteId lookup for it.
+ */
+async function withOwnDeviceFallback(
+  row: { orgId: string; deviceId: string | null; siteId: string | null; ownDeviceId: string | null } | undefined,
+): Promise<Lineage | undefined> {
+  if (!row) return undefined;
+  if (row.deviceId && row.siteId) {
+    return { orgId: row.orgId, deviceId: row.deviceId, siteId: row.siteId };
+  }
+  if (!row.ownDeviceId) {
+    return { orgId: row.orgId, deviceId: row.deviceId, siteId: row.siteId };
+  }
+  const siteId = await resolveOwnDeviceSiteId(row.orgId, row.ownDeviceId);
+  return { orgId: row.orgId, deviceId: row.ownDeviceId, siteId };
+}
+
 async function resolveRecoveryTokenLineage(
   orgId: string,
   ref: ResilienceResourceRef,
@@ -205,7 +250,13 @@ async function resolveRecoveryTokenLineage(
     return row;
   }
   const [row] = await db
-    .select({ orgId: recoveryTokens.orgId, deviceId: backupSnapshots.deviceId, siteId: devices.siteId })
+    .select({
+      orgId: recoveryTokens.orgId,
+      deviceId: backupSnapshots.deviceId,
+      siteId: devices.siteId,
+      // D17 fallback when the snapshot is gone (SET NULL) — the token's own device.
+      ownDeviceId: recoveryTokens.deviceId,
+    })
     .from(recoveryTokens)
     .leftJoin(backupSnapshots, and(
       eq(backupSnapshots.id, recoveryTokens.snapshotId),
@@ -217,7 +268,7 @@ async function resolveRecoveryTokenLineage(
     ))
     .where(and(eq(recoveryTokens.id, ref.id), eq(recoveryTokens.orgId, orgId)))
     .limit(1);
-  return row;
+  return withOwnDeviceFallback(row);
 }
 
 async function resolveMediaArtifactLineage(
@@ -241,7 +292,16 @@ async function resolveMediaArtifactLineage(
     return row;
   }
   const [row] = await db
-    .select({ orgId: recoveryMediaArtifacts.orgId, deviceId: backupSnapshots.deviceId, siteId: devices.siteId })
+    .select({
+      orgId: recoveryMediaArtifacts.orgId,
+      deviceId: backupSnapshots.deviceId,
+      siteId: devices.siteId,
+      // D17 fallback: recoveryMediaArtifacts.snapshotId is still CASCADE (not
+      // SET NULL), so this row is deleted along with its snapshot in
+      // practice — but resolve via the row's own token's device anyway for
+      // defense in depth, matching the target-role join just above.
+      ownDeviceId: recoveryTokens.deviceId,
+    })
     .from(recoveryMediaArtifacts)
     .leftJoin(backupSnapshots, and(
       eq(backupSnapshots.id, recoveryMediaArtifacts.snapshotId),
@@ -251,9 +311,13 @@ async function resolveMediaArtifactLineage(
       eq(devices.id, backupSnapshots.deviceId),
       eq(devices.orgId, recoveryMediaArtifacts.orgId),
     ))
+    .leftJoin(recoveryTokens, and(
+      eq(recoveryTokens.id, recoveryMediaArtifacts.tokenId),
+      eq(recoveryTokens.orgId, recoveryMediaArtifacts.orgId),
+    ))
     .where(and(eq(recoveryMediaArtifacts.id, ref.id), eq(recoveryMediaArtifacts.orgId, orgId)))
     .limit(1);
-  return row;
+  return withOwnDeviceFallback(row);
 }
 
 async function resolveBootMediaArtifactLineage(
@@ -277,7 +341,16 @@ async function resolveBootMediaArtifactLineage(
     return row;
   }
   const [row] = await db
-    .select({ orgId: recoveryBootMediaArtifacts.orgId, deviceId: backupSnapshots.deviceId, siteId: devices.siteId })
+    .select({
+      orgId: recoveryBootMediaArtifacts.orgId,
+      deviceId: backupSnapshots.deviceId,
+      siteId: devices.siteId,
+      // D17 fallback: recoveryBootMediaArtifacts.snapshotId is still CASCADE
+      // (not SET NULL), so this row is deleted along with its snapshot in
+      // practice — but resolve via the row's own token's device anyway for
+      // defense in depth, matching the target-role join just above.
+      ownDeviceId: recoveryTokens.deviceId,
+    })
     .from(recoveryBootMediaArtifacts)
     .leftJoin(backupSnapshots, and(
       eq(backupSnapshots.id, recoveryBootMediaArtifacts.snapshotId),
@@ -287,9 +360,13 @@ async function resolveBootMediaArtifactLineage(
       eq(devices.id, backupSnapshots.deviceId),
       eq(devices.orgId, recoveryBootMediaArtifacts.orgId),
     ))
+    .leftJoin(recoveryTokens, and(
+      eq(recoveryTokens.id, recoveryBootMediaArtifacts.tokenId),
+      eq(recoveryTokens.orgId, recoveryBootMediaArtifacts.orgId),
+    ))
     .where(and(eq(recoveryBootMediaArtifacts.id, ref.id), eq(recoveryBootMediaArtifacts.orgId, orgId)))
     .limit(1);
-  return row;
+  return withOwnDeviceFallback(row);
 }
 
 async function resolveRestoreJobLineage(
@@ -309,7 +386,13 @@ async function resolveRestoreJobLineage(
     return row;
   }
   const [row] = await db
-    .select({ orgId: restoreJobs.orgId, deviceId: backupSnapshots.deviceId, siteId: devices.siteId })
+    .select({
+      orgId: restoreJobs.orgId,
+      deviceId: backupSnapshots.deviceId,
+      siteId: devices.siteId,
+      // D17 fallback when the snapshot is gone (SET NULL) — the job's own device.
+      ownDeviceId: restoreJobs.deviceId,
+    })
     .from(restoreJobs)
     .leftJoin(backupSnapshots, and(
       eq(backupSnapshots.id, restoreJobs.snapshotId),
@@ -321,7 +404,7 @@ async function resolveRestoreJobLineage(
     ))
     .where(and(eq(restoreJobs.id, ref.id), eq(restoreJobs.orgId, orgId)))
     .limit(1);
-  return row;
+  return withOwnDeviceFallback(row);
 }
 
 export async function authorizeResilienceResources(input: {

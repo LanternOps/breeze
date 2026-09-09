@@ -4,13 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/spf13/cobra"
 )
 
 var runBMRRecovery = bmr.RunRecoveryWithTokenContext
+
+// recoveryContext is a seam over defaultRecoveryContext so tests can inject
+// an already-cancelled context without sending a real OS signal to the
+// test process.
+var recoveryContext = defaultRecoveryContext
+
+// defaultRecoveryContext returns a context that is cancelled when the
+// process receives SIGINT (os.Interrupt) or SIGTERM, so a long-running BMR
+// recovery (a 10,000-file manifest can take hours) can be interrupted
+// cleanly instead of only via SIGKILL. syscall.SIGTERM is defined on
+// GOOS=windows too (Go's syscall package models it there, even though
+// Windows has no real SIGTERM semantics), so this builds unmodified across
+// platforms.
+func defaultRecoveryContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
 
 func init() {
 	rootCmd.AddCommand(newBMRRecoverCommand())
@@ -35,7 +54,24 @@ func newBMRRecoverCommand() *cobra.Command {
 			}
 			cfg.TargetPaths = targetPaths
 
-			result, err := runBMRRecovery(context.Background(), cfg)
+			ctx, stop := recoveryContext()
+			defer stop()
+
+			result, err := runBMRRecovery(ctx, cfg)
+			// If the context is what ended the run (a SIGINT/SIGTERM fired,
+			// or the injected recoveryContext seam in tests), surface a
+			// clear, purpose-built error here rather than whatever generic
+			// message happened to bubble up from deep inside runBMRRecovery
+			// (e.g. a bare "context canceled" from an in-flight HTTP call).
+			// This only affects what the CLI prints/returns — the "complete"
+			// call runBMRRecovery already made to the server (it posts a
+			// failed completion on error) is untouched.
+			if ctx.Err() != nil {
+				err = fmt.Errorf("recovery interrupted by signal: %w", ctx.Err())
+				if result != nil {
+					result.Error = err.Error()
+				}
+			}
 			if result != nil {
 				encoded, marshalErr := json.MarshalIndent(result, "", "  ")
 				if marshalErr != nil {

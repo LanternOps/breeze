@@ -14,32 +14,24 @@ Breeze ships with Caddy as the default reverse proxy. It automatically provision
 
 ### Production Caddyfile
 
-The Caddyfile is generated inline inside `docker-compose.yml` — there is no separate config file to manage. A reference copy also exists at `docker/Caddyfile.prod`, but the compose-generated version is what runs in production.
+Caddy's configuration lives in one canonical file, `docker/Caddyfile.prod`, which every Breeze compose file mounts read-only into the container (`./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro`) — there is no separate config generated inline, and no other Caddyfile to keep in sync. Edit that file directly if you need to add a route.
 
-```caddy
-{
-  email {$ACME_EMAIL}
-}
+Routing is more than a two-way split between `web` and `api`. In match order, the file routes:
 
-{$BREEZE_DOMAIN} {
-  @api path /api/* /health /ready /metrics/*
-  handle @api {
-    encode zstd gzip
-    reverse_proxy api:3001
-  }
+| Path | Destination | Notes |
+|---|---|---|
+| `/api/v1/mcp/sse`, `/api/v1/helper/chat/sessions/*/messages`, `/api/v1/ai/sessions/*/stream` | `api:3001` | SSE/streaming — no compression, no buffering |
+| `/api/v1/auth/billing-init` | `billing:3002` | Billing auth init |
+| `/activate/complete`, `/activate/*` (with a `status` query) | `web:4321` | Account-activation pages |
+| `/oauth/consent`, `/oauth/consent/*` | `web:4321` | OAuth consent UI — matched before the API's `/oauth/*` block |
+| `/oauth/*`, the OAuth `.well-known` endpoints | `api:3001` | OAuth provider (authorize, token, registration, discovery) |
+| `/billing/invoices*`, `/billing/quotes*` | `web:4321` | MSP invoicing/quotes UI — matched before the billing sidecar |
+| `/billing`, `/billing/*` | `billing:3002` | Hosted billing UI sidecar |
+| `/portal`, `/portal/*` | `portal:4322` | Customer portal |
+| `/api/*`, `/s/*`, `/health*`, `/ready`, `/metrics/*`, `/i/*` | `api:3001` | General API traffic. Also normalizes the client-certificate assertion headers used by agent mTLS — see [Certificate Pinning & mTLS](/security/mtls/) |
+| everything else | `web:4321` | Dashboard (catch-all) |
 
-  handle {
-    encode zstd gzip
-    reverse_proxy web:4321
-  }
-
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    X-Content-Type-Options "nosniff"
-    Referrer-Policy "strict-origin-when-cross-origin"
-  }
-}
-```
+The same security headers shown below are set globally on every response.
 
 ### How It Works
 
@@ -70,9 +62,11 @@ Leave the variable empty for any internet-reachable deployment. You do not need 
 ### WebSocket Proxying
 
 Caddy automatically handles WebSocket upgrade for:
-- Agent connections at `/api/v1/agents/:id/ws`
-- Terminal sessions at `/api/v1/terminal/:deviceId`
-- Real-time dashboard updates
+- Agent connections at `/api/v1/agent-ws/:id/ws`
+- Remote desktop / terminal sessions at `/api/v1/remote/sessions/:id/ws`, `/api/v1/desktop-ws/*`, and `/api/v1/tunnel-ws/*`
+- The one-time-ticket event stream at `/api/v1/events/ws`
+
+It also disables buffering (but does not upgrade the connection) for the SSE endpoints used by MCP and streaming AI chat: `/api/v1/mcp/sse`, `/api/v1/helper/chat/sessions/*/messages`, and `/api/v1/ai/sessions/*/stream`.
 
 No additional configuration needed.
 

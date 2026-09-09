@@ -262,7 +262,13 @@ func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.
 		if b.backup == nil {
 			b.backup = &backupHelper{}
 		}
-		b.backup.session = session
+		bh := b.backup
+		// bh.session is protected by bh.mu, not b.mu (see backup.go) — nest
+		// it here (b.mu is already held) rather than dropping b.mu first,
+		// since b.mu is still needed below for publishSnapshotLocked etc.
+		bh.mu.Lock()
+		bh.session = session
+		bh.mu.Unlock()
 	}
 	b.publishSnapshotLocked()
 	onClosed := b.onSessionClosed

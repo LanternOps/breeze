@@ -128,7 +128,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 
 		current := int64(i + 1)
-		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
+		displayPath := restoreSourcePath(file)
+		targetPath := resolveTargetPath(cfg.TargetPath, displayPath)
 
 		// Skip already-completed files (resume)
 		if resumeState.CompletedFiles[file.BackupPath] {
@@ -137,7 +138,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				result.BytesRestored += file.Size
 				if progressFn != nil {
 					progressFn("restoring", current, total,
-						fmt.Sprintf("skipped (resumed): %s", file.SourcePath))
+						fmt.Sprintf("skipped (resumed): %s", displayPath))
 				}
 				continue
 			}
@@ -145,19 +146,19 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 
 		// Download to staging
-		stagingFile := filepath.Join(stagingDir, sanitizeFileName(file.BackupPath))
+		stagingFile := filepath.Join(stagingDir, stagingFileName(file.BackupPath))
 		if err := os.MkdirAll(filepath.Dir(stagingFile), 0o755); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to create staging subdir",
-				"file", file.SourcePath, "error", err.Error())
+				"file", displayPath, "error", err.Error())
 			continue
 		}
 
 		dlErr := provider.Download(file.BackupPath, stagingFile)
 		if dlErr != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to download file",
 				"backupPath", file.BackupPath, "error", dlErr.Error())
 			continue
@@ -176,7 +177,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			cleaned := filepath.Clean(targetPath)
 			cleanBase := filepath.Clean(base)
 			if !strings.HasPrefix(cleaned, cleanBase+string(filepath.Separator)) && cleaned != cleanBase {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", file.SourcePath))
+				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
 				result.FilesFailed++
 				os.Remove(stagingFile)
 				continue
@@ -186,7 +187,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Create target directory
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			os.Remove(stagingFile)
 			slog.Warn("failed to create target dir",
 				"target", targetPath, "error", err.Error())
@@ -196,7 +197,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Move from staging to target
 		if err := moveFile(stagingFile, targetPath); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			os.Remove(stagingFile)
 			slog.Warn("failed to move file to target",
 				"staging", stagingFile, "target", targetPath, "error", err.Error())
@@ -211,23 +212,23 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// always checked; the SHA-256 when the manifest carries one.
 		if info, statErr := os.Stat(targetPath); statErr != nil || info == nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to stat restored file", "target", targetPath, "error", fmt.Sprint(statErr))
 			continue
 		} else if info.Size() != file.Size {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", file.SourcePath, file.Size, info.Size()))
+				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", displayPath, file.Size, info.Size()))
 			slog.Warn("restored file failed size check",
 				"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
 			continue
 		}
 		if file.Checksum != "" && !checksumMatches(targetPath, file.Checksum) {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed checksum check (manifest %s)", file.SourcePath, file.Checksum))
+				fmt.Sprintf("restored %s failed checksum check (manifest %s)", displayPath, file.Checksum))
 			slog.Warn("restored file failed checksum check", "target", targetPath)
 			continue
 		}
@@ -241,7 +242,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.Mode != 0 {
 			if err := os.Chmod(targetPath, os.FileMode(file.Mode).Perm()); err != nil {
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), file.SourcePath, err))
+					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), displayPath, err))
 				slog.Warn("failed to reapply file mode on restore",
 					"target", targetPath, "mode", file.Mode, "error", err.Error())
 			}
@@ -249,7 +250,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if !file.ModTime.IsZero() {
 			if err := os.Chtimes(targetPath, file.ModTime, file.ModTime); err != nil {
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mtime to %s: %v", file.SourcePath, err))
+					fmt.Sprintf("could not reapply mtime to %s: %v", displayPath, err))
 				slog.Warn("failed to reapply mtime on restore",
 					"target", targetPath, "error", err.Error())
 			}
@@ -267,7 +268,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 		if progressFn != nil {
 			progressFn("restoring", current, total,
-				fmt.Sprintf("restored: %s", file.SourcePath))
+				fmt.Sprintf("restored: %s", displayPath))
 		}
 	}
 
@@ -325,8 +326,16 @@ func downloadManifest(provider providers.BackupProvider, snapshotID string) (*Sn
 	return &snapshot, nil
 }
 
-// filterFiles returns only the files whose SourcePath matches at least one of
-// the selected path prefixes. If selectedPaths is empty, all files are returned.
+// filterFiles returns only the files whose restoreSourcePath (see that
+// function — OriginalPath when VSS rewrote SourcePath, else SourcePath)
+// matches at least one of the selected paths. If selectedPaths is empty,
+// all files are returned.
+//
+// Matching against restoreSourcePath, not the raw SourcePath, matters
+// because the API indexes and validates selectedPaths against each file's
+// ORIGINAL path (D8): under VSS, SourcePath is a per-run shadow-copy device
+// path like \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x,
+// which a caller selecting "C:\assure\src\x" would never match.
 func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	if len(selectedPaths) == 0 {
 		return files
@@ -334,8 +343,8 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 
 	var matched []SnapshotFile
 	for _, f := range files {
-		for _, prefix := range selectedPaths {
-			if strings.HasPrefix(f.SourcePath, prefix) {
+		for _, selected := range selectedPaths {
+			if pathSelectionMatches(restoreSourcePath(f), selected) {
 				matched = append(matched, f)
 				break
 			}
@@ -344,12 +353,56 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	return matched
 }
 
+// pathSelectionMatches reports whether sourcePath was selected by selected:
+// either sourcePath IS selected (a single file was chosen), or sourcePath
+// lies inside the directory selected names (sourcePath starts with selected
+// plus a path separator). A bare strings.HasPrefix(sourcePath, selected) —
+// the old behavior — also matches any sibling that merely shares selected as
+// a leading substring: selecting "/x/prefix/pick.txt" wrongly also matched
+// "/x/prefix/pick.txt.bak", "/x/prefix/pick.txt2", and
+// "/x/prefix/pick.txtx/inner.txt", which an in-place restore then silently
+// overwrote even though the operator never selected them (D5).
+//
+// Both "/" and "\" are accepted as the directory-boundary separator
+// regardless of which one selected itself uses: manifests written on
+// Windows store SourcePath with backslashes, while a caller (e.g. a web UI
+// that always speaks forward slashes) may pass a selection in the other
+// convention. A trailing separator on selected is normalised away first so
+// "/x/prefix/" and "/x/prefix" select identically.
+func pathSelectionMatches(sourcePath, selected string) bool {
+	trimmed := strings.TrimRight(selected, `/\`)
+	if sourcePath == trimmed {
+		return true
+	}
+	return strings.HasPrefix(sourcePath, trimmed+"/") || strings.HasPrefix(sourcePath, trimmed+`\`)
+}
+
 // volumeName strips a leading volume/drive name (e.g. "C:") from a path. It
 // defaults to filepath.VolumeName, which is a no-op off Windows. Tests override
 // it with a Windows-style implementation so the embedded-drive case can be
 // exercised on any host (Linux/macOS CI would otherwise assert the wrong
 // behavior, since filepath.VolumeName never strips a drive letter there).
 var volumeName = filepath.VolumeName
+
+// restoreSourcePath returns the path a restore should re-root files under:
+// f.OriginalPath when VSS rewrote f.SourcePath to a per-run-ephemeral
+// shadow-copy device path (e.g.
+// \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x — see
+// SnapshotFile.OriginalPath's doc comment), else f.SourcePath itself (the
+// common, non-VSS case, where SourcePath is already the real path). Same
+// rule as journalEntryKey (checkpoint-journal resume identity) — reused
+// here — but restore/verify/BMR need it independently: SourcePath is the
+// READ-time location a backup was taken FROM, and once the shadow copy VSS
+// rewrote it under is gone (the very next backup run, or a reboot),
+// restoring under that literal device path either writes into a stale/
+// nonexistent shadow device or, worse, silently splits one logical file
+// tree across ShadowCopy1/ShadowCopy2/... depending on which run's shadow
+// ID happened to be live (D8). Every restore/verify/BMR call that computes
+// a destination path or matches a path selection against a manifest entry
+// MUST go through this, never f.SourcePath directly.
+func restoreSourcePath(f SnapshotFile) string {
+	return journalEntryKey(f)
+}
 
 // stripVolumeAndLeadingSeparators removes the volume/drive (e.g. "C:") and any
 // leading separators so an ABSOLUTE source path maps UNDER a target base.
@@ -397,11 +450,53 @@ func restoreStagingDir(cfg RestoreConfig) (string, error) {
 	return filepath.Join(os.TempDir(), "breeze-restore-staging", cfg.SnapshotID, stagingKey), nil
 }
 
+// clearReadOnly clears the owner-write bit on dst so a subsequent
+// open-for-write/rename onto it can succeed. On Windows, Go maps the
+// FILE_ATTRIBUTE_READONLY attribute to exactly this bit (0o200), so this
+// doubles as "clear the ReadOnly attribute" there. It never touches
+// directories and never follows symlinks (Lstat), and it is a no-op — not
+// an error — when dst is already writable. restored reports whether it
+// actually changed anything, so callers only retry (and only log) when a
+// change was made.
+func clearReadOnly(dst string) (restored bool, err error) {
+	info, err := os.Lstat(dst)
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	perm := info.Mode().Perm()
+	if perm&0o200 != 0 {
+		return false, nil
+	}
+	if err := os.Chmod(dst, perm|0o200); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // moveFile attempts os.Rename first (fast, same filesystem), then falls back
 // to copy+delete for cross-filesystem moves.
+//
+// A destination that exists and carries the Windows ReadOnly attribute (very
+// common for app config files being restored in place) makes os.Rename fail
+// with "Access is denied" — Windows enforces the read-only attribute on
+// rename, unlike Unix where directory permissions alone govern rename (D19).
+// When that happens, clear the write-protection on dst and retry the rename
+// once before falling back to copyAndDelete, which now can also recover from
+// the same condition via clearReadOnly.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
+	}
+	if _, statErr := os.Lstat(dst); statErr == nil {
+		if restored, clearErr := clearReadOnly(dst); clearErr == nil && restored {
+			slog.Debug("cleared read-only attribute on restore target before retrying rename", "target", dst)
+			if err := os.Rename(src, dst); err == nil {
+				return nil
+			}
+		}
 	}
 	// Cross-filesystem fallback: copy then delete
 	return copyAndDelete(src, dst)
@@ -415,6 +510,12 @@ func copyAndDelete(src, dst string) error {
 	}
 
 	dstFile, err := os.Create(dst)
+	if err != nil {
+		if restored, clearErr := clearReadOnly(dst); clearErr == nil && restored {
+			slog.Debug("cleared read-only attribute on restore target before retrying create", "target", dst)
+			dstFile, err = os.Create(dst)
+		}
+	}
 	if err != nil {
 		_ = srcFile.Close()
 		return fmt.Errorf("create destination: %w", err)
@@ -439,14 +540,27 @@ func copyAndDelete(src, dst string) error {
 	return nil
 }
 
-// sanitizeFileName converts a backup path to a safe local filename by
-// replacing path separators and removing leading dots.
-func sanitizeFileName(backupPath string) string {
-	safe := strings.ReplaceAll(backupPath, "/", "_")
-	safe = strings.ReplaceAll(safe, "\\", "_")
-	safe = strings.TrimLeft(safe, ".")
-	if safe == "" {
-		safe = "unnamed"
-	}
-	return safe
+// stagingFileName derives a short, injective local filename for downloading
+// file.BackupPath into the staging directory. The object key can be
+// arbitrarily long (snapshot prefix + "files/" + the full original source
+// path — proven in production to exceed 400 characters for a nested,
+// long-named source file), and naively flattening it into one path
+// component (the old approach: replace every "/" with "_") easily exceeds
+// the filesystem's per-component name limit (~255 bytes on ext4/APFS/NTFS),
+// so opening the destination file fails with "file name too long" and the
+// file is silently dropped into failedFiles even though the object exists
+// in storage and both VerifyIntegrity and TestRestore — which restore under
+// the object's real, unflattened directory structure via resolveTargetPath,
+// not a single flattened component — read it back fine (D4).
+//
+// A hex-encoded SHA-256 digest of the BackupPath is both bounded (fixed 64
+// hex chars + ".gz" = 67, comfortably under any filesystem limit) and
+// collision-resistant, so distinct BackupPaths never share a staging file.
+// The ".gz" suffix is cosmetic only — nothing parses this name back into a
+// BackupPath; resume state (ResumeState.CompletedFiles, restore_resume.go)
+// and every restore-loop lookup key off file.BackupPath directly, never off
+// the staging filename, so this stays consistent with resume behavior.
+func stagingFileName(backupPath string) string {
+	sum := sha256.Sum256([]byte(backupPath))
+	return hex.EncodeToString(sum[:]) + ".gz"
 }

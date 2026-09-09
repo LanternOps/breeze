@@ -11,6 +11,14 @@ Each baseline stores a list of known devices with their IP, MAC, hostname, asset
 
 ---
 
+## In the console
+
+<Aside type="caution">
+  There is currently no console UI for creating baselines, triggering scans, or reviewing change events -- everything on this page is done through the API shown below. Use the **Known Guests** section (Settings > Partner > Regional) to manage the guest MAC allowlist described further down this page.
+</Aside>
+
+---
+
 ## Key Concepts
 
 ### Event Types
@@ -219,35 +227,7 @@ This also updates the associated alert's device reference.
 
 ## API Reference
 
-### Baselines
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/network/baselines` | List baselines with optional org, site, and subnet filters |
-| `POST` | `/api/v1/network/baselines` | Create a new baseline for an org/site/subnet |
-| `GET` | `/api/v1/network/baselines/:id` | Get a single baseline by ID |
-| `PATCH` | `/api/v1/network/baselines/:id` | Update scan schedule or alert settings |
-| `DELETE` | `/api/v1/network/baselines/:id` | Delete a baseline (optionally with its change events) |
-| `POST` | `/api/v1/network/baselines/:id/scan` | Trigger an immediate baseline scan |
-| `GET` | `/api/v1/network/baselines/:id/changes` | List change events for a specific baseline |
-
-### Network Changes
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/network/changes` | List change events across baselines with filters |
-| `GET` | `/api/v1/network/changes/:id` | Get a single change event with baseline subnet |
-| `POST` | `/api/v1/network/changes/:id/acknowledge` | Acknowledge a change event |
-| `POST` | `/api/v1/network/changes/:id/link-device` | Link a change event to a managed device |
-| `POST` | `/api/v1/network/changes/bulk-acknowledge` | Bulk acknowledge up to 200 events |
-
-### Known Guests
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/partner/known-guests` | List known guest MAC addresses for the partner |
-| `POST` | `/api/v1/partner/known-guests` | Add a known guest MAC address |
-| `DELETE` | `/api/v1/partner/known-guests/:id` | Remove a known guest |
+The full endpoint tables for baselines, network changes, and known guests live in [Network Intelligence](/features/network-intelligence/#api-reference) -- this page and that one cover the same endpoints, so they aren't repeated here.
 
 ---
 

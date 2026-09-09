@@ -81,6 +81,15 @@ A policy can bundle multiple feature types:
 | **Automation** | Event triggers, cron schedules, bulk actions |
 | **Privileged Access** | Windows UAC elevation prompt capture for [privileged access management](/features/pam/) |
 | **Vulnerability Scanning** | Turns on daily CVE correlation for the scope (off by default) -- see [vulnerability management](/features/vulnerability-management/) |
+| **Event Log Forwarding** | Destination and filters for shipping device event logs to an external store -- see [Event Log Forwarding](/features/event-log-forwarding/) |
+| **Software Policy** | Allowlist/blocklist/audit enforcement evaluated during software inventory scans -- see [Software Policies](/features/software-policies/) |
+| **Sensitive Data Discovery** | Scan schedule and rules for PII, credentials, and other sensitive data on endpoints -- see [Sensitive Data Discovery](/features/sensitive-data/) |
+| **Peripheral Control** | USB, Bluetooth, and Thunderbolt device allow/block rules -- see [Peripheral Control](/features/peripheral-control/) |
+| **Warranty** | Warning and critical expiry thresholds that raise alerts before a device's warranty lapses -- see [Warranty Tracking](/features/warranty-tracking/) |
+| **Breeze Helper** | Tray icon and menu options (portal link, device info, request support) for the [Breeze Helper](/agents/helper/) app |
+| **Remote Access** | MFA and consent requirements for Remote Desktop and Remote Terminal sessions -- see [Remote Access](/features/remote-access/) |
+| **OneDrive Helper** | Silent sign-in, Files On-Demand, Known Folder Move, and SharePoint library auto-mount -- see [OneDrive Helper](/features/onedrive-helper/) |
+| **Device Lifecycle** | Days to retain a removed device before it is permanently purged |
 
 Each feature can be configured in one of two modes:
 
@@ -116,7 +125,7 @@ Compliance rules support three enforcement levels:
 
 <Steps>
 
-1. Navigate to **Configuration → Policies**.
+1. Navigate to **Fleet Management → Config Policies**.
 
 2. Click **New Policy**, then choose **Configure New** to start from scratch, or **Link to Existing** to inherit from a baseline policy (see [Baseline policies](#baseline-policies-inheritance) above). Choosing **Link to Existing** adds a picker of eligible baselines — filtered to the ones your chosen ownership scope is allowed to inherit from.
 
@@ -255,7 +264,7 @@ GET /policies/compliance/device/:deviceId
 
 Every Breeze deployment ships with a built-in set of **Breeze Defaults** that sit at the bottom of the resolution hierarchy. These defaults are read-only — you cannot edit or delete them — but every policy you create at any level overrides them.
 
-To inspect the current defaults, navigate to **Configuration → Policies → Defaults** (or go directly to **/configuration-policies/defaults**). The page lists every setting that Breeze ships with, shows its current value, and indicates whether it is **Active** (in effect for devices with no overriding policy) or **Not enforced** (the feature is present in defaults but not turned on by default).
+To inspect the current defaults, navigate to **Fleet Management → Config Policies → Defaults** (or go directly to **/configuration-policies/defaults**). The page lists every setting that Breeze ships with, shows its current value, and indicates whether it is **Active** (in effect for devices with no overriding policy) or **Not enforced** (the feature is present in defaults but not turned on by default).
 
 Examples of shipped defaults:
 
@@ -351,7 +360,7 @@ When creating a policy, set `ownerScope` to `organization` (the default) or `par
 
 To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `maintenance`, `compliance`, `backup`, `security`, `monitoring`, `automation`, `pam`, `vulnerability`.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `alert_rule`, `backup`, `security`, `monitoring`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`.
 
 ## Troubleshooting
 

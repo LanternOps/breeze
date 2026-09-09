@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -303,5 +304,63 @@ func TestTestRestorePreservesDistinctPathsForDuplicateBasenames(t *testing.T) {
 	}
 	if pathA == pathB {
 		t.Fatalf("duplicate basenames restored to the same path %q", pathA)
+	}
+}
+
+// TestTestRestore_UsesOriginalPathUnderVSS proves D8 for TestRestore: a
+// manifest entry whose SourcePath is a VSS shadow-copy device path must be
+// restored under its OriginalPath's relative structure, never under the
+// shadow path's — otherwise a test-restore silently exercises (and
+// "passes") a location no real recovery would ever use.
+//
+// TestRestore unconditionally os.RemoveAll's its restore dir before
+// returning (see its Cleanup step), so asserting on the filesystem AFTER
+// it returns would be vacuous — everything is gone by then regardless of
+// which path it wrote to. Instead this uses recordingTestRestoreProvider
+// (see TestTestRestorePreservesDistinctPathsForDuplicateBasenames above),
+// which records each Download's local destination in a map that survives
+// the cleanup, to observe where the file was actually written DURING the
+// restore.
+func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+
+	snapshot := Snapshot{
+		ID: "dup-basenames", // recordingTestRestoreProvider.Download special-cases this manifest key
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz"), Size: 2},
+		},
+		Size: 2,
+	}
+	manifest, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	provider := &recordingTestRestoreProvider{
+		manifest: manifest,
+		files: map[string][]byte{
+			path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz"): []byte("xx"),
+		},
+	}
+
+	result, err := TestRestore(provider, "dup-basenames", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "passed" {
+		t.Fatalf("expected passed, got %s (error: %s, failed: %v)", result.Status, result.Error, result.FailedFiles)
+	}
+
+	downloadedTo := provider.downloads[path.Join(snapshotRootDir, "dup-basenames", "files", "x.gz")]
+	if downloadedTo == "" {
+		t.Fatalf("expected the file download to be recorded, got %+v", provider.downloads)
+	}
+	if strings.Contains(downloadedTo, "vss-shadow-copy-1") {
+		t.Fatalf("TestRestore wrote under the VSS shadow-device path instead of the original path: %q", downloadedTo)
+	}
+	wantSuffix := filepath.Join("assure", "src", "x")
+	if !strings.HasSuffix(downloadedTo, wantSuffix) {
+		t.Fatalf("TestRestore destination = %q, want it to end with the original path's relative structure %q", downloadedTo, wantSuffix)
 	}
 }

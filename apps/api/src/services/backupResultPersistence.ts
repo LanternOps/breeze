@@ -1189,7 +1189,16 @@ export async function applyBackupCommandResultToJob(params: {
       const BATCH_SIZE = 1000;
       const fileRows = result.snapshot.files.map((file) => ({
         snapshotDbId: snapshot.id,
-        sourcePath: file.sourcePath,
+        // D12: prefer the stable originalPath (e.g. C:\assure\src\x) over the
+        // transient VSS shadow-copy device path the agent uploaded from. The
+        // browse tree (snapshots.ts buildSnapshotTree) and selective-restore
+        // validation (restore.ts) both key off this column expecting a path
+        // that still means something after the snapshot completes — indexing
+        // the raw \\?\GLOBALROOT\...\HarddiskVolumeShadowCopyN\... path roots
+        // the browse tree at "?" and rejects every real selective-restore
+        // selection. No separate column for the raw shadow path: it has no
+        // browsing/restore value once the shadow copy is released.
+        sourcePath: file.originalPath ?? file.sourcePath,
         backupPath: file.backupPath,
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,

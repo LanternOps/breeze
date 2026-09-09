@@ -10,6 +10,18 @@ export const backupSnapshotFileResultSchema = z.object({
   backupPath: z.string().min(1),
   size: z.number().int().nonnegative().optional(),
   modTime: z.string().datetime({ offset: true }).optional(),
+  // D12: on a Windows VSS-backed run, `sourcePath` is the transient shadow-copy
+  // device path the agent actually read from
+  // (\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...) — it stops resolving
+  // the moment the shadow copy is released and has no display/selection value.
+  // `originalPath` is the stable, user-facing path (e.g. C:\assure\src\x) the
+  // agent also matches selective-restore selections against. When present, it
+  // is what gets indexed into backup_snapshot_files.source_path (see
+  // backupResultPersistence.ts) so the browse tree and selective-restore
+  // validation both operate on a path that is still meaningful after the
+  // snapshot completes. Omitted by non-Windows / non-VSS runs, where
+  // sourcePath already IS the display/selection path.
+  originalPath: z.string().min(1).optional(),
 });
 
 export const backupSnapshotResultSchema = z.object({

@@ -22,6 +22,17 @@ const (
 	backupHelperIdleTimeout  = 30 * time.Minute
 )
 
+// backupHelperStopGrace bounds how long StopBackupHelper waits for in-flight
+// backup runs to drain before killing the helper anyway (D3). It is a
+// package var, not a const, so tests can shrink it; production leaves it at
+// its full 5s, comfortably inside the 20s whole-agent shutdown budget
+// (agent/internal/agentapp/shutdown_budget.go).
+var backupHelperStopGrace = 5 * time.Second
+
+// backupHelperStopPollInterval is how often StopBackupHelper re-checks
+// activeRuns while waiting out backupHelperStopGrace.
+var backupHelperStopPollInterval = 100 * time.Millisecond
+
 // backupHelperDiedError is the terminal error reported for a backup run whose
 // helper process disappeared mid-run (#2998). It is a fixed string so support
 // and the server can separate "the helper died" from a genuinely stalled
@@ -64,7 +75,18 @@ type backupHelper struct {
 	session    *Session
 	process    *os.Process
 	binaryPath string
-	spawning   bool
+
+	// spawnDone is non-nil exactly while a spawn attempt for this helper is
+	// in flight. The goroutine performing the spawn creates it and stores it
+	// here under mu, then closes it under mu (after recording the outcome in
+	// spawnErr) once the attempt returns, success or failure. A concurrent
+	// caller that finds spawnDone already non-nil waits on it instead of
+	// failing outright: a profile with `file` + `system_image` selections
+	// dispatches one backup_run command per selection within milliseconds of
+	// each other, and only one helper process must ever be spawned for that
+	// burst. spawnErr is only meaningful once spawnDone is closed.
+	spawnDone chan struct{}
+	spawnErr  error
 
 	// activeRuns holds every async backup_run this helper is executing, keyed
 	// by command id. It is the gate on synthesizing a failure when the helper
@@ -116,17 +138,22 @@ const (
 // GetOrSpawnBackupHelper returns the existing backup helper session or spawns a new one.
 func (b *Broker) GetOrSpawnBackupHelper(binaryPath string) (*Session, error) {
 	b.mu.RLock()
-	if b.backup != nil && b.backup.session != nil {
-		s := b.backup.session
-		b.mu.RUnlock()
-		return s, nil
-	}
+	bh := b.backup
 	b.mu.RUnlock()
+
+	if bh != nil {
+		bh.mu.Lock()
+		s := bh.session
+		bh.mu.Unlock()
+		if s != nil {
+			return s, nil
+		}
+	}
 
 	return b.spawnBackupHelper(binaryPath)
 }
 
-func (b *Broker) spawnBackupHelper(binaryPath string) (*Session, error) {
+func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err error) {
 	b.mu.Lock()
 	if b.backup == nil {
 		b.backup = &backupHelper{binaryPath: binaryPath}
@@ -140,40 +167,53 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (*Session, error) {
 		bh.mu.Unlock()
 		return s, nil
 	}
-	if bh.spawning {
+	if bh.spawnDone != nil {
+		// A spawn for this helper is already in flight -- most commonly two
+		// backup_run commands (one per profile selection) dispatched within
+		// milliseconds of each other. Wait for that spawn to finish instead
+		// of failing this caller outright; only one process is ever spawned
+		// for the burst (see spawnDone doc comment on backupHelper).
+		done := bh.spawnDone
 		bh.mu.Unlock()
-		return nil, fmt.Errorf("backup helper is already being spawned")
+		return waitForBackupHelperSpawn(bh, done)
 	}
-	bh.spawning = true
+	done := make(chan struct{})
+	bh.spawnDone = done
 	bh.mu.Unlock()
 
+	// Record this attempt's outcome (session, err -- the named returns) into
+	// bh.spawnErr and signal every waiter by closing done, all under bh.mu so
+	// a waiter that has just acquired bh.mu in waitForBackupHelperSpawn never
+	// observes spawnErr before it is final.
 	defer func() {
 		bh.mu.Lock()
-		bh.spawning = false
+		bh.spawnErr = err
+		bh.spawnDone = nil
+		close(done)
 		bh.mu.Unlock()
 	}()
 
 	// Resolve binary path
 	path := binaryPath
 	if path == "" {
-		self, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("failed to find self path: %w", err)
+		self, resolveErr := os.Executable()
+		if resolveErr != nil {
+			return nil, fmt.Errorf("failed to find self path: %w", resolveErr)
 		}
 		dir := filepath.Dir(self)
 		path = filepath.Join(dir, backupBinaryName(runtime.GOOS))
 	}
 
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("backup binary not found at %s: %w", path, err)
+	if _, statErr := os.Stat(path); statErr != nil {
+		return nil, fmt.Errorf("backup binary not found at %s: %w", path, statErr)
 	}
 
 	log.Info("spawning backup helper", "path", path, "socket", b.socketPath)
 	cmd := exec.Command(path, "--socket", b.socketPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to spawn backup helper: %w", err)
+	if startErr := cmd.Start(); startErr != nil {
+		return nil, fmt.Errorf("failed to spawn backup helper: %w", startErr)
 	}
 
 	bh.mu.Lock()
@@ -183,14 +223,13 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (*Session, error) {
 	// Wait for the helper to connect via IPC
 	deadline := time.Now().Add(backupHelperSpawnTimeout)
 	for time.Now().Before(deadline) {
-		b.mu.RLock()
-		if b.backup != nil && b.backup.session != nil {
-			s := b.backup.session
-			b.mu.RUnlock()
+		bh.mu.Lock()
+		s := bh.session
+		bh.mu.Unlock()
+		if s != nil {
 			log.Info("backup helper connected", "pid", cmd.Process.Pid)
 			return s, nil
 		}
-		b.mu.RUnlock()
 		time.Sleep(200 * time.Millisecond)
 	}
 
@@ -198,26 +237,72 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (*Session, error) {
 	return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
 }
 
+// waitForBackupHelperSpawn blocks until the in-flight spawn represented by
+// done completes, bounded by backupHelperSpawnTimeout, then reports that
+// spawn's outcome: the session it produced, or an error describing why it
+// didn't. It must not hold bh.mu (or any mutex) while selecting on done --
+// the spawning goroutine needs bh.mu to record its own outcome and close
+// done.
+func waitForBackupHelperSpawn(bh *backupHelper, done chan struct{}) (*Session, error) {
+	select {
+	case <-done:
+		bh.mu.Lock()
+		s := bh.session
+		spawnErr := bh.spawnErr
+		bh.mu.Unlock()
+		if s != nil {
+			return s, nil
+		}
+		if spawnErr != nil {
+			return nil, fmt.Errorf("concurrent backup helper spawn failed: %w", spawnErr)
+		}
+		return nil, fmt.Errorf("concurrent backup helper spawn failed")
+	case <-time.After(backupHelperSpawnTimeout):
+		return nil, fmt.Errorf("timed out waiting for concurrent backup helper spawn")
+	}
+}
+
 // SetBackupSession is called by the broker's connection handler when a backup helper authenticates.
 func (b *Broker) SetBackupSession(s *Session) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.backup == nil {
 		b.backup = &backupHelper{}
 	}
-	b.backup.session = s
+	bh := b.backup
+	b.mu.Unlock()
+
+	bh.mu.Lock()
+	bh.session = s
+	bh.mu.Unlock()
 }
 
 // ClearBackupSession removes the backup session (called on disconnect).
 func (b *Broker) ClearBackupSession() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.backup != nil {
-		b.backup.session = nil
+	b.mu.RLock()
+	bh := b.backup
+	b.mu.RUnlock()
+	if bh == nil {
+		return
 	}
+
+	bh.mu.Lock()
+	bh.session = nil
+	bh.mu.Unlock()
 }
 
-// StopBackupHelper kills the backup helper process.
+// StopBackupHelper kills the backup helper process. It is the SCM/graceful-
+// stop path (agent shutdown), distinct from StopBackupHelperIfIdle (binary
+// swap, which defers instead of killing).
+//
+// If a backup run is still in flight it waits up to backupHelperStopGrace
+// for activeRuns to drain -- most runs finish and report their own terminal
+// result (noteBackupRunResult) well inside that window -- then kills the
+// process anyway so agent shutdown still completes inside its own budget
+// (agent/internal/agentapp/shutdown_budget.go). Before this, StopBackupHelper
+// killed unconditionally: on a real Windows Server 2022 host mid-10k-file
+// backup, that silently failed the job at 9,751/10,046 files with nothing
+// warning that runs were still active (D3). A run still active when the
+// grace expires is logged at WARN with its count.
 func (b *Broker) StopBackupHelper() {
 	b.mu.Lock()
 	bh := b.backup
@@ -225,14 +310,46 @@ func (b *Broker) StopBackupHelper() {
 	if bh == nil {
 		return
 	}
+
+	deadline := time.Now().Add(backupHelperStopGrace)
+	for {
+		bh.mu.Lock()
+		active := len(bh.activeRuns)
+		if active == 0 || !time.Now().Before(deadline) {
+			if active > 0 {
+				log.Warn("stopping backup helper with runs in flight", "count", active)
+			}
+			if bh.process != nil {
+				log.Info("stopping backup helper", "pid", bh.process.Pid)
+				_ = bh.process.Kill()
+				bh.process = nil
+			}
+			bh.session = nil
+			bh.mu.Unlock()
+			return
+		}
+		bh.mu.Unlock()
+		time.Sleep(backupHelperStopPollInterval)
+	}
+}
+
+// ActiveBackupRunCount returns the number of backup_run commands the backup
+// helper is currently tracking (see activeRuns on backupHelper) -- pending-
+// ack, executing, and doomed entries all count, since the caller only needs
+// "is something in flight for this helper right now". It is nil-safe: a
+// broker that has never spawned a backup helper returns 0, so
+// sendWatchdogStateSync (heartbeat) can call it unconditionally on every
+// tick without a nil check of its own.
+func (b *Broker) ActiveBackupRunCount() int {
+	b.mu.RLock()
+	bh := b.backup
+	b.mu.RUnlock()
+	if bh == nil {
+		return 0
+	}
 	bh.mu.Lock()
 	defer bh.mu.Unlock()
-	if bh.process != nil {
-		log.Info("stopping backup helper", "pid", bh.process.Pid)
-		_ = bh.process.Kill()
-		bh.process = nil
-	}
-	bh.session = nil
+	return len(bh.activeRuns)
 }
 
 // StopBackupHelperIfIdle stops any resident backup helper process IF no
@@ -277,13 +394,15 @@ func (b *Broker) StopBackupHelperIfIdle() bool {
 // would otherwise parse the ack as a malformed terminal result.
 func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration, async bool, queueAsync ...bool) (*ipc.Envelope, error) {
 	b.mu.RLock()
-	var session *Session
-	var bh *backupHelper
-	if b.backup != nil {
-		bh = b.backup
-		session = b.backup.session
-	}
+	bh := b.backup
 	b.mu.RUnlock()
+
+	var session *Session
+	if bh != nil {
+		bh.mu.Lock()
+		session = bh.session
+		bh.mu.Unlock()
+	}
 
 	if session == nil {
 		return nil, fmt.Errorf("backup helper not connected")
@@ -432,15 +551,18 @@ func (b *Broker) reportBackupHelperDeath(session *Session) {
 		return
 	}
 
-	// bh.session is written under b.mu (SetBackupSession, ClearBackupSession,
-	// registerNonLifecycleSession), so it must be read under b.mu too — this
-	// value decides whether a customer's run gets failed, and an unsynchronized
-	// read of it would be a genuine data race. b.mu -> bh.mu is the lock order
-	// used everywhere else in this file, so nesting them here is safe.
+	// b.mu only protects the b.backup pointer itself; bh.session and
+	// bh.activeRuns are protected by bh.mu (SetBackupSession,
+	// ClearBackupSession, registerNonLifecycleSession, spawnBackupHelper all
+	// write/read them under bh.mu). This value decides whether a customer's
+	// run gets failed, and an unsynchronized read of it would be a genuine
+	// data race, so fetch bh under b.mu, release b.mu, then do everything
+	// else under bh.mu alone — the pointer in b.backup is never reset once
+	// created, so releasing b.mu here is safe.
 	b.mu.RLock()
 	bh := b.backup
+	b.mu.RUnlock()
 	if bh == nil {
-		b.mu.RUnlock()
 		return
 	}
 	bh.mu.Lock()
@@ -475,7 +597,6 @@ func (b *Broker) reportBackupHelperDeath(session *Session) {
 		}
 	}
 	bh.mu.Unlock()
-	b.mu.RUnlock()
 
 	if superseded {
 		if stillTracked > 0 {

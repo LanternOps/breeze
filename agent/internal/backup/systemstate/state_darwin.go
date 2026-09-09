@@ -57,7 +57,7 @@ func (c *DarwinCollector) CollectState(stagingDir string) (*SystemStateManifest,
 	}
 
 	if len(manifest.Artifacts) == 0 {
-		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
+		return manifest, fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
 	}
 
 	hw, err := c.CollectHardwareProfile()
@@ -226,7 +226,7 @@ func (c *DarwinCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 		hw.TotalMemoryMB = bytes / (1024 * 1024)
 	}
 
-	// Disks — diskutil list (plain text)
+	// Disks - diskutil list (plain text)
 	if out, err := exec.Command("diskutil", "list").Output(); err == nil {
 		hw.Disks = parseDarwinDiskutil(string(out))
 	}
@@ -236,7 +236,7 @@ func (c *DarwinCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 		hw.NetworkAdapters = parseDarwinNICs(string(out))
 	}
 
-	// UEFI — all Apple Silicon and most Intel Macs since ~2006 use UEFI.
+	// UEFI - all Apple Silicon and most Intel Macs since ~2006 use UEFI.
 	if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
 		hw.IsUEFI = true // All supported macOS machines are UEFI.
 		_ = out

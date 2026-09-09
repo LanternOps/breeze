@@ -132,6 +132,23 @@ The customer portal is served under the `/portal` path on your main domain (for 
    RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=
    ```
 
+   Then set the initial admin account. The API creates it automatically the
+   first time it starts against an empty database — in production this is
+   **required**: without both variables set, that first-boot seed throws and
+   the API crash-loops instead of starting.
+
+   ```bash
+   BREEZE_BOOTSTRAP_ADMIN_EMAIL=you@yourdomain.com
+   BREEZE_BOOTSTRAP_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+   ```
+
+   <Aside type="caution">
+     The password must be at least 16 characters and can't look like a
+     placeholder (`changeme`, `password`, `change-in-production`, etc.) — the
+     API rejects it and refuses to start otherwise. Rotate it after your first
+     login.
+   </Aside>
+
    If Breeze is behind a reverse proxy, also set `TRUST_PROXY_HEADERS=true` and list the proxy's CIDRs in `TRUSTED_PROXY_CIDRS`. See [Environment Variables](/deploy/environment/) for details.
 
 4. **Configure TURN server**
@@ -178,7 +195,7 @@ The customer portal is served under the `/portal` path on your main domain (for 
    docker compose up -d
    ```
 
-   That's it. On first start, the API container automatically runs database migrations and seeds the initial admin user. Caddy obtains a TLS certificate from Let's Encrypt.
+   That's it. On first start, the API container automatically runs database migrations and seeds the initial admin user with the `BREEZE_BOOTSTRAP_ADMIN_EMAIL`/`BREEZE_BOOTSTRAP_ADMIN_PASSWORD` you set in step 3. Caddy obtains a TLS certificate from Let's Encrypt.
 
 6. **Verify the deployment**
 
@@ -219,7 +236,7 @@ Grafana is available at `http://127.0.0.1:3000` (localhost only by default).
 
 ## Pinning a Version
 
-`.env.example` ships with an explicit `BREEZE_VERSION` pin, so a fresh deployment is already pinned. Change it deliberately when you upgrade; if you clear it, images fall back to the `latest` tag. To pin to a specific release:
+`.env.example` ships with an explicit `BREEZE_VERSION` pin, so a fresh deployment is already pinned. Change it deliberately when you upgrade. There is no `latest` fallback: every image reference in `docker-compose.yml` is digest/tag-pinned and required, so clearing `BREEZE_VERSION` (or any of the `*_IMAGE_REF` variables) makes `docker compose` refuse to run at all, with an error like `Set BREEZE_VERSION in .env`, rather than silently pulling a newer image. To pin to a specific release:
 
 ```bash
 # In .env

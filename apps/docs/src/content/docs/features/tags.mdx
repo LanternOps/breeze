@@ -56,6 +56,10 @@ The update is validated with the Zod schema `z.array(z.string()).optional()`, so
 
 The `GET /api/v1/tags` endpoint returns every unique tag across all devices visible to your auth scope, along with the number of devices carrying each tag.
 
+<Aside type="note">
+  Manual assets (network gear, printers, and other equipment tracked without an agent) have their own separate `tags` array and are not counted here -- `GET /api/v1/tags` only aggregates tags from the `devices` table.
+</Aside>
+
 <Tabs>
   <TabItem label="cURL">
 ```bash

@@ -24,9 +24,9 @@ usage cap (`maxUsage`) and a TTL, so plan them around your rollout:
 
 - Create **one key per site** so devices land in the right place — there is no
   `SITE_ID` install parameter; site assignment is encoded in the key.
-- Set `maxUsage` to the number of devices you are deploying, and a TTL that
-  covers your rollout window (the default is 60 minutes, which is too short
-  for a phased GPO rollout — set an explicit expiry).
+- Set `maxUsage` to the number of devices you are deploying. The default TTL
+  is 30 days, which covers most rollout windows; set an explicit longer expiry
+  only if your phased GPO rollout runs beyond that.
 - If your server enforces `AGENT_ENROLLMENT_SECRET`, you will also need that
   shared secret at deploy time.
 

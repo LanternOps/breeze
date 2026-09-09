@@ -352,6 +352,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedLegalHold: 0,
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
     });
     sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 2, blockedIdentities: 1 });
 
@@ -367,6 +368,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       deleted: 2,
       skipped: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
       gcDeleted: 5,
       gcSkippedIdentities: 2,
       gcBlockedIdentities: 1,
@@ -382,6 +384,7 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       skippedLegalHold: 1,
       skippedImmutable: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
     });
     sweepUnreferencedBackupObjectsMock.mockRejectedValue(new Error('S3 listing failed'));
 
@@ -411,10 +414,41 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       deleted: 0,
       skipped: 0,
       prunedByMaxVersions: 0,
+      failed: 0,
       gcDeleted: 0,
       gcSkippedIdentities: 0,
       gcBlockedIdentities: 0,
     });
+  });
+
+  it('D17: a per-row cleanup failure does not prevent the GC sweep, but still fails the job at the end', async () => {
+    // Before the fix, cleanupExpiredSnapshots threw straight out of
+    // processCleanupExpiredSnapshots on a per-row FK violation, so the GC
+    // sweep below (which runs AFTER row-level retention in the same job) was
+    // never reached. Row-level isolation now lives inside
+    // cleanupExpiredSnapshots itself (it resolves with a `failed` count
+    // instead of throwing), but this job must still (a) always run the sweep
+    // and (b) still end up as a FAILED BullMQ job so the failure is visible
+    // — just only after the sweep has already run.
+    mockDb.selectDistinct.mockReturnValue({
+      from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }]),
+    });
+    cleanupExpiredSnapshotsMock.mockResolvedValue({
+      deleted: 1,
+      skippedLegalHold: 0,
+      skippedImmutable: 0,
+      prunedByMaxVersions: 0,
+      failed: 1,
+    });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 0, blockedIdentities: 0 });
+
+    await expect(processCleanupExpiredSnapshots()).rejects.toThrow(/1 snapshot row delete\(s\) failed/);
+
+    // The sweep must have been called despite the row-level failure — this is
+    // the assertion that would have failed before the fix, since the old code
+    // threw straight out of cleanupExpiredSnapshots before the sweep line was
+    // ever reached.
+    expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -298,8 +298,13 @@ export const backupSnapshots = pgTable(
     size: bigint('size', { mode: 'number' }),
     fileCount: integer('file_count'),
     isIncremental: boolean('is_incremental').notNull().default(false),
+    // ON DELETE SET NULL (2026-10-15-140004): an incremental snapshot's
+    // parent pointer must not block the parent's own retention deletion —
+    // see the migration and deleteSnapshotRow's comment above for the D17
+    // history/lineage rationale.
     parentSnapshotId: uuid('parent_snapshot_id').references(
-      (): AnyPgColumn => backupSnapshots.id
+      (): AnyPgColumn => backupSnapshots.id,
+      { onDelete: 'set null' }
     ),
     expiresAt: timestamp('expires_at'),
     metadata: jsonb('metadata'),
@@ -357,9 +362,12 @@ export const restoreJobs = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => organizations.id),
-    snapshotId: uuid('snapshot_id')
-      .notNull()
-      .references(() => backupSnapshots.id),
+    // Nullable + ON DELETE SET NULL (2026-10-15-140004): a restore job is
+    // history and must survive its snapshot's retention deletion — see D17 /
+    // deleteSnapshotRow's comment on backup_snapshots above.
+    snapshotId: uuid('snapshot_id').references(() => backupSnapshots.id, {
+      onDelete: 'set null',
+    }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),

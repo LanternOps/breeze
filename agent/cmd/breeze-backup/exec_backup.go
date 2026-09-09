@@ -93,6 +93,11 @@ func defaultVSS(goos string, systemImage bool) bool {
 // managerFromBackupRunPayload builds a BackupManager from the backup_run command
 // payload's provider + providerConfig + paths. Returns (nil,nil) when the payload
 // carries no provider config so the caller falls back to the agent.yaml manager.
+// helperAgentID is the enrolled agent id loaded from agent.yaml at startup
+// (main.go). It is stamped into every manifest's BackupIdentity so incremental
+// dedupe only ever references this device's own previous snapshot (D6).
+var helperAgentID string
+
 func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager, error) {
 	if len(payload) == 0 {
 		return nil, nil
@@ -150,6 +155,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			Provider:           provider,
 			SystemStateEnabled: true,
 			VSSEnabled:         vssEnabled,
+			AgentID:            helperAgentID,
 		}), nil
 	}
 	if len(p.Paths) == 0 {
@@ -167,6 +173,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		Paths:      p.Paths,
 		Retention:  0,
 		VSSEnabled: vssEnabled,
+		AgentID:    helperAgentID,
 	}), nil
 }
 

@@ -39,6 +39,36 @@ export function shouldShowEmptyApprovalState(inputs: {
  * (the wash/shake animation is the confirmation that survives a focus swap,
  * not the toast).
  */
+/**
+ * `owner` tag ApprovalScreen stamps on every toast it posts.
+ *
+ * #5368 made the toast a single app-wide host, which broke the assumption
+ * `approvalId: null` used to encode. It meant "screen-global to
+ * ApprovalScreen" only because nothing else could write to ApprovalScreen's
+ * own `toast` state; on a shared host, every background toast (TimerBar's
+ * "Synced 3 offline time entries", a ticket comment landing, a queue warning)
+ * also arrives with no row id. ApprovalGate keeps the navigator running
+ * UNDERNEATH the takeover on purpose, so those keep firing while an approval
+ * is on screen.
+ */
+export const APPROVAL_TOAST_OWNER = 'approval';
+
+/**
+ * Narrows the app-wide host's current toast to the decision confirmation this
+ * screen is reasoning about, or null if the toast belongs to another screen.
+ *
+ * Everything downstream — whether the takeover paints a toast at all, and
+ * whether it may fall through to "No pending approvals" — keys off this, so a
+ * background toast can neither cover a live approval prompt nor hold the
+ * takeover open.
+ */
+export function decisionToastFor(
+  toast: { owner: string | null; sourceId: string | null } | null
+): { approvalId: string | null } | null {
+  if (toast === null || toast.owner !== APPROVAL_TOAST_OWNER) return null;
+  return { approvalId: toast.sourceId };
+}
+
 export function isDecisionToastVisible(
   toast: { approvalId: string | null } | null,
   focusedId: string | undefined

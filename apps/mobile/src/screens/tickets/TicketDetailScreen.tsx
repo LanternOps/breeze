@@ -39,7 +39,6 @@ import {
   writeLocalTimer,
 } from '../../services/localTimer';
 import { useNetworkConnected } from '../../lib/useNetworkConnected';
-import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -62,9 +61,9 @@ import {
   type TicketAttachmentMeta,
 } from '../../services/ticketAttachments';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
+import { navigateToTicket } from '../../navigation/navigationRef';
 import { AttachmentChip } from '../../components/AttachmentChip';
-import { Toast } from '../../components/Toast';
-import { toastClearanceOffset } from '../../components/timerBarLogic';
+import { useToast } from '../../components/toast/ToastHost';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
@@ -73,6 +72,7 @@ import {
   priorityColor,
   priorityLabel,
   statusLabel,
+  requesterLabel,
   ticketRef,
   visibleActivityCount,
 } from './ticketCopy';
@@ -80,7 +80,7 @@ import {
   buildCommentSubmission,
   COMMENT_MODES,
   composerPlaceholder,
-  DEFAULT_COMMENT_MODE,
+  initialCommentMode,
   internalBannerText,
   isPublicForMode,
   modeTabLabel,
@@ -88,7 +88,11 @@ import {
   type CommentMode,
 } from './commentMode';
 import { startForTicket, stopRunningTimer } from './timerActions';
-import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
+import {
+  startOutcomeEffects,
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from './timerOutcomeEffects';
 import { CommentAttachments } from './CommentAttachments';
 import {
   addPickedFiles,
@@ -161,21 +165,21 @@ export function TicketDetailScreen() {
    * single message, and silently snapping the composer back to a different
    * visibility between two sends is its own surprise. The mode stays legible
    * the whole time (selected tab, wash, button label), and the screen unmounts
-   * on navigate-away, so `DEFAULT_COMMENT_MODE` reasserts itself every time a
-   * ticket is opened fresh.
+   * on navigate-away, so the seed below reasserts itself every time a ticket is
+   * opened fresh.
+   *
+   * The seed is the route's `composeMode` when it names one (#5366 — stopping a
+   * timer opens the ticket in `internal`), otherwise `DEFAULT_COMMENT_MODE`.
+   * `initialCommentMode` owns that choice so it is assertable: this file is a
+   * `.tsx` the node-only Vitest config never imports.
    */
-  const [commentMode, setCommentMode] = useState<CommentMode>(DEFAULT_COMMENT_MODE);
+  const [commentMode, setCommentMode] = useState<CommentMode>(() =>
+    initialCommentMode(route.params)
+  );
   const [resolutionNote, setResolutionNote] = useState('');
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
-  /**
-   * Measured height of the comment composer, so the toast (below) can clear
-   * it entirely rather than overlapping its mode tabs — see the Toast usage
-   * at the bottom of this component and #5105 ("Timer started" covering the
-   * Reply / Internal note tabs).
-   */
-  const [composerHeight, setComposerHeight] = useState(0);
+  const { show: showToast } = useToast();
   const [timerNotice, setTimerNotice] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState(false);
   const [chips, setChips] = useState<Chip[]>([]);
@@ -196,7 +200,6 @@ export function TicketDetailScreen() {
   }, []);
 
   const connected = useNetworkConnected();
-  const keyboardHeight = useKeyboardHeight();
   const running = useAppSelector((state) => state.time.running);
   // Sticky for the session: once the server has refused this account the
   // control is withdrawn rather than re-offered and failing (see timeSlice).
@@ -216,6 +219,37 @@ export function TicketDetailScreen() {
       mounted.current = false;
     };
   }, []);
+
+  /**
+   * #5366. The composer sits at the END of the scroll content, so "open the
+   * ticket ready to write" is two moves: scroll the list to the bottom, then
+   * raise the keyboard. Both need imperative handles.
+   */
+  const composerRef = useRef<TextInput>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const focusFrame = useRef<number | null>(null);
+  const focusComposer = useCallback(() => {
+    // Deferred a frame: callers run from an effect or a stop handler, and the
+    // ScrollView's content height is only known after the native layout pass
+    // that follows this commit — scrolling in the same tick lands short of the
+    // composer on a long activity feed. The keyboard is raised AFTER the
+    // scroll so `automaticallyAdjustKeyboardInsets` (iOS) applies its inset to
+    // a list already at the bottom, which is what keeps the composer clear of
+    // the keyboard instead of under it.
+    if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => {
+      focusFrame.current = null;
+      if (!mounted.current) return;
+      scrollRef.current?.scrollToEnd({ animated: true });
+      composerRef.current?.focus();
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    },
+    []
+  );
 
   /**
    * Returns true when the ticket was refreshed. Callers that just mutated
@@ -260,6 +294,32 @@ export function TicketDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * #5366. Honour `focusComposer` once per navigation.
+   *
+   * Waits for `ticket`: until the load resolves this screen renders a spinner
+   * and the composer is not mounted at all, so a focus here would land on a
+   * null ref and be silently lost — the failure this feature exists to remove.
+   *
+   * `setParams({ focusComposer: false })` is what makes it once-per-navigation
+   * rather than once-per-render: every later re-render (a reload, a chip, a
+   * keystroke) re-runs this effect, and without clearing the flag it would drag
+   * the list back to the bottom under the technician mid-scroll. Clearing it
+   * also leaves a *later* navigate to this same already-mounted route free to
+   * flip false -> true and focus again, which a one-shot ref would swallow.
+   */
+  const focusComposerParam = route.params.focusComposer;
+  const composeModeParam = route.params.composeMode;
+  useEffect(() => {
+    if (focusComposerParam !== true || ticket === null) return;
+    navigation.setParams({ focusComposer: false });
+    // Re-seed the mode too: on a navigate to a ticket that is ALREADY mounted
+    // react-navigation updates params in place, and the useState seed above
+    // only ever runs on mount.
+    setCommentMode(initialCommentMode({ composeMode: composeModeParam }));
+    focusComposer();
+  }, [focusComposerParam, composeModeParam, ticket, navigation, focusComposer]);
 
   /**
    * Prepare and upload ONE chip's file.
@@ -316,7 +376,7 @@ export function TicketDetailScreen() {
                   Linking.openSettings().catch((err: unknown) => {
                     reportInternalError(err, 'ticket-attachment-open-settings');
                     if (mounted.current) {
-                      setToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
+                      showToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
                     }
                   });
                 },
@@ -324,7 +384,7 @@ export function TicketDetailScreen() {
             ]
           );
         } else if (outcome.reason === 'failed') {
-          setToast({ kind: 'error', text: outcome.message });
+          showToast({ kind: 'error', text: outcome.message });
         }
         return;
       }
@@ -336,7 +396,7 @@ export function TicketDetailScreen() {
       const started = added.chips.slice(before);
 
       if (added.rejected > 0) {
-        setToast({
+        showToast({
           kind: 'error',
           text: `Only 5 files per comment — ${added.rejected} not added.`,
         });
@@ -370,7 +430,7 @@ export function TicketDetailScreen() {
       } catch (err: unknown) {
         reportInternalError(err, 'ticket-attachment-open');
         const failure = toAttachmentError(err);
-        if (mounted.current) setToast({ kind: 'error', text: failure.message });
+        if (mounted.current) showToast({ kind: 'error', text: failure.message });
       }
     },
     [ticketId]
@@ -411,9 +471,9 @@ export function TicketDetailScreen() {
         // server returned so the user sees their own text, and say plainly
         // that the rest of the view may be stale.
         setTicket((prev) => (prev ? { ...prev, comments: [...prev.comments, created] } : prev));
-        setToast({ kind: 'error', text: 'Comment added, but the ticket could not be refreshed.' });
+        showToast({ kind: 'error', text: 'Comment added, but the ticket could not be refreshed.' });
       } else {
-        setToast({ kind: 'success', text: 'Comment added' });
+        showToast({ kind: 'success', text: 'Comment added' });
       }
     } catch (err: unknown) {
       reportInternalError(err, 'ticket-comment');
@@ -426,7 +486,7 @@ export function TicketDetailScreen() {
         const text = code === 'ATTACHMENT_NOT_CLAIMABLE'
           ? toAttachmentError(err).message
           : (err as { message?: string }).message || 'Could not add comment.';
-        setToast({ kind: 'error', text });
+        showToast({ kind: 'error', text });
       }
     } finally {
       inFlight.current = false;
@@ -441,7 +501,7 @@ export function TicketDetailScreen() {
       // rather than firing a request that always 400s.
       if (statusRequiresResolutionNote(status) && !resolutionNote.trim()) {
         setPendingStatus(status);
-        setToast({ kind: 'error', text: 'A resolution note is required to resolve.' });
+        showToast({ kind: 'error', text: 'A resolution note is required to resolve.' });
         return;
       }
       inFlight.current = true;
@@ -479,15 +539,15 @@ export function TicketDetailScreen() {
         const label = statusLabel({ status: applied, statusName: updated?.statusName ?? null });
         if (!refreshed) {
           setTicket((prev) => (prev ? { ...prev, ...updated } : prev));
-          setToast({ kind: 'error', text: `Marked ${label}, but the ticket could not be refreshed.` });
+          showToast({ kind: 'error', text: `Marked ${label}, but the ticket could not be refreshed.` });
         } else {
-          setToast({ kind: 'success', text: `Marked ${label}` });
+          showToast({ kind: 'success', text: `Marked ${label}` });
         }
       } catch (err: unknown) {
         const apiError = err as { message?: string };
         reportInternalError(err, 'ticket-status');
         if (mounted.current) {
-          setToast({ kind: 'error', text: apiError.message || 'Could not change status.' });
+          showToast({ kind: 'error', text: apiError.message || 'Could not change status.' });
         }
       } finally {
         inFlight.current = false;
@@ -535,7 +595,7 @@ export function TicketDetailScreen() {
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      setToast(effects.toast);
+      showToast(effects.toast);
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
@@ -580,12 +640,30 @@ export function TicketDetailScreen() {
       }
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      setToast(effects.toast);
+      showToast(effects.toast);
+      /**
+       * #5366. Open the composer on the ticket that was actually being timed.
+       *
+       * Usually that is this screen, so the composer is simply focused in
+       * place. But this Stop button fires for whatever timer is running, not
+       * only one started here (the notice above it says as much), so stopping
+       * ticket B's timer while reading ticket A must NOT focus A's composer:
+       * the note about B's work would be written onto A, and an internal note
+       * cannot be moved afterwards. Navigate to B instead — the same thing the
+       * TimerBar does, via the same shared decision.
+       */
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (composerTicketId === ticketId) {
+        setCommentMode('internal');
+        focusComposer();
+      } else if (composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
+      }
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
     }
-  }, [connected, dispatch, refreshQueueDepth, load, running]);
+  }, [connected, dispatch, refreshQueueDepth, load, running, focusComposer, ticketId]);
 
   if (loading && !ticket) {
     return (
@@ -638,6 +716,7 @@ export function TicketDetailScreen() {
       enabled={Platform.OS !== 'ios'}
     >
       <ScrollView
+        ref={scrollRef}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         // Drag the list down to dismiss the keyboard (the chat list already
@@ -667,6 +746,14 @@ export function TicketDetailScreen() {
         ) : (
           <Text style={styles.metaDim}>Unassigned</Text>
         )}
+        {/*
+          #5367: who the ticket is FOR. Hidden rather than shown empty when the
+          ticket names nobody — most agent/alert-raised tickets have no
+          requester at all, and a bare "Requester:" reads as a load failure.
+        */}
+        {requesterLabel(ticket) ? (
+          <Text style={styles.metaDim}>Requester {requesterLabel(ticket)}</Text>
+        ) : null}
 
         {ticket.description ? (
           <View style={styles.card}>
@@ -834,7 +921,6 @@ export function TicketDetailScreen() {
             mode. */}
         <View
           style={[styles.composer, isInternal && styles.composerInternal]}
-          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}
         >
           <View style={styles.modeTabs} accessibilityRole="tablist">
             {COMMENT_MODES.map((mode) => {
@@ -871,6 +957,7 @@ export function TicketDetailScreen() {
           {isInternal ? <Text style={styles.internalBanner}>{internalBannerText}</Text> : null}
 
           <TextInput
+            ref={composerRef}
             value={comment}
             onChangeText={setComment}
             placeholder={composerPlaceholder(commentMode)}
@@ -929,31 +1016,6 @@ export function TicketDetailScreen() {
           </Pressable>
         </View>
       </ScrollView>
-
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        // Clears the composer's full measured height so "Timer started" /
-        // "Timer stopped" never overlaps its mode tabs (#5105) — the
-        // component's own default offset assumes a short, fixed-height
-        // screen, not one ending in a composer that can run to 200+px. Also
-        // clears the keyboard height on iOS (#5171): iOS keeps the window at
-        // full height and relies on `automaticallyAdjustKeyboardInsets`
-        // (above) to shift only the ScrollView's content, so the Toast — a
-        // sibling of that ScrollView, not inside it — is not lifted along
-        // with the composer and needs the keyboard height added explicitly.
-        // Android is intentionally excluded: with no `softwareKeyboardLayoutMode`
-        // override the OS resizes the window itself when the keyboard opens,
-        // so `bottom: 0` already lands just above the keyboard there — adding
-        // `keyboardHeight` again would double-count it and over-clear the toast.
-        bottomOffset={toastClearanceOffset(
-          composerHeight,
-          spacing['4'],
-          Platform.OS === 'ios' ? keyboardHeight : 0
-        )}
-      />
     </KeyboardAvoidingView>
   );
 }

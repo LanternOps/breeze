@@ -72,7 +72,7 @@ The detail below documents the winget execution path specifically. Chocolatey (W
 
 The Breeze agent runs winget directly, in the agent's own **SYSTEM** process, against **machine scope** — there is no dependency on a user being logged in, and no separate helper process in the loop. Scanning, installing, and uninstalling third-party patches all happen the same way regardless of whether anyone is signed in to the device, consistent with how OS patches are already applied.
 
-Scope is machine-wide installs only. Per-user (per-profile) winget installs are not scanned or patched by this engine.
+Machine-wide (SYSTEM-scope) installs are fully scanned and patched. Per-user (per-profile) winget installs are also detected, on a best-effort basis through a helper running in the interactive user's session, so they appear in the patch list -- but they cannot be installed or remediated from the SYSTEM agent context, and attempting to do so returns an error.
 
 <Aside type="note">
 This requires winget (the **App Installer**) to already be present on the device. It ships by default on Windows 10, Windows 11, and Windows Server 2025. On Windows Server 2019 and 2022, winget is often missing, and automatic provisioning of winget on those servers is a planned follow-up rather than something Breeze does today. Until it ships, a Server 2019/2022 device without winget reports the third-party engine as unavailable and simply detects no third-party patches — expected behavior, since servers of that vintage typically aren't running desktop apps like browsers or Zoom in the first place.
@@ -181,7 +181,7 @@ POST /patches/:id/decline
 }
 ```
 
-Rejection creates an audit record but is not a permanent block. The stored approval status is `rejected`. A rejected patch can be approved at any time by calling the approve endpoint. No data is deleted when a patch is rejected.
+Rejection creates an audit record but is not a permanent block. The stored approval status is `rejected`, though the decline endpoint's own response body echoes `"status": "declined"` rather than `rejected` — the two strings refer to the same action. A rejected patch can be approved at any time by calling the approve endpoint. No data is deleted when a patch is rejected.
 
 ### Deferring
 

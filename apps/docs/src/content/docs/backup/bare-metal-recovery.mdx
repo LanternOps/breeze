@@ -1,6 +1,6 @@
 ---
 title: Bare Metal Recovery
-description: Restore a full system image to bare hardware or a replacement device with the Breeze recovery environment, recovery token generation, and token security.
+description: Reinstall a base OS or boot an operator-built Linux ISO, then use a one-time recovery token to restore files from a file snapshot, or download system-state artifacts from a system_image snapshot for manual review — Breeze does not apply them automatically.
 sidebar:
   order: 12
   label: "Bare Metal Recovery"
@@ -8,17 +8,19 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Bare Metal Recovery (BMR) lets you restore a complete system — OS, drivers, configuration, and data — to new or replacement hardware. Unlike a standard restore that requires an enrolled agent, BMR uses a one-time recovery token so you can recover to a machine that has never been enrolled in Breeze.
+Bare Metal Recovery (BMR) is a **reinstall-then-recover** flow, not disk imaging. You put a working OS on the target machine yourself — by installing one normally or, on Linux/amd64 hardware, by booting an ISO Breeze builds from your own boot-template directory — then run the `breeze-backup` recovery binary with a one-time token. It downloads the snapshot: a `file` snapshot restores its files onto whatever is already booted; a `system_image` snapshot downloads its collected OS-state artifacts as plain files but does not apply them. Breeze does not ship boot media, and there is no WinPE/WinRE environment: on Windows and macOS you provide the booted OS yourself before recovery starts.
+
+A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot downloads OS-state artifacts without applying them. To recover data and collect OS-state artifacts for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice.
 
 ---
 
 ## How It Works
 
-1. You generate a **recovery token** from a backup snapshot
-2. Boot the target hardware from recovery media
-3. The recovery agent authenticates with the token (no enrollment needed)
-4. System state and data are downloaded and restored
-5. Post-restore validation checks confirm success
+1. Get a working OS onto the target machine — install one normally, or boot the Linux/amd64 recovery ISO if you built one from your boot template.
+2. Generate a **recovery token** from a backup snapshot and download the recovery bundle (the `breeze-backup` binary, a launch script, and `bootstrap.json`).
+3. On the target machine, run the recovery binary with the token — no Breeze enrollment needed.
+4. It downloads the snapshot: for a `file` snapshot, files are restored to their original paths; for a `system_image` snapshot, the collected OS-state artifacts are downloaded as files into a staging directory and are **not** applied.
+5. A post-restore validation probe runs and reports pass/fail; nothing reboots the machine for you.
 
 ---
 
@@ -28,16 +30,22 @@ Bare Metal Recovery (BMR) lets you restore a complete system — OS, drivers, co
 1. Find the snapshot you want to recover from (via the Backup dashboard or device backup tab).
 2. Select **Bare Metal Recovery** from the restore options.
 3. Configure the recovery:
-   - **Snapshot** — the backup to recover from
-   - **Token lifetime** — how long the token remains valid (in hours)
+   - **Snapshot** — the single backup to recover from (one snapshot per token)
+   - **Token lifetime** — how long the token remains valid, 1–168 hours
    - **Restore type** — Full, Selective, or Bare Metal
-   - **Target configuration** — optional hardware configuration hints
+   - **Target configuration** — optional `source=target` path remappings applied on the recovery machine
 4. Click **Generate Token**.
 5. The token is displayed **once**. Copy it immediately — it's stored as a SHA-256 hash and cannot be retrieved later.
 </Steps>
 
+Once a token exists, build downloadable recovery media for it from the **Recovery Bootstrap** tab on the device's Backup view — either a bootable ISO or a recovery bundle (the helper binary and a launch script) for machines that already have an OS installed.
+
 <Aside type="danger">
   Recovery tokens are shown only once at creation time. Store the token securely and use it promptly. If lost, generate a new one.
+</Aside>
+
+<Aside type="note">
+  Recovering data and collecting OS-state artifacts for one machine takes two tokens and two runs: one against the device's `system_image` snapshot, one against its `file` snapshot.
 </Aside>
 
 ---
@@ -45,18 +53,31 @@ Bare Metal Recovery (BMR) lets you restore a complete system — OS, drivers, co
 ## Running the Recovery
 
 <Steps>
-1. Boot the target machine from Breeze recovery media.
-2. When prompted, enter the recovery token.
-3. The recovery agent connects to Breeze and authenticates with the token.
-4. The recovery process begins:
-   - **System state** is restored first (OS configuration, drivers, registry on Windows; `/etc`, boot config on Linux)
-   - **Data files** are restored next
-5. Post-restore validation runs automatically:
-   - Service status checks
-   - Network connectivity verification
-   - Critical file presence confirmation
-6. The machine reboots into the restored OS.
+1. Get the target machine to a booted OS: install one normally, or boot it from the Linux/amd64 recovery ISO if you built one.
+2. Download and extract the recovery bundle for the target platform/architecture, then run the launch script (`run-recovery.sh` / `run-recovery.ps1`) or the binary directly:
+   ```
+   breeze-backup bmr-recover --token <recovery-token> --server <breeze-server-url>
+   ```
+   Add `--target-path <source>=<target>` (repeatable) to remap individual file paths from the snapshot onto different locations on the recovery machine; anything not remapped restores to its original path.
+3. The recovery agent authenticates with the token and downloads the snapshot manifest.
+4. For a `system_image` snapshot, the recovery binary downloads the collected artifacts as ordinary files into a staging directory — it does **not** apply them to the running OS. The staging directory is a temporary path such as `/tmp/breeze-systemstate-<random>/{boot,crontabs,etc,firewall,packages,services}` on Linux, `C:\Windows\SystemTemp\breeze-systemstate-<random>\` on Windows, or `/var/folders/.../T/breeze-systemstate-<random>/` on macOS. A `system_image` snapshot contains:
+   - **Windows** — registry hives (`SYSTEM`, `SOFTWARE`, `SAM`, `SECURITY`), the BCD store, the certificate store, installed drivers, service configuration, and firewall policy.
+   - **Linux** — the `/etc` tree, the captured `dpkg`/`dnf` package list, the set of enabled systemd services, firewall (`iptables`) rules, and crontabs.
+   - **macOS** — preference plists, LaunchDaemon/LaunchAgent items, and network configuration.
+   The run still reports `status: completed` with `stateApplied: false` and the warning "no system state found in snapshot, skipping state restore" — a `completed` `system_image` recovery does not mean the OS was restored. To apply any of these artifacts, an operator has to inspect the staging directory and apply them by hand (e.g. `reg restore`, copying `/etc` files back, re-enabling services).
+5. For a `file` snapshot, files are downloaded and written to their original paths (or their `--target-path` remapping). This is the only step in this flow that changes the running OS's state.
+6. A post-restore validation probe checks network reachability, presence of critical files, and service status, and reports the result — it does not repair or retry anything it finds wrong.
 </Steps>
+
+<Aside type="caution">
+  Nothing in this flow reboots the machine or replaces its running OS. For a `system_image` snapshot, nothing in this flow modifies the running OS at all — the collected artifacts land in a staging directory as plain files, and applying any of them (registry import, `/etc` copy, service re-enable, and so on) is a separate, manual step.
+</Aside>
+
+---
+
+## What a Recovered Machine Is — and Isn't
+
+A machine recovered with a `file` snapshot is: the OS you installed or booted, plus the recovered files, otherwise unchanged. A machine recovered with a `system_image` snapshot is: exactly the OS you installed or booted — the collected artifacts sit alongside it as files in a staging directory, and `/etc`, the registry, boot configuration, services, firewall, and crontabs on the machine are untouched. A `completed` `system_image` recovery means the artifacts downloaded successfully, not that any of them were applied. Neither snapshot type produces a byte-identical clone of the original machine — there is no disk or partition imaging anywhere in this flow, and hardware-specific state (disk partitioning, bootloader identity, kernel/driver binaries) is not reproduced.
 
 ---
 
@@ -64,12 +85,12 @@ Bare Metal Recovery (BMR) lets you restore a complete system — OS, drivers, co
 
 | Scenario | Approach |
 |----------|----------|
-| **Hard drive failure** | BMR to new disk in same hardware |
-| **Machine replacement** | BMR to new hardware of similar specification |
-| **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/) |
-| **Migration** | System image restore to different hardware (may need driver updates) |
+| **Hard drive failure** | Install/boot an OS on the new disk, then recover data with BMR; use a `system_image` snapshot only to collect artifacts for manual reference |
+| **Machine replacement** | Install a base OS on the replacement hardware, then recover data with BMR; reconfigure the OS and reinstall drivers yourself — BMR does not apply either |
+| **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/) — plan for manual OS reconfiguration, not automatic state restore |
+| **Migration** | Recover data onto different hardware; reconcile OS configuration, drivers, and boot differences yourself |
 
-For recovering individual files or databases, use the standard [restore workflow](/backup/restoring/) instead — it's faster and doesn't require recovery media.
+For recovering individual files or databases onto an already-enrolled device, use the standard [restore workflow](/backup/restoring/) instead — it's faster and doesn't require a recovery token.
 
 ---
 

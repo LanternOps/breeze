@@ -41,9 +41,10 @@ vi.mock('drizzle-orm', () => ({
   inArray: (a: unknown, b: unknown) => ({ _op: 'inArray', a, b }),
 }));
 
-import { computeInviteFunnel } from './aiToolsFleetStatus';
+import { computeInviteFunnel, registerFleetStatusTools } from './aiToolsFleetStatus';
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
+import type { AiTool } from './aiTools';
 
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -237,5 +238,37 @@ describe('computeInviteFunnel', () => {
       invited_email: 'orphan@acme.com',
       enrolled_at: enrolledAt.toISOString(),
     });
+  });
+});
+
+// #5362: the model name-matched `get_fleet_status` for the mobile "Show fleet
+// status" chip and narrated "your fleet is empty" from invite-funnel zeros on a
+// 51-device tenant. The tool name is what wins the match, so the name itself
+// must not read like a fleet overview and the description must redirect.
+describe('get_invite_funnel — tool naming contract (#5362)', () => {
+  function registry(): Map<string, AiTool> {
+    const reg = new Map<string, AiTool>();
+    registerFleetStatusTools(reg);
+    return reg;
+  }
+
+  it('registers only get_invite_funnel — no fleet-status name is advertised', () => {
+    const names = [...registry().keys()];
+    expect(names).toEqual(['get_invite_funnel']);
+    for (const name of names) {
+      expect(name).not.toMatch(/fleet[_\s-]*status/i);
+    }
+  });
+
+  it('definition name matches the registration key', () => {
+    const tool = registry().get('get_invite_funnel');
+    expect(tool?.definition.name).toBe('get_invite_funnel');
+  });
+
+  it('description disclaims a fleet overview and names the tools that do answer it', () => {
+    const description = registry().get('get_invite_funnel')?.definition.description ?? '';
+    expect(description).toMatch(/NOT a fleet overview/i);
+    expect(description).toContain('query_devices');
+    expect(description).toContain('get_fleet_health');
   });
 });

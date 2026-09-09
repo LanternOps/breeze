@@ -11,6 +11,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -459,4 +460,29 @@ func TestHandleBackupCommand_AsyncResultDurationTracksElapsed(t *testing.T) {
 	}
 
 	<-done
+}
+
+// TestInitBackupManager_CarriesAgentIDIntoManager pins the production wiring
+// in initBackupManager that stamps BackupConfig.AgentID from cfg.AgentID.
+// D6 (incremental dedupe base scoped to backup identity) depends on this:
+// without AgentID flowing into the manager, previousManifest can pick
+// another device's snapshot as its dedupe base. See the AgentID doc comment
+// on backup.BackupConfig for the full story.
+func TestInitBackupManager_CarriesAgentIDIntoManager(t *testing.T) {
+	cfg := &config.Config{
+		AgentID:         "agent-wiring-test",
+		BackupEnabled:   true,
+		BackupPaths:     []string{t.TempDir()},
+		BackupProvider:  "local",
+		BackupLocalPath: t.TempDir(),
+		BackupRetention: 7,
+	}
+
+	mgr := initBackupManager(cfg)
+	if mgr == nil {
+		t.Fatal("initBackupManager returned nil, expected a manager")
+	}
+	if got := mgr.GetAgentID(); got != "agent-wiring-test" {
+		t.Fatalf("mgr.GetAgentID() = %q, want %q", got, "agent-wiring-test")
+	}
 }

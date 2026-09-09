@@ -25,6 +25,12 @@ export interface CreateTicketBody {
   description?: string;
   priority: TicketPriority;
   assigneeId?: string;
+  /**
+   * #5367: the requester CONTACT (`tickets.requester_contact_id`). Omitted —
+   * never sent as null — for "No contact", matching how `assigneeId` handles
+   * "Unassigned": the server only ever sees the field when a real id was picked.
+   */
+  requesterContactId?: string;
 }
 
 export type BuildResult =
@@ -44,6 +50,7 @@ export function buildCreateTicketBody(input: {
   description: string;
   priority: TicketPriority;
   assigneeId?: string | null;
+  requesterContactId?: string | null;
 }): BuildResult {
   if (!input.orgId) return { ok: false, reason: 'org' };
   const subject = input.subject.trim();
@@ -52,6 +59,7 @@ export function buildCreateTicketBody(input: {
   const body: CreateTicketBody = { orgId: input.orgId, subject, priority: input.priority };
   if (description) body.description = description;
   if (input.assigneeId) body.assigneeId = input.assigneeId;
+  if (input.requesterContactId) body.requesterContactId = input.requesterContactId;
   return { ok: true, body };
 }
 
@@ -106,8 +114,23 @@ export function defaultAssigneeId(me: { id: string } | null | undefined): string
  * network failure, a non-ApiError throw — is still worth reporting.
  */
 export function isExpectedAssigneeLoadFailure(err: unknown): boolean {
+  return isForbidden(err);
+}
+
+/** A refusal by the permission model, as opposed to a failure worth reporting. */
+function isForbidden(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   return (err as { statusCode?: unknown }).statusCode === 403;
+}
+
+/**
+ * #5367: same rule for the contacts fetch. `GET /orgs/organizations/:id/contacts`
+ * is gated on `organizations:read`, which plenty of technician roles do not
+ * carry — for them the CONTACT row is simply not offered, which is the
+ * permission model working, not a defect to report.
+ */
+export function isExpectedContactLoadFailure(err: unknown): boolean {
+  return isForbidden(err);
 }
 
 /**
@@ -134,4 +157,81 @@ export function assigneeOptions(
   rest.sort((a, b) => a.label.localeCompare(b.label));
 
   return [...options, ...rest];
+}
+
+// ── Requester contact (#5367) ────────────────────────────────────────────────
+
+/** A row from `GET /orgs/organizations/:id/contacts`, trimmed to what the picker needs. */
+export interface OrgContactOption {
+  id: string;
+  name: string | null;
+  email: string | null;
+  isPrimary?: boolean;
+}
+
+export interface ContactOption {
+  /** `null` is the "No contact" row — sent as an omitted field, not literal null. */
+  id: string | null;
+  label: string;
+}
+
+/** The default, and the way back to it once a contact has been picked. */
+export const NO_CONTACT_LABEL = 'No contact';
+
+/**
+ * How a contact reads in the picker: `name · email`, or whichever one it has.
+ * A contact row is only required to carry ONE identifier (the API's
+ * `no-identifier` rule), so both halves are individually optional.
+ */
+export function contactDisplayLabel(contact: Pick<OrgContactOption, 'name' | 'email'>): string {
+  const name = contact.name?.trim();
+  const email = contact.email?.trim();
+  if (name && email) return `${name} · ${email}`;
+  return name || email || 'Unnamed contact';
+}
+
+/**
+ * Picker contents: "No contact" first (it is both the default and the only way
+ * to clear a pick, so it survives every search), then the org's primary contact
+ * ahead of everyone else — on most customer sites that is the person a ticket
+ * is for — then the rest by display label.
+ *
+ * `search` filters client-side over name AND email. The list is one page of at
+ * most 100 contacts, so this is a filter over what was fetched, not a query:
+ * an org with more contacts than that needs server-side search (follow-up).
+ */
+export function contactOptions(
+  contacts: readonly OrgContactOption[],
+  search?: string
+): ContactOption[] {
+  const needle = search?.trim().toLowerCase() ?? '';
+  const matching = needle
+    ? contacts.filter(
+        (c) =>
+          (c.name ?? '').toLowerCase().includes(needle) || (c.email ?? '').toLowerCase().includes(needle)
+      )
+    : [...contacts];
+
+  const ranked = matching
+    .map((c) => ({ id: c.id, label: contactDisplayLabel(c), primary: c.isPrimary === true }))
+    .sort((a, b) => (a.primary === b.primary ? a.label.localeCompare(b.label) : a.primary ? -1 : 1));
+
+  return [
+    { id: null, label: NO_CONTACT_LABEL },
+    ...ranked.map(({ id, label }) => ({ id, label })),
+  ];
+}
+
+/**
+ * The contact selection that survives an organization change: none, unless the
+ * organization did not actually change. Contacts are org-scoped, so carrying a
+ * pick across would POST a `requesterContactId` from the previous customer —
+ * which the API rejects (400 `REQUESTER_CONTACT_WRONG_ORG`), and which would
+ * name the wrong customer's person if it ever did not.
+ */
+export function contactSelectionForOrg(
+  current: { orgId: string | null; contactId: string | null },
+  nextOrgId: string | null
+): string | null {
+  return current.orgId === nextOrgId ? current.contactId : null;
 }

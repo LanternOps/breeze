@@ -28,6 +28,7 @@ import {
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
 import { captureException } from '../services/sentry';
+import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 
 // ── GFS tag types ────────────────────────────────────────────────────────────
 
@@ -160,6 +161,13 @@ export type RetentionCleanupResult = {
   skippedLegalHold: number;
   skippedImmutable: number;
   prunedByMaxVersions: number;
+  // D17: a row whose DELETE was rejected by the DB (most commonly a
+  // NO-ACTION FK still pointing at it from a history table — restore_jobs,
+  // recovery_tokens, backup_chains, backup_verifications, or its own
+  // parent_snapshot_id self-reference) is counted here rather than aborting
+  // the whole pass. It is retried on the next run — nothing here is a
+  // permanent skip.
+  failed: number;
 };
 
 /**
@@ -185,6 +193,34 @@ async function deleteSnapshotRow(params: { id: string }): Promise<void> {
 }
 
 /**
+ * D17: `deleteSnapshotRow` can still legitimately reject — the FKs this
+ * migration widened to ON DELETE SET NULL cover the known history tables, but
+ * an as-yet-unregistered referencing table, or an unrelated DB error (lock
+ * timeout, connection blip), must not take down the whole cleanup pass for
+ * every other expired row in the org. One bad row is logged at ERROR with its
+ * snapshot id and the PG SQLSTATE/constraint (when the driver surfaced one)
+ * and skipped; the caller's loop continues to the next row and the row is
+ * simply retried on the next scheduled run.
+ */
+async function tryDeleteSnapshotRow(snap: { id: string; snapshotId: string }): Promise<boolean> {
+  try {
+    await deleteSnapshotRow({ id: snap.id });
+    return true;
+  } catch (error) {
+    const code = pgErrorCode(error);
+    const constraint = pgErrorConstraint(error);
+    console.error(
+      `[BackupRetention] Failed to delete snapshot ${snap.snapshotId} (id ${snap.id})` +
+      (code ? ` — PG ${code}` : ' — no PG SQLSTATE on the error') +
+      (constraint ? ` (constraint ${constraint})` : '') +
+      ' — skipping this row; will retry next run:',
+      error,
+    );
+    return false;
+  }
+}
+
+/**
  * Cleans up expired snapshots for an org, respecting legal holds and immutability.
  *
  * Snapshots are deleted when:
@@ -201,6 +237,7 @@ export async function cleanupExpiredSnapshots(
     skippedLegalHold: 0,
     skippedImmutable: 0,
     prunedByMaxVersions: 0,
+    failed: 0,
   };
 
   // Find all expired snapshots for this org
@@ -244,9 +281,11 @@ export async function cleanupExpiredSnapshots(
     }
 
     // Safe to delete
-    await deleteSnapshotRow({ id: snap.id });
-
-    result.deleted++;
+    if (await tryDeleteSnapshotRow({ id: snap.id, snapshotId: snap.snapshotId })) {
+      result.deleted++;
+    } else {
+      result.failed++;
+    }
   }
 
   const versionBoundSnapshots = await db
@@ -307,9 +346,12 @@ export async function cleanupExpiredSnapshots(
         continue;
       }
 
-      await deleteSnapshotRow({ id: snap.id });
-      result.deleted++;
-      result.prunedByMaxVersions++;
+      if (await tryDeleteSnapshotRow({ id: snap.id, snapshotId: snap.snapshotId })) {
+        result.deleted++;
+        result.prunedByMaxVersions++;
+      } else {
+        result.failed++;
+      }
     }
   }
 
@@ -317,14 +359,28 @@ export async function cleanupExpiredSnapshots(
     result.deleted > 0 ||
     result.skippedLegalHold > 0 ||
     result.skippedImmutable > 0 ||
-    result.prunedByMaxVersions > 0
+    result.prunedByMaxVersions > 0 ||
+    result.failed > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
       `skipped ${result.skippedLegalHold} (legal hold), ` +
       `${result.skippedImmutable} (immutable), ` +
-      `pruned ${result.prunedByMaxVersions} by maxVersions`
+      `pruned ${result.prunedByMaxVersions} by maxVersions` +
+      (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors — will retry next run)` : '')
     );
+  }
+
+  // D17 summary: surfaced once per org run (not per row, which console.error
+  // in tryDeleteSnapshotRow already covers) so a run with failures is visible
+  // in Sentry beyond stdout, mirroring sweepUnreferencedBackupObjects's
+  // wedge-message convention below.
+  if (result.failed > 0) {
+    const summary =
+      `[BackupRetention] Org ${orgId}: ${result.failed} snapshot row delete(s) failed this run — ` +
+      'see prior per-row error logs for the specific snapshot id(s) and PG error; will retry next run.';
+    console.error(summary);
+    captureException(new Error(summary));
   }
 
   return result;
@@ -435,7 +491,37 @@ export function computeExpiresAt(
 //             normalizeStorageIdentity and its belt-and-braces collision
 //             check, detectSuspiciousStorageIdentityCollisions.
 
-export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
+const BACKUP_GC_GRACE_MS_DEFAULT = 48 * 60 * 60 * 1000;
+// Test/lab knob only (2026-09-09 assurance campaign, cell R1/R4): the grace is a
+// production safety margin and must never be lowered on a real deployment.
+// Lowest grace production will accept from the env knob. The grace window is
+// what protects objects of an in-flight upload whose manifest is not yet
+// published (see sweepUnreferencedBackupObjects); the knob exists so a lab can
+// prove reclamation in seconds, not so an operator can shave the window.
+const BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR = 60 * 60 * 1000;
+
+function resolveBackupGcGraceMs(): number {
+  const raw = process.env.BACKUP_GC_GRACE_MS;
+  if (raw === undefined || raw.trim() === '') return BACKUP_GC_GRACE_MS_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(
+      `[BackupRetention] Ignoring BACKUP_GC_GRACE_MS=${JSON.stringify(raw)} (not a positive number); using default ${BACKUP_GC_GRACE_MS_DEFAULT} ms`,
+    );
+    return BACKUP_GC_GRACE_MS_DEFAULT;
+  }
+  if (process.env.NODE_ENV === 'production' && n < BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR) {
+    console.warn(
+      `[BackupRetention] BACKUP_GC_GRACE_MS=${n} is below the production floor; using ${BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR} ms instead`,
+    );
+    return BACKUP_GC_GRACE_MS_PRODUCTION_FLOOR;
+  }
+  console.warn(
+    `[BackupRetention] BACKUP_GC_GRACE_MS override active: ${n} ms (default ${BACKUP_GC_GRACE_MS_DEFAULT} ms)`,
+  );
+  return n;
+}
+export const BACKUP_GC_GRACE_MS = resolveBackupGcGraceMs();
 
 // Must stay STRICTLY LARGER than agent/internal/backup/journal.go's
 // journalMaxAge (7 days) — the agent trusts its checkpoint journal (and
