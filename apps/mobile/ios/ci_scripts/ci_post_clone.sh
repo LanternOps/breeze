@@ -189,12 +189,12 @@ npx expo prebuild --platform ios --no-install
 # ---------------------------------------------------------------------------
 HERMES_PROPS="$REPO_ROOT/apps/mobile/node_modules/react-native/sdks/hermes-engine/version.properties"
 if [ "${RCT_HERMES_V1_ENABLED:-1}" = "0" ]; then
-  HERMES_VERSION="$(sed -n 's/^HERMES_VERSION_NAME=//p' "$HERMES_PROPS")"
+  HERMES_VERSION="$(sed -n 's/^HERMES_VERSION_NAME=//p' "$HERMES_PROPS" 2>/dev/null || true)"
 else
-  HERMES_VERSION="$(sed -n 's/^HERMES_V1_VERSION_NAME=//p' "$HERMES_PROPS")"
+  HERMES_VERSION="$(sed -n 's/^HERMES_V1_VERSION_NAME=//p' "$HERMES_PROPS" 2>/dev/null || true)"
 fi
 if [ -z "$HERMES_VERSION" ]; then
-  echo "ci_post_clone: could not read the Hermes version from $HERMES_PROPS" >&2
+  echo "ci_post_clone: could not read the Hermes version from $HERMES_PROPS (missing file, or the key is absent)" >&2
   exit 1
 fi
 echo "--- hermes: prebuilt version $HERMES_VERSION"
@@ -208,6 +208,21 @@ HERMES_SHA1="${BREEZE_HERMES_TARBALL_SHA1:-}"
 if [ -z "$HERMES_SHA1" ]; then
   HERMES_SHA1="$(curl -fsSL --retry 3 "$HERMES_MAVEN_BASE/$HERMES_TARBALL_NAME.sha1" 2>/dev/null | head -c 40 || true)"
 fi
+# A checksum that is not exactly 40 hex characters (an HTML error page, a
+# pasted value with whitespace) must read as "no checksum", not as a mismatch
+# that looks like a tampered tarball. Same guard react-native's own
+# fetch_maven_sha1 applies.
+HERMES_SHA1="$(printf '%s' "$HERMES_SHA1" | tr 'A-Z' 'a-z')"
+case "$HERMES_SHA1" in
+  ????????????????????????????????????????) case "$HERMES_SHA1" in *[!0-9a-f]*) HERMES_SHA1="" ;; esac ;;
+  *) HERMES_SHA1="" ;;
+esac
+[ -n "$HERMES_SHA1" ] || echo "--- hermes: no usable sha1 for $HERMES_TARBALL_NAME; any download will be refused" >&2
+
+# Google's Maven Central mirror serves the same bytes directly, without the
+# redirect that is broken on the primary. It is transport only: the sha1 gate
+# above still comes from Maven itself.
+HERMES_GCS_BASE="https://maven-central.storage-download.googleapis.com/maven2/com/facebook/hermes/hermes-ios/$HERMES_VERSION"
 
 hermes_fetch() {
   # $1 = URL. Succeeds only when the download completes AND the sha1 matches.
@@ -231,11 +246,18 @@ hermes_fetch() {
 HERMES_READY=0
 if hermes_fetch "$HERMES_MAVEN_BASE/$HERMES_TARBALL_NAME"; then
   HERMES_READY=1
+elif hermes_fetch "$HERMES_GCS_BASE/$HERMES_TARBALL_NAME"; then
+  HERMES_READY=1
 elif [ -n "${BREEZE_HERMES_TARBALL_URL:-}" ] && hermes_fetch "$BREEZE_HERMES_TARBALL_URL"; then
   HERMES_READY=1
 fi
 
 if [ "$HERMES_READY" = "1" ]; then
+  # A local tarball is used verbatim for every configuration (the podspec only
+  # adds its per-configuration swap for Maven downloads). Correct for the
+  # Archive/Release action this workflow runs; a Debug action in the same
+  # workflow would link release Hermes, which builds and runs but has no CDP
+  # inspector. Gate this on CI_XCODEBUILD_ACTION if Debug actions are added.
   echo "--- hermes: using verified prebuilt tarball ($HERMES_SHA1)"
   HERMES_ENGINE_TARBALL_PATH="$HERMES_TARBALL"
   export HERMES_ENGINE_TARBALL_PATH
