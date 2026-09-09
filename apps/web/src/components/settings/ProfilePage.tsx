@@ -146,6 +146,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [mfaError, setMfaError] = useState<string | undefined>();
   const [mfaSuccess, setMfaSuccess] = useState<string | undefined>();
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | undefined>();
+  // #5319: the setup response already carries the base32 secret; keep it so the
+  // enrollment panel can offer manual entry beside the QR image.
+  const [totpSecret, setTotpSecret] = useState<string | undefined>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | undefined>();
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeyName, setPasskeyName] = useState('');
@@ -476,6 +479,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         const data = await response.json();
         setQrCodeDataUrl(data.qrCodeDataUrl);
+        setTotpSecret(typeof data.secret === 'string' ? data.secret : undefined);
         return true;
       } catch (error) {
         setMfaError(error instanceof Error ? error.message : t('profilePage.failedToStartMFASetup'));
@@ -1139,6 +1143,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         ssoSetupReady={ssoSetupReady}
         ssoReauthGrantAvailable={hasSsoReauthGrant}
         qrCodeDataUrl={qrCodeDataUrl}
+        totpSecret={totpSecret}
         recoveryCodes={recoveryCodes}
         onRequestSetup={handleMfaRequestSetup}
         onEnable={handleMfaEnable}
