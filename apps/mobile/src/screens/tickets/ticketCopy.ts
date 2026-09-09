@@ -76,6 +76,25 @@ export function isBreached(ticket: Pick<TicketSummary, 'slaBreachedAt'>): boolea
 }
 
 /**
+ * #5367: who the ticket is FOR, for the detail header.
+ *
+ * Reads the requester SNAPSHOT (`submitter_name` / `submitter_email`) rather
+ * than resolving `requester_contact_id`, because the snapshot is what the API
+ * already returns on the ticket read and what the notify worker actually mails
+ * — so the header names the person who will receive the public replies. Null
+ * when the ticket names nobody, so the caller hides the row instead of
+ * rendering "Requester:" with nothing after it.
+ */
+export function requesterLabel(
+  ticket: { submitterName?: string | null; submitterEmail?: string | null }
+): string | null {
+  const name = ticket.submitterName?.trim();
+  if (name) return name;
+  const email = ticket.submitterEmail?.trim();
+  return email || null;
+}
+
+/**
  * Empty-state copy depends on both filters — "no tickets at all" and "none
  * assigned to you" are different situations and a single string reads as a bug
  * when the tech knows the queue is not empty.
