@@ -207,6 +207,7 @@
     "minutes": "Minutos",
     "rate": "Tarifa por hora",
     "rateWithCurrency": "Tarifa por hora ({{currency}})",
+    "rateInvalid": "Ingresa una tarifa de 0 o más.",
     "noRateWarning": "Sin tarifa por hora: el tiempo facturable sin tarifa no se puede facturar.",
     "descriptionPlaceholder": "Descripción (opcional)",
     "techFallback": "Técnico",

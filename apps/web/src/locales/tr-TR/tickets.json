@@ -207,6 +207,7 @@
     "minutes": "Dakika",
     "rate": "Saatlik ücret",
     "rateWithCurrency": "Saatlik ücret ({{currency}})",
+    "rateInvalid": "0 veya daha yüksek bir ücret girin.",
     "noRateWarning": "Saatlik ücret yok — ücretsiz faturalandırılabilir süre faturalandırılamaz.",
     "descriptionPlaceholder": "Açıklama (isteğe bağlı)",
     "techFallback": "Teknoloji",

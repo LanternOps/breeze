@@ -207,6 +207,7 @@
     "minutes": "Minutes",
     "rate": "Hourly rate",
     "rateWithCurrency": "Hourly rate ({{currency}})",
+    "rateInvalid": "Enter a rate of 0 or more.",
     "noRateWarning": "No hourly rate — billable time without a rate cannot be invoiced.",
     "descriptionPlaceholder": "Description (optional)",
     "techFallback": "Tech",
