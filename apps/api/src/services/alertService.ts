@@ -52,6 +52,71 @@ export interface RuleWithTemplate {
 }
 
 /**
+ * Publish `alert.triggered` for an already-inserted alert row, rolling the row
+ * back if the publish fails.
+ *
+ * A committed `active` alert that was never published is worse than no alert at
+ * all: every creator dedupes on open alerts, so the unpublished row makes them
+ * skip re-creating it forever — the silent, inbox-only alert #5241 exists to
+ * eliminate. Deleting it lets the next evaluation retry the whole
+ * create + publish.
+ *
+ * @returns true when the event was published; false when the row was rolled
+ *          back (the caller must not burn a cooldown or enqueue follow-up work).
+ */
+async function publishAlertTriggeredOrRollback(opts: {
+  alertId: string;
+  orgId: string;
+  deviceId: string;
+  /** Producing subsystem, used for the Sentry tag and log lines. */
+  source: string;
+  payload: Record<string, unknown>;
+  publisher: string;
+  siteId: string | null | undefined;
+}): Promise<boolean> {
+  const { alertId, orgId, deviceId, source, payload, publisher, siteId } = opts;
+
+  try {
+    await publishEvent('alert.triggered', orgId, payload, publisher, { siteId });
+    return true;
+  } catch (error) {
+    captureException(error, undefined, {
+      errorId: 'alert-triggered-publish-failed',
+      alertId,
+      alertSource: source,
+      orgId,
+      deviceId
+    });
+    console.error(
+      `[AlertService] Failed to publish alert.triggered for ${source} alert ${alertId}; rolling the alert row back:`,
+      error
+    );
+    try {
+      await db.delete(alerts).where(eq(alerts.id, alertId));
+    } catch (deleteError) {
+      // Now the row IS stranded — unpublished and undeletable. Nothing else
+      // will notice it, so report it under its own errorId. Note that
+      // `captureException` is a no-op when Sentry is not initialised (the
+      // common self-hosted shape), so on those deployments the console.error
+      // below is the only durable trace — operators who want to be paged on
+      // this need a log-based alert on it.
+      captureException(deleteError, undefined, {
+        errorId: 'alert-triggered-orphan-rollback-failed',
+        alertId,
+        alertSource: source,
+        orgId,
+        deviceId
+      });
+      console.error(
+        `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
+        deleteError
+      );
+    }
+    return false;
+  }
+}
+
+/**
  * Create a new alert
  * - Checks cooldown to prevent duplicates
  * - Deduplicates against existing active alerts
@@ -146,17 +211,17 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     return null;
   }
 
-  // Set cooldown
-  await setCooldown(ruleId, deviceId, cooldownMinutes);
-
-  enqueueAlertCorrelationForDevice(orgId, deviceId);
-
-  // Publish event — attach the device's site so site-restricted users see it
+  // Publish event — attach the device's site so site-restricted users see it.
+  // The cooldown and the correlation job are deliberately set only AFTER a
+  // successful publish: on a rollback the next evaluation must be free to retry
+  // the whole create + publish, and nothing may point at the deleted row.
   const siteId = await resolveDeviceSiteId(deviceId);
-  await publishEvent(
-    'alert.triggered',
+  const published = await publishAlertTriggeredOrRollback({
+    alertId: newAlert.id,
     orgId,
-    {
+    deviceId,
+    source: 'alert_rule',
+    payload: {
       alertId: newAlert.id,
       ruleId,
       deviceId,
@@ -164,9 +229,18 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       title,
       message
     },
-    'alert-service',
-    { siteId }
-  );
+    publisher: 'alert-service',
+    siteId
+  });
+
+  if (!published) {
+    return null;
+  }
+
+  // Set cooldown
+  await setCooldown(ruleId, deviceId, cooldownMinutes);
+
+  enqueueAlertCorrelationForDevice(orgId, deviceId);
 
   console.log(`[AlertService] Created alert ${newAlert.id} for rule=${ruleId} device=${deviceId}`);
 
@@ -192,6 +266,15 @@ export interface CreateSourcedAlertParams {
   /** Extra fields merged into the `alert.triggered` payload. */
   eventPayload?: Record<string, unknown>;
   triggeredAt?: Date;
+  /** Config-policy alert rule behind this alert, when there is one. */
+  configPolicyId?: string | null;
+  /** Human label for the producing config item, e.g. `'warranty_expiry'`. */
+  configItemName?: string | null;
+  /**
+   * Site to scope the published event to. Omit to resolve it from the device;
+   * pass it explicitly (including `null`) when the caller already knows it.
+   */
+  siteId?: string | null;
 }
 
 /**
@@ -210,8 +293,9 @@ export interface CreateSourcedAlertParams {
  * flap-suppression stay with the caller, whose keys are source-specific
  * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
  *
- * @returns the new alert id, or null if the insert produced no row (in which
- *          case nothing is published — the caller should not burn its cooldown).
+ * @returns the new alert id, or null if the insert produced no row or the
+ *          publish failed and the row was rolled back — in either case nothing
+ *          was published and the caller should not burn its cooldown.
  */
 export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
@@ -222,6 +306,8 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       ruleId: null,
       deviceId,
       orgId,
+      configPolicyId: params.configPolicyId ?? null,
+      configItemName: params.configItemName ?? null,
       severity,
       title,
       message,
@@ -241,61 +327,30 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
     return null;
   }
 
-  try {
-    // Attach the device's site so site-restricted users see it, same as createAlert.
-    const siteId = await resolveDeviceSiteId(deviceId);
-    await publishEvent(
-      'alert.triggered',
-      orgId,
-      {
-        alertId,
-        ruleId: null,
-        deviceId,
-        severity,
-        title,
-        message,
-        // `source` last so it is always the one persisted in context — a caller
-        // cannot accidentally publish a source that disagrees with the row.
-        ...eventPayload,
-        source: context.source
-      },
-      publisher,
-      { siteId }
-    );
-  } catch (error) {
-    // The row is already committed but nothing was notified. Leaving it is
-    // WORSE than never creating it: callers dedupe on the open alert, so they
-    // would find an `active` row and skip re-creating it forever — precisely
-    // the silent, inbox-only alert #5241 exists to eliminate. Roll it back so
-    // the next evaluation retries the whole create+publish.
-    captureException(error, undefined, {
-      errorId: 'alert-triggered-publish-failed',
+  // Attach the device's site so site-restricted users see it, same as createAlert.
+  const siteId = params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
+  const published = await publishAlertTriggeredOrRollback({
+    alertId,
+    orgId,
+    deviceId,
+    source: context.source,
+    payload: {
       alertId,
-      alertSource: context.source,
-      orgId,
-      deviceId
-    });
-    console.error(
-      `[AlertService] Failed to publish alert.triggered for ${context.source} alert ${alertId}; rolling the alert row back:`,
-      error
-    );
-    try {
-      await db.delete(alerts).where(eq(alerts.id, alertId));
-    } catch (deleteError) {
-      // Now the row IS stranded — unpublished and undeletable. Nothing else
-      // will notice it, so this needs to page rather than only log.
-      captureException(deleteError, undefined, {
-        errorId: 'alert-triggered-orphan-rollback-failed',
-        alertId,
-        alertSource: context.source,
-        orgId,
-        deviceId
-      });
-      console.error(
-        `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
-        deleteError
-      );
-    }
+      ruleId: null,
+      deviceId,
+      severity,
+      title,
+      message,
+      // `source` last so it is always the one persisted in context — a caller
+      // cannot accidentally publish a source that disagrees with the row.
+      ...eventPayload,
+      source: context.source
+    },
+    publisher,
+    siteId
+  });
+
+  if (!published) {
     return null;
   }
 
@@ -1024,56 +1079,40 @@ export async function evaluateDeviceAlertsFromPolicy(deviceId: string): Promise<
         const title = interpolateTemplate(rule.titleTemplate, templateContext);
         const message = interpolateTemplate(rule.messageTemplate, templateContext);
 
-        // 9. Create alert with config policy references (ruleId left null)
-        const [newAlert] = await db
-          .insert(alerts)
-          .values({
-            ruleId: null,
-            deviceId,
-            orgId: device.orgId,
-            configPolicyId: rule.id,
+        // 9. Create alert with config policy references (ruleId left null).
+        // Routed through createSourcedAlert so a failed publish rolls the row
+        // back instead of leaving a silent, dedupe-blocking alert (#5325).
+        const newAlertId = await createSourcedAlert({
+          deviceId,
+          orgId: device.orgId,
+          severity: rule.severity,
+          title,
+          message,
+          context: {
+            ...result.context,
+            conditionsMet: result.conditionsMet,
+            conditionsNotMet: result.conditionsNotMet,
+            cooldownMinutes: rule.cooldownMinutes,
+            source: 'config_policy',
+          },
+          configPolicyId: rule.id,
+          configItemName: rule.name,
+          publisher: 'alert-service',
+          eventPayload: {
+            configPolicyAlertRuleId: rule.id,
             configItemName: rule.name,
-            severity: rule.severity,
-            title,
-            message,
-            context: {
-              ...result.context,
-              conditionsMet: result.conditionsMet,
-              conditionsNotMet: result.conditionsNotMet,
-              cooldownMinutes: rule.cooldownMinutes,
-              source: 'config_policy',
-            },
-            status: 'active',
-            triggeredAt: new Date(),
-          })
-          .returning();
+          },
+          // The device row already carries its site — no need to re-resolve it.
+          siteId: device.siteId,
+        });
 
-        if (newAlert) {
-          // 10. Set cooldown
+        if (newAlertId) {
+          // 10. Set cooldown — only once the alert actually published, so a
+          // rolled-back create is retried on the next evaluation.
           await markConfigPolicyRuleCooldown(rule.id, deviceId, rule.cooldownMinutes);
 
-          enqueueAlertCorrelationForDevice(device.orgId, deviceId);
-
-          // 11. Publish event — carry siteId so site-restricted users get it
-          await publishEvent(
-            'alert.triggered',
-            device.orgId,
-            {
-              alertId: newAlert.id,
-              configPolicyAlertRuleId: rule.id,
-              configItemName: rule.name,
-              deviceId,
-              severity: rule.severity,
-              title,
-              message,
-              source: 'config_policy',
-            },
-            'alert-service',
-            { siteId: device.siteId }
-          );
-
-          console.log(`[AlertService] Created config policy alert ${newAlert.id} for cpar=${rule.id} device=${deviceId}`);
-          createdAlerts.push(newAlert.id);
+          console.log(`[AlertService] Created config policy alert ${newAlertId} for cpar=${rule.id} device=${deviceId}`);
+          createdAlerts.push(newAlertId);
         }
       }
     } catch (error) {
