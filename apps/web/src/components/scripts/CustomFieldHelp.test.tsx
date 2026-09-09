@@ -42,7 +42,8 @@ describe('CustomFieldHelp (#5233)', () => {
       const snippet = customFieldExampleSnippet(lang);
       expect(snippet, lang).toContain(CUSTOM_FIELD_MARKER);
     }
-    // The bash/cmd/python forms print a literal JSON object — parse it.
+    // bash and cmd print a literal JSON object — parse it (python builds its
+    // object with json.dumps, so it is valid by construction).
     for (const lang of ['bash', 'cmd']) {
       const line = customFieldExampleSnippet(lang).split('\n').find(l => l.includes(CUSTOM_FIELD_MARKER))!;
       const json = line.slice(line.indexOf(CUSTOM_FIELD_MARKER) + CUSTOM_FIELD_MARKER.length).replace(/["']\s*$/, '').replace(/\\"/g, '"').trim();
@@ -76,6 +77,7 @@ describe('CustomFieldHelp (#5233)', () => {
     expect(editor.executeEdits).toHaveBeenCalledTimes(1);
     expect(editor.executeEdits.mock.calls[0][1][0].text).toContain(CUSTOM_FIELD_MARKER);
     expect(editor.pushUndoStop).toHaveBeenCalledTimes(2);
+    expect(editor.executeEdits.mock.calls[0][1][0].range).toEqual({ startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 1 });
     expect(onInsert).toHaveBeenCalledWith('MODEL');
     expect(editor.focus).toHaveBeenCalled();
   });

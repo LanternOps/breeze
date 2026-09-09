@@ -14,9 +14,21 @@ const { editorInstances } = vi.hoisted(() => ({
 vi.mock('@monaco-editor/react', async () => {
   const React = (await vi.importActual<typeof import('react')>('react'));
   const loader = { config: vi.fn() };
-  function MockEditor({ onMount, value }: { onMount?: (e: unknown) => void; value?: string }) {
+  function MockEditor({ onMount, value, onChange }: { onMount?: (e: unknown) => void; value?: string; onChange?: (v: string) => void }) {
+    const valueRef = React.useRef(value ?? '');
+    valueRef.current = value ?? '';
     React.useEffect(() => {
-      const instance = { layout: vi.fn(), dispose: vi.fn() };
+      // Enough of the Monaco surface for CustomFieldHelp's insert path (#5233):
+      // executeEdits appends to the current value and getModel reads it back.
+      const instance = {
+        layout: vi.fn(),
+        dispose: vi.fn(),
+        getSelection: () => null,
+        pushUndoStop: vi.fn(),
+        executeEdits: (_src: string, edits: Array<{ text: string }>) => { valueRef.current += edits.map(e => e.text).join(''); onChange?.(valueRef.current); },
+        getModel: () => ({ getValue: () => valueRef.current }),
+        focus: vi.fn()
+      };
       editorInstances.push(instance);
       onMount?.(instance);
       // The real wrapper disposes on its own unmount; the mock deliberately does
@@ -845,5 +857,13 @@ describe('ScriptForm custom-field help (#5233)', () => {
     render(<ScriptForm isNew />);
     await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
     expect(screen.getByTestId('custom-field-help-toggle').textContent).toContain('Reading and writing custom fields');
+  });
+
+  it('Insert example writes the snippet into the form content the editor renders', async () => {
+    render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId('custom-field-help-toggle'));
+    fireEvent.click(screen.getByTestId('custom-field-help-insert'));
+    await waitFor(() => expect(screen.getByTestId('mock-monaco').textContent).toContain('::breeze:custom-fields::'));
   });
 });
