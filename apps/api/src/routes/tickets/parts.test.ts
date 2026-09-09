@@ -20,6 +20,7 @@ const { dbSelectMock, authRef, getScopedTicketOr404Mock, timeServiceMocks } = vi
     deleteTicketPart: vi.fn(),
     listTimeEntries: vi.fn(),
     getTicketBillingSummary: vi.fn(),
+    getTicketTimeEntryDefaults: vi.fn(),
     listBillables: vi.fn()
   }
 }));
@@ -278,10 +279,27 @@ describe('parts routes', () => {
         billableTotals: [{ currencyCode: 'USD', amount: '99.00' }]
       }
     });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue({ hourlyRate: '125.00', currencyCode: 'USD', isBillable: true });
     const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.time.billableAmounts[0].amount).toBe('125.00');
+  });
+
+  // #5321: the ticket quick-add prefills its rate from here and warns when the
+  // resolved default is null — without it a billable entry is logged rate-less
+  // and only fails later with ALL_MISSING_RATE 409 on "Create invoice".
+  it('GET /:id/billing-summary carries the time-entry billing defaults', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 0, billableMinutes: 0, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue({ hourlyRate: null, currencyCode: 'EUR', isBillable: true });
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.defaults).toEqual({ hourlyRate: null, currencyCode: 'EUR', isBillable: true });
   });
 });
 

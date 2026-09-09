@@ -93,6 +93,73 @@ describe('TicketTimeBilling', () => {
     });
   });
 
+  // #5321: the quick-add offered no rate, so an entry landed with hourly_rate
+  // NULL and "Create invoice" then 409'd (ALL_MISSING_RATE) for every one.
+  describe('quick-add rate (#5321)', () => {
+    const withDefaults = (defaults: unknown) => async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: { ...summary, defaults } }) } as Response;
+      }
+      return route(url);
+    };
+
+    it('prefills the rate from the ticket default and posts it', async () => {
+      fetchWithAuth.mockImplementation(withDefaults({ hourlyRate: '150.00', currencyCode: 'USD', isBillable: true }));
+      render(<TicketTimeBilling ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+      const rate = screen.getByTestId('ticket-billing-quick-add-rate') as HTMLInputElement;
+      expect(rate.value).toBe('150.00');
+      expect(screen.queryByTestId('ticket-billing-quick-add-no-rate')).toBeNull();
+      fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+      fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+      await waitFor(() => {
+        const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries');
+        expect(call).toBeTruthy();
+        expect(JSON.parse((call![1] as RequestInit).body as string).hourlyRate).toBe(150);
+      });
+    });
+
+    it('sends a rate the tech typed when the ticket has no default, and warns until they do', async () => {
+      fetchWithAuth.mockImplementation(withDefaults({ hourlyRate: null, currencyCode: 'USD', isBillable: true }));
+      render(<TicketTimeBilling ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+      expect((screen.getByTestId('ticket-billing-quick-add-rate') as HTMLInputElement).value).toBe('');
+      // Billable + no rate is the un-invoiceable combination — say so up front.
+      expect(screen.getByTestId('ticket-billing-quick-add-no-rate')).toBeTruthy();
+      fireEvent.change(screen.getByTestId('ticket-billing-quick-add-rate'), { target: { value: '85.5' } });
+      expect(screen.queryByTestId('ticket-billing-quick-add-no-rate')).toBeNull();
+      fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+      fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+      await waitFor(() => {
+        const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries');
+        expect(call).toBeTruthy();
+        expect(JSON.parse((call![1] as RequestInit).body as string).hourlyRate).toBe(85.5);
+      });
+    });
+
+    it('omits hourlyRate entirely when the field is left blank, so the server default still applies', async () => {
+      fetchWithAuth.mockImplementation(withDefaults({ hourlyRate: null, currencyCode: 'USD', isBillable: true }));
+      render(<TicketTimeBilling ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+      fireEvent.change(screen.getByTestId('ticket-billing-quick-add-minutes'), { target: { value: '30' } });
+      fireEvent.click(screen.getByTestId('ticket-billing-quick-add-submit'));
+      await waitFor(() => {
+        const call = fetchWithAuth.mock.calls.find((args) => args[0] === '/time-entries');
+        expect(call).toBeTruthy();
+        expect(Object.keys(JSON.parse((call![1] as RequestInit).body as string))).not.toContain('hourlyRate');
+      });
+    });
+
+    it('does not warn about a missing rate on a non-billable entry', async () => {
+      fetchWithAuth.mockImplementation(withDefaults({ hourlyRate: null, currencyCode: 'USD', isBillable: true }));
+      render(<TicketTimeBilling ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+      expect(screen.getByTestId('ticket-billing-quick-add-no-rate')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('ticket-billing-quick-add-billable'));
+      expect(screen.queryByTestId('ticket-billing-quick-add-no-rate')).toBeNull();
+    });
+  });
+
   it('broadcasts billing-changed after a quick-add so the workbench feed live-refreshes', async () => {
     const onBillingChanged = vi.fn();
     window.addEventListener(BILLING_CHANGED_EVENT, onBillingChanged);

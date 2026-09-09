@@ -12,7 +12,7 @@ const idParam = z.object({ id: z.string().guid() });
 const partIdParam = z.object({ id: z.string().guid() });
 import {
   addTicketPart, updateTicketPart, deleteTicketPart,
-  listTimeEntries, getTicketBillingSummary, TimeEntryServiceError
+  listTimeEntries, getTicketBillingSummary, getTicketTimeEntryDefaults, TimeEntryServiceError
 } from '../../services/timeEntryService';
 import { getScopedTicketOr404 } from './tickets';
 import { timeActorFrom } from '../timeEntries/timeEntries';
@@ -95,6 +95,17 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('para
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
-  const summary = await getTicketBillingSummary(ticket.id);
-  return c.json({ data: summary });
+  // `defaults` (#5321) is what the server would stamp on a new entry for this
+  // ticket. The quick-add prefills its rate from it and warns when it is null —
+  // a rate-less billable entry is only refused much later, at invoice assembly
+  // (ALL_MISSING_RATE 409), by which point the tech has moved on.
+  try {
+    const [summary, defaults] = await Promise.all([
+      getTicketBillingSummary(ticket.id),
+      getTicketTimeEntryDefaults(ticket.id, timeActorFrom(c))
+    ]);
+    return c.json({ data: { ...summary, defaults } });
+  } catch (err) {
+    return handleServiceError(c, err);
+  }
 });
