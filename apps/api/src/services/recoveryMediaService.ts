@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile, copyFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -33,6 +32,7 @@ import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 import { safeFetchFollowingRedirects } from './urlSafety';
+import { resolveRecoveryWorkDir } from './recoveryWorkDir';
 import {
   authorizeQueuedRecoveryWork,
   RecoveryAuthorizationDeniedError,
@@ -581,7 +581,8 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     return;
   }
 
-  const workingDir = await mkdtemp(join(tmpdir(), 'bmr-bundle-'));
+  const baseWorkDir = await resolveRecoveryWorkDir();
+  const workingDir = await mkdtemp(join(baseWorkDir, 'bmr-bundle-'));
   try {
     const bundleDir = join(workingDir, 'bundle');
     await mkdir(bundleDir, { recursive: true });

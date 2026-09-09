@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -21,6 +20,7 @@ import {
 } from './recoveryMediaService';
 import { isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 import { verifyTemplateDirectory } from './recoveryBootMediaTemplateManifest';
+import { resolveRecoveryWorkDir } from './recoveryWorkDir';
 import {
   authorizeQueuedRecoveryWork,
   captureRecoveryAuthorizationSubject,
@@ -266,7 +266,8 @@ export async function buildRecoveryBootMediaArtifact(artifactId: string) {
     throw new Error('RECOVERY_BOOT_MEDIA_BASE_DIR must be configured for bootable ISO generation');
   }
 
-  const workingDir = await mkdtemp(join(tmpdir(), 'recovery-boot-media-'));
+  const baseWorkDir = await resolveRecoveryWorkDir();
+  const workingDir = await mkdtemp(join(baseWorkDir, 'recovery-boot-media-'));
   try {
     const imageRoot = join(workingDir, 'iso-root');
     const verifiedTemplate = await verifyTemplateDirectory(baseTemplateDir);
