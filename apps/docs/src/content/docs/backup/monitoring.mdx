@@ -116,7 +116,7 @@ Jobs are triggered either **automatically** by a policy schedule, **manually** v
 
 Track storage growth over time from the **Overview** tab's storage section. The usage chart shows cumulative storage by provider over the past 14 days (configurable from 3 to 90 days via the API).
 
-If storage is growing faster than expected, check whether retention policies are cleaning up old snapshots as intended, or whether large datasets were recently added to backup scope.
+If storage is growing faster than expected, check whether large datasets were recently added to backup scope. Note that expired restore points disappear from Breeze but their data is not yet reclaimed from the storage target (see the retention note on the [storage page](/backup/storage/)), so usage does not fall when retention runs.
 
 ---
 

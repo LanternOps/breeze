@@ -49,6 +49,16 @@ The storage configuration wizard walks you through four steps:
    - **Custom** — set your own day count and version count
 
    Optionally enable encryption and configure key rotation (every 30, 60, or 90 days).
+
+   :::note[What retention removes today]
+   When a restore point passes its retention window it is removed from Breeze: it no longer appears in the
+   snapshot list and can no longer be restored or verified. The objects it wrote to the storage target are
+   handled by a separate background sweep that only deletes data no remaining restore point references,
+   after a 48-hour grace period. In the current release that sweep does not yet reclaim the data of expired
+   restore points themselves, so bucket usage does not shrink when restore points expire. This is tracked in
+   [issue #5429](https://github.com/LanternOps/breeze/issues/5429); plan bucket capacity for growth until it
+   lands.
+   :::
 </Steps>
 
 Click **Publish Configuration** to make it active, or **Save as Draft** to finish later.
