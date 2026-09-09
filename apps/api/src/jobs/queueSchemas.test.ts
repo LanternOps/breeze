@@ -231,7 +231,14 @@ describe('automationQueueJobDataSchema', () => {
 
 describe('sensitiveDataQueueJobDataSchema', () => {
   const validCases: Array<{ name: string; payload: Record<string, unknown> }> = [
-    { name: 'dispatch-scan', payload: { type: 'dispatch-scan', scanId: 'scan-1' } },
+    { name: 'manual dispatch-scan', payload: { type: 'dispatch-scan', scanId: 'scan-1', origin: 'manual' } },
+    {
+      name: 'scheduled dispatch-scan',
+      payload: {
+        type: 'dispatch-scan', scanId: 'scan-1', origin: 'policy_scheduler',
+        authorityGeneration: '5e2f7393-455c-4f27-86d4-30b21f708fa8',
+      },
+    },
     {
       name: 'schedule-policies',
       payload: { type: 'schedule-policies', scanAt: '2026-06-19T00:00:00.000Z' },
@@ -244,6 +251,11 @@ describe('sensitiveDataQueueJobDataSchema', () => {
 
   const malformedCases: Array<{ name: string; payload: Record<string, unknown> }> = [
     { name: 'dispatch-scan with empty scanId', payload: { type: 'dispatch-scan', scanId: '' } },
+    { name: 'legacy dispatch-scan with no origin', payload: { type: 'dispatch-scan', scanId: 'scan-1' } },
+    {
+      name: 'scheduled dispatch-scan with no generation',
+      payload: { type: 'dispatch-scan', scanId: 'scan-1', origin: 'policy_scheduler' },
+    },
     { name: 'schedule-policies missing scanAt', payload: { type: 'schedule-policies' } },
     {
       name: 'schedule-policies with an unexpected key',
