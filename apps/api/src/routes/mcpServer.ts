@@ -1333,7 +1333,18 @@ async function handleToolsCall(
   };
 
   return runTier3ToolLifecycle(
-    { id, c, auth, apiKey, sessionId, orgId: executionOrgId, toolName, tier, toolInput },
+    {
+      id,
+      c,
+      auth,
+      apiKey,
+      sessionId,
+      orgId: executionOrgId,
+      toolName,
+      requestedToolName,
+      tier,
+      toolInput,
+    },
     execute,
   );
 }
@@ -1367,6 +1378,8 @@ function writeMcpToolAuditEvent(
     sessionId?: string;
     orgId?: string | null;
     toolName: string;
+    /** Deprecated alias the client sent, when it differed from `toolName`. */
+    requestedToolName?: string;
     tier: number;
     toolInput: Record<string, unknown>;
     durationMs: number;
@@ -1399,6 +1412,9 @@ function writeMcpToolAuditEvent(
       partnerId: event.auth.partnerId ?? event.apiKey.partnerId ?? null,
       orgId: orgId ?? null,
       toolName: event.toolName,
+      ...(event.requestedToolName && event.requestedToolName !== event.toolName
+        ? { requestedToolName: event.requestedToolName, deprecatedToolAlias: true }
+        : {}),
       tier: event.tier,
       target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
       arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
@@ -1426,6 +1442,14 @@ interface Tier3LifecycleContext {
   /** Authoritative execution org (resolveMcpExecutionContext / bootstrap default). */
   orgId: string | null;
   toolName: string;
+  /**
+   * The name the CLIENT actually sent, when it was a deprecated alias that
+   * resolved to a different `toolName` (see services/aiToolAliases.ts). Audit
+   * records it so "is anyone still calling the old name?" is a query rather
+   * than a grep of ephemeral console output — that is the signal the alias is
+   * safe to delete. Undefined on the overwhelmingly common non-aliased call.
+   */
+  requestedToolName?: string;
   tier: number;
   toolInput: Record<string, unknown>;
 }
@@ -1538,6 +1562,7 @@ async function finalizeTier3ToolLifecycle(
     sessionId: ctx.sessionId,
     orgId: ctx.orgId,
     toolName: ctx.toolName,
+    requestedToolName: ctx.requestedToolName,
     tier: ctx.tier,
     toolInput: ctx.toolInput,
     durationMs,
