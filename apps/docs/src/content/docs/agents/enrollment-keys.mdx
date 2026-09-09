@@ -346,6 +346,11 @@ Every enrollment key operation is recorded in the audit log:
 | `enrollment_key.rotate` | Key material regenerated. Includes previous and new `maxUsage`, `expiresAt`, and `usageCount`. |
 | `enrollment_key.delete` | Key permanently deleted. |
 | `enrollment_key.purge_expired` | Bulk deletion of expired keys. Includes the `deletedCount`. |
+| `enrollment_key.bootstrap_token_issued` | A single-use bootstrap token was minted from this key (dashboard "generate installer" flows). |
+| `enrollment_key.installer_link_created` | A public installer link or short link was generated for this key. |
+| `enrollment_key.installer_download` | A pre-configured installer (Windows MSI or macOS zip) was built and downloaded from the dashboard for this key. |
+| `enrollment_key.installer_build_failed` | Installer build failed after usage was already reserved; logged so the failure is traceable. |
+| `enrollment_key.public_download` | An anonymous download via a public or short installer link. Logged with the requester's IP and a sentinel anonymous actor id (no logged-in user). |
 | `agent.enroll` | Agent successfully enrolls using a key. Logged with `actorType: agent`. |
 
 ---

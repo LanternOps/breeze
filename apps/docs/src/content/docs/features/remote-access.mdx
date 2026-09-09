@@ -375,6 +375,22 @@ When a session ends (`disconnected` or `failed`), the platform records `duration
 
 ---
 
+## Session Recording
+
+Breeze does not record sessions itself. What it provides is a place to attach a link to a recording produced elsewhere — for example, a screen-recording pipeline your organization runs alongside remote sessions — and a way for technicians to open that link later from the session's history entry.
+
+If the caller ending a session (`POST /remote/sessions/:id/end`) includes a `recordingUrl` in the request body, it is stored on the session. Only an absolute `http(s)` URL on an allow-listed origin (`RECORDING_URL_ALLOWED_ORIGINS`), or a same-origin path starting with `/`, is accepted — anything else is rejected.
+
+<Steps>
+
+1. Go to **Remote Access → Session History**.
+2. Click a row to open its details panel.
+3. If a recording link was attached when the session ended, a **Recording** section appears with a **View Recording** button that opens the link in a new tab. Sessions ended without a `recordingUrl` show no such section.
+
+</Steps>
+
+---
+
 ## Rate Limits
 
 Breeze enforces per-organisation and per-user limits on concurrent remote access resources. When a limit is reached, the creation request returns `429 Too Many Requests`.
@@ -424,7 +440,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 | POST | `/remote/sessions/:id/answer` | Relay device's SDP answer back to browser |
 | POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |
 | POST | `/remote/sessions/:id/ws-ticket` | Mint a one-time WebSocket ticket (required for terminal and desktop) |
-| POST | `/remote/sessions/:id/end` | End a session |
+| POST | `/remote/sessions/:id/end` | End a session (optional body: `bytesTransferred`, `recordingUrl` — see [Session Recording](#session-recording)) |
 
 ### Network Proxy Tunnels
 

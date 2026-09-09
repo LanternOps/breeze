@@ -92,6 +92,16 @@ partners (MSP)
 | `rolePermissions` | Maps roles to permissions |
 | `partnerUsers` | Maps users to partners with roles |
 
+### Other Core Tables
+
+| Table | Purpose |
+|---|---|
+| `alerts` | Fired alert instances: device, org, severity, status (`active`, `acknowledged`, `resolved`, `suppressed`, `dismissed`), and ack/resolve/dismiss metadata. Related: `alertRules`, `alertTemplates`. |
+| `scripts` | Reusable script definitions: language, content, parameter definitions, timeout, run-as. Related: `scriptExecutions` (per-device runs), `scriptExecutionBatches`. |
+| `automations` | Trigger → conditions → actions definitions, owned by an org or a partner (partner-wide). Related: `automationRuns`, `automationDeviceResults`, `automationResourceBindings`. |
+| `tickets` | Service-desk tickets: subject, status, priority, assignment, requester. Defined in `db/schema/portal.ts`. Related: `ticketCategories`, `ticketAlertLinks`. |
+| `apiKeys` | Organization-scoped API keys (`brz_…`) with hashed secret, key prefix, scopes, rate limit, and human/service-principal linkage. |
+
 ### Default Roles
 
 Seeded by `pnpm db:seed`:

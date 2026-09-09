@@ -11,6 +11,22 @@ This feature is designed for compliance auditing, troubleshooting, and drift det
 
 ---
 
+## Viewing Changes in the Console
+
+Open a device's detail page and select the **Change History** tab to browse its change timeline without querying the API directly.
+
+Each row shows:
+
+- **When** the change was detected.
+- **Type** -- a colored badge for one of the eight change categories (Software, Service, Startup, Network, Scheduled Task, User Account, Hardware, OS Version).
+- **Action** -- Added, Removed, Modified, or Updated.
+- **Subject** -- what changed (e.g. "Google Chrome 122.0.6261.69").
+- **Before -> After** -- the previous and new values side by side; an addition shows only the new value, a removal shows the old value struck through.
+
+Use the **Type** and **Action** dropdowns above the table to narrow the list, and **Load more** to page through older changes beyond the initial 100.
+
+---
+
 ## Key Concepts
 
 ### Change Types
@@ -196,6 +212,25 @@ Every change is assigned a SHA-256 fingerprint computed from a stable concatenat
 This fingerprint is stored in a `VARCHAR(64)` column with a unique index on `(deviceId, fingerprint)`. When the agent ships the same change twice (e.g., after a retry), the database `ON CONFLICT DO NOTHING` clause silently skips the duplicate.
 
 Within a single request, the API also deduplicates by fingerprint before attempting insertion, so batch payloads with repeated entries are handled efficiently.
+
+---
+
+## AI Integration
+
+### query_change_log (Tier 1)
+
+A read-only tool the AI assistant uses to search device configuration changes -- software installs/updates, service changes, startup drift, network changes, scheduled task changes, user account changes, hardware changes, and OS version updates.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deviceId` | string (UUID) | Scope results to a single device. Optional. |
+| `startTime` | ISO 8601 datetime | Lower time bound (inclusive). Optional. |
+| `endTime` | ISO 8601 datetime | Upper time bound (inclusive). Optional. |
+| `changeType` | enum | One of the eight change types above. Optional. |
+| `changeAction` | enum | `added`, `removed`, `modified`, or `updated`. Optional. |
+| `limit` | number | Max results to return (default 100, max 500). |
+
+The AI uses this tool to answer questions like "What changed on this device in the last 24 hours?" or "Was any software installed on the finance team's laptops this week?" without you having to open the Change History tab yourself.
 
 ---
 

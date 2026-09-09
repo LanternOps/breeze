@@ -11,6 +11,30 @@ Scans can be triggered manually for specific devices or scheduled through scan p
 
 ---
 
+## Using the Console
+
+Open **Sensitive Data** from the Security section of the left sidebar. The page has four tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Dashboard** | Stat cards for total findings, open findings, critical-open findings, and findings remediated in the last 24 hours, plus bar/pie breakdowns by data type and risk level |
+| **Findings** | A paginated, filterable table of individual findings (by data type, risk, status, and a client-side text search) with row selection for bulk remediation |
+| **Scans** | Recent scans with status, duration, and finding counts, plus a **New Scan** button |
+| **Policies** | Scan policies -- create, edit, and delete them here |
+
+<Steps>
+1. From the **Scans** tab, click **New Scan** to open the scan dialog.
+2. Optionally select an existing policy to reuse its detection classes, or pick detection classes (Credentials, PCI, PHI, PII, Financial) directly.
+3. Enter one or more device IDs (comma, semicolon, or newline separated).
+4. Submit. Each targeted device gets its own scan row, which updates live as the agent reports progress.
+</Steps>
+
+To act on a finding, select one or more rows in the **Findings** tab and choose a remediation action. **Encrypt**, **Quarantine**, and **Secure Delete** are destructive and require a confirmation step; **Secure Delete** additionally requires a second-approval token when the organization has that control enabled. **Accept Risk** and **False Positive** apply immediately.
+
+Policies created from the **Policies** tab can be owned by a single organization or, for partner-scope users, made **partner-wide** ("All organizations") so the same detection schedule applies across every managed org.
+
+---
+
 ## Key Concepts
 
 ### Data Classification Types

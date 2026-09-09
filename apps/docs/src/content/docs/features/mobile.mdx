@@ -50,7 +50,32 @@ The device list supports pull-to-refresh, a free-text filter over name, hostname
 
 The list holds one page of devices at a time rather than the entire fleet, so a filter that finds nothing means nothing matched *on the loaded page* -- the screen says so explicitly instead of implying the fleet is empty.
 
-Tapping a device opens a detail screen showing full device information (hostname, IP address, OS, agent version, last seen, organization, site) along with live metrics retrieved from `GET /devices/:id/metrics`.
+Tapping a device opens a detail screen with the following rows (a field with no value renders as `—`, never blank):
+
+| Field | Notes |
+|-------|-------|
+| **Hostname** | |
+| **IP address** | LAN IP on the first line; the public/WAN IP is appended on a second line only when known |
+| **Logged-in user** | |
+| **Operating system** | OS label with its version appended (`Windows 11 · 23H2`); an unknown version falls back to the bare OS label rather than a dash |
+| **Open alerts** | A real count, including `· 0` -- only a count that hasn't been reported yet shows a dash |
+| **Open tickets** | Same convention as open alerts |
+| **Agent version** | |
+| **Last seen** | |
+| **Organization** | |
+| **Site** | |
+
+Below the fields, live **CPU**, **memory**, and **disk** metrics are retrieved from `GET /devices/:id/metrics`.
+
+### Fleet Hygiene Findings on the Systems Tab
+
+The Systems tab's **Active Issues** list is not alerts alone. It also rolls up your fleet's open [Fleet Hygiene findings](/features/fleet-hygiene/) -- the same VSS, Universal Print, Intel ME, and SCEP checks the AI assistant's fleet-findings tool reports -- as one summary row per organization, appended below the alert rows: **"N open findings"** with the org name underneath.
+
+A findings row is display-only for now: there's no severity dot (a small "Finding" tag instead) and no swipe-to-acknowledge or tap-through to a findings detail screen -- act on a finding from the AI chat or the web dashboard's Fleet Hygiene page. Findings still count toward the top-of-screen issue total and the "N issues across M organizations" summary, so an org with open findings but no active alerts still shows up there.
+
+<Aside type="note">
+  The findings counts endpoint (`GET /fleet/findings/counts`) doesn't exist on servers older than v0.111.0. Against an older server the findings row is silently omitted rather than shown as an error -- everything else on the Systems tab (alerts, devices, orgs) still loads normally.
+</Aside>
 
 ### Alert Inbox
 
@@ -250,6 +275,19 @@ Approvals are only delivered to **trusted devices** — mobile devices the user 
 
 <Aside type="caution">
 If a user has no active trusted device — or push delivery is disabled on the device — approval requests cannot be delivered and will simply expire. Keep at least one trusted device registered with notifications enabled if you rely on approval mode.
+</Aside>
+
+### Approver Device Registration and Assurance
+
+Signing in to the mobile app also tries, silently, to register the phone as a **Breeze Authenticator** approver device -- the same registration that [Approval Security](/features/approval-security/) uses to decide the strongest assurance level (L1-L4) an approval from this phone can satisfy. No action from the user is needed when it succeeds.
+
+There are two possible outcomes, and which one happens is not under the user's control -- it depends on what the phone's hardware supports:
+
+- **Hardware-attested.** On a phone with a Secure Enclave (iOS) or StrongBox/TEE (Android), the app generates a hardware-backed key and proves it with a platform attestation (App Attest on iOS, Play Integrity on Android). This device can satisfy up to **L4** -- the assurance floor for critical-risk approvals.
+- **Legacy, unattested.** On a phone without that hardware, the app instead registers a biometric-gated key with no attestation behind it. Breeze is honest about the difference: an unattested device is capped at **L2/L3**, and cannot approve anything requiring L4.
+
+<Aside type="caution">
+  If a phone that supports attestation fails to complete it, Breeze does **not** silently fall back to registering it as legacy -- that would let the phone approve requests at an assurance level it hasn't actually earned. Instead, the app shows a banner: **"Approver setup didn't complete"** or **"Finish approver setup,"** explaining that approvals from this phone are recorded at the lowest assurance level until it's fixed. The one in-app remedy is signing out and back in, since registration needs a fresh one-time grant issued at login. If the banner names a hardware attestation failure specifically, signing in again will not change the outcome -- contact your administrator.
 </Aside>
 
 ### `approval_requests` table

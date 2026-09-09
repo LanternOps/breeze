@@ -92,6 +92,18 @@ Click a run to expand it and view:
 
 Use the status filter dropdown to narrow results to Success, Failed, Partial, or Running.
 
+### Cancelling a run
+
+A **Cancel run** button appears on any run that is still `running`. It requires the `automations:write` permission — without it the button does not appear at all, not just disabled. For a partner-wide automation's run, cancelling also requires permission to manage partner-wide policies; a technician who can see the run but not cancel it sees a tooltip explaining why instead of the button.
+
+Clicking **Cancel run** asks for confirmation, then stops the run:
+
+- Actions not yet dispatched to any device are marked cancelled immediately.
+- `run_script` actions already sent to a device get a best-effort stop request; the confirmation reports how many were confirmed stopped versus only asked to stop, since a device may not acknowledge in time.
+- `execute_command` and `deploy_software` actions cannot be recalled once dispatched -- the shell command or software install runs to completion on the device regardless. These are listed separately as actions the cancel could not reach, so the run is never reported as fully stopped when one of these is still in flight.
+
+The run's status becomes `cancelled` once the stop is processed.
+
 ---
 
 ## Key Concepts
@@ -209,6 +221,10 @@ You can define multiple automations per feature link by adding additional items 
 ### Viewing policy-managed automations
 
 Automations created through Configuration Policies appear in `GET /automations` alongside legacy standalone automations. Policy-managed automations include a `configPolicyId` field in the response. Their runs include both `configPolicyId` and `configItemName`; the `automationId` field is `null` for policy-managed runs.
+
+<Aside type="tip">
+  Devices in an active maintenance window with automation suppression enabled are automatically excluded from a policy-managed automation's run, for both schedule and event triggers. This does not apply to standalone automations created directly on the Automations page. See [Automation and Patching Suppression](/features/maintenance-windows/#automation-and-patching-suppression) for the full behavior.
+</Aside>
 
 ---
 
@@ -482,6 +498,7 @@ The `?secret=` query-string parameter has been **removed entirely** — there is
 | GET | `/automations/runs/:runId` | Get run detail with logs |
 | POST | `/automations/:id/trigger` | Manually trigger a run |
 | POST | `/automations/:id/run` | Alias for trigger |
+| POST | `/automations/runs/:runId/cancel` | Cancel a running run (optional body: `graceSeconds`, integer 0-30, defaults to 5). Requires `automations:write`. |
 | POST | `/automations/webhooks/:id` | (Public) Inbound webhook trigger |
 
 ### Configuration Policy endpoints
