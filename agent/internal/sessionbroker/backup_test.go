@@ -2,9 +2,11 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +268,121 @@ func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {
 	}
 	if got.SessionID != "backup-existing" {
 		t.Errorf("got %s, want backup-existing", got.SessionID)
+	}
+}
+
+// TestGetOrSpawnBackupHelper_ConcurrentCallersWaitForSpawn covers the case
+// where a profile with `file` + `system_image` selections dispatches two
+// backup_run commands within milliseconds of each other. The first caller
+// spawns the helper; the second caller must WAIT for that in-flight spawn to
+// finish and then reuse the resulting session, instead of failing instantly
+// with "backup helper is already being spawned".
+//
+// It simulates the in-flight spawn without a real process by setting
+// bh.spawnDone directly (what spawnBackupHelper does at the start of a real
+// spawn attempt), then -- from the test goroutine, after the concurrent
+// caller has had a chance to observe it and start waiting -- completing that
+// spawn the way the real spawning goroutine's deferred cleanup does:
+// attaching the session and closing spawnDone under bh.mu.
+func TestGetOrSpawnBackupHelper_ConcurrentCallersWaitForSpawn(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+	}
+
+	bh := &backupHelper{spawnDone: make(chan struct{})}
+	b.backup = bh
+
+	type result struct {
+		session *Session
+		err     error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		s, err := b.GetOrSpawnBackupHelper("")
+		resultCh <- result{s, err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	s := &Session{
+		SessionID: "backup-concurrent",
+		conn:      &ipc.Conn{},
+		pending:   make(map[string]pendingResponse),
+	}
+
+	// Complete the in-flight spawn the way the real spawning goroutine does:
+	// attach the session and close spawnDone, all under bh.mu.
+	bh.mu.Lock()
+	bh.session = s
+	done := bh.spawnDone
+	bh.spawnDone = nil
+	close(done)
+	bh.mu.Unlock()
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("unexpected error: %v", res.err)
+		}
+		if res.session == nil || res.session.SessionID != "backup-concurrent" {
+			t.Fatalf("got %+v, want session backup-concurrent", res.session)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for concurrent caller to return")
+	}
+}
+
+// TestGetOrSpawnBackupHelper_ConcurrentCallerSeesSpawnFailure: when the
+// in-flight spawn finishes WITHOUT producing a session (the spawn failed), a
+// concurrent waiter must get a non-nil error mentioning the spawn failure --
+// not hang, and not silently succeed with a nil session.
+func TestGetOrSpawnBackupHelper_ConcurrentCallerSeesSpawnFailure(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+	}
+
+	bh := &backupHelper{spawnDone: make(chan struct{})}
+	b.backup = bh
+
+	type result struct {
+		session *Session
+		err     error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		s, err := b.GetOrSpawnBackupHelper("")
+		resultCh <- result{s, err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// The in-flight spawn finishes WITHOUT a session: record the failure and
+	// close spawnDone, exactly as spawnBackupHelper's deferred cleanup does
+	// on a failed attempt.
+	spawnFailure := errors.New("backup binary not found at /nonexistent: stat /nonexistent: no such file or directory")
+	bh.mu.Lock()
+	bh.spawnErr = spawnFailure
+	done := bh.spawnDone
+	bh.spawnDone = nil
+	close(done)
+	bh.mu.Unlock()
+
+	select {
+	case res := <-resultCh:
+		if res.err == nil {
+			t.Fatal("expected an error when the concurrent spawn failed, got nil")
+		}
+		if res.session != nil {
+			t.Fatalf("expected nil session on spawn failure, got %+v", res.session)
+		}
+		if !strings.Contains(res.err.Error(), spawnFailure.Error()) {
+			t.Errorf("expected error to mention the concurrent spawn failure %q, got %q", spawnFailure.Error(), res.err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for concurrent caller to return")
 	}
 }
