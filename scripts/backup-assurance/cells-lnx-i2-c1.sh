@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 export LAB_API=${LAB_API:-http://localhost:33933/api/v1} LAB_STATE=${LAB_STATE:-$HOME/breeze-assurance/lab-state.json}
 L=scripts/backup-assurance/lab.sh
-S=/private/tmp/claude-501/-Users-toddhebebrand--herdr-worktrees-breeze-droplet-volume-add/73ed31ce-eb66-4900-b078-0b5b8ce77bd7/scratchpad
+S=${LAB_SCRATCH:?set LAB_SCRATCH to the dir holding vmssh/mc helpers}
 R=$HOME/breeze-assurance/runs/lnx; mkdir -p "$R"
 DEV=$(jq -r .devLnx "$LAB_STATE")
 rsh() { $S/vmssh "$@" 2>/dev/null; }

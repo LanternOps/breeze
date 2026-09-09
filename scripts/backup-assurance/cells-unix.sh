@@ -11,7 +11,7 @@ RIG=${1:?lnx|mac}; SRC=${2:?corpus root}; RROOT=${3:?restore root}; NOC1=${4:-}
 cd "$(dirname "$0")/../.."
 export LAB_API=${LAB_API:-http://localhost:33933/api/v1} LAB_STATE=${LAB_STATE:-$HOME/breeze-assurance/lab-state.json}
 L=scripts/backup-assurance/lab.sh
-S=/private/tmp/claude-501/-Users-toddhebebrand--herdr-worktrees-breeze-droplet-volume-add/73ed31ce-eb66-4900-b078-0b5b8ce77bd7/scratchpad
+S=${LAB_SCRATCH:?set LAB_SCRATCH to the dir holding vmssh/mc helpers}
 R=$HOME/breeze-assurance/runs/$RIG; mkdir -p "$R"
 case $RIG in
   lnx) DEV=$(jq -r .devLnx "$LAB_STATE"); rsh() { $S/vmssh "$@" 2>/dev/null; }; PRE=/home/ubuntu/assure/pre.tsv; HT=/home/ubuntu/assure/hash-tree.sh; CMP=/home/ubuntu/assure/compare-hashes.sh; SUDO=sudo ;;

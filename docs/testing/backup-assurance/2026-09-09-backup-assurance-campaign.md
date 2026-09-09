@@ -55,15 +55,15 @@ Established by code inventory on 2026-09-09; the docs disagree with several of t
 
 | Rig | Host | OS | Enrolled to | Role in campaign |
 |---|---|---|---|---|
-| WIN-A | `WIN-IMDR2GAIDMV` 100.101.28.70 (Hyper-V guest on `KIT`) | Windows Server 2022 Std Eval, 4 vCPU, 2.25 GB | dead local stack → **re-enroll to lab stack** | main Windows rig; candidate for SQL Server Express + nested Hyper-V |
-| WIN-B | `WIN-DHQNR1F8LO2` 100.101.150.55 (Hyper-V guest on `KIT`) | Windows Server 2022 Std Eval, 4 vCPU, 2.5 GB, agent v0.111.1 | **prod EU** (`eu.2breeze.app`) | shipped-binary path: prod API dispatch → MinIO on the Mac as the S3 destination; non-destructive only |
+| WIN-A | Hyper-V guest on the lab hypervisor, Tailscale-reachable | Windows Server 2022 Std Eval, 4 vCPU, 2.25 GB | dead local stack → **re-enroll to lab stack** | main Windows rig; candidate for SQL Server Express + nested Hyper-V |
+| WIN-B | Hyper-V guest on the lab hypervisor, Tailscale-reachable | Windows Server 2022 Std Eval, 4 vCPU, 2.5 GB, agent v0.111.1 | **prod EU** (`eu.2breeze.app`) | shipped-binary path: prod API dispatch → MinIO on the Mac as the S3 destination; non-destructive only |
 | LNX-QEMU | QEMU/HVF on this Mac (arm64) | Ubuntu 24.04 cloud image, fresh disk per run | lab stack | Linux file/system_image; **bare-metal recovery into a fresh VM** |
-| LNX-X86 | `ubuntu` 100.80.42.117 (KVM rig) | Ubuntu 22.04, prod-US enrolled | isolated second agent → lab stack via reverse tunnel | x86_64 Linux confirmation; needs Tailscale check-mode approval |
+| LNX-X86 | x86 KVM rig, Tailscale-reachable | Ubuntu 22.04, prod-US enrolled | isolated second agent → lab stack via reverse tunnel | x86_64 Linux confirmation; needs Tailscale check-mode approval |
 | MAC | this Mac (arm64) | macOS | isolated agent rig `~/breeze-backup-e2e-rig` → lab stack | macOS file/system_image + restore; BMR darwin restorer non-destructively only |
 | Storage | MinIO on the Mac (`docker-compose.dev.yml` minio), reachable from the Windows VMs over Tailscale (verified 200) | — | — | S3 destination for every rig; local-vault directories per rig |
 
 Lab API: `pnpm wt-stack` in this worktree (API runs role `all`, so backup workers are in-process). Not
-available in this lab: a hypervisor console for `KIT` (no fresh Windows VMs, no VM snapshots, no Windows
+available in this lab: a console on the lab hypervisor (no fresh Windows VMs, no VM snapshots, no Windows
 10/11 client), real cloud buckets (Azure / GCS / B2), an M365 tenant for C2C, a physical machine for
 PXE/ISO boot.
 
@@ -301,7 +301,7 @@ Filled in as cells execute. One row per cell per rig.
 
 1. **Ubuntu x86 rig** — Tailscale check-mode approval link needed to open the ControlMaster. Default: QEMU
    arm64 covers Linux until approved.
-2. **`KIT` Hyper-V host access** (192.168.0.7, Tailscale `kit-1`, no SSH/WinRM exposed) — needed for fresh
+2. **Lab Hyper-V host access** (LAN-only, no SSH/WinRM exposed) — needed for fresh
    Windows VMs (Windows BMR B1, Windows 10/11 client, VM snapshots for destructive tests). Default: Windows
    BMR stays BLOCKED; no destructive restore onto a VM I cannot roll back.
 3. **Install SQL Server Express + the Hyper-V role on WIN-A** (2.25 GB RAM; nested virt appears exposed).

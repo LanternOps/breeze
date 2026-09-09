@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 export LAB_API=${LAB_API:-http://localhost:33933/api/v1} LAB_STATE=${LAB_STATE:-$HOME/breeze-assurance/lab-state.json}
 L=scripts/backup-assurance/lab.sh
-W=administrator@100.101.28.70
+W=${LAB_WIN_SSH:?set LAB_WIN_SSH=user@host for the Windows rig}
 R=$HOME/breeze-assurance/runs/win; mkdir -p "$R"
 DEV=$(jq -r .devWin "$LAB_STATE")
 wsh() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$W" "$@" 2>/dev/null; }

@@ -13,7 +13,7 @@ export LAB_API_CONTAINER=${LAB_API_CONTAINER:-breeze-wt-toddhebebrand-backup-ass
 export LAB_REDIS_CONTAINER=${LAB_REDIS_CONTAINER:-breeze-wt-toddhebebrand-backup-assurance-redis-1}
 PG=${LAB_PG_CONTAINER:-breeze-wt-toddhebebrand-backup-assurance-postgres-1}
 L=scripts/backup-assurance/lab.sh
-S=/private/tmp/claude-501/-Users-toddhebebrand--herdr-worktrees-breeze-droplet-volume-add/73ed31ce-eb66-4900-b078-0b5b8ce77bd7/scratchpad
+S=${LAB_SCRATCH:?set LAB_SCRATCH to the dir holding vmssh/mc helpers}
 R=$HOME/breeze-assurance/runs/lnx; mkdir -p "$R"
 DEV=$(jq -r .devLnx "$LAB_STATE")
 psql() { docker exec "$PG" psql -U breeze -d breeze -Atc "$1"; }
