@@ -39,7 +39,6 @@ import {
   writeLocalTimer,
 } from '../../services/localTimer';
 import { useNetworkConnected } from '../../lib/useNetworkConnected';
-import { useKeyboardHeight } from '../../lib/useKeyboardHeight';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -63,8 +62,7 @@ import {
 } from '../../services/ticketAttachments';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
 import { AttachmentChip } from '../../components/AttachmentChip';
-import { Toast } from '../../components/Toast';
-import { toastClearanceOffset } from '../../components/timerBarLogic';
+import { useToast } from '../../components/toast/ToastHost';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
@@ -168,14 +166,7 @@ export function TicketDetailScreen() {
   const [resolutionNote, setResolutionNote] = useState('');
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
-  /**
-   * Measured height of the comment composer, so the toast (below) can clear
-   * it entirely rather than overlapping its mode tabs — see the Toast usage
-   * at the bottom of this component and #5105 ("Timer started" covering the
-   * Reply / Internal note tabs).
-   */
-  const [composerHeight, setComposerHeight] = useState(0);
+  const { show: showToast } = useToast();
   const [timerNotice, setTimerNotice] = useState<string | null>(null);
   const [timerBusy, setTimerBusy] = useState(false);
   const [chips, setChips] = useState<Chip[]>([]);
@@ -196,7 +187,6 @@ export function TicketDetailScreen() {
   }, []);
 
   const connected = useNetworkConnected();
-  const keyboardHeight = useKeyboardHeight();
   const running = useAppSelector((state) => state.time.running);
   // Sticky for the session: once the server has refused this account the
   // control is withdrawn rather than re-offered and failing (see timeSlice).
@@ -316,7 +306,7 @@ export function TicketDetailScreen() {
                   Linking.openSettings().catch((err: unknown) => {
                     reportInternalError(err, 'ticket-attachment-open-settings');
                     if (mounted.current) {
-                      setToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
+                      showToast({ kind: 'error', text: "Couldn't open Settings. Open it manually." });
                     }
                   });
                 },
@@ -324,7 +314,7 @@ export function TicketDetailScreen() {
             ]
           );
         } else if (outcome.reason === 'failed') {
-          setToast({ kind: 'error', text: outcome.message });
+          showToast({ kind: 'error', text: outcome.message });
         }
         return;
       }
@@ -336,7 +326,7 @@ export function TicketDetailScreen() {
       const started = added.chips.slice(before);
 
       if (added.rejected > 0) {
-        setToast({
+        showToast({
           kind: 'error',
           text: `Only 5 files per comment — ${added.rejected} not added.`,
         });
@@ -370,7 +360,7 @@ export function TicketDetailScreen() {
       } catch (err: unknown) {
         reportInternalError(err, 'ticket-attachment-open');
         const failure = toAttachmentError(err);
-        if (mounted.current) setToast({ kind: 'error', text: failure.message });
+        if (mounted.current) showToast({ kind: 'error', text: failure.message });
       }
     },
     [ticketId]
@@ -411,9 +401,9 @@ export function TicketDetailScreen() {
         // server returned so the user sees their own text, and say plainly
         // that the rest of the view may be stale.
         setTicket((prev) => (prev ? { ...prev, comments: [...prev.comments, created] } : prev));
-        setToast({ kind: 'error', text: 'Comment added, but the ticket could not be refreshed.' });
+        showToast({ kind: 'error', text: 'Comment added, but the ticket could not be refreshed.' });
       } else {
-        setToast({ kind: 'success', text: 'Comment added' });
+        showToast({ kind: 'success', text: 'Comment added' });
       }
     } catch (err: unknown) {
       reportInternalError(err, 'ticket-comment');
@@ -426,7 +416,7 @@ export function TicketDetailScreen() {
         const text = code === 'ATTACHMENT_NOT_CLAIMABLE'
           ? toAttachmentError(err).message
           : (err as { message?: string }).message || 'Could not add comment.';
-        setToast({ kind: 'error', text });
+        showToast({ kind: 'error', text });
       }
     } finally {
       inFlight.current = false;
@@ -441,7 +431,7 @@ export function TicketDetailScreen() {
       // rather than firing a request that always 400s.
       if (statusRequiresResolutionNote(status) && !resolutionNote.trim()) {
         setPendingStatus(status);
-        setToast({ kind: 'error', text: 'A resolution note is required to resolve.' });
+        showToast({ kind: 'error', text: 'A resolution note is required to resolve.' });
         return;
       }
       inFlight.current = true;
@@ -479,15 +469,15 @@ export function TicketDetailScreen() {
         const label = statusLabel({ status: applied, statusName: updated?.statusName ?? null });
         if (!refreshed) {
           setTicket((prev) => (prev ? { ...prev, ...updated } : prev));
-          setToast({ kind: 'error', text: `Marked ${label}, but the ticket could not be refreshed.` });
+          showToast({ kind: 'error', text: `Marked ${label}, but the ticket could not be refreshed.` });
         } else {
-          setToast({ kind: 'success', text: `Marked ${label}` });
+          showToast({ kind: 'success', text: `Marked ${label}` });
         }
       } catch (err: unknown) {
         const apiError = err as { message?: string };
         reportInternalError(err, 'ticket-status');
         if (mounted.current) {
-          setToast({ kind: 'error', text: apiError.message || 'Could not change status.' });
+          showToast({ kind: 'error', text: apiError.message || 'Could not change status.' });
         }
       } finally {
         inFlight.current = false;
@@ -535,7 +525,7 @@ export function TicketDetailScreen() {
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      setToast(effects.toast);
+      showToast(effects.toast);
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
@@ -580,7 +570,7 @@ export function TicketDetailScreen() {
       }
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      setToast(effects.toast);
+      showToast(effects.toast);
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
@@ -834,7 +824,6 @@ export function TicketDetailScreen() {
             mode. */}
         <View
           style={[styles.composer, isInternal && styles.composerInternal]}
-          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}
         >
           <View style={styles.modeTabs} accessibilityRole="tablist">
             {COMMENT_MODES.map((mode) => {
@@ -929,31 +918,6 @@ export function TicketDetailScreen() {
           </Pressable>
         </View>
       </ScrollView>
-
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        // Clears the composer's full measured height so "Timer started" /
-        // "Timer stopped" never overlaps its mode tabs (#5105) — the
-        // component's own default offset assumes a short, fixed-height
-        // screen, not one ending in a composer that can run to 200+px. Also
-        // clears the keyboard height on iOS (#5171): iOS keeps the window at
-        // full height and relies on `automaticallyAdjustKeyboardInsets`
-        // (above) to shift only the ScrollView's content, so the Toast — a
-        // sibling of that ScrollView, not inside it — is not lifted along
-        // with the composer and needs the keyboard height added explicitly.
-        // Android is intentionally excluded: with no `softwareKeyboardLayoutMode`
-        // override the OS resizes the window itself when the keyboard opens,
-        // so `bottom: 0` already lands just above the keyboard there — adding
-        // `keyboardHeight` again would double-count it and over-clear the toast.
-        bottomOffset={toastClearanceOffset(
-          composerHeight,
-          spacing['4'],
-          Platform.OS === 'ios' ? keyboardHeight : 0
-        )}
-      />
     </KeyboardAvoidingView>
   );
 }

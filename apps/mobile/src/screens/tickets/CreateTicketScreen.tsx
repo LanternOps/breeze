@@ -20,7 +20,7 @@ import { createTicket, type TicketPriority } from '../../services/tickets';
 import { listOrganizations } from '../../services/organizations';
 import { listAssignableUsers } from '../../services/users';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel } from './ticketCopy';
@@ -61,7 +61,7 @@ export function CreateTicketScreen() {
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TicketPriority>(DEFAULT_TICKET_PRIORITY);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
 
   const loadOrgs = useCallback(
     async (search: string) => {
@@ -127,7 +127,7 @@ export function CreateTicketScreen() {
       navigation.replace('TicketDetail', { ticketId: created.id });
     } catch (err) {
       reportInternalError(err, 'CreateTicketScreen.submit');
-      setToast({ kind: 'error', text: 'Could not create the ticket. Check the connection and try again.' });
+      showToast({ kind: 'error', text: 'Could not create the ticket. Check the connection and try again.' });
       setBusy(false);
     }
   };
@@ -262,12 +262,6 @@ export function CreateTicketScreen() {
           )}
         </Pressable>
       </ScrollView>
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'error'}
-        onHidden={() => setToast(null)}
-      />
       <OrgPickerSheet
         visible={orgSheetVisible}
         orgs={orgs}
