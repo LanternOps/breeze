@@ -424,6 +424,11 @@ describe('getOrgAgentUpdateConfig — version pins', () => {
   });
 });
 
+// getOrgAgentVersionPinsBatch (issue #5285) lives in its own service module
+// (services/orgAgentVersionPins.ts) with its own minimal test file — it does
+// not import helpers.ts, so its tests don't belong in this file's heavy
+// mock harness. See orgAgentVersionPins.test.ts.
+
 // ---------------------------------------------------------------------------
 // resolvePinnedUpgradeTarget — turns a pin (or its absence) into a concrete
 // target version, fail-closed when a pinned build is missing for the device's

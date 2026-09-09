@@ -1225,6 +1225,11 @@
       "scan": "Scan",
       "unifi": "UniFi",
       "manual": "Manuell"
+    },
+    "agentVersionRelation": {
+      "equalTooltip": "Entspricht der effektiven Version {{version}}",
+      "aheadTooltip": "Vor dem Pin {{version}}",
+      "behindTooltip": "Hinter dem Pin {{version}}"
     }
   },
   "deviceLogsTab": {

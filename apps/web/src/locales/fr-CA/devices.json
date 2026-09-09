@@ -1225,6 +1225,11 @@
       "scan": "Analyse",
       "unifi": "UniFi",
       "manual": "Manuel"
+    },
+    "agentVersionRelation": {
+      "equalTooltip": "Correspond à la version effective {{version}}",
+      "aheadTooltip": "En avance sur l'épinglage {{version}}",
+      "behindTooltip": "En retard sur l'épinglage {{version}}"
     }
   },
   "deviceLogsTab": {
