@@ -61,6 +61,7 @@ import {
   type TicketAttachmentMeta,
 } from '../../services/ticketAttachments';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
+import { navigateToTicket } from '../../navigation/navigationRef';
 import { AttachmentChip } from '../../components/AttachmentChip';
 import { useToast } from '../../components/toast/ToastHost';
 import { relativeTime } from '../../lib/relativeTime';
@@ -86,7 +87,11 @@ import {
   type CommentMode,
 } from './commentMode';
 import { startForTicket, stopRunningTimer } from './timerActions';
-import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
+import {
+  startOutcomeEffects,
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from './timerOutcomeEffects';
 import { CommentAttachments } from './CommentAttachments';
 import {
   addPickedFiles,
@@ -635,21 +640,29 @@ export function TicketDetailScreen() {
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
       showToast(effects.toast);
-      // #5366. The ticket is already open, so there is nothing to navigate to —
-      // just put the composer under the technician's thumb in internal mode, so
-      // the entry gets a description instead of landing as `No description`.
-      // Same gate as the TimerBar: only a stop that recorded a span (online or
-      // queued) has anything to annotate; a parked or not-running stop leaves
-      // the error notice on screen to be read.
-      if (outcome.ok === true || outcome.ok === 'queued') {
+      /**
+       * #5366. Open the composer on the ticket that was actually being timed.
+       *
+       * Usually that is this screen, so the composer is simply focused in
+       * place. But this Stop button fires for whatever timer is running, not
+       * only one started here (the notice above it says as much), so stopping
+       * ticket B's timer while reading ticket A must NOT focus A's composer:
+       * the note about B's work would be written onto A, and an internal note
+       * cannot be moved afterwards. Navigate to B instead — the same thing the
+       * TimerBar does, via the same shared decision.
+       */
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (composerTicketId === ticketId) {
         setCommentMode('internal');
         focusComposer();
+      } else if (composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
       }
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
     }
-  }, [connected, dispatch, refreshQueueDepth, load, running, focusComposer]);
+  }, [connected, dispatch, refreshQueueDepth, load, running, focusComposer, ticketId]);
 
   if (loading && !ticket) {
     return (

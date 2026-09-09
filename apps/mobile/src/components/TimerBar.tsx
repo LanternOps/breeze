@@ -45,7 +45,10 @@ import {
 import { weekStartFor } from '../screens/time/timesheetWeek';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../services/timeEntryAccess';
 import { stopRunningTimer } from '../screens/tickets/timerActions';
-import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
+import {
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from '../screens/tickets/timerOutcomeEffects';
 import {
   isQueueWedged,
   isRunningTimerLong,
@@ -413,16 +416,12 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
        * `No description` because the only way back to the ticket was to find
        * it again.
        *
-       * Gated on the OUTCOME, not on `effects.clearRunning`: an unusable-clock
-       * or not-running stop clears the bar too, but nothing was recorded to
-       * annotate and the error the technician needs to read is on this screen.
-       * A timer with no ticket (general time) has nothing to open.
+       * `stopComposerTicketId` decides which ticket (or none) — shared with
+       * TicketDetailScreen's own stop handler, see timerOutcomeEffects.ts.
        */
-      const recordedStop = outcome.ok === true || outcome.ok === 'queued';
-      const stoppedTicketId =
-        (outcome.ok === true ? outcome.entry.ticketId : null) ?? running?.ticketId ?? null;
-      if (mounted.current && recordedStop && stoppedTicketId !== null) {
-        navigateToTicket(stoppedTicketId, { composeMode: 'internal', focusComposer: true });
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (mounted.current && composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
       }
     } finally {
       stopInFlight.current = false;
