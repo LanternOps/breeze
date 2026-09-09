@@ -145,12 +145,16 @@ describe('config env', () => {
   });
 
   // mfaForcePartnerAdmin is the kill-switch for the role-level MFA gate
-  // introduced in Task 8 of the launch-readiness sprint. Defaults ON so
-  // the secure-by-default posture holds, but ops can flip it OFF without
-  // a code change when an enrollment outage locks legitimate users out.
-  it('defaults mfaForcePartnerAdmin to true when unset', async () => {
+  // introduced in Task 8 of the launch-readiness sprint. Defaults OFF for
+  // this release (#4491): the reconcile migration
+  // (2026-10-11-170000-partner-admin-force-mfa-reconcile.sql) flips
+  // force_mfa on every EXISTING Partner Admin role, so enforcing on
+  // upgrade with no warning would lock admins into enrolment with zero
+  // notice. Enforcement returns to default ON once the notification-period
+  // feature (#5306) ships; MFA_FORCE_FOR_PARTNER_ADMIN=true opts in now.
+  it('defaults mfaForcePartnerAdmin to false when unset', async () => {
     const mod = await loadEnv();
-    expect(mod.mfaForcePartnerAdmin()).toBe(true);
+    expect(mod.mfaForcePartnerAdmin()).toBe(false);
   });
 
   it('returns false when MFA_FORCE_FOR_PARTNER_ADMIN is explicitly disabled', async () => {

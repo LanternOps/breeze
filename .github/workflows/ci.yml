@@ -2580,9 +2580,23 @@ jobs:
           fi
           echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
-          # RMM-QA-164: with MFA_FORCE_FOR_PARTNER_ADMIN=false in this stack's
-          # .env the role-force component must be suppressed end to end
-          # (proves the root compose actually threads the valve, D6).
+          # RMM-QA-164 (D6): the behavioural mfaEnrollmentRequired assertion
+          # below only discriminates a compose-wiring regression when the
+          # container's resolved value actually differs from the code
+          # default. mfaForcePartnerAdmin() now defaults to false (#4491),
+          # matching this stack's .env, so an UNMAPPED variable would produce
+          # the identical container-resolved value and this assertion would
+          # pass on a broken mapping too. Read the container's own env
+          # directly first so a dropped mapping is still caught regardless of
+          # which way the code default points.
+          RESOLVED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml.ci \
+            exec -T api printenv MFA_FORCE_FOR_PARTNER_ADMIN || true)
+          echo "api container MFA_FORCE_FOR_PARTNER_ADMIN='${RESOLVED}' (expected 'false': set in .env)"
+          if [ "${RESOLVED}" != "false" ]; then
+            echo "ERROR: docker-compose.yml did not thread MFA_FORCE_FOR_PARTNER_ADMIN from .env into the api container"
+            exit 1
+          fi
+          # ...and then confirm it's actually honoured end to end.
           ENROLL=$(echo "${RESPONSE}" | jq -r '.mfaEnrollmentRequired')
           echo "mfaEnrollmentRequired=${ENROLL} (expected false: relief valve set in .env)"
           if [ "${ENROLL}" != "false" ]; then

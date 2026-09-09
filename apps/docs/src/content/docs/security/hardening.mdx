@@ -48,7 +48,7 @@ Before going live, verify every item:
 ### Authentication
 
 - [ ] MFA enabled for all admin accounts (authenticator app, SMS, or a passkey)
-- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available.
+- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available. **This enforcement defaults OFF** (`MFA_FORCE_FOR_PARTNER_ADMIN=false`) as of this release — set it to `true` to actually enforce Force MFA roles; see `.env.example`.
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
 - [ ] Session timeout configured (`SESSION_MAX_AGE`)

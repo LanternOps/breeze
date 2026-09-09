@@ -216,3 +216,17 @@ No env vars, no migrations.
 - Behaviour change (API), no migration and no new env vars: confirming a phone number that REPLACES the one behind an already-active SMS factor still advances `mfa_epoch` and revokes every refresh family — every OTHER session is signed out — but the calling session is now REPLACED in the same response instead of evicted (it previously bounced the user to `/login?reason=session-expired` by their own action). `POST /auth/phone/confirm` now returns `sessionReplaced: true` plus `tokens.accessToken` on that branch, alongside rotated refresh/CSRF cookies the client must adopt, and can now answer **409** (another authentication issuance is in flight, or the factor set changed concurrently — nothing was written) and **428** (the client auth binding must be rotated first) from the shared auth-issuance admission path. `tokens` is withheld on the rare post-commit install failure, in which case the client must re-authenticate. Initial phone verification (no active SMS factor yet) is unchanged and returns neither field.
 
 ---
+
+## Partner Admin forced MFA: reconciled but not enforced by default yet (#4491)
+
+**Self-Hosting / Upgrade Notes.**
+- The `2026-10-11-170000-partner-admin-force-mfa-reconcile.sql` migration marks
+  every EXISTING system Partner Admin role as MFA-required (`force_mfa = true`)
+  on every install, reconciling installs that predate RMM-QA-164.
+- Enforcement of that flag is **OFF by default this release**
+  (`MFA_FORCE_FOR_PARTNER_ADMIN` now defaults to `false`) — the migration alone
+  would otherwise lock existing Partner Admins into enrolment at upgrade time
+  with no warning. Set `MFA_FORCE_FOR_PARTNER_ADMIN=true` to enforce now.
+- Enforcement returns to default ON once the notification-period rollout
+  (grace window, banner, deadline before `force_mfa` takes effect — #5306)
+  ships next release.
