@@ -288,7 +288,8 @@ x-api-env: &api-env
   # Auth / security / session
   ENABLE_2FA: ${ENABLE_2FA:-}
   # RMM-QA-164 relief valve (see .env.example). Empty when unset → envFlag
-  # default true; mapped so a locked-out self-hoster can actually flip it.
+  # default false this release (#4491, opt in with true); mapped so a
+  # self-hoster can actually flip it either way.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value

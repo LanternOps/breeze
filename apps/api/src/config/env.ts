@@ -496,12 +496,17 @@ export const OAUTH_JWKS_PUBLIC_JWK = process.env.OAUTH_JWKS_PUBLIC_JWK ?? '';
 export const OAUTH_COOKIE_SECRET = process.env.OAUTH_COOKIE_SECRET ?? '';
 
 // Kill-switch for the role-level MFA gate (Task 8 of the launch-readiness
-// sprint). Defaults ON so the secure-by-default posture holds; ops can
-// flip it OFF without a code change to relieve an enrollment outage that
-// locks legitimate partner-admins out. Read at call time so tests and
-// runtime overrides don't need module re-evaluation.
+// sprint). Defaults OFF for this release (#4491): the reconcile migration
+// (2026-10-11-170000-partner-admin-force-mfa-reconcile.sql) flips
+// force_mfa on every EXISTING Partner Admin role, and enforcing on upgrade
+// with no warning would lock those admins into enrolment unexpectedly.
+// Enforcement returns to default ON once the notification-period feature
+// (#5306 — grace window, banner, deadline before force_mfa takes effect)
+// ships. Set MFA_FORCE_FOR_PARTNER_ADMIN=true to opt in and enforce now.
+// Read at call time so tests and runtime overrides don't need module
+// re-evaluation.
 export function mfaForcePartnerAdmin(): boolean {
-  return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
+  return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', false);
 }
 
 /**
