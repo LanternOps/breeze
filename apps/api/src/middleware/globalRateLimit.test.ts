@@ -169,6 +169,58 @@ describe('globalRateLimit — isolated desktop-ws bucket', () => {
   });
 });
 
+// D13: the bare-metal-recovery helper fetches ONE object per file through
+// /backup/bmr/recover/download, so a 10k-file server would blow through the
+// shared 300/min budget in under half a minute. Only the download route is
+// isolated — /recover/authenticate and /recover/complete deliberately keep
+// the shared budget (they're low-volume, human-in-the-loop calls, and each
+// already carries its own tighter per-route limiter).
+describe('globalRateLimit — isolated bmr recovery download bucket', () => {
+  const DOWNLOAD_PATH = '/api/v1/backup/bmr/recover/download?path=snapshots/snap-1/manifest.json';
+  const AUTH_PATH = '/api/v1/backup/bmr/recover/authenticate';
+  const COMPLETE_PATH = '/api/v1/backup/bmr/recover/complete';
+
+  function buildApp(options?: Parameters<typeof globalRateLimit>[0]) {
+    const app = new Hono();
+    app.use('*', globalRateLimit(options));
+    app.get('/api/v1/backup/bmr/recover/download', (c) => c.json({ ok: true }));
+    app.post('/api/v1/backup/bmr/recover/authenticate', (c) => c.json({ ok: true }));
+    app.post('/api/v1/backup/bmr/recover/complete', (c) => c.json({ ok: true }));
+    app.get('/api/v1/devices', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('does not let download polling drain the shared bucket', async () => {
+    // Shared budget of 2, but 20 download requests — far past what the shared
+    // bucket would tolerate if they were metered together. Uses the default
+    // ISOLATED_BUCKETS (not overridden), so this exercises the real 12,000
+    // bmrrecover limit, not a test-shrunk one.
+    const app = buildApp({ limit: 2, windowSeconds: 60 });
+
+    for (let i = 0; i < 20; i++) {
+      const res = await app.request(DOWNLOAD_PATH);
+      expect(res.status).toBe(200);
+    }
+
+    // The dashboard must still have its full shared budget — proves download
+    // traffic spent its own bucket, not the shared one.
+    expect((await app.request('/api/v1/devices')).status).toBe(200);
+  });
+
+  it('meters authenticate/complete against the SHARED bucket, not the isolated one', async () => {
+    const app = buildApp({ limit: 1, windowSeconds: 60 });
+
+    // Exhausts the shared budget of 1.
+    expect((await app.request(AUTH_PATH, { method: 'POST' })).status).toBe(200);
+
+    // complete is a DIFFERENT path under the same shared bucket — it must be
+    // throttled too, proving neither authenticate nor complete has its own
+    // isolated bucket the way download does.
+    const throttled = await app.request(COMPLETE_PATH, { method: 'POST' });
+    expect(throttled.status).toBe(429);
+  });
+});
+
 describe('ISOLATED_BUCKETS pins', () => {
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
