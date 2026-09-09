@@ -798,6 +798,10 @@ describe('partner desired-configuration material watermarks', () => {
     // the value pointing at the target org before the device does while the two
     // statements share a transaction.
     await expect(db.transaction(async (tx) => {
+      // This fixture uses the admin test client rather than the request app
+      // pool. Declare the system authority it is intentionally simulating;
+      // the re-home SECURITY DEFINER helper rejects missing/ambiguous context.
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
       await tx.execute(sql`
         SELECT public.breeze_rehome_device_custom_field_values(
           ${device.id}::uuid, ${targetOrgId}::uuid)`);
