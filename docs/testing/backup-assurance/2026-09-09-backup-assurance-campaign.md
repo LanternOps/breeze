@@ -317,9 +317,18 @@ Filled in as cells execute. One row per cell per rig.
    tombstoned manifests as roots for the 48 h grace, then sweeps what they alone referenced; (B) the server
    hands the agent its dedupe base from retained rows only, the agent stops listing the bucket for a base,
    and roots become retained rows only. Both need a live-MinIO test proving an expired unreferenced object
-   is reclaimed while a retained snapshot still restores. Default: NOT fixed in PR #5418 — it is a GC
-   correctness change on the data-loss/storage boundary and gets its own plan (like D15); the docs'
-   retention page must say storage is not reclaimed yet until it lands.
+   is reclaimed while a retained snapshot still restores. Advisor quorum (Fable + Codex xhigh, read-only):
+   both reject A alone (a multi-day run outlives the 48 h grace and publishes dangling references) and B
+   alone (nothing keeps the server-chosen base alive if retention removes it mid-run; scheduled runs that
+   build their manager from `agent.yaml` bypass the payload). **Recommendation: C = B + durable base pins**:
+   the server picks the base from retained rows and records a pin (`backup_jobs.base_snapshot_id` while the
+   job is running); GC roots = retained manifests + pinned bases + active restore pins + active upload
+   prefixes; the pin transfers to the child row at publication and is reaped with abandoned jobs; every
+   writer must go through the server (legacy/offline writers get an unswept namespace). Retention then also
+   deletes the expired manifest object so it stops being discoverable. Default: NOT fixed in PR #5418 — it
+   is a GC correctness change on the data-loss/storage boundary and gets its own plan (like D15); shipping
+   D17 alone is safe because the bucket behaviour is unchanged (nothing was reclaimed before either); the
+   docs' retention page now says storage is not reclaimed yet.
 
 ## 10. Issues filed (2026-09-09)
 
