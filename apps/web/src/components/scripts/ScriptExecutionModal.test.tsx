@@ -51,7 +51,7 @@ function renderModal(
   onClose = vi.fn(),
   availableDevices = devices,
 ) {
-  render(
+  const view = render(
     <ScriptExecutionModal
       script={{ ...baseScript, parameters }}
       devices={availableDevices}
@@ -60,7 +60,7 @@ function renderModal(
       onExecute={onExecute}
     />
   );
-  return { onExecute, onClose };
+  return { onExecute, onClose, unmount: view.unmount };
 }
 
 /** Select the one online device and drive the two-step execute button. */
@@ -250,6 +250,44 @@ describe('ScriptExecutionModal admission truth', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // #5270 — the 1.5s auto-close timer used to outlive the component. A test
+  // that unmounted before it fired left it pending, and when it eventually ran
+  // (after that file's jsdom was torn down) it threw
+  // `ReferenceError: window is not defined` as an unhandled error, failing
+  // Test Web with every file passing.
+  it('cancels the pending auto-close timer on unmount and never calls onClose afterwards', async () => {
+    const onClose = vi.fn();
+    const { unmount } = renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // #5270 — the modal's own close path must cancel it too, so a re-open can't
+  // be slammed shut by a timer scheduled before the operator closed it.
+  it('cancels the pending auto-close timer when the operator closes the modal first', async () => {
+    const onClose = vi.fn();
+    renderModal([], vi.fn().mockResolvedValue(admittedResult), onClose);
+
+    await execute();
+    await act(async () => { await Promise.resolve(); });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => { await vi.runAllTimersAsync(); });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
