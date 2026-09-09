@@ -1,8 +1,6 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
-import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
-import { isAccountDisabledResponse, redirectToAccountDisabled } from '../../lib/accountStatus';
 import QuoteList from '../../components/portal/QuoteList';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
@@ -15,16 +13,6 @@ const response = await portalApi.getQuotes(
 if (response.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
-}
-
-// /quotes is the fixed landing page no visibility flag can turn off (see
-// lib/visibilityGate.ts), so a disabled portal user lands right back here
-// after every bounce. A disabled ACCOUNT is not a load failure the customer
-// should see rendered inline (sweep 2026-09-08 G5-6) — send them to the
-// dedicated page instead, the same way the visibility gates redirect rather
-// than render their own "not available" copy.
-if (isAccountDisabledResponse(response)) {
-  return redirectToAccountDisabled(Astro);
 }
 ---
 

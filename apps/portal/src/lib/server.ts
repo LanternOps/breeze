@@ -59,7 +59,31 @@ export async function loadPortalBranding(
  * instead of computing a landing path from defaulted branding as though this
  * were a generic outage.
  */
-export async function loadPortalBrandingWithStatus(
+export function loadPortalBrandingWithStatus(
+  request: Request
+): Promise<{ branding: BrandingConfig; accountDisabled: boolean }> {
+  const cached = brandingByRequest.get(request);
+  if (cached) return cached;
+  const pending = fetchPortalBrandingWithStatus(request);
+  brandingByRequest.set(request, pending);
+  return pending;
+}
+
+/**
+ * Per-request memo. The middleware now loads the branding/account status on
+ * every protected page (#5320) and the layout that page renders loads branding
+ * again — one HTTP request to the API per portal page view, not two. Keyed on
+ * the Request instance Astro threads from middleware into page rendering and
+ * held weakly, so it cannot outlive the request or leak one customer's branding
+ * into another's. A key miss is only a missed optimisation, never a wrong
+ * answer.
+ */
+const brandingByRequest = new WeakMap<
+  Request,
+  Promise<{ branding: BrandingConfig; accountDisabled: boolean }>
+>();
+
+async function fetchPortalBrandingWithStatus(
   request: Request
 ): Promise<{ branding: BrandingConfig; accountDisabled: boolean }> {
   const config: ApiRequestConfig = {
