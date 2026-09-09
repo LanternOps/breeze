@@ -1727,7 +1727,7 @@ describe('resolveAndLockOrgLink (W06 #3900)', () => {
 // These defaults are what the quick-add prefills and warns from.
 describe('getTicketTimeEntryDefaults (#5321)', () => {
   const ACTOR_D = {
-    userId: 'u-1', name: 'Tech', email: 't@e.co', partnerId: 'p-1',
+    userId: 'u-1', name: 'Tech', email: 't@example.com', partnerId: 'p-1',
     accessibleOrgIds: null as string[] | null, manageAll: false,
   };
 
