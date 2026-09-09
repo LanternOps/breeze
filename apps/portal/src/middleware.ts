@@ -6,24 +6,9 @@ import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
 import { prefixDevAssetUrls, shouldPrefixDevAssetUrls } from './lib/devAssetBase';
 import { loadPortalBrandingWithStatus } from './lib/server';
 import { resolveAuthenticatedLanding } from './lib/landing';
+import { isProtectedPath, requiresAccountStatusGuard } from './lib/protectedPaths';
+import { redirectToAccountDisabled } from './lib/accountStatus';
 
-// Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
-// rendered server-side for an unauthenticated visitor and only failed at the API
-// call — the 401 branch inside each page. Guarding them in the middleware keeps
-// the deep-link redirect (below) consistent across every protected route.
-const protectedPrefixes = [
-  '/devices',
-  '/tickets',
-  '/assets',
-  '/profile',
-  '/quotes',
-  '/invoices',
-  '/dashboard',
-  '/security',
-  '/backups',
-  '/reports',
-  '/account-disabled'
-];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
 
 /** Build `/login?next=<path>` so an emailed deep link survives the auth wall. */
@@ -42,10 +27,6 @@ function loginWithNext(pathname: string, search: string): string {
 async function authenticatedLanding(request: Request): Promise<'/dashboard' | '/quotes' | '/account-disabled'> {
   const { branding, accountDisabled } = await loadPortalBrandingWithStatus(request);
   return resolveAuthenticatedLanding({ accountDisabled, branding });
-}
-
-function isProtectedPath(pathname: string): boolean {
-  return protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 /** True for env flags set to `1`/`true`. Mirrors apps/web/src/middleware.ts. */
@@ -94,8 +75,22 @@ export const onRequest = defineMiddleware(async (context, next) => {
     );
   }
 
-  if (isProtectedPath(pathname) && !hasSession) {
-    return context.redirect(loginWithNext(pathname, context.url.search), 302);
+  if (isProtectedPath(pathname)) {
+    if (!hasSession) {
+      return context.redirect(loginWithNext(pathname, context.url.search), 302);
+    }
+
+    // #5320 — a disabled ACCOUNT is not a page-level load failure. Without this
+    // every signed-in page except /quotes (which carried its own hand-rolled
+    // check) rendered the API's raw "Account is not active" string inline. The
+    // branding lookup is memoized per request (lib/server.ts), so the layout's
+    // own branding load reuses this response rather than issuing a second one.
+    if (requiresAccountStatusGuard(pathname)) {
+      const { accountDisabled } = await loadPortalBrandingWithStatus(context.request);
+      if (accountDisabled) {
+        return redirectToAccountDisabled(context);
+      }
+    }
   }
 
   if (hasSession && authOnlyPaths.has(pathname)) {

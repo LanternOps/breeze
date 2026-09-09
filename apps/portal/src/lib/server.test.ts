@@ -129,3 +129,48 @@ describe('loadPortalBrandingWithStatus — account-disabled detection', () => {
     expect(branding).toEqual(defaultBranding);
   });
 });
+
+// #5320 — the middleware now resolves the account status on every protected
+// page, and the layout that page renders loads branding again. Both go through
+// loadPortalBrandingWithStatus, so the pair must cost ONE API call per request,
+// not two.
+describe('loadPortalBrandingWithStatus — per-request memoization', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('issues a single branding fetch for repeated loads on the same request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Acme IT' } }),
+      { status: 200 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/security', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const first = await loadPortalBrandingWithStatus(request);
+    const second = await loadPortalBranding(request);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first.branding);
+  });
+
+  it('does not share a memo across requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Acme IT' } }),
+      { status: 200 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await loadPortalBrandingWithStatus(new Request('https://portal.example/security', {
+      headers: { host: 'portal.example' }
+    }));
+    await loadPortalBrandingWithStatus(new Request('https://portal.example/security', {
+      headers: { host: 'portal.example' }
+    }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

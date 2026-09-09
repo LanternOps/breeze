@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PORTAL_GATED_PAGES } from './visibilityGate';
+import { requiresAccountStatusGuard } from './protectedPaths';
 
 /**
  * Contract test: a portal page whose data comes from behind a visibility gate
@@ -137,5 +138,73 @@ describe('visibility-gate handling in portal pages', () => {
       return !page || gatedMethodsIn(page.source).length === 0;
     });
     expect(stale, 'remove these from HANDLES_GATE_ELSEWHERE').toEqual([]);
+  });
+});
+
+/**
+ * Contract test: every signed-in page is covered by the middleware's
+ * account-status guard, so a disabled ACCOUNT never renders the API's raw
+ * "Account is not active" string inline (#5320).
+ *
+ * The gate above is per-page (an MSP switched THIS page off); this one is
+ * per-account and lives in the middleware — a new page area only has to be
+ * added to PORTAL_PROTECTED_PREFIXES, and this test is what notices when it
+ * isn't. That was the exact miss: /quotes carried a hand-rolled check and the
+ * other nine signed-in areas carried nothing.
+ */
+
+/**
+ * Pages that are deliberately reachable without a portal session — each is a
+ * decision, not a gap.
+ *
+ * - login / forgot-password / reset-password / accept-invite: the auth wall
+ *   itself. The middleware's authenticated-landing redirect already sends a
+ *   signed-in disabled account off /login and /forgot-password.
+ * - index.astro: pure redirect; resolveAuthenticatedLanding (lib/landing.ts)
+ *   handles the disabled case there.
+ * - account-disabled: the destination — guarding it would loop.
+ * - quote/[token], invoice/[token], invoice/return: the URL token IS the
+ *   capability; these documents are emailed to people who never sign in.
+ */
+const UNAUTHENTICATED_PAGES = new Set([
+  'index.astro',
+  'login.astro',
+  'forgot-password.astro',
+  'reset-password.astro',
+  'accept-invite.astro',
+  'account-disabled.astro',
+  'quote/[token].astro',
+  'invoice/[token].astro',
+  'invoice/return.astro',
+]);
+
+/** src/pages-relative file → the route the middleware sees (base stripped). */
+function routeOf(pagePath: string): string {
+  const route = pagePath
+    .replace(/\.astro$/, '')
+    .replace(/\/index$/, '')
+    .replace(/\[[^\]]+\]/g, 'token');
+  return route === 'index' ? '/' : `/${route}`;
+}
+
+describe('account-disabled coverage in portal pages', () => {
+  const pages = walk(PAGES).map((file) => relative(PAGES, file));
+
+  it('every signed-in page sits behind the middleware account-status guard', () => {
+    const unguarded = pages
+      .filter((page) => !UNAUTHENTICATED_PAGES.has(page))
+      .filter((page) => !requiresAccountStatusGuard(routeOf(page)));
+
+    expect(
+      unguarded,
+      'add these page areas to PORTAL_PROTECTED_PREFIXES (lib/protectedPaths.ts) — ' +
+        'without it a disabled account renders the API\'s raw "Account is not active" text:\n' +
+        unguarded.join('\n'),
+    ).toEqual([]);
+  });
+
+  it('keeps the unauthenticated allowlist honest — no entry for a page that no longer exists', () => {
+    const stale = [...UNAUTHENTICATED_PAGES].filter((page) => !pages.includes(page));
+    expect(stale, 'remove these from UNAUTHENTICATED_PAGES').toEqual([]);
   });
 });
