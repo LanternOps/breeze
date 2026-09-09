@@ -346,10 +346,17 @@ export const fixWatchQueueJobDataSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('recover') }).strict(),
 ]);
 
-export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
+export const sensitiveDataQueueJobDataSchema = z.union([
   z.object({
     type: z.literal('dispatch-scan'),
     scanId: z.string().min(1),
+    origin: z.literal('manual'),
+  }).strict(),
+  z.object({
+    type: z.literal('dispatch-scan'),
+    scanId: z.string().min(1),
+    origin: z.literal('policy_scheduler'),
+    authorityGeneration: z.string().uuid(),
   }).strict(),
   z.object({
     type: z.literal('schedule-policies'),

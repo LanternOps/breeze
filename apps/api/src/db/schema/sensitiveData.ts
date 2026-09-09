@@ -29,6 +29,16 @@ export const sensitiveDataPolicies = pgTable('sensitive_data_policies', {
   schedule: jsonb('schedule'),
   isActive: boolean('is_active').notNull().default(true),
   createdBy: uuid('created_by').references(() => users.id),
+  executionAuthorityVersion: integer('execution_authority_version'),
+  executionAuthorityKind: varchar('execution_authority_kind', { length: 32 })
+    .$type<'organization_restricted' | 'organization_unrestricted' | 'partner_unrestricted'>(),
+  executionAuthoritySiteIds: uuid('execution_authority_site_ids').array(),
+  executionAuthorityUserId: uuid('execution_authority_user_id'),
+  executionAuthorityPrincipalKind: varchar('execution_authority_principal_kind', { length: 16 })
+    .$type<'user' | 'system'>(),
+  executionAuthorityFingerprint: varchar('execution_authority_fingerprint', { length: 64 }),
+  executionAuthorityCapturedAt: timestamp('execution_authority_captured_at', { withTimezone: true }),
+  executionAuthorityGeneration: uuid('execution_authority_generation'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -47,6 +57,7 @@ export const sensitiveDataScans = pgTable('sensitive_data_scans', {
   completedAt: timestamp('completed_at'),
   idempotencyKey: varchar('idempotency_key', { length: 128 }),
   requestFingerprint: varchar('request_fingerprint', { length: 64 }),
+  policyAuthorityGeneration: uuid('policy_authority_generation'),
   summary: jsonb('summary'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
