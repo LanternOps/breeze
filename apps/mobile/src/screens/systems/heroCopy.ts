@@ -1,6 +1,7 @@
 import type { Alert } from '../../services/api';
 import type { MobileSummary } from '../../services/systems';
 import type { FleetSegments } from '../../components/FleetBar';
+import { deriveFleetBarSegments } from '../../components/fleetBarSegments';
 
 export interface HeroState {
   copy: string;
@@ -77,8 +78,6 @@ export function deriveHeroState(
   // from the *unacked* activeIssues (same source the headline counts), not
   // from summary.alerts.critical (which includes acknowledged criticals
   // and would paint a red slice while the headline says "all healthy").
-  // Offline + maintenance devices also contribute to warning even without
-  // alerts, since they're degraded fleet state.
   const criticalAlerts = activeIssues.filter(
     (a) => a.severity === 'critical' || a.severity === 'high',
   ).length;
@@ -87,14 +86,15 @@ export function deriveHeroState(
   ).length;
   const degradedDevices = Math.max(0, offline + maintenance);
 
-  const criticalSlice = Math.min(criticalAlerts, total);
-  const warningSlice = Math.min(warningAlerts + degradedDevices, total - criticalSlice);
-  const healthySlice = Math.max(0, total - criticalSlice - warningSlice);
-  const segments: FleetSegments = {
-    healthy: healthySlice,
-    warning: warningSlice,
-    critical: criticalSlice,
-  };
+  // Shared with the Home fleet strip (#5364) so offline devices can't be
+  // amber here and red there — see components/fleetBarSegments.ts.
+  const segments: FleetSegments = deriveFleetBarSegments({
+    total,
+    offline,
+    maintenance,
+    criticalAlerts,
+    warningAlerts,
+  });
 
   if (issueCount === 0 && degradedDevices === 0) {
     const legendParts: string[] = [];
