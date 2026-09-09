@@ -27,6 +27,7 @@ import ScriptVariablePicker from './ScriptVariablePicker';
 import TenantVariableMenu from './TenantVariableMenu';
 import { findUnknownVariableKeys, useTenantVariables, type TenantVariableEntry } from '@/lib/tenantVariableTokens';
 import HelpTooltip from '../shared/HelpTooltip';
+import CustomFieldHelp from './CustomFieldHelp';
 import { cn } from '@/lib/utils';
 import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
@@ -827,6 +828,12 @@ export default function ScriptForm({
           {panelOpen && <ScriptAiPanel bridge={bridge} />}
         </div>
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
+        <CustomFieldHelp
+          language={watchLanguage}
+          editorRef={editorInstanceRef}
+          content={watchContent ?? ''}
+          onInsert={next => setValue('content', next, { shouldDirty: true })}
+        />
         {unknownVariableKeys.length > 0 && (
           <p
             data-testid="script-variable-warning"
@@ -937,7 +944,9 @@ export default function ScriptForm({
                       <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                         {t('scriptForm.parameterBinding.fieldLabel')}
                         <HelpTooltip
-                          text={t('scriptForm.parameterBinding.fieldHelp')}
+                          // Literal `{{paramName}}` in the copy; passed as a value so i18next
+                          // does not treat it as an interpolation slot.
+                          text={t('scriptForm.parameterBinding.fieldHelp', { paramName: '{{paramName}}' })}
                           ariaLabel={t('scriptForm.parameterBinding.fieldHelpAriaLabel')}
                         />
                       </label>

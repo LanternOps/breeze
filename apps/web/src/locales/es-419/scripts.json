@@ -1117,7 +1117,7 @@
       "variablePlaceholder": "p.ej. vendor_token",
       "fieldLabel": "Clave del campo personalizado",
       "fieldPlaceholder": "p.ej. asset_tag",
-      "fieldHelp": "Ingresa la Clave de Campo que se muestra en Configuración → Campos Personalizados (distingue mayúsculas de minúsculas). Lectura: una vez vinculado, el valor resuelto se entrega al script como cualquier parámetro normal, sin mostrar ninguna solicitud. Escritura: para guardar un nuevo valor, haz que el script llame a la API de campos personalizados del dispositivo con una solicitud PATCH y una clave de API.",
+      "fieldHelp": "Ingresa la Clave del campo que se muestra en Configuración → Campos personalizados (distingue mayúsculas y minúsculas). Lectura: el valor resuelto se entrega al script como la variable de entorno BREEZE_PARAM_<KEY> (el nombre del parámetro en mayúsculas con guiones bajos) y como el marcador {{paramName}} — no se muestra ningún aviso. Escritura: imprime ::breeze:custom-fields:: {\"key\": \"value\"} en stdout para un campo con «Permitir que los scripts escriban este campo» habilitado. Consulta «Leer y escribir campos personalizados» debajo del editor para ver un ejemplo.",
       "fieldHelpAriaLabel": "Acerca de la vinculación de campo personalizado del dispositivo",
       "builtinLabel": "Propiedad",
       "chooseTitle": "Elegir una variable",
@@ -1134,6 +1134,18 @@
       "clearedHint": "Todos los patrones detectados han sido reconocidos.",
       "willBlock": "No reconocido: el agente se negará a ejecutar este script.",
       "footnote": "Un reconocimiento se aplica solo a este script y cubre únicamente los patrones indicados aquí. Si más adelante agregas una operación riesgosa distinta, se bloqueará hasta que también la reconozcas."
+    },
+    "customFieldHelp": {
+      "title": "Leer y escribir campos personalizados",
+      "readLabel": "Lectura:",
+      "read": "vincula un parámetro a un campo personalizado (origen «Desde un campo personalizado del dispositivo»). El valor llega como la variable de entorno",
+      "readPlaceholders": "y como el marcador",
+      "writeLabel": "Escritura:",
+      "write": "imprime una línea en stdout con la forma",
+      "writeGate": "El campo debe tener «Permitir que los scripts escriban este campo» habilitado en Configuración → Campos personalizados. Los valores se validan contra el tipo del campo; las claves rechazadas se listan en los detalles de la ejecución.",
+      "secretCaveat": "El valor escrito también aparece en la salida guardada del script — nunca escribas un secreto de esta forma. Usa una variable secreta en su lugar.",
+      "insertExample": "Insertar ejemplo",
+      "docsLink": "Documentación de campos personalizados"
     }
   },
   "scriptList": {
