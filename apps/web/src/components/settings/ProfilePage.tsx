@@ -1234,6 +1234,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           onClick={() => {
                             setPasskeyError(undefined);
                             setPasskeySuccess(undefined);
+                            // Surface the missing-password error BEFORE the
+                            // confirmation rather than after it — otherwise the
+                            // user reads and accepts an alarming "other sessions
+                            // will be signed out" dialog only to be told the
+                            // password field is empty.
+                            if (!passkeyPassword) {
+                              setPasskeyError(t('profilePage.currentPasswordIsRequiredToDeleteAPasskey'));
+                              return;
+                            }
                             setPasskeyPendingDelete(passkey);
                           }}
                           disabled={!!mutatingPasskeyId}

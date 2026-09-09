@@ -79,6 +79,9 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     renderProfile();
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
     const dialog = await screen.findByRole('dialog');
@@ -108,6 +111,19 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
         body: JSON.stringify({ currentPassword: 'current-password' }),
       }),
     ]);
+  });
+
+  it('blocks on the missing-password error instead of opening the dialog', async () => {
+    seedOnePasskey();
+    renderProfile();
+
+    await screen.findByText('MacBook Touch ID');
+    // No password typed. The alarming sign-out warning must not be shown for a
+    // click that cannot succeed anyway.
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(await screen.findByText('Current password is required to delete a passkey')).toBeTruthy();
+    expect(screen.queryByTestId('passkey-delete-confirm')).not.toBeInTheDocument();
   });
 
   it('sends nothing when the confirmation is cancelled', async () => {
