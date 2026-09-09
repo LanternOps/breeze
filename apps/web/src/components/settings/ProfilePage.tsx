@@ -18,6 +18,7 @@ import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
   stashSsoReauthIntent,
   takeSsoReauthIntent,
@@ -157,6 +158,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
   const [editingPasskeyName, setEditingPasskeyName] = useState('');
   const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
+  // #5314: deleting a passkey removes an MFA factor and bumps `mfa_epoch`,
+  // signing the account's OTHER sessions out. Ask before doing that.
+  const [passkeyPendingDelete, setPasskeyPendingDelete] = useState<PasskeySummary | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
@@ -1227,7 +1231,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           {t('profilePage.rename')}</button>
                         <button
                           type="button"
-                          onClick={() => handleDeletePasskey(passkey.id)}
+                          onClick={() => {
+                            setPasskeyError(undefined);
+                            setPasskeySuccess(undefined);
+                            setPasskeyPendingDelete(passkey);
+                          }}
                           disabled={!!mutatingPasskeyId}
                           className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
                         >
@@ -1358,6 +1366,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         >
           {t('profilePage.restartTour')}</button>
       </div>
+
+      <ConfirmDialog
+        open={passkeyPendingDelete !== null}
+        onClose={() => setPasskeyPendingDelete(null)}
+        onConfirm={() => {
+          const target = passkeyPendingDelete;
+          setPasskeyPendingDelete(null);
+          if (target) void handleDeletePasskey(target.id);
+        }}
+        title={t('profilePage.deletePasskeyConfirmTitle')}
+        message={t('profilePage.deletePasskeyConfirmMessage', {
+          name: passkeyPendingDelete?.name || 'Passkey',
+        })}
+        confirmLabel={t('profilePage.delete')}
+        confirmTestId="passkey-delete-confirm"
+      />
     </div>
   );
 }

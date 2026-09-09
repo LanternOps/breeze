@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Vérifier auprès de votre fournisseur d'identité",
     "passkeyIdpVerificationRequired": "Vérifiez auprès de votre fournisseur d'identité avant d'ajouter une clé d'accès.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
-    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité."
+    "couldNotStartIdentityProviderVerification": "Impossible de démarrer la vérification par le fournisseur d'identité.",
+    "deletePasskeyConfirmTitle": "Supprimer cette clé d'accès ?",
+    "deletePasskeyConfirmMessage": "Cette action supprime définitivement la clé d'accès « {{name}} », qui ne pourra plus servir à se connecter. Comme il s'agit d'une méthode multifacteur, sa suppression déconnecte aussi vos autres sessions sur tous les appareils. Action irréversible."
   },
   "roleManager": {
     "roles": "Rôles",

@@ -86,6 +86,8 @@ describe('SecurityTab inheritance (#5080)', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    // #5314: Revert to Parent now asks for confirmation first.
+    fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 
     expect(removeMock).toHaveBeenCalledWith('link-own');
     // The detail page's own featureLinks state must be told the override is

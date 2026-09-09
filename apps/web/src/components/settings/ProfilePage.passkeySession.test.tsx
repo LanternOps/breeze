@@ -149,6 +149,8 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       target: { value: 'current-password' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // #5314: the passkey Delete now opens a confirmation first.
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await waitFor(() => {
       expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration, REPLACEMENT);
@@ -173,6 +175,8 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       target: { value: 'current-password' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // #5314: the passkey Delete now opens a confirmation first.
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     // A refused commit is not the install-failure case: the store refuses only on
     // a stale generation, which means a logout already moved the session on. No
@@ -193,6 +197,8 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       target: { value: 'current-password' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // #5314: the passkey Delete now opens a confirmation first.
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     expect(await screen.findByText('Passkey deleted. Sign in again to continue.')).toBeTruthy();
     expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();

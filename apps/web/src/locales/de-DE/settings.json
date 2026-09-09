@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "passkeyIdpVerificationRequired": "Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey hinzufügen.",
     "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
-    "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden."
+    "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden.",
+    "deletePasskeyConfirmTitle": "Diesen Passkey löschen?",
+    "deletePasskeyConfirmMessage": "Dadurch wird der Passkey \"{{name}}\" dauerhaft entfernt und kann nicht mehr zur Anmeldung verwendet werden. Da es sich um eine Multi-Faktor-Methode handelt, werden dabei auch Ihre anderen Sitzungen auf allen Geräten abgemeldet. Dies kann nicht rückgängig gemacht werden."
   },
   "roleManager": {
     "roles": "Rollen",

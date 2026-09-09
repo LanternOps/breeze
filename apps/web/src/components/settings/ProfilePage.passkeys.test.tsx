@@ -159,6 +159,8 @@ describe('ProfilePage passkey management', () => {
       target: { value: 'current-password' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // #5314: the passkey Delete now opens a confirmation first.
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
 

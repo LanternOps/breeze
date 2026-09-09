@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
     "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
-    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı."
+    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı.",
+    "deletePasskeyConfirmTitle": "Bu geçiş anahtarı silinsin mi?",
+    "deletePasskeyConfirmMessage": "Bu işlem \"{{name}}\" geçiş anahtarını kalıcı olarak kaldırır ve artık oturum açmak için kullanılamaz. Çok faktörlü bir yöntem olduğu için silmek diğer oturumlarınızı da tüm cihazlarda kapatır. Bu işlem geri alınamaz."
   },
   "roleManager": {
     "roles": "Roller",

@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
     "passkeyIdpVerificationRequired": "Verifícate con tu proveedor de identidad antes de agregar una clave de acceso.",
     "ssoReauthFailed": "No se pudo verificar con tu proveedor de identidad. Inténtalo de nuevo.",
-    "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad."
+    "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad.",
+    "deletePasskeyConfirmTitle": "¿Eliminar esta clave de acceso?",
+    "deletePasskeyConfirmMessage": "Esto elimina de forma permanente la clave de acceso \"{{name}}\" y ya no podrá usarse para iniciar sesión. Como es un método de varios factores, al eliminarla también se cierran tus otras sesiones en todos los dispositivos. No se puede deshacer."
   },
   "roleManager": {
     "roles": "Roles",

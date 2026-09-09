@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
     "passkeyIdpVerificationRequired": "Verifique com seu provedor de identidade antes de adicionar uma chave de acesso.",
     "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
-    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade."
+    "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade.",
+    "deletePasskeyConfirmTitle": "Excluir esta chave de acesso?",
+    "deletePasskeyConfirmMessage": "Isso remove permanentemente a chave de acesso \"{{name}}\", que não poderá mais ser usada para entrar. Como é um método de múltiplos fatores, a exclusão também encerra suas outras sessões em todos os dispositivos. Não é possível desfazer."
   },
   "roleManager": {
     "roles": "Funções",

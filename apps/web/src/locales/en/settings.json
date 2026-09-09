@@ -3380,7 +3380,9 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
-    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
+    "deletePasskeyConfirmTitle": "Delete this passkey?",
+    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone."
   },
   "roleManager": {
     "roles": "Roles",

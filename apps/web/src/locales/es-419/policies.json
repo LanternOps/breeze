@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Anular",
         "revertToParent": "Volver a padre",
-        "saving": "Guardando..."
+        "saving": "Guardando...",
+        "revertConfirmTitle": "¿Volver a la política principal?",
+        "revertConfirmMessage": "Esto elimina la anulación de {{feature}} en esta política. Su configuración se pierde y se aplica la configuración de la política principal a todos los dispositivos que usan esta política. No se puede deshacer.",
+        "removeConfirmTitle": "¿Quitar esta configuración?",
+        "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política. Su configuración se pierde y la función deja de aplicarse a todos los dispositivos que usan esta política. No se puede deshacer."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implementar Breeze Assist en dispositivos",

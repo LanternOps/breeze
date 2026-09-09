@@ -3375,7 +3375,9 @@
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
-    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
+    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità.",
+    "deletePasskeyConfirmTitle": "Eliminare questa passkey?",
+    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata."
   },
   "roleManager": {
     "roles": "Ruoli",

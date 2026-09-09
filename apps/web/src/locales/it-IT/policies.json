@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Sovrascrivi",
         "revertToParent": "Ripristina dal padre",
-        "saving": "Salvataggio..."
+        "saving": "Salvataggio...",
+        "revertConfirmTitle": "Ripristinare i criteri padre?",
+        "revertConfirmMessage": "Questa operazione elimina l'override {{feature}} di questo criterio. Le impostazioni vanno perse e vengono applicate quelle del criterio padre a tutti i dispositivi che usano questo criterio. Non può essere annullata.",
+        "removeConfirmTitle": "Rimuovere questa configurazione?",
+        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Distribuisci Breeze Assist sui dispositivi",
