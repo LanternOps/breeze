@@ -401,11 +401,8 @@ func TestCollectRegistryHivesAllFail(t *testing.T) {
 }
 
 func TestCertSvcInstalledChecksCertsrvExe(t *testing.T) {
-	origWindir := os.Getenv("WINDIR")
-	defer os.Setenv("WINDIR", origWindir)
-
 	tmp := t.TempDir()
-	os.Setenv("WINDIR", tmp)
+	t.Setenv("WINDIR", tmp)
 
 	if certSvcInstalled() {
 		t.Error("certSvcInstalled() = true before certsrv.exe exists, want false")

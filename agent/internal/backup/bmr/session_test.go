@@ -16,8 +16,7 @@ import (
 
 func TestAuthenticateRecoverySession(t *testing.T) {
 	var gotToken string
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/backup/bmr/recover/authenticate" {
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return

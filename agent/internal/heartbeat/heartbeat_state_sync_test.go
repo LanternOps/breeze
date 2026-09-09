@@ -60,7 +60,7 @@ func TestSendWatchdogStateSyncReportsActiveBackupRuns(t *testing.T) {
 	h := &Heartbeat{sessionBroker: broker, agentVersion: "1.2.3"}
 	h.sendWatchdogStateSync(time.Now())
 
-	watchdogClientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = watchdogClientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	watchdogClientIPC := ipc.NewConn(watchdogClientConn)
 	env, err := watchdogClientIPC.Recv()
 	if err != nil {
@@ -93,7 +93,7 @@ func TestSendWatchdogStateSyncReportsZeroWithNoBackupRuns(t *testing.T) {
 	h := &Heartbeat{sessionBroker: broker, agentVersion: "1.2.3"}
 	h.sendWatchdogStateSync(time.Now())
 
-	watchdogClientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = watchdogClientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	watchdogClientIPC := ipc.NewConn(watchdogClientConn)
 	env, err := watchdogClientIPC.Recv()
 	if err != nil {
