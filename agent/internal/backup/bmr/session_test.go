@@ -295,8 +295,8 @@ func TestRunRecoveryWithToken_RewritesUnreachableDescriptorOrigin(t *testing.T) 
 		return &RecoveryResult{Status: "completed", FilesRestored: 1}, nil
 	}
 
-	var server *httptest.Server
-	server = httptest.NewServer( //nolint:staticcheck // S1021: the handler closure refers to serverhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server                                                                 //nolint:staticcheck // S1021: the handler closure refers to server, so it must be declared first
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:staticcheck
 		switch r.URL.Path {
 		case "/api/v1/backup/bmr/recover/authenticate":
 			_ = json.NewEncoder(w).Encode(map[string]any{
