@@ -3388,6 +3388,8 @@
     "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
     "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
+    "deletePasskeyConfirmTitle": "Delete this passkey?",
+    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone.",
     "passkeyStepUpHeading": "Verify your existing sign-in factor",
     "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
     "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",

@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Substituir",
         "revertToParent": "Reverter para o pai",
-        "saving": "Salvando..."
+        "saving": "Salvando...",
+        "revertConfirmTitle": "Reverter para a política pai?",
+        "revertConfirmMessage": "Isso exclui a substituição de {{feature}} nesta política. As configurações são perdidas e as configurações da política pai passam a valer para todos os dispositivos que usam esta política. Não é possível desfazer.",
+        "removeConfirmTitle": "Remover esta configuração?",
+        "removeConfirmMessage": "Isso exclui a configuração de {{feature}} desta política. As configurações são perdidas e o recurso deixa de ser aplicado a todos os dispositivos que usam esta política. Não é possível desfazer."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implantar o Breeze Assist nos dispositivos",

@@ -3388,6 +3388,8 @@
     "passkeyIdpVerificationRequired": "Verifícate con tu proveedor de identidad antes de agregar una clave de acceso.",
     "ssoReauthFailed": "No se pudo verificar con tu proveedor de identidad. Inténtalo de nuevo.",
     "couldNotStartIdentityProviderVerification": "No se pudo iniciar la verificación con el proveedor de identidad.",
+    "deletePasskeyConfirmTitle": "¿Eliminar esta clave de acceso?",
+    "deletePasskeyConfirmMessage": "Esto elimina de forma permanente la clave de acceso \"{{name}}\" y ya no podrá usarse para iniciar sesión. Como es un método de varios factores, al eliminarla también se cierran tus otras sesiones en todos los dispositivos. No se puede deshacer.",
     "passkeyStepUpHeading": "Verifica tu factor de inicio de sesión existente",
     "passkeyStepUpIntro": "Esta cuenta ya tiene habilitada la autenticación multifactor. Confírmala antes de agregar otra clave de acceso.",
     "passkeyStepUpNoUsableFactor": "El factor actual de tu cuenta no se puede confirmar aquí. Comunícate con un administrador para agregar una clave de acceso.",

@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Override",
         "revertToParent": "Revert to Parent",
-        "saving": "Saving..."
+        "saving": "Saving...",
+        "revertConfirmTitle": "Revert to parent policy?",
+        "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
+        "removeConfirmTitle": "Remove this configuration?",
+        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",

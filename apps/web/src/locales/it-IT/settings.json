@@ -3383,6 +3383,8 @@
     "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
     "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità.",
+    "deletePasskeyConfirmTitle": "Eliminare questa passkey?",
+    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata.",
     "passkeyStepUpHeading": "Verifica il tuo fattore di accesso esistente",
     "passkeyStepUpIntro": "Questo account ha già l'autenticazione a più fattori abilitata. Confermala prima di aggiungere un'altra passkey.",
     "passkeyStepUpNoUsableFactor": "Il fattore attuale del tuo account non può essere confermato qui. Contatta un amministratore per aggiungere una passkey.",

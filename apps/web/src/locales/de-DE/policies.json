@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Überschreiben",
         "revertToParent": "Zurück zum übergeordneten Element",
-        "saving": "Speichern..."
+        "saving": "Speichern...",
+        "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
+        "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
+        "removeConfirmTitle": "Diese Konfiguration entfernen?",
+        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",

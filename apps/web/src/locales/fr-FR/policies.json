@@ -711,7 +711,11 @@
       "featureTabShell": {
         "override": "Outremise",
         "revertToParent": "Retour au nom de parent",
-        "saving": "Enregistrement..."
+        "saving": "Enregistrement...",
+        "revertConfirmTitle": "Revenir à la stratégie parente ?",
+        "revertConfirmMessage": "Cette action supprime la substitution {{feature}} de cette stratégie. Ses paramètres sont perdus et ceux de la stratégie parente s'appliquent à tous les appareils utilisant cette stratégie. Action irréversible.",
+        "removeConfirmTitle": "Supprimer cette configuration ?",
+        "removeConfirmMessage": "Cette action supprime la configuration {{feature}} de cette stratégie. Ses paramètres sont perdus et la fonctionnalité cesse de s'appliquer à tous les appareils utilisant cette stratégie. Action irréversible."
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Déployer Breeze Assist sur les appareils",
