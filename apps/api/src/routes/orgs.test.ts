@@ -2000,6 +2000,52 @@ describe('org routes', () => {
       expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
     });
 
+    // #5315 — the org card counted decommissioned devices while every other
+    // device surface (fleet list, org record Overview tile and Devices tab)
+    // hides them, so a removed device made this card read one higher than the
+    // record it links to. Assert on the bound parameter: this suite mocks the
+    // schema module, so column names render blank in the compiled statement,
+    // and a JSON dump of the condition would match `devices.status`'s own
+    // `enumValues` and pass against unfixed code.
+    it('excludes decommissioned devices from the per-organization device count', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 12 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+    });
+
     // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
     // Archived orgs are NOT in accessibleOrgIds (computeAccessibleOrgIds
     // allowlists active|trial), so they can never come out of the paginated
@@ -4405,6 +4451,52 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
+    // decommissioned device still inflated the Sites table while the record's
+    // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
+    // a JSON dump of the Drizzle condition embeds `devices.status`'s
+    // `enumValues`, which contains the literal 'decommissioned' and would make
+    // this pass against unfixed code.
+    it('excludes decommissioned devices from the per-site device count', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank —
+      // assert on the bound parameter, which carries the real value either way.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+    });
+
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.select)

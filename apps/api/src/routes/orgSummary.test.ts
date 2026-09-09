@@ -8,6 +8,8 @@ import { orgSummaryRoutes } from './orgSummary';
 // checks (a typo'd literal in the route would fail these tests instead of
 // silently never matching).
 import { PERMISSIONS } from '../services/permissions';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((_c: any, next: any) => next()),
@@ -78,7 +80,8 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
     () =>
       ({
         from: (table: unknown) => ({
-          where: () => {
+          where: (condition: unknown) => {
+            whereByTable.set(table, condition);
             const spec = rowsByTable.get(table);
             if (spec && !Array.isArray(spec)) {
               return queryResult(spec.base, spec.limited);
@@ -88,6 +91,25 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
         }),
       }) as any,
   );
+}
+
+/** WHERE condition captured per table by `setupDb`, so a test can assert on the
+ * predicate the route actually built and not just the rows the mock returned. */
+const whereByTable = new Map<unknown, unknown>();
+
+/** Compile a captured WHERE into its REAL SQL text.
+ *
+ * `JSON.stringify` on a Drizzle condition is NOT a usable substitute: the tree
+ * embeds the `devices.status` column object, whose `enumValues` array literally
+ * contains the string `'decommissioned'` — so a substring assertion on the dump
+ * passes against unfixed code (a vacuous red). Compiling through the real
+ * dialect renders only the statement the database would receive.
+ */
+function compiledWhere(table: unknown): { sql: string; params: unknown[] } {
+  const condition = whereByTable.get(table);
+  if (!condition) throw new Error('no WHERE captured for that table');
+  const query = new PgDialect().sqlToQuery(condition as SQL);
+  return { sql: query.sql, params: query.params as unknown[] };
 }
 
 function buildApp(opts: {
@@ -122,6 +144,7 @@ const WILDCARD_GRANTS = [{ resource: '*', action: '*' }];
 describe('GET /orgs/organizations/:id/summary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    whereByTable.clear();
   });
 
   it('404s when :id is not UUID-shaped', async () => {
@@ -146,6 +169,25 @@ describe('GET /orgs/organizations/:id/summary', () => {
     const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Organization not found' });
+  });
+
+  // #5315 — the Overview "Devices" tile read `count(*)` with no status filter
+  // while the record's Devices tab (GET /devices) excludes decommissioned rows
+  // by default, so a removed device made the tile disagree with its own tab.
+  it('excludes decommissioned devices from the device counts', async () => {
+    setupDb(
+      new Map<unknown, unknown[]>([
+        [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
+        [devices, [{ total: '5', online: '3', offline: '2' }]],
+      ]),
+    );
+    const app = buildApp({ grants: WILDCARD_GRANTS });
+    const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
+
+    expect(res.status).toBe(200);
+    const where = compiledWhere(devices);
+    expect(where.sql).toContain('"devices"."status" <>');
+    expect(where.params).toContain('decommissioned');
   });
 
   it('returns every section for a wildcard-permission partner', async () => {
