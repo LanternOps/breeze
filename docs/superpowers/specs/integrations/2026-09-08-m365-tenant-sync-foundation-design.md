@@ -1,7 +1,8 @@
 ---
 title: Microsoft 365 tenant sync foundation (read manifest v3 + posture snapshots)
 date: 2026-09-08
-status: Draft v2 — advisor quorum applied (Fable + Codex xhigh, 2026-09-08); pending Todd review
+status: Approved 2026-09-08 (Todd) — advisor quorum applied (Fable + Codex xhigh)
+tracking_issue: LanternOps/breeze#5327
 program: M365 posture & security expansion, sub-project 1 of 5
 related:
   - docs/superpowers/specs/integrations/2026-07-13-breeze-m365-control-plane-design.md
