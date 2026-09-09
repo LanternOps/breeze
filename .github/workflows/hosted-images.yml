@@ -167,8 +167,8 @@ jobs:
             org.opencontainers.image.revision=${{ needs.validate.outputs.sha }}
             org.opencontainers.image.version=${{ needs.validate.outputs.version }}
           build-args: ${{ env.BUILD_ARGS }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.image }}
 
   build-m365-executor-image:
     name: Build & Push ${{ matrix.image }} (${{ inputs.tag }})
@@ -234,8 +234,8 @@ jobs:
           context: .
           file: apps/${{ matrix.image }}/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.image }}
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

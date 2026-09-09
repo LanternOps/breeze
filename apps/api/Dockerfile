@@ -56,6 +56,21 @@ RUN pnpm --filter @breeze/ext-workspace build:web
 WORKDIR /app/apps/api
 RUN pnpm build
 
+# Export only compiled files. Release jobs replace this stage with a named
+# context containing these same-run artifacts; ordinary builds use builder.
+FROM scratch AS release-dist
+COPY --from=builder /app/apps/api/dist /apps/api/dist
+COPY --from=builder /app/ee/workspace/dist /ee/workspace/dist
+
+# Runtime source and workspace dependencies do not require compilation. Keeping
+# them separate lets release packaging skip builder when release-dist is supplied.
+FROM deps AS runtime-source
+COPY packages ./packages
+COPY ee ./ee
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/api/migrations ./apps/api/migrations
+COPY apps/api/assets ./apps/api/assets
+
 # Stage 4: Production runner
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 WORKDIR /app
@@ -79,24 +94,25 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 # Copy API build output and dependencies while preserving pnpm workspace symlink layout.
 # /app/apps/api/node_modules links into /app/node_modules/.pnpm.
-COPY --from=builder --chown=hono:nodejs /app/apps/api/dist ./apps/api/dist
-COPY --from=builder --chown=hono:nodejs /app/apps/api/package.json ./apps/api/package.json
+COPY --from=release-dist --chown=hono:nodejs /apps/api/dist ./apps/api/dist
+COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/package.json ./apps/api/package.json
 COPY --from=deps --chown=hono:nodejs /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps --chown=hono:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=hono:nodejs /app/packages ./packages
+COPY --from=runtime-source --chown=hono:nodejs /app/packages ./packages
 
 # Built-in extensions: this runner's WORKDIR ends at /app/apps/api (see below),
 # and builtinRegistry.ts's CJS-bundle fallback resolves packageDir relative to
 # process.cwd() -- so the copy destination must be apps/api/ee, not /app/ee.
-COPY --from=builder --chown=hono:nodejs /app/ee ./apps/api/ee
+COPY --from=runtime-source --chown=hono:nodejs /app/ee ./apps/api/ee
+COPY --from=release-dist --chown=hono:nodejs /ee/workspace/dist ./apps/api/ee/workspace/dist
 
 # Copy migration files for auto-migrate on startup
-COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migrations
+COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migrations
 # Document theme assets (vendored OFL font files for proposal/quote PDF
 # rendering — see apps/api/src/services/documentThemes.ts). FONT_DIR resolves
 # from process.cwd(), and this runner's cwd ends at /app/apps/api (WORKDIR
 # below), so the destination mirrors the migrations copy above.
-COPY --from=builder --chown=hono:nodejs /app/apps/api/assets ./apps/api/assets
+COPY --from=runtime-source --chown=hono:nodejs /app/apps/api/assets ./apps/api/assets
 # Run the API from its workspace path so module resolution uses apps/api/node_modules first.
 WORKDIR /app/apps/api
 

@@ -1,0 +1,38 @@
+name: Load smoke images
+description: Load this workflow run's API, web, and portal images for both smoke suites.
+runs:
+  using: composite
+  steps:
+    - name: Download smoke images from this run
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        pattern: ci-smoke-image-*
+        merge-multiple: true
+        path: ${{ runner.temp }}/smoke-images
+
+    - name: Load and verify smoke images
+      shell: bash
+      env:
+        IMAGE_ARCHIVE_DIR: ${{ runner.temp }}/smoke-images
+        CI_IMAGE_VERSION: ci-smoke-${{ github.run_id }}
+        CI_IMAGE_REVISION: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        for app in api web portal; do
+          docker load --input "${IMAGE_ARCHIVE_DIR}/${app}.tar"
+          ref="ghcr.io/lanternops/breeze/${app}:${CI_IMAGE_VERSION}"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${ref}")"
+          if [[ "${revision}" != "${CI_IMAGE_REVISION}" ]]; then
+            echo "::error::${app} image does not match this checkout"
+            exit 1
+          fi
+        done
+        # Export only after all three images are loaded and verified. Shell
+        # environment takes precedence over .env during Compose interpolation.
+        {
+          echo "BREEZE_VERSION=${CI_IMAGE_VERSION}"
+          echo "GUIDED_SMOKE_VERSION=${CI_IMAGE_VERSION}"
+          echo "BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:${CI_IMAGE_VERSION}"
+          echo "BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:${CI_IMAGE_VERSION}"
+          echo "BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:${CI_IMAGE_VERSION}"
+        } >> "${GITHUB_ENV}"
