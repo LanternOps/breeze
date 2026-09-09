@@ -923,3 +923,81 @@ func TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS(t *testing.T) {
 		t.Fatalf("FailedFiles[0] = %q, want the real path %q (not the VSS shadow path %q)", result.FailedFiles[0], originalPath, shadowSourcePath)
 	}
 }
+
+// TestMoveFile_ReplacesReadOnlyDestination covers D19: restoring over an
+// existing file that carries the Windows ReadOnly attribute (mapped by Go to
+// a 0444-style mode with the owner-write bit cleared) must succeed. On Unix,
+// os.Rename ignores the destination file's own mode bits (directory
+// permissions govern rename), so this passes even before the fix — it exists
+// to pin the cross-platform contract and to catch a regression on Windows.
+func TestMoveFile_ReplacesReadOnlyDestination(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "dst.txt")
+	src := filepath.Join(dir, "src.txt")
+
+	if err := os.WriteFile(dst, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+	if err := os.Chmod(dst, 0o444); err != nil {
+		t.Fatalf("chmod dst: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("dst content = %q, want %q", got, "new")
+	}
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("src still exists after move: err=%v", statErr)
+	}
+}
+
+// TestMoveFile_ReadOnlyDestination_CopyFallbackPath exercises copyAndDelete
+// directly against a read-only destination. Before the fix, os.Create fails
+// with permission-denied on a 0444 file even on Unix (a non-root user cannot
+// open a read-only file for writing), so this test is RED on every OS prior
+// to the fix — unlike TestMoveFile_ReplacesReadOnlyDestination, which the
+// os.Rename fast path already satisfies on Unix.
+func TestMoveFile_ReadOnlyDestination_CopyFallbackPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file mode bits; this test requires a non-root user")
+	}
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "dst.txt")
+	src := filepath.Join(dir, "src.txt")
+
+	if err := os.WriteFile(dst, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+	if err := os.Chmod(dst, 0o444); err != nil {
+		t.Fatalf("chmod dst: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := copyAndDelete(src, dst); err != nil {
+		t.Fatalf("copyAndDelete returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("dst content = %q, want %q", got, "new")
+	}
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("src still exists after copyAndDelete: err=%v", statErr)
+	}
+}

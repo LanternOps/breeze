@@ -450,11 +450,53 @@ func restoreStagingDir(cfg RestoreConfig) (string, error) {
 	return filepath.Join(os.TempDir(), "breeze-restore-staging", cfg.SnapshotID, stagingKey), nil
 }
 
+// clearReadOnly clears the owner-write bit on dst so a subsequent
+// open-for-write/rename onto it can succeed. On Windows, Go maps the
+// FILE_ATTRIBUTE_READONLY attribute to exactly this bit (0o200), so this
+// doubles as "clear the ReadOnly attribute" there. It never touches
+// directories and never follows symlinks (Lstat), and it is a no-op — not
+// an error — when dst is already writable. restored reports whether it
+// actually changed anything, so callers only retry (and only log) when a
+// change was made.
+func clearReadOnly(dst string) (restored bool, err error) {
+	info, err := os.Lstat(dst)
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	perm := info.Mode().Perm()
+	if perm&0o200 != 0 {
+		return false, nil
+	}
+	if err := os.Chmod(dst, perm|0o200); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // moveFile attempts os.Rename first (fast, same filesystem), then falls back
 // to copy+delete for cross-filesystem moves.
+//
+// A destination that exists and carries the Windows ReadOnly attribute (very
+// common for app config files being restored in place) makes os.Rename fail
+// with "Access is denied" — Windows enforces the read-only attribute on
+// rename, unlike Unix where directory permissions alone govern rename (D19).
+// When that happens, clear the write-protection on dst and retry the rename
+// once before falling back to copyAndDelete, which now can also recover from
+// the same condition via clearReadOnly.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
+	}
+	if _, statErr := os.Lstat(dst); statErr == nil {
+		if restored, clearErr := clearReadOnly(dst); clearErr == nil && restored {
+			slog.Debug("cleared read-only attribute on restore target before retrying rename", "target", dst)
+			if err := os.Rename(src, dst); err == nil {
+				return nil
+			}
+		}
 	}
 	// Cross-filesystem fallback: copy then delete
 	return copyAndDelete(src, dst)
@@ -468,6 +510,12 @@ func copyAndDelete(src, dst string) error {
 	}
 
 	dstFile, err := os.Create(dst)
+	if err != nil {
+		if restored, clearErr := clearReadOnly(dst); clearErr == nil && restored {
+			slog.Debug("cleared read-only attribute on restore target before retrying create", "target", dst)
+			dstFile, err = os.Create(dst)
+		}
+	}
 	if err != nil {
 		_ = srcFile.Close()
 		return fmt.Errorf("create destination: %w", err)
