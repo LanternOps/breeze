@@ -3380,7 +3380,13 @@
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "passkeyIdpVerificationRequired": "Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey hinzufügen.",
     "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
-    "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden."
+    "couldNotStartIdentityProviderVerification": "Die Überprüfung durch den Identitätsanbieter konnte nicht gestartet werden.",
+    "passkeyStepUpHeading": "Bestätigen Sie Ihren vorhandenen Anmeldefaktor",
+    "passkeyStepUpIntro": "Für dieses Konto ist bereits eine Multi-Faktor-Authentifizierung aktiviert. Bestätigen Sie diese, bevor Sie einen weiteren Passkey hinzufügen.",
+    "passkeyStepUpNoUsableFactor": "Der aktuelle Faktor Ihres Kontos kann hier nicht bestätigt werden. Wenden Sie sich an einen Administrator, um einen Passkey hinzuzufügen.",
+    "passkeyStepUpIncorrectCode": "Falscher Code. Bitte versuchen Sie es erneut.",
+    "passkeyStepUpTooManyAttempts": "Zu viele Versuche. Bitte versuchen Sie es in ein paar Minuten erneut.",
+    "passkeyStepUpVerificationExpired": "Die Bestätigung ist abgelaufen. Bitte bestätigen Sie erneut."
   },
   "roleManager": {
     "roles": "Rollen",
