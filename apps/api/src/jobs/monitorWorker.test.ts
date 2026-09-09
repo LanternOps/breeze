@@ -325,10 +325,13 @@ describe('recordMonitorCheckResult', () => {
         monitorId: 'monitor-1',
         alertRuleId: 'rule-1',
       }),
+      title: expect.stringContaining('Edge Ping'),
+      message: expect.stringContaining('Edge Ping'),
       eventPayload: expect.objectContaining({
-        source: 'network_monitor',
         monitorId: 'monitor-1',
         alertRuleId: 'rule-1',
+        monitorType: 'icmp_ping',
+        target: '8.8.8.8',
       }),
     }));
     expect(vi.mocked(isCooldownActive)).toHaveBeenCalledWith('rule-1', 'device-1');
@@ -369,6 +372,58 @@ describe('recordMonitorCheckResult', () => {
 
     expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
+  });
+
+  it('keeps evaluating later rules after one rule fails to create its alert (#5241)', async () => {
+    // rule-1's create fails, rule-2's succeeds: the `continue` must skip only
+    // rule-1's cooldown, not abort the rest of the monitor's rule set.
+    vi.mocked(createSourcedAlert)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('alert-2');
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1',
+        orgId: 'org-1',
+        assetId: null,
+        name: 'Edge Ping',
+        target: '8.8.8.8',
+        monitorType: 'icmp_ping',
+        consecutiveFailures: 3
+      }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([
+        {
+          id: 'rule-1',
+          monitorId: 'monitor-1',
+          condition: 'offline',
+          threshold: null,
+          severity: 'high',
+          message: null,
+          isActive: true
+        },
+        {
+          id: 'rule-2',
+          monitorId: 'monitor-1',
+          condition: 'consecutive_failures_gt',
+          threshold: '2',
+          severity: 'critical',
+          message: null,
+          isActive: true
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResolved([{ id: 'device-1' }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1',
+      status: 'offline',
+      responseMs: 250,
+      error: 'timeout'
+    });
+
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(setCooldown)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-2', 'device-1', 5);
   });
 
   it('auto-resolves matching alerts when the monitor recovers', async () => {

@@ -452,8 +452,8 @@ async function evaluateMonitorAlertRules(
         threshold: rule.threshold ?? null
       },
       publisher: 'monitor-worker',
+      // `source` is supplied by createSourcedAlert from `context.source`.
       eventPayload: {
-        source: 'network_monitor',
         monitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,

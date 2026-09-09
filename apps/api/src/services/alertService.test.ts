@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dbMock, insertCalls, enqueueAlertCorrelationMock, alertsTable, alertCorrelationsTable } = vi.hoisted(() => {
+const {
+  dbMock,
+  insertCalls,
+  deleteCalls,
+  captureExceptionMock,
+  enqueueAlertCorrelationMock,
+  alertsTable,
+  alertCorrelationsTable,
+} = vi.hoisted(() => {
   const alertsTable = { id: 'alerts.id', ruleId: 'alerts.ruleId', deviceId: 'alerts.deviceId', status: 'alerts.status' };
   const alertCorrelationsTable = { id: 'alert_correlations.id' };
   const selectResults: unknown[][] = [];
@@ -21,12 +29,17 @@ const { dbMock, insertCalls, enqueueAlertCorrelationMock, alertsTable, alertCorr
       })),
       _table: table,
     })),
+    delete: vi.fn(() => ({
+      where: vi.fn(() => Promise.resolve(undefined)),
+    })),
   };
   return {
     dbMock,
     alertsTable,
     alertCorrelationsTable,
     insertCalls: dbMock.insert,
+    deleteCalls: dbMock.delete,
+    captureExceptionMock: vi.fn(),
     enqueueAlertCorrelationMock: vi.fn(() => Promise.resolve('correlation-job-1')),
   };
 });
@@ -76,6 +89,7 @@ vi.mock('./featureConfigResolver', () => ({
 }));
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: enqueueAlertCorrelationMock }));
 
@@ -176,5 +190,32 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
 
     expect(alertId).toBeNull();
     expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+    // The null-check must short-circuit BEFORE the correlation enqueue too —
+    // there is no alert to correlate.
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the alert row and reports when publishing alert.triggered throws', async () => {
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([{ id: 'alert-9' }]);
+    vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
+
+    const alertId = await createSourcedAlert({
+      deviceId: 'device-1',
+      orgId: 'org-1',
+      severity: 'high',
+      title: 't',
+      message: 'm',
+      context: { source: 'network_monitor', monitorId: 'monitor-1' },
+      publisher: 'monitor-worker',
+    });
+
+    // An `active` row nobody was ever notified about is exactly the silent
+    // inbox-only alert #5241 exists to remove: it must not survive, or the
+    // caller's dedupe would skip re-creating it forever.
+    expect(alertId).toBeNull();
+    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
+    expect(captureExceptionMock).toHaveBeenCalled();
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
   });
 });
