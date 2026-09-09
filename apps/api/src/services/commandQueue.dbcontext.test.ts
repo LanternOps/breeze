@@ -170,6 +170,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
   it('closes the precheck context BEFORE dispatching and waiting', async () => {
     const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', { search: 'Spooler' }, {
       timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
     });
 
     expect(result.status).toBe('completed');
@@ -198,7 +199,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
   it('opens no context at all past the precheck when the device is missing', async () => {
     dbState.deviceRows = [];
 
-    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
 
     expect(result).toEqual({ status: 'failed', error: 'Device not found' });
     expect(ctxState.events).toEqual(['ctx:enter', 'select:devices@depth1', 'ctx:exit']);
@@ -215,7 +216,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
       ctxState.ambient = { scope };
       ctxState.depth = 1;
 
-      const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+      const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
 
       expect(result.status).toBe('completed');
       // No leading ctx:enter — the precheck read is the very first event, so it
@@ -254,9 +255,9 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
       ctxState.ambient = { scope: 'organization' };
       ctxState.depth = 1;
 
-      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
-      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
-      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
+      await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
 
       // The same eventCode has burned thousands of events/day off the org
       // quota when emitted per call — see the throttle's comment.
@@ -276,7 +277,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
       new TrustDeniedError('TRUST_PROBATION', 'probation_default_deny', 'device-1', 'list_services'),
     );
 
-    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
 
     expect(result).toEqual({
       status: 'failed',
@@ -296,7 +297,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
     partnerTrustMocks.assertDeviceExecuteAllowed.mockRejectedValueOnce(new Error('trust store unreachable'));
 
     await expect(
-      executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 }),
+      executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' }),
     ).rejects.toThrow('trust store unreachable');
     // The context must still have closed on the throw path.
     expect(ctxState.depth).toBe(0);
@@ -306,7 +307,7 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
   it('opens no context past the precheck when the device is offline', async () => {
     dbState.deviceRows = [{ ...ONLINE_DEVICE, status: 'offline' }];
 
-    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, { timeoutMs: 5_000, expectedOrgId: 'org-1' });
 
     expect(result).toEqual({ status: 'failed', error: 'Device is offline, cannot execute command' });
     expect(ctxState.events).toEqual([
@@ -336,5 +337,104 @@ describe('executeCommand (unchanged by #4150)', () => {
       'wsSend@depth0',
       'select:device_commands@depth0',
     ]);
+  });
+});
+
+/**
+ * #5264 — the tenancy gate on the precheck's device lookup.
+ *
+ * `precheckCommandExecution` resolves the device with `WHERE devices.id = $1`
+ * and no org predicate. Under `executeCommandWithSystemPrecheck` that read
+ * runs in a SYSTEM scope where RLS filters nothing, so a background caller
+ * holding a device id from an earlier decision (an approved intent, a queued
+ * act step, a durable Operator task) could dispatch a live command into
+ * whatever tenant the device now belongs to.
+ *
+ * These cases live in this file rather than a new one because the harness
+ * above is the only mock of the precheck's `devices` SELECT that lets the row
+ * disagree with the caller's org — which is the entire scenario.
+ *
+ * MUTATION-VERIFIED: deleting the `expectedOrgId` comparison in
+ * `precheckCommandExecution` turns the first two cases red (status
+ * 'completed', a device_commands row inserted) rather than leaving them
+ * vacuously green.
+ */
+describe('precheckCommandExecution org gate (#5264)', () => {
+  it('refuses the dispatch when the device has moved to another org', async () => {
+    dbState.deviceRows = [{ ...ONLINE_DEVICE, orgId: 'org-2' }];
+
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
+      timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result.status).toBe('failed');
+    // Indistinguishable from a genuine miss on purpose: a caller with no
+    // claim on the device must not learn from the error that it still exists.
+    expect(result.error).toBe('Device not found');
+    // Refused BEFORE the row exists — no commandId, nothing inserted, nothing
+    // sent. This is the assertion that actually proves "fail closed".
+    expect(result.commandId).toBeUndefined();
+    expect(dbState.insertedCommand).toBeNull();
+    expect(agentWsMocks.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(ctxState.events).not.toContain('insert:device_commands@depth1');
+  });
+
+  it('refuses before the trust, edition and liveness gates run', async () => {
+    // An OFFLINE device in another org: if the org gate ran after the
+    // liveness gate, the caller would get "Device is offline" — which both
+    // leaks that the id resolves and invites a retry when it comes back.
+    dbState.deviceRows = [{ ...ONLINE_DEVICE, orgId: 'org-2', status: 'offline' }];
+
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
+      timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result.error).toBe('Device not found');
+    expect(partnerTrustMocks.assertDeviceExecuteAllowed).not.toHaveBeenCalled();
+  });
+
+  it('reports the refusal to Sentry under a registered event code with no device id in the tags', async () => {
+    dbState.deviceRows = [{ ...ONLINE_DEVICE, orgId: 'org-2' }];
+
+    await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
+      timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
+    });
+
+    expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
+    const [, options] = sentryMocks.captureMessage.mock.calls[0] as [string, {
+      eventCode: string; tags: Record<string, string>;
+    }];
+    expect(options.eventCode).toBe('command_dispatch_cross_tenant_refused');
+    // Only allowlisted, non-identifying keys survive sentry.ts's scrubber;
+    // a device id must never ride a tag at all.
+    expect(Object.keys(options.tags)).toEqual(['org_id']);
+    expect(options.tags.org_id).toBe('org-1');
+  });
+
+  it('dispatches normally when the device is still in the expected org', async () => {
+    // Positive control: without this the three refusals above would also pass
+    // against a precheck that refuses everything.
+    const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
+      timeoutMs: 5_000,
+      expectedOrgId: 'org-1',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(dbState.insertedCommand).not.toBeNull();
+    expect(sentryMocks.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('leaves the request path alone when no expectedOrgId is supplied', async () => {
+    // `executeCommand` from a route runs inside the caller's org-scoped RLS
+    // transaction, where the SELECT cannot return another tenant's row in the
+    // first place. The gate must not start refusing those.
+    dbState.deviceRows = [{ ...ONLINE_DEVICE, orgId: 'org-2' }];
+
+    const result = await executeCommand('device-1', 'list_services', {}, { timeoutMs: 5_000 });
+
+    expect(result.status).toBe('completed');
   });
 });

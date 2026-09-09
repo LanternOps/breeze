@@ -784,6 +784,29 @@ export interface ExecuteCommandOptions {
   timeoutMs?: number;
   preferHeartbeat?: boolean;
   /**
+   * The organization the caller made its dispatch decision under. When set,
+   * the precheck refuses the dispatch unless the device is STILL in that org
+   * (#5264).
+   *
+   * Why this is a parameter and not just RLS: `precheckCommandExecution`
+   * resolves the device by id alone, and `executeCommandWithSystemPrecheck`
+   * runs that read under a SYSTEM scope that bypasses RLS entirely. Any
+   * background caller holding a device id from an earlier decision — an
+   * approved intent, a queued act step, a durable Operator task — can
+   * therefore dispatch a live command to a device that has since been moved
+   * to another organization, attributed to the ORIGINAL org's agent
+   * principal. That is an active cross-tenant command dispatch, not a stale
+   * read.
+   *
+   * REQUIRED (not optional) on `executeCommandWithSystemPrecheck` — see
+   * `SystemPrecheckCommandOptions`. Optional here because `executeCommand`
+   * runs the precheck inside the caller's OWN org-scoped RLS transaction,
+   * where the `devices` SELECT already cannot see another tenant's row; the
+   * request routes get their guarantee from RLS and pass nothing. Passing it
+   * there anyway is harmless defence in depth.
+   */
+  expectedOrgId?: string;
+  /**
    * Which polling consumer on the device picks up this command.
    * - 'agent' (default): the long-lived Go agent. Has a WS connection, so
    *   executeCommand dispatches over WS for low latency.
@@ -801,6 +824,20 @@ export interface ExecuteCommandOptions {
    */
   targetRole?: 'agent' | 'watchdog';
 }
+
+/**
+ * `ExecuteCommandOptions` for the SYSTEM entry point, where `expectedOrgId` is
+ * mandatory rather than optional (#5264).
+ *
+ * `executeCommandWithSystemPrecheck` runs its device lookup under a scope that
+ * bypasses RLS, so nothing else in the stack can tell the caller's tenant from
+ * anyone else's. Requiring the field at the type level makes the omission a
+ * compile error at the call site rather than a silent cross-tenant dispatch in
+ * production — the same reason the RLS contract tests exist rather than a
+ * review checklist.
+ */
+export type SystemPrecheckCommandOptions =
+  Omit<ExecuteCommandOptions, 'expectedOrgId'> & { expectedOrgId: string };
 
 /**
  * Watchdog-targeted commands have no WS consumer; the WS pre-check and the
@@ -845,6 +882,14 @@ type CommandPrecheckOutcome =
  * `executeCommandWithSystemPrecheck` to get a short system context that closes
  * before anything waits on the device.
  *
+ * THE DEVICE LOOKUP IS NOT SELF-TENANTING (#5264). It is
+ * `WHERE devices.id = $1` with no org predicate, so its isolation comes
+ * ENTIRELY from the ambient RLS context — which is exactly what the system
+ * path does not have. `options.expectedOrgId` closes that: when the caller
+ * says which org it decided under, a device that has since moved refuses the
+ * dispatch here, before any `device_commands` row exists. The system entry
+ * point makes it mandatory; see `SystemPrecheckCommandOptions`.
+ *
  * Every terminal `CommandResult` returned here predates the row, so none of
  * them carries a `commandId` — that preserves the "commandId present ⇔ row
  * exists" contract the dispatch phase relies on.
@@ -858,7 +903,9 @@ async function precheckCommandExecution(
   const targetRole = options.targetRole ?? 'agent';
   const dispatchViaWs = dispatchesViaWs(options);
 
-  // 1. Verify device inside the caller's transaction (RLS-protected).
+  // 1. Verify device inside the caller's transaction (RLS-protected ONLY when
+  // the caller holds a tenant-scoped context — see the header note on #5264
+  // and the explicit `expectedOrgId` gate immediately after this SELECT).
   // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
   // below (#4093) — cheap here because this SELECT already runs.
   const [device] = await db
@@ -878,6 +925,36 @@ async function precheckCommandExecution(
     .limit(1);
 
   if (!device) {
+    return { ok: false, result: { status: 'failed', error: 'Device not found' } };
+  }
+
+  // #5264 — fail-closed tenancy gate. The SELECT above has no org predicate,
+  // and under the system scope RLS is not filtering it either, so this is the
+  // ONLY thing standing between a device that moved organizations and a live
+  // command dispatched into its new tenant under the old tenant's principal.
+  // It runs FIRST — before trust, edition and liveness — because none of those
+  // gates mean anything once the device is known to be the wrong tenant's, and
+  // because their refusal strings would otherwise leak that a device with this
+  // id exists and what state it is in.
+  if (options.expectedOrgId !== undefined && device.orgId !== options.expectedOrgId) {
+    // The deviceId and the two org ids are attribution, so they ride the log
+    // line, not the Sentry event: a device id never belongs in a tag, and the
+    // event's job is only to alert that the class occurred at all.
+    console.error(
+      '[commandQueue] refusing dispatch: device is no longer in the deciding organization (#5264)',
+      { deviceId, type, expectedOrgId: options.expectedOrgId, actualOrgId: device.orgId },
+    );
+    captureMessage(
+      '[commandQueue] command dispatch refused: device left the deciding organization between '
+        + 'decision and dispatch (#5264)',
+      { eventCode: 'command_dispatch_cross_tenant_refused', tags: { org_id: options.expectedOrgId } },
+    );
+    // Deliberately indistinguishable from a genuine miss — byte-identical to
+    // the sibling gate on the QUEUE lane (`dispatchDeviceCommand.ts`, which
+    // has carried this same `expectedOrgId` contract for the
+    // `queueCommandForExecution` callers). The two are one contract: a caller
+    // holding a device id it no longer has any claim to must not learn from
+    // the error string that the device still exists somewhere.
     return { ok: false, result: { status: 'failed', error: 'Device not found' } };
   }
 
@@ -1271,6 +1348,13 @@ function reportHeldContextDispatch(
  * that context itself and call `executeCommand` — but see the note there
  * about how long it will then hold a connection.
  *
+ * BECAUSE the scope is system, the precheck's `devices` read is not filtered
+ * by RLS at all, so `options.expectedOrgId` is MANDATORY here (#5264): every
+ * caller must name the organization it made the dispatch decision under, and
+ * a device that has moved since then is refused. It is a required parameter
+ * rather than a lint rule so that adding a new background dispatch site
+ * cannot compile without answering the question.
+ *
  * PRECONDITION: no ambient DB access context. It is reported (not thrown) when
  * broken, because from inside someone else's transaction the no-held-context
  * promise is unrecoverable — see the guard below.
@@ -1279,7 +1363,7 @@ export async function executeCommandWithSystemPrecheck(
   deviceId: string,
   type: CommandType | string,
   payload: CommandPayload = {},
-  options: ExecuteCommandOptions = {}
+  options: SystemPrecheckCommandOptions,
 ): Promise<CommandResult> {
   const ambient = getCurrentDbAccessContext();
   if (ambient) {

@@ -74,9 +74,15 @@ export interface CriterionEvaluation {
  * THE ORG CHECK IS NOT DECORATION. `verifyServiceRunningForTask` ends up in
  * `executeCommandWithSystemPrecheck`, whose `precheckCommandExecution`
  * (`commandQueue.ts`) resolves the device with `WHERE devices.id = $1` and NO
- * org predicate, under a SYSTEM scope that bypasses RLS. Its comment calls
- * that read "RLS-protected", which is true of the request paths it was
- * written for and false of the system path.
+ * org predicate, under a SYSTEM scope that bypasses RLS.
+ *
+ * Since #5264 that precheck ALSO enforces the org itself — `args.orgId` now
+ * travels all the way down as the mandatory `expectedOrgId` — so this is no
+ * longer the only thing standing between a moved device and a cross-tenant
+ * dispatch. It is kept because it is the only place that can answer
+ * "inconclusive" with a caller-meaningful reason instead of a generic
+ * dispatch failure, and because a pre-flight refusal never reaches the
+ * device_commands path at all.
  *
  * For a short-lived act-mode run that is academic — the device id came from
  * the run's own org moments earlier. For a DURABLE TASK it is not: a task can
@@ -122,7 +128,7 @@ export async function readServiceRunning(args: {
 
   const outcome = await verifyServiceRunningForTask(
     { serviceName: args.serviceName },
-    { deviceId: args.deviceId },
+    { deviceId: args.deviceId, orgId: args.orgId },
     args.agentUserId,
   );
   return {
