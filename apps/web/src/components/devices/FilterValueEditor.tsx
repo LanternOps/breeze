@@ -36,6 +36,8 @@ export interface FilterValueEditorProps {
   // Spec 4.1 — name lookups for hierarchy fields.
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  // Device groups (static + dynamic) — same named picker as org/site.
+  groups?: NamedRef[];
   // Optional filter to limit shown sites to those under the orgIds the user
   // has already selected (parent provides this filtered list).
   // Spec 4.2 — distinct software-name list pulled from API.
@@ -63,9 +65,10 @@ function isSoftwareField(key: string): boolean {
 
 function isOrgField(key: string): boolean { return key === 'orgId'; }
 function isSiteField(key: string): boolean { return key === 'siteId'; }
+function isGroupField(key: string): boolean { return key === 'groupId'; }
 
 export function FilterValueEditor({
-  field, condition, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch
+  field, condition, onChange, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch
 }: FilterValueEditorProps) {
   const { t } = useTranslation('devices');
   const op = condition.operator;
@@ -109,6 +112,17 @@ export function FilterValueEditor({
         condition={condition}
         onChange={onChange}
         testId="filter-site-picker"
+      />
+    );
+  }
+  if (isGroupField(field.key) && groups) {
+    return (
+      <NamedMultiSelect
+        label={t('filterValueEditor.deviceGroups')}
+        options={groups}
+        condition={condition}
+        onChange={onChange}
+        testId="filter-group-picker"
       />
     );
   }
@@ -371,17 +385,18 @@ const CHIP_VALUE_DISPLAY_OVERRIDES: Record<string, string> = {
 };
 
 export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondition, lookups?: {
-  orgs?: NamedRef[]; sites?: NamedRef[];
+  orgs?: NamedRef[]; sites?: NamedRef[]; groups?: NamedRef[];
 }): string {
   const op = operatorLabel(c.operator);
   if (NO_VALUE_OPERATORS.includes(c.operator)) return `${field.label} ${op}`;
   let v: string;
   if (Array.isArray(c.value)) {
-    // Resolve names for org/site chips.
+    // Resolve names for org/site/group chips.
     let display = c.value as string[];
     if (lookups) {
       const table = field.key === 'orgId' ? lookups.orgs
-        : field.key === 'siteId' ? lookups.sites : undefined;
+        : field.key === 'siteId' ? lookups.sites
+        : field.key === 'groupId' ? lookups.groups : undefined;
       if (table) {
         const byId = new Map(table.map(o => [o.id, o.name]));
         display = display.map(id => byId.get(id) ?? id.slice(0, 8));

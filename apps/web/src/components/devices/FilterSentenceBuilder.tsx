@@ -28,6 +28,7 @@ export interface FilterSentenceBuilderProps {
   onChange: (next: FilterConditionGroup) => void;
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  groups?: NamedRef[];
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
   // #1459 — debounced server-side software-name search, threaded to the picker.
@@ -61,7 +62,7 @@ export function isChipRenderable(group: FilterConditionGroup | null): boolean {
 const EMPTY_GROUP: FilterConditionGroup = { operator: 'AND', conditions: [] };
 
 export function FilterSentenceBuilder({
-  value, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
+  value, onChange, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, onSaveRequested
 }: FilterSentenceBuilderProps) {
   const { t } = useTranslation('devices');
   const hasConditions = value.conditions.length > 0;
@@ -75,6 +76,7 @@ export function FilterSentenceBuilder({
         onChange={onChange}
         orgs={orgs}
         sites={sites}
+        groups={groups}
         softwareOptions={softwareOptions}
         softwareOptionCounts={softwareOptionCounts}
         onSoftwareSearch={onSoftwareSearch}
@@ -122,12 +124,13 @@ interface GroupEditorProps {
   onChange: (next: FilterConditionGroup) => void;
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  groups?: NamedRef[];
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
   onSoftwareSearch?: (q: string) => void;
   depth: number;
 }
-function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, depth }: GroupEditorProps) {
+function GroupEditor({ group, onChange, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, depth }: GroupEditorProps) {
   const { t } = useTranslation('devices');
   const toggleOp = () => onChange({ ...group, operator: group.operator === 'AND' ? 'OR' : 'AND' });
   const addCondition = () => {
@@ -183,6 +186,7 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
                   onChange={(g) => updateAt(i, g)}
                   orgs={orgs}
                   sites={sites}
+                  groups={groups}
                   softwareOptions={softwareOptions}
                   softwareOptionCounts={softwareOptionCounts}
                   onSoftwareSearch={onSoftwareSearch}
@@ -208,6 +212,7 @@ function GroupEditor({ group, onChange, orgs, sites, softwareOptions, softwareOp
               onRemove={() => removeAt(i)}
               orgs={orgs}
               sites={sites}
+              groups={groups}
               softwareOptions={softwareOptions}
               softwareOptionCounts={softwareOptionCounts}
               onSoftwareSearch={onSoftwareSearch}
@@ -244,12 +249,13 @@ interface ConditionRowProps {
   onRemove: () => void;
   orgs?: NamedRef[];
   sites?: NamedRef[];
+  groups?: NamedRef[];
   softwareOptions?: string[];
   softwareOptionCounts?: Record<string, number>;
   onSoftwareSearch?: (q: string) => void;
   rowId: string;
 }
-function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOptions, softwareOptionCounts, onSoftwareSearch, rowId }: ConditionRowProps) {
+function ConditionRow({ condition, onChange, onRemove, orgs, sites, groups, softwareOptions, softwareOptionCounts, onSoftwareSearch, rowId }: ConditionRowProps) {
   const { t } = useTranslation('devices');
   const field = getFieldDef(condition.field) ?? V2_FILTER_FIELDS[0];
   const setField = (key: string) => {
@@ -281,6 +287,7 @@ function ConditionRow({ condition, onChange, onRemove, orgs, sites, softwareOpti
           onChange={onChange}
           orgs={orgs}
           sites={sites}
+          groups={groups}
           softwareOptions={softwareOptions}
           softwareOptionCounts={softwareOptionCounts}
           onSoftwareSearch={onSoftwareSearch}

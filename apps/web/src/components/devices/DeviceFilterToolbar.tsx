@@ -202,7 +202,7 @@ export function DeviceFilterToolbar({
   onListFiltersChange,
   orgs = [],
   sites = [],
-  groups: _groups = [],
+  groups = [],
   softwareOptions,
   onSoftwareSearch,
   onCreateGroup,
@@ -460,6 +460,7 @@ export function DeviceFilterToolbar({
               onRemove={() => removeConditionAt(index)}
               orgs={orgs as NamedRef[]}
               sites={sites as NamedRef[]}
+              groups={groups as NamedRef[]}
               softwareOptions={softwareOptions}
               onSoftwareSearch={onSoftwareSearch}
             />
@@ -499,6 +500,7 @@ export function DeviceFilterToolbar({
             onChange={(g) => onChange(g.conditions.length === 0 ? null : g)}
             orgs={orgs as NamedRef[]}
             sites={sites as NamedRef[]}
+            groups={groups as NamedRef[]}
             softwareOptions={softwareOptions}
             onSoftwareSearch={onSoftwareSearch}
           />

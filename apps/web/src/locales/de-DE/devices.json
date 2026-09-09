@@ -800,6 +800,7 @@
     "activeFilters": "Aktive Filter:"
   },
   "deviceGroupsPage": {
+    "viewDevices": "Geräte anzeigen",
     "failedToFetchDeviceGroups": "Gerätegruppen konnten nicht abgerufen werden",
     "windows": "Fenster",
     "put": "PUT",
@@ -2210,6 +2211,7 @@
     }
   },
   "filterValueEditor": {
+    "deviceGroups": "Gerätegruppen",
     "any": "Irgendein",
     "csvPlaceholder": "Durch Kommas getrennte App-Namen",
     "noMatches": "Keine Übereinstimmungen",

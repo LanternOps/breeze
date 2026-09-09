@@ -34,3 +34,26 @@ describe('summarizeCondition', () => {
     expect(summary).not.toContain('decommissioned');
   });
 });
+
+// Device-group filter: the chip-bar rewrite dropped the old group multi-select
+// and left `groupId` as a raw-UUID text input. Groups now get the same named
+// picker + chip-name resolution as orgs/sites.
+const groupField: FilterFieldDefinition = {
+  key: 'groupId',
+  label: 'Device Group',
+  category: 'hierarchy',
+  type: 'string',
+  operators: ['equals', 'in']
+};
+
+describe('summarizeCondition — device groups', () => {
+  it('resolves group UUIDs to names when a groups lookup is provided', () => {
+    const groups = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Domain Controllers' }];
+    const condition: FilterCondition = { field: 'groupId', operator: 'in', value: [groups[0].id] };
+
+    const summary = summarizeCondition(groupField, condition, { groups });
+
+    expect(summary).toBe('Device Group is any of Domain Controllers');
+    expect(summary).not.toContain('33333333');
+  });
+});
