@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invito inviato",
       "inviteSentAmbiguousContact": "Invito inviato, ma non è stato possibile collegare alcun contatto: più contatti condividono questo indirizzo email. Questo utente non vedrà i ticket ricevuti via email finché non verrà collegato un contatto.",
+      "inviteEmailFailed": "Utente del portale creato, ma non è stato possibile inviare l'email di invito.",
       "pendingInvited": "Invitati {{count}} utenti in sospeso",
       "inviteResent": "Invito reinviato",
       "reactivated": "Utente riattivato",

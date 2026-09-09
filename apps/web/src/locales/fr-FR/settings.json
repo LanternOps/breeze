@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invitation envoyée",
       "inviteSentAmbiguousContact": "Invitation envoyée, mais aucun contact n'a pu être lié — plusieurs contacts partagent cette adresse e-mail. Cet utilisateur ne verra pas les tickets reçus par e-mail tant qu'un contact ne sera pas lié.",
+      "inviteEmailFailed": "L'utilisateur du portail a été créé, mais l'e-mail d'invitation n'a pas pu être envoyé.",
       "pendingInvited": "Invité {{count}} utilisateur(s) en attente",
       "inviteResent": "Invitation résignée",
       "reactivated": "Utilisateur réactivé",
