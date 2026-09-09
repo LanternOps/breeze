@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,8 +29,62 @@ func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, d
 		ctx:        ctx,
 		serverURL:  serverURL,
 		token:      token,
-		descriptor: descriptor,
+		descriptor: rewriteDescriptorOrigin(serverURL, descriptor),
 	}
+}
+
+// rewriteDescriptorOrigin makes the download descriptor's URL target the
+// same origin the helper authenticated against via --server, rather than
+// whatever public URL the server was configured with (BREEZE_SERVER /
+// PUBLIC_API_URL / request origin — see recoveryBootstrap.ts). A mis-set or
+// internal-only public URL otherwise makes every recovery fail downloads
+// even though --server is reachable (D10). Only the scheme and host are
+// touched; path and query are left exactly as the server sent them, since
+// the server may sign or scope them.
+func rewriteDescriptorOrigin(serverURL string, descriptor *AuthenticatedDownloadDescriptor) *AuthenticatedDownloadDescriptor {
+	if descriptor == nil || strings.TrimSpace(descriptor.URL) == "" {
+		return descriptor
+	}
+
+	serverParsed, err := url.Parse(serverURL)
+	if err != nil || serverParsed.Host == "" {
+		return descriptor
+	}
+
+	descParsed, err := url.Parse(descriptor.URL)
+	if err != nil {
+		return descriptor
+	}
+
+	if descParsed.Host == "" {
+		// Relative descriptor URL: resolve it against the server origin.
+		resolved := serverParsed.ResolveReference(descParsed)
+		rewritten := *descriptor
+		rewritten.URL = resolved.String()
+		slog.Info("bmr: download descriptor origin rewritten", "from", descriptor.URL, "to", rewritten.URL)
+		return &rewritten
+	}
+
+	if descParsed.Scheme == serverParsed.Scheme && descParsed.Host == serverParsed.Host {
+		return descriptor
+	}
+
+	downgrade := descParsed.Scheme == "https" && serverParsed.Scheme == "http"
+
+	rewrittenURL := *descParsed
+	rewrittenURL.Scheme = serverParsed.Scheme
+	rewrittenURL.Host = serverParsed.Host
+
+	rewritten := *descriptor
+	rewritten.URL = rewrittenURL.String()
+
+	if downgrade {
+		slog.Warn("bmr: download descriptor origin rewritten, downgraded https to http to match --server",
+			"from", descriptor.URL, "to", rewritten.URL, "server", serverURL)
+	} else {
+		slog.Info("bmr: download descriptor origin rewritten", "from", descriptor.URL, "to", rewritten.URL)
+	}
+	return &rewritten
 }
 
 func (p *recoveryDownloadProvider) Upload(localPath, remotePath string) error {
@@ -70,7 +125,7 @@ func (p *recoveryDownloadProvider) Download(remotePath, localPath string) error 
 		return fmt.Errorf("bmr: refreshed bootstrap missing download descriptor")
 	}
 	p.mu.Lock()
-	p.descriptor = bootstrap.Download
+	p.descriptor = rewriteDescriptorOrigin(p.serverURL, bootstrap.Download)
 	p.mu.Unlock()
 
 	return p.downloadOnce(remotePath, localPath)
