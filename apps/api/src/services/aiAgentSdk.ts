@@ -39,6 +39,7 @@ import {
   transitionIntent,
   type ActionIntentTransitionPatch,
 } from './actionIntents/intentService';
+import { buildActionLabel } from './actionIntents/actionLabel';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
@@ -1180,15 +1181,13 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             }
           } catch { /* non-fatal: fall back to default description */ }
           const riskSummary = m365Summary ?? (description.length > 500 ? `${description.slice(0, 497)}...` : description);
-          // The guardrail description names the device by an id stub
-          // ("on device 6eae0f70..." — buildApprovalDescription in
-          // aiGuardrails.ts); the approver reads the hostname. Matched on
-          // THIS call's id prefix, literally, so nothing user-supplied that
-          // happens to look like a stub gets rewritten.
-          const deviceStub = deviceId ? `on device ${deviceId.slice(0, 8)}...` : null;
-          const approvalLabel = deviceStub && deviceContext?.hostname
-            ? riskSummary.split(deviceStub).join(`on ${deviceContext.hostname}`)
-            : riskSummary;
+          // #5363: the "on device 6eae0f70..." → "on KIT" substitution that
+          // used to live here is now `createActionIntent`'s, for every intent
+          // path rather than only a chat with a resolvable deviceContext (see
+          // actionIntents/approvalDeviceName.ts). `riskSummary` is passed as
+          // the label unchanged so an M365 risk summary still wins over the
+          // guardrail description — the intent service rewrites the stub
+          // inside whichever string it receives.
 
           // Create the durable intent. This fans out to eligible org approvers
           // (or the sole-operator self-approval row), dispatches mobile push, and
@@ -1203,7 +1202,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               input: input as Record<string, unknown>,
               source: 'chat',
               reason: riskSummary,
-              actionLabel: approvalLabel,
+              actionLabel: riskSummary,
               orgId: session.orgId,
             });
           } catch (err) {
@@ -1654,7 +1653,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         // Tier → riskTier mapping (documented in the spec): Tier 2 → 'medium'.
         const riskTier: 'medium' | 'high' | 'critical' =
           guardrailCheck.tier >= 4 ? 'critical' : guardrailCheck.tier >= 3 ? 'high' : 'medium';
-        const actionLabel = description;
+        // #5363: this row is rendered by the SAME mobile takeover headline as
+        // a tier-3 intent's, so it gets the same builder — the id stub
+        // ("on device 6eae0f70...") becomes the device's name and a shouted
+        // verb is softened. No extra read: `deviceContext` was already
+        // resolved above from this call's own `deviceId` argument. This path
+        // inserts its approval_requests row directly (it must NOT call
+        // createActionIntent — see the comment block above), so the intent
+        // service's own resolution never reaches it.
+        const actionLabel = buildActionLabel({
+          toolName,
+          input: input as Record<string, unknown>,
+          reason: description,
+          deviceHostname: deviceContext?.displayName ?? deviceContext?.hostname ?? null,
+        });
         // For M365 mutation tools, enrich the approval card with the customer
         // tenant + target user + reason. Non-fatal: any DB hiccup falls back to
         // the default description rather than throwing into the approval path.
