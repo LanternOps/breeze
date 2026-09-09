@@ -67,42 +67,52 @@ the time `…100100…` replays, its own `UPDATE`s match zero rows and it comple
   ```sql
   BEGIN;
 
+  -- The failed migration rolled back its own CREATE TYPE / ADD COLUMN, so in the
+  -- crash-loop state the `source` column does NOT exist yet: create it first
+  -- (guarded, so this is also safe where it already exists).
+  DO $$ BEGIN
+    CREATE TYPE public.discovered_asset_source AS ENUM ('scan', 'unifi', 'manual');
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END $$;
+  ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS source public.discovered_asset_source;
+  ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS url text;
+
   -- Required: the lock helpers read organizations, and discovered_assets is
   -- FORCE ROW LEVEL SECURITY. Without this the discovery SELECTs return no rows
   -- and the UPDATEs match nothing, silently.
   SELECT set_config('breeze.scope', 'system', true);
 
-  SELECT breeze_partner_export_lock_partners_shared(ARRAY(
+  -- Acquire every affected partner (shared) and organization (exclusive) export
+  -- lock in ascending order BEFORE the backfill, so the per-row triggers find
+  -- them already held.
+  SELECT public.breeze_partner_export_lock_partners_shared(ARRAY(
     SELECT DISTINCT o.partner_id
-      FROM discovered_assets d
-      JOIN organizations o ON o.id = d.org_id
-     WHERE o.partner_id IS NOT NULL
+      FROM public.discovered_assets d
+      JOIN public.organizations o ON o.id = d.org_id
+     WHERE d.source IS NULL AND o.partner_id IS NOT NULL
      ORDER BY 1));
 
-  SELECT breeze_partner_export_lock_orgs_exclusive(ARRAY(
+  SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
     SELECT DISTINCT d.org_id
-      FROM discovered_assets d
-     WHERE d.org_id IS NOT NULL
+      FROM public.discovered_assets d
+     WHERE d.source IS NULL AND d.org_id IS NOT NULL
      ORDER BY 1));
 
-  UPDATE discovered_assets a
+  UPDATE public.discovered_assets a
      SET source = 'unifi'
    WHERE a.source IS NULL
      AND (a.detected_type_source = 'unifi_controller'
-          OR EXISTS (SELECT 1 FROM unifi_devices u
+          OR EXISTS (SELECT 1 FROM public.unifi_devices u
                       WHERE u.discovered_asset_id = a.id));
 
-  UPDATE discovered_assets SET source = 'scan' WHERE source IS NULL;
+  UPDATE public.discovered_assets SET source = 'scan' WHERE source IS NULL;
 
   COMMIT;
   ```
 
-  (This is exactly what was run to unwedge the hosted US region. It assumes the
-  `source` column exists, i.e. that 100100 got far enough to add it before
-  failing; if the column is missing, add it first with
-  `CREATE TYPE discovered_asset_source AS ENUM ('scan','unifi','manual');` and
-  `ALTER TABLE discovered_assets ADD COLUMN source discovered_asset_source;` —
-  or just upgrade to 0.111.1, which does all of this for you.)
+  (This is the same sequence that unwedged the hosted US region, with the column
+  creation hoisted to the top. It is idempotent: on a database where 100100 or
+  100050 already ran, every statement is a no-op.)
 - No schema shape changes beyond 0.111.0: the same enum, the same two columns,
   the same constraints. 100050 only moves the backfill earlier and wraps it in
   the correct lock order.
