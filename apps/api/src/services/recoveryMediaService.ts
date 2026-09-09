@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile, copyFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -33,6 +32,7 @@ import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 import { safeFetchFollowingRedirects } from './urlSafety';
+import { resolveRecoveryWorkDir } from './recoveryWorkDir';
 import {
   authorizeQueuedRecoveryWork,
   RecoveryAuthorizationDeniedError,
@@ -566,6 +566,21 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     throw new Error(`Recovery token ${artifact.tokenId} not found`);
   }
 
+  // 2026-10-15-140004 widened recovery_tokens.snapshot_id to ON DELETE SET
+  // NULL so an expired backup_snapshots row's retention delete is never
+  // blocked by a still-live recovery token (D17). That makes it possible for
+  // an active, non-terminal token to point at a snapshot that no longer
+  // exists — building bootable recovery media for it is meaningless (there is
+  // nothing left to restore), so fail loudly here rather than let a null
+  // snapshotId reach buildBundleReadme/bootstrapConfig. recoveryMediaWorker.ts
+  // catches this and records it via recordRecoveryMediaBuildFailure, the same
+  // path every other throw in this function already takes.
+  if (!token.snapshotId) {
+    throw new Error(
+      `Recovery token ${token.id}'s snapshot has been deleted (retention expiry) — cannot build recovery media`
+    );
+  }
+
   if (token.status === 'revoked' || token.status === 'expired' || token.status === 'used') {
     await db
       .update(recoveryMediaArtifacts)
@@ -581,7 +596,8 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     return;
   }
 
-  const workingDir = await mkdtemp(join(tmpdir(), 'bmr-bundle-'));
+  const baseWorkDir = await resolveRecoveryWorkDir();
+  const workingDir = await mkdtemp(join(baseWorkDir, 'bmr-bundle-'));
   try {
     const bundleDir = join(workingDir, 'bundle');
     await mkdir(bundleDir, { recursive: true });

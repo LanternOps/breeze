@@ -592,3 +592,26 @@ func TestBackupStopCancelsPayloadDispatchedBackupRun(t *testing.T) {
 		t.Fatal("backup_run did not unwind after backup_stop cancelled it")
 	}
 }
+
+// The incremental dedupe base is selected by BackupIdentity, which includes
+// the device's agent id (D6: without it, previousManifest fails open to a full
+// backup every run — or, before the identity existed, deduped against ANY
+// device's newest manifest in the bucket). Both payload-built managers must
+// carry the helper's agent id.
+func TestManagerFromBackupRunPayload_CarriesHelperAgentID(t *testing.T) {
+	prev := helperAgentID
+	helperAgentID = "agent-abc123"
+	t.Cleanup(func() { helperAgentID = prev })
+	for name, payload := range map[string]string{
+		"file":         `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/srv/data"]}`,
+		"system_image": `{"provider":"local","providerConfig":{"path":"/var/backups"},"systemImage":true}`,
+	} {
+		mgr, err := managerFromBackupRunPayload(json.RawMessage(payload))
+		if err != nil || mgr == nil {
+			t.Fatalf("%s: mgr=%v err=%v", name, mgr, err)
+		}
+		if got := mgr.GetAgentID(); got != "agent-abc123" {
+			t.Fatalf("%s: AgentID = %q, want agent-abc123", name, got)
+		}
+	}
+}

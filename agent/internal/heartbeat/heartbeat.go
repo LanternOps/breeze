@@ -5714,6 +5714,10 @@ func (h *Heartbeat) sendWatchdogStateSync(lastHeartbeat time.Time) {
 		ConfigHash:    "", // TODO: populate when config hashing is implemented
 		Connected:     true,
 		LastHeartbeat: lastHeartbeat.Format(time.RFC3339),
+		// ActiveBackupRuns lets the watchdog's CheckIPC veto an IPC-failure
+		// escalation while a backup is genuinely in flight (D3) instead of
+		// killing the backup helper on a transient probe hiccup.
+		ActiveBackupRuns: h.sessionBroker.ActiveBackupRunCount(),
 	})
 }
 

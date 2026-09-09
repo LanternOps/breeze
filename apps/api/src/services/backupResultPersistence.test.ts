@@ -1059,6 +1059,66 @@ describe('backup result persistence', () => {
     errorSpy.mockRestore();
     warnSpy.mockRestore();
   });
+
+  // D12: Windows VSS snapshots upload via the transient
+  // \\?\GLOBALROOT\...\HarddiskVolumeShadowCopyN\... device path (sourcePath),
+  // but browse (snapshots.ts buildSnapshotTree) and selective-restore
+  // validation (restore.ts:226) both key off backup_snapshot_files.source_path
+  // to display/match the STABLE user-facing path. Indexing the raw shadow path
+  // there produces a `?`-rooted browse tree and rejects every legitimate
+  // selective-restore selection.
+  it('D12: indexes originalPath (not the VSS shadow path) as sourcePath when the agent reports both', async () => {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(
+        chainMock([
+          { id: 'job-1', orgId: 'org-1', configId: 'config-1', backupType: 'file', backupMode: 'file' },
+        ]) as any
+      )
+      .mockReturnValue(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any) // existingSnapshot lookup -> insert branch
+      .mockReturnValueOnce(
+        chainMock([{ featureLinkId: null, policyId: null, deviceId: 'device-1' }]) as any
+      );
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snapshot-db-1', jobId: 'job-1', snapshotId: 'provider-snap-1' }]) as any
+      )
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.delete).mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+    resolveBackupProtectionForDeviceMock.mockResolvedValue(null);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        snapshot: {
+          id: 'provider-snap-1',
+          files: [
+            {
+              sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+              originalPath: 'C:\\assure\\src\\x',
+              backupPath: 'snapshots/snap-1/files/x.gz',
+              size: 123,
+            },
+          ],
+        },
+      },
+    });
+
+    const fileInsertValues = vi.mocked(db.insert).mock.results[1]?.value?.values;
+    expect(fileInsertValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sourcePath: 'C:\\assure\\src\\x',
+        backupPath: 'snapshots/snap-1/files/x.gz',
+      }),
+    ]);
+  });
 });
 
 

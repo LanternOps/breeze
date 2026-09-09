@@ -618,10 +618,94 @@ func TestCreateSnapshot_AlreadyGzExtension(t *testing.T) {
 		t.Fatalf("CreateSnapshot failed: %v", err)
 	}
 
+	// A source path that already ends in .gz MUST still gain the upload's own
+	// .gz suffix (double .gz is expected here). Object keys are derived from
+	// source paths via a single ALWAYS-append rule; collapsing "data.txt.gz"
+	// and "data.txt" onto the same one-.gz key is exactly the D2 collision
+	// (a sibling "data.txt" upload would silently clobber this file's bytes).
 	backupPath := snapshot.Files[0].BackupPath
-	if strings.HasSuffix(backupPath, ".gz.gz") {
-		t.Errorf("should not double .gz extension, got %q", backupPath)
+	if !strings.HasSuffix(backupPath, ".gz.gz") {
+		t.Errorf("backup path for an already-.gz source must double the extension to stay injective, got %q", backupPath)
 	}
+}
+
+// TestCreateSnapshot_BackupPathInjectiveOverSourcePaths proves D2: the
+// object key ensureGzipExtension produces for a file's backupPath must be
+// injective over distinct source (snapshot) paths. Before the fix,
+// ensureGzipExtension left an already-".gz"-suffixed path unchanged, so
+// "report" and "report.gz" (or "a.tar" and "a.tar.gz") both mapped to the
+// same stored key — whichever upload landed last silently overwrote the
+// other file's bytes while the job still reported success.
+func TestCreateSnapshot_BackupPathInjectiveOverSourcePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	collidingPairs := []struct {
+		name string
+		a    string
+		b    string
+	}{
+		{"plain-vs-dot-gz", "x", "x.gz"},
+		{"tar-vs-tar-gz", "a.tar", "a.tar.gz"},
+	}
+
+	for _, tc := range collidingPairs {
+		t.Run(tc.name, func(t *testing.T) {
+			fileA := createTempFile(t, tmpDir, tc.name+"-a", "contentA")
+			fileB := createTempFile(t, tmpDir, tc.name+"-b", "contentB-longer")
+
+			files := []backupFile{
+				{sourcePath: fileA, snapshotPath: "path_0/" + tc.a, size: 8, modTime: time.Now()},
+				{sourcePath: fileB, snapshotPath: "path_0/" + tc.b, size: 15, modTime: time.Now()},
+			}
+
+			provider := newMockProvider()
+			snapshot, err := CreateSnapshot(provider, files)
+			if err != nil {
+				t.Fatalf("CreateSnapshot failed: %v", err)
+			}
+			if len(snapshot.Files) != 2 {
+				t.Fatalf("expected 2 files in the manifest, got %d", len(snapshot.Files))
+			}
+
+			backupPathA := snapshot.Files[0].BackupPath
+			backupPathB := snapshot.Files[1].BackupPath
+			if backupPathA == backupPathB {
+				t.Fatalf("source paths %q and %q collided on backupPath %q — one file's bytes were overwritten by the other",
+					tc.a, tc.b, backupPathA)
+			}
+
+			// Both objects must actually be present in storage under distinct
+			// keys with their own content — not merely distinct strings while
+			// one upload clobbered the other via some other collision.
+			if _, ok := provider.files[backupPathA]; !ok {
+				t.Errorf("backupPath %q for %q not found in provider storage", backupPathA, tc.a)
+			}
+			if _, ok := provider.files[backupPathB]; !ok {
+				t.Errorf("backupPath %q for %q not found in provider storage", backupPathB, tc.b)
+			}
+		})
+	}
+
+	// A plain, uncompressed-looking source path is the overwhelmingly common
+	// case and must keep working exactly as before: exactly one .gz suffix,
+	// no double-suffixing regression.
+	t.Run("plain-file-single-gz-suffix", func(t *testing.T) {
+		file1 := createTempFile(t, tmpDir, "plain-y", "plain content")
+		files := []backupFile{
+			{sourcePath: file1, snapshotPath: "path_0/y.txt", size: 13, modTime: time.Now()},
+		}
+
+		provider := newMockProvider()
+		snapshot, err := CreateSnapshot(provider, files)
+		if err != nil {
+			t.Fatalf("CreateSnapshot failed: %v", err)
+		}
+
+		backupPath := snapshot.Files[0].BackupPath
+		if !strings.HasSuffix(backupPath, ".gz") || strings.HasSuffix(backupPath, ".gz.gz") {
+			t.Errorf("plain source path should get exactly one .gz suffix, got %q", backupPath)
+		}
+	})
 }
 
 func TestCreateSnapshot_PreservesFileMetadata(t *testing.T) {
@@ -1141,16 +1225,22 @@ func TestCreateSnapshotWithProgress_NonVSSFilesCarryNoOriginalPath(t *testing.T)
 }
 
 func TestEnsureGzipExtension(t *testing.T) {
+	// ensureGzipExtension ALWAYS appends ".gz", even when the input already
+	// ends in ".gz" — this is what keeps the derived object key injective
+	// over source paths (D2). Leaving an already-".gz" input unchanged would
+	// map two distinct source paths (e.g. "report" and "report.gz") onto the
+	// same stored key, silently losing one file's bytes to the other's
+	// upload.
 	tests := []struct {
 		input string
 		want  string
 	}{
 		{"file.txt", "file.txt.gz"},
-		{"file.txt.gz", "file.txt.gz"},
+		{"file.txt.gz", "file.txt.gz.gz"},
 		{"path/to/data", "path/to/data.gz"},
-		{"path/to/data.gz", "path/to/data.gz"},
+		{"path/to/data.gz", "path/to/data.gz.gz"},
 		{"", ".gz"},
-		{".gz", ".gz"},
+		{".gz", ".gz.gz"},
 		{"file.GZ", "file.GZ.gz"}, // case-sensitive
 	}
 
@@ -1543,7 +1633,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
 		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
 	}
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil)
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, "test-device")
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
@@ -1570,7 +1660,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 
 	provider.uploadCalls = nil // isolate run 2's upload assertions
 
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev == nil {
 		t.Fatalf("expected a usable previous manifest for run 2, got none: %s", reason)
 	}
@@ -1583,7 +1673,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
 		// f3 deliberately absent — deleted from disk before this run's walk.
 	}
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, "test-device")
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1665,7 +1755,7 @@ func TestIncrementalBackup_FetchFailureFallsBackToFullRun(t *testing.T) {
 
 	// Simulate a broken destination for the previous-manifest fetch only.
 	provider.listErr = errors.New("simulated list failure")
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev != nil {
 		t.Fatalf("expected nil previous manifest on a list failure, got %+v", prev)
 	}

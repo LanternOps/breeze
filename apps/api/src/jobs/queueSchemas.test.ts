@@ -584,3 +584,28 @@ describe('deliverEventJobDataSchema', () => {
     ).toThrow();
   });
 });
+
+describe('backupProcessResultSchema snapshot files (D12)', () => {
+  it('accepts the originalPath a VSS-backed Windows agent sends alongside the shadow sourcePath', async () => {
+    const { backupProcessResultSchema } = await import('./queueSchemas');
+    const parsed = backupProcessResultSchema.safeParse({
+      status: 'completed',
+      snapshot: {
+        id: 'snapshot-20260909T191123Z-4faf7e45',
+        timestamp: '2026-09-09T19:11:23.000Z',
+        size: 10,
+        files: [{
+          sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+          originalPath: 'C:\\assure\\src\\x',
+          backupPath: 'snapshots/snapshot-20260909T191123Z-4faf7e45/files/path_0/assure/src/x.gz',
+          size: 10,
+          modTime: '2026-09-09T19:11:23.000Z',
+        }],
+      },
+    });
+    // originalPath (D12) must not be rejected by the strict queue schema — a
+    // rejection here silently leaves the job running forever.
+    expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(true);
+  });
+});
+

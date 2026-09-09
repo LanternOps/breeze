@@ -326,6 +326,11 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   deleted: number;
   skipped: number;
   prunedByMaxVersions: number;
+  // D17: rows whose DELETE was rejected by the DB (per-row isolated in
+  // cleanupExpiredSnapshots — see backupRetention.ts) across every org this
+  // run. Non-zero triggers the throw at the very end of this function, AFTER
+  // the GC sweep below has already run.
+  failed: number;
   gcDeleted: number;
   // GC's unit of work is a storage identity (possibly several backupConfigs
   // rows sharing one bucket), not a single "destination" row.
@@ -341,12 +346,14 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   let deleted = 0;
   let skipped = 0;
   let prunedByMaxVersions = 0;
+  let failed = 0;
 
   for (const { orgId } of orgRows) {
     const result = await cleanupExpiredSnapshots(orgId);
     deleted += result.deleted;
     skipped += result.skippedLegalHold + result.skippedImmutable;
     prunedByMaxVersions += result.prunedByMaxVersions;
+    failed += result.failed;
   }
 
   // Mark-and-sweep GC runs ONCE per retention cycle, after row-level
@@ -370,7 +377,21 @@ export async function processCleanupExpiredSnapshots(): Promise<{
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
-  return { deleted, skipped, prunedByMaxVersions, gcDeleted, gcSkippedIdentities, gcBlockedIdentities };
+  // D17: a per-row DELETE failure must not be swallowed — it has to surface
+  // as a failed BullMQ job so it's visible in the worker's failed-job log and
+  // dashboards, not just in the Sentry capture cleanupExpiredSnapshots already
+  // made per org. This throw is deliberately the LAST thing in this function,
+  // after both row-level retention for every org AND the GC sweep above have
+  // already run to completion — a job whose retention had partial failures
+  // must not also block that run's object-storage reclamation.
+  if (failed > 0) {
+    throw new Error(
+      `[BackupWorker] cleanup-expired-snapshots: ${failed} snapshot row delete(s) failed this run — ` +
+      'see prior [BackupRetention] per-row error logs for detail; rows will be retried next run.'
+    );
+  }
+
+  return { deleted, skipped, prunedByMaxVersions, failed, gcDeleted, gcSkippedIdentities, gcBlockedIdentities };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────

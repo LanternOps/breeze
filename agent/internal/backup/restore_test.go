@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,6 +164,95 @@ func TestRestoreFromSnapshot_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRestoreFromSnapshot_LongSourcePath proves D4: a manifest entry whose
+// SourcePath is long enough that the object's BackupPath (snapshot prefix +
+// "files/" + the full original source path) exceeds the filesystem's
+// per-component name limit (~255 bytes on ext4/APFS/NTFS) once flattened
+// into a single staging filename must still restore successfully. The
+// object itself uploads fine (the source path keeps its real directory
+// structure — no single filesystem component here is longer than 150
+// bytes), matching the proven live scenario where the object existed in
+// storage and integrity/test-restore both passed it, but the real restore's
+// OLD staging filename (built by replacing every "/" in the BackupPath with
+// "_", collapsing it into one oversized path component) failed to open with
+// "file name too long" and the file was silently dropped into failedFiles.
+func TestRestoreFromSnapshot_LongSourcePath(t *testing.T) {
+	longDir := strings.Repeat("d", 150)
+	longFile := strings.Repeat("f", 150) + ".txt"
+	name := longDir + "/" + longFile
+
+	provider, snapID := setupRestoreTestSnapshot(t, map[string]string{
+		name: "long path content",
+	})
+
+	snapshot, err := downloadManifest(provider, snapID)
+	if err != nil {
+		t.Fatalf("download manifest: %v", err)
+	}
+	if len(snapshot.Files) != 1 {
+		t.Fatalf("expected 1 file in manifest, got %d", len(snapshot.Files))
+	}
+	sourcePath := snapshot.Files[0].SourcePath
+	if len(sourcePath) < 300 {
+		t.Fatalf("test setup: SourcePath %q is only %d chars, want 300+", sourcePath, len(sourcePath))
+	}
+
+	targetDir := t.TempDir()
+	cfg := RestoreConfig{
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+	}
+
+	result, err := RestoreFromSnapshot(provider, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q (failedFiles=%v, warnings=%v), want completed — a long source path must not be silently dropped",
+			result.Status, result.FailedFiles, result.Warnings)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("FilesRestored = %d, want 1", result.FilesRestored)
+	}
+
+	wantTarget := resolveTargetPath(targetDir, sourcePath)
+	data, err := os.ReadFile(wantTarget)
+	if err != nil {
+		t.Fatalf("restored file not found at expected target %q: %v", wantTarget, err)
+	}
+	if string(data) != "long path content" {
+		t.Errorf("restored content = %q, want %q", data, "long path content")
+	}
+}
+
+// TestStagingFileName_BoundedAndInjective proves the local staging filename
+// derived from a BackupPath (a) never exceeds a small, filesystem-safe
+// length regardless of how long the source path was, and (b) stays
+// injective — two distinct BackupPaths must never derive the same staging
+// filename, which would let one download's bytes land on top of another's
+// in the staging directory.
+func TestStagingFileName_BoundedAndInjective(t *testing.T) {
+	longBackupPath := "snapshots/" + strings.Repeat("s", 40) + "/files/" +
+		strings.Repeat("d", 150) + "/" + strings.Repeat("f", 150) + ".txt.gz"
+
+	got := stagingFileName(longBackupPath)
+	if len(got) > 80 {
+		t.Errorf("staging file name length = %d, want <= 80 (name: %q)", len(got), got)
+	}
+
+	other := stagingFileName(longBackupPath + "-different")
+	if got == other {
+		t.Errorf("distinct BackupPaths %q and %q produced the same staging file name %q", longBackupPath, longBackupPath+"-different", got)
+	}
+
+	// Stable/deterministic: the same BackupPath must always derive the same
+	// staging filename (resume and retry logic download to this path across
+	// multiple attempts within the same run).
+	if again := stagingFileName(longBackupPath); again != got {
+		t.Errorf("stagingFileName(%q) not deterministic: got %q then %q", longBackupPath, got, again)
+	}
+}
+
 func TestRestoreFromSnapshot_CancelledMidway(t *testing.T) {
 	testFiles := map[string]string{
 		"one.txt": "first\n",
@@ -213,9 +303,13 @@ func TestRestoreFromSnapshot_SelectivePaths(t *testing.T) {
 	targetDir := t.TempDir()
 
 	cfg := RestoreConfig{
-		SnapshotID:    snapID,
-		TargetPath:    targetDir,
-		SelectedPaths: []string{"/original/config", "/original/data"},
+		SnapshotID: snapID,
+		TargetPath: targetDir,
+		// Exact file selections (not "/original/config" as a bare partial-name
+		// prefix — that string also prefix-matches "config.txt" under the old,
+		// pre-D5-fix strings.HasPrefix semantics, which is precisely the bug:
+		// a partial name is not a valid selection of a whole file or directory).
+		SelectedPaths: []string{"/original/config.txt", "/original/data.csv"},
 	}
 
 	result, err := RestoreFromSnapshot(provider, cfg, nil)
@@ -507,5 +601,403 @@ func TestFilterFiles(t *testing.T) {
 				t.Errorf("filterFiles(%v) returned %d files, want %d", tt.prefixes, len(got), tt.want)
 			}
 		})
+	}
+}
+
+// TestFilterFiles_SiblingCollisionAndSeparators proves D5: filterFiles must
+// match a selection against a manifest entry's SourcePath by exact equality
+// or a directory boundary (selected + separator) — never by a bare string
+// prefix. A plain strings.HasPrefix (the old behavior) also matched
+// unrelated siblings that merely share a leading substring, so selecting
+// one file silently pulled in — and, on an in-place restore, silently
+// overwrote — files the operator never chose.
+func TestFilterFiles_SiblingCollisionAndSeparators(t *testing.T) {
+	t.Run("selecting a single file does not match siblings sharing its name as a prefix", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: "/x/prefix/pick.txt"},
+			{SourcePath: "/x/prefix/pick.txt.bak"},
+			{SourcePath: "/x/prefix/pick.txt2"},
+			{SourcePath: "/x/prefix/pick.txtx/inner.txt"},
+		}
+
+		got := filterFiles(files, []string{"/x/prefix/pick.txt"})
+		if len(got) != 1 || got[0].SourcePath != "/x/prefix/pick.txt" {
+			gotPaths := make([]string, len(got))
+			for i, f := range got {
+				gotPaths[i] = f.SourcePath
+			}
+			t.Errorf("filterFiles selecting a single file = %v, want only [/x/prefix/pick.txt]", gotPaths)
+		}
+	})
+
+	t.Run("selecting the parent directory matches everything under it, siblings included", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: "/x/prefix/pick.txt"},
+			{SourcePath: "/x/prefix/pick.txt.bak"},
+			{SourcePath: "/x/prefix/pick.txt2"},
+			{SourcePath: "/x/prefix/pick.txtx/inner.txt"},
+		}
+
+		got := filterFiles(files, []string{"/x/prefix"})
+		if len(got) != 4 {
+			t.Errorf("filterFiles selecting the parent directory returned %d files, want 4 (all of them)", len(got))
+		}
+	})
+
+	t.Run("Windows-style backslash paths: single file selection excludes siblings", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: `C:\x\prefix\pick.txt`},
+			{SourcePath: `C:\x\prefix\pick.txt.bak`},
+		}
+
+		got := filterFiles(files, []string{`C:\x\prefix\pick.txt`})
+		if len(got) != 1 || got[0].SourcePath != `C:\x\prefix\pick.txt` {
+			gotPaths := make([]string, len(got))
+			for i, f := range got {
+				gotPaths[i] = f.SourcePath
+			}
+			t.Errorf("filterFiles (Windows-style) selecting a single file = %v, want only [C:\\x\\prefix\\pick.txt]", gotPaths)
+		}
+	})
+
+	t.Run("Windows-style backslash paths: directory selection includes siblings", func(t *testing.T) {
+		files := []SnapshotFile{
+			{SourcePath: `C:\x\prefix\pick.txt`},
+			{SourcePath: `C:\x\prefix\pick.txt.bak`},
+		}
+
+		got := filterFiles(files, []string{`C:\x\prefix`})
+		if len(got) != 2 {
+			t.Errorf("filterFiles (Windows-style) selecting the parent directory returned %d files, want 2 (both)", len(got))
+		}
+	})
+}
+
+// The shadow SourcePath/OriginalPath pair below is the exact live D8
+// proof: manifest entries under VSS carry a per-run shadow-copy device
+// path as SourcePath and the real, human-visible location as OriginalPath.
+const (
+	d8ShadowSourcePath = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x`
+	d8OriginalPath     = `C:\assure\src\x`
+)
+
+// TestRestoreSourcePath_PrefersOriginalPathUnderVSS proves restoreSourcePath
+// itself: OriginalPath wins whenever set, never the VSS shadow-device
+// SourcePath.
+func TestRestoreSourcePath_PrefersOriginalPathUnderVSS(t *testing.T) {
+	f := SnapshotFile{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath}
+	if got := restoreSourcePath(f); got != d8OriginalPath {
+		t.Fatalf("restoreSourcePath = %q, want the original path %q, not the shadow device path", got, d8OriginalPath)
+	}
+
+	// The common, non-VSS case: OriginalPath unset falls back to SourcePath.
+	plain := SnapshotFile{SourcePath: "/data/plain.txt"}
+	if got := restoreSourcePath(plain); got != "/data/plain.txt" {
+		t.Fatalf("restoreSourcePath (no OriginalPath) = %q, want SourcePath %q", got, "/data/plain.txt")
+	}
+}
+
+// TestResolveTargetPath_UsesOriginalPathUnderVSS is D8's core proof for
+// destination computation: a manifest entry whose SourcePath is the VSS
+// shadow-copy device path must resolve its restore destination from
+// OriginalPath, landing under "assure/src/x" relative to the target base —
+// never under the shadow-device form, which is either gone by restore time
+// or (worse) present under a DIFFERENT shadow ID from a later run, silently
+// splitting one logical file tree across ShadowCopy1/ShadowCopy2/...
+// (proven live). Exercised against both a Unix-style and a Windows-style
+// target base — the Windows one via withWindowsVolumeName so it also runs
+// on Linux/macOS CI, matching TestResolveTargetPathStripsEmbeddedDrive's
+// pattern of computing the expectation with filepath.Join for
+// GOOS-independence.
+func TestResolveTargetPath_UsesOriginalPathUnderVSS(t *testing.T) {
+	withWindowsVolumeName(t)
+
+	f := SnapshotFile{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath}
+	resolved := restoreSourcePath(f)
+
+	t.Run("unix-style target base", func(t *testing.T) {
+		const targetBase = "/alt"
+		got := resolveTargetPath(targetBase, resolved)
+		want := filepath.Join(targetBase, `assure\src\x`)
+		if got != want {
+			t.Fatalf("resolveTargetPath(%q, ...) = %q, want %q", targetBase, got, want)
+		}
+		if strings.Contains(got, "GLOBALROOT") {
+			t.Fatalf("computed target path leaked the VSS shadow-device form: %q", got)
+		}
+	})
+
+	t.Run("windows-style target base", func(t *testing.T) {
+		const targetBase = `C:\alt`
+		got := resolveTargetPath(targetBase, resolved)
+		want := filepath.Join(targetBase, `assure\src\x`)
+		if got != want {
+			t.Fatalf("resolveTargetPath(%q, ...) = %q, want %q", targetBase, got, want)
+		}
+		if strings.Contains(got, "GLOBALROOT") {
+			t.Fatalf("computed target path leaked the VSS shadow-device form: %q", got)
+		}
+	})
+}
+
+// TestFilterFiles_MatchesOriginalPathUnderVSS proves selective restore's
+// selection matching goes through OriginalPath, not the raw SourcePath: the
+// API validates/indexes selectedPaths against each file's original,
+// human-visible location, so a selection of "C:\assure\src\x" must match a
+// manifest entry whose SourcePath is the shadow-device form.
+func TestFilterFiles_MatchesOriginalPathUnderVSS(t *testing.T) {
+	files := []SnapshotFile{
+		{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath},
+		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\other\y`, OriginalPath: `C:\assure\other\y`},
+	}
+
+	got := filterFiles(files, []string{d8OriginalPath})
+	if len(got) != 1 || got[0].OriginalPath != d8OriginalPath {
+		t.Fatalf("filterFiles selecting the original path = %+v, want exactly the entry whose OriginalPath is %q", got, d8OriginalPath)
+	}
+
+	// Selecting the raw shadow-device SourcePath must NOT be required to
+	// match (it's an internal, per-run-ephemeral value the API never
+	// indexes selections against) — but proving the ORIGINAL-path match
+	// works is the load-bearing assertion above; this just documents that a
+	// selection by the (correct, real) original path is what a caller uses.
+}
+
+// TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS is the full
+// end-to-end proof (D8): RestoreFromSnapshotContext, given a manifest entry
+// whose SourcePath is a per-run shadow-copy-style path and whose
+// OriginalPath is the real location, must actually write the restored file
+// on disk under the ORIGINAL path's relative structure beneath TargetPath —
+// not under the shadow path's. Uses forward-slash paths (rather than the
+// literal Windows shadow-device string) so the written file's real,
+// on-disk location can be asserted portably in CI.
+func TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "vss-shadow-snap"
+	prefix := filepath.Join("snapshots", snapshotID)
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("vss-shadow-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	backupPath := filepath.Join(prefix, "files", "x.gz")
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	// SourcePath mimics a per-run VSS shadow-copy device path (using
+	// forward slashes so filepath.Join produces real nested directories on
+	// every CI platform); OriginalPath is the real, stable location.
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: filepath.ToSlash(backupPath), Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	manifestData, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestTmp := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestTmp, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := provider.Upload(manifestTmp, filepath.Join(prefix, "manifest.json")); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	targetDir := t.TempDir()
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: targetDir}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected status completed, got %s (error: %s)", result.Status, result.Error)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("expected 1 file restored, got %d", result.FilesRestored)
+	}
+
+	wantPath := filepath.Join(targetDir, "assure", "src", "x")
+	restored, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("expected the file to land at %q (the ORIGINAL path, not the shadow path): %v", wantPath, err)
+	}
+	if string(restored) != string(content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+
+	// Regression guard: the shadow-copy path segment must never appear
+	// anywhere on disk under targetDir.
+	shadowPath := filepath.Join(targetDir, "vss-shadow-copy-1")
+	if _, statErr := os.Stat(shadowPath); statErr == nil {
+		t.Fatalf("file was restored under the shadow-copy path %q instead of the original path", shadowPath)
+	}
+}
+
+// alwaysFailDownloadProvider wraps a LocalProvider and fails every Download
+// call whose remotePath is in the fail set, so a test can force a
+// deterministic per-file download failure.
+type alwaysFailDownloadProvider struct {
+	*providers.LocalProvider
+	fail map[string]bool
+}
+
+func (p *alwaysFailDownloadProvider) Download(remotePath, localPath string) error {
+	if p.fail[remotePath] {
+		return errors.New("injected download failure")
+	}
+	return p.LocalProvider.Download(remotePath, localPath)
+}
+
+// TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS proves the
+// silent-failure fix from the PR #5418 review: filterFiles/pathSelection/
+// targetPath were switched to restoreSourcePath(file), but result.FailedFiles
+// (and Warnings/progress) still reported the raw, per-run-ephemeral VSS
+// shadow-device SourcePath on failure — meaningless (and possibly already
+// gone) by the time an operator reads the result. A file whose SourcePath is
+// the shadow path and whose OriginalPath is the real location, that fails to
+// download, must report FailedFiles[0] as the real OriginalPath.
+func TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "vss-shadow-fail-snap"
+	prefix := filepath.Join("snapshots", snapshotID)
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("vss-shadow-fail-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	backupPath := filepath.Join(prefix, "files", "x.gz")
+	if err := base.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: filepath.ToSlash(backupPath), Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	manifestData, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestTmp := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestTmp, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := base.Upload(manifestTmp, filepath.Join(prefix, "manifest.json")); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	provider := &alwaysFailDownloadProvider{
+		LocalProvider: base,
+		fail:          map[string]bool{filepath.ToSlash(backupPath): true},
+	}
+
+	targetDir := t.TempDir()
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: targetDir}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesFailed != 1 || len(result.FailedFiles) != 1 {
+		t.Fatalf("expected exactly 1 failed file, got FilesFailed=%d FailedFiles=%v", result.FilesFailed, result.FailedFiles)
+	}
+	if result.FailedFiles[0] != originalPath {
+		t.Fatalf("FailedFiles[0] = %q, want the real path %q (not the VSS shadow path %q)", result.FailedFiles[0], originalPath, shadowSourcePath)
+	}
+}
+
+// TestMoveFile_ReplacesReadOnlyDestination covers D19: restoring over an
+// existing file that carries the Windows ReadOnly attribute (mapped by Go to
+// a 0444-style mode with the owner-write bit cleared) must succeed. On Unix,
+// os.Rename ignores the destination file's own mode bits (directory
+// permissions govern rename), so this passes even before the fix — it exists
+// to pin the cross-platform contract and to catch a regression on Windows.
+func TestMoveFile_ReplacesReadOnlyDestination(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "dst.txt")
+	src := filepath.Join(dir, "src.txt")
+
+	if err := os.WriteFile(dst, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+	if err := os.Chmod(dst, 0o444); err != nil {
+		t.Fatalf("chmod dst: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("dst content = %q, want %q", got, "new")
+	}
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("src still exists after move: err=%v", statErr)
+	}
+}
+
+// TestMoveFile_ReadOnlyDestination_CopyFallbackPath exercises copyAndDelete
+// directly against a read-only destination. Before the fix, os.Create fails
+// with permission-denied on a 0444 file even on Unix (a non-root user cannot
+// open a read-only file for writing), so this test is RED on every OS prior
+// to the fix — unlike TestMoveFile_ReplacesReadOnlyDestination, which the
+// os.Rename fast path already satisfies on Unix.
+func TestMoveFile_ReadOnlyDestination_CopyFallbackPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file mode bits; this test requires a non-root user")
+	}
+
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "dst.txt")
+	src := filepath.Join(dir, "src.txt")
+
+	if err := os.WriteFile(dst, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+	if err := os.Chmod(dst, 0o444); err != nil {
+		t.Fatalf("chmod dst: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := copyAndDelete(src, dst); err != nil {
+		t.Fatalf("copyAndDelete returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("dst content = %q, want %q", got, "new")
+	}
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("src still exists after copyAndDelete: err=%v", statErr)
 	}
 }

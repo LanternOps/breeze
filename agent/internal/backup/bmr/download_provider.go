@@ -3,8 +3,10 @@ package bmr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,7 +14,73 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/httputil"
 )
+
+const (
+	// downloadRetryInitialDelay/downloadRetryMaxDelay bound the exponential
+	// backoff schedule for a single retryable download failure (429/502/503/
+	// 504). downloadRetryMaxTotalWait is the minimum cumulative time the
+	// retry loop spends sleeping before giving up on one object — D13: a
+	// live 10,047-file BMR recovery hit the download route's per-token rate
+	// limiter (BMR_DOWNLOAD_TOKEN_LIMIT, apps/api/src/routes/backup/bmr.ts)
+	// after ~134 files and treated every subsequent 429 as a permanent
+	// failure, finishing "partial" with 9,913 files missing in under two
+	// minutes — nowhere near long enough for a 100-req/60s limiter window to
+	// clear.
+	downloadRetryInitialDelay = 1 * time.Second
+	downloadRetryMaxDelay     = 30 * time.Second
+	downloadRetryMaxTotalWait = 5 * time.Minute
+)
+
+// retrySleep is a seam for tests to skip the real backoff delay while still
+// exercising the retry loop's attempt/duration accounting, and — in
+// production — the mechanism that makes a backoff step cooperatively
+// cancellable: the retry loop can wait up to downloadRetryMaxTotalWait (5
+// minutes) across a recovery, so a cancelled context must interrupt an
+// in-flight sleep immediately rather than being noticed only after it
+// elapses. Returns ctx.Err() if ctx is cancelled/expires before d passes,
+// else nil. Mirrors renameRetrySleep in agent/internal/config/config.go.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// downloadStatusError is a typed HTTP-status download failure so callers
+// (shouldRefresh, the retry loop) can branch on the status code directly
+// instead of substring-matching the formatted error text.
+type downloadStatusError struct {
+	statusCode int
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *downloadStatusError) Error() string {
+	if e.message != "" {
+		return fmt.Sprintf("bmr: download failed with status %d: %s", e.statusCode, e.message)
+	}
+	return fmt.Sprintf("bmr: download failed with status %d", e.statusCode)
+}
+
+// isRetryableDownloadStatus reports whether a status is a transient
+// condition worth retrying with backoff. Any other 4xx (401/403/404/etc.) is
+// permanent — 401/403 are instead handled by the existing re-authenticate
+// path in Download.
+func isRetryableDownloadStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
 
 type recoveryDownloadProvider struct {
 	ctx       context.Context
@@ -28,8 +96,71 @@ func newRecoveryDownloadProvider(ctx context.Context, serverURL, token string, d
 		ctx:        ctx,
 		serverURL:  serverURL,
 		token:      token,
-		descriptor: descriptor,
+		descriptor: rewriteDescriptorOrigin(serverURL, descriptor),
 	}
+}
+
+// rewriteDescriptorOrigin makes the download descriptor's URL target the
+// same origin the helper authenticated against via --server, rather than
+// whatever public URL the server was configured with (BREEZE_SERVER /
+// PUBLIC_API_URL / request origin — see recoveryBootstrap.ts). A mis-set or
+// internal-only public URL otherwise makes every recovery fail downloads
+// even though --server is reachable (D10). Only the scheme and host are
+// touched; path and query are left exactly as the server sent them, since
+// the server may sign or scope them.
+func rewriteDescriptorOrigin(serverURL string, descriptor *AuthenticatedDownloadDescriptor) *AuthenticatedDownloadDescriptor {
+	if descriptor == nil || strings.TrimSpace(descriptor.URL) == "" {
+		return descriptor
+	}
+
+	serverParsed, err := url.Parse(serverURL)
+	if err != nil {
+		slog.Warn("bmr: could not parse --server URL, leaving download descriptor origin unchanged",
+			"server", serverURL, "error", err.Error())
+		return descriptor
+	}
+	if serverParsed.Host == "" {
+		slog.Warn("bmr: --server URL has no host, leaving download descriptor origin unchanged",
+			"server", serverURL)
+		return descriptor
+	}
+
+	descParsed, err := url.Parse(descriptor.URL)
+	if err != nil {
+		slog.Warn("bmr: could not parse download descriptor URL, leaving it unchanged",
+			"url", descriptor.URL, "error", err.Error())
+		return descriptor
+	}
+
+	if descParsed.Host == "" {
+		// Relative descriptor URL: resolve it against the server origin.
+		resolved := serverParsed.ResolveReference(descParsed)
+		rewritten := *descriptor
+		rewritten.URL = resolved.String()
+		slog.Info("bmr: download descriptor origin rewritten", "from", descriptor.URL, "to", rewritten.URL)
+		return &rewritten
+	}
+
+	if descParsed.Scheme == serverParsed.Scheme && descParsed.Host == serverParsed.Host {
+		return descriptor
+	}
+
+	downgrade := descParsed.Scheme == "https" && serverParsed.Scheme == "http"
+
+	rewrittenURL := *descParsed
+	rewrittenURL.Scheme = serverParsed.Scheme
+	rewrittenURL.Host = serverParsed.Host
+
+	rewritten := *descriptor
+	rewritten.URL = rewrittenURL.String()
+
+	if downgrade {
+		slog.Warn("bmr: download descriptor origin rewritten, downgraded https to http to match --server",
+			"from", descriptor.URL, "to", rewritten.URL, "server", serverURL)
+	} else {
+		slog.Info("bmr: download descriptor origin rewritten", "from", descriptor.URL, "to", rewritten.URL)
+	}
+	return &rewritten
 }
 
 func (p *recoveryDownloadProvider) Upload(localPath, remotePath string) error {
@@ -56,7 +187,7 @@ func (p *recoveryDownloadProvider) Download(remotePath, localPath string) error 
 		return fmt.Errorf("bmr: create destination directory: %w", err)
 	}
 
-	if err := p.downloadOnce(remotePath, localPath); err == nil {
+	if err := p.downloadWithRetry(remotePath, localPath); err == nil {
 		return nil
 	} else if !p.shouldRefresh(err) {
 		return err
@@ -70,18 +201,71 @@ func (p *recoveryDownloadProvider) Download(remotePath, localPath string) error 
 		return fmt.Errorf("bmr: refreshed bootstrap missing download descriptor")
 	}
 	p.mu.Lock()
-	p.descriptor = bootstrap.Download
+	p.descriptor = rewriteDescriptorOrigin(p.serverURL, bootstrap.Download)
 	p.mu.Unlock()
 
-	return p.downloadOnce(remotePath, localPath)
+	return p.downloadWithRetry(remotePath, localPath)
 }
 
 func (p *recoveryDownloadProvider) shouldRefresh(err error) bool {
-	if err == nil {
+	var statusErr *downloadStatusError
+	if !errors.As(err, &statusErr) {
 		return false
 	}
-	message := err.Error()
-	return strings.Contains(message, "status 401") || strings.Contains(message, "status 403")
+	return statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden
+}
+
+// downloadWithRetry retries downloadOnce with exponential backoff on a
+// transient status (429/502/503/504), honoring the server's Retry-After
+// header when present instead of the internal schedule. It keeps retrying
+// until it has waited at least downloadRetryMaxTotalWait cumulative time,
+// then gives up. Non-retryable errors (including 401/403, left for
+// Download's existing re-authenticate path, and any non-HTTP error) return
+// immediately on the first attempt.
+func (p *recoveryDownloadProvider) downloadWithRetry(remotePath, localPath string) error {
+	delay := downloadRetryInitialDelay
+	var totalWaited time.Duration
+	var retried bool
+
+	for {
+		err := p.downloadOnce(remotePath, localPath)
+		if err == nil {
+			if retried {
+				slog.Info("bmr: download succeeded after retry", "path", remotePath)
+			}
+			return nil
+		}
+
+		var statusErr *downloadStatusError
+		if !errors.As(err, &statusErr) || !isRetryableDownloadStatus(statusErr.statusCode) {
+			return err
+		}
+
+		if totalWaited >= downloadRetryMaxTotalWait {
+			return fmt.Errorf("bmr: download retries exhausted after %s: %w", totalWaited.Round(time.Second), err)
+		}
+
+		wait := delay
+		if statusErr.retryAfter > 0 {
+			wait = statusErr.retryAfter
+		}
+
+		if !retried {
+			slog.Warn("bmr: download failed, retrying with backoff",
+				"path", remotePath, "status", statusErr.statusCode, "wait", wait)
+			retried = true
+		}
+
+		if sleepErr := retrySleep(p.ctx, wait); sleepErr != nil {
+			return fmt.Errorf("bmr: download cancelled during retry backoff: %w", sleepErr)
+		}
+		totalWaited += wait
+
+		delay *= 2
+		if delay > downloadRetryMaxDelay {
+			delay = downloadRetryMaxDelay
+		}
+	}
 }
 
 func (p *recoveryDownloadProvider) currentDescriptor() (*AuthenticatedDownloadDescriptor, error) {
@@ -148,13 +332,17 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		statusErr := &downloadStatusError{
+			statusCode: resp.StatusCode,
+			retryAfter: httputil.ParseRetryAfter(resp.Header, time.Now()),
+		}
 		var body map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 			if message, ok := body["error"].(string); ok && message != "" {
-				return fmt.Errorf("bmr: download failed with status %d: %s", resp.StatusCode, message)
+				statusErr.message = message
 			}
 		}
-		return fmt.Errorf("bmr: download failed with status %d", resp.StatusCode)
+		return statusErr
 	}
 
 	file, err := os.Create(localPath)

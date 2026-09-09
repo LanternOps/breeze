@@ -1,0 +1,379 @@
+# Backup Assurance Campaign — 2026-09-09
+
+**Status:** In progress
+**Owner:** Todd Hebebrand (executed by Claude)
+**Branch:** `ToddHebebrand/backup-assurance`
+**Baseline under test:** `main` @ `d340fec414` (v0.111.1 + unreleased) and the shipped v0.111.1 binaries
+**Verification standard:** `docs/superpowers/specs/backup/2026-05-13-backup-certification-design.md` §4 (byte-exact restore chain)
+
+## 1. Why
+
+Backup is the product's most consequential feature and the one with the widest gap between what the docs
+promise and what has ever been proven. As of this date the only recorded end-to-end evidence is:
+
+| Date | OS | Mode | Restore | Notes |
+|---|---|---|---|---|
+| 2026-07-15 | Windows Server 2022 | `system_image` | alternate-path, non-destructive | one VM, byte-match |
+| 2026-07-17 | macOS (synthetic tree) | `file` full + incremental | alternate-path, test restore, integrity | local provider only |
+
+Nothing else — Linux, Hyper-V, MSSQL, local vault, GC/retention, cross-device, in-place overwrite, bare-metal
+recovery on any OS, Windows client OS, or any cloud provider — has a recorded live run. Every restore ever
+executed went into a scratch directory. The bare-metal recovery doc (`apps/docs/.../bare-metal-recovery.mdx`)
+describes a flow that has never been run. The certification harness designed on 2026-05-13 was never built.
+
+The goal of this campaign is **evidence, not a green checkbox**: for every cell in the matrix below, either a
+byte-exact proof with recorded hashes, a filed defect, or an explicit "not testable in this lab" with the reason.
+
+## 2. What the product actually is (so the tests measure the right thing)
+
+Established by code inventory on 2026-09-09; the docs disagree with several of these and §8 reconciles them.
+
+- **Modes:** `file` (all OS), `system_image` (= OS *system-state artifacts*: registry hives / BCD / drivers /
+  certs / services / package list; NOT a disk image), `hyperv` (Windows only, per-VM checkpoint export),
+  `mssql` (Windows only, per-DB full/diff/log). C2C (M365 / Google Workspace) is agentless and server-side.
+- **Destinations on the normal backup path:** `s3` (any S3-compatible endpoint) and `local` only. The API
+  create-config validator rejects `azure_blob` / `google_cloud` / `backblaze` even though the DB enum, the agent
+  providers, and `storage.mdx` list them. BMR's download path accepts all five.
+- **Restore paths:** full / selective / alternate-path via `POST /backup/restore`; integrity check + test
+  restore via `POST /backup/verify`; cross-device restore is accepted by the API (`deviceId`) but the
+  `RestoreWizard` never sends it; restore-as-VM + instant boot (Hyper-V); MSSQL restore; C2C item restore.
+- **Bare-metal recovery is "reinstall, then recover":** operator mints a one-time token, downloads a recovery
+  bundle (the `breeze-backup` binary + launch script + bootstrap.json) and optionally a Linux/amd64 ISO built
+  from an *operator-supplied* template dir. On a machine that already has a booted OS, `breeze-backup
+  bmr-recover --token --server` downloads the snapshot and (a) applies system state — Linux: `cp -a` `/etc`,
+  apt/dnf package reinstall, `systemctl enable`, firewall, crontabs; Windows: `reg restore` of hives **onto the
+  live registry**, `bcdedit /import`, `certutil -restoreDB`, `netsh advfirewall import`, `pnputil` drivers;
+  macOS: prefs, launch items, network config — then (b) restores files, then (c) runs a validation probe. There
+  is no disk imaging, no WinPE/WinRE, and Breeze does not author boot media.
+- **Encryption:** only S3 SSE-S3 / SSE-KMS on the data path. Client-side encryption has an interface with zero
+  implementations; the encryption-keys CRUD manages metadata only.
+- **Incremental:** unconditional; unchanged files are *referenced* from older snapshot prefixes. Server-side
+  GC (`backupRetention.ts`) is the only object-deletion path and must never delete an object a newer manifest
+  references.
+
+## 3. Lab
+
+| Rig | Host | OS | Enrolled to | Role in campaign |
+|---|---|---|---|---|
+| WIN-A | Hyper-V guest on the lab hypervisor, Tailscale-reachable | Windows Server 2022 Std Eval, 4 vCPU, 2.25 GB | dead local stack → **re-enroll to lab stack** | main Windows rig; candidate for SQL Server Express + nested Hyper-V |
+| WIN-B | Hyper-V guest on the lab hypervisor, Tailscale-reachable | Windows Server 2022 Std Eval, 4 vCPU, 2.5 GB, agent v0.111.1 | **prod EU** (`eu.2breeze.app`) | shipped-binary path: prod API dispatch → MinIO on the Mac as the S3 destination; non-destructive only |
+| LNX-QEMU | QEMU/HVF on this Mac (arm64) | Ubuntu 24.04 cloud image, fresh disk per run | lab stack | Linux file/system_image; **bare-metal recovery into a fresh VM** |
+| LNX-X86 | x86 KVM rig, Tailscale-reachable | Ubuntu 22.04, prod-US enrolled | isolated second agent → lab stack via reverse tunnel | x86_64 Linux confirmation; needs Tailscale check-mode approval |
+| MAC | this Mac (arm64) | macOS | isolated agent rig `~/breeze-backup-e2e-rig` → lab stack | macOS file/system_image + restore; BMR darwin restorer non-destructively only |
+| Storage | MinIO on the Mac (`docker-compose.dev.yml` minio), reachable from the Windows VMs over Tailscale (verified 200) | — | — | S3 destination for every rig; local-vault directories per rig |
+
+Lab API: `pnpm wt-stack` in this worktree (API runs role `all`, so backup workers are in-process). Not
+available in this lab: a console on the lab hypervisor (no fresh Windows VMs, no VM snapshots, no Windows
+10/11 client), real cloud buckets (Azure / GCS / B2), an M365 tenant for C2C, a physical machine for
+PXE/ISO boot.
+
+## 4. Test matrix
+
+Legend for the `Result` column in §6: **PASS** (byte-exact, hashes recorded) · **FAIL** (defect filed, issue #)
+· **PARTIAL** · **BLOCKED** (lab limitation, reason) · **N/A** (mode not supported on OS).
+
+### 4.1 Fidelity corpus (seeded by `scripts/backup-assurance/seed-corpus.{sh,ps1}`, hashed before and after)
+
+- Sizes: 0 B, 1 B, 4095 B, 4096 B, 1 MiB, 100 MiB, 2.5 GiB (forces S3 multipart), plus 10,000 × 1 KiB files
+  (indexing / result-cap pressure: the server `result` cap is 5 MB ≈ 13k entries).
+- Names: unicode (`café`, CJK, emoji), spaces, leading/trailing dots, `#`/`%`/`+`/`&` (URL-key hazards),
+  200-char component, Windows path > 260 chars, 20-level nesting, empty directories.
+- Content: random bytes (all 256 values), highly compressible, sparse (Unix), identical content in two paths
+  (dedupe / hardlink sensitivity).
+- Metadata: mtime (exact), Unix mode bits (0600/0755/setuid stripped?), Windows read-only / hidden / system
+  attributes, an explicit DACL (Windows), xattr (macOS), symlink (documented as skipped — assert skipped
+  *loudly*, not silently), hardlink pair.
+- Adversarial: file held open with an exclusive lock during backup (VSS on Windows), file appended to during
+  backup, file deleted between scan and upload, permission-denied file, directory junction / mount point.
+
+### 4.2 Cells
+
+| # | Area | Cell | WIN-A | WIN-B (prod) | LNX-QEMU | LNX-X86 | MAC |
+|---|---|---|---|---|---|---|---|
+| F1 | file → S3 | full backup of corpus, integrity check, test restore | ● | ● | ● | ● | ● |
+| F2 | file → S3 | full restore to alternate path, byte + metadata diff | ● | ● | ● | ● | ● |
+| F3 | file → S3 | in-place restore over a modified/deleted tree (overwrite semantics) | ● | — | ● | ● | ● |
+| F4 | file → S3 | selective restore (single file, one directory, unicode name) | ● | ● | ● | ● | ● |
+| F5 | file → S3 | cross-device restore via API `deviceId` (WIN-A → MAC, LNX → WIN-A) | ● | — | ● | — | ● |
+| F6 | file → local vault | F1 + F2 against a local directory destination | ● | — | ● | — | ● |
+| F7 | file | exclude patterns honoured; symlink skip is visible in the result | ● | — | ● | — | ● |
+| I1 | incremental | run 2 unchanged → every file referenced, 0 bytes re-uploaded | ● | ● | ● | — | ● |
+| I2 | incremental | modify + delete + add → run 3; restore of run 3 does **not** resurrect deleted files | ● | — | ● | — | ● |
+| I3 | incremental | restore run 2 after run 3 exists (older snapshot still restorable) | ● | — | ● | — | — |
+| R1 | retention/GC | shorten retention, run GC; run-3 restore still byte-exact (no referenced object deleted) | ● | — | ● | — | — |
+| R2 | retention/GC | GFS tags + keep-counts prune exactly the expected snapshots; legal hold blocks | ● | — | — | — | — |
+| S1 | system_image | backup + alternate-path restore, required artifacts present | ● | ● | ● | ● | ● |
+| S2 | system_image | partial collection fails loud (rename a hive / deny read) | ● | — | ● | — | — |
+| C1 | controls | Stop mid-upload → job cancelled, no manifest, journal kept, next run resumes | ● | — | ● | — | ● |
+| C2 | controls | kill helper / reboot mid-run → reaper marks failed within 15 min, next run resumes | ● | — | ● | — | — |
+| C3 | controls | network cut mid-upload → job does not sit Running forever (#2798 known) | ● | — | ● | — | — |
+| C4 | controls | scheduled run fires at the configured time/timezone; backup window respected | ● | — | — | — | — |
+| E1 | errors | wrong S3 credentials / missing bucket / unreachable endpoint → failed job with actionable message | ● | — | ● | — | — |
+| E2 | errors | restore target disk full / permission denied → failed restore, partial state reported | ● | — | ● | — | — |
+| E3 | errors | helper binary missing or hash-mismatched → loud failure, readiness reflects it | ● | — | ● | — | — |
+| V1 | VSS | locked file captured via shadow copy; VSS-unavailable fallback visible (#3010) | ● | ● | N/A | N/A | N/A |
+| H1 | hyperv | discover VM, backup (app-consistent), restore VM, restore-as-VM, instant boot | ◐ nested | — | N/A | N/A | N/A |
+| M1 | mssql | SQL Server Express: full + diff + log chain, restore to new DB name, row-hash match | ◐ install | — | N/A | N/A | N/A |
+| B1 | BMR | token → bundle → `bmr-recover` on a **fresh** machine → system state + files applied → reboot → validation | ◑ blocked (no fresh VM) | — | ● | — | ◐ non-destructive |
+| B2 | BMR | token security: single use, expiry, wrong org, tampered bundle signature | ● | — | ● | — | — |
+| T1 | tenancy | restore/verify/token routes refuse cross-org snapshot + device ids | ● (API) | — | — | — | — |
+| U1 | UI | dashboard, device tab, restore wizard, verification tab, recovery bootstrap tab, readiness (#3970) | ● | ● | ● | — | ● |
+| P1 | prod path | WIN-B: shipped v0.111.1 agent + prod EU API → MinIO; F1/F2/F4/I1/S1/V1 | — | ● | — | — | — |
+
+● planned · ◐ attempt, may be blocked · ◑ blocked pending a decision (§9) · — not planned this campaign
+
+### 4.2b Cells added after the independent review (Codex, 2026-09-09)
+
+An independent static review of the matrix against the code produced 25 candidate blind spots. Each is a
+*claim to verify*, not a finding; the cell exists to prove or disprove it. Numbers in brackets are the
+review items.
+
+| # | Cell | Claim under test |
+|---|---|---|
+| F1c | `report`/`report.gz` and `data.tar`/`data.tar.gz` sibling pairs in the corpus | `ensureGzipExtension` maps both names to one object key, so one file silently overwrites the other [2] |
+| F4b | selective restore of `pick.txt` beside `pick.txt.bak`, `pick.txt2`, `pick.txtx/` | selection is a raw string-prefix match, so siblings get restored too; a zero-match selection returns `completed` [16] |
+| F2b | inject chmod/utime failure after content restore | metadata failures only warn; restore still `completed` [19] |
+| F5b | cross-device restore of case-distinct Linux names onto Windows | destination collisions are unchecked; last writer wins, all counted as success [15] |
+| F6b | S3 primary + local vault mirror; restore with primary down; exceed vault retention | vault sync marks a manifest verified after uploading it; vault retention deletes prefixes without reference checks [5] |
+| I4 | two devices, same source path/size/mtime, different bytes, one destination | previous-manifest lookup is destination-wide, not device-scoped, so device B references device A's object [3] |
+| I5 | same-size edit with preserved mtime | size+mtime dedupe misses the change (documented limitation vs defect) [3] |
+| C5 | interrupt after manifest publish, before journal removal; restart immediately and after journal max-age | stale-journal cleanup deletes a published snapshot prefix [1] |
+| C6 | interrupt a restore, alter a restored file without changing its length, resume | resume trusts same-size targets and skips checksum + metadata [11] |
+| C2b | lose the terminal result after a partial manifest is published, then reconcile | storage reconciliation rewrites an incomplete backup as `completed` [20] |
+| E2b | restore over existing good files with corrupted stored bytes | destination is replaced before the checksum is checked, no rollback [4] |
+| O1 | whole configured root unavailable beside small readable files; all-excluded source | ≤10% failure ratio still `completed`; empty scan becomes `skipped` → persisted `completed` without a snapshot [17] |
+| R3 | GC with a retained system_image snapshot whose manifest is missing; structurally incomplete manifest | GC excludes system_image rows from protection and accepts a manifest without `files` [6] |
+| R4 | expire a snapshot holding a unique obsolete version | GC marks every listed manifest, including expired ones, so nothing is ever reclaimed [23] |
+| D1 | edit a destination config's bucket after backups exist, then restore an older snapshot | restore resolves the config's *current* details; history is stranded [21] |
+| S1b | compare original OS-state sentinels (mode, owner, mtime, links) against collected artifacts | staging copies files as 0600/0700, drops symlinks, skips unreadable entries silently [18] |
+| S1c | Linux: `packages/dpkg.txt` produced vs `packages_dpkg.txt` consumed by the restorer | producer/consumer artifact names disagree, so package reinstall never runs [9] |
+| B1b | BMR with a failing state step / stopped required service | state and validation failures only warn; status `completed`; service probe always true [7] |
+| B1c | BMR with a corrupted / wrong-size object | BMR manifest drops checksums; counters use declared sizes [8] |
+| B1d | BMR of an incremental snapshot (run 3 referencing runs 1–2) | download is limited to the selected snapshot's prefix, so referenced files are rejected [13] |
+| B1e | BMR from a `local` destination through the API download proxy | proxy streams stored gzip bytes; helper writes them unchanged [12] |
+| B1f | BMR `--target-path` remaps + "selective" token | system state is always applied; unmapped files go to original paths — recovery is never non-destructive [14] |
+| T2 | non-canonical manifest paths (`..`, junction under the target) on restore and test-restore | test-restore path has no containment check at all [10] |
+| P2 | protection/GFS/MSSQL-chain bookkeeping failure injected at persistence | job stays `completed` while retention guarantees were never established [22] |
+
+Corrections to §2 accepted from the review: token-flow BMR downloads go through the API proxy, which supports
+`s3` and `local` only (the five-provider constructor is the legacy direct-config fallback) [24]; the agent's
+stale-journal cleanup and the vault rollover also delete objects, so the server GC is not the *only* deletion
+path [25]; incremental dedupe is file-mode only (system-state runs skip it) [25]; and an omitted `targetPath`
+restores into a temp directory, so "in-place restore" must be expressed as `targetPath` = the original root
+(F3 re-specified accordingly).
+
+### 4.3 Explicitly out of scope (lab limitation, listed so nobody mistakes silence for coverage)
+
+Windows 10/11 client OS; Azure / GCS / B2 (API rejects them anyway); C2C M365 / Google Workspace; physical
+PXE / ISO boot; DR-plan execution; encryption key rotation (no data-path consumer exists); Windows BMR onto
+fresh hardware (needs a fresh VM — see §9).
+
+## 5. Method
+
+1. Seed corpus → record `pre.sha256` (path, size, sha256, mtime, mode/attrs).
+2. Trigger via the API the way the UI does (`POST /backup/jobs/run/:deviceId`, `/backup/restore`,
+   `/backup/verify`); poll `backup_jobs` / `restore_jobs` to a terminal state; capture the job row + result JSON.
+3. Verify in storage: list objects under the snapshot prefix, compare manifest entries to object sizes.
+4. Restore → record `post.sha256` → `diff pre post` must be empty; metadata diff must match the documented
+   fidelity (mode + mtime on Unix, attributes on Windows).
+5. Every cell records: rig, agent/helper version, API commit, snapshot id, job id, hashes file, verdict.
+6. Defects: file a GitHub issue per root cause with the evidence; fix in this branch when small and
+   low-blast-radius (agent-shipped code gets the full review round); otherwise link the issue.
+
+Harness lives in `scripts/backup-assurance/` (seed/hash/diff scripts, an API driver) and is shaped after the
+certification spec's verbs (`seed`, `snapshot_hash`, `trigger_backup`, `wait_for`, `trigger_restore`,
+`verify_byte_exact`, `verify_filesystem_metadata`) so it can be lifted into the cert harness later.
+
+## 6. Results ledger
+
+Filled in as cells execute. One row per cell per rig.
+
+| Cell | Rig | Versions | Snapshot / job | Result | Evidence |
+|---|---|---|---|---|---|
+| F1 backup | LNX-QEMU | agent+helper 0.112.0 (main d340fec414), API main | `snapshot-20260909T170751Z-4c52c965` / job `3f614160` | PASS with D1 — file job completed 10,047 files / 185,439,939 B in 63 s; system_image job failed at spawn (D1) | `~/breeze-assurance/runs/lnx/F1-*.json` |
+| F1 backup | MAC | same | `snapshot-20260909T170757Z-ab1aa50a` / job `cf0af05d` | PASS with D1 + O1 — 10,047/10,048 (perm-denied expected), status `completed` with errorCount 1 | `runs/mac/F1-*.json` |
+| F1 backup | WIN-A | same | `snapshot-20260909T170910Z-c486ac6d` / jobs `2313c9df` (failed, D3) → `ed1fc8d1` (completed, resumed same snapshot) | FAIL then PASS on rerun — D3 killed the first run at 9,751/10,046; rerun resumed from journal, 10,045/10,046 in ~60 s; system_image failed at spawn both times (D1) | `runs/win/F1*-*.json`, `C:\ProgramData\Breeze\logs\{agent,backup,watchdog-journal}.log` |
+| F1 integrity | LNX-QEMU, MAC | same | verification `c413d631` / `6a6b3a65` | PARTIAL — 10,045 verified, 2 failed = the D2 collision pair (checksum mismatch); everything else byte-verified | `runs/*/F1-verify-integrity.json` |
+| F1 test restore | LNX-QEMU, MAC | same | `ea27fe6e` / `f2bcf2f4` | PARTIAL — same 2 failures; 40–42 s for 185 MB | `runs/*/F1-verify-testrestore.json` |
+| F1c collision | LNX-QEMU, MAC | same | — | FAIL (D2) — MinIO holds 2 objects for 4 source files under `content/collide/` | `mc ls` output in ledger notes |
+| F2 alt-path restore | LNX-QEMU | same | restore `9d126897` | MISMATCH — 10,043/10,047 byte-identical; 2 wrong content (D2), 1 missing (D4 long name), perm-denied restored 0000→0644 (O4); setuid dropped (O5); 3 symlinks + 1 empty dir absent (O6, O7); mtime + mode preserved on all others | `runs/lnx/F2-compare.txt` |
+| F2 alt-path restore | MAC | same | restore `5c7a0bd7` | MISMATCH — 10,044/10,048 identical; D2 ×2, D4 ×1, perm-denied (expected, non-root rig); O6/O7 same | `runs/mac/F2-compare.txt` |
+| F4 selective | LNX-QEMU | same | restore `bffa496a` | PASS for the 3 selected files (bytes exact) but FAIL F4b — 3 unselected prefix siblings restored too (D5); directory selection rejected by the API (O9) | `runs/lnx/F4-*.json`, `F4-tree.txt` |
+| C2 resume (incidental) | WIN-A | same | see F1 WIN-A | PASS — after the agent restart the next manual run resumed the same snapshot id and uploaded only the remaining objects | job rows above |
+| F1 integrity | WIN-A | same | verification `2fefed4d` | PARTIAL — 10,043 verified, 2 failed (D2 pair) | `runs/win/F1-verify-integrity.json` |
+| I1 unchanged run 2 | LNX-QEMU | same | `snapshot-20260909T172204Z-a8314497` / job `74963c0e` | FAIL (D6) — 10,047 files / 185 MB re-uploaded, 0 referenced, 129 s | `runs/lnx/I1-*.json`, run-2 manifest analysis |
+| I1 unchanged run 2 | MAC | same | `snapshot-20260909T172424Z-8301167a` | FAIL (D6) — same, 10,046 new objects | `runs/mac/I1-*.json` |
+| S1 system_image backup | LNX-QEMU | same | `snapshot-20260909T172404Z-04b256c5` / job `177de24d` | PASS (backup) — 871 artifacts / 2.39 MB in 9 s; only succeeded because the helper was already running (D1 otherwise) | `runs/lnx/I1-job-177de24d*.json` |
+| S1 system_image backup | MAC | same | `snapshot-20260909T172520Z-3353a0e6` / job `1575b497` | PASS (backup) — 70 artifacts / 181 KB | `runs/mac/I1-job-1575b497*.json` |
+| S1 system_image restore | LNX-QEMU, MAC | same | snapshots `9dd5f39a` / `04fe65f7` | PASS — 871 / 70 artifacts restored `completed`, 0 failed; artifacts land under the collector's temp path (O10) | `runs/*/S1-restore.json`, `runs/lnx/S1-tree.txt` |
+| F1 test restore | WIN-A | same | verification `04af6e8f` | PARTIAL — 10,043 verified, 2 failed (D2); 148 s | `runs/win/F1-verify-testrestore.json` |
+| F2 alt-path restore | WIN-A | same | restore `b68037f8` | FAIL (D8) — 10,042 restored but under `restore-F2\Device\HarddiskVolumeShadowCopy{1,2}\assure\src\…`; byte compare not meaningful until D8 is fixed | `runs/win/F2-restore.json` |
+| B1 bundle | LNX (API) | same | media `e692f9a3` (amd64), `0d2e6bd5` (arm64) | FAIL (D7) — both builds `failed`, `ENOSPC` in the API container's 64 MB `/tmp` | `runs/lnx/bmr/media-*.json` |
+| I1 unchanged run 2 | WIN-A | same | `snapshot-20260909T173200Z-5a8a2cc8` / job `b7048cce` | FAIL (D6) — 10,044 objects re-uploaded, 0 referenced | `runs/win/I1-*.json` |
+| S1 system_image backup | WIN-A | same | `snapshot-20260909T173605Z-8d04cd1a` / job `415718cf` | PASS with warning — 12 artifacts / 92 MB, `completed`, errorLog `system state collection incomplete: [certs] failed` (O12); ran only because the helper was already up (D1) | `runs/win/I1-job-415718cf*.json` |
+| T1 tenancy | API (org B `1318fccd`) | API main | snapshot `1a8be5a6`, device `ea3aa8af` (org A) | PASS — restore 404, verify 400 "Snapshot not found for organization", BMR token 404, snapshot get/browse 404, manual run 404 "Device not found", job list empty | `runs/T1-cross-org.txt` |
+| B1 bundle (after D7 fix) | LNX (API) | API branch `28e0da5150` | media `e692f9a3` rebuilt | PASS — 13.4 MB `breeze-recovery-bundle-linux-amd64.tar.gz` with `breeze-backup` (x86-64 ELF), `run-recovery.sh`, `README.txt`, `bootstrap.json`, `CHECKSUM.txt`; status `legacy_unsigned` (no signing key in the lab). The row's `metadata.error` still shows the earlier ENOSPC text after a successful rebuild (O15). | `runs/lnx/bmr/bundle-amd64-2.tar.gz`, `x2/` |
+| **Post-fix (0.112.1 = branch `35b2a0960a`)** | | | | | |
+| F1 dual-job | MAC | agent+helper 0.112.1 | `snapshot-20260909T181227Z-c0a17997` (file) + `…181302Z-71f363a0` (system_image) | PASS — both jobs `completed` (D1 fixed) | `runs/mac/postfix-F1-*.json` |
+| F1 integrity | MAC | 0.112.1 | snapshot row `82a6a96d` | PASS — 10,047 verified, 0 failed (D2 fixed) | `runs/mac/postfix-F1-integrity.json` |
+| F2 alt-path restore | MAC | 0.112.1 | — | PASS — 10,047/10,047 readable files byte-identical incl. `report`/`report.gz` pair and the 200-char name (D2, D4 fixed); mtime + mode drift 0; only symlinks + empty dir absent (O6/O7) and perm-denied (non-root rig) | `runs/mac/postfix-F2-compare.txt` |
+| F4b selective | MAC | 0.112.1 | — | PASS — exactly the 3 selected files restored (D5 fixed) | `runs/mac/postfix-F4-tree.txt` |
+| I1 unchanged run 2 | MAC | 0.112.1 | `snapshot-20260909T181606Z-58093641` | PASS — `referencedFiles: 10047`, `referencedSize: 185,436,867` (D6 fixed); counter nit O17 | `runs/mac/postfix-I1-*.json` |
+| F1 dual-job | LNX-QEMU | 0.112.1 | `snapshot-20260909T181140Z-96287a98` (file) + `…181206Z-1e920948` (system_image) | PASS — both `completed` (D1 fixed) | `runs/lnx/postfix-F1-*.json` |
+| F1 integrity | LNX-QEMU | 0.112.1 | snapshot row `18ce3d7f` | PASS — 10,047 verified, 0 failed (D2 fixed) | `runs/lnx/postfix-F1-integrity.json` |
+| F2 alt-path restore | LNX-QEMU | 0.112.1 | — | PASS — 10,046/10,047 byte-identical (the 1 "changed" is `perm-denied.txt`, unreadable to the non-root pre-hash; restored bytes are the backup's), 200-char name and both collision pairs correct (D2, D4 fixed); remaining drift = O4 (0000→644), O5 (setuid), O6/O7 | `runs/lnx/postfix-F2-compare.txt` |
+| F4b selective | LNX-QEMU | 0.112.1 | — | PASS — exactly 3 files (D5 fixed) | `runs/lnx/postfix-F4-tree.txt` |
+| I1 unchanged run 2 | LNX-QEMU | 0.112.1 | `snapshot-20260909T181350Z-17615ff3` | PASS — `referencedFiles: 10047`; helper log `using previous manifest … baseSnapshotId=snapshot-20260909T181140Z-96287a98 candidates=24 skippedForeign=3` (D6 fixed) | `runs/lnx/postfix-I1-*.json` |
+| F1 dual-job | WIN-A | 0.112.1 | `snapshot-20260909T181233Z-661363d4` (file) | file PASS (10,045/10,046, perm-denied expected); system_image now FAILS LOUD on the SECURITY hive as intended (O13 fix) but the API shows `Malformed backup result payload: snapshot: … received null` instead of the reason (D11) | `runs/win/postfix-F1-*.json` |
+| F1 integrity | WIN-A | 0.112.1 | snapshot row `f7618117` | PASS — 10,045 verified, 0 failed (D2 fixed) | `runs/win/postfix-F1-integrity.json` |
+| F2 alt-path restore | WIN-A | 0.112.1 | — | **BYTE-EXACT** — 10,045/10,045 under `C:\assure\postfix\F2\assure\src` (D8 fixed), long name + collision pairs correct (D2, D4), mtime preserved; drift = Hidden/System/Sparse attributes not restored, ReadOnly kept (O18); symlinks/junction + empty dir absent (O6/O7) | `runs/win/postfix-F2-compare.txt` |
+| I1 unchanged run 2 | WIN-A | 0.112.1 | `snapshot-20260909T182207Z-a7a7160c` | PASS — `referencedFiles: 10045` across a new VSS shadow copy (originalPath keying) (D6 fixed); system_image again D11 | `runs/win/postfix-I1-*.json` |
+| I2 mutate → run 3 → restore | LNX-QEMU | 0.112.1 | `snapshot-20260909T182425Z-467472b4` (run 3) | PASS — the mutated run referenced 10,044 and uploaded exactly the 3 changed/added files; restore of run 3 matches the mutated corpus 10,046/10,047 (perm-denied artifact only), deleted `content/crlf.txt` absent, `new-after-run2.txt` present, appended 100 MiB + rewritten `random.bin` byte-exact | `runs/lnx/postfix-I2-compare.txt` |
+| I3 restore run 1 after runs 2–3 | LNX-QEMU | 0.112.1 | run-1 row `1a8be5a6` | PASS — the original snapshot is still fully restorable after later incremental runs: MISSING 0, EXTRA 0; the 3 "changed" are the pre-D2 collision pair (that snapshot predates the fix) and the perm-denied artifact; the 200-char name now restores (D4) | `runs/lnx/postfix-I3-compare.txt` |
+| C1 cancel + resume | LNX-QEMU | 0.112.1 | cancelled job `8efe4397` → resumed `snapshot-20260909T190934Z-8f5d8ba7` | PASS (cancel in the scan/dedupe phase) — Stop → `cancelled`, `Cancelled by user`, no snapshot published, checkpoint journal kept, helper alive; the next run logged `resuming interrupted backup from checkpoint journal … resumedBytes=0` and completed 10,048 files with 10,047 referenced and the new 1.5 GiB file uploaded. A cancel timed inside a single large upload was NOT reached in this lab (the 1.5 GiB file uploads to local MinIO in < 75 s and O24 hides in-file progress); the July 2026 reliability plan's stall/iptables procedure remains the way to exercise it. | `runs/lnx/postfix-C1-job.json`, `postfix-C1b-*.json` |
+| S1 system_image (after D11, O13 fixes) | WIN-A | helper 0.112.3 (`e16fa09a91`, `f89c8da1c9`) | job `01a473e4` | PASS (fails loud as designed) — `failed` with errorLog `systemstate: collection failed: system state collection missing required artifact(s) [registry] - image would not be restorable …` (Defender blocks the SECURITY hive); the reason is duplicated in the message (O21) and the hive name is only in the helper log | `runs/win/postfix2-S1-job-*.json` |
+| **B1 bare-metal recovery (all fixes)** | LNX-QEMU → fresh VM 2 (pristine Ubuntu 24.04 arm64, never enrolled) | helper 0.112.3 (`f70c79d3b5`), API `38466432ff` | token `35e3b7ae` → file snapshot `4bac446a` (10,047 files, 185 MB) | **PASS** — `status: completed, filesRestored: 10047, failedFiles: 0, validated: true` in 8 m 43 s; server row `restore_jobs f10b14fb` = `completed` 10,047 / 185,439,939 B with `failedFiles: 0` persisted (D14); token `used`/`completed`. Byte compare on the recovered machine: 10,044 identical; the 3 "changed" are the pre-D2 collision pair (snapshot predates the fix) and the non-root pre-hash artifact; mode + mtime now applied (O20 fixed), residual = setuid (O5), symlinks/empty dir (O6/O7). Throughput ≈ 1,150 files/min through the API 302 → MinIO path. | `runs/lnx/bmr/B1-file-run7.txt` |
+| F4b selective + browse (after D12 + queue fix) | WIN-A | helper 0.112.3, API `b5d65d5ed5` | snapshot row `cef96b8e` (`snapshot-20260909T191735Z-9702e203`, 10,045 referenced) | PASS — browse root is `C:` (was `?`); selective restore of `C:\assure\src\content\prefix\pick.txt`, `meta\ads-host.txt`, `sizes\1MiB.bin` restored exactly those 3 files under the real path (D12, D5, D8 on Windows). The alternate data stream on `ads-host.txt` is gone (O26). | `runs/win/postfix-F4b-*.json`, `postfix-F4b-tree.txt` |
+| R1 GC survives references | LNX (API, `BACKUP_GC_GRACE_MS=1000`) | API `bf35cfc694` (D17) | expired rows `18ce3d7f`, `faf1938b`, `e627b5f5` (run-1 base + two unchanged runs of the post-fix chain) | PASS — `cleanup-expired-snapshots`: `deleted 3, skipped 0`, sweep ran (`[BackupGC] Run complete`); newest retained snapshot then restored 10,048/10,048 byte-identical (only the known mode/setuid/symlink observations O4–O6) | `runs/lnx/postfix-GC3.txt`, `postfix-R1-restore.json`, `postfix-R1-compare.txt` |
+| R4 GC reclaims unreferenced objects | LNX (API, `BACKUP_GC_GRACE_MS=1000`) | API `bf35cfc694` | same three rows; `content/crlf.txt.gz` under the expired base is referenced by no retained manifest (deleted from the corpus before every later run) | FAIL (D18) — sweep deleted 0 objects; the expired base still holds all 10,048 objects and six manifest-bearing prefixes exist with no DB row. Every bucket manifest is a GC root and nothing removes manifests, so retention never frees storage | `runs/lnx/postfix-GC3.txt`; issue [#5429](https://github.com/LanternOps/breeze/issues/5429) |
+| Final-build Windows rerun (F1, integrity, F2, I1) | WIN-A (agent+helper 0.112.4) | `8a6836e174` | same corpus, restore target `C:\assure\postfix\F2` reused from the earlier run | F1 file job completed (10,045 referenced), system-state failed loud (Defender/SECURITY hive) on run 1 and completed (13 artifacts) on run 2; integrity 0 failed; F2 BYTE-EXACT 10,045/10,045 but job `failed` — D19: `meta\readonly.txt` already existed read-only in the reused target and the overwrite hit `Access is denied`; I1 all files referenced | `runs/win/postfix3-cells-win-0.112.4.txt` |
+| D19 proof: restore over existing read-only file | WIN-A (agent+helper 0.112.5) | `9926659afb` | same snapshot restored again into `C:\assure\postfix\F2` where `meta\readonly.txt` already exists read-only | PASS — `completed`, 10,045/10,045, 0 failed; file left `ReadOnly, Archive`, mtime preserved | `runs/win/postfix4-F2-readonly-overwrite.json` |
+| R1 full-chain restore | LNX-QEMU | 0.112.1 | newest row `640414e6` (10,048 files, references 7 earlier prefixes) | **PASS — 10,048/10,048 byte-identical**, 1.83 GB; only O4/O5 metadata drift and O6/O7 | `runs/lnx/postfix-R1-compare.txt` |
+| B1-sys system_image token | LNX-QEMU → fresh VM 2 | helper 0.112.3 | token `49a78512` → system_image snapshot `3c781073` (871 artifacts) | FAIL (D15) — `completed` / `validated: true` / `stateApplied: false`; artifacts written as files under `/tmp/breeze-systemstate-1037725844/`, no OS state applied | `runs/lnx/bmr/B1-sys-run.txt` |
+| B1 recover (after D10) | LNX-QEMU → fresh VM 2 | helper 0.112.2 (`058cbfd4a2`) | token `43e5c562` (file snapshot `4bac446a`, pre-D2 data) | PARTIAL — descriptor origin rewritten to `--server`, manifest downloaded (10,047 files), validation probe passed, but only 134 files restored (69.5 MB) before every download hit the per-token 429 (D13); completion report rejected `Request body too large` (D14); restored files lack mode/mtime (O20); the collision pair is wrong-content because the snapshot predates the D2 fix. 131/134 restored files byte-identical. | `runs/lnx/bmr/B1-file-run5.txt` |
+| B1 recover (after D9) | LNX-QEMU → fresh VM 2 | helper 0.112.1 | token `554635d8` | PROGRESS — authenticate now succeeds (`bmr: starting recovery`), manifest download fails on the server-supplied `http://localhost` descriptor (D10) | `runs/lnx/bmr/B1-file-run3.txt` |
+| B1 recover | LNX-QEMU → fresh VM 2 | helper 0.112.0 arm64 | tokens `554635d8` (file snapshot `4bac446a`), `b83e4a48` (system_image `9dd5f39a`) | FAIL (D9) — `bmr: authenticate failed: Invalid recovery token` for both active tokens; nothing recovered (0/10,047) | `runs/lnx/bmr/B1-file-run.txt` |
+
+## 7. Defects found
+
+| # | Severity | Cell | Summary | Issue / fix |
+|---|---|---|---|---|
+| D1 | HIGH | F1 (Linux, macOS) | A manual run of a two-selection profile dispatches `file` + `system_image` concurrently; the second `backup_run` fails instantly with `backup helper unavailable: backup helper is already being spawned` (`sessionbroker/backup.go:145` returns an error to any caller that arrives while the helper is still spawning). Every multi-selection run loses its second selection. Regression vs the 2026-07-15 log ("both complete"); the #4925 queue relaxed server-side dedupe so both now arrive at once. | fix in this branch (wait for the in-flight spawn instead of erroring) |
+| D2 | HIGH (data loss) | F1c (Linux, macOS; Windows pending) | `ensureGzipExtension` (`snapshot.go:1015`) leaves a source name that already ends in `.gz` untouched, so `report` and `report.gz` map to the same object key and one overwrites the other; same for `data.tar` / `data.tar.gz`. The backup job reports `completed`; the integrity check reports the pair as 2 failed files (checksum mismatch) — proven in MinIO: 2 objects under `content/collide/` for 4 source files. | issue + fix (encode the stored key so it is injective) |
+| O1 | MED | F1 (macOS) | A run with a failed file (`perm-denied.txt`, permission denied) persists as `completed` with `errorCount: 1`; the failure is only visible in `errorLog`. Under the 10% rule (`completion_status.go`) a run can silently miss up to 10% of files and still show green. | product decision: `partial` for any failed file? |
+| O2 | LOW | F1 | `expiresAt` = created + 7 d although the link retention says `retentionDays: 14` — `keepDaily: 7` wins (`computeExpiresAt` takes the GFS window). Same observation as 2026-07-17, still unadjudicated. | doc/UI: make the effective expiry explicit |
+| D3 | HIGH | F1 (Windows) | During the 10k-file upload the watchdog logged `check.ipc_degraded` ×3 (pongs arrived after its timeout while the agent was busy and its heartbeat to the API had timed out), declared `check.ipc_failed`, and issued a `graceful_restart`; the agent stopped, killed the helper (`stopping backup helper`), and the job failed at 9,751/10,046 files with `backup helper exited unexpectedly`. The rerun resumed the same snapshot from the journal and completed (C2 resume proof), but a customer would see a failed backup and, on a small server under load, this recurs. | analysis delegated; fix = watchdog must not restart while a backup run is in flight, and/or IPC pong must not share a blocked goroutine |
+| D4 | HIGH (silent data loss on restore) | F2 (Linux, macOS) | `restore.go:148` stages each download under `sanitizeFileName(file.BackupPath)` — the whole object key flattened into ONE filename — so any source path longer than ≈180 chars produces a staging name > 255 bytes and `open … file name too long`. The file is silently absent from the restore (restore says `partial`, the failed path is buried in `failedFiles`), while the backup, integrity check and test restore all reported it fine. Proven with `names/L×200/L×200.txt` (object present in MinIO, never restored). | issue + fix (stage under a hashed or mirrored directory layout) |
+| D5 | HIGH (overwrites unselected data) | F4b (Linux) | Selective restore of exactly `content/prefix/pick.txt` restored 6 files: `pick.txt`, `pick.txt.bak`, `pick.txt2`, `pick.txtx/inner.txt` (+ the 2 legitimately selected). `restore.go:337` matches `selectedPaths` as raw string prefixes. In an in-place restore this clobbers files the operator never selected. | issue + fix (match exact path or `path + separator`) |
+| O3 | MED | F2 | While a restore runs, the API logs `[AgentWs] Dropping backup_progress … reason=not-found` once per file (10k lines in 3 min) — restore progress is not persisted and the lab API spent ~85 % CPU on it, which is what starved the Windows heartbeat that fed D3. | issue: persist or discard restore progress cheaply |
+| O4 | LOW | F2 (Linux) | A source file with mode `0000` is restored as `0644` (manifest `mode: 0` is treated as "unknown"). | note |
+| O5 | LOW | F2 (Linux) | setuid/setgid/sticky bits are not preserved (`4755` → `755`): the manifest stores `Perm()` only. | issue (server workloads care) |
+| O6 | MED | F1/F2 (all) | Symlinks are silently absent from the manifest (0 entries for 3 links) and from restores; nothing in the job, result or UI says so. `symlink skip is visible` (F7) therefore FAILS. | issue: record skipped links in the result |
+| O7 | MED | F2 (all) | Empty directories are not preserved (`empty/a/b/c` missing after restore). | issue |
+| O8 | LOW | F2 (all) | A restore with 3 failed files out of 10,047 is persisted as `failed` (API) while the agent reports `partial`; `restoredFiles: 10044` is only visible in the row. | UI copy / status mapping decision |
+| O9 | LOW | F4 (API) | `POST /backup/restore` selective mode rejects a directory path (`Selected path is not available in this snapshot`); only exact indexed file paths are accepted. The wizard also only ever sends file paths (`RestoreWizard.tsx:313`), so UI and API agree; `restoring.mdx` should not promise folder-level selection. | doc fix |
+| D6 | HIGH (no incremental) | I1 (Linux, macOS) | An unchanged second run re-uploaded all 10,047 files (10,046 new objects, `referencedFiles: 0`, every run-2 `backupPath` under the run-2 prefix). The helper logged no dedupe decision at all for run 2 (run 1 had logged "no previous snapshot for this destination"). Root cause (confirmed from the run-2 manifest): `baseSnapshotId` = `snapshot-20260909T170910Z-c486ac6d` — the **Windows** device's snapshot. `previousManifest` (`incremental.go:39-60`) takes the newest manifest returned by a bucket-wide `ListObjects("snapshots/")` (`snapshot.go:871-880`, `providers/s3.go:182-212`) with no device / config / run-kind scoping, so on any shared bucket the dedupe base is whichever device or mode finished last. Corollary (Codex [3]): when two devices share paths, one device references the other's objects. The positive path also has no log line (`backup.go:637-638`). All three run-2 manifests confirm it: Linux base = the Windows file snapshot, macOS base = the Linux `system_image` snapshot, Windows base = the macOS `system_image` snapshot. | fix: stamp a backup identity into the manifest and filter candidates by it; log the chosen base |
+| D7 | HIGH (BMR unusable in prod) | B1 (bundle) | `POST /backup/bmr/media` fails with `ENOSPC: no space left on device, write`: `recoveryMediaService.ts:584` builds the bundle under `mkdtemp(tmpdir())`, i.e. the container's `/tmp`, which `docker-compose.yml:529-530` AND `deploy/docker-compose.prod.yml:389-390` (api) / `:447-448` (worker) cap as a 64 MB tmpfs — the bundle embeds a 45–65 MB helper binary plus its tarball. Boot-media ISOs (`recoveryBootMediaService.ts:269`) hit the same limit harder. Every bundle/ISO build fails on any deployment using the shipped compose files. | issue + fix (write under the `api_data` volume or raise the tmpfs) |
+| D8 | HIGH (Windows restore lands in the wrong place) | F2 (Windows) | With VSS on (the default for `file`), the manifest's `sourcePath` is the shadow device path (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\…`) and `originalPath` carries the real `C:\assure\src\…`; the restore re-roots by `sourcePath`, so an alternate-path restore wrote `C:\assure\restore-F2\Device\HarddiskVolumeShadowCopy1\assure\src\…` — and, because the resumed run used a second shadow copy, 231 files landed under `…ShadowCopy2\…`, splitting one tree in two. An in-place restore would target a read-only shadow device. Also breaks Windows BMR file placement. Manifest: 10,045/10,045 entries have `originalPath`; 9,814 under ShadowCopy1, 231 under ShadowCopy2. | issue + fix (restore/BMR must target `originalPath` when present) |
+| D9 | CRITICAL (BMR has not worked since 2026-04-11) | B1 (Linux) | Freshly minted, `active` recovery tokens are rejected by `POST /backup/bmr/recover/authenticate` (`Invalid recovery token`). Root cause: the three public, token-authenticated recovery routes (`bmr.ts:1172` authenticate, `~1432` download, `1619` complete) query `recovery_tokens` on the bare pool with no access context; the table has forced RLS (`2026-04-11-rewrite-backup-rls-policies.sql:96-106`) so `breeze_app` sees 0 rows and the handler answers "invalid". Proven: sha256 of the plaintext equals the stored `token_hash`; the same SELECT returns 1 row as superuser and 0 rows after `SET ROLE breeze_app`. No test covers these routes under RLS. | fix in this branch (system-scoped lookup, then org-scoped everything) + integration test |
+| O12 | LOW | S1 (Windows) | `system state collection incomplete: [certs] failed` — `certutil -backupDB` fails with `0x80070002` on a box with no AD CS role; IIS gets a clean "not installed, skipping" but certs does not. False-alarm warning on every non-CA server. | detect absent CA role → skip |
+| O13 | HIGH (silent + customer-visible AV alert) | S1 (Windows) | `systemstate: reg save failed hive=SECURITY error="fork/exec C:\Windows\system32\reg.exe: Access is denied."` — the SECURITY hive was not captured, yet the job's errorLog names only `[certs]`; the registry step only fails when ZERO hives save (`state_windows.go:116-122`), so a system-state snapshot missing SECURITY passes as complete. Cause confirmed on the box: **Microsoft Defender detects `reg.exe save HKLM\SECURITY` as `Trojan:Win32/Commando.A!ml`** (events 1116/1117 at 10:35:48, the exact moment of the helper's call, and again at 10:44:45 for a scheduled-task probe as SYSTEM, exit 0x80070005). Every Defender-protected Windows machine will (a) lose the SECURITY hive silently and (b) raise a malware alert attributed to Breeze on each system-state backup. | fix now: any missing hive fails the step and is named; follow-up issue: capture hive files from the VSS shadow copy instead of spawning reg.exe |
+| O14 | LOW | C1 | A job that completed while the API was restarting kept a stale `transferredSize` (75.7 MB of 185 MB) — the terminal result does not finalise the progress counters. | nit: set transferredSize from the result |
+| O15 | LOW | B1 | A recovery-media row rebuilt successfully after a failed attempt keeps the old `metadata.error` text (`ENOSPC…`) next to a ready status. | nit: clear error metadata on rebuild |
+| D10 | MED (BMR) | B1 (Linux, after D9) | The helper authenticates against `--server`, but then downloads from the descriptor URL the server built from `BREEZE_SERVER`/`PUBLIC_API_URL` (`http://localhost/api/v1/backup/bmr/recover/download?…` → `connection refused`). A mis-set or internal public URL makes every recovery fail even with a reachable `--server`. | fix: helper rewrites the descriptor origin to `--server` (delegated) |
+| D11 | MED | S1 (Windows, post-fix) | When a `system_image` run fails loud (helper: `system state collection missing required artifact(s) [registry]`), `backup.go` "proceeds without" system state, the paths-less run yields a result with `snapshot: null`, and the API's strict result schema rejects it: the job is `failed` with `Malformed backup result payload: snapshot: Invalid input: expected object, received null` — the real reason never reaches the operator. Also the Go error string's em-dash is mangled in the Windows log. | fix: helper sends a proper failure result (no snapshot) and the API schema accepts `snapshot: null` for failed status |
+| O18 | LOW | F2 (Windows) | Windows file attributes are not restored: Hidden and System become plain Archive, SparseFile is lost (file is fully allocated); ReadOnly survives. ADS (`meta/ads-host.txt:breeze.assurance`) not checked yet. | issue: preserve attributes (SetFileAttributes) |
+| D12 | HIGH (Windows selective restore unusable) | F4b (Windows), U1 | The API indexes `backup_snapshot_files.sourcePath` from the manifest's `sourcePath`, which under VSS is `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\…`: `GET /backup/snapshots/:id/browse` returns a single root named `?`, and `POST /backup/restore` selective rejects the real path (`Selected path is not available in this snapshot: C:\assure\src\content\prefix\pick.txt`). The wizard can only offer shadow paths, which the fixed agent (D8) no longer matches. Every VSS-backed Windows snapshot is affected. | fix: index/browse/validate by `originalPath` when present (API), keep `sourcePath` for provenance |
+| O19 | MED (UX) | B1 | A recovery that authenticates and then fails (network, D10) burns the single-use token: the retry answers `Token is used` and the operator must mint a new token from the console — awkward when the console is what they are recovering. | decision: allow re-authentication while `sessionStatus` is not `completed`, or document |
+| D13 | HIGH (BMR cannot finish) | B1 (Linux, after D10) | `/backup/bmr/recover/download` is rate-limited per token (`enforceTokenRateLimit(c,'download',…)`); the helper downloads one object per file with no backoff, so after ~134 files every download answered `429 Rate limit exceeded` and the run ended `partial` with 9,913 of 10,047 files missing (`restore failed for …: bmr: download failed with status 429`). A real server has 10⁴–10⁶ files. | fix: exempt or size the per-token download limit for object fetches (API) + helper honours 429/Retry-After with backoff |
+| D14 | MED | B1 (Linux) | `POST /backup/bmr/recover/complete` failed with `Request body too large`: the completion payload carried one warning string per failed file (~9,900). The recovery outcome is never recorded server-side (`sessionStatus` stays authenticated). | fix: helper caps/aggregates warnings; API accepts a bounded summary |
+| O20 | MED | B1 (Linux) | Files restored by `bmr-recover` have no mtime/mode applied (all 134 restored files show metadata drift) — the BMR manifest struct drops `mode`/`modTime` (Codex [8]). | fix: apply mode + mtime in `bmr.restoreFiles` like `restore.go` does |
+| O21 | LOW | S1 (Windows) | The failed system_image job's errorLog repeats the reason twice (`…; system state was not collected: …`) and names the step (`[registry]`) but not the hive; the hive is only in the helper log. | nit |
+| O22 | LOW (lab-observed) | B1 | While the lab API was down for ~7 min, a `bmr-recover` that had already authenticated sat silently for 10+ min with no log line and no exit — consistent with an HTTP call without a client timeout on the recovery path; not re-proven after the API came back (the process was killed). | check `http.Client` timeouts in `bmr/session.go` / `download_provider.go` |
+| D16 | HIGH (job stuck forever, self-inflicted regression) | Windows ×3 after the D12 API change | Three Windows file jobs stayed `running` indefinitely with the device online, `transferredSize` = full and `snapshotId` set, no snapshot row, no reaper action. Root cause: the D12 fix added `originalPath` to the route result schema but the strict BullMQ payload schema (`jobs/queueSchemas.ts` `backupSnapshotFileSchema`) still rejected it — API log `Failed to process backup results … ZodError … Unrecognized key: "originalPath"` — so every VSS-backed Windows result was dropped after `Processing backup result for job …`. Exactly the July 2026 "strict queue schema hung the job" trap, re-hit. Fixed in `b5d65d5ed5` with a red test. Two lessons stand on their own: (a) a rejected terminal result leaves the job `running` with no reaper rule for "device online, helper idle, result rejected" — it must fail the job loudly; (b) the agent logs `failed to submit command result … status 404` at every `backup_run` dispatch because the HTTP result route has no `device_commands` row for WS-direct backup commands (O25, noise). | fixed (`b5d65d5ed5`); follow-ups: fail the job on result rejection; reaper rule; quiet O25 |
+| D15 | HIGH (BMR system state is a no-op) | B1-sys (Linux) | Recovering a `system_image` snapshot with a token on the fresh VM ended `status: completed, filesRestored: 871, stateApplied: false, validated: true` with the warning `no system state found in snapshot, skipping state restore`; the 871 artifacts landed as ordinary files under `/tmp/breeze-systemstate-1037725844/{boot,crontabs,etc,firewall,packages,services}` and `/etc` / hostname were untouched. The collector uploads its staging dir as plain snapshot files (`backup.go:474`), `bmr.go` looks for `system-state/manifest.json` under the snapshot prefix, and nothing connects the two — so the documented "system state is restored first" never happens on any OS, while the run reports success. Promotes O10. | design + implement the producer/consumer contract (stable `system-state/` keys + manifest; apply via the restorers; fail loud when a system_image token yields no state) |
+| O24 | LOW | C1 | Progress counters advance only when a file completes: during a single 1.5 GiB upload `transferredSize` stayed at the previous value for the whole transfer (the keepalive re-sends unchanged counters), so the UI bar freezes on large files. | nit: byte-level progress within a file |
+| O26 | LOW | F4b (Windows) | NTFS alternate data streams are not backed up or restored (`ads-host.txt:breeze.assurance` absent after restore; only `:$DATA`). | doc + issue |
+| D17 | HIGH (retention silently stops for the whole deployment) | R1/R4 (GC) | With three expired snapshot rows, the `cleanup-expired-snapshots` job failed on the first one: `deleteSnapshotRow` does a hard `DELETE FROM backup_snapshots` and `restore_jobs.snapshot_id` (also `backup_verifications`, `recovery_tokens`, `backup_chains.full_snapshot_id`, the `parent_snapshot_id` self-FK) is `ON DELETE NO ACTION` → `23503 … still referenced from table "restore_jobs"`. The BullMQ job aborted, no other row was processed, and the object sweep that runs after cleanup in the same job never ran (bucket unchanged: 145,671 objects). Any snapshot that was ever restored, verified or tokened therefore blocks retention for every snapshot behind it. | FIXED `bf35cfc694` — migration `2026-10-15-140004` (five FKs → `ON DELETE SET NULL`), per-row delete isolation with PG code logged, worker throws only after the sweep, null-widening sweep + site-scoped lineage fallback for history rows; re-run PASS (`deleted 3`, sweep ran). Follow-up [#5421](https://github.com/LanternOps/breeze/issues/5421) (MSSQL chain health stale after its full expires) |
+| D18 | HIGH (retention is purely logical — bucket usage only grows) | R4 (GC, after D17) | `sweepStorageIdentity` (`backupRetention.ts` ~873) marks as live roots the retained DB rows **and every prefix that still has a `manifest.json` in the bucket** (`listedManifestSnapshotIds`, the "dedup-source race" protection at ~787), and nothing ever deletes a manifest object (`deleteSnapshotRow` ~189 deletes only the row; its docstring claims GC keys off *retained* manifests, which is not what the sweep does). After the three rows were deleted the sweep reported `0 objects deleted`; `files/path_0/content/crlf.txt.gz` under the expired base is referenced by none of the 13 retained Linux manifests, is hours past the grace, and survived. Only loose objects a prefix's own manifest does not list, and manifest-less prefixes older than 9 days, are ever reclaimed. The protection exists because the agent chooses its incremental dedupe base by listing bucket manifests (`incremental.go` `previousManifest`), so a base whose row was just deleted must not be swept mid-run. | OPEN — design decision (two-phase expiry with manifest tombstone + grace, or server-provided dedupe base + roots = retained rows); issue [#5429](https://github.com/LanternOps/breeze/issues/5429); see §9 |
+| D19 | MED (any in-place Windows restore of a read-only file fails) | Windows F2 rerun on 0.112.4 | Restoring over an existing file with the ReadOnly attribute: `moveFile` (`restore.go` ~455) `os.Rename` is refused by Windows and the `copyAndDelete` fallback's `os.Create` fails too (`create destination: … Access is denied.`); the file is listed in `FailedFiles` and the job ends `failed` ("restore completed partially") although every other file was byte-identical. Unix is unaffected (directory permissions govern rename). | FIXED `9926659afb` — `clearReadOnly` + retry in `moveFile`/`copyAndDelete`; package tests run on WIN-A from a cross-compiled test binary; live proof on 0.112.5: restore into the same reused target → `completed` 10,045/10,045, 0 failed, `readonly.txt` ends `ReadOnly, Archive` with its original mtime; issue [#5431](https://github.com/LanternOps/breeze/issues/5431) |
+| O16 | LOW (deploy) | B1 | The public BMR routes rate-limit per IP with key `bmr:authenticate:unknown` behind Caddy in the lab (client IP not resolved) — all recovering machines share one 10/min bucket. Also the per-token limit (`BMR_AUTHENTICATE_TOKEN_LIMIT`) is exhausted by a handful of retries with a long window, and the 429 gives no retry-after guidance in the helper output. | check trusted-proxy config on prod; surface retry-after |
+| O17 | LOW | I1 (post-fix) | With every file referenced (`referencedFiles: 10047`), `transferredSize` still equals the full corpus size — the transferred counter includes referenced bytes. | nit |
+| D9b | LOW | B1 | `bootstrap.command` server URL comes from `BREEZE_SERVER` → `PUBLIC_API_URL` → request origin (`recoveryBootstrap.ts:59-65`); the lab `.env` had `PUBLIC_API_URL=http://localhost`. Production must point this at the externally reachable API. | lab `.env` fix; note in docs |
+| O10 | MED | S1 | `system_image` snapshots record their artifacts under the collector's temp staging dir as `sourcePath` (`/tmp/breeze-systemstate-<rand>/…`, `/var/folders/…/T/breeze-systemstate-<rand>/…`), not a stable `system-state/` layout, and no `system-state/manifest.json` object exists — which is what `bmr.go` looks for (Codex [9]). BMR system-state application therefore has nothing to apply. | issue: producer/consumer contract |
+| O11 | LOW (lab) / MED (product) | B1 | `bootstrap.command` embeds `--server "http://localhost"`: the server URL comes from the API's configured public URL, with no port; a mis-set value produces an unusable copy-paste command. | check the env source; docs |
+
+## 8. Docs vs reality (to reconcile at the end)
+
+| Doc claim | Reality | Action |
+|---|---|---|
+| `bare-metal-recovery.mdx`: "restore a complete system — OS, drivers, configuration, and data — to new hardware… boot the target from Breeze recovery media… the machine reboots into the restored OS" | reinstall-then-recover of system-state artifacts + files; no disk image; ISO is Linux/amd64 from an operator template; Windows applies hives to a live registry | rewrite after B1 evidence |
+| `storage.mdx` lists Azure / GCS / B2 | API validator accepts `s3` and `local` only | fix docs or the validator (decision) |
+| `encryption.mdx` implies backup encryption keys protect data | only S3 SSE; keys are metadata | rewrite |
+| `restoring.mdx` "Cross-Device Restore" | API-only; wizard never sends `deviceId` | verify F5, then either wire the UI or mark API-only |
+
+## 9. Decisions needed from Todd (batched; conservative defaults applied meanwhile)
+
+1. **Ubuntu x86 rig** — Tailscale check-mode approval link needed to open the ControlMaster. Default: QEMU
+   arm64 covers Linux until approved.
+2. **Lab Hyper-V host access** (LAN-only, no SSH/WinRM exposed) — needed for fresh
+   Windows VMs (Windows BMR B1, Windows 10/11 client, VM snapshots for destructive tests). Default: Windows
+   BMR stays BLOCKED; no destructive restore onto a VM I cannot roll back.
+3. **Install SQL Server Express + the Hyper-V role on WIN-A** (2.25 GB RAM; nested virt appears exposed).
+   Default: proceed — both are removable and the VM is a throwaway lab box.
+4. **In-place overwrite restores on WIN-B** (prod-enrolled). Default: alternate-path only on WIN-B.
+5. **Real cloud credentials** (S3 / B2 / Azure) and an **M365 test tenant** for provider and C2C cells.
+   Default: skipped, listed as out of scope.
+6. **D18 storage-reclamation contract** ([#5429](https://github.com/LanternOps/breeze/issues/5429)) — retention
+   deletes rows but the sweep keeps every bucket manifest as a root, so nothing is ever freed. Two viable
+   contracts: (A) two-phase expiry — retention unpublishes the manifest (tombstone), the sweep keeps
+   tombstoned manifests as roots for the 48 h grace, then sweeps what they alone referenced; (B) the server
+   hands the agent its dedupe base from retained rows only, the agent stops listing the bucket for a base,
+   and roots become retained rows only. Both need a live-MinIO test proving an expired unreferenced object
+   is reclaimed while a retained snapshot still restores. Advisor quorum (Fable + Codex xhigh, read-only):
+   both reject A alone (a multi-day run outlives the 48 h grace and publishes dangling references) and B
+   alone (nothing keeps the server-chosen base alive if retention removes it mid-run; scheduled runs that
+   build their manager from `agent.yaml` bypass the payload). **Recommendation: C = B + durable base pins**:
+   the server picks the base from retained rows and records a pin (`backup_jobs.base_snapshot_id` while the
+   job is running); GC roots = retained manifests + pinned bases + active restore pins + active upload
+   prefixes; the pin transfers to the child row at publication and is reaped with abandoned jobs; every
+   writer must go through the server (legacy/offline writers get an unswept namespace). Retention then also
+   deletes the expired manifest object so it stops being discoverable. Default: NOT fixed in PR #5418 — it
+   is a GC correctness change on the data-loss/storage boundary and gets its own plan (like D15); shipping
+   D17 alone is safe because the bucket behaviour is unchanged (nothing was reclaimed before either); the
+   docs' retention page now says storage is not reclaimed yet.
+
+## 10. Issues filed (2026-09-09)
+
+One issue per root cause, each carrying the campaign evidence and the fix commit where one exists.
+
+| Issue | Title |
+|---|---|
+| [#5384](https://github.com/LanternOps/breeze/issues/5384) | [Agent][Backup] Concurrent backup_run fails when file + system_image dispatch together (helper spawn race) |
+| [#5385](https://github.com/LanternOps/breeze/issues/5385) | [Agent][Backup] Non-injective object keys silently overwrite same-named .gz siblings (report vs report.gz) |
+| [#5386](https://github.com/LanternOps/breeze/issues/5386) | [Agent][Backup] Watchdog restarts the agent mid-backup on a busy host, killing the helper and failing the job |
+| [#5387](https://github.com/LanternOps/breeze/issues/5387) | [Agent][Backup] Restore silently drops files whose staged filename exceeds the OS path-length limit |
+| [#5388](https://github.com/LanternOps/breeze/issues/5388) | [Agent][Backup] Selective restore matches unselected sibling paths by string prefix, overwriting them |
+| [#5389](https://github.com/LanternOps/breeze/issues/5389) | [Agent][Backup] Incremental dedupe picks its base snapshot bucket-wide, so runs never dedupe (and can cross devices) |
+| [#5390](https://github.com/LanternOps/breeze/issues/5390) | [API][Backup] BMR bundle/ISO build fails with ENOSPC on every shipped deployment (64 MB /tmp) |
+| [#5391](https://github.com/LanternOps/breeze/issues/5391) | [Agent][Backup] Windows file restore lands under the VSS shadow-copy device path instead of the real path |
+| [#5392](https://github.com/LanternOps/breeze/issues/5392) | [API][Backup] Bare-metal recovery token authentication has been broken since 2026-04-11 (RLS blocks the token lookup) |
+| [#5393](https://github.com/LanternOps/breeze/issues/5393) | [API][Backup] Restore progress writes flood the API log and burn CPU (10k lines / 3 min) |
+| [#5394](https://github.com/LanternOps/breeze/issues/5394) | [Agent][Backup] Symlinks and empty directories are silently skipped on backup and restore |
+| [#5395](https://github.com/LanternOps/breeze/issues/5395) | [Agent][Backup] setuid/setgid/sticky bits are stripped on restore |
+| [#5396](https://github.com/LanternOps/breeze/issues/5396) | [API][Backup] A backup run can silently drop up to 10% of files and still report `completed` |
+| [#5397](https://github.com/LanternOps/breeze/issues/5397) | [Agent][Backup] Windows system-state backup silently drops the SECURITY hive and triggers a Defender malware alert |
+| [#5398](https://github.com/LanternOps/breeze/issues/5398) | [Agent][Backup] system_image backup logs a false-alarm certs failure on servers without the AD CS role |
+| [#5399](https://github.com/LanternOps/breeze/issues/5399) | [Agent][Backup] system_image artifacts are written under a random temp path with no system-state manifest — BMR has nothing to restore |
+| [#5400](https://github.com/LanternOps/breeze/issues/5400) | [API][Backup] GFS `keepDaily` silently overrides the configured `retentionDays`, shortening snapshot lifetime |
+| [#5401](https://github.com/LanternOps/breeze/issues/5401) | [Agent][Backup] BMR helper downloads from the server's public URL instead of the --server the operator gave it |
+| [#5402](https://github.com/LanternOps/breeze/issues/5402) | [Agent][Backup] A backup run that correctly fails loud gets masked behind "Malformed backup result payload" |
+| [#5403](https://github.com/LanternOps/breeze/issues/5403) | [API][Backup] Windows selective restore is unusable under VSS — browse root shows "?" and real paths are rejected |
+| [#5404](https://github.com/LanternOps/breeze/issues/5404) | [API][Backup] BMR download rate limit stops recovery after ~134 files |
+| [#5405](https://github.com/LanternOps/breeze/issues/5405) | [API][Backup] BMR completion report is rejected as too large, so recovery outcome is never recorded |
+| [#5406](https://github.com/LanternOps/breeze/issues/5406) | [Agent][Backup] BMR-restored files have no mode or mtime applied |
+| [#5407](https://github.com/LanternOps/breeze/issues/5407) | [Agent][Backup] Windows Hidden/System/Sparse file attributes are not restored |
+| [#5408](https://github.com/LanternOps/breeze/issues/5408) | [API][Backup] A failed recovery attempt burns the single-use BMR token, forcing a console round-trip to retry |
+| [#5409](https://github.com/LanternOps/breeze/issues/5409) | [API][Backup] BMR public rate limit falls back to a shared IP bucket behind a proxy, with no retry-after guidance |
+| [#5410](https://github.com/LanternOps/breeze/issues/5410) | [API][Backup] transferredSize is wrong in two ways — includes referenced (not just transferred) bytes, and goes stale during an API outage |
+| [#5411](https://github.com/LanternOps/breeze/issues/5411) | [API][Backup] A rebuilt recovery-media row keeps its old error message next to a ready status |
+| [#5412](https://github.com/LanternOps/breeze/issues/5412) | [Agent/API][Backup] Bare-metal recovery of a system_image snapshot applies no OS state, yet reports completed/validated |
+| [#5413](https://github.com/LanternOps/breeze/issues/5413) | [API][Backup] Strict queue-result schema rejected originalPath, dropping every Windows backup result and hanging the job forever |
+| [#5414](https://github.com/LanternOps/breeze/issues/5414) | [Agent][Backup] Agent logs a 404 on every WS-direct backup_run command-result submission |
+| [#5415](https://github.com/LanternOps/breeze/issues/5415) | [Agent][Backup] Failed system_image job's errorLog duplicates the failure reason and omits the hive name |
+| [#5416](https://github.com/LanternOps/breeze/issues/5416) | [Agent][Backup] bmr-recover may hang silently with no timeout during an API outage (unconfirmed) |
+| [#5417](https://github.com/LanternOps/breeze/issues/5417) | [Agent][Backup] No in-file progress reporting — the UI progress bar freezes during a single large file upload |
+| [#5419](https://github.com/LanternOps/breeze/issues/5419) | [API][Backup] Expired-snapshot cleanup aborts on a NO ACTION foreign key and stops retention for the whole deployment (D17) |
+| [#5421](https://github.com/LanternOps/breeze/issues/5421) | [API][Backup] MSSQL chain stays active/healthy after retention deletes its full snapshot (D17 follow-up: `full_snapshot_id` SET NULL leaves `is_active`/health stale until the next differential) |
+| [#5429](https://github.com/LanternOps/breeze/issues/5429) | [API][Backup] Retention never reclaims storage: GC marks every manifest still in the bucket as a live root, so expired snapshots' objects are immortal (D18) |
+| [#5431](https://github.com/LanternOps/breeze/issues/5431) | [Agent][Backup] Windows restore over an existing read-only file fails with Access denied; job ends failed (D19) |

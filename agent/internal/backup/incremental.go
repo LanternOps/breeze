@@ -25,23 +25,42 @@ const (
 	decideReference
 )
 
-// previousManifest fetches the newest completed snapshot's manifest for
-// this provider — see ListSnapshots, which only returns snapshots that
-// actually have an uploaded manifest.json (a partial/aborted prefix without
-// one is not a completed snapshot) — for reference-decision comparisons.
+// previousManifest fetches the newest completed snapshot's manifest that
+// belongs to THIS run's backup identity — see ListSnapshots, which only
+// returns snapshots that actually have an uploaded manifest.json (a
+// partial/aborted prefix without one is not a completed snapshot) — for
+// reference-decision comparisons.
 //
-// Returns (nil, reason) when no previous manifest is usable: either there
-// simply isn't one yet (first run for this destination) or fetching/parsing
-// one failed. reason is always non-empty in that case so callers can log it
-// directly. Dedupe is strictly an optimization — it must never fail or
-// block a run — so this function never returns an error; every failure
-// mode collapses to "run full" via a nil *Snapshot.
-func previousManifest(ctx context.Context, provider providers.BackupProvider) (*Snapshot, string) {
+// identity is this run's BackupIdentity (see BackupManager.runBackupIdentity
+// / Snapshot.BackupIdentity's doc comment). A bucket can hold snapshots from
+// MULTIPLE devices and run kinds with no key prefix between them (D6), so
+// "the newest snapshot in the bucket" is a different question from "the
+// newest snapshot for THIS device/run". previousManifest answers the
+// second one: it scans ListSnapshots' results (ascending by Timestamp) from
+// the newest backward and returns the first candidate whose BackupIdentity
+// equals identity exactly. A candidate with any other identity — including
+// a legacy manifest with no BackupIdentity at all, which never equals
+// anything, empty string included — is skipped. If identity itself is
+// empty (this run has no known identity — see BackupConfig.AgentID), no
+// candidate can be proven to be "this run's own" snapshot, so this returns
+// immediately without even listing.
+//
+// Returns (nil, reason) when no previous manifest is usable: no snapshot
+// exists yet for this destination, every candidate belongs to a different
+// identity, this run itself has no identity, or fetching/parsing failed.
+// reason is always non-empty in that case so callers can log it directly.
+// Dedupe is strictly an optimization — it must never fail or block a run —
+// so this function never returns an error; every failure mode collapses to
+// "run full" via a nil *Snapshot.
+func previousManifest(ctx context.Context, provider providers.BackupProvider, identity string) (*Snapshot, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Sprintf("context already done: %v", err)
+	}
+	if identity == "" {
+		return nil, "this run has no known backup identity, nothing to safely match a previous snapshot against"
 	}
 	snapshots, err := ListSnapshots(provider)
 	if err != nil {
@@ -54,9 +73,28 @@ func previousManifest(ctx context.Context, provider providers.BackupProvider) (*
 	if len(snapshots) == 0 {
 		return nil, "no previous snapshot for this destination"
 	}
-	// ListSnapshots sorts ascending by Timestamp; the newest is last.
-	newest := snapshots[len(snapshots)-1]
-	return &newest, ""
+	// ListSnapshots sorts ascending by Timestamp; scan from the newest
+	// backward for the first candidate that actually belongs to this run's
+	// identity — see the doc comment above for why "newest overall" is the
+	// wrong question in a bucket shared by multiple devices/run-kinds.
+	skippedForeign := 0
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		candidate := snapshots[i]
+		if candidate.BackupIdentity != identity {
+			skippedForeign++
+			continue
+		}
+		log.Info("using previous manifest for incremental reference dedupe",
+			"baseSnapshotId", candidate.ID,
+			"baseTimestamp", candidate.Timestamp,
+			"candidates", len(snapshots),
+			"skippedForeign", skippedForeign,
+		)
+		return &candidate, ""
+	}
+	return nil, fmt.Sprintf(
+		"no matching previous snapshot for this backup identity (%d of %d candidate(s) belonged to a different device/run/destination)",
+		skippedForeign, len(snapshots))
 }
 
 // buildPreviousIndex converts a previous snapshot's file list into the

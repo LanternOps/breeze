@@ -1,6 +1,6 @@
 ---
 title: Restoring Data
-description: Restore files, folders, or full systems from Breeze backup snapshots. Covers browsing snapshots, full and selective restores, and bare metal recovery.
+description: Restore individual files or full snapshots from Breeze backups. Covers browsing snapshots, full and selective (file-level) restores, cross-device restore, and bare metal recovery.
 sidebar:
   order: 5
   label: "Restoring Data"
@@ -38,8 +38,8 @@ Before restoring, you can inspect what a snapshot contains:
 | Type | What it recovers | When to use |
 |------|-----------------|-------------|
 | **Full restore** | Everything in the snapshot | Replacing a failed drive or rebuilding a system |
-| **Selective restore** | Specific files and folders you choose | Recovering accidentally deleted files or a specific directory |
-| **Bare metal recovery** | Full system to new hardware | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
+| **Selective restore** | Individual files you choose (not folders — see below) | Recovering accidentally deleted files |
+| **Bare metal recovery** | System-state artifacts and/or files onto a machine that reinstalls or boots its own OS | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
 
 ---
 
@@ -52,10 +52,9 @@ Before restoring, you can inspect what a snapshot contains:
 2. Select the snapshot to restore from.
 3. Choose **Full Restore**.
 4. Choose the destination:
-   - **Original location** — restores files to their original paths on the same device
-   - **Alternate path** — specify a different directory (e.g., `/var/restore` or `D:\Restored`)
-5. Optionally change the target device — you can restore to a different device in the same organization.
-6. Review the summary and click **Restore**.
+   - **Original location** — despite the name, this does **not** restore files to their original paths. With no destination path set, the agent restores into a temporary directory on the device instead (under the system temp directory). To restore in place — overwriting the originals — choose **Alternate path** and type in the original root path yourself.
+   - **Alternate path** — specify a directory (e.g., `/var/restore` or `D:\Restored`); files are written there preserving their relative structure.
+5. Review the summary and click **Restore**. The restore always runs on the device that owns the snapshot — the wizard does not offer a way to target a different device (see [Cross-Device Restore](#cross-device-restore) below).
 </Steps>
 
 ### Selective Restore
@@ -64,8 +63,8 @@ Before restoring, you can inspect what a snapshot contains:
 1. Open the **Restore Wizard**.
 2. Select the snapshot.
 3. Choose **Selective Restore**.
-4. Browse the file tree and check the boxes next to the files and folders you want to recover.
-5. Choose the destination path.
+4. Browse the file tree and check the boxes next to the individual files you want to recover. Selection is per-file — checking a folder is not supported, and the API rejects a folder path submitted directly; select the files inside it instead.
+5. Choose the destination path (the same "Original location" caveat above applies).
 6. Review and click **Restore**.
 </Steps>
 
@@ -90,22 +89,22 @@ If the target device is offline, Breeze rejects the restore request immediately 
 
 ## Cross-Device Restore
 
-You can restore a snapshot to a different device than the one it was taken from. Both devices must be in the same organization. This is useful when:
-
-- The original device is offline or decommissioned
-- You need to clone data to a replacement machine
-- You want to test a restore without touching the production device
-
-In the Restore Wizard, change the target device in the destination step.
+The restore API (`POST /backup/restore`) accepts a target `deviceId`, so a snapshot can be restored to a different device than the one it was taken from — both devices must be in the same organization. This is **API-only today**: the Restore Wizard in the web UI never sends a `deviceId`, so any restore started from the wizard runs on the device that owns the snapshot. To restore to a different device, call the API directly with the target `deviceId`.
 
 Cross-device restores also require the destination device to be online when you start the restore. If Breeze cannot queue the restore command, the restore job is marked failed with the dispatch error instead of remaining stuck in a pending state.
 
 ---
 
+## What Is and Isn't Preserved
+
+- **Preserved** — file content byte-for-byte; on Linux and macOS, Unix mode permission bits and the original modification time (mtime) are reapplied to each restored file.
+- **Not preserved** — symlinks are skipped entirely, both in the backup and on restore; empty directories are not recreated; setuid/setgid/sticky bits are dropped (only the base permission bits are restored).
+- **Open files.** On Windows, files locked by running applications may fail to restore. Stop the relevant services first, or restore to an alternate path.
+
+---
+
 ## Restore Considerations
 
-- **Existing files.** A full restore to the original location overwrites files at the same paths. Use an alternate path if you want to compare before replacing.
-- **Permissions.** Restored files retain the permissions from the snapshot. On Linux and macOS, Unix mode bits and the original modification time (mtime) are reapplied to each restored file. If restoring to a different device or OS, permissions may need adjustment.
-- **System-image restores.** Windows system-state (system image) snapshots restore byte-for-byte — the restored artifacts match the original backup exactly.
-- **Open files.** On Windows, files locked by running applications may fail to restore. Stop the relevant services first, or restore to an alternate path.
+- **Destination path.** See the "Original location" caveat above — an explicit destination path is the only way to control where files land, including restoring in place.
+- **Permissions.** See "What Is and Isn't Preserved" above. If restoring to a different device or OS, permissions may need adjustment regardless.
 - **Disk space.** Ensure the target device has enough free space for the restore. The snapshot's total size is shown in the Restore Wizard summary.
