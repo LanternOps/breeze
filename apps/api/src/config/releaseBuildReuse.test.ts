@@ -11,6 +11,11 @@ type Job = { needs?: string[]; if?: string; steps: Step[]; permissions?: Record<
 const workflow = load(read('.github/workflows/release.yml')) as { jobs: Record<string, Job> };
 const stepsUsing = (job: Job, action: string) => job.steps.filter((step) => step.uses?.startsWith(`${action}@`));
 
+function required<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined) throw new Error(`Missing ${label}`);
+  return value;
+}
+
 // Model FROM/COPY dependencies, so a future runner COPY from builder cannot
 // silently restore compilation in the release packaging path.
 function stages(source: string) {
@@ -19,13 +24,13 @@ function stages(source: string) {
   for (const line of source.split('\n')) {
     const from = line.match(/^FROM\s+(\S+)\s+AS\s+(\S+)$/i);
     if (from) {
-      current = from[2];
-      result.set(current, { body: '', dependencies: [from[1]] });
+      current = required(from[2], 'FROM stage alias');
+      result.set(current, { body: '', dependencies: [required(from[1], 'FROM source')] });
     } else if (current) {
-      const stage = result.get(current)!;
+      const stage = required(result.get(current), `stage ${current}`);
       stage.body += `${line}\n`;
       const copy = line.match(/^COPY\s+--from=(\S+)/i);
-      if (copy) stage.dependencies.push(copy[1]);
+      if (copy) stage.dependencies.push(required(copy[1], 'COPY source stage'));
     }
   }
   return result;
@@ -37,16 +42,16 @@ function ancestors(source: string, overrides: Set<string>) {
   function visit(name: string) {
     if (seen.has(name) || !graph.has(name)) return;
     seen.add(name);
-    if (!overrides.has(name)) graph.get(name)!.dependencies.forEach(visit);
+    if (!overrides.has(name)) required(graph.get(name), `stage ${name}`).dependencies.forEach(visit);
   }
-  visit([...graph.keys()].at(-1)!);
+  visit(required([...graph.keys()].at(-1), 'final Dockerfile stage'));
   return seen;
 }
 
 describe.each(['api', 'web'])('release %s compilation reuse', (app) => {
   const dockerfile = read(`apps/${app}/Dockerfile`);
-  const build = workflow.jobs[`build-${app}`];
-  const publish = workflow.jobs[`build-docker-${app}`];
+  const build = required(workflow.jobs[`build-${app}`], `build-${app} job`);
+  const publish = required(workflow.jobs[`build-docker-${app}`], `build-docker-${app} job`);
 
   it('uses the compiler for ordinary builds and bypasses it for supplied distributions', () => {
     expect([...stages(dockerfile).keys()].at(-1)).toBe('runner');
@@ -55,33 +60,35 @@ describe.each(['api', 'web'])('release %s compilation reuse', (app) => {
     expect(packaging).toContain('release-dist');
     expect(packaging).toContain('deps');
     expect(packaging).not.toContain('builder');
-    expect(stages(dockerfile).get('runner')!.body).toContain(` /apps/${app}/dist ./apps/${app}/dist`);
+    expect(required(stages(dockerfile).get('runner'), 'runner stage').body).toContain(` /apps/${app}/dist ./apps/${app}/dist`);
   });
 
   it('maps every exported compiled directory through same-run artifacts into the named context', () => {
     const buildStep = stepsUsing(build, 'docker/build-push-action');
     expect(buildStep).toHaveLength(1);
-    expect(buildStep[0].with?.target).toBe('release-dist');
-    expect(buildStep[0].with?.push).not.toBe(true);
-    expect(buildStep[0].with?.outputs).toBe(`type=local,dest=\${{ runner.temp }}/${app}-release`);
+    const compileStep = required(buildStep[0], 'release compilation step');
+    expect(compileStep.with?.target).toBe('release-dist');
+    expect(compileStep.with?.push).not.toBe(true);
+    expect(compileStep.with?.outputs).toBe(`type=local,dest=\${{ runner.temp }}/${app}-release`);
     const push = stepsUsing(publish, 'docker/build-push-action');
     expect(push).toHaveLength(1);
-    expect(String(push[0].with?.['build-contexts']).trim()).toBe('release-dist=${{ runner.temp }}/release-dist');
+    const publishStep = required(push[0], 'release publishing step');
+    expect(String(publishStep.with?.['build-contexts']).trim()).toBe('release-dist=${{ runner.temp }}/release-dist');
 
-    const exported = [...stages(dockerfile).get('release-dist')!.body.matchAll(/^COPY --from=builder (\S+) (\S+)$/gm)];
+    const exported = [...required(stages(dockerfile).get('release-dist'), 'release-dist stage').body.matchAll(/^COPY --from=builder (\S+) (\S+)$/gm)];
     expect(exported).toHaveLength(app === 'api' ? 2 : 1);
-    for (const [, source, destination] of exported) {
+    for (const match of exported) {
+      const source = required(match[1], 'exported source path');
+      const destination = required(match[2], 'exported destination path');
       expect(source).toBe(`/app${destination}`);
-      const upload = stepsUsing(build, 'actions/upload-artifact').find((step) =>
-        step.with?.path === `\${{ runner.temp }}/${app}-release${destination}`);
-      expect(upload, `missing upload for ${destination}`).toBeDefined();
-      expect(upload!.with?.['if-no-files-found']).toBe('error');
-      const download = stepsUsing(publish, 'actions/download-artifact').find((step) =>
-        step.with?.name === upload!.with?.name);
-      expect(download, `missing download for ${destination}`).toBeDefined();
-      expect(download!.with?.path).toBe(`\${{ runner.temp }}/release-dist${destination}`);
-      expect(download!.with?.['run-id']).toBeUndefined();
-      expect(download!.with?.repository).toBeUndefined();
+      const upload = required(stepsUsing(build, 'actions/upload-artifact').find((step) =>
+        step.with?.path === `\${{ runner.temp }}/${app}-release${destination}`), `upload for ${destination}`);
+      expect(upload.with?.['if-no-files-found']).toBe('error');
+      const download = required(stepsUsing(publish, 'actions/download-artifact').find((step) =>
+        step.with?.name === upload.with?.name), `download for ${destination}`);
+      expect(download.with?.path).toBe(`\${{ runner.temp }}/release-dist${destination}`);
+      expect(download.with?.['run-id']).toBeUndefined();
+      expect(download.with?.repository).toBeUndefined();
     }
     // Preserve the public tarball's layout: its artifact contains dist contents,
     // while API's additional built-in web bundle remains a separate artifact.
@@ -92,7 +99,7 @@ describe.each(['api', 'web'])('release %s compilation reuse', (app) => {
   it('keeps publishing behind release integrity and lineage validation', () => {
     expect(publish.needs).toEqual(expect.arrayContaining([`build-${app}`, 'create-release']));
     expect(publish.if).toContain("needs.create-release.result == 'success'");
-    expect(workflow.jobs['create-release'].needs).toEqual(expect.arrayContaining(['release-integrity-gate', 'validate-release-lineage']));
+    expect(required(workflow.jobs['create-release'], 'create-release job').needs).toEqual(expect.arrayContaining(['release-integrity-gate', 'validate-release-lineage']));
     expect(build.permissions?.packages).not.toBe('write');
     expect(stepsUsing(build, 'docker/login-action')).toHaveLength(0);
     expect(build.steps.some((step) => step.run?.includes('pnpm build'))).toBe(false);
@@ -106,7 +113,7 @@ describe('release packaging validation in GitHub Actions', () => {
     permissions: Record<string, string>;
     jobs: Record<string, Job & { strategy: { matrix: { app: string[] } } }>;
   };
-  const job = check.jobs['verify-release-packaging'];
+  const job = required(check.jobs['verify-release-packaging'], 'verify-release-packaging job');
 
   it('checks both runtime images when their release build definitions change', () => {
     expect(job.strategy.matrix.app).toEqual(['api', 'web']);
@@ -119,10 +126,12 @@ describe('release packaging validation in GitHub Actions', () => {
     ]);
     const builds = stepsUsing(job, 'docker/build-push-action');
     expect(builds).toHaveLength(2);
-    expect(builds[0].with?.target).toBe('release-dist');
-    expect(builds[0].with?.outputs).toBe('type=local,dest=${{ runner.temp }}/release-dist');
-    expect(String(builds[1].with?.['build-contexts']).trim()).toBe('release-dist=${{ runner.temp }}/release-dist');
-    expect(builds[1].with?.load).toBe(true);
+    const compileStep = required(builds[0], 'validation compilation step');
+    const packageStep = required(builds[1], 'validation packaging step');
+    expect(compileStep.with?.target).toBe('release-dist');
+    expect(compileStep.with?.outputs).toBe('type=local,dest=${{ runner.temp }}/release-dist');
+    expect(String(packageStep.with?.['build-contexts']).trim()).toBe('release-dist=${{ runner.temp }}/release-dist');
+    expect(packageStep.with?.load).toBe(true);
     for (const build of builds) expect(build.with?.push).toBe(false);
     expect(check.permissions).toEqual({ contents: 'read' });
     expect(stepsUsing(job, 'docker/login-action')).toHaveLength(0);
