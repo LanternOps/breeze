@@ -67,6 +67,19 @@ type Snapshot struct {
 	// blind "most recent snapshot ID", since a fetch/parse failure means no
 	// comparison happened at all (fail-open full run).
 	BaseSnapshotID string `json:"baseSnapshotId,omitempty"`
+	// BackupIdentity stamps which device + destination + run-kind produced
+	// this snapshot (see BackupManager.runBackupIdentity). A bucket can hold
+	// snapshots from multiple devices with no key prefix between them, so
+	// "the newest snapshot in the bucket" is not the same question as "the
+	// newest snapshot for THIS device" — previousManifest uses this field to
+	// tell the two apart when picking an incremental-dedupe base (D6):
+	// referencing another device's — or another run-kind's — object bytes as
+	// though they were this device's own previous backup is a correctness
+	// bug, not just a missed optimization. Omitted (empty) when this run has
+	// no known identity (e.g. BackupConfig.AgentID unset) or predates this
+	// field; previousManifest treats an empty BackupIdentity as matching
+	// NOTHING, including another empty one, rather than guessing.
+	BackupIdentity string `json:"backupIdentity,omitempty"`
 	// UploadFailures records this run's per-file upload failures (skipped,
 	// stalled, or retry-exhausted files) when the snapshot still partially
 	// succeeded. In-memory only — `json:"-"` keeps it out of both the uploaded
@@ -318,12 +331,25 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 // already failed, and a positive answer aborts the whole run rather than
 // letting every remaining file be recorded as individually bad (#3260). nil
 // means the run reads the live filesystem and has nothing to defend.
-func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn) (*Snapshot, error) {
+//
+// runIdentity, if provided (variadic so the ~25 existing call sites that
+// don't care about it need no change — same pattern as main.go's
+// `tickets ...*backupExecutionTicket`), is stamped onto the new snapshot's
+// BackupIdentity (see that field's doc comment and runBackupIdentity) so a
+// LATER run can find this one via previousManifest without picking up
+// another device's or run-kind's snapshot instead (D6). At most the first
+// element is used; passing more than one is a caller bug and only the first
+// is honored.
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn, runIdentity ...string) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if sourceLiveness == nil {
 		sourceLiveness = func(string) error { return nil }
+	}
+	identity := ""
+	if len(runIdentity) > 0 {
+		identity = runIdentity[0]
 	}
 
 	// Register the journal's fd cleanup before any other return path so
@@ -351,8 +377,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		snapshotID = journal.snapshotID
 	}
 	snapshot := &Snapshot{
-		ID:        snapshotID,
-		Timestamp: time.Now().UTC(),
+		ID:             snapshotID,
+		Timestamp:      time.Now().UTC(),
+		BackupIdentity: identity,
 	}
 	if prevSnapshot != nil {
 		snapshot.FormatVersion = 2
@@ -1075,6 +1102,29 @@ func backupIdentity(provider providers.BackupProvider, paths []string) string {
 		material = idp.BackupIdentity()
 	}
 	return material + "|" + strings.Join(paths, ",")
+}
+
+// runBackupIdentity returns the BackupIdentity this run should stamp onto
+// its own manifest and match previous manifests against for incremental
+// dedupe base selection (D6). It EXTENDS backupIdentity's provider+paths
+// material — which alone cannot distinguish two DEVICES backing up to the
+// same destination with the same configured paths, exactly D6's bug — with
+// m.config.AgentID (the device) and the run kind (file vs system_image, so
+// a system-state snapshot can never become a file run's base or vice
+// versa).
+//
+// Returns "" when m.config.AgentID is unset — see BackupConfig.AgentID's
+// doc comment for what that means downstream (previousManifest refuses to
+// match anything against an empty identity).
+func (m *BackupManager) runBackupIdentity() string {
+	if m.config.AgentID == "" {
+		return ""
+	}
+	kind := "file"
+	if m.config.SystemStateEnabled {
+		kind = "system_image"
+	}
+	return backupIdentity(m.config.Provider, m.config.Paths) + "|" + m.config.AgentID + "|" + kind
 }
 
 func newSnapshotID() string {

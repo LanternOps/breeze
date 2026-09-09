@@ -62,6 +62,33 @@ type BackupConfig struct {
 	SystemStateEnabled bool   // Collect system state alongside file backup
 	StagingDir         string // Base directory for temporary staging (empty = OS temp dir)
 
+	// AgentID identifies the DEVICE this manager is running on, for
+	// incremental-dedupe base-snapshot selection (see runBackupIdentity /
+	// Snapshot.BackupIdentity). backupIdentity(Provider, Paths) alone
+	// distinguishes DESTINATIONS, not devices: two devices backing up to the
+	// same bucket with the same configured paths produce the identical
+	// string, which is exactly how D6 happened — one device's incremental
+	// run picked another device's snapshot as its dedupe base and
+	// re-uploaded everything (or worse, would have silently referenced a
+	// same-path/size/mtime coincidence as though it were its own data).
+	//
+	// The caller should populate this from config.Config.AgentID — the
+	// agent's enrollment identifier, which is guaranteed non-empty for any
+	// enrolled agent (config.IsEnrolled checks AgentID != "") — rather than
+	// config.Config.DeviceID, which is left empty on any agent that enrolled
+	// before that field existed and never backfills on its own (see its doc
+	// comment in internal/config/config.go).
+	//
+	// Empty (the zero value — e.g. CreateSnapshotContext callers with no
+	// manager/device context, or a caller that hasn't wired AgentID through
+	// yet) means this run stamps no BackupIdentity onto its own manifest,
+	// and previousManifest then refuses to match ANY previous snapshot
+	// against it — including one this same process produced earlier under
+	// the same empty identity — since an unstamped run cannot prove whose
+	// snapshot it is either way. Fail-open to a full backup, the same safe
+	// default as every other dedupe failure mode in this package.
+	AgentID string
+
 	// VSSProvider overrides where a VSS-enabled run gets its provider from.
 	// Nil — the production case, and what every real caller sets — means
 	// "use the platform provider", i.e. vss.NewProvider on Windows and no VSS
@@ -169,6 +196,12 @@ func (m *BackupManager) GetProvider() providers.BackupProvider {
 }
 
 // GetPaths returns the configured backup source paths.
+// GetAgentID returns the device identity stamped into manifests for
+// incremental-dedupe base selection (BackupConfig.AgentID).
+func (m *BackupManager) GetAgentID() string {
+	return m.config.AgentID
+}
+
 func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
@@ -618,6 +651,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		return job, scanErr
 	}
 
+	// This run's backup identity (device + destination + run kind — see
+	// runBackupIdentity/Snapshot.BackupIdentity) is computed once and reused
+	// both to select this run's dedupe base below and to stamp the new
+	// snapshot's own manifest, so a LATER run can find this one without
+	// picking up another device's or run-kind's snapshot instead (D6).
+	runIdentity := m.runBackupIdentity()
+
 	// Previous-manifest fetch for incremental reference decisions (manifest
 	// v2). Fail-open: any fetch/parse problem collapses to a loud log line
 	// and a full run — dedupe is strictly an optimization and must never
@@ -631,7 +671,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	var prevSnapshot *Snapshot
 	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
-		prev, reason := previousManifest(runCtx, m.config.Provider)
+		prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
 		if prev == nil {
 			log.Info("running full backup, no reference dedupe", "reason", reason)
 		} else {
@@ -704,7 +744,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness)
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness, runIdentity)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}

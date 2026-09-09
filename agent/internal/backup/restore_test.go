@@ -672,3 +672,173 @@ func TestFilterFiles_SiblingCollisionAndSeparators(t *testing.T) {
 		}
 	})
 }
+
+// The shadow SourcePath/OriginalPath pair below is the exact live D8
+// proof: manifest entries under VSS carry a per-run shadow-copy device
+// path as SourcePath and the real, human-visible location as OriginalPath.
+const (
+	d8ShadowSourcePath = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x`
+	d8OriginalPath     = `C:\assure\src\x`
+)
+
+// TestRestoreSourcePath_PrefersOriginalPathUnderVSS proves restoreSourcePath
+// itself: OriginalPath wins whenever set, never the VSS shadow-device
+// SourcePath.
+func TestRestoreSourcePath_PrefersOriginalPathUnderVSS(t *testing.T) {
+	f := SnapshotFile{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath}
+	if got := restoreSourcePath(f); got != d8OriginalPath {
+		t.Fatalf("restoreSourcePath = %q, want the original path %q, not the shadow device path", got, d8OriginalPath)
+	}
+
+	// The common, non-VSS case: OriginalPath unset falls back to SourcePath.
+	plain := SnapshotFile{SourcePath: "/data/plain.txt"}
+	if got := restoreSourcePath(plain); got != "/data/plain.txt" {
+		t.Fatalf("restoreSourcePath (no OriginalPath) = %q, want SourcePath %q", got, "/data/plain.txt")
+	}
+}
+
+// TestResolveTargetPath_UsesOriginalPathUnderVSS is D8's core proof for
+// destination computation: a manifest entry whose SourcePath is the VSS
+// shadow-copy device path must resolve its restore destination from
+// OriginalPath, landing under "assure/src/x" relative to the target base —
+// never under the shadow-device form, which is either gone by restore time
+// or (worse) present under a DIFFERENT shadow ID from a later run, silently
+// splitting one logical file tree across ShadowCopy1/ShadowCopy2/...
+// (proven live). Exercised against both a Unix-style and a Windows-style
+// target base — the Windows one via withWindowsVolumeName so it also runs
+// on Linux/macOS CI, matching TestResolveTargetPathStripsEmbeddedDrive's
+// pattern of computing the expectation with filepath.Join for
+// GOOS-independence.
+func TestResolveTargetPath_UsesOriginalPathUnderVSS(t *testing.T) {
+	withWindowsVolumeName(t)
+
+	f := SnapshotFile{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath}
+	resolved := restoreSourcePath(f)
+
+	t.Run("unix-style target base", func(t *testing.T) {
+		const targetBase = "/alt"
+		got := resolveTargetPath(targetBase, resolved)
+		want := filepath.Join(targetBase, `assure\src\x`)
+		if got != want {
+			t.Fatalf("resolveTargetPath(%q, ...) = %q, want %q", targetBase, got, want)
+		}
+		if strings.Contains(got, "GLOBALROOT") {
+			t.Fatalf("computed target path leaked the VSS shadow-device form: %q", got)
+		}
+	})
+
+	t.Run("windows-style target base", func(t *testing.T) {
+		const targetBase = `C:\alt`
+		got := resolveTargetPath(targetBase, resolved)
+		want := filepath.Join(targetBase, `assure\src\x`)
+		if got != want {
+			t.Fatalf("resolveTargetPath(%q, ...) = %q, want %q", targetBase, got, want)
+		}
+		if strings.Contains(got, "GLOBALROOT") {
+			t.Fatalf("computed target path leaked the VSS shadow-device form: %q", got)
+		}
+	})
+}
+
+// TestFilterFiles_MatchesOriginalPathUnderVSS proves selective restore's
+// selection matching goes through OriginalPath, not the raw SourcePath: the
+// API validates/indexes selectedPaths against each file's original,
+// human-visible location, so a selection of "C:\assure\src\x" must match a
+// manifest entry whose SourcePath is the shadow-device form.
+func TestFilterFiles_MatchesOriginalPathUnderVSS(t *testing.T) {
+	files := []SnapshotFile{
+		{SourcePath: d8ShadowSourcePath, OriginalPath: d8OriginalPath},
+		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\other\y`, OriginalPath: `C:\assure\other\y`},
+	}
+
+	got := filterFiles(files, []string{d8OriginalPath})
+	if len(got) != 1 || got[0].OriginalPath != d8OriginalPath {
+		t.Fatalf("filterFiles selecting the original path = %+v, want exactly the entry whose OriginalPath is %q", got, d8OriginalPath)
+	}
+
+	// Selecting the raw shadow-device SourcePath must NOT be required to
+	// match (it's an internal, per-run-ephemeral value the API never
+	// indexes selections against) — but proving the ORIGINAL-path match
+	// works is the load-bearing assertion above; this just documents that a
+	// selection by the (correct, real) original path is what a caller uses.
+}
+
+// TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS is the full
+// end-to-end proof (D8): RestoreFromSnapshotContext, given a manifest entry
+// whose SourcePath is a per-run shadow-copy-style path and whose
+// OriginalPath is the real location, must actually write the restored file
+// on disk under the ORIGINAL path's relative structure beneath TargetPath —
+// not under the shadow path's. Uses forward-slash paths (rather than the
+// literal Windows shadow-device string) so the written file's real,
+// on-disk location can be asserted portably in CI.
+func TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "vss-shadow-snap"
+	prefix := filepath.Join("snapshots", snapshotID)
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("vss-shadow-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	backupPath := filepath.Join(prefix, "files", "x.gz")
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	// SourcePath mimics a per-run VSS shadow-copy device path (using
+	// forward slashes so filepath.Join produces real nested directories on
+	// every CI platform); OriginalPath is the real, stable location.
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: filepath.ToSlash(backupPath), Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	manifestData, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestTmp := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestTmp, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := provider.Upload(manifestTmp, filepath.Join(prefix, "manifest.json")); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	targetDir := t.TempDir()
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: targetDir}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected status completed, got %s (error: %s)", result.Status, result.Error)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("expected 1 file restored, got %d", result.FilesRestored)
+	}
+
+	wantPath := filepath.Join(targetDir, "assure", "src", "x")
+	restored, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("expected the file to land at %q (the ORIGINAL path, not the shadow path): %v", wantPath, err)
+	}
+	if string(restored) != string(content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+
+	// Regression guard: the shadow-copy path segment must never appear
+	// anywhere on disk under targetDir.
+	shadowPath := filepath.Join(targetDir, "vss-shadow-copy-1")
+	if _, statErr := os.Stat(shadowPath); statErr == nil {
+		t.Fatalf("file was restored under the shadow-copy path %q instead of the original path", shadowPath)
+	}
+}

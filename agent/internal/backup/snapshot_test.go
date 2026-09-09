@@ -1633,7 +1633,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: 3, modTime: modTime},
 		{sourcePath: f3, snapshotPath: "path_0/f3.txt", size: 5, modTime: modTime},
 	}
-	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil)
+	snapshot1, err := createSnapshotWithProgress(context.Background(), provider, run1Files, nil, nil, nil, nil, "test-device")
 	if err != nil {
 		t.Fatalf("run 1 failed: %v", err)
 	}
@@ -1660,7 +1660,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 
 	provider.uploadCalls = nil // isolate run 2's upload assertions
 
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev == nil {
 		t.Fatalf("expected a usable previous manifest for run 2, got none: %s", reason)
 	}
@@ -1673,7 +1673,7 @@ func TestCreateSnapshotWithProgress_IncrementalTwoRun_ReferencesUnchangedFiles(t
 		{sourcePath: f2, snapshotPath: "path_0/f2.txt", size: int64(len("TWO-CHANGED")), modTime: newModTime}, // changed
 		// f3 deliberately absent — deleted from disk before this run's walk.
 	}
-	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil)
+	snapshot2, err := createSnapshotWithProgress(context.Background(), provider, run2Files, nil, nil, prev, nil, "test-device")
 	if err != nil {
 		t.Fatalf("run 2 failed: %v", err)
 	}
@@ -1755,7 +1755,7 @@ func TestIncrementalBackup_FetchFailureFallsBackToFullRun(t *testing.T) {
 
 	// Simulate a broken destination for the previous-manifest fetch only.
 	provider.listErr = errors.New("simulated list failure")
-	prev, reason := previousManifest(context.Background(), provider)
+	prev, reason := previousManifest(context.Background(), provider, "test-device")
 	if prev != nil {
 		t.Fatalf("expected nil previous manifest on a list failure, got %+v", prev)
 	}

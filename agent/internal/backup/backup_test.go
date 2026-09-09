@@ -894,6 +894,10 @@ func TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects(t *testing
 		Paths:      []string{tmpDir},
 		Retention:  2,
 		StagingDir: t.TempDir(),
+		// AgentID is required for RunBackupContext's incremental dedupe to
+		// find a previous run as its base (D6: previousManifest never
+		// matches without a known identity — see runBackupIdentity).
+		AgentID: "test-device",
 	})
 
 	const runs = 4

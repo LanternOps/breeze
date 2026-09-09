@@ -2,6 +2,7 @@ package bmr
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -413,5 +414,147 @@ func TestProviderFromAuthenticatedConfig_S3(t *testing.T) {
 	}
 	if provider == nil {
 		t.Fatal("expected provider")
+	}
+}
+
+// TestRestoreSourcePath_PrefersOriginalPathUnderVSS proves restoreFiles'
+// helper itself: OriginalPath wins whenever set, never the VSS
+// shadow-device SourcePath (D8) — mirrors backup's own restoreSourcePath.
+func TestRestoreSourcePath_PrefersOriginalPathUnderVSS(t *testing.T) {
+	const shadow = `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x`
+	const original = `C:\assure\src\x`
+
+	f := manifestFile{SourcePath: shadow, OriginalPath: original}
+	if got := restoreSourcePath(f); got != original {
+		t.Fatalf("restoreSourcePath = %q, want the original path %q, not the shadow device path", got, original)
+	}
+
+	plain := manifestFile{SourcePath: "/data/plain.txt"}
+	if got := restoreSourcePath(plain); got != "/data/plain.txt" {
+		t.Fatalf("restoreSourcePath (no OriginalPath) = %q, want SourcePath %q", got, "/data/plain.txt")
+	}
+}
+
+// TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath is D8's core
+// proof for BMR's default (no --target-path override) restore destination:
+// a manifest entry whose SourcePath is a VSS shadow-copy device path must
+// land under its OriginalPath, never under the shadow path — before this
+// field existed, bmr's manifestFile silently dropped `originalPath` on
+// decode (no matching struct field), so every VSS-backed BMR recovery
+// restored under the literal shadow-device path.
+func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-vss-default"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("bmr-default-target-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	// restoreFiles writes directly to the (default or overridden) target
+	// path with no containment check of its own (unlike RestoreFromSnapshotContext),
+	// so both paths here live under an isolated temp root.
+	restoreRoot := t.TempDir()
+	originalPath := filepath.Join(restoreRoot, "assure", "src", "x")
+	shadowSourcePath := filepath.Join(restoreRoot, "vss-shadow-copy-1", "assure", "src", "x")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+
+	filesRestored, bytesRestored, warnings, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 {
+		t.Fatalf("filesRestored = %d, want 1 (warnings: %v)", filesRestored, warnings)
+	}
+	if bytesRestored != int64(len(content)) {
+		t.Fatalf("bytesRestored = %d, want %d", bytesRestored, len(content))
+	}
+
+	restored, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatalf("expected the file to land at the original path %q: %v", originalPath, err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+	if _, statErr := os.Stat(shadowSourcePath); statErr == nil {
+		t.Fatalf("file was restored under the shadow-copy path %q instead of the original path", shadowSourcePath)
+	}
+}
+
+// TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath proves D8's other
+// half: RecoveryConfig.TargetPaths overrides are documented as "original ->
+// target path overrides" (see that field's doc comment) and must actually
+// be looked up by the ORIGINAL path — a caller (the server, a human
+// operator) only ever knows the real, human-visible location, never the
+// per-run VSS shadow-device path, so a lookup keyed by SourcePath would
+// never hit under VSS.
+func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-vss-override"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("bmr-override-target-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	shadowSourcePath := filepath.Join(restoreRoot, "vss-shadow-copy-1", "assure", "src", "x")
+	originalPath := filepath.Join(restoreRoot, "assure", "src", "x")
+	overrideTarget := filepath.Join(t.TempDir(), "alt-restore-location", "x")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	cfg := RecoveryConfig{
+		TargetPaths: map[string]string{
+			originalPath: overrideTarget,
+		},
+	}
+
+	filesRestored, _, warnings, err := restoreFiles(context.Background(), manifest, cfg, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 {
+		t.Fatalf("filesRestored = %d, want 1 (warnings: %v)", filesRestored, warnings)
+	}
+
+	restored, err := os.ReadFile(overrideTarget)
+	if err != nil {
+		t.Fatalf("expected the file to land at the override target %q (keyed by the original path): %v", overrideTarget, err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored content = %q, want %q", restored, content)
+	}
+	if _, statErr := os.Stat(originalPath); statErr == nil {
+		t.Fatalf("file should not have landed at the un-overridden original path %q once an override was configured", originalPath)
 	}
 }

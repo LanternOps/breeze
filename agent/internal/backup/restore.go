@@ -128,7 +128,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 
 		current := int64(i + 1)
-		targetPath := resolveTargetPath(cfg.TargetPath, file.SourcePath)
+		targetPath := resolveTargetPath(cfg.TargetPath, restoreSourcePath(file))
 
 		// Skip already-completed files (resume)
 		if resumeState.CompletedFiles[file.BackupPath] {
@@ -325,8 +325,16 @@ func downloadManifest(provider providers.BackupProvider, snapshotID string) (*Sn
 	return &snapshot, nil
 }
 
-// filterFiles returns only the files whose SourcePath matches at least one of
-// the selected paths. If selectedPaths is empty, all files are returned.
+// filterFiles returns only the files whose restoreSourcePath (see that
+// function — OriginalPath when VSS rewrote SourcePath, else SourcePath)
+// matches at least one of the selected paths. If selectedPaths is empty,
+// all files are returned.
+//
+// Matching against restoreSourcePath, not the raw SourcePath, matters
+// because the API indexes and validates selectedPaths against each file's
+// ORIGINAL path (D8): under VSS, SourcePath is a per-run shadow-copy device
+// path like \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x,
+// which a caller selecting "C:\assure\src\x" would never match.
 func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	if len(selectedPaths) == 0 {
 		return files
@@ -335,7 +343,7 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	var matched []SnapshotFile
 	for _, f := range files {
 		for _, selected := range selectedPaths {
-			if pathSelectionMatches(f.SourcePath, selected) {
+			if pathSelectionMatches(restoreSourcePath(f), selected) {
 				matched = append(matched, f)
 				break
 			}
@@ -374,6 +382,26 @@ func pathSelectionMatches(sourcePath, selected string) bool {
 // exercised on any host (Linux/macOS CI would otherwise assert the wrong
 // behavior, since filepath.VolumeName never strips a drive letter there).
 var volumeName = filepath.VolumeName
+
+// restoreSourcePath returns the path a restore should re-root files under:
+// f.OriginalPath when VSS rewrote f.SourcePath to a per-run-ephemeral
+// shadow-copy device path (e.g.
+// \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\assure\src\x — see
+// SnapshotFile.OriginalPath's doc comment), else f.SourcePath itself (the
+// common, non-VSS case, where SourcePath is already the real path). Same
+// rule as journalEntryKey (checkpoint-journal resume identity) — reused
+// here — but restore/verify/BMR need it independently: SourcePath is the
+// READ-time location a backup was taken FROM, and once the shadow copy VSS
+// rewrote it under is gone (the very next backup run, or a reboot),
+// restoring under that literal device path either writes into a stale/
+// nonexistent shadow device or, worse, silently splits one logical file
+// tree across ShadowCopy1/ShadowCopy2/... depending on which run's shadow
+// ID happened to be live (D8). Every restore/verify/BMR call that computes
+// a destination path or matches a path selection against a manifest entry
+// MUST go through this, never f.SourcePath directly.
+func restoreSourcePath(f SnapshotFile) string {
+	return journalEntryKey(f)
+}
 
 // stripVolumeAndLeadingSeparators removes the volume/drive (e.g. "C:") and any
 // leading separators so an ABSOLUTE source path maps UNDER a target base.

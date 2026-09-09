@@ -251,6 +251,7 @@ func runBackupHelper() {
 	if cfgErr != nil {
 		cfg = config.Default()
 	}
+	helperAgentID = cfg.AgentID
 
 	stopLogging := initLogging(cfg)
 	log := logging.L("backup-helper")
@@ -418,6 +419,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
 		StagingDir:         stagingDir,
+		AgentID:            cfg.AgentID,
 	})
 
 	return mgr

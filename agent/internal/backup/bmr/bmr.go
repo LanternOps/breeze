@@ -148,8 +148,34 @@ type snapshotManifest struct {
 
 type manifestFile struct {
 	SourcePath string `json:"sourcePath"`
-	BackupPath string `json:"backupPath"`
-	Size       int64  `json:"size"`
+	// OriginalPath is SourcePath reconstructed back through a VSS
+	// shadow-copy rewrite — mirrors backup.SnapshotFile.OriginalPath (see
+	// that field's doc comment). Empty except on a Windows run where VSS
+	// was active and this file's root was rewritten. Must be preferred over
+	// SourcePath everywhere a restore chooses a destination — see
+	// restoreSourcePath (D8): before this field existed, BMR's manifestFile
+	// silently dropped `originalPath` on decode (no matching struct field),
+	// so every VSS-backed BMR recovery restored under the literal
+	// \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\... shadow-device
+	// path instead of the real location.
+	OriginalPath string `json:"originalPath,omitempty"`
+	BackupPath   string `json:"backupPath"`
+	Size         int64  `json:"size"`
+}
+
+// restoreSourcePath returns the path a BMR restore should re-root file
+// under: file.OriginalPath when VSS rewrote SourcePath to a per-run
+// shadow-copy device path, else file.SourcePath. Mirrors backup's
+// (unexported) restoreSourcePath / journalEntryKey rule — bmr's
+// manifestFile is a deliberately independent JSON-shaped mirror of
+// backup.SnapshotFile (see snapshotManifest's doc comment above), so it
+// carries its own copy of the same fallback rule rather than importing
+// backup for one function.
+func restoreSourcePath(file manifestFile) string {
+	if file.OriginalPath != "" {
+		return file.OriginalPath
+	}
+	return file.SourcePath
 }
 
 func downloadManifest(snapshotID string, provider providers.BackupProvider) (*snapshotManifest, error) {
@@ -263,8 +289,14 @@ func restoreFiles(
 			}
 			return filesRestored, bytesRestored, warnings, fmt.Errorf("bmr: recovery cancelled")
 		}
-		targetPath := file.SourcePath
-		if override, ok := cfg.TargetPaths[file.SourcePath]; ok {
+		// TargetPaths overrides are keyed by the ORIGINAL path (see
+		// RecoveryConfig.TargetPaths's doc comment: "original -> target
+		// path overrides") — under VSS, file.SourcePath is a per-run
+		// shadow-copy device path a caller would never know to key an
+		// override by (D8).
+		origPath := restoreSourcePath(file)
+		targetPath := origPath
+		if override, ok := cfg.TargetPaths[origPath]; ok {
 			targetPath = override
 		}
 
