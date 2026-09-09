@@ -73,6 +73,7 @@ import {
   priorityColor,
   priorityLabel,
   statusLabel,
+  requesterLabel,
   ticketRef,
   visibleActivityCount,
 } from './ticketCopy';
@@ -667,6 +668,14 @@ export function TicketDetailScreen() {
         ) : (
           <Text style={styles.metaDim}>Unassigned</Text>
         )}
+        {/*
+          #5367: who the ticket is FOR. Hidden rather than shown empty when the
+          ticket names nobody — most agent/alert-raised tickets have no
+          requester at all, and a bare "Requester:" reads as a load failure.
+        */}
+        {requesterLabel(ticket) ? (
+          <Text style={styles.metaDim}>Requester {requesterLabel(ticket)}</Text>
+        ) : null}
 
         {ticket.description ? (
           <View style={styles.card}>

@@ -4,9 +4,13 @@ import {
   assigneeOptions,
   buildCreateTicketBody,
   canSubmitTicket,
+  contactDisplayLabel,
+  contactOptions,
+  contactSelectionForOrg,
   defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
   isExpectedAssigneeLoadFailure,
+  isExpectedContactLoadFailure,
   preselectOrg,
   TICKET_PRIORITY_OPTIONS,
 } from './createTicketForm';
@@ -196,5 +200,84 @@ describe('assigneeOptions', () => {
       { id: 'u3', label: 'alex@example.com' },
       { id: 'u2', label: 'Bailey Ops' },
     ]);
+  });
+});
+
+// #5367: the requester CONTACT on a new ticket.
+describe('contact selection', () => {
+  const contacts = [
+    { id: 'c2', name: 'Bailey Buyer', email: 'bailey@acme.test', isPrimary: false },
+    { id: 'c1', name: 'Alex Admin', email: 'alex@acme.test', isPrimary: true },
+    { id: 'c3', name: 'Casey Clerk', email: 'casey@acme.test', isPrimary: false },
+  ];
+
+  it('labels a contact as "name · email", falling back to whichever it has', () => {
+    expect(contactDisplayLabel({ name: 'Alex Admin', email: 'alex@acme.test' })).toBe(
+      'Alex Admin · alex@acme.test'
+    );
+    expect(contactDisplayLabel({ name: 'Alex Admin', email: null })).toBe('Alex Admin');
+    expect(contactDisplayLabel({ name: '  ', email: 'alex@acme.test' })).toBe('alex@acme.test');
+    expect(contactDisplayLabel({ name: null, email: null })).toBe('Unnamed contact');
+  });
+
+  it('puts "No contact" first, then the primary contact, then the rest by label', () => {
+    expect(contactOptions(contacts)).toEqual([
+      { id: null, label: 'No contact' },
+      { id: 'c1', label: 'Alex Admin · alex@acme.test' },
+      { id: 'c2', label: 'Bailey Buyer · bailey@acme.test' },
+      { id: 'c3', label: 'Casey Clerk · casey@acme.test' },
+    ]);
+  });
+
+  it('keeps a primary contact ahead of an alphabetically earlier non-primary', () => {
+    const primaryLast = [
+      { id: 'c2', name: 'Aaron Early', email: 'aaron@acme.test', isPrimary: false },
+      { id: 'c1', name: 'Zoe Primary', email: 'zoe@acme.test', isPrimary: true },
+    ];
+    expect(contactOptions(primaryLast).map((o) => o.id)).toEqual([null, 'c1', 'c2']);
+  });
+
+  it('filters by name or email, case-insensitively, and always keeps the "No contact" row', () => {
+    expect(contactOptions(contacts, 'BAIL').map((o) => o.id)).toEqual([null, 'c2']);
+    expect(contactOptions(contacts, 'casey@acme').map((o) => o.id)).toEqual([null, 'c3']);
+    expect(contactOptions(contacts, 'nobody').map((o) => o.id)).toEqual([null]);
+    // A blank search is not a filter.
+    expect(contactOptions(contacts, '   ').map((o) => o.id)).toEqual([null, 'c1', 'c2', 'c3']);
+  });
+
+  it('drops the contact selection when the organization changes, keeps it when it does not', () => {
+    expect(contactSelectionForOrg({ orgId: 'o1', contactId: 'c1' }, 'o2')).toBeNull();
+    expect(contactSelectionForOrg({ orgId: 'o1', contactId: 'c1' }, null)).toBeNull();
+    expect(contactSelectionForOrg({ orgId: 'o1', contactId: 'c1' }, 'o1')).toBe('c1');
+    expect(contactSelectionForOrg({ orgId: null, contactId: null }, 'o1')).toBeNull();
+  });
+
+  it('treats a 403 contacts fetch as expected (hide the row) and anything else as reportable', () => {
+    expect(isExpectedContactLoadFailure({ statusCode: 403 })).toBe(true);
+    expect(isExpectedContactLoadFailure({ statusCode: 500 })).toBe(false);
+    expect(isExpectedContactLoadFailure(new Error('offline'))).toBe(false);
+    expect(isExpectedContactLoadFailure(null)).toBe(false);
+  });
+
+  it('sends requesterContactId when a contact is picked, and omits it for "No contact"', () => {
+    expect(
+      buildCreateTicketBody({
+        orgId: 'o1',
+        subject: 'x',
+        description: '',
+        priority: 'normal',
+        requesterContactId: 'c1',
+      })
+    ).toEqual({ ok: true, body: { orgId: 'o1', subject: 'x', priority: 'normal', requesterContactId: 'c1' } });
+
+    expect(
+      buildCreateTicketBody({
+        orgId: 'o1',
+        subject: 'x',
+        description: '',
+        priority: 'normal',
+        requesterContactId: null,
+      })
+    ).toEqual({ ok: true, body: { orgId: 'o1', subject: 'x', priority: 'normal' } });
   });
 });
