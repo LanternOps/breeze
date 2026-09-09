@@ -27,6 +27,7 @@ import { resolveAlertRulesForDevice, resolveMaintenanceConfigForDevice, isInMain
 import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
+import { captureException } from './sentry';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -170,6 +171,139 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   console.log(`[AlertService] Created alert ${newAlert.id} for rule=${ruleId} device=${deviceId}`);
 
   return newAlert.id;
+}
+
+/**
+ * Parameters for {@link createSourcedAlert}.
+ */
+export interface CreateSourcedAlertParams {
+  deviceId: string;
+  orgId: string;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  message: string;
+  /**
+   * Persisted to `alerts.context`. `source` names the producing subsystem and
+   * is also what the caller's own dedupe query keys on.
+   */
+  context: Record<string, unknown> & { source: string };
+  /** Event-bus publisher label, e.g. `'monitor-worker'`. */
+  publisher: string;
+  /** Extra fields merged into the `alert.triggered` payload. */
+  eventPayload?: Record<string, unknown>;
+  triggeredAt?: Date;
+}
+
+/**
+ * Create an alert that has no `alert_rules` row behind it and publish
+ * `alert.triggered` for it.
+ *
+ * Rule-less producers (network monitors, warranty, network baseline, …) cannot
+ * use {@link createAlert}: that path looks up `alertRules`/`alertTemplates` by
+ * `ruleId` for its cooldown + dedupe settings and bails when the rule does not
+ * exist. Inserting into `alerts` directly instead — which is what
+ * `monitorWorker` did before #5241 — makes the alert visible in the inbox but
+ * invisible to every `alert.triggered` consumer: no notifications, no
+ * escalation, no automations, no AI verdict.
+ *
+ * This helper is the shared insert + publish tail. Cooldown, dedupe and
+ * flap-suppression stay with the caller, whose keys are source-specific
+ * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
+ *
+ * @returns the new alert id, or null if the insert produced no row (in which
+ *          case nothing is published — the caller should not burn its cooldown).
+ */
+export async function createSourcedAlert(params: CreateSourcedAlertParams): Promise<string | null> {
+  const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
+
+  const [newAlert] = await db
+    .insert(alerts)
+    .values({
+      ruleId: null,
+      deviceId,
+      orgId,
+      severity,
+      title,
+      message,
+      context,
+      status: 'active',
+      triggeredAt: triggeredAt ?? new Date()
+    })
+    .returning({ id: alerts.id });
+
+  const alertId = newAlert?.id;
+  if (!alertId) {
+    const err = new Error(
+      `[AlertService] Insert returned no row for ${context.source} alert (org=${orgId} device=${deviceId}); nothing published`
+    );
+    console.error(err.message);
+    captureException(err, undefined, { alertSource: context.source, orgId, deviceId });
+    return null;
+  }
+
+  try {
+    // Attach the device's site so site-restricted users see it, same as createAlert.
+    const siteId = await resolveDeviceSiteId(deviceId);
+    await publishEvent(
+      'alert.triggered',
+      orgId,
+      {
+        alertId,
+        ruleId: null,
+        deviceId,
+        severity,
+        title,
+        message,
+        // `source` last so it is always the one persisted in context — a caller
+        // cannot accidentally publish a source that disagrees with the row.
+        ...eventPayload,
+        source: context.source
+      },
+      publisher,
+      { siteId }
+    );
+  } catch (error) {
+    // The row is already committed but nothing was notified. Leaving it is
+    // WORSE than never creating it: callers dedupe on the open alert, so they
+    // would find an `active` row and skip re-creating it forever — precisely
+    // the silent, inbox-only alert #5241 exists to eliminate. Roll it back so
+    // the next evaluation retries the whole create+publish.
+    captureException(error, undefined, {
+      errorId: 'alert-triggered-publish-failed',
+      alertId,
+      alertSource: context.source,
+      orgId,
+      deviceId
+    });
+    console.error(
+      `[AlertService] Failed to publish alert.triggered for ${context.source} alert ${alertId}; rolling the alert row back:`,
+      error
+    );
+    try {
+      await db.delete(alerts).where(eq(alerts.id, alertId));
+    } catch (deleteError) {
+      // Now the row IS stranded — unpublished and undeletable. Nothing else
+      // will notice it, so this needs to page rather than only log.
+      captureException(deleteError, undefined, {
+        errorId: 'alert-triggered-orphan-rollback-failed',
+        alertId,
+        alertSource: context.source,
+        orgId,
+        deviceId
+      });
+      console.error(
+        `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
+        deleteError
+      );
+    }
+    return null;
+  }
+
+  // Only correlate an alert that actually published — a rolled-back row must
+  // not leave a correlation job pointing at a deleted alert.
+  enqueueAlertCorrelationForDevice(orgId, deviceId);
+
+  return alertId;
 }
 
 /**

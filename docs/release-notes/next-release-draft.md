@@ -230,3 +230,29 @@ No env vars, no migrations.
 - Enforcement returns to default ON once the notification-period rollout
   (grace window, banner, deadline before `force_mfa` takes effect — #5306)
   ships next release.
+
+---
+
+## Network-monitor alerts now notify, escalate and automate (#5241)
+
+**Self-Hosting / Upgrade Notes.**
+- Behaviour change (API), no migration and no new env vars: alerts raised by
+  **Network Monitors** (ICMP / TCP / HTTP / DNS checks) were previously written
+  straight into the `alerts` table without publishing `alert.triggered`, so they
+  appeared only in the Alerts inbox. They now go through the shared alert
+  create+publish path and therefore start **sending notifications** (email,
+  Teams, Slack, webhook, PagerDuty, SMS, Pushover), **starting escalation
+  policies**, **firing automations** with an `alert.triggered` trigger, and
+  **receiving AI alert verdicts** — exactly like every other alert source.
+- **Expect a step change in notification and automation volume on upgrade** if
+  you have network monitors configured with alert rules: monitors that were
+  silently raising inbox-only alerts will start paging on-call. Review your
+  monitor alert rules, notification channels and escalation policies before
+  deploying. The existing 5-minute per-rule cooldown and the
+  `source = network_monitor` dedupe still apply, and recovery still auto-resolves
+  as before.
+- The published event carries `source: 'network_monitor'`, `monitorId`,
+  `alertRuleId`, `monitorType` and `target` alongside the standard
+  `alertId`/`deviceId`/`severity` fields, so an automation event filter can be
+  narrowed to network monitors (`source` = `network_monitor`) or to one monitor.
+  `ruleId` is `null` for these alerts — they have no `alert_rules` row.
