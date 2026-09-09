@@ -229,7 +229,17 @@ vi.mock('../db/schema', () => ({
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
-  devices: { siteId: { __column: 'devices.siteId' } },
+  // #5315 — `status` and `orgId` are sentinels (same pattern as sites.id /
+  // organizations.status) so the device-count tests can prove the
+  // decommissioned filter is applied to devices.status and not to some other
+  // column: an unrecognized chunk compiles to an opaque bound parameter, so
+  // the sentinel OBJECT itself shows up in `params` and identifies the column.
+  devices: {
+    siteId: { __column: 'devices.siteId' },
+    orgId: { __column: 'devices.orgId' },
+    status: { __column: 'devices.status' },
+    isEphemeral: { __column: 'devices.isEphemeral' },
+  },
   // Agent version pins (issue #2124) validate against this table at save time.
   agentVersions: { id: {}, component: {}, version: {} }
 }));
@@ -2041,9 +2051,14 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
       const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
       expect(compiled.sql).toContain('<>');
       expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
@@ -4490,11 +4505,14 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(countWhere).toBeDefined();
-      // This suite mocks the schema module, so column names render blank —
-      // assert on the bound parameter, which carries the real value either way.
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
       const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
       expect(compiled.sql).toContain('<>');
       expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     it('should return sites with pagination', async () => {

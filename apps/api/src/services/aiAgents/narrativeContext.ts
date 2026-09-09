@@ -685,7 +685,8 @@ async function loadHeader(orgId: string): Promise<RawOrgHeader & { partnerId: st
            o.partner_id AS partner_id,
            p.name AS partner_name,
            p.timezone AS timezone,
-           (SELECT COUNT(*) FROM devices d WHERE d.org_id = ${orgId} AND d.is_ephemeral = false)::int AS device_count,
+           (SELECT COUNT(*) FROM devices d WHERE d.org_id = ${orgId} AND d.is_ephemeral = false
+             AND d.status <> 'decommissioned')::int AS device_count,
            (SELECT COUNT(*) FROM sites s WHERE s.org_id = ${orgId})::int AS site_count
     FROM organizations o
     JOIN partners p ON p.id = o.partner_id
