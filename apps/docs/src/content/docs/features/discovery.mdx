@@ -28,15 +28,15 @@ A profile defines the complete configuration for a scan: which subnets to target
 
 ### Discovered Assets
 
-Each unique IP address found during a scan is stored as a discovered asset within the organization. Assets are classified by type (workstation, server, printer, router, switch, etc.) and track their status through a lifecycle:
+Each unique IP address found during a scan is stored as a discovered asset within the organization. Assets are classified by type (workstation, server, printer, router, switch, etc.) and tracked along two independent axes: an approval status you set, and a liveness indicator the system sets.
 
-| Status | Meaning |
+| Approval Status | Meaning |
 |--------|---------|
-| `new` | Recently discovered, not yet reviewed |
-| `identified` | Reviewed and classified but not linked to an enrolled device |
-| `managed` | Linked to an enrolled Breeze agent device |
-| `ignored` | Explicitly excluded from monitoring and reports |
-| `offline` | Previously seen but not found in the most recent scan |
+| `pending` | Recently discovered, not yet reviewed |
+| `approved` | Reviewed and accepted — shows up in dashboards and reports |
+| `dismissed` | Explicitly excluded from dashboards and reports |
+
+Separately, every asset carries an **online/offline** indicator based on whether it was seen in the most recent scan — this is independent of approval status, so a `pending` or `approved` asset can be online or offline at any time. Linking an asset to an enrolled device (see [Asset-to-Device Linking](#asset-to-device-linking) below) is a separate concept from approval status: a linked asset can be `pending`, `approved`, or `dismissed` just like any other.
 
 ### Asset Types
 
@@ -295,7 +295,7 @@ The job status is set to `cancelled` and the system attempts to remove it from t
 List all discovered assets with optional filters:
 
 ```
-GET /discovery/assets?orgId=uuid&status=new&assetType=router
+GET /discovery/assets?orgId=uuid&approvalStatus=pending&assetType=router
 ```
 
 **Filter parameters:**
@@ -303,10 +303,10 @@ GET /discovery/assets?orgId=uuid&status=new&assetType=router
 | Parameter | Values |
 |-----------|--------|
 | `orgId` | UUID of the organization |
-| `status` | `new`, `identified`, `managed`, `ignored`, `offline` |
+| `approvalStatus` | `pending`, `approved`, `dismissed` |
 | `assetType` | `workstation`, `server`, `printer`, `router`, `switch`, `firewall`, `access_point`, `phone`, `iot`, `camera`, `nas`, `unknown` |
 
-**Quick Filters:** The discovered assets tab includes chip-style quick filter buttons at the top of the list. Filter by scan profile or subnet to quickly narrow down results. When filters are active, bulk actions (approve, ignore, delete) apply only to the currently filtered view -- unfiltered assets are not affected.
+**Quick Filters:** The discovered assets tab includes chip-style quick filter buttons at the top of the list. Filter by scan profile or subnet to quickly narrow down results. When filters are active, bulk actions (approve, dismiss) apply only to the currently filtered view -- unfiltered assets are not affected.
 
 Each asset in the response includes monitoring status flags:
 
@@ -343,7 +343,7 @@ From the **Monitoring** tab you can see the asset's link state and **Unlink** it
 
 ### Asset-to-Device Linking
 
-Linking records which enrolled Breeze device corresponds to a discovered asset — it sets the asset status to `managed` and is used for **identity and asset tracking only**. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
+Linking records which enrolled Breeze device corresponds to a discovered asset — it also sets the asset's approval status to `approved` as a side effect, and is used for **identity and asset tracking only**. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
 
 Linking is **automatic and hidden**: during scan result processing, the worker matches assets to enrolled devices by MAC address or IP address within the same organization, with no action needed from you. The only manual acts are **overriding** a link (pointing the asset at a different enrolled device from its network device detail page) and **unlinking**. A manual unlink is permanent until you re-link — the next scan will not undo it.
 
@@ -364,20 +364,39 @@ The discovery asset list also supports filtering by linked device (`linkedDevice
 
 Opening a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) is done from the network device detail page: find the open web port and click **Open Web UI**. The proxied request rides an online agent on the same network — no VPN, firewall rules, or port forwarding required. See [Network Proxy](/features/remote-access/#network-proxy) in the Remote Access docs for the full workflow, allowlist configuration, session lifetime, and security model.
 
-### Ignoring an Asset
+### Approving and Dismissing Assets
 
-Mark an asset as ignored to exclude it from dashboards and reports:
+Every discovered asset starts out `pending`. Approving it marks it reviewed and keeps it visible in dashboards and reports; dismissing it excludes it from dashboards and reports without deleting the underlying record.
 
 ```bash
-POST /discovery/assets/:id/ignore
+PATCH /discovery/assets/:id/approve
+```
+
+```bash
+PATCH /discovery/assets/:id/dismiss
+```
+
+Both record who made the change and when. Selecting multiple rows in the discovered assets list enables bulk **Approve** and **Dismiss** buttons, backed by:
+
+```bash
+POST /discovery/assets/bulk-approve
 Content-Type: application/json
 
 {
-  "reason": "Test device, not production"
+  "assetIds": ["uuid", "uuid"]
 }
 ```
 
-The `reason` field is optional (max 1,000 characters). The asset records who ignored it and when.
+```bash
+POST /discovery/assets/bulk-dismiss
+Content-Type: application/json
+
+{
+  "assetIds": ["uuid", "uuid"]
+}
+```
+
+Each bulk request accepts up to 200 asset IDs.
 
 ### Deleting an Asset
 
@@ -469,10 +488,13 @@ The asset list endpoint (`GET /discovery/assets`) includes `snmpMonitoringEnable
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/discovery/assets` | List assets (`?orgId=&status=&assetType=`) |
+| GET | `/discovery/assets` | List assets (`?orgId=&approvalStatus=&assetType=`) |
 | GET | `/discovery/assets/:id` | Get single asset detail (identity, monitoring status, discovery metadata) |
 | POST | `/discovery/assets/:id/link` | Link asset to enrolled device |
-| POST | `/discovery/assets/:id/ignore` | Mark asset as ignored |
+| PATCH | `/discovery/assets/:id/approve` | Approve asset |
+| PATCH | `/discovery/assets/:id/dismiss` | Dismiss asset |
+| POST | `/discovery/assets/bulk-approve` | Approve up to 200 assets at once (`assetIds`) |
+| POST | `/discovery/assets/bulk-dismiss` | Dismiss up to 200 assets at once (`assetIds`) |
 | DELETE | `/discovery/assets/:id` | Delete asset and associated monitors |
 
 ### Network Topology

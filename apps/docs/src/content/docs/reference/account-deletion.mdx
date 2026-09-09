@@ -26,7 +26,7 @@ A signed-in user requests deletion of their own account from the dashboard accou
 
 </Steps>
 
-Password re-entry is rate limited (5 attempts per 5 minutes). Only **one pending request per user** is allowed at a time — submitting again while one is pending is rejected.
+Password re-entry is rate limited (5 attempts per 5 minutes). Only **one pending request per user** is allowed at a time — submitting again while one is already pending is idempotent: it returns the existing pending request (`200`) rather than creating a second one or returning an error.
 
 After submission the user sees the process-by date and can cancel any time before it:
 
@@ -40,7 +40,7 @@ Submitting a request does not disable the account. The user keeps full access fo
 
 ## Reviewing requests (administrator)
 
-Administrators with the **`users:write`** permission review pending requests at **Admin → Account deletion requests**. Approving and rejecting both require the administrator to pass an **MFA challenge**.
+Administrators with the **`users:write`** permission review pending requests at **Administration → Deletion Requests**. That nav item, and the rest of the Administration section, only appears for **platform admins** (`isPlatformAdmin: true`) — other `users:write` holders can still call the review endpoint directly but have no dashboard entry point. Approving and rejecting both require the administrator to pass an **MFA challenge**.
 
 | Decision | Effect |
 |----------|--------|

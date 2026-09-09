@@ -11,7 +11,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 The idea is step-up verification: a low-risk approval can be a quick tap, but signing off on a critical action should demand your strongest proof of identity. Approval Security is the policy that draws those lines.
 
-Reach it at **Settings → Organization → Approval Security**. The policy set here applies across your MSP -- it is the per-partner enforcement floor, not a per-device setting.
+Reach it at **Settings → Organizations → (organization) → Security & Access → Approval Security**. The policy set here applies across your MSP -- it is the per-partner enforcement floor, not a per-device setting.
 
 <Aside type="note">
   Approval Security sets the *assurance bar* for a decision. It does not decide *whether* an action needs approval in the first place -- that is [Privileged Access Management](/features/pam/) (the rule chain, the queue, and the auto-approve / require-approval verdicts). PAM decides an action needs a human; Approval Security decides how convincingly that human must authenticate.
@@ -45,7 +45,7 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 
 <Steps>
 
-1. Open **Settings → Organization → Approval Security**.
+1. Open **Settings → Organizations → (organization) → Security & Access → Approval Security**.
 
 2. For each **risk tier** (Low, Medium, High, Critical), pick the minimum **assurance level** you want to require from the dropdown. Only levels at or above the Breeze default for that tier are selectable.
 

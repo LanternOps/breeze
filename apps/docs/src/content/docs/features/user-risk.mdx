@@ -93,7 +93,7 @@ The score boundaries between risk levels are configurable:
 | Spike delta | 15 | A score increase of this many points in one calculation cycle triggers a spike notification |
 | Auto-assign training | 80 | Score at or above this level triggers automatic training assignment (if enabled) |
 
-To change these thresholds, navigate to **Settings > User Risk > Policy** and adjust the values under the **Thresholds** tab.
+These thresholds are part of the risk policy. Policy configuration is API-only today — see [Risk Policy](#risk-policy) below.
 
 ---
 
@@ -177,14 +177,18 @@ Weights determine how much each risk factor contributes to the total score. They
 
 ```json
 {
-  "failedLogins": 2.5,
-  "unusualLocation": 3.0,
-  "privilegeEscalation": 5.0,
-  "policyViolation": 4.0,
-  "overdueTraining": 1.5,
-  "staleCredentials": 2.0
+  "mfaRisk": 0.14,
+  "authFailureRisk": 0.2,
+  "sessionAnomalyRisk": 0.1,
+  "threatExposureRisk": 0.2,
+  "softwareViolationRisk": 0.15,
+  "deviceSecurityRisk": 0.1,
+  "staleAccessRisk": 0.06,
+  "recentImpactRisk": 0.05
 }
 ```
+
+The keys must match the eight risk factors listed above exactly — any other key is silently ignored.
 
 Higher weights mean that factor has a greater impact on the overall score.
 
@@ -218,26 +222,13 @@ Interventions are automated actions triggered by risk conditions.
 
 ### Updating the Policy
 
-<Steps>
-1. Navigate to **Settings > User Risk > Policy**.
-2. Adjust weights, thresholds, or intervention settings.
-3. Click **Save**. Changes take effect immediately for future score calculations.
-</Steps>
+Policy configuration is API-only today — there is no policy editor in the dashboard. Send a `PUT` request to the user risk policy endpoint with the weights, thresholds, and/or intervention settings you want to change; changes take effect immediately for future score calculations.
 
 ---
 
 ## Security Training Assignment
 
-When a user's risk score exceeds the configured threshold, Breeze can automatically assign security training. You can also manually assign training to any user.
-
-### Assigning Training
-
-<Steps>
-1. Navigate to the user's risk detail page.
-2. Click **Assign Training**.
-3. Optionally select a specific training module and provide a reason.
-4. Click **Assign**. The assignment is recorded as a risk event.
-</Steps>
+When a user's risk score exceeds the configured threshold, Breeze can automatically assign security training. Training can also be assigned manually, but this is API-only today — there is no **Assign Training** button in the dashboard. Send a `POST` request to the assign-training endpoint with the user, an optional module, and an optional reason; the assignment is recorded as a risk event.
 
 ### Assignment Fields
 

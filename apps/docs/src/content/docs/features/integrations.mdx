@@ -20,11 +20,11 @@ Breeze supports three categories of integrations, each served by a dedicated set
 | Category | Providers | Purpose |
 |----------|-----------|---------|
 | **Communication** | Slack, Microsoft Teams, Discord | Alert notifications, status updates, and on-call messaging |
-| **PSA / Ticketing** | Jira, ServiceNow, ConnectWise, Autotask, Freshservice, Zendesk | Ticket creation, bi-directional sync, and workflow automation |
-| **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms |
-| **Accounting** | QuickBooks Online | Connect your accounting platform (see [Accounting](#accounting-integrations)) |
-| **Distributors** | Pax8, TD SYNNEX | Sync licenses and pull live distributor pricing into your [Product Catalog](/features/product-catalog/) |
-| **Network** | UniFi (Ubiquiti Site Manager cloud, or a self-hosted controller) | Discover UniFi fleet inventory and WAN health via the cloud, or connect a self-hosted controller directly through a Breeze agent -- with optional agent-collected deep telemetry either way (see [UniFi Network](#unifi-network)) |
+| **PSA / Ticketing** | Jira, ServiceNow, ConnectWise, Autotask, Freshservice, Zendesk | Connection management and credential storage today; ticket sync is not implemented yet (see [PSA Integrations](/features/psa-integrations/)) |
+| **Monitoring** | External monitoring endpoints | Forward device telemetry and health data to third-party observability platforms (see [Monitoring & Observability Integrations](/features/monitoring-integrations/)) |
+| **Accounting** | QuickBooks Online | Connect your accounting platform (see [Accounting Integrations](/features/accounting-integrations/)) |
+| **Distributors** | Pax8, TD SYNNEX | Sync licenses and pull live distributor pricing into your [Product Catalog](/features/product-catalog/) -- see [Distributor Integrations](/features/distributor-integrations/) |
+| **Network** | UniFi (Ubiquiti Site Manager cloud, or a self-hosted controller) | Discover UniFi fleet inventory and WAN health via the cloud, or connect a self-hosted controller directly through a Breeze agent -- with optional agent-collected deep telemetry either way (see [UniFi Network Integration](/features/unifi-integration/)) |
 
 <Aside>
   Communication and monitoring integrations are configured through the `/integrations` routes. PSA connections use the dedicated `/psa` routes, which provide full CRUD, credential encryption, ticket mapping, and sync management.
@@ -204,7 +204,7 @@ PSA (Professional Services Automation) integrations are the most fully featured 
 | **Zendesk** | `zendesk` | Subdomain, email, API token |
 
 <Aside type="caution">
-  Credentials are encrypted using AES-256-GCM before being stored in the database. The encryption key is derived from the `APP_ENCRYPTION_KEY` environment variable. In production, this variable must be set -- the API will refuse to start without it.
+  Credentials are encrypted using AES-256-GCM before being stored in the database. The encryption key is derived from the `APP_ENCRYPTION_KEY` environment variable, which is required in every environment -- the API will refuse to start without it.
 </Aside>
 
 ### Creating a PSA Connection
@@ -501,24 +501,13 @@ DELETE /psa/connections/:id
 
 ### Triggering a Sync
 
-Manually trigger a data sync for a PSA connection:
-
 ```bash
 POST /psa/connections/:id/sync
 ```
 
-Response:
-
-```json
-{
-  "id": "uuid",
-  "provider": "connectwise",
-  "syncedAt": "2026-02-18T...",
-  "status": "queued"
-}
-```
-
-The sync runs asynchronously. The connection's `lastSyncAt` and `lastSyncStatus` fields are updated as the sync progresses.
+<Aside type="caution">
+  PSA ticket sync is not implemented yet. This endpoint always returns `501 Not Implemented` with `{ "error": "PSA ticket sync is not implemented yet" }` -- no ticket data moves between Breeze and the PSA today.
+</Aside>
 
 ### Updating Connection Status
 
@@ -658,10 +647,10 @@ Verify the webhook URL is correct and publicly reachable. Use the `"test": true`
 Confirm that the credentials are correct and the PSA platform's API is accessible from your Breeze API server. Some providers require IP allowlisting or VPN access. Check the `lastTestedAt` and sync status fields on the connection for additional context.
 
 **"Failed to encrypt credentials" error on PSA connection creation.**
-The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. In production, this variable is required. In development, the API falls back to `JWT_SECRET` or `SESSION_SECRET`, but these must also be present.
+The `APP_ENCRYPTION_KEY` environment variable is not set or is invalid. It's required in every environment -- the API will not start without it.
 
 **Ticket mappings not appearing.**
-Ticket mappings are created during PSA sync operations. Ensure the connection has been synced at least once via `POST /psa/connections/:id/sync`. Also verify that the connection's `enabled` flag is `true`.
+This is expected today -- PSA ticket sync is not implemented yet (see [PSA Integrations](/features/psa-integrations/)), so no ticket mappings are ever created.
 
 **"Organization context required" error.**
 Integration routes require an organization scope. If you are authenticated with a partner or system scope, pass the `orgId` query parameter or include it in the request body to specify which organization's integrations you are managing.

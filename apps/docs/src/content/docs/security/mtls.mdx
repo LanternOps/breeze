@@ -206,16 +206,16 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 
 ## Organization Settings
 
-Enable or configure mTLS per organization:
+Configure the per-organization certificate policy — how long issued certificates live, and what happens when one expires:
 
 ```bash
 curl -X PATCH -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"mtls": {"enabled": true, "quarantinePolicy": "auto"}}' \
-  https://breeze.yourdomain.com/api/v1/org/:orgId/settings/mtls
+  -d '{"certLifetimeDays": 90, "expiredCertPolicy": "auto_reissue"}' \
+  https://breeze.yourdomain.com/api/v1/agents/org/:orgId/settings/mtls
 ```
 
-Quarantine policies:
-- `auto` — Automatically quarantine devices with expired or invalid certificates
-- `manual` — Only quarantine via admin action
-- `disabled` — mTLS tracking without enforcement
+- `certLifetimeDays` — 1 to 365, defaults to 90
+- `expiredCertPolicy`:
+  - `auto_reissue` (default) — automatically issue a replacement certificate when the current one expires
+  - `quarantine` — quarantine the device instead of reissuing

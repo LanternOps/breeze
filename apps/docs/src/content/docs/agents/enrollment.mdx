@@ -14,8 +14,9 @@ import { Aside } from '@astrojs/starlight/components';
 Agent                                 API Server
   │                                      │
   │─── POST /api/v1/agents/enroll ──────►│
-  │    { hostname, os, arch,             │
-  │      enrollmentSecret, siteId }      │
+  │    { enrollmentKey, hostname,        │
+  │      osType, architecture,           │
+  │      enrollmentSecret }              │
   │                                      │
   │    Validate enrollment secret        │
   │    Create device record              │
@@ -23,7 +24,7 @@ Agent                                 API Server
   │    Hash token (SHA-256) → store      │
   │    Issue mTLS cert (if configured)   │
   │                                      │
-  │◄── 201 { agentToken, deviceId,  ─────│
+  │◄── 201 { authToken, deviceId,   ─────│
   │         orgId, siteId, mtls? }       │
   │                                      │
   │    Store config to disk              │
@@ -44,7 +45,7 @@ Agent tokens follow the `brz_` prefix convention:
 
 - **Generation**: Cryptographically random, 32-byte hex string with `brz_` prefix
 - **Storage (server)**: Only the SHA-256 hash is stored in the `agentTokenHash` column
-- **Storage (agent)**: The raw token is stored in `secrets.yaml` with `0600` permissions (the main `agent.yaml` config uses `0640` so the Helper can read it)
+- **Storage (agent)**: The raw token is stored in `secrets.yaml` with `0600` permissions (the main `agent.yaml` config uses `0644` so the Helper can read it)
 - **Validation**: API hashes incoming tokens and compares against stored hash
 - **Same pattern as API keys** (`apiKeyAuth.ts`)
 
@@ -58,7 +59,7 @@ Enrollment keys are created in the dashboard and can be scoped to:
 
 - **Organization** — devices enroll into a specific org
 - **Site** — devices enroll into a specific site within an org
-- **Expiry** — keys expire after a configurable TTL (default: 60 minutes)
+- **Expiry** — keys expire after a configurable TTL (default: 30 days, via `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`)
 - **Usage limit** — keys can be limited to a number of uses
 
 ## Bulk Enrollment

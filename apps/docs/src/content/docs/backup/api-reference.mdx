@@ -97,8 +97,8 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/backup/hyperv/vms/:deviceId` | List VMs on a host |
 | POST | `/backup/hyperv/backup` | Export a VM (`deviceId`, `vmName`, `exportPath`, optional `consistencyType`) |
 | POST | `/backup/hyperv/restore` | Import a VM from backup |
-| POST | `/backup/hyperv/checkpoint` | Manage VM checkpoints |
-| POST | `/backup/hyperv/vm-state` | Control VM power state |
+| POST | `/backup/hyperv/checkpoints/:deviceId/:vmId` | Manage VM checkpoints |
+| POST | `/backup/hyperv/vm-state/:deviceId/:vmId` | Control VM power state |
 
 ---
 
@@ -115,8 +115,8 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/backup/bmr/token` | Generate recovery token (`snapshotId`, optional `expiresInHours`, `restoreType`, `targetConfig`) |
-| GET | `/backup/bmr/token/:id` | Get recovery token metadata |
+| POST | `/backup/bmr/tokens` | Generate recovery token (`snapshotId`, optional `expiresInHours`, `restoreType`, `targetConfig`) |
+| GET | `/backup/bmr/tokens/:id` | Get recovery token metadata |
 
 ---
 
@@ -165,6 +165,10 @@ This page lists all backup API endpoints for teams building integrations or auto
 
 ## Cloud-to-Cloud (C2C)
 
+<Aside type="caution">
+  Sync and restore execution are not yet implemented. `POST /c2c/configs/:id/run` creates a job that immediately fails with `c2c_sync_not_implemented`, and restore jobs fail the same way with `c2c_restore_not_implemented`. Connection and config setup below work today.
+</Aside>
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/c2c/m365/config` | Check if platform M365 app is configured |
@@ -175,7 +179,7 @@ This page lists all backup API endpoints for teams building integrations or auto
 | GET | `/c2c/connections/:id` | Get connection details |
 | GET | `/c2c/configs` | List C2C backup configs |
 | POST | `/c2c/configs` | Create/update backup scope and schedule |
-| POST | `/c2c/configs/:id/run` | Trigger immediate sync |
+| POST | `/c2c/configs/:id/run` | Trigger a sync (fails immediately — not yet implemented) |
 
 ---
 

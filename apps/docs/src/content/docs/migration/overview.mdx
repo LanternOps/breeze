@@ -120,7 +120,7 @@ Seven phases take you from decision to decommission. The custom-field backfill i
    | Setting | Default | Migration value |
    |---|---|---|
    | `maxUsage` | 1 | Device count + 20% headroom |
-   | `expiresAt` | 60 minutes | Long enough to cover your rollout wave |
+   | `expiresAt` | 30 days | Usually enough as-is; extend further only for a longer rollout wave |
    | `siteId` | — | Pin it, so devices land in the right site without per-device logic |
 
    Add **mutual antivirus and EDR exclusions for both agents** before you push. Two RMM agents on one box, each with a watchdog restarting the other's processes, is a reliable way to trip behavioural AV. See [Antivirus Exceptions](/deploy/antivirus-exceptions/).
