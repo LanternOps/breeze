@@ -1,6 +1,6 @@
 ---
 title: Bare Metal Recovery
-description: Reinstall a base OS or boot an operator-built Linux ISO, then use a one-time recovery token to reapply system-state artifacts and restore files to a machine that was never enrolled in Breeze.
+description: Reinstall a base OS or boot an operator-built Linux ISO, then use a one-time recovery token to restore files from a file snapshot, or download system-state artifacts from a system_image snapshot for manual review — Breeze does not apply them automatically.
 sidebar:
   order: 12
   label: "Bare Metal Recovery"
@@ -8,9 +8,9 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Bare Metal Recovery (BMR) is a **reinstall-then-recover** flow, not disk imaging. You put a working OS on the target machine yourself — by installing one normally or, on Linux/amd64 hardware, by booting an ISO Breeze builds from your own boot-template directory — then run the `breeze-backup` recovery binary with a one-time token. It downloads the snapshot and reapplies OS system-state artifacts and files on top of whatever is already booted. Breeze does not ship boot media, and there is no WinPE/WinRE environment: on Windows and macOS you provide the booted OS yourself before recovery starts.
+Bare Metal Recovery (BMR) is a **reinstall-then-recover** flow, not disk imaging. You put a working OS on the target machine yourself — by installing one normally or, on Linux/amd64 hardware, by booting an ISO Breeze builds from your own boot-template directory — then run the `breeze-backup` recovery binary with a one-time token. It downloads the snapshot: a `file` snapshot restores its files onto whatever is already booted; a `system_image` snapshot downloads its collected OS-state artifacts as plain files but does not apply them. Breeze does not ship boot media, and there is no WinPE/WinRE environment: on Windows and macOS you provide the booted OS yourself before recovery starts.
 
-A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot recovers OS system state. To recover both on one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice.
+A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers data; a `system_image`-mode snapshot downloads OS-state artifacts without applying them. To recover data and collect OS-state artifacts for one machine, generate two tokens (one per snapshot) and run `bmr-recover` twice.
 
 ---
 
@@ -19,7 +19,7 @@ A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers 
 1. Get a working OS onto the target machine — install one normally, or boot the Linux/amd64 recovery ISO if you built one from your boot template.
 2. Generate a **recovery token** from a backup snapshot and download the recovery bundle (the `breeze-backup` binary, a launch script, and `bootstrap.json`).
 3. On the target machine, run the recovery binary with the token — no Breeze enrollment needed.
-4. It downloads the snapshot and applies OS system-state artifacts (if the snapshot is `system_image`) or files (if the snapshot is `file`).
+4. It downloads the snapshot: for a `file` snapshot, files are restored to their original paths; for a `system_image` snapshot, the collected OS-state artifacts are downloaded as files into a staging directory and are **not** applied.
 5. A post-restore validation probe runs and reports pass/fail; nothing reboots the machine for you.
 
 ---
@@ -43,7 +43,7 @@ A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers 
 </Aside>
 
 <Aside type="note">
-  Recovering both OS state and data for one machine takes two tokens and two runs: one against the device's `system_image` snapshot, one against its `file` snapshot.
+  Recovering data and collecting OS-state artifacts for one machine takes two tokens and two runs: one against the device's `system_image` snapshot, one against its `file` snapshot.
 </Aside>
 
 ---
@@ -58,23 +58,24 @@ A recovery token is scoped to **one snapshot**. A `file`-mode snapshot recovers 
    ```
    Add `--target-path <source>=<target>` (repeatable) to remap individual file paths from the snapshot onto different locations on the recovery machine; anything not remapped restores to its original path.
 3. The recovery agent authenticates with the token and downloads the snapshot manifest.
-4. For a `system_image` snapshot, system-state artifacts are applied directly onto the live, already-booted OS:
-   - **Linux** — the backed-up `/etc` tree is copied over, packages are reinstalled from the captured `dpkg`/`dnf` list, systemd services are re-enabled, `iptables` rules and crontabs are restored.
-   - **Windows** — registry hives (`SYSTEM`, `SOFTWARE`, `SAM`, `SECURITY`) are `reg restore`d onto the **live** registry, the BCD store is imported with `bcdedit /import`, the certificate store is restored with `certutil -restoreDB`, firewall policy is imported with `netsh advfirewall import`, and drivers are installed with `pnputil`.
-   - **macOS** — preference plists, LaunchDaemon/LaunchAgent items, and network configuration are copied back and `configd` is poked to reload.
-5. For a `file` snapshot, files are downloaded and written to their original paths (or their `--target-path` remapping).
+4. For a `system_image` snapshot, the recovery binary downloads the collected artifacts as ordinary files into a staging directory — it does **not** apply them to the running OS. The staging directory is a temporary path such as `/tmp/breeze-systemstate-<random>/{boot,crontabs,etc,firewall,packages,services}` on Linux, `C:\Windows\SystemTemp\breeze-systemstate-<random>\` on Windows, or `/var/folders/.../T/breeze-systemstate-<random>/` on macOS. A `system_image` snapshot contains:
+   - **Windows** — registry hives (`SYSTEM`, `SOFTWARE`, `SAM`, `SECURITY`), the BCD store, the certificate store, installed drivers, service configuration, and firewall policy.
+   - **Linux** — the `/etc` tree, the captured `dpkg`/`dnf` package list, the set of enabled systemd services, firewall (`iptables`) rules, and crontabs.
+   - **macOS** — preference plists, LaunchDaemon/LaunchAgent items, and network configuration.
+   The run still reports `status: completed` with `stateApplied: false` and the warning "no system state found in snapshot, skipping state restore" — a `completed` `system_image` recovery does not mean the OS was restored. To apply any of these artifacts, an operator has to inspect the staging directory and apply them by hand (e.g. `reg restore`, copying `/etc` files back, re-enabling services).
+5. For a `file` snapshot, files are downloaded and written to their original paths (or their `--target-path` remapping). This is the only step in this flow that changes the running OS's state.
 6. A post-restore validation probe checks network reachability, presence of critical files, and service status, and reports the result — it does not repair or retry anything it finds wrong.
 </Steps>
 
 <Aside type="caution">
-  Nothing in this flow reboots the machine or replaces its running OS. System-state artifacts are applied as file/registry writes to the OS you already booted, in place, while it's running.
+  Nothing in this flow reboots the machine or replaces its running OS. For a `system_image` snapshot, nothing in this flow modifies the running OS at all — the collected artifacts land in a staging directory as plain files, and applying any of them (registry import, `/etc` copy, service re-enable, and so on) is a separate, manual step.
 </Aside>
 
 ---
 
 ## What a Recovered Machine Is — and Isn't
 
-A machine that has gone through BMR is: the OS you installed or booted, with the backed-up system-state artifacts applied on top of it, plus the files from the `file` snapshot. It is **not** a byte-identical clone of the original machine — there is no disk or partition imaging anywhere in this flow, and hardware-specific state (disk partitioning, bootloader identity beyond the imported BCD store on Windows, kernel/driver binaries on Linux) is not reproduced.
+A machine recovered with a `file` snapshot is: the OS you installed or booted, plus the recovered files, otherwise unchanged. A machine recovered with a `system_image` snapshot is: exactly the OS you installed or booted — the collected artifacts sit alongside it as files in a staging directory, and `/etc`, the registry, boot configuration, services, firewall, and crontabs on the machine are untouched. A `completed` `system_image` recovery means the artifacts downloaded successfully, not that any of them were applied. Neither snapshot type produces a byte-identical clone of the original machine — there is no disk or partition imaging anywhere in this flow, and hardware-specific state (disk partitioning, bootloader identity, kernel/driver binaries) is not reproduced.
 
 ---
 
@@ -82,10 +83,10 @@ A machine that has gone through BMR is: the OS you installed or booted, with the
 
 | Scenario | Approach |
 |----------|----------|
-| **Hard drive failure** | Install/boot an OS on the new disk, then recover system state and data with BMR |
-| **Machine replacement** | Install a base OS on the replacement hardware, then recover with BMR (drivers for the new hardware are not injected automatically outside Windows `pnputil`) |
-| **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/) |
-| **Migration** | Recover system state and files onto different hardware; expect to reconcile driver and boot differences yourself |
+| **Hard drive failure** | Install/boot an OS on the new disk, then recover data with BMR; use a `system_image` snapshot only to collect artifacts for manual reference |
+| **Machine replacement** | Install a base OS on the replacement hardware, then recover data with BMR; reconfigure the OS and reinstall drivers yourself — BMR does not apply either |
+| **Disaster recovery** | BMR as part of a [DR plan](/backup/disaster-recovery/) — plan for manual OS reconfiguration, not automatic state restore |
+| **Migration** | Recover data onto different hardware; reconcile OS configuration, drivers, and boot differences yourself |
 
 For recovering individual files or databases onto an already-enrolled device, use the standard [restore workflow](/backup/restoring/) instead — it's faster and doesn't require a recovery token.
 
