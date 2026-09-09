@@ -1600,20 +1600,6 @@
     "running": "In esecuzione...",
     "runAgain": "Esegui di nuovo",
     "scriptFallback": "Script",
-    "status": {
-      "cancelled": "Annullato",
-      "completed": "Completato",
-      "failed": "Non riuscito",
-      "pending": "In sospeso",
-      "running": "In esecuzione",
-      "timeout": "Timeout"
-    },
-    "statusDescriptions": {
-      "completed": "Script completato con successo",
-      "pending": "Lo script è in attesa di essere eseguito",
-      "running": "Lo script è attualmente in esecuzione...",
-      "timeout": "L'esecuzione dello script è scaduta"
-    },
     "stderr": "Errore standard (stderr)",
     "stdout": "Output standard (stdout)",
     "table": {

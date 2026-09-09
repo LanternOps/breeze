@@ -1600,20 +1600,6 @@
     "running": "Wird ausgeführt...",
     "runAgain": "Erneut ausführen",
     "scriptFallback": "Skript",
-    "status": {
-      "cancelled": "Abgesagt",
-      "completed": "Abgeschlossen",
-      "failed": "Fehlgeschlagen",
-      "pending": "Ausstehend",
-      "running": "Wird ausgeführt",
-      "timeout": "Zeitüberschreitung"
-    },
-    "statusDescriptions": {
-      "completed": "Skript erfolgreich abgeschlossen",
-      "pending": "Das Skript wartet darauf, ausgeführt zu werden",
-      "running": "Das Skript wird gerade ausgeführt...",
-      "timeout": "Zeitüberschreitung bei der Skriptausführung"
-    },
     "stderr": "Standardfehler (stderr)",
     "stdout": "Standardausgabe (stdout)",
     "table": {
