@@ -112,7 +112,7 @@ describe('Cancel run affordance', () => {
       jsonResponse({
         success: true,
         run: { id: 'run-1', status: 'cancelled' },
-        executionsCancelled: 3,
+        executionsStopped: 3,
         uncancellableActions: [{ actionIndex: 0, actionType: 'execute_command', reason: 'no_execution_row' }],
       }),
     );
@@ -130,7 +130,7 @@ describe('Cancel run affordance', () => {
 
   it('renders no uncancellable-actions banner when the cancel fully succeeded', async () => {
     fetchWithAuthMock.mockResolvedValue(
-      jsonResponse({ success: true, run: { id: 'run-1', status: 'cancelled' }, executionsCancelled: 4, uncancellableActions: [] }),
+      jsonResponse({ success: true, run: { id: 'run-1', status: 'cancelled' }, executionsStopped: 4, uncancellableActions: [] }),
     );
     const user = userEvent.setup();
     render(<AutomationRunHistory runs={[makeRun()]} isOpen onClose={() => {}} permissions={withAutomationsWrite} />);
@@ -144,7 +144,7 @@ describe('Cancel run affordance', () => {
 
   it('calls onRunCancelled with the run id after a successful cancel, so the host page can refresh', async () => {
     fetchWithAuthMock.mockResolvedValue(
-      jsonResponse({ success: true, run: { id: 'run-1', status: 'cancelled' }, executionsCancelled: 4, uncancellableActions: [] }),
+      jsonResponse({ success: true, run: { id: 'run-1', status: 'cancelled' }, executionsStopped: 4, uncancellableActions: [] }),
     );
     const onRunCancelled = vi.fn();
     const user = userEvent.setup();
@@ -193,6 +193,25 @@ describe('Cancel run affordance', () => {
     // A 401 is session-expiry, not a normal error — no redundant toast on
     // top of the redirect (runAction's own documented contract).
     expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a real success toast naming the stopped-execution count, not a raw i18n key (sweep 2026-09-08 row 18)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      jsonResponse({ success: true, run: { id: 'run-1', status: 'cancelled' }, executionsStopped: 3, uncancellableActions: [] }),
+    );
+    const user = userEvent.setup();
+    render(<AutomationRunHistory runs={[makeRun()]} isOpen onClose={() => {}} permissions={withAutomationsWrite} />);
+
+    await user.click(screen.getByTestId('cancel-run'));
+    await user.click(screen.getByTestId('confirm-cancel-run'));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringContaining('3') }),
+      );
+    });
+    const [{ message }] = showToastMock.mock.calls.find(([call]) => call.type === 'success')!;
+    expect(message).not.toContain('automationRunHistory.actions.cancelRunSuccess');
   });
 
   it('renders devicesCancelled separately from succeeded and failed', () => {
