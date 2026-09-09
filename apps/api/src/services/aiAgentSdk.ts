@@ -543,11 +543,21 @@ async function transitionIntentAndPublish(
  * - `executed: true` — the CAS is attempted AFTER the tool had its real-world
  *   side effect. The effect happened and cannot be undone, but the intent now
  *   carries the winner's terminal state, so the result THIS execution produced
- *   is recorded nowhere. That is the hole this helper exists to close, and it
- *   is the exact posture `intentReleaseWorker.ts` already takes on its own
- *   `executing -> completed` loss: log, `captureException`, and write an
- *   `action_intent.executed` / `result: 'failure'` audit row carrying an
- *   explicit `execution_cas_lost` marker.
+ *   is recorded nowhere. That is the hole this helper exists to close: log,
+ *   `captureException`, and write an `action_intent.executed` /
+ *   `result: 'failure'` audit row carrying an explicit `execution_cas_lost`
+ *   marker.
+ *
+ *   The log + `captureException` half is taken straight from
+ *   `intentReleaseWorker.ts`'s own `executing -> completed` loss. The durable
+ *   record is NOT: the worker re-persists the outcome on the intent's TASK
+ *   OPERATION row (`persistTaskOperationOutcome`, #5209), which is a channel
+ *   this file does not have — every intent it transitions is created without a
+ *   task context, so `taskId` is null by construction (see
+ *   `transitionIntentAndPublish` above). The audit row is this path's
+ *   equivalent durable record, not a claim of parity. The worker's own three
+ *   lost-CAS branches still write no audit row of their own; backporting one
+ *   is a separate change, deliberately not made here.
  *
  * Never retries the tool: a lost CAS means another writer owns the intent, and
  * re-running would double-execute a real side effect — the precise thing the
@@ -617,8 +627,13 @@ function reportLostTerminalCas(opts: {
     });
     recordActionIntentMetric('chat', toolName, 'executed');
   } catch (err) {
-    // The marker is the ONLY record that this execution's outcome exists at
-    // all, so losing it must not itself be silent.
+    // Only a SYNCHRONOUS throw reaches here (a bug in the payload sanitiser,
+    // say): `writeAuditEvent` is a fire-and-forget `void writeAuditEventAsync`
+    // (auditEvents.ts) and the underlying `createAuditLogAsync` never rejects —
+    // it catches internally and routes a real DB-write failure to its own retry
+    // queue plus `captureException`. So this catch is not what makes a failed
+    // marker write observable; it exists so that the one failure mode the audit
+    // layer canNOT absorb doesn't take the rest of postToolUse down with it.
     console.error(`[AI-SDK] Failed to write the CAS-lost audit marker for intent ${intentId}:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
