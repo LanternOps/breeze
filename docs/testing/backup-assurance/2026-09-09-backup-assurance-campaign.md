@@ -209,6 +209,8 @@ Filled in as cells execute. One row per cell per rig.
 | F1 test restore | WIN-A | same | verification `04af6e8f` | PARTIAL — 10,043 verified, 2 failed (D2); 148 s | `runs/win/F1-verify-testrestore.json` |
 | F2 alt-path restore | WIN-A | same | restore `b68037f8` | FAIL (D8) — 10,042 restored but under `restore-F2\Device\HarddiskVolumeShadowCopy{1,2}\assure\src\…`; byte compare not meaningful until D8 is fixed | `runs/win/F2-restore.json` |
 | B1 bundle | LNX (API) | same | media `e692f9a3` (amd64), `0d2e6bd5` (arm64) | FAIL (D7) — both builds `failed`, `ENOSPC` in the API container's 64 MB `/tmp` | `runs/lnx/bmr/media-*.json` |
+| I1 unchanged run 2 | WIN-A | same | `snapshot-20260909T173200Z-5a8a2cc8` / job `b7048cce` | FAIL (D6) — 10,044 objects re-uploaded, 0 referenced | `runs/win/I1-*.json` |
+| S1 system_image backup | WIN-A | same | `snapshot-20260909T173605Z-8d04cd1a` / job `415718cf` | PASS with warning — 12 artifacts / 92 MB, `completed`, errorLog `system state collection incomplete: [certs] failed` (O12); ran only because the helper was already up (D1) | `runs/win/I1-job-415718cf*.json` |
 | T1 tenancy | API (org B `1318fccd`) | API main | snapshot `1a8be5a6`, device `ea3aa8af` (org A) | PASS — restore 404, verify 400 "Snapshot not found for organization", BMR token 404, snapshot get/browse 404, manual run 404 "Device not found", job list empty | `runs/T1-cross-org.txt` |
 | B1 recover | LNX-QEMU → fresh VM 2 | helper 0.112.0 arm64 | tokens `554635d8` (file snapshot `4bac446a`), `b83e4a48` (system_image `9dd5f39a`) | FAIL (D9) — `bmr: authenticate failed: Invalid recovery token` for both active tokens; nothing recovered (0/10,047) | `runs/lnx/bmr/B1-file-run.txt` |
 
