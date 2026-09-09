@@ -45,8 +45,8 @@ Each audit log entry contains the following fields:
 | `userAgent` | Text | Client user-agent string |
 | `result` | Enum | Outcome of the action: `success`, `failure`, or `denied` |
 | `errorMessage` | Text | Error details when the result is `failure` or `denied` |
-| `checksum` | String (128) | SHA-256 of this row's canonical payload |
-| `prevChecksum` | String (128) | Checksum of the previous audit row in this organization's hash chain |
+| `checksum` | String (128) | SHA-256 of this row's own canonical payload (content-only; legacy column) |
+| `prevChecksum` | String (128) | Legacy column, always `NULL` on new rows — see [Tamper Evidence](#tamper-evidence) for where the hash chain actually lives |
 
 ### Actor Types
 
@@ -87,15 +87,18 @@ The following actions are flagged as security events and appear in the security 
 - `policy.create`
 - `policy.evaluate`
 - `automation.policy.evaluate`
-- `agent.source.ip.changed` — emitted when an agent's source IP changes between heartbeats; can indicate NAT changes, mobility, or stolen tokens.
 
 ### Tamper Evidence
 
 Audit log rows are append-only at the database layer. Postgres triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` against the table — even a superuser cannot rewrite history without explicit administrative privileges.
 
-In addition to row-level immutability, each row carries `prevChecksum` linking to the previous audit row in the same organization. Together with `checksum`, this produces a per-org SHA-256 hash chain. The link is **sealed at commit time** under a per-organization advisory lock, so concurrent writes from agents and users cannot fork the chain. Verifying the chain end-to-end detects insertion, deletion, or alteration of any row between two timestamps.
+The hash chain itself lives in a separate `audit_log_chain` table, not in the `checksum`/`prevChecksum` columns on `audit_logs` (those are a legacy, content-only pair kept for backward compatibility — see the field table above). A **deferred, commit-time database trigger** appends one entry per audit row to the chain table — its own content hash, a link to the previous chain entry's hash, and the resulting chain hash — under a per-organization advisory lock, so concurrent writes from agents and users are serialized into the chain and cannot fork it. Verifying the chain end-to-end detects insertion, deletion, or alteration of any audit row.
 
-Retention pruning is the one supported path that removes audit rows, and it operates by **prefix-cut**: the contiguous oldest segment that has aged past the retention window is deleted, and the first surviving row becomes the new chain head. There is **no re-anchoring** — the verifier accepts a null `prevChecksum` on the earliest retained row as evidence of a pruned prefix rather than a break, so the integrity check continues to pass after old data ages out.
+A daily worker verifies every organization's chain (04:15 UTC) and raises a P1 security incident the moment any org's chain returns a break, so tampering pages an operator instead of sitting silently detectable-but-unobserved. It can be turned off with `AUDIT_CHAIN_VERIFY_ENABLED=false`, which stops the scheduled sweep entirely (manual verification calls still work).
+
+A separate `audit_chain_anchors` table adds protection against a chain that is rewritten *after* rows are deleted, which could otherwise reconstruct into something internally consistent: it records periodic, append-only snapshots of each org's chain head (position, hash, entry count), optionally signed with an Ed25519 key when anchor signing is configured. A forged chain that is shorter or older than a previously recorded anchor is caught even if the forged chain passes the ordinary walk on its own.
+
+Retention pruning is the one supported path that removes audit rows, and it operates by **prefix-cut**: the contiguous oldest segment of the chain that has aged past the retention window is deleted, and the first surviving chain entry becomes the new head. There is **no re-anchoring** — the verifier accepts a null previous-hash on the earliest retained entry as evidence of a pruned prefix rather than a break, so the integrity check continues to pass after old data ages out.
 
 Pruning is protected by **connection-level privilege separation**. The API's normal database role (`breeze_app`) holds only `SELECT`/`INSERT` on the audit tables and cannot delete rows at all. Retention runs on a separate, dedicated connection authenticated as `breeze_audit_admin` (configured via `AUDIT_ADMIN_DATABASE_URL`) and still gated behind the `breeze.allow_audit_retention='1'` session GUC. Because deletion lives on a connection the request path never touches, a compromise of the API cannot destroy audit history. The platform's audit retention worker is the only caller — operators do not prune by hand.
 
@@ -150,7 +153,11 @@ Audit log retention is configured per organization in the `audit_retention_polic
 
 From v0.110.0, **an organization created on this version or later gets a policy automatically** — 365 days, enforced from the moment the organization exists, whichever way it was created.
 
-**An organization created before that has no row**, and the daily retention worker skips any organization without one — so its audit logs accumulate indefinitely until someone sets a policy. This is the case for every organization on an upgraded install: nothing has been pruned and nothing will be until you save a policy, which also means nothing was quietly deleted by the upgrade. Configure one from **Settings > Security & Access > Audit Retention** (requires the `audit:manage` permission, held by Org Admin by default), or directly via the API:
+**An organization created before that has no row**, and the daily retention worker skips any organization without one — so its audit logs accumulate indefinitely until someone sets a policy. This is the case for every organization on an upgraded install: nothing has been pruned and nothing will be until you save a policy, which also means nothing was quietly deleted by the upgrade. Configure one from **Settings > Security & Access > Audit Retention**, or directly via the API:
+
+<Aside type="caution">
+  Both the read and write endpoints require a **partner- or system-scoped** session in addition to the `audit:manage`/`audit:read` permission — an Org Admin user token is org-scoped and gets a 403 even though Org Admin holds those permissions by default. In practice, only a partner-level user (or a platform admin) can currently set an organization's audit retention policy.
+</Aside>
 
 ```
 GET /orgs/organizations/{id}/audit-retention
@@ -202,7 +209,7 @@ The `agent_logs` table has the following indexes for efficient querying:
 
 ### Log Ingestion
 
-Agents submit diagnostic logs via `POST /agents/:id/logs` with a JSON body containing a `logs` array (maximum 500 entries per request). Each entry must include:
+Agents submit diagnostic logs via `POST /agents/:id/logs` with a JSON body containing a `logs` array (maximum 200 entries per request, and the request body is capped at 256KB gzipped). Each entry must include:
 
 - `timestamp` (ISO 8601 datetime)
 - `level` (`debug`, `info`, `warn`, `error`)
@@ -230,7 +237,7 @@ Diagnostic logs are queried via `GET /devices/:id/diagnostic-logs` with the foll
 Results are ordered by timestamp descending and include the total count for pagination.
 
 <Aside type="note">
-  Diagnostic log queries require authentication and one of the following scopes: `organization`, `partner`, or `system`. The device must belong to the caller's organization.
+  Diagnostic log queries require authentication, one of the following scopes: `organization`, `partner`, or `system`, and the `devices:read` permission. The device must belong to the caller's organization.
 </Aside>
 
 ---

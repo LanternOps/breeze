@@ -33,8 +33,11 @@ rollup can no longer make the dashboard feel slow.
 | Durable event dispatch consumers | Agent enrollment and command dispatch |
 
 Jobs that need to reach an agent's live connection stay on the API container,
-because that is where the connection lives. Everything else — the majority of
-Breeze's background work — moves.
+because that is where the connection lives — this includes a few jobs that
+otherwise look like the routine scheduled/retention work in the left column,
+such as automation-run dispatch, backup verification, and event-log retention,
+whose closures reach socket-local dispatch under the hood. Everything else —
+the majority of Breeze's background work — moves.
 
 ## Choosing the roles
 

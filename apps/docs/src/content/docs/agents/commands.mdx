@@ -8,7 +8,7 @@ sidebar:
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The Breeze agent supports **120+ commands** organized into 30+ categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`.
+The Breeze agent supports **120+ commands** organized into 30+ categories. Commands are sent from the API to agents over WebSocket, each with an `action` string and an optional JSON `payload`. This page documents the commands MSP admins and integrators use most often — it is not an exhaustive reference for every command type the agent implements.
 
 ## Command Flow
 
@@ -288,7 +288,7 @@ This command is also exposed directly as `POST /devices/:id/auto-update` with bo
 
 Ask the agent to collect a fresh hardware/software inventory snapshot immediately instead of waiting for its scheduled run. The dashboard exposes this as the **Refresh Inventory** button on the device detail page; the API surface is `POST /devices/:id/commands` with `{ "type": "refresh_inventory" }`.
 
-Duplicates are rejected: while an inventory refresh is already queued or running for a device, a second request returns `409 Conflict` with `code: "ALREADY_PENDING"`. The bulk variant (`POST /devices/bulk/commands`) applies the same check per device and partitions its response into `commands` (newly issued), `skipped` (already-pending refreshes, each with the existing `commandId`), and `failed`.
+Duplicates are rejected while a `refresh_inventory` command for the device is still in `pending` status (not yet claimed by the agent): a second request returns `409 Conflict` with `code: "ALREADY_PENDING"`. This check only looks at `pending` status — once the agent has claimed the command, a new request is allowed even if the first one hasn't finished running yet. The bulk variant (`POST /devices/bulk/commands`) applies the same check per device and partitions its response into `commands` (newly issued), `skipped` (already-pending refreshes, each with the existing `commandId`), and `failed`.
 
 ---
 
@@ -332,6 +332,10 @@ Maximum file read size is 1 MB. Larger files will be rejected.
 | `path` | string | Required | File path to write |
 | `content` | string | `""` | File content |
 | `encoding` | string | `"text"` | `"text"` or `"base64"` |
+
+<Aside>
+Maximum file write size is 4 MB (decoded). Larger content is rejected.
+</Aside>
 
 Parent directories are created automatically. Files are written with `0644` permissions.
 
@@ -825,8 +829,8 @@ Run, list, stop, and verify backups using the configured backup provider.
 | `backup_run` | Start a backup job | -- |
 | `backup_list` | List backup snapshots | -- |
 | `backup_stop` | Stop a running backup | -- |
-| `backup_verify` | Verify backup integrity | `verificationType` |
-| `backup_test_restore` | Test-restore a snapshot | `snapshotId`, `targetPath` |
+| `backup_verify` | Verify backup integrity (checksum only) | `snapshotId` |
+| `backup_test_restore` | Test-restore a snapshot | `snapshotId` |
 | `backup_cleanup` | Clean up expired snapshots | -- |
 
 ### `backup_run`
@@ -847,14 +851,16 @@ No payload parameters. Stops the currently running backup job.
 
 ### `backup_verify`
 
-| Param | Type | Default | Description |
+| Param | Type | Required | Description |
 |---|---|---|---|
-| `verificationType` | string | `"integrity"` | `integrity` (checksum) or `test_restore` (extract to temp) |
+| `snapshotId` | string | Yes | Snapshot to verify |
+
+Always performs a checksum integrity check against the snapshot's manifest — there is no `verificationType` option, and this action does not extract/restore any files. To confirm a snapshot can actually be restored, use `backup_test_restore` instead.
 
 ```json
 {
   "action": "backup_verify",
-  "payload": { "verificationType": "test_restore" }
+  "payload": { "snapshotId": "snap-20260329-0200" }
 }
 ```
 
@@ -863,15 +869,13 @@ No payload parameters. Stops the currently running backup job.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `snapshotId` | string | Yes | Snapshot to test-restore |
-| `targetPath` | string | No | Temporary restore destination |
+
+There is no `targetPath` override — the agent always extracts to its own managed temp directory and reports the actual path back in the result's `restorePath` field.
 
 ```json
 {
   "action": "backup_test_restore",
-  "payload": {
-    "snapshotId": "snap-20260329-0200",
-    "targetPath": "/tmp/restore-test"
-  }
+  "payload": { "snapshotId": "snap-20260329-0200" }
 }
 ```
 
@@ -978,7 +982,7 @@ When a command times out, it is marked `failed` with `timedOutBy: 'server'` in t
 
 ## Heartbeat Telemetry
 
-The agent sends a heartbeat every 60 seconds containing:
+By default, the agent sends a heartbeat every 60 seconds (configurable via `heartbeat_interval_seconds` in `agent.yaml`, clamped to a 5–3600 second range) containing:
 
 | Field | Description |
 |---|---|

@@ -38,7 +38,7 @@ ssh -L 3000:127.0.0.1:3000 user@your-server
 
 # Then open http://localhost:3000
 # Username: admin
-# Password: (your GRAFANA_ADMIN_PASSWORD from .env.prod)
+# Password: (your GRAFANA_ADMIN_PASSWORD from .env)
 ```
 
 <Aside type="tip">
@@ -71,7 +71,7 @@ To add your own dashboards:
 1. Create or import a dashboard in the Grafana UI.
 2. Export it as JSON from the Grafana dashboard settings.
 3. Save the JSON file to `monitoring/grafana/dashboards/`.
-4. The dashboard provisioner (`monitoring/grafana/dashboards.yml`) automatically picks up new files in that directory on the next Grafana restart.
+4. The dashboard provisioner (`monitoring/grafana/dashboards.yml`) rescans that directory every 30 seconds and picks up new files automatically — no Grafana restart needed.
 
 </Steps>
 
@@ -134,7 +134,6 @@ Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60
 | `breeze:http_request_duration:p95_5m` | 95th percentile request duration |
 | `breeze:http_request_duration:p99_5m` | 99th percentile request duration |
 | `breeze:devices:active_count` | Total active device count |
-| `breeze:http_requests:rate5m_by_org` | Request rate per organization |
 | `breeze:redis_ops:rate5m` | Redis operations per second |
 | `breeze:postgres_query_duration:avg5m` | Average PostgreSQL query duration |
 
@@ -355,7 +354,7 @@ To change retention, edit the relevant configuration and restart the container.
 1. Check which containers are failing: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml ps`
 2. Read the logs: `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml logs <container> --tail 100`
 3. Common causes:
-   - **Grafana:** `GRAFANA_ADMIN_PASSWORD` not set in `.env.prod`. The compose file requires this variable.
+   - **Grafana:** `GRAFANA_ADMIN_PASSWORD` not set in `.env`. The compose file requires this variable. (This is separate from `.env.prod`, which only `scripts/prod/deploy.sh`'s digest-pinned production flow reads.)
    - **Postgres Exporter:** `POSTGRES_PASSWORD` not set or incorrect. The exporter needs the same credentials as the database.
    - **Prometheus:** Invalid YAML in `prometheus.yml` or rule files. Validate with `promtool check config monitoring/prometheus.yml`.
    - **Loki:** Permissions issue on the data volume. Loki runs as a non-root user and needs write access to `/loki`.

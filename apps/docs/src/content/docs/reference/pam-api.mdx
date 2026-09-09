@@ -386,7 +386,7 @@ Decisioning fails safe: if either evaluator *errors*, the request is recorded as
 Whether a device captures UAC prompts at all is governed by the **`pam`** configuration-policy feature, resolved through the normal policy hierarchy (partner → org → site → group → device, closest-wins). The feature's inline settings shape is a single flag:
 
 ```json
-{ "uacInterceptionEnabled": true }
+{ "uacInterceptionEnabled": false }
 ```
 
-`uacInterceptionEnabled` defaults to **true** at every level, so upgrades are behavior-preserving; admins opt a scope *out* by assigning a policy that turns it off. This toggle controls only whether devices *capture* elevation prompts -- it does not govern the rule chain, request queue, or audit history, which are scoped to the organization and site and managed in the Privileged Access console. See [Configuration Policies](/features/configuration-policies/) for how feature settings resolve.
+`uacInterceptionEnabled` defaults to **false** at every level -- capture is opt-in, and admins turn it on for a scope by assigning a policy that sets it to `true`. This toggle controls only whether devices *capture* elevation prompts -- it does not govern the rule chain, request queue, or audit history, which are scoped to the organization and site and managed in the Privileged Access console. See [Configuration Policies](/features/configuration-policies/) for how feature settings resolve.

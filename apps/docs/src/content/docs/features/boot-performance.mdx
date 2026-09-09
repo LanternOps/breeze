@@ -88,7 +88,7 @@ The Breeze agent uses platform-specific data sources to collect boot timing and 
     Each item's CPU and disk I/O impact is derived from ETW boot trace data when available.
   </TabItem>
   <TabItem label="macOS">
-    **Boot Timing**: The `log show` command with the `--predicate` filter targeting kernel boot events. The agent parses timestamps from launchd and kernel log entries to calculate boot phase durations.
+    **Boot Timing**: The boot timestamp itself comes from `sysctl -n kern.boottime`. From there, the agent uses the `log show` command with a `--predicate` filter targeting the `loginwindow` process to determine when the desktop became ready, and calculates the boot phase duration as the time between the two.
 
     **Startup Items**: The agent enumerates:
     - Login Items configured in System Settings (`login_item` type)

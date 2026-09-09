@@ -115,13 +115,13 @@ Commit re-derives every row's annotation against fresh database state and reject
 | `timezone` | no | IANA, validated |
 | `address`, `contact` | no | `contact` is `{name, email, phone}` |
 
-Commit-only per-row fields: `expectedAnnotation`, `expectedOrganizationId`, `reactivate`. Top-level: `mode` (`skip` default, or `update`).
+Commit-only per-row fields: `expectedAnnotation`, `expectedOrganizationId`, `reactivate`, `forceCreate` (create a new organization instead of attaching to a name-matched or soft-deleted match). Top-level: `mode` (`skip` default, or `update`).
 
 The import covers **organizations and sites** (plus their external-link rows). It does not import devices — devices arrive by enrolling agents (Recipes 2–3) — and its `contact` field carries only one headline contact per row; the many-contacts-per-organization case has its own importer in [Recipe 1c](#recipe-1c--import-contacts). The single-record endpoints (`POST /orgs/organizations`, `POST /orgs/sites`) still exist for one-offs and carry fields the import rows don't (`contractStart`, `billingContact`, …).
 
 ### Recipe 1b — Import Companies from Your PSA
 
-If your company list already lives in a PSA, skip the CSV: a connected PSA can feed the same org import directly. Supported providers: **ConnectWise, Autotask, ServiceNow, Freshservice, Zendesk, and Jira** (any connection whose adapter can list companies).
+If your company list already lives in a PSA, skip the CSV: a connected PSA can feed the same org import directly. Supported providers: **ConnectWise, Autotask, ServiceNow, Freshservice, and Zendesk** (any connection whose adapter can list companies — Jira is excluded, since it has no company/account object to map onto an organization).
 
 In the web UI, open **Integrations → PSA** and choose **Import companies** on a connection. Scripted, the same preview → commit pair lives at `POST /psa/connections/:id/import/preview` and `POST /psa/connections/:id/import` (partner scope, MFA, and both org- and site-write permissions required). The PSA's companies come back as ordinary import rows with the same annotation vocabulary as the CSV import (create / matched / conflict), and each imported organization gets an external-link row carrying the PSA's stable company ID — so re-imports and later PSA syncs match by identity, not by name. Companies already linked to an organization are filtered out of the preview.
 
@@ -258,7 +258,7 @@ Over 500 sites? The list endpoints paginate by cursor — follow `nextCursor` wh
   `POST /partner-api/enrollment-keys` returns the raw `key` as a top-level field of the `201` body and never again — only a SHA-256 hash is stored (`data` carries the id, org/site, usage, and expiry). Capture the output. If you lose a key, `POST /enrollment-keys/:id/rotate` on the main API (JWT) issues a new one.
 </Aside>
 
-If the Partner API doesn't cover something you need mid-run, the JWT flow from the auth section still works: the same enrollment-key shape lives at `POST /enrollment-keys` (there `orgId` can be omitted for single-org partners, and the default TTL is 60 minutes via `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`).
+If the Partner API doesn't cover something you need mid-run, the JWT flow from the auth section still works: the same enrollment-key shape lives at `POST /enrollment-keys` (there `orgId` can be omitted for single-org partners, and the default TTL is 30 days via `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`).
 
 Treat the resulting file as a credential: it is a list of tokens that can enroll devices into your customers' tenants. Delete it once the wave is complete, or shorten the TTL by rotating.
 
@@ -356,7 +356,7 @@ echo '--- missing from Breeze ---'
 comm -23 /tmp/expected.txt /tmp/breeze-devices.txt
 ```
 
-Mind the pagination — `limit` is capped at 100 per page, so page through `?page=N` for orgs above that size.
+Mind the pagination — `limit` accepts up to 1000 per page (500 if omitted), so page through `?page=N` for orgs above that size.
 
 ---
 

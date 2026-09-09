@@ -165,7 +165,7 @@
       "Environment Variables",
       "API Reference",
       "Troubleshooting",
-      "\"Invalid or expired enrollment key\" (401)",
+      "Enrollment key rejected (401)",
       "\"Enrollment secret required\" (403)",
       "\"Invalid enrollment secret\" (403)",
       "\"Enrollment key must be associated with a site\" (400)",
@@ -225,7 +225,7 @@
       "Helper Configuration & Screenshots",
       "Creating a Session",
       "Sending a Message",
-      "Approving a Tool Execution",
+      "Tool Approval",
       "Troubleshooting"
     ],
     "section": "agents"
@@ -343,13 +343,11 @@
   {
     "path": "/backup/encryption/",
     "title": "Encryption Key Management",
-    "description": "Create, rotate, and deactivate the AES-256 and RSA-2048 encryption keys that protect Breeze backup snapshots at rest, with key fingerprint handling.",
+    "description": "How backup data is actually encrypted at rest today (S3 server-side encryption), and the early-access client-managed key manager for a future client-side encryption model.",
     "headings": [
-      "Managing Keys",
-      "Creating a Key",
-      "Rotating a Key",
-      "Deactivating a Key",
-      "How Encryption Works"
+      "What's Actually Enforced",
+      "Encryption Keys Manager (Early Access)",
+      "How to Actually Protect Backup Data Today"
     ],
     "section": "backup"
   },
@@ -490,7 +488,7 @@
   {
     "path": "/backup/storage/",
     "title": "Storage Configuration",
-    "description": "Set up backup storage targets for S3, Azure Blob, Google Cloud, Backblaze B2, or local NAS, with connectivity testing and multiple configurations.",
+    "description": "Set up backup storage targets for S3 (and S3-compatible services like MinIO, Wasabi, and Backblaze B2) or local NAS, with connectivity testing and multiple configurations.",
     "headings": [
       "Creating a Storage Configuration",
       "Testing Connectivity",
@@ -824,6 +822,7 @@
       "Compose file changes",
       "v0.95.0 — stable Caddy address and proxy trust",
       "Version-specific notes",
+      "v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration",
       "v0.111.0 — offline work queue, script cancellation, organization record page",
       "v0.110.0 — reboot deferral, device-set billing, QuickBooks payments, portal visibility",
       "v0.109.0 — AI agents, ticket attachments and org archiving",
@@ -1228,9 +1227,6 @@
       "Metrics API",
       "Time Range and Aggregation",
       "Alerting",
-      "Bandwidth threshold alerts",
-      "Setting up a bandwidth alert",
-      "Playbook integration",
       "API Reference",
       "Query Parameters",
       "Response Bandwidth Fields",
@@ -1288,9 +1284,7 @@
     "headings": [
       "Overview",
       "Logo Customization",
-      "Uploading Logos",
-      "Logo Upload API",
-      "Logo Display Behavior",
+      "Uploading a Logo",
       "Color Customization",
       "Setting Colors",
       "Contrast Calculation",
@@ -1298,7 +1292,6 @@
       "Branding Schema",
       "Org Branding Editor",
       "Partner Branding",
-      "Cascade Behavior",
       "Partner Branding Editor",
       "Custom Domains",
       "Supported Assets",
@@ -1306,8 +1299,8 @@
       "Size Recommendations",
       "Custom CSS",
       "API Reference",
-      "Organization Branding",
-      "Portal Branding (Public)",
+      "Organization Portal Settings",
+      "Portal Branding",
       "Request / Response Examples",
       "Troubleshooting"
     ],
@@ -1653,7 +1646,7 @@
       "Network Device Detail Page",
       "Asset-to-Device Linking",
       "Connecting to a discovered device's web UI",
-      "Ignoring an Asset",
+      "Approving and Dismissing Assets",
       "Deleting an Asset",
       "Network Topology",
       "How connections are measured",
@@ -1777,6 +1770,8 @@
       "Per-Organization Configuration",
       "Partner-Wide Configuration",
       "What Gets Shipped",
+      "Fleet-Wide Log Search",
+      "Additional Fleet Log Features",
       "Troubleshooting"
     ],
     "section": "features"
@@ -2048,13 +2043,10 @@
       "Querying Diagnostic Logs",
       "Query Parameters",
       "Response Format",
-      "Fleet-Wide Log Search",
-      "Additional Fleet Log Features",
       "Dropped Log Monitoring",
       "API Reference",
       "Agent Ingest",
       "Device Diagnostic Logs",
-      "Fleet Log Search",
       "Troubleshooting"
     ],
     "section": "features"
@@ -2811,9 +2803,7 @@
       "Credentials You May Need",
       "Testing a Connection",
       "Managing Connections",
-      "Ticket Sync & Field Mappings",
-      "Sync direction",
-      "Ticket mappings",
+      "Ticket Sync Settings",
       "Troubleshooting",
       "Related"
     ],
@@ -3185,7 +3175,7 @@
   {
     "path": "/features/setup-wizard/",
     "title": "First-Login Setup Wizard",
-    "description": "Guided two-step setup wizard covering organization setup and device enrollment for new administrators on their first Breeze login.",
+    "description": "Guided four-step setup wizard covering account security, organization setup, regional settings, and device enrollment for new administrators on their first Breeze login.",
     "headings": [
       "When the Wizard Appears",
       "Setup Steps",
@@ -3529,7 +3519,6 @@
       "Policy Components",
       "Updating the Policy",
       "Security Training Assignment",
-      "Assigning Training",
       "Assignment Fields",
       "Deduplication",
       "Access Reviews",
@@ -4205,8 +4194,6 @@
       "Setting Up OIDC",
       "OIDC Discovery",
       "Setting Up SAML",
-      "Service Provider Metadata",
-      "SAML Attribute Mapping",
       "SSO Login Flow",
       "Sign-In Hardening",
       "Verified Email Required",
@@ -4282,7 +4269,6 @@
       "MSI install succeeds but agent shows offline",
       "Server-Side Installer Issues",
       "\"Generate Link\" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`",
-      "\"Generate Link\" fails with `MSI build pipeline not reachable. Retry`",
       "Reporting an Issue"
     ],
     "section": "reference"
@@ -4516,7 +4502,7 @@
     "description": "Rotation schedules and step-by-step procedures for Breeze RMM secrets, including the JWT secret, encryption keys, peppers, and database credentials.",
     "headings": [
       "Rotation Schedule",
-      "Rotating JWT Secret",
+      "Rotating the JWT Signing Key",
       "Rotating App Encryption Key",
       "Rotating MFA Encryption Key",
       "Rotating Enrollment Key Pepper",
