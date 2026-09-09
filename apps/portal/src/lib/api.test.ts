@@ -215,6 +215,29 @@ describe('portalApi.getBrandingByDomain', () => {
   });
 });
 
+describe('portalApi.getBranding — code forwarding (sweep 2026-09-08 G5-6)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('forwards the response code on a non-2xx response', async () => {
+    // getBranding used to rebuild its failure response by hand and drop
+    // `code` — the account-disabled 403's code never reached callers, so the
+    // portal middleware/pages had no way to distinguish it from any other
+    // branding-load failure.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),
+      { status: 403 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getBranding({ redirectOnUnauthorized: false });
+
+    expect(result.statusCode).toBe(403);
+    expect(result.code).toBe('PORTAL_ACCOUNT_INACTIVE');
+  });
+});
+
 describe('ApiRequestConfig.timeoutMs', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

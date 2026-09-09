@@ -187,7 +187,13 @@ describe('portalAuthMiddleware org-status gate', () => {
     portalUserRow.current = { ...portalUserRow.current, status: 'disabled' };
     const res = await call();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Account is not active' });
+    // `code` (sweep 2026-09-08 G5-6) lets the portal app distinguish this
+    // deliberate account-disable from a generic load failure and render its
+    // own "access disabled" page instead of the outage copy.
+    expect(await res.json()).toEqual({
+      error: 'Account is not active',
+      code: 'PORTAL_ACCOUNT_INACTIVE',
+    });
     expect(getActiveOrgTenant).not.toHaveBeenCalled();
   });
   // ---- #3258 W03: the contact link is HYDRATED onto portalAuth ----
