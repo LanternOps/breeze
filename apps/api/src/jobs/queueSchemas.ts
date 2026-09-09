@@ -15,6 +15,11 @@ export const queueActorMetaSchema = z.object({
 
 const backupSnapshotFileSchema = z.object({
   sourcePath: z.string().min(1),
+  // Stable pre-VSS path (D12): under a shadow copy sourcePath is the
+  // \\?\GLOBALROOT device path; originalPath is the real C:\ path the index,
+  // browse tree and selective restore must use. Strict schema: a missing entry
+  // here silently drops the whole result and leaves the job running forever.
+  originalPath: z.string().min(1).optional(),
   backupPath: z.string().min(1),
   size: z.number().nonnegative().optional(),
   modTime: z.string().min(1).optional(),
