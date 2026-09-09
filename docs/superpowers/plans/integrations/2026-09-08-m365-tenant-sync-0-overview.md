@@ -258,7 +258,7 @@ export function isM365TenantSyncEnabled(): boolean; // envFlag('M365_TENANT_SYNC
 
 `m365_sync_state`, `m365_users`, `m365_intune_devices`, `m365_ca_policies`,
 `m365_license_skus`, `m365_secure_score_snapshots`, `m365_posture_rollups`.
-Enums `m365_sync_domain`, `m365_sync_status`. Drizzle file
+All four entity tables key on `(org_id, graph_id)`; for `m365_license_skus` the `graph_id` column holds the Graph `skuId` (there is no separate `sku_id` column) so one `PersistContext.existing` map shape serves every domain. `m365_sync_state` has a surrogate `id` PK plus `UNIQUE (org_id, domain)`. Enums `m365_sync_domain`, `m365_sync_status`. Drizzle file
 `apps/api/src/db/schema/m365Sync.ts` exporting `m365SyncState`, `m365Users`,
 `m365IntuneDevices`, `m365CaPolicies`, `m365LicenseSkus`,
 `m365SecureScoreSnapshots`, `m365PostureRollups`.
