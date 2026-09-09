@@ -54,6 +54,11 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // Passthrough mock, same shape as restore.test.ts: D9's org-scoping fix
+  // wraps everything after the token lookup in withDbAccessContext(...),
+  // and this mocked suite doesn't exercise real RLS — it just needs the
+  // context param ignored and `fn` invoked so the route logic still runs.
+  withDbAccessContext: vi.fn((_context: unknown, fn: () => any) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

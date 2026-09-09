@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import {
   backupConfigs,
   backupJobs,
@@ -109,15 +109,26 @@ export function buildRecoveryDownloadDescriptor(args: {
 }
 
 export async function expireUnusedRecoveryTokens(): Promise<void> {
-  await db
-    .update(recoveryTokens)
-    .set({ status: 'expired' })
-    .where(
-      and(
-        inArray(recoveryTokens.status, ['active', 'authenticated']),
-        lt(recoveryTokens.expiresAt, new Date())
+  // System-scoped on purpose (D9): this is a housekeeping sweep of expired
+  // tokens across ALL orgs, and its most important callers are the public,
+  // token-authenticated BMR recovery routes (bmr.ts `bmrPublicRoutes`),
+  // which run before ANY org is known — there is no org to scope to yet.
+  // The write is safe to run system-wide: it's a blind UPDATE gated only by
+  // status + expiry, reads and returns nothing caller-supplied, and cannot
+  // leak cross-org data. When this already runs inside an existing DB access
+  // context (e.g. an authenticated `bmrRoutes` request), withDbAccessContext
+  // joins that context instead of widening it — see db/index.ts.
+  await withSystemDbAccessContext(() =>
+    db
+      .update(recoveryTokens)
+      .set({ status: 'expired' })
+      .where(
+        and(
+          inArray(recoveryTokens.status, ['active', 'authenticated']),
+          lt(recoveryTokens.expiresAt, new Date())
+        )
       )
-    );
+  );
 }
 
 export async function syncExpiredRecoveryMediaArtifacts(orgId?: string): Promise<void> {
