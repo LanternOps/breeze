@@ -869,6 +869,51 @@ type CommandPrecheckOutcome =
   | { ok: false; result: CommandResult };
 
 /**
+ * At most one Sentry event per deciding org per window for the #5264
+ * cross-tenant refusal below.
+ *
+ * Same reasoning as `reportHeldContextDispatch` further down this file, which
+ * exists because a hot path emitting one event per call has previously burned
+ * thousands of events/day off the org quota. The refusal is rare by design,
+ * but it is NOT rare by construction: a durable AI Operator task re-runs its
+ * verification read on a schedule for as long as it stays `waiting`, and a
+ * bulk org move can strand many device ids at once — either one would fire an
+ * event per attempt, and the Nth is worth nothing the first was not.
+ *
+ * A SEPARATE map from `heldContextDispatchLastCapture` on purpose: sharing one
+ * would let a burst of either signal silently suppress the other for a whole
+ * window, and "a dispatch was refused across tenants" and "a dispatch was made
+ * from inside a held context" are problems an operator needs to see
+ * independently.
+ *
+ * Keyed by the DECIDING org rather than the device, so one misbehaving caller
+ * cannot evict everyone else's window by cycling device ids — and capped,
+ * because unlike the three-valued `scope` key the sibling uses, the org space
+ * is unbounded. Blowing past the cap inside one window IS the storm this
+ * throttle exists for, so dropping the whole map (rather than growing it) is
+ * the right failure mode: the next refusal per org re-alerts and the map
+ * restarts small.
+ *
+ * The console line stays unthrottled: it carries the deviceId, the command
+ * type and the ACTUAL org, none of which may ride a Sentry tag. Logs have no
+ * quota, so the event is the alert and the log line is the attribution.
+ */
+const CROSS_TENANT_REFUSAL_CAPTURE_THROTTLE_MS = 15 * 60 * 1000;
+const CROSS_TENANT_REFUSAL_MAX_TRACKED_ORGS = 200;
+const crossTenantRefusalLastCapture = new Map<string, number>();
+
+function shouldCaptureCrossTenantRefusal(expectedOrgId: string): boolean {
+  const now = Date.now();
+  const last = crossTenantRefusalLastCapture.get(expectedOrgId);
+  if (last !== undefined && now - last < CROSS_TENANT_REFUSAL_CAPTURE_THROTTLE_MS) return false;
+  if (crossTenantRefusalLastCapture.size >= CROSS_TENANT_REFUSAL_MAX_TRACKED_ORGS) {
+    crossTenantRefusalLastCapture.clear();
+  }
+  crossTenantRefusalLastCapture.set(expectedOrgId, now);
+  return true;
+}
+
+/**
  * Phase 1 of `executeCommand` — every gate that must clear BEFORE a
  * `device_commands` row exists: the device lookup, the partner-trust
  * capability check, the artifact-edition gate, the liveness gates and the
@@ -944,11 +989,15 @@ async function precheckCommandExecution(
       '[commandQueue] refusing dispatch: device is no longer in the deciding organization (#5264)',
       { deviceId, type, expectedOrgId: options.expectedOrgId, actualOrgId: device.orgId },
     );
-    captureMessage(
-      '[commandQueue] command dispatch refused: device left the deciding organization between '
-        + 'decision and dispatch (#5264)',
-      { eventCode: 'command_dispatch_cross_tenant_refused', tags: { org_id: options.expectedOrgId } },
-    );
+    if (shouldCaptureCrossTenantRefusal(options.expectedOrgId)) {
+      // Invariant text: it is the Sentry grouping key, so the varying part
+      // rides the allowlisted `org_id` tag rather than the message.
+      captureMessage(
+        '[commandQueue] command dispatch refused: device left the deciding organization between '
+          + 'decision and dispatch (#5264)',
+        { eventCode: 'command_dispatch_cross_tenant_refused', tags: { org_id: options.expectedOrgId } },
+      );
+    }
     // Deliberately indistinguishable from a genuine miss — byte-identical to
     // the sibling gate on the QUEUE lane (`dispatchDeviceCommand.ts`, which
     // has carried this same `expectedOrgId` contract for the

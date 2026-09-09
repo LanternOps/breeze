@@ -28,6 +28,10 @@ vi.mock('../aiAgents/actVerify', () => ({
   verifyServiceRunningForTask: vi.fn(() => Promise.resolve(mockState.serviceVerdict)),
 }));
 
+// Imported so the #5264 case below can assert on the ARGUMENTS the mock was
+// called with, not merely on the verdict it returned.
+import { verifyServiceRunningForTask } from '../aiAgents/actVerify';
+
 // `verification.ts` makes exactly TWO reads, and this stub keeps them apart by
 // the TABLE passed to `.from(...)` rather than by call order:
 //
@@ -128,6 +132,23 @@ describe('evaluateCriterion — the device must still be in the task org', () =>
     expect(result.result).toBe('inconclusive');
     expect(result.outcome).toBeNull();
     expect(result.detail).toMatch(/no longer in this organization/i);
+  });
+
+  it('hands the TASK org down to the dispatch, not just to the pre-flight probe (#5264)', async () => {
+    // The pre-flight probe above is not the only guard any more: the org now
+    // travels into `precheckCommandExecution` as the mandatory
+    // `expectedOrgId`, which is what actually refuses a device that moved
+    // between the probe and the dispatch. `tsc` enforces that the key is
+    // PRESENT; only this asserts it carries the right VALUE — passing the
+    // device's current org instead of the task's would compile, would make
+    // the two trivially match, and would silently defeat the whole gate.
+    await evaluate({ serviceVerdict: { verification: 'passed' }, deviceInOrg: true, alertId: null });
+
+    expect(verifyServiceRunningForTask).toHaveBeenCalledWith(
+      expect.objectContaining({ serviceName: expect.any(String) }),
+      expect.objectContaining({ orgId: ORG_ID }),
+      AGENT_USER_ID,
+    );
   });
 });
 

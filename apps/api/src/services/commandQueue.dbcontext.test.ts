@@ -365,7 +365,10 @@ describe('precheckCommandExecution org gate (#5264)', () => {
 
     const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
       timeoutMs: 5_000,
-      expectedOrgId: 'org-1',
+      // Each refusal case below uses a DISTINCT deciding org: the Sentry
+      // throttle is keyed on it and its map is module-level, so sharing one
+      // org would make whichever case ran second silently miss its capture.
+      expectedOrgId: 'org-decider-a',
     });
 
     expect(result.status).toBe('failed');
@@ -388,7 +391,7 @@ describe('precheckCommandExecution org gate (#5264)', () => {
 
     const result = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
       timeoutMs: 5_000,
-      expectedOrgId: 'org-1',
+      expectedOrgId: 'org-decider-b',
     });
 
     expect(result.error).toBe('Device not found');
@@ -400,7 +403,7 @@ describe('precheckCommandExecution org gate (#5264)', () => {
 
     await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, {
       timeoutMs: 5_000,
-      expectedOrgId: 'org-1',
+      expectedOrgId: 'org-decider-c',
     });
 
     expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
@@ -411,7 +414,27 @@ describe('precheckCommandExecution org gate (#5264)', () => {
     // Only allowlisted, non-identifying keys survive sentry.ts's scrubber;
     // a device id must never ride a tag at all.
     expect(Object.keys(options.tags)).toEqual(['org_id']);
-    expect(options.tags.org_id).toBe('org-1');
+    expect(options.tags.org_id).toBe('org-decider-c');
+  });
+
+  it('throttles the Sentry event per deciding org while still refusing every dispatch', async () => {
+    // A durable Operator task re-reads on a schedule and a bulk org move can
+    // strand many device ids at once, so the refusal is rare by design but not
+    // by construction. The REFUSAL must never be throttled — only the alert.
+    dbState.deviceRows = [{ ...ONLINE_DEVICE, orgId: 'org-2' }];
+    const options = { timeoutMs: 5_000, expectedOrgId: 'org-decider-d' } as const;
+
+    const first = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, options);
+    const second = await executeCommandWithSystemPrecheck('device-1', 'list_services', {}, options);
+    const third = await executeCommandWithSystemPrecheck('device-9', 'list_services', {}, options);
+
+    for (const result of [first, second, third]) {
+      expect(result.error).toBe('Device not found');
+    }
+    expect(dbState.insertedCommand).toBeNull();
+    // One event for the window — the 2nd and 3rd tell an operator nothing the
+    // 1st did not, and a retry loop would otherwise burn the org's quota.
+    expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
   });
 
   it('dispatches normally when the device is still in the expected org', async () => {
