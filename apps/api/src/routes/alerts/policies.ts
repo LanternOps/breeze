@@ -50,7 +50,7 @@ policiesRoutes.get(
         // too, but must not see partner-wide rows at the app layer (RLS is
         // stricter than the app layer here; never claim parity).
         const orgCondition = eq(escalationPolicies.orgId, query.orgId);
-        const partnerCondition = auth.partnerId
+        const partnerCondition = auth.scope === 'partner' && auth.partnerId
           ? and(isNull(escalationPolicies.orgId), eq(escalationPolicies.partnerId, auth.partnerId))
           : undefined;
         conditions.push(

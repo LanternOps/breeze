@@ -2070,19 +2070,6 @@ function nonEmptyText(value: unknown): string | null {
 }
 
 /**
- * #5173: `execute_command`'s headline used to be the raw call signature
- * ('Execute "kill_process" command on device 74e15ef8...') for every
- * commandType, mutating or not. These builders read `input.payload` (the
- * tool's `payload: z.record(z.string(), z.unknown())` — deliberately
- * unvalidated, so these are read-only extractions for display, never a
- * validation gate) to produce a call-specific verb phrase for the
- * commandTypes execute_command's schema actually accepts. A commandType not
- * in this map, or one whose payload lacks the field its builder needs,
- * returns null and buildApprovalDescription falls back to the pre-existing
- * generic "Execute "<type>" command" wording below — so an unrecognised or
- * sparse call never regresses to something worse than what shipped before.
- */
-/**
  * sweep 2026-09-08 row 19: `manage_services` exposes `serviceName` on ITS OWN
  * input schema and normalizes it to `payload.name` before calling into
  * commandQueue — but `execute_command`'s schema never documented a payload
@@ -2099,6 +2086,19 @@ function serviceNameFromPayload(payload: Record<string, unknown>): string | null
   return nonEmptyText(payload.serviceName) ?? nonEmptyText(payload.name);
 }
 
+/**
+ * #5173: `execute_command`'s headline used to be the raw call signature
+ * ('Execute "kill_process" command on device 74e15ef8...') for every
+ * commandType, mutating or not. These builders read `input.payload` (the
+ * tool's `payload: z.record(z.string(), z.unknown())` — deliberately
+ * unvalidated, so these are read-only extractions for display, never a
+ * validation gate) to produce a call-specific verb phrase for the
+ * commandTypes execute_command's schema actually accepts. A commandType not
+ * in this map, or one whose payload lacks the field its builder needs,
+ * returns null and buildApprovalDescription falls back to the pre-existing
+ * generic "Execute "<type>" command" wording below — so an unrecognised or
+ * sparse call never regresses to something worse than what shipped before.
+ */
 const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string, unknown>) => string | null> = {
   kill_process: (payload) => {
     const processName = nonEmptyText(payload.processName);

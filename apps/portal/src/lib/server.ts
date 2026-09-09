@@ -71,11 +71,16 @@ export async function loadPortalBrandingWithStatus(
     ? await portalApi.getBranding(config)
     : await portalApi.getBrandingByDomain(domain, config);
 
-  const accountDisabled = isAccountDisabledResponse(response);
-
   if (!response.data && response.statusCode === 401) {
     response = await portalApi.getBrandingByDomain(domain, config);
   }
+
+  // Computed from the FINAL response (after the 401 retry above), not the
+  // first one — an expired session 401s, then the retried public-domain
+  // lookup can itself come back as the account-disabled 403. Computing this
+  // before the retry silently dropped that case (review finding on
+  // qa/sweep-post-v0.110.0).
+  const accountDisabled = isAccountDisabledResponse(response);
 
   // 404 is the documented shared-domain case (no custom domain → no row); the
   // account-disabled 403 is a deliberate refusal, not a failure to log; every

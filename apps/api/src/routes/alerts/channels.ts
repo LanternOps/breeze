@@ -105,7 +105,7 @@ channelsRoutes.get(
         // too, but must not see partner-wide rows at the app layer (RLS is
         // stricter than the app layer here; never claim parity).
         const orgCondition = eq(notificationChannels.orgId, query.orgId);
-        const partnerCondition = auth.partnerId
+        const partnerCondition = auth.scope === 'partner' && auth.partnerId
           ? and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, auth.partnerId))
           : undefined;
         conditions.push(

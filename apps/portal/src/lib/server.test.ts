@@ -88,6 +88,31 @@ describe('loadPortalBrandingWithStatus — account-disabled detection', () => {
     expect(branding.enableDashboard).toBe(true);
   });
 
+  // Review finding on qa/sweep-post-v0.110.0: `accountDisabled` was computed
+  // from the FIRST (session) response, before the 401-retry re-assigns
+  // `response` to the public-domain lookup. A session that 401s (expired)
+  // and then hits an account-disabled 403 on the retried public-domain call
+  // never surfaced as `accountDisabled: true` — it must be computed from the
+  // FINAL response, after the retry.
+  it('reports accountDisabled when the retried (post-401) domain lookup 403s with the inactive code', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),
+        { status: 403 }
+      ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = new Request('https://portal.example/login', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+
+    const { accountDisabled } = await loadPortalBrandingWithStatus(request);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(accountDisabled).toBe(true);
+  });
+
   it('loadPortalBranding still returns just the branding half (no behavior change)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ error: 'Account is not active', code: 'PORTAL_ACCOUNT_INACTIVE' }),

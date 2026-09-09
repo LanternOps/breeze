@@ -24,3 +24,19 @@ describe('portal middleware — authenticated landing (sweep 2026-09-08 G5-6)', 
     expect(middlewareSource).not.toContain('portalLandingPath(await loadPortalBranding(request))');
   });
 });
+
+/**
+ * `/account-disabled` renders account-specific details (why the account is
+ * disabled, who to contact) and was reachable by an anonymous visitor —
+ * `isProtectedPath` never covered it, so it rendered server-side with no
+ * session at all instead of bouncing to login like every other signed-in
+ * surface (review finding on qa/sweep-post-v0.110.0). Scoped to just this
+ * page per #5320 — not a general expansion of the protected-prefix list.
+ */
+describe('portal middleware — /account-disabled requires a session', () => {
+  it('lists /account-disabled among the protected prefixes', () => {
+    const protectedPrefixesMatch = middlewareSource.match(/const protectedPrefixes = \[([\s\S]*?)\];/);
+    expect(protectedPrefixesMatch).not.toBeNull();
+    expect(protectedPrefixesMatch![1]).toContain("'/account-disabled'");
+  });
+});

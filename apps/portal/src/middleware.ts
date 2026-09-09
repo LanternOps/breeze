@@ -21,7 +21,8 @@ const protectedPrefixes = [
   '/dashboard',
   '/security',
   '/backups',
-  '/reports'
+  '/reports',
+  '/account-disabled'
 ];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
 
