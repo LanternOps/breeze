@@ -1117,7 +1117,7 @@
       "variablePlaceholder": "e.g. vendor_token",
       "fieldLabel": "Custom field key",
       "fieldPlaceholder": "e.g. asset_tag",
-      "fieldHelp": "Enter the Field Key shown in Settings → Custom Fields (case-sensitive). Read: once bound, the resolved value is delivered to the script just like a normal parameter — no prompt is shown. Write: to save a new value back, have the script call the device's custom-fields API with a PATCH request and an API key.",
+      "fieldHelp": "Enter the Field Key shown in Settings → Custom Fields (case-sensitive). Read: the resolved value is delivered to the script as the environment variable BREEZE_PARAM_<KEY> (the parameter name in upper snake case) and as the {{paramName}} placeholder — no prompt is shown. Write: print ::breeze:custom-fields:: {\"key\": \"value\"} to stdout for a field that has \"Allow scripts to write this field\" enabled. See \"Reading and writing custom fields\" under the editor for an example.",
       "fieldHelpAriaLabel": "About the device custom field binding",
       "builtinLabel": "Property",
       "chooseTitle": "Choose a variable",
@@ -1134,6 +1134,18 @@
       "clearedHint": "Every matched pattern has been acknowledged.",
       "willBlock": "Not acknowledged — the agent will refuse to run this script.",
       "footnote": "An acknowledgement applies to this script only, and covers just the patterns listed here. If you later add a different risky operation, it will be blocked until you acknowledge that one too."
+    },
+    "customFieldHelp": {
+      "title": "Reading and writing custom fields",
+      "readLabel": "Read:",
+      "read": "bind a parameter to a custom field (source \"From a device custom field\"). The value arrives as the environment variable",
+      "readPlaceholders": "and as the placeholder",
+      "writeLabel": "Write:",
+      "write": "print a line to stdout in the form",
+      "writeGate": "The field must have \"Allow scripts to write this field\" enabled in Settings → Custom Fields. Values are validated against the field type; rejected keys are listed in the run details.",
+      "secretCaveat": "The written value also appears in the script's saved output — never write a secret this way. Use a secret variable instead.",
+      "insertExample": "Insert example",
+      "docsLink": "Custom fields docs"
     }
   },
   "scriptList": {

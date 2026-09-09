@@ -722,7 +722,13 @@ describe('ScriptForm sourced parameters', () => {
 
     const trigger = await screen.findByRole('button', { name: 'About the device custom field binding' });
     fireEvent.click(trigger);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(/PATCH request/i);
+    const tip = await screen.findByRole('tooltip');
+    // #5233: the marker replaces the stale PATCH-plus-API-key advice, the env
+    // var is named, and the literal {{paramName}} survives i18next interpolation.
+    expect(tip).toHaveTextContent('::breeze:custom-fields::');
+    expect(tip).toHaveTextContent('BREEZE_PARAM_<KEY>');
+    expect(tip).toHaveTextContent('{{paramName}}');
+    expect(tip).not.toHaveTextContent(/PATCH/i);
   });
 
   it('clears the previous arm\'s binding key when the source changes', async () => {
@@ -824,5 +830,20 @@ describe('ScriptForm security acknowledgement wiring', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     // Verbatim: the agent compares against its own description string.
     expect(onSubmit.mock.calls[0]![0].acknowledgedSecurityPatterns).toEqual([HKLM]);
+  });
+});
+
+describe('ScriptForm custom-field help (#5233)', () => {
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    orgStoreMock.mockReturnValue({ organizations: [{ id: 'o-1', name: 'Org One' }], partners: [], sites: [] });
+  });
+  afterEach(() => { vi.clearAllMocks(); });
+
+  it('renders the "Reading and writing custom fields" aside under the editor', async () => {
+    render(<ScriptForm isNew />);
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.getByTestId('custom-field-help-toggle').textContent).toContain('Reading and writing custom fields');
   });
 });

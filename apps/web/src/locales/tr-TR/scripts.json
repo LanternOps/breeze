@@ -1053,7 +1053,7 @@
       "variablePlaceholder": "ör. vendor_token",
       "fieldLabel": "Özel alan anahtarı",
       "fieldPlaceholder": "ör. asset_tag",
-      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: bağlandıktan sonra, çözümlenen değer normal bir parametre gibi betiğe iletilir — herhangi bir istem gösterilmez. Yazma: yeni bir değeri geri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: çözümlenen değer betiğe BREEZE_PARAM_<KEY> ortam değişkeni (parametre adı büyük harf ve alt çizgiyle) ve {{paramName}} yer tutucusu olarak iletilir — herhangi bir istem gösterilmez. Yazma: \"Betiklerin bu alanı yazmasına izin ver\" etkin olan bir alan için stdout’a ::breeze:custom-fields:: {\"key\": \"value\"} yazdırın. Örnek için düzenleyicinin altındaki \"Özel alanları okuma ve yazma\" bölümüne bakın.",
       "fieldHelpAriaLabel": "Cihaz özel alan bağlaması hakkında",
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
@@ -1134,6 +1134,18 @@
       "empty": "Henüz değişken yok.",
       "secretUnavailable": "Gizli — kaynağı \"Gizli bir değişkenden\" olan bir parametre üzerinden bağlayın.",
       "unknown": "{{keys}} için değişken yok — hedeflenen cihazlar siz onu oluşturana kadar başarısız olacaktır."
+    },
+    "customFieldHelp": {
+      "title": "Özel alanları okuma ve yazma",
+      "readLabel": "Okuma:",
+      "read": "bir parametreyi özel bir alana bağlayın (kaynak \"Cihaz özel alanından\"). Değer şu ortam değişkeni olarak gelir:",
+      "readPlaceholders": "ve şu yer tutucu olarak:",
+      "writeLabel": "Yazma:",
+      "write": "stdout’a şu biçimde bir satır yazdırın:",
+      "writeGate": "Alanın Ayarlar → Özel Alanlar bölümünde \"Betiklerin bu alanı yazmasına izin ver\" seçeneği etkin olmalıdır. Değerler alan türüne göre doğrulanır; reddedilen anahtarlar çalıştırma ayrıntılarında listelenir.",
+      "secretCaveat": "Yazılan değer betiğin kaydedilen çıktısında da görünür — bu yolla asla bir gizli değer yazmayın. Bunun yerine gizli bir değişken kullanın.",
+      "insertExample": "Örnek ekle",
+      "docsLink": "Özel alanlar belgeleri"
     }
   },
   "scriptList": {
