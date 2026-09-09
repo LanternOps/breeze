@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
@@ -227,6 +229,45 @@ describe('restore routes', () => {
     expect((await res.json()).data).toHaveLength(1);
     expect(restoreChain.where).toHaveBeenCalled();
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("D17: site-scoped restore listing does not drop a job whose snapshot was retention-deleted (SET NULL)", async () => {
+    // restore_jobs.snapshot_id is ON DELETE SET NULL since 2026-10-15-140004,
+    // so a job can legitimately have snapshotId: null while its device stays
+    // very much in scope. Before the fix, the site-scoping predicate was a
+    // bare `exists (select 1 from backup_snapshots where ... )` keyed off
+    // restore_jobs.snapshot_id — with snapshot_id NULL, no row can ever
+    // satisfy that EXISTS (a NULL join key never matches), so the predicate
+    // silently excluded the job from every site-scoped listing regardless of
+    // whether its own device was allowed. The preceding
+    // `restoreJobs.deviceId IN allowedDeviceIds` condition already bounds the
+    // query correctly on its own, so the EXISTS clause must not re-narrow a
+    // null-snapshot row out.
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const allowedDevicesChain = chainMock([{ id: 'device-in', siteId: SITE_A }]);
+    const restoreChain = chainMock([
+      makeRestoreJob({ id: 'restore-in', deviceId: 'device-in', snapshotId: null }),
+    ]);
+    selectMock
+      .mockReturnValueOnce(allowedDevicesChain)
+      .mockReturnValueOnce(restoreChain);
+
+    const res = await app.request('/restore');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveLength(1);
+
+    // Inspect the compiled WHERE predicate directly (the mock resolves
+    // whatever is queued regardless of the predicate, so asserting on the
+    // response body alone can't tell a correct query from a broken one that
+    // happens to be fed the "right" mocked rows) — this is the same
+    // PgDialect().sqlToQuery() technique used elsewhere in this repo to pin
+    // raw `sql` fragment text (see recoveryBootstrap.test.ts).
+    const whereArg = restoreChain.where.mock.calls[0]![0] as SQL;
+    const { sql: compiledSql } = new PgDialect().sqlToQuery(whereArg);
+    const normalized = compiledSql.toLowerCase();
+    expect(normalized).toContain('is null');
+    expect(normalized).toContain('or exists (');
   });
 
   it('keeps unrestricted restore list behavior unchanged', async () => {

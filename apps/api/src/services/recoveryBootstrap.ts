@@ -158,7 +158,15 @@ export async function syncExpiredRecoveryMediaArtifacts(orgId?: string): Promise
     );
 }
 
-export async function resolveSnapshotProviderConfig(snapshotDbId: string) {
+// snapshotDbId accepts null/undefined so callers reading a nullable FK
+// (recovery_tokens.snapshot_id since 2026-10-15-140004 / D17 — ON DELETE SET
+// NULL so a token outlives its snapshot's retention deletion) can pass the
+// value straight through instead of each re-deriving "no snapshot" as a
+// separate branch. Resolves the same way an unknown id already did: null,
+// which every existing caller already treats as "snapshot not found".
+export async function resolveSnapshotProviderConfig(snapshotDbId: string | null | undefined) {
+  if (!snapshotDbId) return null;
+
   const [snapshot] = await db
     .select({
       id: backupSnapshots.id,

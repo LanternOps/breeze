@@ -167,6 +167,79 @@ describe('cleanupExpiredSnapshots — object storage decoupling', () => {
     expect(result.skippedImmutable).toBe(1);
     expect(mockDb.delete).toHaveBeenCalledTimes(1); // only s5 physically deleted
   });
+
+  it('logs and skips a row whose delete rejects with a FK violation (D17), and still deletes the next expired row', async () => {
+    // Reproduces the live lab failure: a snapshot that was ever restored (or
+    // verified/tokened) still has a NO-ACTION-FK history row pointing at it
+    // (e.g. restore_jobs.snapshot_id), so its DELETE raised 23503. Before the
+    // fix that aborted cleanupExpiredSnapshots entirely, so no other expired
+    // row in the org — let alone the object-storage sweep that runs after
+    // this job in backupWorker.ts — was ever reached. Per-row isolation means
+    // the bad row is logged and skipped while the next expired row is still
+    // deleted.
+    selectQueue.push([
+      {
+        id: 'snap-fk-blocked',
+        snapshotId: 'snap-blocked',
+        metadata: null,
+        legalHold: false,
+        isImmutable: false,
+        immutableUntil: null,
+        provider: 's3',
+        providerConfig: { bucket: 'b', region: 'us-east-1' },
+      },
+      {
+        id: 'snap-ok',
+        snapshotId: 'snap-2',
+        metadata: null,
+        legalHold: false,
+        isImmutable: false,
+        immutableUntil: null,
+        provider: 's3',
+        providerConfig: { bucket: 'b', region: 'us-east-1' },
+      },
+    ]); // expired query
+    selectQueue.push([]); // versionBoundSnapshots query (maxVersions pass)
+
+    const fkError = Object.assign(
+      new Error(
+        'update or delete on table "backup_snapshots" violates foreign key constraint ' +
+          '"restore_jobs_snapshot_id_backup_snapshots_id_fk" on table "restore_jobs"',
+      ),
+      { code: '23503', constraint_name: 'restore_jobs_snapshot_id_backup_snapshots_id_fk' },
+    );
+
+    mockDb.delete
+      .mockImplementationOnce(() => ({ where: () => Promise.reject(fkError) }))
+      .mockImplementationOnce(() => chainable([]));
+
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(mockDb.delete).toHaveBeenCalledTimes(2); // both rows attempted
+    expect(result.deleted).toBe(1); // only snap-ok
+    expect(result.failed).toBe(1); // snap-fk-blocked counted as a failure, not silently dropped
+
+    // The per-row error surfaces the snapshot id and the PG SQLSTATE/constraint
+    // so an operator can tell an FK violation from an unrelated DB error.
+    const rowErrorCall = consoleErrorSpy.mock.calls.find(
+      ([msg]) => typeof msg === 'string' && msg.includes('snap-blocked'),
+    );
+    expect(rowErrorCall).toBeDefined();
+    expect(rowErrorCall?.[0]).toContain('23503');
+    expect(rowErrorCall?.[0]).toContain('restore_jobs_snapshot_id_backup_snapshots_id_fk');
+
+    // A run-level summary is also logged when any row failed.
+    expect(
+      consoleErrorSpy.mock.calls.some(
+        ([msg]) => typeof msg === 'string' && msg.includes('org-1') && msg.includes('1'),
+      ),
+    ).toBe(true);
+    expect(captureExceptionMock).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
 });
 
 describe('sweepUnreferencedBackupObjects', () => {
@@ -438,6 +511,34 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(bad.BACKUP_GC_GRACE_MS).toBe(48 * 60 * 60 * 1000);
     } finally {
       if (prev === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prev;
+      vi.resetModules();
+    }
+  });
+
+  it('BACKUP_GC_GRACE_MS override is floored to 1h in production and always logged (review item)', async () => {
+    const prevGrace = process.env.BACKUP_GC_GRACE_MS;
+    const prevEnv = process.env.NODE_ENV;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      process.env.BACKUP_GC_GRACE_MS = '1000';
+      process.env.NODE_ENV = 'production';
+      vi.resetModules();
+      const prod = await import('./backupRetention');
+      // A 1 s grace in production would sweep objects of any in-flight upload
+      // whose manifest is not published yet; the knob is a lab knob.
+      expect(prod.BACKUP_GC_GRACE_MS).toBe(60 * 60 * 1000);
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('BACKUP_GC_GRACE_MS'))).toBe(true);
+
+      warn.mockClear();
+      process.env.NODE_ENV = 'test';
+      vi.resetModules();
+      const lab = await import('./backupRetention');
+      expect(lab.BACKUP_GC_GRACE_MS).toBe(1000);
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('BACKUP_GC_GRACE_MS'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+      if (prevGrace === undefined) delete process.env.BACKUP_GC_GRACE_MS; else process.env.BACKUP_GC_GRACE_MS = prevGrace;
+      if (prevEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = prevEnv;
       vi.resetModules();
     }
   });

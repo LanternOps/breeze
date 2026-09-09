@@ -566,6 +566,21 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
     throw new Error(`Recovery token ${artifact.tokenId} not found`);
   }
 
+  // 2026-10-15-140004 widened recovery_tokens.snapshot_id to ON DELETE SET
+  // NULL so an expired backup_snapshots row's retention delete is never
+  // blocked by a still-live recovery token (D17). That makes it possible for
+  // an active, non-terminal token to point at a snapshot that no longer
+  // exists — building bootable recovery media for it is meaningless (there is
+  // nothing left to restore), so fail loudly here rather than let a null
+  // snapshotId reach buildBundleReadme/bootstrapConfig. recoveryMediaWorker.ts
+  // catches this and records it via recordRecoveryMediaBuildFailure, the same
+  // path every other throw in this function already takes.
+  if (!token.snapshotId) {
+    throw new Error(
+      `Recovery token ${token.id}'s snapshot has been deleted (retention expiry) — cannot build recovery media`
+    );
+  }
+
   if (token.status === 'revoked' || token.status === 'expired' || token.status === 'used') {
     await db
       .update(recoveryMediaArtifacts)

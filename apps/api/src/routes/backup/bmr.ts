@@ -122,7 +122,10 @@ function getSessionStatus(row: {
 function toTokenSummary(row: {
   id: string;
   deviceId: string;
-  snapshotId: string;
+  // Nullable since 2026-10-15-140004 (D17): a recovery token outlives its
+  // snapshot's retention deletion (ON DELETE SET NULL), so an old/terminal
+  // token can legitimately report snapshotId: null here.
+  snapshotId: string | null;
   restoreType: string;
   status: string;
   createdAt: Date;
@@ -736,6 +739,16 @@ bmrRoutes.post(
     if (token.status !== 'active') {
       return c.json({ error: `Recovery token is ${token.status}` }, 409);
     }
+    // D17 (2026-10-15-140004): recovery_tokens.snapshot_id is now ON DELETE
+    // SET NULL, so a still-active token can point at a snapshot that
+    // retention already deleted. There is nothing left to build media for.
+    // Captured into a local so the narrowing survives the db.transaction
+    // closure below — TS drops property narrowing across function
+    // boundaries.
+    const tokenSnapshotId = token.snapshotId;
+    if (!tokenSnapshotId) {
+      return c.json({ error: 'Recovery token\'s snapshot no longer exists (retention expiry)' }, 409);
+    }
 
     const [existing] = await db
       .select()
@@ -790,7 +803,7 @@ bmrRoutes.post(
       const [created] = await tx.insert(recoveryMediaArtifacts).values({
         orgId,
         tokenId: token.id,
-        snapshotId: token.snapshotId,
+        snapshotId: tokenSnapshotId,
         platform: payload.platform,
         architecture: payload.architecture,
         status: 'pending',
@@ -1371,7 +1384,12 @@ bmrPublicRoutes.post(
         buildAuthenticatedBootstrapPayload({
           tokenId: row.id,
           deviceId: row.deviceId,
-          snapshotId: row.snapshotId,
+          // snapshot.id (not row.snapshotId) — TS can't narrow row.snapshotId
+          // from the `!snapshot` guard above, but by construction they're the
+          // same value: resolveSnapshotProviderConfig looked snapshot up BY
+          // row.snapshotId, so a non-null `snapshot` proves it was non-null.
+          // snapshot.id is properly typed non-null (backup_snapshots' PK).
+          snapshotId: snapshot.id,
           restoreType: row.restoreType,
           targetConfig: row.targetConfig,
           authenticatedAt,
