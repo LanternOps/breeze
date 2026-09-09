@@ -92,6 +92,14 @@ Partner-scoped users can update their own partner's settings via the `/partners/
 
 Settings are merged on update -- you do not need to send the entire object. Only the keys you include are overwritten.
 
+Two partner-level fields sit **outside** the `settings` blob and are sent as
+top-level properties on the same `PATCH /partners/me` request:
+
+| Field | Type | Description |
+|---|---|---|
+| `serviceManagementMode` | `enum` | `native` (default), `external`, or `off`. Decides whether this MSP runs Breeze's own service desk and customer billing at all. See [Service Management mode](/reference/partner-management/#service-management-mode). |
+| `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null in every other mode -- the two are enforced as a pair. |
+
 ### Creating a Partner
 
 Only **system-scoped** users can create partners.
@@ -206,6 +214,35 @@ Partner-scoped and system-scoped users can create organisations.
 </Tabs>
 
 Returns the created organisation object with a `201` status.
+
+### The Organisation Record Page
+
+Every organisation has a single page that gathers everything about that customer
+in one place, rather than making a technician assemble it from the fleet-wide
+Devices, Tickets and Invoices lists. Open an organisation from the organisations
+list -- or follow the organisation name from a ticket, invoice or quote -- and you
+land on it.
+
+| Tab | Contents |
+|---|---|
+| **Overview** | Summary tiles for the customer: fleet, open work, and billing position. |
+| **Contacts** | The organisation's [contacts](#contacts), managed in place. |
+| **Sites** | The organisation's [sites](#sites). |
+| **Devices** | The full device list, pinned to this customer. |
+| **Tickets** | The ticket queue, pinned to this customer. |
+| **Billing** | Contracts, Invoices and Quotes, each pinned to this customer. |
+| **Activity** | The audit trail for this organisation. |
+
+Each of these tabs is the same list you already know from the sidebar, **pinned**
+to the organisation you are looking at: filters and searches are scoped to it, the
+Organisation column drops out as redundant, and a **New** action pre-selects the
+customer. Pinning wins over whatever the global organisation switcher is set to,
+so opening a customer's record never depends on remembering to switch scope first.
+
+Which tabs appear depends on the partner's
+[Service Management mode](/reference/partner-management/#service-management-mode):
+`off` hides both Tickets and Billing, and `external` hides Billing while keeping
+Tickets.
 
 ### Soft Deletes for Organisations
 

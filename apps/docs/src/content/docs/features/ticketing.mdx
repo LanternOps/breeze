@@ -146,6 +146,17 @@ Tickets enter the queue from four directions:
 - **By email.** Customers email your inbound address and their message becomes a ticket -- see [Email-to-Ticket](#email-to-ticket) below.
 - **Through the API**, for integrations and automation.
 
+<Aside type="note" title="Service Management has to be on">
+  Ticketing is part of the **Service Management** module, which is a partner-level
+  switch (**Settings → Partner → Company → Modules**). With it turned **off**,
+  Breeze runs as monitoring and management only: the Service Desk and Billing
+  sections leave the sidebar and *every* path above refuses to create a new
+  ticket — technician, portal, alert, inbound email, the AI assistant's ticket
+  tool, and the API. Existing tickets stay readable, and turning the module back
+  on restores everything with its history intact. See
+  [Service Management mode](/reference/partner-management/#service-management-mode).
+</Aside>
+
 ## Email-to-Ticket
 
 Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.

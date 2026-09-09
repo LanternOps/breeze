@@ -337,6 +337,8 @@ Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to
 
 Enforcement of the Force MFA flag is itself gated by the `MFA_FORCE_FOR_PARTNER_ADMIN` environment variable, which **defaults to `false`** for this release: the Partner Admin role is seeded/reconciled with Force MFA on regardless, but the 428 wall above only fires once an operator sets `MFA_FORCE_FOR_PARTNER_ADMIN=true`. See `.env.example` for details. This default returns to `true` once a notification-period rollout ships.
 
+**The variable gates the *role* flag only.** MFA required by an organisation's or partner's own security settings (**Require MFA** under Settings → Security) is enforced regardless of what `MFA_FORCE_FOR_PARTNER_ADMIN` is set to — it is not a global switch for turning MFA requirements off. Related: a settings change that *would* lock out users who have already enrolled is now refused outright with `409 mfa_policy_would_lock_out_users` and a count of the users affected, rather than applied and discovered at the next sign-in.
+
 ### Permission Model
 
 Permissions are stored as `resource:action` pairs in the `permissions` table. Roles are linked to permissions through the `role_permissions` join table.

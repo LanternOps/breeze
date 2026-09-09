@@ -252,6 +252,8 @@ curl -X POST https://breeze.example.com/api/v1/orgs/partners \
 | `maxOrganizations` | `integer` | Optional cap on organization count |
 | `maxDevices` | `integer` | Optional cap on total devices across all organizations |
 | `settings` | `jsonb` | Partner-level settings (timezone, business hours, contact info) |
+| `serviceManagementMode` | `enum` | `native`, `external`, or `off`. Default: `native`. See [Service Management mode](#service-management-mode) |
+| `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null otherwise |
 | `ssoConfig` | `jsonb` | SSO configuration |
 | `billingEmail` | `varchar(255)` | Billing contact email |
 | `createdAt` | `timestamp` | Record creation time |
@@ -278,6 +280,50 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
     }
   }'
 ```
+
+### Service Management mode
+
+Not every MSP runs its service desk in Breeze. **Service Management mode** is a
+partner-level switch that decides whether Breeze's own service desk and customer
+billing are part of this MSP's product at all. Find it on the **Modules** card
+under **Settings → Partner → Company**.
+
+| Mode | What the MSP gets |
+|---|---|
+| **Breeze service desk & billing** (`native`) | Everything. The default, and what every existing partner keeps. |
+| **Off — RMM only** (`off`) | Breeze is monitoring and management only. The **Service Desk** section (Tickets, Timesheets) and the **Billing** section (Quotes, Invoices, Contracts, Product Catalog) disappear from the sidebar, and **no new ticket can be created anywhere**. |
+| `external` | For an MSP whose tickets live in a third-party PSA. **No UI in this release** — see below. |
+
+**What `off` actually refuses.** Turning the module off is a product decision, not
+a permission: it hides the service-desk and billing surfaces and refuses *new*
+ticket creation on every path — the web UI, the customer portal, inbound
+email-to-ticket, the AI assistant's ticket tool, and vulnerability-driven ticket
+creation all answer `409 service_management_off`. **Existing tickets stay
+readable** and nothing is deleted, so turning the module back on restores the
+surfaces with their history intact.
+
+<Aside type="note" title="`external` has no selector yet">
+  `external` is reachable only through the API in this release, and only for a
+  partner that already has a **partner-wide** PSA connection bound to it — the
+  mode and the connection are enforced as a pair, so neither can be set without
+  the other. The Modules card deliberately offers only `native` and `off`; a
+  partner already on `external` keeps it and sees a note that changing it is not
+  available here yet. A UI selector ships with the external service-desk feature.
+  See [PSA Integrations](/features/psa-integrations/).
+</Aside>
+
+Both the mode and the bound PSA connection are top-level fields on
+`PATCH /partners/me` — they are **not** keys inside the merged `settings` object:
+
+```bash
+curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{ "serviceManagementMode": "off" }'
+```
+
+An unrecognised or missing mode is read as `native`, so a partner is never
+accidentally locked out of its own service desk by bad data.
 
 ### Soft Deleting a Partner
 

@@ -83,6 +83,17 @@ FAILOVER ───ipc connected────→ MONITORING
   Because the watchdog restarts an agent that stays down past its standby window, `breeze-agent service stop` is **temporary** while the watchdog is installed — the agent comes back after the standby grace period. To stop the agent durably, stop or uninstall the watchdog as well.
 </Aside>
 
+<Aside type="note" title="Known wrinkle on Linux">
+  On Linux, `systemctl stop breeze-agent` currently runs its full 30-second stop
+  timeout and ends in a kill rather than exiting promptly, so the graceful
+  announced-shutdown path above does not complete in time and the agent is
+  recovered through the ordinary unhealthy ladder instead — roughly 30 seconds
+  either way. The practical effects are cosmetic: each `service install` takes
+  about half a minute, and the unit is briefly reported as `failed` before it
+  comes back up. Being restarted is still the outcome, so the durable-stop advice
+  above is unchanged.
+</Aside>
+
 ---
 
 ## Recovery

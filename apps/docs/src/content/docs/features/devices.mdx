@@ -188,6 +188,48 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 
 ---
 
+## Queued Actions
+
+A laptop that is asleep, a workstation someone shut down for the weekend, a
+server on a maintenance reboot — Breeze no longer throws away work aimed at a
+device that happens to be offline. Instead the action is **queued** with a
+delivery deadline and handed to the device the moment it checks in again.
+
+The device page shows a **Queued actions** section listing everything currently
+waiting for that device: what the action is, who asked for it, when it was
+queued, and when it expires. Anything in the list can be **cancelled** from
+there if you no longer want it to run.
+
+Elsewhere in the product a waiting step reads **"Queued — device offline"**
+rather than Failed, so a nightly automation over a fleet of sleeping laptops no
+longer shows a wall of red. The trade-off is worth knowing: **work that used to
+fail fast now sits pending for up to a week.** If a step is only meaningful
+against a live device, set it to skip instead — see the offline behaviour control
+in [Automations](/features/automations/) and the patch-policy equivalent in
+[Patch Management](/features/patch-management/).
+
+Deadlines depend on the kind of work:
+
+| Kind of work | Waits for |
+|---|---|
+| Scripts, patch installs, patch scans, software installs, automation actions | **7 days** |
+| Inventory refreshes and other self-superseding config syncs | **24 hours** |
+| Reboot, shutdown, and scheduled restart | **24 hours** |
+
+A queued action that reaches its deadline without the device coming back expires
+undelivered and is reported as expired — it never sits pending forever, and it
+never runs late enough to surprise someone. Self-hosters can tune all three
+deadlines; see [Environment Variables](/deploy/environment/#feature-flags).
+
+<Aside type="note">
+  Interactive work is deliberately **not** queued. Anything where you are waiting
+  on a live answer — a terminal session, a remote-desktop connection, browsing
+  files, listing or controlling processes and services — still reports the device
+  as offline immediately rather than promising an answer later.
+</Aside>
+
+---
+
 ## The Change History Tab
 
 Opening a device and selecting **Change History** shows a newest-first timeline of what has physically and logically changed on that endpoint over time — a swapped disk, added memory, a new CPU, a BIOS update, or an operating-system upgrade. Use it to answer questions like "when did this machine's RAM change?" or "did the OS get upgraded before that issue started?" without cross-referencing screenshots or asking the user.
