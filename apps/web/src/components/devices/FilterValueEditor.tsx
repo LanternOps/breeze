@@ -7,9 +7,10 @@
 //   - array + hasAny/hasAll: comma-separated text → string[]
 //   - any + isNull/isNotNull/isEmpty/isNotEmpty: no value input
 //
-// Spec section 4.1 — when the field is `orgId` / `siteId` and the parent
-// provides orgs/sites name lookups, render a searchable multi-select of
-// names instead of raw UUIDs.
+// Spec section 4.1 — when the field is `orgId` / `siteId` / `groupId` and the
+// parent provides the matching orgs/sites/groups name lookup, render a
+// searchable multi-select of names instead of raw UUIDs. (Groups extend the
+// spec text — #5342.)
 // Spec section 4.2 — when the field is `software.installed` /
 // `software.notInstalled` and softwareOptions are provided, render a
 // multi-select chip list with All/Any combinator.
@@ -38,8 +39,6 @@ export interface FilterValueEditorProps {
   sites?: NamedRef[];
   // Device groups (static + dynamic) — same named picker as org/site.
   groups?: NamedRef[];
-  // Optional filter to limit shown sites to those under the orgIds the user
-  // has already selected (parent provides this filtered list).
   // Spec 4.2 — distinct software-name list pulled from API.
   softwareOptions?: string[];
   // Optional per-name device counts to surface in the picker list.
