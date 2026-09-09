@@ -57,6 +57,7 @@ import {
 import { useNetworkConnected } from '../lib/useNetworkConnected';
 import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
+import { navigateToTicket } from '../navigation/navigationRef';
 import { useToast } from './toast/ToastHost';
 
 /**
@@ -405,6 +406,24 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (effects.refreshNeedsAttention) await refreshNeedsAttention();
       if (mounted.current) showToast(effects.toast);
+      /**
+       * #5366. A stop that actually recorded a span opens the ticket with the
+       * internal-note composer focused, so what was just done is written while
+       * it is still in the technician's head — the entry used to land as
+       * `No description` because the only way back to the ticket was to find
+       * it again.
+       *
+       * Gated on the OUTCOME, not on `effects.clearRunning`: an unusable-clock
+       * or not-running stop clears the bar too, but nothing was recorded to
+       * annotate and the error the technician needs to read is on this screen.
+       * A timer with no ticket (general time) has nothing to open.
+       */
+      const recordedStop = outcome.ok === true || outcome.ok === 'queued';
+      const stoppedTicketId =
+        (outcome.ok === true ? outcome.entry.ticketId : null) ?? running?.ticketId ?? null;
+      if (mounted.current && recordedStop && stoppedTicketId !== null) {
+        navigateToTicket(stoppedTicketId, { composeMode: 'internal', focusComposer: true });
+      }
     } finally {
       stopInFlight.current = false;
       if (mounted.current) setBusy(false);

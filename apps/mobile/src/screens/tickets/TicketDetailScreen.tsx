@@ -78,7 +78,7 @@ import {
   buildCommentSubmission,
   COMMENT_MODES,
   composerPlaceholder,
-  DEFAULT_COMMENT_MODE,
+  initialCommentMode,
   internalBannerText,
   isPublicForMode,
   modeTabLabel,
@@ -159,10 +159,17 @@ export function TicketDetailScreen() {
    * single message, and silently snapping the composer back to a different
    * visibility between two sends is its own surprise. The mode stays legible
    * the whole time (selected tab, wash, button label), and the screen unmounts
-   * on navigate-away, so `DEFAULT_COMMENT_MODE` reasserts itself every time a
-   * ticket is opened fresh.
+   * on navigate-away, so the seed below reasserts itself every time a ticket is
+   * opened fresh.
+   *
+   * The seed is the route's `composeMode` when it names one (#5366 — stopping a
+   * timer opens the ticket in `internal`), otherwise `DEFAULT_COMMENT_MODE`.
+   * `initialCommentMode` owns that choice so it is assertable: this file is a
+   * `.tsx` the node-only Vitest config never imports.
    */
-  const [commentMode, setCommentMode] = useState<CommentMode>(DEFAULT_COMMENT_MODE);
+  const [commentMode, setCommentMode] = useState<CommentMode>(() =>
+    initialCommentMode(route.params)
+  );
   const [resolutionNote, setResolutionNote] = useState('');
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -208,6 +215,37 @@ export function TicketDetailScreen() {
   }, []);
 
   /**
+   * #5366. The composer sits at the END of the scroll content, so "open the
+   * ticket ready to write" is two moves: scroll the list to the bottom, then
+   * raise the keyboard. Both need imperative handles.
+   */
+  const composerRef = useRef<TextInput>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const focusFrame = useRef<number | null>(null);
+  const focusComposer = useCallback(() => {
+    // Deferred a frame: callers run from an effect or a stop handler, and the
+    // ScrollView's content height is only known after the native layout pass
+    // that follows this commit — scrolling in the same tick lands short of the
+    // composer on a long activity feed. The keyboard is raised AFTER the
+    // scroll so `automaticallyAdjustKeyboardInsets` (iOS) applies its inset to
+    // a list already at the bottom, which is what keeps the composer clear of
+    // the keyboard instead of under it.
+    if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => {
+      focusFrame.current = null;
+      if (!mounted.current) return;
+      scrollRef.current?.scrollToEnd({ animated: true });
+      composerRef.current?.focus();
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    },
+    []
+  );
+
+  /**
    * Returns true when the ticket was refreshed. Callers that just mutated
    * something use the result to decide whether they can honestly report
    * success: a POST that succeeded followed by a GET that failed leaves the
@@ -250,6 +288,32 @@ export function TicketDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * #5366. Honour `focusComposer` once per navigation.
+   *
+   * Waits for `ticket`: until the load resolves this screen renders a spinner
+   * and the composer is not mounted at all, so a focus here would land on a
+   * null ref and be silently lost — the failure this feature exists to remove.
+   *
+   * `setParams({ focusComposer: false })` is what makes it once-per-navigation
+   * rather than once-per-render: every later re-render (a reload, a chip, a
+   * keystroke) re-runs this effect, and without clearing the flag it would drag
+   * the list back to the bottom under the technician mid-scroll. Clearing it
+   * also leaves a *later* navigate to this same already-mounted route free to
+   * flip false -> true and focus again, which a one-shot ref would swallow.
+   */
+  const focusComposerParam = route.params.focusComposer;
+  const composeModeParam = route.params.composeMode;
+  useEffect(() => {
+    if (focusComposerParam !== true || ticket === null) return;
+    navigation.setParams({ focusComposer: false });
+    // Re-seed the mode too: on a navigate to a ticket that is ALREADY mounted
+    // react-navigation updates params in place, and the useState seed above
+    // only ever runs on mount.
+    setCommentMode(initialCommentMode({ composeMode: composeModeParam }));
+    focusComposer();
+  }, [focusComposerParam, composeModeParam, ticket, navigation, focusComposer]);
 
   /**
    * Prepare and upload ONE chip's file.
@@ -571,11 +635,21 @@ export function TicketDetailScreen() {
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
       showToast(effects.toast);
+      // #5366. The ticket is already open, so there is nothing to navigate to —
+      // just put the composer under the technician's thumb in internal mode, so
+      // the entry gets a description instead of landing as `No description`.
+      // Same gate as the TimerBar: only a stop that recorded a span (online or
+      // queued) has anything to annotate; a parked or not-running stop leaves
+      // the error notice on screen to be read.
+      if (outcome.ok === true || outcome.ok === 'queued') {
+        setCommentMode('internal');
+        focusComposer();
+      }
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
     }
-  }, [connected, dispatch, refreshQueueDepth, load, running]);
+  }, [connected, dispatch, refreshQueueDepth, load, running, focusComposer]);
 
   if (loading && !ticket) {
     return (
@@ -628,6 +702,7 @@ export function TicketDetailScreen() {
       enabled={Platform.OS !== 'ios'}
     >
       <ScrollView
+        ref={scrollRef}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         // Drag the list down to dismiss the keyboard (the chat list already
@@ -860,6 +935,7 @@ export function TicketDetailScreen() {
           {isInternal ? <Text style={styles.internalBanner}>{internalBannerText}</Text> : null}
 
           <TextInput
+            ref={composerRef}
             value={comment}
             onChangeText={setComment}
             placeholder={composerPlaceholder(commentMode)}

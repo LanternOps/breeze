@@ -20,6 +20,7 @@ import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScree
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
 import { flushPendingNavigation } from './navigationRef';
+import type { CommentMode } from '../screens/tickets/commentMode';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
 import { palette, fontFamily } from '../theme';
@@ -32,10 +33,25 @@ export type SystemsStackParamList = {
   SystemsDeviceDetail: { device: Device };
 };
 
+/**
+ * #5366. `composeMode` / `focusComposer` let a caller open the ticket *at the
+ * composer* rather than at the top of a read-only page — stopping a timer is
+ * the first such caller. Both are optional and both are absent on the push-tap
+ * path, which must keep opening the ticket with the keyboard down.
+ *
+ * Named rather than inlined so `navigateToTicket` can build the params against
+ * the same type the screen reads them from.
+ */
+export type TicketDetailParams = {
+  ticketId: string;
+  composeMode?: CommentMode;
+  focusComposer?: boolean;
+};
+
 export type TicketsStackParamList = {
   Tickets: undefined;
   CreateTicket: undefined;
-  TicketDetail: { ticketId: string };
+  TicketDetail: TicketDetailParams;
   /**
    * W11 (#4337). Carries `contentType` and `filename` as params rather than
    * re-fetching the attachment row: the feed already holds both, and the viewer
