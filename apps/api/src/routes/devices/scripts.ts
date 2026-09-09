@@ -37,6 +37,11 @@ scriptsRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #5318 — the device Scripts tab now renders the same status labels as
+        // the scripts pages, which qualify a terminal status with the cancel
+        // outcome ("your stop request arrived too late" / "stop failed").
+        // Already exposed at this permission level by GET /scripts/executions/:id.
+        cancelState: scriptExecutions.cancelState,
         // #4885 — the "Run again" action needs the runtime values the
         // execution was submitted with. Already exposed at the same
         // SCRIPTS_READ permission level by GET /scripts/:id/executions and

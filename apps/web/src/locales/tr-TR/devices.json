@@ -1605,20 +1605,6 @@
     "running": "Koşuyor...",
     "runAgain": "Tekrar çalıştır",
     "scriptFallback": "Komut Dosyası",
-    "status": {
-      "cancelled": "İptal edildi",
-      "completed": "Tamamlandı",
-      "failed": "Başarısız",
-      "pending": "Beklemede",
-      "running": "Koşuyor",
-      "timeout": "Zaman Aşımı"
-    },
-    "statusDescriptions": {
-      "completed": "Komut dosyası başarıyla tamamlandı",
-      "pending": "Komut dosyası çalıştırılmayı bekliyor",
-      "running": "Komut dosyası şu anda yürütülüyor...",
-      "timeout": "Komut dosyası yürütme zaman aşımına uğradı"
-    },
     "stderr": "Standart Hata (stderr)",
     "stdout": "Standart Çıkış (stdout)",
     "table": {
