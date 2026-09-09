@@ -56,6 +56,22 @@ function down(keepVolumes: boolean): void {
 function test(passthrough: string[]): void {
   const worktreePath = process.cwd();
   const d = readDescriptor(worktreePath); // throws clear error if not up
+  // #5266 — globalSetup clears the login rate limiter with
+  // `redis-cli -a $REDIS_PASSWORD`; this stack's redis requires auth, so an
+  // absent value makes that clear silently no-op and 429s the one login the
+  // whole suite depends on. The stack is already up here, and compose refuses
+  // to boot redis without a password, so a miss means a lookup bug — say so
+  // rather than passing '' and reproducing the defect one layer down.
+  const redisPassword =
+    process.env.REDIS_PASSWORD ?? readStackEnvValue(worktreePath, 'REDIS_PASSWORD');
+  if (!redisPassword) {
+    throw new Error(
+      '[wt-stack test] REDIS_PASSWORD is not in the environment, .env or .env.stack, yet the ' +
+        "stack is up — so it can't legitimately be missing. globalSetup's login rate-limit " +
+        'clear would silently no-op and 429 the suite. Restore the value (or re-run ' +
+        '`wt-stack up`) before testing.'
+    );
+  }
   execFileSync('npx', ['playwright', 'test', ...passthrough], {
     cwd: `${worktreePath}/e2e-tests`,
     stdio: 'inherit',
@@ -65,11 +81,7 @@ function test(passthrough: string[]): void {
       E2E_BASE_URL: d.baseUrl,
       E2E_ADMIN_EMAIL: d.admin.email,
       E2E_ADMIN_PASSWORD: d.admin.password,
-      // #5266 — globalSetup clears the login rate limiter with
-      // `redis-cli -a $REDIS_PASSWORD`; this stack's redis requires auth, so
-      // without this the clear silently no-ops and a stale window 429s the one
-      // login the whole suite depends on.
-      REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? readStackEnvValue(worktreePath, 'REDIS_PASSWORD') ?? '',
+      REDIS_PASSWORD: redisPassword,
     },
   });
 }

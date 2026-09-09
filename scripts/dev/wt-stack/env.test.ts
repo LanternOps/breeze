@@ -49,6 +49,17 @@ describe('readStackEnvValue', () => {
     expect(readStackEnvValue(dir, 'REDIS_PASSWORD')).toBe('quoted pw');
   });
 
+  it('strips a trailing inline comment from an unquoted value but not from a quoted one', () => {
+    writeFileSync(
+      path.join(dir, '.env'),
+      'REDIS_PASSWORD=plain-pw   # the redis password\nHASHY="pw # not a comment"\nNOSPACE=a#b\n'
+    );
+    expect(readStackEnvValue(dir, 'REDIS_PASSWORD')).toBe('plain-pw');
+    expect(readStackEnvValue(dir, 'HASHY')).toBe('pw # not a comment');
+    // No preceding whitespace — compose treats this as part of the value.
+    expect(readStackEnvValue(dir, 'NOSPACE')).toBe('a#b');
+  });
+
   it('returns undefined for a missing key, a commented-out key, and a missing file', () => {
     writeFileSync(path.join(dir, '.env'), '# REDIS_PASSWORD=commented\n');
     expect(readStackEnvValue(dir, 'REDIS_PASSWORD')).toBeUndefined();

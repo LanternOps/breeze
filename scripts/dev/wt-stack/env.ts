@@ -67,7 +67,14 @@ export function readStackEnvValue(worktreePath: string, key: string): string | u
     if (!existsSync(p)) continue;
     for (const line of readFileSync(p, 'utf8').split('\n')) {
       const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-      if (m?.[1] === key) found = m[2].replace(/^(["'])(.*)\1$/, '$2');
+      if (m?.[1] !== key) continue;
+      const raw = m[2];
+      const quoted = /^(["'])(.*)\1$/.exec(raw);
+      // A quoted value keeps everything inside the quotes; an unquoted one ends
+      // at a whitespace-preceded `#`, the way compose's dotenv parser reads it.
+      // `.env.example` puts trailing comments on values all over the place, so
+      // not stripping them here would hand back e.g. `pw   # the redis password`.
+      found = quoted ? quoted[2] : raw.replace(/\s+#.*$/, '').trimEnd();
     }
   }
   return found;
