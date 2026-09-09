@@ -151,10 +151,14 @@ gc() {
   local c=${LAB_REDIS_CONTAINER:?set LAB_REDIS_CONTAINER}
   # BullMQ job on queue "backup", name "cleanup-expired-snapshots" (backupWorker.ts). Use the API's own
   # Node runtime so the payload shape is exactly what the worker validates.
-  docker exec "${LAB_API_CONTAINER:?set LAB_API_CONTAINER}" node -e '
+  local rp; rp=$(grep -h '^REDIS_PASSWORD=' .env.stack .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+  docker exec -e "REDIS_PASSWORD=$rp" -e REDIS_HOST=redis "${LAB_API_CONTAINER:?set LAB_API_CONTAINER}" node -e '
     const {Queue}=require("bullmq");
-    const q=new Queue("backup",{connection:{host:process.env.REDIS_HOST||"redis",port:Number(process.env.REDIS_PORT||6379)}});
-    q.add("cleanup-expired-snapshots",{type:"cleanup-expired-snapshots",meta:{actorType:"system",actorId:null,source:"backup-assurance"}}).then(j=>{console.log("enqueued",j.id);return q.close()}).catch(e=>{console.error(e);process.exit(1)});'
+    const u=process.env.REDIS_URL?new URL(process.env.REDIS_URL):null;
+    const connection={host:(u&&u.hostname)||process.env.REDIS_HOST||"redis",port:Number((u&&u.port)||process.env.REDIS_PORT||6379),password:(u&&u.password)||process.env.REDIS_PASSWORD||undefined,username:(u&&u.username)||undefined,maxRetriesPerRequest:1,enableOfflineQueue:false};
+    const q=new Queue("backup",{connection});
+    q.add("cleanup-expired-snapshots",{type:"cleanup-expired-snapshots",meta:{actorType:"system",actorId:null,source:"backup-assurance"}}).then(j=>{console.log("enqueued",j.id);return q.close()}).then(()=>process.exit(0)).catch(e=>{console.error(String(e));process.exit(1)});
+    setTimeout(()=>{console.error("enqueue timed out");process.exit(2)},20000);'
 }
 
 cmd=${1:-}; shift || true
