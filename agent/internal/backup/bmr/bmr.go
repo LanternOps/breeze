@@ -35,6 +35,20 @@ var (
 	chtimesFile = os.Chtimes
 )
 
+// maxConsecutiveDownloadFailures bounds how many per-file restore failures
+// (mkdir or download — the ones that call addFailure below) restoreFiles
+// tolerates in a row before aborting the whole recovery. downloadWithRetry
+// (download_provider.go) already retries a single file's transient errors
+// for up to ~5 minutes; without this breaker, a manifest of thousands of
+// files against a server that has disappeared mid-recovery would spend
+// that full retry budget on EVERY file in turn — a 10,000-file manifest
+// could run for days instead of failing fast. Any successful file restore
+// resets the counter back to zero; chmod/chtimes fidelity failures
+// (addFidelityFailure) do NOT count toward it, since the file's bytes were
+// already restored fine. It is a package-level var (not const) so tests
+// can shrink it to keep fixtures small.
+var maxConsecutiveDownloadFailures = 25
+
 // RunRecovery orchestrates a full bare metal recovery.
 //
 // Steps:
@@ -308,22 +322,30 @@ func restoreFiles(
 	cfg RecoveryConfig,
 	provider providers.BackupProvider,
 ) (filesRestored int, bytesRestored int64, warnings []string, failedFiles int, err error) {
+	// consecutiveFailures tracks the current run of back-to-back per-file
+	// download/write failures for the circuit breaker below. Any
+	// successful file restore resets it to zero.
+	consecutiveFailures := 0
+
 	// addFailure records a per-file failure. It always increments
-	// failedFiles (the true count, reported via RecoveryResult.FailedFiles),
-	// but stops appending individual warning strings once maxRecoveryWarnings
-	// is reached — see the const's doc comment (D14).
+	// failedFiles (the true count, reported via RecoveryResult.FailedFiles)
+	// and consecutiveFailures (the circuit breaker's counter), but stops
+	// appending individual warning strings once maxRecoveryWarnings is
+	// reached — see the const's doc comment (D14).
 	addFailure := func(format string, args ...any) {
 		failedFiles++
+		consecutiveFailures++
 		if len(warnings) < maxRecoveryWarnings {
 			warnings = append(warnings, fmt.Sprintf(format, args...))
 		}
 	}
 
 	// addFidelityFailure records a post-restore metadata (chmod/chtimes)
-	// failure. Unlike addFailure, it does NOT increment failedFiles: the
-	// file's bytes were already downloaded and verified successfully, only
-	// the permission/mtime reapply failed, so this is not a restore
-	// failure. It still shares the same maxRecoveryWarnings cap on
+	// failure. Unlike addFailure, it does NOT increment failedFiles or
+	// consecutiveFailures: the file's bytes were already downloaded and
+	// verified successfully, only the permission/mtime reapply failed, so
+	// this is neither a restore failure nor grounds to trip the circuit
+	// breaker. It still shares the same maxRecoveryWarnings cap on
 	// individual warning strings (D14) — a systematic chmod/chtimes failure
 	// (e.g. a read-only restore target) must not blow past the API's
 	// warnings size limit any more than a wave of download failures may.
@@ -335,12 +357,13 @@ func restoreFiles(
 		}
 	}
 
+	breakerTripped := false
 	for _, file := range manifest.Files {
 		if ctx != nil && ctx.Err() != nil {
 			if filesRestored > 0 {
 				return filesRestored, bytesRestored, warnings, failedFiles, nil
 			}
-			return filesRestored, bytesRestored, warnings, failedFiles, fmt.Errorf("bmr: recovery cancelled")
+			return filesRestored, bytesRestored, warnings, failedFiles, ctx.Err()
 		}
 		// TargetPaths overrides are keyed by the ORIGINAL path (see
 		// RecoveryConfig.TargetPaths's doc comment: "original -> target
@@ -356,13 +379,22 @@ func restoreFiles(
 		dir := filepath.Dir(targetPath)
 		if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil {
 			addFailure("mkdir failed for %s: %s", dir, mkErr.Error())
+			if consecutiveFailures >= maxConsecutiveDownloadFailures {
+				breakerTripped = true
+				break
+			}
 			continue
 		}
 
 		if dlErr := provider.Download(file.BackupPath, targetPath); dlErr != nil {
 			addFailure("restore failed for %s: %s", file.SourcePath, dlErr.Error())
+			if consecutiveFailures >= maxConsecutiveDownloadFailures {
+				breakerTripped = true
+				break
+			}
 			continue
 		}
+		consecutiveFailures = 0
 		if ctx != nil && ctx.Err() != nil {
 			return filesRestored, bytesRestored, warnings, failedFiles, nil
 		}
@@ -392,6 +424,15 @@ func restoreFiles(
 		bytesRestored += file.Size
 	}
 
+	if breakerTripped {
+		skipped := len(manifest.Files) - filesRestored - failedFiles
+		if len(warnings) < maxRecoveryWarnings {
+			warnings = append(warnings, fmt.Sprintf(
+				"aborting after %d consecutive file failures; %d files not attempted",
+				maxConsecutiveDownloadFailures, skipped))
+		}
+	}
+
 	if failedFiles > maxRecoveryWarnings {
 		warnings = append(warnings,
 			fmt.Sprintf("... and %d more file restore failures", failedFiles-maxRecoveryWarnings))
@@ -399,6 +440,12 @@ func restoreFiles(
 	if fidelityFailures > maxRecoveryWarnings {
 		warnings = append(warnings,
 			fmt.Sprintf("... and %d more metadata failures", fidelityFailures-maxRecoveryWarnings))
+	}
+
+	if breakerTripped {
+		return filesRestored, bytesRestored, warnings, failedFiles,
+			fmt.Errorf("bmr: aborted after %d consecutive file failures (%d of %d files restored)",
+				maxConsecutiveDownloadFailures, filesRestored, len(manifest.Files))
 	}
 
 	if filesRestored == 0 && len(manifest.Files) > 0 {

@@ -568,21 +568,64 @@ func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
 	}
 }
 
+// breakerFakeProvider is a minimal in-memory BackupProvider used to
+// exercise restoreFiles' consecutive-failure circuit breaker
+// (maxConsecutiveDownloadFailures, bmr.go) under scripted per-call
+// success/failure sequences. Unlike providers.NewLocalProvider (used by the
+// fixtures elsewhere in this file), it never touches disk, so tests can
+// assert an exact provider.Download call count.
+type breakerFakeProvider struct {
+	// downloadErr, given the 0-based index of this Download call, returns
+	// the error Download should return for that call (nil for success). A
+	// nil downloadErr means every call succeeds.
+	downloadErr func(callIndex int) error
+	calls       int
+}
+
+func (p *breakerFakeProvider) Download(_, _ string) error {
+	idx := p.calls
+	p.calls++
+	if p.downloadErr == nil {
+		return nil
+	}
+	return p.downloadErr(idx)
+}
+
+func (p *breakerFakeProvider) Upload(_, _ string) error        { return nil }
+func (p *breakerFakeProvider) List(_ string) ([]string, error) { return nil, nil }
+func (p *breakerFakeProvider) Delete(_ string) error           { return nil }
+
 // TestRestoreFiles_CapsWarningsAndCountsFailedFiles proves D14's fix: with
-// every file failing to restore (the observed shape once the download route's
+// most files failing to restore (the observed shape once the download route's
 // per-token rate limiter starts returning 429s — see D13), restoreFiles must
 // not accumulate one warning string per failure. 9,900 such strings blew the
 // /bmr/recover/complete request past the API's default 1MB body-limit gate
 // ("Request body too large"), so the server never even learned the recovery's
 // outcome. Warnings are capped at 50 individual entries plus one summary
 // line; FailedFiles carries the true count for the caller/telemetry.
+//
+// Failures here are spread out — never more than
+// maxConsecutiveDownloadFailures-1 in a row — so this exercises D14's cap
+// without ALSO tripping the consecutive-failure circuit breaker added
+// alongside it (proven separately by
+// TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures): every file
+// in the manifest must still be attempted.
 func TestRestoreFiles_CapsWarningsAndCountsFailedFiles(t *testing.T) {
-	const totalFiles = 10000
-	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir) // nothing uploaded: every Download fails
+	const cycles = 10
+	cycleLen := maxConsecutiveDownloadFailures // cycleLen-1 failures then 1 success, repeated
+	totalFiles := cycles * cycleLen
 
 	snapshotID := "bmr-mass-failure"
 	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(idx int) error {
+			if idx%cycleLen == cycleLen-1 {
+				return nil // one success per cycle resets the breaker
+			}
+			return errors.New("simulated download failure")
+		},
+	}
 
 	files := make([]manifestFile, totalFiles)
 	for i := 0; i < totalFiles; i++ {
@@ -596,20 +639,169 @@ func TestRestoreFiles_CapsWarningsAndCountsFailedFiles(t *testing.T) {
 
 	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err == nil {
-		t.Fatal("expected restoreFiles to report an error when every file fails")
+		t.Fatal("expected restoreFiles to report an error when most files fail")
+	}
+	if provider.calls != totalFiles {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must not trip on this cadence)", provider.calls, totalFiles)
+	}
+	wantFailed := totalFiles - cycles // one success per cycle
+	if failedFiles != wantFailed {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, wantFailed)
+	}
+	if filesRestored != cycles {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, cycles)
+	}
+	if len(warnings) > maxRecoveryWarnings+1 {
+		t.Fatalf("len(warnings) = %d, want <= %d", len(warnings), maxRecoveryWarnings+1)
+	}
+	last := warnings[len(warnings)-1]
+	wantMore := wantFailed - maxRecoveryWarnings
+	wantSubstr := fmt.Sprintf("%d more", wantMore)
+	if !strings.Contains(last, wantSubstr) {
+		t.Fatalf("last warning = %q, want it to mention %q", last, wantSubstr)
+	}
+}
+
+// TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures proves the
+// consecutive-failure circuit breaker (maxConsecutiveDownloadFailures,
+// bmr.go): with every download failing, restoreFiles must stop attempting
+// further files once it has accumulated maxConsecutiveDownloadFailures
+// failures in a row, rather than working through the whole manifest.
+// Without this, a large manifest against a server that has disappeared
+// mid-recovery would burn downloadWithRetry's full multi-minute retry
+// budget on every single remaining file.
+func TestRestoreFiles_CircuitBreakerStopsAfterConsecutiveFailures(t *testing.T) {
+	const totalFiles = 30 // > maxConsecutiveDownloadFailures, so the breaker must trip before the end
+	snapshotID := "bmr-breaker-all-fail"
+	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(int) error { return errors.New("simulated download failure") },
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err == nil {
+		t.Fatal("expected restoreFiles to return an error when the circuit breaker trips")
+	}
+	if !strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("err = %q, want it to mention 'consecutive'", err.Error())
+	}
+	if provider.calls != maxConsecutiveDownloadFailures {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must stop further attempts, not just stop counting)", provider.calls, maxConsecutiveDownloadFailures)
+	}
+	if failedFiles != maxConsecutiveDownloadFailures {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, maxConsecutiveDownloadFailures)
 	}
 	if filesRestored != 0 {
 		t.Fatalf("filesRestored = %d, want 0", filesRestored)
 	}
-	if failedFiles != totalFiles {
-		t.Fatalf("failedFiles = %d, want %d", failedFiles, totalFiles)
+	foundAbortWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "consecutive") && strings.Contains(w, "not attempted") {
+			foundAbortWarning = true
+			break
+		}
 	}
-	if len(warnings) > 51 {
-		t.Fatalf("len(warnings) = %d, want <= 51", len(warnings))
+	if !foundAbortWarning {
+		t.Fatalf("warnings = %v, want one mentioning consecutive failures and files not attempted", warnings)
 	}
-	last := warnings[len(warnings)-1]
-	if !strings.Contains(last, "9950 more") {
-		t.Fatalf("last warning = %q, want it to mention '9950 more' (10000 failures - 50 individually-listed)", last)
+}
+
+// TestRestoreFiles_CircuitBreakerNotTrippedByAlternatingFailures proves the
+// breaker only counts a CONSECUTIVE run of failures: a fail/success
+// alternation that never strings together maxConsecutiveDownloadFailures
+// failures in a row must never trip the breaker, and every file in the
+// manifest gets attempted.
+func TestRestoreFiles_CircuitBreakerNotTrippedByAlternatingFailures(t *testing.T) {
+	const totalFiles = 41 // odd, so the run also ends on a failure
+	snapshotID := "bmr-breaker-alternating"
+	restoreRoot := t.TempDir()
+
+	provider := &breakerFakeProvider{
+		downloadErr: func(idx int) error {
+			if idx%2 == 0 {
+				return errors.New("simulated download failure")
+			}
+			return nil
+		},
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if provider.calls != totalFiles {
+		t.Fatalf("provider.Download call count = %d, want %d (breaker must not trip on alternating failures)", provider.calls, totalFiles)
+	}
+	wantFailed := totalFiles/2 + 1 // indices 0,2,4,...,40 fail
+	if failedFiles != wantFailed {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, wantFailed)
+	}
+	wantRestored := totalFiles - wantFailed
+	if filesRestored != wantRestored {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, wantRestored)
+	}
+	if err == nil {
+		t.Fatal("expected an error since not every file restored")
+	}
+	if strings.Contains(err.Error(), "consecutive") {
+		t.Fatalf("err = %q, must not mention 'consecutive' (breaker should not have tripped)", err.Error())
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "aborting after") {
+			t.Fatalf("warnings = %v, must not contain an abort/breaker warning", warnings)
+		}
+	}
+}
+
+// TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr proves
+// restoreFiles checks ctx at the very first loop iteration and, with zero
+// files downloaded, returns ctx.Err() itself — not a generic wrapped
+// message — so callers can distinguish cancellation from an ordinary
+// restore failure.
+func TestRestoreFiles_CancelledContextBeforeLoopReturnsCtxErr(t *testing.T) {
+	restoreRoot := t.TempDir()
+	provider := &breakerFakeProvider{
+		downloadErr: func(int) error { return nil },
+	}
+
+	manifest := &snapshotManifest{
+		ID: "bmr-breaker-cancelled",
+		Files: []manifestFile{
+			{SourcePath: filepath.Join(restoreRoot, "f0"), BackupPath: "snapshots/x/files/f0.gz", Size: 10},
+		},
+		Size: 10,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	filesRestored, bytesRestored, _, failedFiles, err := restoreFiles(ctx, manifest, RecoveryConfig{}, provider)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled (ctx.Err() itself)", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider.Download call count = %d, want 0 (no downloads once ctx is already cancelled)", provider.calls)
+	}
+	if filesRestored != 0 || bytesRestored != 0 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d bytesRestored=%d failedFiles=%d, want all 0", filesRestored, bytesRestored, failedFiles)
 	}
 }
 
