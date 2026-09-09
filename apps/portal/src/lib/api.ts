@@ -966,6 +966,11 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        // `code` (sweep 2026-09-08 G5-6) used to be dropped here — the
+        // account-disabled 403's code never reached loadPortalBranding, so
+        // the middleware's login-redirect guard had no way to tell a disabled
+        // account apart from any other branding-load failure.
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };
@@ -991,6 +996,7 @@ export const portalApi = {
     if (!response.data) {
       return {
         error: response.error,
+        code: response.code,
         statusCode: response.statusCode,
         headers: response.headers
       };

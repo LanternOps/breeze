@@ -52,6 +52,20 @@ import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbConte
 export const authRoutes = new Hono();
 const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
 
+/** `code` on the account-status 403 (sweep 2026-09-08 G5-6) — see the gate
+ *  below and apps/portal/src/lib/accountStatus.ts, which mirrors this string. */
+export const PORTAL_ACCOUNT_INACTIVE_CODE = 'PORTAL_ACCOUNT_INACTIVE';
+
+/**
+ * Paths a disabled portal user is still permitted to hit despite failing the
+ * account-status gate. Kept intentionally tight — pure session teardown only.
+ * `c.req.path` is the absolute request path (e.g. `/api/v1/portal/auth/logout`),
+ * so match on suffix rather than assuming any particular mount prefix.
+ */
+function isPortalAuthGateExemptPath(path: string): boolean {
+  return path.endsWith('/auth/logout');
+}
+
 async function isPortalPasswordResetEnabled(orgId: string): Promise<boolean> {
   const [row] = await withSystemDbAccessContext(() =>
     db
@@ -167,7 +181,25 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   }
 
   if (user.status !== 'active') {
-    return c.json({ error: 'Account is not active' }, 403);
+    // `/auth/logout` is exempt: a disabled portal user must still be able to
+    // sign out and clear their session cookie (sweep 2026-09-08 G5-6). Without
+    // this, a disabled user was trapped logged-in-but-blocked — every request
+    // (including logout) 403'd, the cookie never cleared, and `/login` bounced
+    // them straight back to a page that 403'd the same way. Sign-out is pure
+    // teardown with no DB reads, so we skip the org-status gate and the
+    // request-transaction wrapper below entirely rather than special-casing
+    // them too.
+    if (!isPortalAuthGateExemptPath(c.req.path)) {
+      // `code` lets the portal app distinguish a deliberate account-disable
+      // from a generic load failure (e.g. an outage) and route to its own
+      // "access disabled" page instead of rendering the outage copy.
+      return c.json({ error: 'Account is not active', code: PORTAL_ACCOUNT_INACTIVE_CODE }, 403);
+    }
+    c.set('portalAuth', { user, token, authMethod, timezone: timezone ?? 'UTC' });
+    if (authMethod === 'cookie') {
+      setPortalSessionCookies(c, token);
+    }
+    return next();
   }
 
   // Org-status gate. Portal sessions live in Redis and were validated against

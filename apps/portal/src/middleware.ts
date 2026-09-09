@@ -4,8 +4,8 @@ import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
 import { prefixDevAssetUrls, shouldPrefixDevAssetUrls } from './lib/devAssetBase';
-import { loadPortalBranding } from './lib/server';
-import { portalLandingPath } from './lib/landing';
+import { loadPortalBrandingWithStatus } from './lib/server';
+import { resolveAuthenticatedLanding } from './lib/landing';
 
 // Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
 // rendered server-side for an unauthenticated visitor and only failed at the API
@@ -32,11 +32,15 @@ function loginWithNext(pathname: string, search: string): string {
   return withBase(`/login?next=${encodeURIComponent(target)}`);
 }
 
-/** Where a signed-in customer belongs, per their org's visibility flags. They
- *  come to read a proposal or pay a bill; `/dashboard` only leads when the
- *  org has explicitly turned it on (fail-closed, #4562). */
-async function authenticatedLanding(request: Request): Promise<'/dashboard' | '/quotes'> {
-  return portalLandingPath(await loadPortalBranding(request));
+/** Where a signed-in customer belongs. A disabled account (sweep 2026-09-08
+ *  G5-6) goes to its own page FIRST — /quotes is the one signed-in surface no
+ *  visibility flag can turn off, so a disabled account bounced there used to
+ *  403 all over again with no explanation. Otherwise, per their org's
+ *  visibility flags: they come to read a proposal or pay a bill; `/dashboard`
+ *  only leads when the org has explicitly turned it on (fail-closed, #4562). */
+async function authenticatedLanding(request: Request): Promise<'/dashboard' | '/quotes' | '/account-disabled'> {
+  const { branding, accountDisabled } = await loadPortalBrandingWithStatus(request);
+  return resolveAuthenticatedLanding({ accountDisabled, branding });
 }
 
 function isProtectedPath(pathname: string): boolean {
