@@ -144,7 +144,7 @@ import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
   getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate,
-  resolveAndLockOrgLink, readTimeEntryById
+  resolveAndLockOrgLink, readTimeEntryById, getTicketTimeEntryDefaults
 } from './timeEntryService';
 
 describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
@@ -1718,5 +1718,52 @@ describe('resolveAndLockOrgLink (W06 #3900)', () => {
       .resolves.toEqual({ orgId: 'o1', currencyCode: 'EUR' });
     // The harness counts .for('share') and .for('update') alike.
     expect(dbMocks.forUpdateCalls).toBe(before + 1);
+  });
+});
+
+// #5321: the ticket quick-add ("Log time") had no rate field and no way to see
+// what the server WOULD stamp, so a billable entry could be created with a NULL
+// rate and only fail much later at invoice assembly (ALL_MISSING_RATE 409).
+// These defaults are what the quick-add prefills and warns from.
+describe('getTicketTimeEntryDefaults (#5321)', () => {
+  const ACTOR_D = {
+    userId: 'u-1', name: 'Tech', email: 't@example.com', partnerId: 'p-1',
+    accessibleOrgIds: null as string[] | null, manageAll: false,
+  };
+
+  beforeEach(() => {
+    dbMocks.selectResults = [];
+    configMocks.getOrgBillingDefaults.mockReset();
+    configMocks.getOrgBillingDefaults.mockResolvedValue(null);
+  });
+
+  it('returns the org default rate, the org currency and the billable default', async () => {
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'USD', defaultBillable: true });
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: false, defaultHourlyRate: '100.00', rateCurrency: 'USD' }]);
+    await expect(getTicketTimeEntryDefaults('t-1', ACTOR_D)).resolves.toEqual({
+      hourlyRate: '150.00', currencyCode: 'USD', isBillable: true,
+    });
+  });
+
+  it('reports hourlyRate null when nothing upstream carries a rate in the org currency', async () => {
+    // org default entered in CAD, org bills in USD → match-or-skip yields null,
+    // and the category has no rate either. This is exactly the state that made
+    // "Create invoice" 409 for every quick-added entry.
+    configMocks.getOrgBillingDefaults.mockResolvedValue({ defaultHourlyRate: '150.00', rateCurrency: 'CAD', defaultBillable: true });
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-1', categoryId: 'cat-1' }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 'cat-1', partnerId: 'p-1', defaultBillable: true, defaultHourlyRate: null, rateCurrency: null }]);
+    await expect(getTicketTimeEntryDefaults('t-1', ACTOR_D)).resolves.toEqual({
+      hourlyRate: null, currencyCode: 'USD', isBillable: true,
+    });
+  });
+
+  it('refuses a ticket outside the caller org allowlist', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-OTHER', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    await expect(getTicketTimeEntryDefaults('t-1', { ...ACTOR_D, accessibleOrgIds: ['o-1'] }))
+      .rejects.toMatchObject({ status: 404, code: 'TICKET_ORG_DENIED' });
   });
 });

@@ -256,6 +256,32 @@ async function resolveTicketLink(ticketId: string, actor: TimeEntryActor) {
 }
 
 /**
+ * The billing defaults the server WOULD stamp on a new ticket-linked time entry
+ * — the resolved match-or-skip rate, the org's locked currency, and the
+ * billable default (#5321).
+ *
+ * Read-only (no ticket lock): a UI prefill must not queue behind, or contend
+ * with, a concurrent org move. The value is advisory — `createTimeEntry` always
+ * re-resolves under its own lock, so a stale prefill can never write a rate in
+ * the wrong currency.
+ *
+ * Exists because a NULL rate is invisible at log time and only surfaces much
+ * later as the ALL_MISSING_RATE 409 on "Create invoice". Exposing the default
+ * lets the ticket quick-add prefill the rate and warn when there is none.
+ */
+export async function getTicketTimeEntryDefaults(
+  ticketId: string,
+  actor: TimeEntryActor,
+): Promise<{ hourlyRate: string | null; currencyCode: string; isBillable: boolean }> {
+  const link = await resolveTicketLink(ticketId, actor);
+  return {
+    hourlyRate: link.defaultHourlyRate,
+    currencyCode: link.currencyCode,
+    isBillable: link.defaultBillable,
+  };
+}
+
+/**
  * Lock the ticket row on the REQUEST transaction (global order: tickets →
  * time_entries → ticket_parts). Held until request commit (withDbAccessContext
  * is one transaction, db/index.ts), so a concurrent moveTicketOrg / device move

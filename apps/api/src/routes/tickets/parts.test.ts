@@ -20,6 +20,7 @@ const { dbSelectMock, authRef, getScopedTicketOr404Mock, timeServiceMocks } = vi
     deleteTicketPart: vi.fn(),
     listTimeEntries: vi.fn(),
     getTicketBillingSummary: vi.fn(),
+    getTicketTimeEntryDefaults: vi.fn(),
     listBillables: vi.fn()
   }
 }));
@@ -113,6 +114,7 @@ vi.mock('../../services/sensitiveReadAudit', () => ({
 }));
 
 import { ticketsRoutes } from './index';
+import { TimeEntryServiceError } from '../../services/timeEntryService';
 import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -278,10 +280,64 @@ describe('parts routes', () => {
         billableTotals: [{ currencyCode: 'USD', amount: '99.00' }]
       }
     });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue({ hourlyRate: '125.00', currencyCode: 'USD', isBillable: true });
     const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.time.billableAmounts[0].amount).toBe('125.00');
+  });
+
+  // #5321: the ticket quick-add prefills its rate from here and warns when the
+  // resolved default is null — without it a billable entry is logged rate-less
+  // and only fails later with ALL_MISSING_RATE 409 on "Create invoice".
+  it('GET /:id/billing-summary carries the time-entry billing defaults', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 0, billableMinutes: 0, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockResolvedValue({ hourlyRate: null, currencyCode: 'EUR', isBillable: true });
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.defaults).toEqual({ hourlyRate: null, currencyCode: 'EUR', isBillable: true });
+  });
+
+  // Review finding: the summary read never depended on organizations/partner
+  // data. A ticket whose org or partner cannot be resolved must not take the
+  // whole panel down just because the (advisory) defaults lookup failed.
+  it('still returns the summary when the defaults lookup fails, with defaults null', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 60, billableMinutes: 60, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockRejectedValue(
+      new TimeEntryServiceError('Ticket partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE')
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.time.totalMinutes).toBe(60);
+      expect(body.data.defaults).toBeNull();
+      // Swallowed for the client, never for the operator.
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('propagates an unexpected (non-service) defaults fault instead of hiding it', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
+    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
+      time: { totalMinutes: 0, billableMinutes: 0, billableAmounts: [] },
+      parts: { partsCount: 0, billableTotals: [] }
+    });
+    timeServiceMocks.getTicketTimeEntryDefaults.mockRejectedValue(new Error('connection terminated'));
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
+    expect(res.status).toBe(500);
   });
 });
 
