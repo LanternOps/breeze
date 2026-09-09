@@ -1225,6 +1225,11 @@
       "scan": "Varredura",
       "unifi": "UniFi",
       "manual": "Manual"
+    },
+    "agentVersionRelation": {
+      "equalTooltip": "Corresponde à versão efetiva {{version}}",
+      "aheadTooltip": "À frente do pin {{version}}",
+      "behindTooltip": "Atrás do pin {{version}}"
     }
   },
   "deviceLogsTab": {

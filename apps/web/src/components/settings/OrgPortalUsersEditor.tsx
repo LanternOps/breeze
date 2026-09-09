@@ -65,7 +65,7 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const invite = async () => {
     if (!emailValid) return;
     try {
-      const result = await runAction<{ data: { contactLink?: string } }>({
+      const result = await runAction<{ data: { contactLink?: string }; emailSent: boolean }>({
         request: () => fetchWithAuth(`${base(orgId)}/invite`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -74,12 +74,20 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
         errorFallback: t('orgPortalUsersEditor.errors.sendInvite'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
+      // `emailSent: false` (e.g. Redis down, no email provider configured) means
+      // the portal user row exists but nothing was ever delivered — a plain
+      // success toast here told the tech "Invite sent" for an invite that never
+      // left the building (sweep 2026-09-08 G5-4). Checked first: a customer who
+      // never got an email cannot act on a contact-linking nuance either.
+      //
       // 'ambiguous' means the org has several contacts sharing this email, so
       // the invite was created with no contact link — the new login will not
       // see tickets that person emailed in until a contact is linked by hand.
       // A plain success toast here would hide that silently, so this one gets
       // a warning instead of (not in addition to) the generic success toast.
-      if (result.data?.contactLink === 'ambiguous') {
+      if (result.emailSent === false) {
+        showToast({ message: t('orgPortalUsersEditor.toasts.inviteEmailFailed'), type: 'warning' });
+      } else if (result.data?.contactLink === 'ambiguous') {
         showToast({ message: t('orgPortalUsersEditor.toasts.inviteSentAmbiguousContact'), type: 'warning' });
       } else {
         showToast({ message: t('orgPortalUsersEditor.toasts.inviteSent'), type: 'success' });

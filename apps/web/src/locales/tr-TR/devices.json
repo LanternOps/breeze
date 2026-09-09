@@ -1225,6 +1225,11 @@
       "scan": "Tarama",
       "unifi": "UniFi",
       "manual": "Manuel"
+    },
+    "agentVersionRelation": {
+      "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
+      "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
+      "behindTooltip": "{{version}} sabitlemesinin gerisinde"
     }
   },
   "deviceLogsTab": {

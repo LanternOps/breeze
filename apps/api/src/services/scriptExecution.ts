@@ -333,6 +333,30 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     for (const key of dispatch.ignoredParameters) {
       ignoredParameters.add(key);
     }
+    // #5128 — an admitted target whose command did NOT reach the device sits in
+    // `queued`, not `pending` (offline-work-queue spec, "Per-feature
+    // semantics": "Manual runs whose command was `queued_offline` sit in
+    // `queued`"). Without this the web's "Queued — device offline" chip and the
+    // Queued filter in ExecutionHistory describe a state no dispatch path ever
+    // produced: W02 shipped the copy and the `delivery` field below, and W04
+    // shipped this write for the AUTOMATION caller only
+    // (executeRunScriptAction in automationRuntime.ts), leaving the manual run
+    // — the path that actually renders the chip — stuck in `pending`.
+    //
+    // Guarded on `pending` for the same reason the core's `running` write is
+    // (scriptDispatch.ts): a fast agent can already have driven the row
+    // terminal via handleScriptResult, and a blind write would resurrect it.
+    // The dispatch core owns the `running` write on the delivered path, so this
+    // only ever fires when `delivered` is false.
+    if (!dispatch.delivered && dispatch.executionId) {
+      await db
+        .update(scriptExecutions)
+        .set({ status: 'queued' })
+        .where(and(
+          eq(scriptExecutions.id, dispatch.executionId),
+          eq(scriptExecutions.status, 'pending'),
+        ));
+    }
     targetById.set(device.id, {
       requestedDeviceId: device.id,
       admission: 'admitted',
@@ -342,7 +366,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       // #5128 W2 — the dispatch core's own delivery attempt, not a device
       // status read: `delivered: false` covers every queued outcome
       // ('no_agent' and the claim/decrypt/send-failed races alike), all of
-      // which land the row in `pending` awaiting the next heartbeat.
+      // which land the row in `queued` (above) awaiting the next heartbeat.
       delivery: dispatch.delivered ? 'delivered' : 'queued_offline',
     });
   }

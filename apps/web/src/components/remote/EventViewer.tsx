@@ -81,6 +81,14 @@ export type EventViewerProps = {
   selectedLog?: string;
   events?: EventLogEntry[];
   loading?: boolean;
+  /**
+   * Reason the top-level event-log LIST fetch failed, or null/undefined for
+   * none. Surfaced through the same banner as a failed events query
+   * (`fetchError`) so a device that never got past listing its logs (e.g.
+   * offline, 503) reads the same as one whose query for the selected log
+   * failed — never as an empty "No Events" table (#4935-style regression).
+   */
+  loadError?: string | null;
   onSelectLog?: (logName: string) => void;
   onQueryEvents?: (logName: string, filter: EventFilter) => Promise<EventLogEntry[]>;
   onGetEvent?: (logName: string, recordId: string) => Promise<EventLogEntry>;
@@ -223,6 +231,7 @@ export default function EventViewer({
   selectedLog: initialSelectedLog,
   events: initialEvents,
   loading: externalLoading = false,
+  loadError,
   onSelectLog,
   onQueryEvents,
   onGetEvent
@@ -271,7 +280,13 @@ export default function EventViewer({
       setEvents(result);
     } catch (error) {
       console.error('Failed to fetch events:', error);
-      setFetchError('Failed to fetch event logs. Please try again.');
+      // Preserve the actual reason (e.g. the API's "The device is offline."
+      // for a 503 device_offline response) instead of overwriting it with a
+      // generic string — losing that reason is what made an offline device
+      // indistinguishable from a genuinely empty log (#4935-style).
+      setFetchError(
+        error instanceof Error ? error.message : t('remoteToolsPage.errors.queryEvents')
+      );
     } finally {
       setLoading(false);
     }
@@ -666,12 +681,12 @@ export default function EventViewer({
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {fetchError ? (
+                {(loadError || fetchError) ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-12 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <XCircle className="h-8 w-8 text-red-400" />
-                        <p className="text-sm text-red-600 dark:text-red-400">{fetchError}</p>
+                        <p className="text-sm text-red-600 dark:text-red-400">{loadError || fetchError}</p>
                         <button
                           type="button"
                           onClick={handleRefresh}

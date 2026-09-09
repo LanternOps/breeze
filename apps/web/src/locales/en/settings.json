@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invite sent",
       "inviteSentAmbiguousContact": "Invite sent, but no contact could be linked — several contacts share this email. This user will not see tickets that were emailed in until a contact is linked.",
+      "inviteEmailFailed": "Portal user created, but the invite email could not be sent.",
       "pendingInvited": "Invited {{count}} pending user(s)",
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
@@ -3382,7 +3383,13 @@
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
     "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
     "deletePasskeyConfirmTitle": "Delete this passkey?",
-    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone."
+    "deletePasskeyConfirmMessage": "This permanently removes the passkey \"{{name}}\" and it can no longer be used to sign in. Because it is a multi-factor method, deleting it also signs your other sessions out on every device. This cannot be undone.",
+    "passkeyStepUpHeading": "Verify your existing sign-in factor",
+    "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
+    "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
+    "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
+    "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
   },
   "roleManager": {
     "roles": "Roles",

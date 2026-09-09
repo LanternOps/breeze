@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Invito inviato",
       "inviteSentAmbiguousContact": "Invito inviato, ma non è stato possibile collegare alcun contatto: più contatti condividono questo indirizzo email. Questo utente non vedrà i ticket ricevuti via email finché non verrà collegato un contatto.",
+      "inviteEmailFailed": "Utente del portale creato, ma non è stato possibile inviare l'email di invito.",
       "pendingInvited": "Invitati {{count}} utenti in sospeso",
       "inviteResent": "Invito reinviato",
       "reactivated": "Utente riattivato",
@@ -3377,7 +3378,13 @@
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
     "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità.",
     "deletePasskeyConfirmTitle": "Eliminare questa passkey?",
-    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata."
+    "deletePasskeyConfirmMessage": "Questa operazione rimuove definitivamente la passkey \"{{name}}\", che non potrà più essere usata per accedere. Trattandosi di un metodo a più fattori, l'eliminazione disconnette anche le altre sessioni su tutti i dispositivi. Non può essere annullata.",
+    "passkeyStepUpHeading": "Verifica il tuo fattore di accesso esistente",
+    "passkeyStepUpIntro": "Questo account ha già l'autenticazione a più fattori abilitata. Confermala prima di aggiungere un'altra passkey.",
+    "passkeyStepUpNoUsableFactor": "Il fattore attuale del tuo account non può essere confermato qui. Contatta un amministratore per aggiungere una passkey.",
+    "passkeyStepUpIncorrectCode": "Codice errato. Riprova.",
+    "passkeyStepUpTooManyAttempts": "Troppi tentativi. Riprova tra qualche minuto.",
+    "passkeyStepUpVerificationExpired": "La verifica è scaduta. Verifica di nuovo."
   },
   "roleManager": {
     "roles": "Ruoli",

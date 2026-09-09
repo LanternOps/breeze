@@ -77,6 +77,23 @@ const updateChain = () => ({
   }),
 });
 
+// `db.update` is stubbed with `mockReturnValue(updateChain())`, so every update
+// in a run records its payload on the SAME `set` spy. Reading that one call
+// history gives the ordered list of every UPDATE the call made, which is what
+// these tests assert on — never a positional index into `db.update.mock.results`
+// (all of whose entries share that value). #5128 added a per-execution
+// `{ status: 'queued' }` write inside the dispatch loop, which shifted every
+// such index by one.
+const allUpdateSets = (): Record<string, unknown>[] => {
+  const results = vi.mocked(db.update).mock.results;
+  if (results.length === 0) return [];
+  return (results[0]!.value as { set: { mock: { calls: unknown[][] } } }).set.mock.calls.map(
+    (call) => call[0] as Record<string, unknown>,
+  );
+};
+
+const hasDevicesFailed = (payload: Record<string, unknown>) => 'devicesFailed' in payload;
+
 const baseScript = (overrides: Record<string, unknown> = {}) => ({
   id: 'script-1',
   orgId: 'org-a',
@@ -245,8 +262,11 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
       'device-3': 'batch-org-b',
     });
 
-    // Final status update covers both created batches.
-    expect(db.update).toHaveBeenCalledTimes(1);
+    // Four updates: one `{ status: 'queued' }` execution write per
+    // admitted-but-undelivered device (#5128), then ONE final batch-status
+    // update covering both created batches.
+    expect(db.update).toHaveBeenCalledTimes(4);
+    expect(allUpdateSets()).toHaveLength(4);
   });
 });
 
@@ -342,12 +362,12 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
     expect(result.admission.targets).toHaveLength(2);
     expect(result.admission.status).toBe('partially_queued');
 
-    // db.update calls: one devicesFailed increment for the failed device's
-    // batch, plus the final batch-status update.
-    const updateCalls = vi.mocked(db.update).mock.results;
-    expect(updateCalls).toHaveLength(2);
-    const devicesFailedSetCall = updateCalls[0]!.value.set.mock.calls[0][0];
-    expect(devicesFailedSetCall).toHaveProperty('devicesFailed');
+    // db.update calls: the admitted device's `queued` execution write (#5128),
+    // one devicesFailed increment for the failed device's batch, and the final
+    // batch-status update. Exactly ONE of them touches devicesFailed.
+    const sets = allUpdateSets();
+    expect(sets).toHaveLength(3);
+    expect(sets.filter(hasDevicesFailed)).toHaveLength(1);
   });
 });
 
@@ -412,11 +432,12 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
     // A second `.values(...)` call would be the duplicate failed-execution row.
     const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
     expect(insertChain.values.mock.calls).toHaveLength(1);
-    // The only db.update left is the final batch-status write — no
-    // devicesFailed increment (the gate already spent that slot).
-    const updateCalls = vi.mocked(db.update).mock.results;
-    expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0]!.value.set.mock.calls[0][0]).not.toHaveProperty('devicesFailed');
+    // The only db.updates left are the admitted device's `queued` execution
+    // write (#5128) and the final batch-status write — NO devicesFailed
+    // increment (the gate already spent that slot).
+    const sets = allUpdateSets();
+    expect(sets).toHaveLength(2);
+    expect(sets.filter(hasDevicesFailed)).toHaveLength(0);
   });
 
   // #3409 PR4c-2 review finding 3 — THE regression this split exists for.
@@ -455,9 +476,11 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
       orgId: 'org-b',
       status: 'failed',
     });
-    const updateCalls = vi.mocked(db.update).mock.results;
-    expect(updateCalls).toHaveLength(2);
-    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+    // Three updates: the admitted device's `queued` execution write (#5128),
+    // the failed device's devicesFailed increment, and the final batch status.
+    const sets = allUpdateSets();
+    expect(sets).toHaveLength(3);
+    expect(sets.filter(hasDevicesFailed)).toHaveLength(1);
   });
 
   // The claim gate's infrastructure-fault path writes NOTHING (it cannot know
@@ -483,8 +506,7 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
     if (!result.ok) return;
     const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
     expect(insertChain.values.mock.calls).toHaveLength(2);
-    const updateCalls = vi.mocked(db.update).mock.results;
-    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+    expect(allUpdateSets().filter(hasDevicesFailed)).toHaveLength(1);
   });
 
   it('still writes the row and increments the batch for a code the gate did NOT record', async () => {
@@ -516,9 +538,11 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
       orgId: 'org-b',
       status: 'failed',
     });
-    const updateCalls = vi.mocked(db.update).mock.results;
-    expect(updateCalls).toHaveLength(2);
-    expect(updateCalls[0]!.value.set.mock.calls[0][0]).toHaveProperty('devicesFailed');
+    // Three updates: the admitted device's `queued` execution write (#5128),
+    // the failed device's devicesFailed increment, and the final batch status.
+    const sets = allUpdateSets();
+    expect(sets).toHaveLength(3);
+    expect(sets.filter(hasDevicesFailed)).toHaveLength(1);
   });
 });
 

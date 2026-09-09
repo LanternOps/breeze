@@ -10,6 +10,7 @@ import {
   requireMfa,
   requirePermission,
   requireScope,
+  type AuthContext,
 } from "../middleware/auth";
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
@@ -18,7 +19,11 @@ import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
 import { getBinarySource, getGithubReleaseVersion } from "../services/binarySource";
-import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
+import {
+  getPromotedComponentVersion,
+  getPromotedAgentVersionForDisplay,
+} from "../services/promotedAgentVersion";
+import { getOrgAgentVersionPinsBatch } from "../services/orgAgentVersionPins";
 import { PERMISSIONS } from "../services/permissions";
 import {
   verifyReleaseArtifactManifestAsset,
@@ -80,6 +85,13 @@ const latestQuerySchema = z.object({
   platform: platformEnum,
   arch: architectureEnum,
   component: componentEnum.optional().default("agent"),
+});
+
+// Issue #5285: comma-separated orgIds for GET /agent-versions/effective. A
+// generous but bounded cap (below) keeps one caller from turning this into an
+// unbounded fan-out; the query itself is otherwise as cheap as GET /orgs.
+const effectiveVersionsQuerySchema = z.object({
+  orgIds: z.string().min(1),
 });
 
 const downloadParamsSchema = z.object({
@@ -675,6 +687,62 @@ export async function validateReleaseManifest(args: {
 
   return { ok: true };
 }
+
+// GET /agent-versions/effective?orgIds=a,b,c — issue #5285. The Devices list
+// "Agent Version" column needs each visible org's EFFECTIVE agent-version
+// target (its agentVersionPins.agent pin, or the globally promoted version
+// when unpinned) to colour-code device rows by relation to it. Resolved ONCE
+// per page load across every visible org (this one request), never per row —
+// the caller (DevicesPage) calls this after loading /orgs, not per device.
+//
+// Mounted BEFORE the "/:version/download" family below (this file has no
+// "/:orgId"-shaped route to collide with, but keeping static paths ahead of
+// param routes is the house style in this file).
+agentVersionRoutes.get(
+  "/effective",
+  authMiddleware,
+  requireScope("organization", "partner", "system"),
+  zValidator("query", effectiveVersionsQuerySchema),
+  async (c) => {
+    const auth = c.get("auth") as AuthContext;
+    const { orgIds: orgIdsParam } = c.req.valid("query");
+
+    // Silently drop an orgId the caller cannot access rather than 403ing the
+    // whole request — a stale/foreign id on the query string (e.g. a device
+    // row from an org the caller lost access to mid-session) should not sink
+    // every other org's badge, and dropping it never confirms or denies that
+    // the id exists (same posture as GET /orgs' accessible-scope filter).
+    // Capped well above any real page's distinct-org count so one caller
+    // can't turn this into an unbounded fan-out.
+    const requested = [
+      ...new Set(
+        orgIdsParam
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      ),
+    ].slice(0, 200);
+    const allowed = requested.filter((id) => auth.canAccessOrg(id));
+
+    if (allowed.length === 0) {
+      return c.json({ data: {} });
+    }
+
+    // The pin batch is per-org; the promoted fallback is edition-wide, so it
+    // is resolved ONCE for the whole request regardless of org count.
+    const [pinsByOrg, promoted] = await Promise.all([
+      getOrgAgentVersionPinsBatch(allowed),
+      getPromotedAgentVersionForDisplay(),
+    ]);
+
+    const data: Record<string, string | null> = {};
+    for (const orgId of allowed) {
+      data[orgId] = pinsByOrg[orgId]?.agent ?? promoted;
+    }
+
+    return c.json({ data });
+  },
+);
 
 // GET /agent-versions/latest - Get latest version info for platform/arch
 // This endpoint is public (no auth) so agents can check for updates

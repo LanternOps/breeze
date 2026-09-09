@@ -1197,6 +1197,7 @@
     "toasts": {
       "inviteSent": "Davet gönderildi",
       "inviteSentAmbiguousContact": "Davet gönderildi, ancak birden fazla kişi bu e-posta adresini paylaştığı için hiçbir kişi bağlanamadı. Bir kişi bağlanana kadar bu kullanıcı e-posta yoluyla gelen talepleri göremeyecek.",
+      "inviteEmailFailed": "Portal kullanıcısı oluşturuldu, ancak davet e-postası gönderilemedi.",
       "pendingInvited": "Davet edildi {{count}} bekleyen kullanıcı(lar)",
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
@@ -3382,7 +3383,13 @@
     "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
     "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı.",
     "deletePasskeyConfirmTitle": "Bu geçiş anahtarı silinsin mi?",
-    "deletePasskeyConfirmMessage": "Bu işlem \"{{name}}\" geçiş anahtarını kalıcı olarak kaldırır ve artık oturum açmak için kullanılamaz. Çok faktörlü bir yöntem olduğu için silmek diğer oturumlarınızı da tüm cihazlarda kapatır. Bu işlem geri alınamaz."
+    "deletePasskeyConfirmMessage": "Bu işlem \"{{name}}\" geçiş anahtarını kalıcı olarak kaldırır ve artık oturum açmak için kullanılamaz. Çok faktörlü bir yöntem olduğu için silmek diğer oturumlarınızı da tüm cihazlarda kapatır. Bu işlem geri alınamaz.",
+    "passkeyStepUpHeading": "Mevcut oturum açma faktörünüzü doğrulayın",
+    "passkeyStepUpIntro": "Bu hesapta zaten çok faktörlü kimlik doğrulama etkin. Başka bir geçiş anahtarı eklemeden önce bunu onaylayın.",
+    "passkeyStepUpNoUsableFactor": "Hesabınızın mevcut faktörü burada onaylanamıyor. Geçiş anahtarı eklemek için bir yöneticiyle iletişime geçin.",
+    "passkeyStepUpIncorrectCode": "Kod hatalı. Lütfen tekrar deneyin.",
+    "passkeyStepUpTooManyAttempts": "Çok fazla deneme. Lütfen birkaç dakika içinde tekrar deneyin.",
+    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın."
   },
   "roleManager": {
     "roles": "Roller",

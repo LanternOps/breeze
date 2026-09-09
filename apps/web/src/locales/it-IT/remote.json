@@ -196,7 +196,7 @@
       "justNow": "Adesso",
       "minutesAgo": "{{count}} min fa"
     },
-    "title": "Titolo",
+    "title": "Attività file",
     "unverifiedHint": "Suggerimento non verificato"
   },
   "fileManager": {
@@ -236,7 +236,7 @@
       "scanned": "File analizzati: {{count}}",
       "selected": "Selezionati: {{count}} · {{size}}",
       "threshold": "Soglia",
-      "title": "Titolo",
+      "title": "Analisi disco",
       "trigger": "Attivazione: {{value}}"
     },
     "dismiss": "Chiudi",
@@ -260,7 +260,7 @@
     "moveTo": "Sposta in",
     "selectedCount": "Numero selezionato",
     "size": "Dimensione",
-    "title": "Titolo",
+    "title": "Gestione file",
     "transfers": "Trasferimenti",
     "trash": "Cestino",
     "selectedCount_one": "{{count}} selezionato",
@@ -440,7 +440,7 @@
       "generic": "Si è verificato un errore"
     },
     "refreshStatus": "Aggiorna stato",
-    "title": "Titolo"
+    "title": "Gestione file"
   },
   "remoteTerminal": {
     "connectedBang": "Connessione riuscita",
@@ -616,7 +616,7 @@
     "noServicesFound": "Nessun servizio trovato",
     "ok": "OK",
     "page": "Pagina {{current}} di {{total}}",
-    "refreshHint": "Suggerimento per l'aggiornamento",
+    "refreshHint": "Aggiorna per verificare i servizi.",
     "restartService": "Riavvia servizio",
     "searchPlaceholder": "Segnaposto di ricerca",
     "serviceConfirm": "Vuoi davvero {{action}} il servizio {{service}}?",

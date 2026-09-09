@@ -11,6 +11,8 @@ import MFASettings from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
+import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
+import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
 import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -155,6 +157,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
   const [isAddingPasskey, setIsAddingPasskey] = useState(false);
+  // SR2-20: an account that already holds an MFA factor (TOTP/SMS/another
+  // passkey) must present a fresh existing-factor step-up grant before it may
+  // add another. The FIRST submit never carries one — the server 403s
+  // `existing_factor_step_up_required` and THIS reveals the step-up step,
+  // rather than the raw error code dead-ending the card (sweep G4-7).
+  const [passkeyStepUpNeeded, setPasskeyStepUpNeeded] = useState(false);
+  const [passkeyStepUpCode, setPasskeyStepUpCode] = useState('');
   const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
   const [editingPasskeyName, setEditingPasskeyName] = useState('');
   const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
@@ -506,6 +515,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // whichever road spends it first.
   const hasSsoReauthGrant = ssoReauthGrantId !== null;
 
+  // SR2-20: mirrors the server gate (`userHasStrongerReauthFactor`) — prove
+  // whichever existing factor is strongest. `passkeys` here is the account's
+  // OWN prior passkeys (a passkey being added right now cannot prove itself).
+  const passkeyStepUpTier: ReauthTier = useMemo(
+    () => pickReauthTier(passkeys.length, user?.mfaMethod ?? null),
+    [passkeys.length, user?.mfaMethod],
+  );
+
   // Consume an `#ssoReauthGrant=<id>` handed back by the SSO callback: the user
   // has just re-proved their identity at the IdP. Mount-only by design — the
   // fragment is stripped as it is read, so this can never fire twice.
@@ -795,6 +812,28 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
+  /**
+   * SR2-20 mint failure → human copy. `mintStepUpGrant`'s own message is the
+   * server's literal English `error` string (never localized), so a rejected
+   * proof must be branched on `responseCode`/`status` the same way
+   * ApproverDevicesSection's `mapRegisterError` does — never rendered as-is.
+   */
+  const mapPasskeyStepUpMintError = (err: unknown): string => {
+    if (err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+      return t('profilePage.passkeySetupWasCanceledOrTimedOut');
+    }
+    if (err instanceof StepUpMintError) {
+      if (err.responseCode === 'mfa_proof_invalid' || err.status === 400) {
+        return t('profilePage.passkeyStepUpIncorrectCode');
+      }
+      if (err.status === 429) {
+        return t('profilePage.passkeyStepUpTooManyAttempts');
+      }
+      return t('profilePage.passkeyStepUpVerificationExpired');
+    }
+    return err instanceof Error ? err.message : t('profilePage.failedToAddPasskey');
+  };
+
   const handleAddPasskey = async () => {
     if (isAddingPasskey) return;
     // #4018: a passwordless SSO account proves identity with a fresh forced IdP
@@ -812,11 +851,43 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     } else if (!passkeyPassword) {
       return;
     }
+    // SR2-20: the step-up step is showing (a prior submit 403'd). No usable
+    // factor (SMS-only accounts — /auth/mfa/step-up has no authenticated SMS
+    // sender wired up here, same gap as MaintenanceModeDialog's) can never
+    // resolve; a TOTP tier needs its 6-digit code before minting is worth a
+    // round trip.
+    if (passkeyStepUpNeeded) {
+      if (passkeyStepUpTier === 'password') return;
+      if (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6) return;
+    }
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
       const label = passkeyName.trim() || 'Passkey';
+
+      // SR2-20: mint the existing-factor step-up grant BEFORE the registration
+      // round-trip, exactly once per submit. A fresh grant is minted only when
+      // the step-up step is showing — the initial submit never carries one, so
+      // an account with no existing factor (first-time enrollment) never pays
+      // for a step-up it does not need.
+      let stepUpGrantId: string | undefined;
+      if (passkeyStepUpNeeded) {
+        try {
+          stepUpGrantId = await mintStepUpGrant({
+            operation: 'add_factor',
+            reauth:
+              passkeyStepUpTier === 'passkey'
+                ? { method: 'passkey' }
+                : { method: 'totp', code: passkeyStepUpCode },
+          });
+        } catch (err) {
+          setPasskeyStepUpCode('');
+          setPasskeyError(mapPasskeyStepUpMintError(err));
+          return;
+        }
+      }
+
       // The SAME grant id goes to BOTH calls: register/options only VALIDATES
       // it, register/verify CONSUMES it. Minting a second grant in between
       // would fail the consume — each is bound to the epochs + sid captured at
@@ -840,11 +911,31 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // from them now means only that the bearer expired, which SHOULD refresh.
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
-        body: JSON.stringify({ ...optionsProof, name: label })
+        body: JSON.stringify({
+          ...optionsProof,
+          name: label,
+          ...(stepUpGrantId ? { stepUpGrantId } : {}),
+        })
       });
 
       const optionsData = await optionsResponse.json().catch(() => ({}));
       if (!optionsResponse.ok) {
+        // SR2-20: the account already holds an MFA factor and this submit
+        // carried no grant yet — reveal the step-up step instead of the raw
+        // enum (paper cut G4-7). A SECOND rejection (a grant WAS sent and
+        // still bounced — a factor changed mid-flight and bumped mfa_epoch)
+        // is not silently retried into a loop: reset to the pre-step-up state
+        // with a translated message instead.
+        if (optionsData.error === 'existing_factor_step_up_required') {
+          setPasskeyStepUpCode('');
+          if (!stepUpGrantId) {
+            setPasskeyStepUpNeeded(true);
+            return;
+          }
+          setPasskeyStepUpNeeded(false);
+          setPasskeyError(t('profilePage.passkeyStepUpVerificationExpired'));
+          return;
+        }
         throw new Error(
           optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
         );
@@ -854,7 +945,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const credential = await createPasskeyCredential(optionsJSON);
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
-        body: JSON.stringify({ name: label, credential, ...verifyProof })
+        body: JSON.stringify({
+          name: label,
+          credential,
+          ...verifyProof,
+          ...(stepUpGrantId ? { stepUpGrantId } : {}),
+        })
       });
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
@@ -885,6 +981,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // already spent — same rule as the TOTP terminal write.
       setSsoReauthGrantId(null);
       setSsoSetupReady(false);
+      setPasskeyStepUpNeeded(false);
+      setPasskeyStepUpCode('');
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
@@ -1306,6 +1404,47 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               />
             </div>
           )}
+          {/* SR2-20: revealed only once the FIRST submit 403s
+              existing_factor_step_up_required — an account with no existing
+              factor never sees this (paper cut G4-7). A locally-scoped prompt
+              rather than <StepUpPrompt>: ApproverDevicesSection below already
+              renders one on this same page, and that component's ids
+              (`approver-stepup-*`) are not unique per instance. */}
+          {passkeyStepUpNeeded && (
+            <div className="space-y-2 rounded-md border p-3" data-testid="passkey-stepup-section">
+              <p className="text-sm font-medium">{t('profilePage.passkeyStepUpHeading')}</p>
+              <p className="text-xs text-muted-foreground">
+                {t('profilePage.passkeyStepUpIntro')}
+              </p>
+              {passkeyStepUpTier === 'passkey' ? (
+                <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-passkey-note">
+                  {t('stepUpPrompt.youWillConfirmWithYourPasskey')}
+                </p>
+              ) : passkeyStepUpTier === 'totp' ? (
+                <>
+                  <label className="text-sm font-medium" htmlFor="passkey-stepup-code">
+                    {t('stepUpPrompt.authenticatorCode')}
+                  </label>
+                  <input
+                    id="passkey-stepup-code"
+                    data-testid="passkey-stepup-code"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    value={passkeyStepUpCode}
+                    onChange={event => setPasskeyStepUpCode(event.target.value.replace(/\D/g, ''))}
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    disabled={isAddingPasskey}
+                  />
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-no-factor">
+                  {t('profilePage.passkeyStepUpNoUsableFactor')}
+                </p>
+              )}
+            </div>
+          )}
           {isPasswordless && !hasSsoReauthGrant ? (
             <button
               type="button"
@@ -1321,7 +1460,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               type="button"
               data-testid="passkey-add"
               onClick={handleAddPasskey}
-              disabled={isAddingPasskey || (!isPasswordless && !passkeyPassword)}
+              disabled={
+                isAddingPasskey
+                || (!isPasswordless && !passkeyPassword)
+                || (passkeyStepUpNeeded
+                  && (passkeyStepUpTier === 'password'
+                    || (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)))
+              }
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
