@@ -21,7 +21,7 @@ export function customFieldExampleSnippet(language: string): string {
   switch (language) {
     case 'powershell':
       return [
-        '# Read: a parameter bound to custom field "asset_tag" arrives as an env var',
+        '# Read: a parameter named asset_tag (bound to a custom field) arrives as BREEZE_PARAM_<NAME>',
         '$assetTag = $env:BREEZE_PARAM_ASSET_TAG',
         '# Write: print the marker; the field needs "Allow scripts to write this field"',
         "$fields = @{ ram_slot_type = 'DDR5-5600'; free_dimm_slots = 2 }",
@@ -30,14 +30,14 @@ export function customFieldExampleSnippet(language: string): string {
     case 'python':
       return [
         'import json, os',
-        '# Read: a parameter bound to custom field "asset_tag" arrives as an env var',
+        '# Read: a parameter named asset_tag (bound to a custom field) arrives as BREEZE_PARAM_<NAME>',
         'asset_tag = os.environ.get("BREEZE_PARAM_ASSET_TAG")',
         '# Write: print the marker; the field needs "Allow scripts to write this field"',
         `print("${CUSTOM_FIELD_MARKER} " + json.dumps({"ram_slot_type": "DDR5-5600", "free_dimm_slots": 2}))`,
       ].join('\n');
     case 'cmd':
       return [
-        'REM Read: a parameter bound to custom field "asset_tag" arrives as an env var',
+        'REM Read: a parameter named asset_tag (bound to a custom field) arrives as BREEZE_PARAM_<NAME>',
         'set ASSET_TAG=%BREEZE_PARAM_ASSET_TAG%',
         'REM Write: print the marker; the field needs "Allow scripts to write this field"',
         `echo ${CUSTOM_FIELD_MARKER} {"ram_slot_type":"DDR5-5600","free_dimm_slots":2}`,
@@ -45,7 +45,7 @@ export function customFieldExampleSnippet(language: string): string {
     case 'bash':
     default:
       return [
-        '# Read: a parameter bound to custom field "asset_tag" arrives as an env var',
+        '# Read: a parameter named asset_tag (bound to a custom field) arrives as BREEZE_PARAM_<NAME>',
         'asset_tag="$BREEZE_PARAM_ASSET_TAG"',
         '# Write: print the marker; the field needs "Allow scripts to write this field"',
         `echo '${CUSTOM_FIELD_MARKER} {"ram_slot_type":"DDR5-5600","free_dimm_slots":2}'`,
