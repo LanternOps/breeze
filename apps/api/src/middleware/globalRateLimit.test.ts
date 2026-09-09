@@ -172,7 +172,9 @@ describe('globalRateLimit — isolated desktop-ws bucket', () => {
 describe('ISOLATED_BUCKETS pins', () => {
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
-    const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/');
+    const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');
+    // authenticate/complete must NOT inherit the wide budget.
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/backup/bmr/recover/authenticate'.startsWith(b.prefix))).toBe(false);
     // A 10k-file recovery fetches one object per file from a single IP; the
     // per-token limiter inside the route already bounds abuse.
     expect(bucket).toBeDefined();

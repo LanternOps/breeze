@@ -72,10 +72,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // Bare-metal recovery (2026-09-09 assurance campaign, D13): the recovery
   // helper fetches ONE object per file through /backup/bmr/recover/download,
   // so a 10k-file server would be capped at 300 files/min by the shared
-  // bucket. The routes are token-authenticated and path-scoped to a single
-  // snapshot, and carry their own per-token limiter inside the route, so the
-  // isolated bucket only needs to stay below "runaway client" territory.
-  { prefix: '/api/v1/backup/bmr/recover/', name: 'bmrrecover', limit: 12_000 },
+  // bucket. Only the download route is isolated: it is token-authenticated,
+  // path-scoped to a single snapshot and carries its own per-token limiter,
+  // so the bucket only needs to stay below "runaway client" territory.
+  // /recover/authenticate and /recover/complete keep the shared budget plus
+  // their tighter per-route limiters.
+  { prefix: '/api/v1/backup/bmr/recover/download', name: 'bmrrecover', limit: 12_000 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

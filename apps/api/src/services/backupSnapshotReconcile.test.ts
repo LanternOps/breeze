@@ -1029,3 +1029,30 @@ describe('reconcileOrphanedBackupSnapshots', () => {
     ).rejects.toMatchObject({ code: 'destination_unreadable' });
   });
 });
+
+describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
+  it('carries the stable originalPath through when re-adopting a VSS-backed snapshot', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const manifest = {
+      id: 'snapshot-20260909T191735Z-9702e203',
+      timestamp: '2026-09-09T19:17:35.000Z',
+      size: 10,
+      files: [{
+        sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\assure\\src\\x',
+        originalPath: 'C:\\assure\\src\\x',
+        backupPath: 'snapshots/snapshot-20260909T191735Z-9702e203/files/path_0/assure/src/x.gz',
+        size: 10,
+        modTime: '2026-09-09T19:17:35.000Z',
+      }],
+    };
+    const result = manifestToCommandResult({
+      snapshotId: manifest.id,
+      manifestText: JSON.stringify(manifest),
+      matchedBy: 'job-snapshot-id',
+    });
+    // Without this the orphan-reconcile path indexes the transient shadow-copy
+    // device path (browse root "?", selective restore rejects real paths).
+    expect(result.snapshot?.files?.[0]?.originalPath).toBe('C:\\assure\\src\\x');
+  });
+});
+
