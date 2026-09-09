@@ -52,6 +52,140 @@ func TestStopBackupHelper_NilBroker(t *testing.T) {
 	b.StopBackupHelper()
 }
 
+// TestStopBackupHelper_NoActiveRuns_KillsImmediately locks down the
+// pre-existing behaviour: with nothing tracked in activeRuns, StopBackupHelper
+// kills the resident process and clears state right away, with no grace wait.
+func TestStopBackupHelper_NoActiveRuns_KillsImmediately(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test helper process: %v", err)
+	}
+	defer func() { _, _ = cmd.Process.Wait() }()
+
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup: &backupHelper{
+			process: cmd.Process,
+			session: &Session{SessionID: "backup-stop-idle"},
+		},
+	}
+
+	start := time.Now()
+	b.StopBackupHelper()
+	elapsed := time.Since(start)
+
+	if b.backup.process != nil {
+		t.Fatalf("expected process to be cleared, got %+v", b.backup.process)
+	}
+	if b.backup.session != nil {
+		t.Fatalf("expected session to be cleared, got %+v", b.backup.session)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected an immediate kill with no active runs, took %v", elapsed)
+	}
+}
+
+// TestStopBackupHelper_ActiveRun_WaitsThenKillsAnyway proves change B (D3):
+// a run still active when StopBackupHelper is called (the SCM/graceful-stop
+// path) must not be silently dropped by an unconditional kill. It waits up
+// to backupHelperStopGrace for the run to drain, then kills the process
+// anyway so agent shutdown still completes inside its own budget
+// (agentapp/shutdown_budget.go).
+func TestStopBackupHelper_ActiveRun_WaitsThenKillsAnyway(t *testing.T) {
+	orig := backupHelperStopGrace
+	backupHelperStopGrace = 150 * time.Millisecond
+	defer func() { backupHelperStopGrace = orig }()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test helper process: %v", err)
+	}
+	defer func() { _, _ = cmd.Process.Wait() }()
+
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup: &backupHelper{
+			process: cmd.Process,
+			session: &Session{SessionID: "backup-stop-active"},
+			activeRuns: map[string]backupRunState{
+				"cmd-1": backupRunExecuting,
+			},
+		},
+	}
+
+	start := time.Now()
+	b.StopBackupHelper()
+	elapsed := time.Since(start)
+
+	if elapsed < backupHelperStopGrace {
+		t.Fatalf("expected StopBackupHelper to wait out the grace (%v) before killing, only waited %v", backupHelperStopGrace, elapsed)
+	}
+	if b.backup.process != nil {
+		t.Fatalf("expected process to be killed once the grace expired, got %+v", b.backup.process)
+	}
+	if b.backup.session != nil {
+		t.Fatalf("expected session to be cleared, got %+v", b.backup.session)
+	}
+}
+
+// TestStopBackupHelper_ActiveRun_DrainsBeforeGraceReturnsEarly proves
+// StopBackupHelper polls activeRuns rather than unconditionally sleeping the
+// full grace: a run that finishes mid-wait lets the stop proceed well before
+// backupHelperStopGrace elapses.
+func TestStopBackupHelper_ActiveRun_DrainsBeforeGraceReturnsEarly(t *testing.T) {
+	origGrace := backupHelperStopGrace
+	backupHelperStopGrace = 5 * time.Second
+	defer func() { backupHelperStopGrace = origGrace }()
+	origPoll := backupHelperStopPollInterval
+	backupHelperStopPollInterval = 20 * time.Millisecond
+	defer func() { backupHelperStopPollInterval = origPoll }()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test helper process: %v", err)
+	}
+	defer func() { _, _ = cmd.Process.Wait() }()
+
+	bh := &backupHelper{
+		process: cmd.Process,
+		session: &Session{SessionID: "backup-stop-drain"},
+		activeRuns: map[string]backupRunState{
+			"cmd-1": backupRunExecuting,
+		},
+	}
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup:     bh,
+	}
+
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		bh.mu.Lock()
+		delete(bh.activeRuns, "cmd-1")
+		bh.mu.Unlock()
+	}()
+
+	start := time.Now()
+	b.StopBackupHelper()
+	elapsed := time.Since(start)
+
+	if elapsed >= backupHelperStopGrace {
+		t.Fatalf("expected an early return once the run drained, took the full grace (%v)", elapsed)
+	}
+	if elapsed < 80*time.Millisecond {
+		t.Fatalf("returned before the run actually drained (%v)", elapsed)
+	}
+	if b.backup.process != nil {
+		t.Fatalf("expected process to be killed once drained, got %+v", b.backup.process)
+	}
+}
+
 func TestForwardBackupCommand_NotConnected(t *testing.T) {
 	b := &Broker{
 		sessions:   make(map[string]*Session),
@@ -233,6 +367,55 @@ func TestStopBackupHelperIfIdle_IdleStopsProcessAndClearsSession(t *testing.T) {
 	}
 	if b.backup.session != nil {
 		t.Fatalf("expected session to be cleared, got %+v", b.backup.session)
+	}
+}
+
+// TestActiveBackupRunCount_NilBroker verifies a broker that has never
+// spawned a backup helper reports 0 rather than panicking — the heartbeat's
+// state_sync sender (sendWatchdogStateSync) calls this unconditionally on
+// every tick, including before any backup has ever run.
+func TestActiveBackupRunCount_NilBroker(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+	}
+	if got := b.ActiveBackupRunCount(); got != 0 {
+		t.Fatalf("expected 0 with no backup helper ever spawned, got %d", got)
+	}
+}
+
+// TestActiveBackupRunCount_ReflectsActiveRuns verifies the count is read
+// straight from activeRuns, regardless of which per-run state (pending-ack,
+// executing, doomed) each entry is in — CheckIPC's D3 veto (checks.go) needs
+// this to reflect "any run this helper is tracking", not just confirmed-
+// executing ones.
+func TestActiveBackupRunCount_ReflectsActiveRuns(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup: &backupHelper{
+			activeRuns: map[string]backupRunState{
+				"cmd-1": backupRunPendingAck,
+				"cmd-2": backupRunExecuting,
+				"cmd-3": backupRunDoomed,
+			},
+		},
+	}
+	if got := b.ActiveBackupRunCount(); got != 3 {
+		t.Fatalf("expected 3 active runs, got %d", got)
+	}
+}
+
+// TestActiveBackupRunCount_ZeroWhenEmpty verifies a spawned-but-idle helper
+// (backup non-nil, no tracked runs) reports 0, not some sentinel.
+func TestActiveBackupRunCount_ZeroWhenEmpty(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup:     &backupHelper{},
+	}
+	if got := b.ActiveBackupRunCount(); got != 0 {
+		t.Fatalf("expected 0 with an idle helper, got %d", got)
 	}
 }
 

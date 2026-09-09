@@ -22,6 +22,17 @@ const (
 	backupHelperIdleTimeout  = 30 * time.Minute
 )
 
+// backupHelperStopGrace bounds how long StopBackupHelper waits for in-flight
+// backup runs to drain before killing the helper anyway (D3). It is a
+// package var, not a const, so tests can shrink it; production leaves it at
+// its full 5s, comfortably inside the 20s whole-agent shutdown budget
+// (agent/internal/agentapp/shutdown_budget.go).
+var backupHelperStopGrace = 5 * time.Second
+
+// backupHelperStopPollInterval is how often StopBackupHelper re-checks
+// activeRuns while waiting out backupHelperStopGrace.
+var backupHelperStopPollInterval = 100 * time.Millisecond
+
 // backupHelperDiedError is the terminal error reported for a backup run whose
 // helper process disappeared mid-run (#2998). It is a fixed string so support
 // and the server can separate "the helper died" from a genuinely stalled
@@ -279,7 +290,19 @@ func (b *Broker) ClearBackupSession() {
 	bh.mu.Unlock()
 }
 
-// StopBackupHelper kills the backup helper process.
+// StopBackupHelper kills the backup helper process. It is the SCM/graceful-
+// stop path (agent shutdown), distinct from StopBackupHelperIfIdle (binary
+// swap, which defers instead of killing).
+//
+// If a backup run is still in flight it waits up to backupHelperStopGrace
+// for activeRuns to drain -- most runs finish and report their own terminal
+// result (noteBackupRunResult) well inside that window -- then kills the
+// process anyway so agent shutdown still completes inside its own budget
+// (agent/internal/agentapp/shutdown_budget.go). Before this, StopBackupHelper
+// killed unconditionally: on a real Windows Server 2022 host mid-10k-file
+// backup, that silently failed the job at 9,751/10,046 files with nothing
+// warning that runs were still active (D3). A run still active when the
+// grace expires is logged at WARN with its count.
 func (b *Broker) StopBackupHelper() {
 	b.mu.Lock()
 	bh := b.backup
@@ -287,14 +310,46 @@ func (b *Broker) StopBackupHelper() {
 	if bh == nil {
 		return
 	}
+
+	deadline := time.Now().Add(backupHelperStopGrace)
+	for {
+		bh.mu.Lock()
+		active := len(bh.activeRuns)
+		if active == 0 || !time.Now().Before(deadline) {
+			if active > 0 {
+				log.Warn("stopping backup helper with runs in flight", "count", active)
+			}
+			if bh.process != nil {
+				log.Info("stopping backup helper", "pid", bh.process.Pid)
+				_ = bh.process.Kill()
+				bh.process = nil
+			}
+			bh.session = nil
+			bh.mu.Unlock()
+			return
+		}
+		bh.mu.Unlock()
+		time.Sleep(backupHelperStopPollInterval)
+	}
+}
+
+// ActiveBackupRunCount returns the number of backup_run commands the backup
+// helper is currently tracking (see activeRuns on backupHelper) -- pending-
+// ack, executing, and doomed entries all count, since the caller only needs
+// "is something in flight for this helper right now". It is nil-safe: a
+// broker that has never spawned a backup helper returns 0, so
+// sendWatchdogStateSync (heartbeat) can call it unconditionally on every
+// tick without a nil check of its own.
+func (b *Broker) ActiveBackupRunCount() int {
+	b.mu.RLock()
+	bh := b.backup
+	b.mu.RUnlock()
+	if bh == nil {
+		return 0
+	}
 	bh.mu.Lock()
 	defer bh.mu.Unlock()
-	if bh.process != nil {
-		log.Info("stopping backup helper", "pid", bh.process.Pid)
-		_ = bh.process.Kill()
-		bh.process = nil
-	}
-	bh.session = nil
+	return len(bh.activeRuns)
 }
 
 // StopBackupHelperIfIdle stops any resident backup helper process IF no

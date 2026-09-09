@@ -470,6 +470,13 @@ type StateSync struct {
 	ConfigHash    string `json:"configHash"`
 	Connected     bool   `json:"connected"`
 	LastHeartbeat string `json:"lastHeartbeat"`
+	// ActiveBackupRuns is the number of backup_run commands the backup
+	// helper is currently executing (sessionbroker.Broker.ActiveBackupRunCount).
+	// The watchdog's CheckIPC (internal/watchdog/checks.go) uses this to veto
+	// an IPC-failure escalation while a backup is in flight and this sync is
+	// recent (D3): killing the backup helper mid-run on a transient IPC
+	// hiccup previously had no guard at all.
+	ActiveBackupRuns int `json:"activeBackupRuns,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.
