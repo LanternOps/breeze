@@ -143,13 +143,19 @@ export default function MFASetupForm({
               })}
             </p>
             <div className="flex flex-wrap items-center gap-3">
-              <code
-                data-testid="mfa-totp-secret"
-                aria-label={t('mfaSetup.manualKeyLabel', { defaultValue: 'Setup key' })}
-                className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
-              >
-                {groupedSecret}
-              </code>
+              {/* sr-only SIBLING, not an aria-label: an accessible name would
+                  replace the key's text for a screen reader. */}
+              <span>
+                <span className="sr-only">
+                  {t('mfaSetup.manualKeyLabel', { defaultValue: 'Setup key' })}
+                </span>
+                <code
+                  data-testid="mfa-totp-secret"
+                  className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
+                >
+                  {groupedSecret}
+                </code>
+              </span>
               <button
                 type="button"
                 data-testid="mfa-copy-totp-secret"

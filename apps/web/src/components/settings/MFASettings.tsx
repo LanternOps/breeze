@@ -937,13 +937,19 @@ export default function MFASettings({
                 {t('mFASettings.enterThisSetupKeyInYourAuthenticatorAppInstead')}
               </p>
               <div className="flex flex-wrap items-center gap-3">
-                <code
-                  data-testid="mfa-totp-secret"
-                  aria-label={t('mFASettings.setupKey')}
-                  className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
-                >
-                  {groupedTotpSecret}
-                </code>
+                {/* The sr-only label is a SIBLING, never an aria-label on the
+                    <code>: an accessible name overrides the element's text, so
+                    labelling it would announce "Setup key" INSTEAD of the key —
+                    the exact failure this block exists to fix. */}
+                <span>
+                  <span className="sr-only">{t('mFASettings.setupKey')}</span>
+                  <code
+                    data-testid="mfa-totp-secret"
+                    className="rounded-sm bg-background px-2 py-1 font-mono text-sm tracking-wider break-all select-all"
+                  >
+                    {groupedTotpSecret}
+                  </code>
+                </span>
                 <button
                   type="button"
                   data-testid="mfa-copy-totp-secret"

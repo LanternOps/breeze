@@ -53,6 +53,20 @@ describe('MFASettings — manual TOTP entry key (#5319)', () => {
     expect(key.textContent).toBe(GROUPED);
   });
 
+  // An accessible name on the <code> would REPLACE its text for a screen
+  // reader, announcing "Setup key" instead of the key — the exact failure this
+  // block exists to fix. The label has to be a sibling.
+  it('never labels the key element in a way that hides the key itself', async () => {
+    renderSetup();
+
+    await screen.findByText(/Set up authenticator/i);
+    const key = screen.getByTestId('mfa-totp-secret');
+    expect(key.getAttribute('aria-label')).toBeNull();
+    expect(key.getAttribute('aria-labelledby')).toBeNull();
+    // ...and the label is still there for context, just not as the name.
+    expect(screen.getByText('Setup key')).toBeTruthy();
+  });
+
   it('copies the raw unspaced secret and confirms it', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     installClipboard(writeText);
