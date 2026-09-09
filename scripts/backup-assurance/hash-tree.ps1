@@ -42,6 +42,15 @@ Get-ChildItem -LiteralPath $rootFull -Recurse -Force -Attributes !ReparsePoint |
 Get-ChildItem -LiteralPath $rootFull -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue | ForEach-Object {
   $lines.Add("L`t" + (Rel $_.FullName) + "`tSYMLINK`t" + ($_.Target -join ';'))
 }
+# Get-ChildItem -Recurse descends into directory symlinks and junctions; drop
+# anything that lives under a reparse point so the tree is hashed once.
+$linkDirs = @($lines | Where-Object { $_.StartsWith("L`t") } | ForEach-Object { (($_ -split "`t")[1]) + '/' })
+if ($linkDirs.Count -gt 0) {
+  $lines = @($lines | Where-Object {
+    $l = $_; $p = ($l -split "`t")[1]
+    -not ($linkDirs | Where-Object { $p.StartsWith($_) })
+  })
+}
 $out = $lines | Sort-Object { ($_ -split "`t")[1] } -Culture 'en-US-POSIX' -ErrorAction SilentlyContinue
 if (-not $out) { $out = $lines | Sort-Object { ($_ -split "`t")[1] } }
 $utf8 = New-Object System.Text.UTF8Encoding($false)

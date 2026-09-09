@@ -82,6 +82,19 @@ printf 'tail' | dd of=content/sparse-64MiB.bin bs=1 seek=67108860 conv=notrunc 2
 cp content/random.bin content/random-duplicate.bin
 printf 'CRLF line 1\r\nCRLF line 2\r\n' > content/crlf.txt
 printf 'no trailing newline' > content/no-newline.txt
+# Object-key collision probes: the agent appends .gz to stored keys, so a
+# sibling pair `report` / `report.gz` must still map to two distinct objects.
+mkdir -p content/collide
+prand 3000 col1 > content/collide/report
+prand 3000 col2 > content/collide/report.gz
+prand 3000 col3 > content/collide/data.tar
+prand 3000 col4 > content/collide/data.tar.gz
+# Selective-restore prefix siblings: selecting `pick.txt` must not touch these.
+mkdir -p content/prefix/pick.txtx
+prand 1500 pf1 > content/prefix/pick.txt
+prand 1500 pf2 > content/prefix/pick.txt.bak
+prand 1500 pf3 > content/prefix/pick.txt2
+prand 1500 pf4 > content/prefix/pick.txtx/inner.txt
 
 # --- metadata ----------------------------------------------------------------
 mkdir -p meta/links meta/hardlink

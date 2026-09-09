@@ -15,6 +15,8 @@ $ErrorActionPreference = 'Stop'
 
 function Write-PRand {
   param([string]$Path, [long]$Bytes, [string]$Seed)
+  # .NET resolves relative paths against the process CWD, not PowerShell's location.
+  if (-not [System.IO.Path]::IsPathRooted($Path)) { $Path = Join-Path $script:RootFull $Path }
   $dir = Split-Path -Parent $Path
   if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
   $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
@@ -45,7 +47,10 @@ function Write-PRand {
 function U { param([int[]]$cps) -join ($cps | ForEach-Object { [char]::ConvertFromUtf32($_) }) }
 
 New-Item -ItemType Directory -Path $Root -Force | Out-Null
+$script:RootFull = (Get-Item -LiteralPath $Root).FullName.TrimEnd('\')
+$Root = $script:RootFull
 Set-Location -LiteralPath $Root
+[Environment]::CurrentDirectory = $Root
 foreach ($d in 'sizes','names','content','meta','many','adversarial','empty') {
   if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force }
 }
@@ -75,7 +80,14 @@ Write-PRand 'names\dots\..double-dot-prefix' 2048 n7
 Write-PRand 'names\special\#hash %percent +plus &amp ;semi ,comma.txt' 2048 n8
 Write-PRand "names\special\quote'apos.txt" 2048 n9
 $long = 'L' * 200
-Write-PRand "names\$long\$long.txt" 2048 n12
+try {
+  Write-PRand "names\$long\$long.txt" 2048 n12
+} catch {
+  # 200-char dir + 200-char name exceeds MAX_PATH without LongPathsEnabled; record it.
+  Write-Warning "long name (>260) could not be created on this host: $($_.Exception.Message)"
+  Set-Content -LiteralPath 'names\LONG-NAME-UNSUPPORTED.txt' -Value $_.Exception.Message
+  Write-PRand "names\$long\short.txt" 2048 n12
+}
 # Deep nesting: 20 levels pushes the absolute path well past MAX_PATH (260).
 $deep = 'names\deep'
 1..20 | ForEach-Object { $deep = "$deep\level$_" }
@@ -97,6 +109,16 @@ while ($w -lt 1MB) { $n = [Math]::Min($line.Length, 1MB - $w); $fs.Write($line, 
 Copy-Item 'content\random.bin' 'content\random-duplicate.bin'
 [System.IO.File]::WriteAllText("$Root\content\crlf.txt", "CRLF line 1`r`nCRLF line 2`r`n")
 [System.IO.File]::WriteAllText("$Root\content\no-newline.txt", 'no trailing newline')
+# Object-key collision probes (agent appends .gz to stored keys).
+Write-PRand 'content\collide\report' 3000 col1
+Write-PRand 'content\collide\report.gz' 3000 col2
+Write-PRand 'content\collide\data.tar' 3000 col3
+Write-PRand 'content\collide\data.tar.gz' 3000 col4
+# Selective-restore prefix siblings.
+Write-PRand 'content\prefix\pick.txt' 1500 pf1
+Write-PRand 'content\prefix\pick.txt.bak' 1500 pf2
+Write-PRand 'content\prefix\pick.txt2' 1500 pf3
+Write-PRand 'content\prefix\pick.txtx\inner.txt' 1500 pf4
 # Sparse file: 64 MiB apparent
 $sp = [System.IO.File]::Open("$Root\content\sparse-64MiB.bin", 'Create')
 $sp.SetLength(64MB); $sp.Seek(64MB - 4, 'Begin') | Out-Null; $sp.Write([System.Text.Encoding]::ASCII.GetBytes('tail'), 0, 4); $sp.Close()

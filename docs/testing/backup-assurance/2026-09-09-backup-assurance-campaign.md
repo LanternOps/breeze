@@ -122,6 +122,46 @@ Legend for the `Result` column in §6: **PASS** (byte-exact, hashes recorded) ·
 
 ● planned · ◐ attempt, may be blocked · ◑ blocked pending a decision (§9) · — not planned this campaign
 
+### 4.2b Cells added after the independent review (Codex, 2026-09-09)
+
+An independent static review of the matrix against the code produced 25 candidate blind spots. Each is a
+*claim to verify*, not a finding; the cell exists to prove or disprove it. Numbers in brackets are the
+review items.
+
+| # | Cell | Claim under test |
+|---|---|---|
+| F1c | `report`/`report.gz` and `data.tar`/`data.tar.gz` sibling pairs in the corpus | `ensureGzipExtension` maps both names to one object key, so one file silently overwrites the other [2] |
+| F4b | selective restore of `pick.txt` beside `pick.txt.bak`, `pick.txt2`, `pick.txtx/` | selection is a raw string-prefix match, so siblings get restored too; a zero-match selection returns `completed` [16] |
+| F2b | inject chmod/utime failure after content restore | metadata failures only warn; restore still `completed` [19] |
+| F5b | cross-device restore of case-distinct Linux names onto Windows | destination collisions are unchecked; last writer wins, all counted as success [15] |
+| F6b | S3 primary + local vault mirror; restore with primary down; exceed vault retention | vault sync marks a manifest verified after uploading it; vault retention deletes prefixes without reference checks [5] |
+| I4 | two devices, same source path/size/mtime, different bytes, one destination | previous-manifest lookup is destination-wide, not device-scoped, so device B references device A's object [3] |
+| I5 | same-size edit with preserved mtime | size+mtime dedupe misses the change (documented limitation vs defect) [3] |
+| C5 | interrupt after manifest publish, before journal removal; restart immediately and after journal max-age | stale-journal cleanup deletes a published snapshot prefix [1] |
+| C6 | interrupt a restore, alter a restored file without changing its length, resume | resume trusts same-size targets and skips checksum + metadata [11] |
+| C2b | lose the terminal result after a partial manifest is published, then reconcile | storage reconciliation rewrites an incomplete backup as `completed` [20] |
+| E2b | restore over existing good files with corrupted stored bytes | destination is replaced before the checksum is checked, no rollback [4] |
+| O1 | whole configured root unavailable beside small readable files; all-excluded source | ≤10% failure ratio still `completed`; empty scan becomes `skipped` → persisted `completed` without a snapshot [17] |
+| R3 | GC with a retained system_image snapshot whose manifest is missing; structurally incomplete manifest | GC excludes system_image rows from protection and accepts a manifest without `files` [6] |
+| R4 | expire a snapshot holding a unique obsolete version | GC marks every listed manifest, including expired ones, so nothing is ever reclaimed [23] |
+| D1 | edit a destination config's bucket after backups exist, then restore an older snapshot | restore resolves the config's *current* details; history is stranded [21] |
+| S1b | compare original OS-state sentinels (mode, owner, mtime, links) against collected artifacts | staging copies files as 0600/0700, drops symlinks, skips unreadable entries silently [18] |
+| S1c | Linux: `packages/dpkg.txt` produced vs `packages_dpkg.txt` consumed by the restorer | producer/consumer artifact names disagree, so package reinstall never runs [9] |
+| B1b | BMR with a failing state step / stopped required service | state and validation failures only warn; status `completed`; service probe always true [7] |
+| B1c | BMR with a corrupted / wrong-size object | BMR manifest drops checksums; counters use declared sizes [8] |
+| B1d | BMR of an incremental snapshot (run 3 referencing runs 1–2) | download is limited to the selected snapshot's prefix, so referenced files are rejected [13] |
+| B1e | BMR from a `local` destination through the API download proxy | proxy streams stored gzip bytes; helper writes them unchanged [12] |
+| B1f | BMR `--target-path` remaps + "selective" token | system state is always applied; unmapped files go to original paths — recovery is never non-destructive [14] |
+| T2 | non-canonical manifest paths (`..`, junction under the target) on restore and test-restore | test-restore path has no containment check at all [10] |
+| P2 | protection/GFS/MSSQL-chain bookkeeping failure injected at persistence | job stays `completed` while retention guarantees were never established [22] |
+
+Corrections to §2 accepted from the review: token-flow BMR downloads go through the API proxy, which supports
+`s3` and `local` only (the five-provider constructor is the legacy direct-config fallback) [24]; the agent's
+stale-journal cleanup and the vault rollover also delete objects, so the server GC is not the *only* deletion
+path [25]; incremental dedupe is file-mode only (system-state runs skip it) [25]; and an omitted `targetPath`
+restores into a temp directory, so "in-place restore" must be expressed as `targetPath` = the original root
+(F3 re-specified accordingly).
+
 ### 4.3 Explicitly out of scope (lab limitation, listed so nobody mistakes silence for coverage)
 
 Windows 10/11 client OS; Azure / GCS / B2 (API rejects them anyway); C2C M365 / Google Workspace; physical
@@ -150,11 +190,35 @@ Filled in as cells execute. One row per cell per rig.
 
 | Cell | Rig | Versions | Snapshot / job | Result | Evidence |
 |---|---|---|---|---|---|
+| F1 backup | LNX-QEMU | agent+helper 0.112.0 (main d340fec414), API main | `snapshot-20260909T170751Z-4c52c965` / job `3f614160` | PASS with D1 — file job completed 10,047 files / 185,439,939 B in 63 s; system_image job failed at spawn (D1) | `~/breeze-assurance/runs/lnx/F1-*.json` |
+| F1 backup | MAC | same | `snapshot-20260909T170757Z-ab1aa50a` / job `cf0af05d` | PASS with D1 + O1 — 10,047/10,048 (perm-denied expected), status `completed` with errorCount 1 | `runs/mac/F1-*.json` |
+| F1 backup | WIN-A | same | `snapshot-20260909T170910Z-c486ac6d` / jobs `2313c9df` (failed, D3) → `ed1fc8d1` (completed, resumed same snapshot) | FAIL then PASS on rerun — D3 killed the first run at 9,751/10,046; rerun resumed from journal, 10,045/10,046 in ~60 s; system_image failed at spawn both times (D1) | `runs/win/F1*-*.json`, `C:\ProgramData\Breeze\logs\{agent,backup,watchdog-journal}.log` |
+| F1 integrity | LNX-QEMU, MAC | same | verification `c413d631` / `6a6b3a65` | PARTIAL — 10,045 verified, 2 failed = the D2 collision pair (checksum mismatch); everything else byte-verified | `runs/*/F1-verify-integrity.json` |
+| F1 test restore | LNX-QEMU, MAC | same | `ea27fe6e` / `f2bcf2f4` | PARTIAL — same 2 failures; 40–42 s for 185 MB | `runs/*/F1-verify-testrestore.json` |
+| F1c collision | LNX-QEMU, MAC | same | — | FAIL (D2) — MinIO holds 2 objects for 4 source files under `content/collide/` | `mc ls` output in ledger notes |
+| F2 alt-path restore | LNX-QEMU | same | restore `9d126897` | MISMATCH — 10,043/10,047 byte-identical; 2 wrong content (D2), 1 missing (D4 long name), perm-denied restored 0000→0644 (O4); setuid dropped (O5); 3 symlinks + 1 empty dir absent (O6, O7); mtime + mode preserved on all others | `runs/lnx/F2-compare.txt` |
+| F2 alt-path restore | MAC | same | restore `5c7a0bd7` | MISMATCH — 10,044/10,048 identical; D2 ×2, D4 ×1, perm-denied (expected, non-root rig); O6/O7 same | `runs/mac/F2-compare.txt` |
+| F4 selective | LNX-QEMU | same | restore `bffa496a` | PASS for the 3 selected files (bytes exact) but FAIL F4b — 3 unselected prefix siblings restored too (D5); directory selection rejected by the API (O9) | `runs/lnx/F4-*.json`, `F4-tree.txt` |
+| C2 resume (incidental) | WIN-A | same | see F1 WIN-A | PASS — after the agent restart the next manual run resumed the same snapshot id and uploaded only the remaining objects | job rows above |
 
 ## 7. Defects found
 
 | # | Severity | Cell | Summary | Issue / fix |
 |---|---|---|---|---|
+| D1 | HIGH | F1 (Linux, macOS) | A manual run of a two-selection profile dispatches `file` + `system_image` concurrently; the second `backup_run` fails instantly with `backup helper unavailable: backup helper is already being spawned` (`sessionbroker/backup.go:145` returns an error to any caller that arrives while the helper is still spawning). Every multi-selection run loses its second selection. Regression vs the 2026-07-15 log ("both complete"); the #4925 queue relaxed server-side dedupe so both now arrive at once. | fix in this branch (wait for the in-flight spawn instead of erroring) |
+| D2 | HIGH (data loss) | F1c (Linux, macOS; Windows pending) | `ensureGzipExtension` (`snapshot.go:1015`) leaves a source name that already ends in `.gz` untouched, so `report` and `report.gz` map to the same object key and one overwrites the other; same for `data.tar` / `data.tar.gz`. The backup job reports `completed`; the integrity check reports the pair as 2 failed files (checksum mismatch) — proven in MinIO: 2 objects under `content/collide/` for 4 source files. | issue + fix (encode the stored key so it is injective) |
+| O1 | MED | F1 (macOS) | A run with a failed file (`perm-denied.txt`, permission denied) persists as `completed` with `errorCount: 1`; the failure is only visible in `errorLog`. Under the 10% rule (`completion_status.go`) a run can silently miss up to 10% of files and still show green. | product decision: `partial` for any failed file? |
+| O2 | LOW | F1 | `expiresAt` = created + 7 d although the link retention says `retentionDays: 14` — `keepDaily: 7` wins (`computeExpiresAt` takes the GFS window). Same observation as 2026-07-17, still unadjudicated. | doc/UI: make the effective expiry explicit |
+| D3 | HIGH | F1 (Windows) | During the 10k-file upload the watchdog logged `check.ipc_degraded` ×3 (pongs arrived after its timeout while the agent was busy and its heartbeat to the API had timed out), declared `check.ipc_failed`, and issued a `graceful_restart`; the agent stopped, killed the helper (`stopping backup helper`), and the job failed at 9,751/10,046 files with `backup helper exited unexpectedly`. The rerun resumed the same snapshot from the journal and completed (C2 resume proof), but a customer would see a failed backup and, on a small server under load, this recurs. | analysis delegated; fix = watchdog must not restart while a backup run is in flight, and/or IPC pong must not share a blocked goroutine |
+| D4 | HIGH (silent data loss on restore) | F2 (Linux, macOS) | `restore.go:148` stages each download under `sanitizeFileName(file.BackupPath)` — the whole object key flattened into ONE filename — so any source path longer than ≈180 chars produces a staging name > 255 bytes and `open … file name too long`. The file is silently absent from the restore (restore says `partial`, the failed path is buried in `failedFiles`), while the backup, integrity check and test restore all reported it fine. Proven with `names/L×200/L×200.txt` (object present in MinIO, never restored). | issue + fix (stage under a hashed or mirrored directory layout) |
+| D5 | HIGH (overwrites unselected data) | F4b (Linux) | Selective restore of exactly `content/prefix/pick.txt` restored 6 files: `pick.txt`, `pick.txt.bak`, `pick.txt2`, `pick.txtx/inner.txt` (+ the 2 legitimately selected). `restore.go:337` matches `selectedPaths` as raw string prefixes. In an in-place restore this clobbers files the operator never selected. | issue + fix (match exact path or `path + separator`) |
+| O3 | MED | F2 | While a restore runs, the API logs `[AgentWs] Dropping backup_progress … reason=not-found` once per file (10k lines in 3 min) — restore progress is not persisted and the lab API spent ~85 % CPU on it, which is what starved the Windows heartbeat that fed D3. | issue: persist or discard restore progress cheaply |
+| O4 | LOW | F2 (Linux) | A source file with mode `0000` is restored as `0644` (manifest `mode: 0` is treated as "unknown"). | note |
+| O5 | LOW | F2 (Linux) | setuid/setgid/sticky bits are not preserved (`4755` → `755`): the manifest stores `Perm()` only. | issue (server workloads care) |
+| O6 | MED | F1/F2 (all) | Symlinks are silently absent from the manifest (0 entries for 3 links) and from restores; nothing in the job, result or UI says so. `symlink skip is visible` (F7) therefore FAILS. | issue: record skipped links in the result |
+| O7 | MED | F2 (all) | Empty directories are not preserved (`empty/a/b/c` missing after restore). | issue |
+| O8 | LOW | F2 (all) | A restore with 3 failed files out of 10,047 is persisted as `failed` (API) while the agent reports `partial`; `restoredFiles: 10044` is only visible in the row. | UI copy / status mapping decision |
+| O9 | MED | F4 (API) | `POST /backup/restore` selective mode rejects a directory path (`Selected path is not available in this snapshot`); only exact indexed file paths are accepted — so "restore this folder" is not possible through the API as documented in `restoring.mdx`. | check what the wizard sends; doc or API fix |
 
 ## 8. Docs vs reality (to reconcile at the end)
 
