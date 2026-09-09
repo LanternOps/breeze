@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
@@ -88,6 +92,7 @@ func TestRecoveryResultSerialization(t *testing.T) {
 		DriversInjected: 3,
 		Validated:       true,
 		Warnings:        []string{"minor warning 1"},
+		FailedFiles:     2,
 	}
 
 	data, err := json.Marshal(result)
@@ -120,6 +125,9 @@ func TestRecoveryResultSerialization(t *testing.T) {
 	}
 	if len(decoded.Warnings) != 1 {
 		t.Fatalf("Warnings length: got %d, want 1", len(decoded.Warnings))
+	}
+	if decoded.FailedFiles != 2 {
+		t.Errorf("FailedFiles: got %d, want 2", decoded.FailedFiles)
 	}
 }
 
@@ -474,7 +482,7 @@ func TestRestoreFiles_DefaultTargetUsesOriginalPathNotShadowPath(t *testing.T) {
 		Size: int64(len(content)),
 	}
 
-	filesRestored, bytesRestored, warnings, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	filesRestored, bytesRestored, warnings, _, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -539,7 +547,7 @@ func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
 		},
 	}
 
-	filesRestored, _, warnings, err := restoreFiles(context.Background(), manifest, cfg, provider)
+	filesRestored, _, warnings, _, err := restoreFiles(context.Background(), manifest, cfg, provider)
 	if err != nil {
 		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
 	}
@@ -556,5 +564,107 @@ func TestRestoreFiles_TargetPathOverrideKeyedByOriginalPath(t *testing.T) {
 	}
 	if _, statErr := os.Stat(originalPath); statErr == nil {
 		t.Fatalf("file should not have landed at the un-overridden original path %q once an override was configured", originalPath)
+	}
+}
+
+// TestRestoreFiles_CapsWarningsAndCountsFailedFiles proves D14's fix: with
+// every file failing to restore (the observed shape once the download route's
+// per-token rate limiter starts returning 429s — see D13), restoreFiles must
+// not accumulate one warning string per failure. 9,900 such strings blew the
+// /bmr/recover/complete request past the API's default 1MB body-limit gate
+// ("Request body too large"), so the server never even learned the recovery's
+// outcome. Warnings are capped at 50 individual entries plus one summary
+// line; FailedFiles carries the true count for the caller/telemetry.
+func TestRestoreFiles_CapsWarningsAndCountsFailedFiles(t *testing.T) {
+	const totalFiles = 10000
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir) // nothing uploaded: every Download fails
+
+	snapshotID := "bmr-mass-failure"
+	restoreRoot := t.TempDir()
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: filepath.ToSlash(path.Join("snapshots", snapshotID, "files", fmt.Sprintf("f%d.gz", i))),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: int64(totalFiles * 10)}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err == nil {
+		t.Fatal("expected restoreFiles to report an error when every file fails")
+	}
+	if filesRestored != 0 {
+		t.Fatalf("filesRestored = %d, want 0", filesRestored)
+	}
+	if failedFiles != totalFiles {
+		t.Fatalf("failedFiles = %d, want %d", failedFiles, totalFiles)
+	}
+	if len(warnings) > 51 {
+		t.Fatalf("len(warnings) = %d, want <= 51", len(warnings))
+	}
+	last := warnings[len(warnings)-1]
+	if !strings.Contains(last, "9950 more") {
+		t.Fatalf("last warning = %q, want it to mention '9950 more' (10000 failures - 50 individually-listed)", last)
+	}
+}
+
+// TestRestoreFiles_ReappliesModeAndModTime proves O20's fix: restoreFiles
+// must reapply the manifest's captured mode and modTime after a successful
+// download, mirroring backup.RestoreFromSnapshot's fidelity guarantee
+// (restore.go ~:241). Before this, manifestFile carried neither field, so
+// every file BMR actually restored during the live D13 run (134 of them)
+// landed with drifted permissions and mtimes.
+func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-metadata"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "secret.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "secret")
+	content := []byte("sensitive-bytes")
+	if err := os.WriteFile(srcPath, content, 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	wantMTime := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "secret")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content)), Mode: 0o600, ModTime: wantMTime},
+		},
+		Size: int64(len(content)),
+	}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+
+	info, statErr := os.Stat(targetPath)
+	if statErr != nil {
+		t.Fatalf("stat restored file: %v", statErr)
+	}
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %o, want 0600", info.Mode().Perm())
+		}
+	}
+	if !info.ModTime().Truncate(time.Second).Equal(wantMTime) {
+		t.Errorf("modTime = %v, want %v", info.ModTime(), wantMTime)
 	}
 }

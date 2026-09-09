@@ -89,6 +89,17 @@ type RecoveryResult struct {
 	Validated       bool     `json:"validated"`
 	Warnings        []string `json:"warnings,omitempty"`
 	Error           string   `json:"error,omitempty"`
+	// FailedFiles is the true count of files that failed to restore, even
+	// once Warnings has been capped (see maxRecoveryWarnings in bmr.go) —
+	// D14: a completion payload carrying one warning string per failed file
+	// (~9,900 of them on a 10,047-file recovery hit by the download route's
+	// rate limiter, D13) blew past the API's body-size limit on
+	// /bmr/recover/complete, so the server never even learned the outcome.
+	// bmrCompleteSchema (apps/api/src/routes/backup/schemas.ts) does not yet
+	// parse this field — it is not a `.strict()` schema, so the extra JSON
+	// key is silently dropped rather than rejected; wire it up there in a
+	// follow-up to actually persist/display it.
+	FailedFiles int `json:"failedFiles"`
 }
 
 // ValidationResult from post-restore checks.
