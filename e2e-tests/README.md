@@ -143,21 +143,36 @@ Set in the parent `.env` file. Playwright reads via `process.env`:
 | `E2E_LINUX_DEVICE_ID` | Enrolled Linux device UUID |
 | `REDIS_PASSWORD` | Used by globalSetup to clear login rate-limit |
 
-### Seeded admin and forced MFA (RMM-QA-164)
+### Seeded admin and forced MFA (RMM-QA-164 / #5266)
 
-A fresh stack seeds the system Partner Admin role with `force_mfa = true`, but
-enforcement of that flag is gated by `MFA_FORCE_FOR_PARTNER_ADMIN`, which
-**defaults to `false`** (#4491) — so a fresh stack's `.env` (matching
-`.env.example`) does NOT hit the 428 wall below unless you've explicitly set
-that var to `true`. If you have set it to `true`, the seeded
-`admin@breeze.local` (or your `BREEZE_BOOTSTRAP_ADMIN_EMAIL`) is minted
-`mfa: false` and receives `428 mfa_enrollment_required` on the first protected
-request — `globalSetup`'s login lands on `/auth/mfa/setup?forced=1` instead of
-the dashboard. Pick one before running the suite:
+A fresh stack seeds the system Partner Admin role with `force_mfa = true`
+(#4491), and the seeded `admin@breeze.local` (or your
+`BREEZE_BOOTSTRAP_ADMIN_EMAIL`) holds that role. When enforcement is on, that
+admin is minted `mfa: false` and receives `428 mfa_enrollment_required` on the
+first protected request — `globalSetup`'s login lands on
+`/auth/mfa/setup?forced=1` instead of the dashboard, the shared storage state is
+never written, and every spec fails before it starts.
 
-- enrol TOTP for that admin once (Settings → Security → Two-factor), or
-- unset (or set back to `false`) `MFA_FORCE_FOR_PARTNER_ADMIN` in the stack's
-  `.env` (it suppresses only the role-force component) and restart `api`.
+Enforcement is gated by the API's `MFA_FORCE_FOR_PARTNER_ADMIN` flag. **Do not
+rely on its shipping default**: it was `true` until #5307, is `false` for this
+release only, and returns to `true` once #5306 (the grace-window feature) lands.
+The stack must pin it explicitly.
+
+- **`pnpm wt-stack up` pins it for you.** `scripts/dev/wt-stack/env.ts` writes
+  `MFA_FORCE_FOR_PARTNER_ADMIN=false` into the generated `.env.stack`, which
+  compose loads *after* your root `.env`, so it wins even if your `.env` sets the
+  var. Nothing to do. (The `portal-dev-e2e` CI job writes the same value into its
+  own `.env`.)
+- **Any other stack** (a hand-rolled `docker compose -f docker-compose.yml -f
+  docker-compose.override.yml.dev up`) is governed by your root `.env` and the
+  shipping default. Set `MFA_FORCE_FOR_PARTNER_ADMIN=false` there and restart
+  `api`, or enrol TOTP for that admin once (Settings → Security → Two-factor).
+
+The flag suppresses **only** the role-force component; an org's or partner's
+`security.requireMfa` setting is still enforced, so MFA-policy specs keep
+working. Nothing here changes the stored `force_mfa` flag — the Partner Admin
+posture is intact, and `globalSetup` fails fast with the remedy above rather
+than timing out if it ever lands on `/auth/mfa/setup`.
 
 ### WebAuthn specs need `PUBLIC_APP_URL` to match the browser origin
 
@@ -188,7 +203,16 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up --bui
 
 ### Login 429 (rate limited)
 
-`globalSetup` already clears the rate-limit for `admin@breeze.local` on each run. If it fires anyway, your stack's redis isn't reachable from the host — confirm `breeze-redis` container is running.
+`globalSetup` clears the per-email rate-limit window before it logs in, and now
+reports a 429 as a 429 instead of letting it look like a login hang.
+
+That clear talks to redis as `redis-cli -a $REDIS_PASSWORD`, so it **silently
+no-ops when `REDIS_PASSWORD` is absent from the environment** and a stack whose
+redis requires auth rejects the `DEL` (#5266). `pnpm wt-stack test` now passes
+the value through from the stack's own env files; if you invoke `playwright
+test` directly, export `REDIS_PASSWORD` yourself. If it still fires, your
+stack's redis isn't reachable from the host — confirm the redis container is
+running.
 
 ### Selector not found
 
