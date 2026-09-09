@@ -52,7 +52,7 @@ import { ease, duration } from '../../../lib/motion';
 import { track } from '../../../lib/analytics';
 import { relativeTime } from '../../../lib/relativeTime';
 import { useNetworkConnected } from '../../../lib/useNetworkConnected';
-import { Toast } from '../../../components/Toast';
+import { ToastOutlet, useToast } from '../../../components/toast/ToastHost';
 import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
@@ -110,7 +110,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricOn, setBiometricOn] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
 
   useEffect(() => {
     if (!visible) {
@@ -144,7 +144,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   // sheet open, when the technician has not saved anything.
   useEffect(() => {
     if (!prefsError) return;
-    setToast({
+    showToast({
       kind: 'error',
       text:
         prefsErrorKind === 'load'
@@ -180,9 +180,9 @@ export function SettingsSheet({ visible, onCancel }: Props) {
           onPress: async () => {
             const result = await dispatch(blockPairedDevice({ id: device.id }));
             if (blockPairedDevice.fulfilled.match(result)) {
-              setToast({ kind: 'success', text: 'Device revoked.' });
+              showToast({ kind: 'success', text: 'Device revoked.' });
             } else {
-              setToast({ kind: 'error', text: 'Could not revoke device.' });
+              showToast({ kind: 'error', text: 'Could not revoke device.' });
             }
           },
         },
@@ -205,9 +205,9 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         onPress: async () => {
           const result = await dispatch(revokeConnectedAppAsync({ clientId: app.clientId }));
           if (revokeConnectedAppAsync.fulfilled.match(result)) {
-            setToast({ kind: 'success', text: 'App revoked.' });
+            showToast({ kind: 'success', text: 'App revoked.' });
           } else {
-            setToast({ kind: 'error', text: 'Could not revoke app.' });
+            showToast({ kind: 'error', text: 'Could not revoke app.' });
           }
         },
       },
@@ -246,7 +246,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
 
   function onPasswordSuccess() {
     setPasswordOpen(false);
-    setToast({ kind: 'success', text: 'Password updated.' });
+    showToast({ kind: 'success', text: 'Password updated.' });
   }
 
   function onPressDeleteAccount() {
@@ -274,7 +274,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
               const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
               await safeOpen(url);
             } catch {
-              setToast({
+              showToast({
                 kind: 'error',
                 text: 'Could not open the deletion page. Please try again.',
               });
@@ -346,15 +346,11 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             onRevokeDevice={onRevokeDevice}
             onRevokeApp={onRevokeApp}
           />
-          {/* Toast inside the sliding container so its left/right gutters
-              are relative to the sheet (84% width), not the modal root. */}
-          <Toast
-            visible={!!toast}
-            text={toast?.text ?? ''}
-            kind={toast?.kind ?? 'success'}
-            onHidden={() => setToast(null)}
-            bottomOffset={insets.bottom + spacing[16]}
-          />
+          {/* This sheet is an RN Modal, which always paints ABOVE the app-wide
+              toast host, so it mounts its own outlet. Only the topmost mounted
+              outlet renders (see toastState.topOutletId), so the toast is never
+              painted twice. */}
+          <ToastOutlet />
         </Animated.View>
       </View>
 
