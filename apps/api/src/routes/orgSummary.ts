@@ -20,7 +20,7 @@
  * so it carries the same visibility requirement as the audit trail itself.
  */
 import { Hono } from 'hono';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { INVOICE_STATUSES } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -157,10 +157,17 @@ orgSummaryRoutes.get(
         .select({
           total: sql<string>`count(*)`,
           online: sql<string>`count(*) FILTER (WHERE ${devices.status} = 'online')`,
-          offline: sql<string>`count(*) FILTER (WHERE ${devices.status} <> 'online' AND ${devices.status} <> 'decommissioned')`,
+          offline: sql<string>`count(*) FILTER (WHERE ${devices.status} <> 'online')`,
         })
         .from(devices)
-        .where(eq(devices.orgId, id));
+        // Removed (decommissioned) devices are excluded from EVERY count here,
+        // not just `offline` (#5315). The record page's own Devices tab lists
+        // `GET /devices`, which drops decommissioned rows by default — with the
+        // exclusion applied only to `offline`, the Overview tile reported a
+        // higher total than the tab it sits next to ("Devices 6" vs 5 rows).
+        // Filtering in the WHERE keeps `total`, `online` and `offline` on one
+        // population, so the tile's "N of M online" sub-label stays coherent.
+        .where(and(eq(devices.orgId, id), ne(devices.status, 'decommissioned')));
       summary.devices = {
         total: toCount(row?.total),
         online: toCount(row?.online),

@@ -229,7 +229,17 @@ vi.mock('../db/schema', () => ({
   // inArray was called against the sites.id column specifically.
   sites: { id: { __column: 'sites.id' }, orgId: { __column: 'sites.orgId' } },
   // GET /orgs/sites enriches each site with a grouped device count (#1790).
-  devices: { siteId: { __column: 'devices.siteId' } },
+  // #5315 — `status` and `orgId` are sentinels (same pattern as sites.id /
+  // organizations.status) so the device-count tests can prove the
+  // decommissioned filter is applied to devices.status and not to some other
+  // column: an unrecognized chunk compiles to an opaque bound parameter, so
+  // the sentinel OBJECT itself shows up in `params` and identifies the column.
+  devices: {
+    siteId: { __column: 'devices.siteId' },
+    orgId: { __column: 'devices.orgId' },
+    status: { __column: 'devices.status' },
+    isEphemeral: { __column: 'devices.isEphemeral' },
+  },
   // Agent version pins (issue #2124) validate against this table at save time.
   agentVersions: { id: {}, component: {}, version: {} }
 }));
@@ -1998,6 +2008,57 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data.find((o: { id: string }) => o.id === 'org-1').deviceCount).toBe(12);
       expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
+    });
+
+    // #5315 — the org card counted decommissioned devices while every other
+    // device surface (fleet list, org record Overview tile and Devices tab)
+    // hides them, so a removed device made this card read one higher than the
+    // record it links to. Assert on the bound parameter: this suite mocks the
+    // schema module, so column names render blank in the compiled statement,
+    // and a JSON dump of the condition would match `devices.status`'s own
+    // `enumValues` and pass against unfixed code.
+    it('excludes decommissioned devices from the per-organization device count', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1'] });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 12 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     // ── includeArchived (Wave 4 Task 3) ────────────────────────────────────
@@ -4405,6 +4466,55 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
+    // decommissioned device still inflated the Sites table while the record's
+    // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
+    // a JSON dump of the Drizzle condition embeds `devices.status`'s
+    // `enumValues`, which contains the literal 'decommissioned' and would make
+    // this pass against unfixed code.
+    it('excludes decommissioned devices from the per-site device count', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      expect(countWhere).toBeDefined();
+      // This suite mocks the schema module, so column names render blank in the
+      // compiled statement — assert on the bound parameters instead, which
+      // carry BOTH the sentinel identifying the column and the excluded value.
+      // Pairing them is what rules out the filter landing on the wrong column.
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
     it('should return sites with pagination', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.select)

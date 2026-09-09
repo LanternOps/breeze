@@ -1578,17 +1578,23 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   // `devices_org_id_last_seen_at_idx`, and EXPLAIN on a populated deployment
   // takes the index, not a seq scan.
   //
-  // `devices` has no soft-delete or archive column, so every row is a live
-  // device and a plain count is the whole story. An org with no devices is
-  // absent from the grouped result, hence the `?? 0` rather than leaving it
-  // undefined — "0 devices" is the truth for a new tenant, and undefined is
-  // what produced the blank label in the first place.
+  // Removed devices are excluded (#5315). `devices` has no soft-delete column,
+  // but `status = 'decommissioned'` is the removal marker, and every device
+  // surface a tech reads — the fleet list, the org record's Devices tab, its
+  // Overview tile — hides those rows, so counting them here made this card the
+  // odd one out. An org with no (live) devices is absent from the grouped
+  // result, hence the `?? 0` rather than leaving it undefined — "0 devices" is
+  // the truth for a new tenant, and undefined is what produced the blank label
+  // in the first place.
   const pageOrgIds = ordered.map((org) => org.id);
   const deviceCounts = pageOrgIds.length
     ? await db
         .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
         .from(devices)
-        .where(inArray(devices.orgId, pageOrgIds))
+        .where(and(
+          inArray(devices.orgId, pageOrgIds),
+          ne(devices.status, 'decommissioned'),
+        ))
         .groupBy(devices.orgId)
     : [];
   const deviceCountByOrgId = new Map(
@@ -2556,7 +2562,15 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     const counts = await db
       .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
       .from(devices)
-      .where(and(inArray(devices.siteId, siteIds), eq(devices.isEphemeral, false)))
+      // Removed (decommissioned) devices are excluded alongside the ephemeral
+      // Quick Support ones (#5315): the org record's Devices tab lists
+      // `GET /devices`, which drops decommissioned rows by default, so counting
+      // them here made the Sites table disagree with the tab beside it.
+      .where(and(
+        inArray(devices.siteId, siteIds),
+        eq(devices.isEphemeral, false),
+        ne(devices.status, 'decommissioned'),
+      ))
       .groupBy(devices.siteId);
     for (const row of counts) {
       deviceCountBySite.set(row.siteId, Number(row.count));
