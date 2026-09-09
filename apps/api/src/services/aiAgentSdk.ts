@@ -603,7 +603,18 @@ function reportLostTerminalCas(opts: {
     // the durable worker is expected under contention. It still has to be
     // COUNTABLE: a rising cas_lost rate means the pre-execution paths are
     // racing something, and a console.warn cannot carry that signal.
-    recordActionIntentMetric('chat', toolName, 'cas_lost');
+    try {
+      recordActionIntentMetric('chat', toolName, 'cas_lost');
+    } catch (err) {
+      // Mirrors the `executed: true` branch's guard below, for the same
+      // reason: every caller of this helper is reporting SOME other failure
+      // (a revalidation stop, a digest mismatch, the tier-3 catch), and a
+      // throw out of the metrics layer here would unwind into that caller's
+      // outer catch — replacing the specific reason it had already computed
+      // with a generic `execution_error`. Observability must never be able
+      // to overwrite the diagnosis it exists to support.
+      console.error(`[AI-SDK] Failed to record the cas_lost metric for intent ${intentId}:`, err);
+    }
     return;
   }
 

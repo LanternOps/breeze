@@ -3192,6 +3192,49 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     }
   });
 
+  // Guard for the metric call itself: a throw out of the metrics layer must
+  // not unwind into the caller's outer catch and replace the specific
+  // revalidation diagnosis with a generic execution_error.
+  it('keeps the specific revalidation error when the cas_lost metric recorder throws (#5326)', async () => {
+    setActionIntentMetricsRecorder({
+      onEvent: () => {
+        throw new Error('prom registry exploded');
+      },
+    });
+    try {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+      mockInsertReturning({ id: 'exec-plan-metric-throws' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({
+          id: 'intent-plan-metric-throws',
+          approvalRequestIds: ['appr-plan-metric-throws'],
+        }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValueOnce(true).mockResolvedValue(false);
+      mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: false, errorCode: 'actor_invalid' });
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+
+      const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'Authorization for this action could no longer be verified; it was not executed.',
+      });
+    } finally {
+      setActionIntentMetricsRecorder(null);
+    }
+  });
+
   // Control for the test above: when the terminal CAS WINS there is no
   // contention to report, so nothing may be counted as cas_lost.
   it('does NOT bump cas_lost when the pre-execution terminal CAS wins (#5326)', async () => {
