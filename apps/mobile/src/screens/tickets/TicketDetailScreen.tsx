@@ -525,7 +525,7 @@ export function TicketDetailScreen() {
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      if (effects.toast !== null) showToast(effects.toast);
+      showToast(effects.toast);
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);
@@ -570,7 +570,7 @@ export function TicketDetailScreen() {
       }
       if (!mounted.current) return;
       setTimerNotice(effects.notice);
-      if (effects.toast !== null) showToast(effects.toast);
+      showToast(effects.toast);
     } finally {
       timerInFlight.current = false;
       if (mounted.current) setTimerBusy(false);

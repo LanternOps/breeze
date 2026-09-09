@@ -349,7 +349,12 @@ export function SettingsSheet({ visible, onCancel }: Props) {
           {/* This sheet is an RN Modal, which always paints ABOVE the app-wide
               toast host, so it mounts its own outlet. Only the topmost mounted
               outlet renders (see toastState.topOutletId), so the toast is never
-              painted twice. */}
+              painted twice — and this outlet's id genuinely tracks the sheet
+              being on screen, because Modal.render returns null while it is
+              hidden (react-native Modal.js `_shouldShowModal`), which also
+              keeps the outlet alive through iOS's dismiss animation. It sits
+              inside the sliding container so its gutters are relative to the
+              sheet (84% width), not the modal root. */}
           <ToastOutlet />
         </Animated.View>
       </View>

@@ -16,7 +16,12 @@ import { useApprovalTheme, type, spacing, palette } from '../../theme';
 import { duration, ease, haptic } from '../../lib/motion';
 import { track } from '../../lib/analytics';
 
-import { isDecisionToastVisible, shouldShowEmptyApprovalState } from './approvalDecidedTransition';
+import {
+  APPROVAL_TOAST_OWNER,
+  decisionToastFor,
+  isDecisionToastVisible,
+  shouldShowEmptyApprovalState,
+} from './approvalDecidedTransition';
 import { CountdownRing } from './components/CountdownRing';
 import { RequesterAvatar } from './components/RequesterAvatar';
 import { RequesterRow } from './components/RequesterRow';
@@ -113,7 +118,7 @@ export function ApprovalScreen() {
       dispatch(markExpired(focused.id));
       // Screen-global: markExpired rolls focus to the next request in the
       // same tick, and the user still needs to hear that this one lapsed.
-      showToast({ kind: 'error', text: 'This request expired before you could respond.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request expired before you could respond.' });
     }, 1000);
     return () => clearInterval(id);
   }, [focused?.id, focused?.expiresAt, focused?.status]);
@@ -138,7 +143,7 @@ export function ApprovalScreen() {
     // different action. See PR #696 Critical #3 / decisionTarget.ts.
     const target = decisionTarget(id, focused);
     if (!target) {
-      showToast({ kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
       return;
     }
     successWash.value = withSequence(
@@ -157,17 +162,17 @@ export function ApprovalScreen() {
           is_recursive: approvalSnap.isRecursive,
           seconds_to_decide: decideSeconds,
         });
-        showToast({ sourceId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
+        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: 'success', text: `Approved · ${approvalSnap.actionLabel}` });
       })
       .catch((err: Error) => {
-        showToast({ kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Approve') });
       });
   }
 
   function handleDeny(id: CapturedRequestId, reason?: string) {
     const target = decisionTarget(id, focused);
     if (!target) {
-      showToast({ kind: 'error', text: 'This request changed before you confirmed — review it again.' });
+      showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: 'This request changed before you confirmed — review it again.' });
       return;
     }
     denyShake.value = withSequence(
@@ -187,10 +192,10 @@ export function ApprovalScreen() {
           is_recursive: approvalSnap.isRecursive,
           seconds_to_decide: decideSeconds,
         });
-        showToast({ sourceId: approvalSnap.id, kind: 'error', text: 'Denied · logged' });
+        showToast({ owner: APPROVAL_TOAST_OWNER, sourceId: approvalSnap.id, kind: 'error', text: 'Denied · logged' });
       })
       .catch((err: Error) => {
-        showToast({ kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: messageForDecisionError(err.message, 'Deny') });
       });
   }
 
@@ -210,11 +215,11 @@ export function ApprovalScreen() {
         track('approval_reported_suspicious');
         setReportSheetOpen(false);
         setReportBusy(false);
-        showToast({ kind: 'success', text: 'Reported. Session revoked.' });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'success', text: 'Reported. Session revoked.' });
       })
       .catch(() => {
         setReportBusy(false);
-        showToast({ kind: 'error', text: "Couldn't revoke. Try again." });
+        showToast({ owner: APPROVAL_TOAST_OWNER, kind: 'error', text: "Couldn't revoke. Try again." });
       });
   }
 
@@ -225,22 +230,24 @@ export function ApprovalScreen() {
     dispatch(markExpired(focused.id));
   }
 
-  // A toast bound to a request that is no longer on screen is stale; a toast
-  // with no approval id (report outcome, focus-swap guard) is screen-global.
+  // `decisionToastFor` first drops anything this screen did not post — the
+  // host is app-wide and the navigator keeps running underneath the takeover,
+  // so background toasts arrive here too (#5368). Of what remains, a toast
+  // bound to a request that is no longer on screen is stale; one with no
+  // approval id (report outcome, focus-swap guard) is screen-global.
   // Computed before the `!focused` branch below (#5172): the decision that
   // just cleared `focused` is exactly what queues this toast, so the toast's
   // liveness has to be known before deciding what "no focused row" renders.
-  const toastVisible = isDecisionToastVisible(
-    toast ? { approvalId: toast.sourceId } : null,
-    focused?.id
-  );
+  const toastVisible = isDecisionToastVisible(decisionToastFor(toast), focused?.id);
 
   // A confirmation whose row is no longer focused used to be merely un-rendered
   // by this screen's own <Toast>. The host is shared, so it has to be taken
   // DOWN instead — otherwise the dropped confirmation would ride along and
   // paint over whatever surface comes next.
   useEffect(() => {
-    if (toast !== null && !toastVisible) dismissToast(toast.id);
+    if (toast !== null && toast.owner === APPROVAL_TOAST_OWNER && !toastVisible) {
+      dismissToast(toast.id);
+    }
   }, [toast, toastVisible, dismissToast]);
 
   if (!focused) {

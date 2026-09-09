@@ -404,7 +404,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (effects.refreshNeedsAttention) await refreshNeedsAttention();
-      if (mounted.current && effects.toast !== null) showToast(effects.toast);
+      if (mounted.current) showToast(effects.toast);
     } finally {
       stopInFlight.current = false;
       if (mounted.current) setBusy(false);

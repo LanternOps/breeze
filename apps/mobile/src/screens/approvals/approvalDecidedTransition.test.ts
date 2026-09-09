@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-import { isDecisionToastVisible, shouldShowEmptyApprovalState } from './approvalDecidedTransition';
+import {
+  APPROVAL_TOAST_OWNER,
+  decisionToastFor,
+  isDecisionToastVisible,
+  shouldShowEmptyApprovalState,
+} from './approvalDecidedTransition';
 
 /**
  * #5172: ApprovalScreen's `!focused` branch rendered "No pending approvals /
@@ -60,5 +65,38 @@ describe('isDecisionToastVisible', () => {
 
   it('#5172: a toast for the just-decided row is visible when NOTHING is now focused (last item)', () => {
     expect(isDecisionToastVisible({ approvalId: 'a' }, undefined)).toBe(true);
+  });
+});
+
+/**
+ * #5368: the toast is now a single app-wide host, so ApprovalScreen has to
+ * tell ITS toasts apart from every other screen's. `approvalId: null` used to
+ * be a safe "screen-global" marker because only ApprovalScreen could post into
+ * ApprovalScreen's own toast state; now TimerBar's "Synced 3 offline time
+ * entries" and every other background toast also carries no sourceId, and
+ * ApprovalGate deliberately keeps the navigator running underneath the
+ * takeover — so without an owner tag a background toast would paint over a
+ * live approval prompt, and would also hold the takeover off its empty state.
+ */
+describe('decisionToastFor', () => {
+  it('is null when no toast is showing', () => {
+    expect(decisionToastFor(null)).toBeNull();
+  });
+
+  it('is null for a toast posted by another screen', () => {
+    expect(decisionToastFor({ owner: null, sourceId: null })).toBeNull();
+    expect(decisionToastFor({ owner: 'systems', sourceId: null })).toBeNull();
+  });
+
+  it('passes an approval-owned toast through with its row id', () => {
+    expect(decisionToastFor({ owner: APPROVAL_TOAST_OWNER, sourceId: 'appr-1' })).toEqual({
+      approvalId: 'appr-1',
+    });
+  });
+
+  it('keeps an approval-owned outcome error screen-global (no row id)', () => {
+    expect(decisionToastFor({ owner: APPROVAL_TOAST_OWNER, sourceId: null })).toEqual({
+      approvalId: null,
+    });
   });
 });

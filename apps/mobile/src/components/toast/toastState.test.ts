@@ -9,7 +9,7 @@ describe('toastReducer', () => {
       id: 1,
       request: { kind: 'success', text: 'Timer started' },
     });
-    expect(next).toEqual({ id: 1, kind: 'success', text: 'Timer started', sourceId: null });
+    expect(next).toEqual({ id: 1, kind: 'success', text: 'Timer started', owner: null, sourceId: null });
   });
 
   it('replaces the current toast rather than queueing behind it', () => {
@@ -27,21 +27,34 @@ describe('toastReducer', () => {
       id: 2,
       kind: 'error',
       text: 'Could not stop the timer',
+      owner: null,
       sourceId: null,
     });
   });
 
-  it('carries an optional sourceId for callers that scope a toast to a row', () => {
+  it('carries the optional owner and sourceId a caller scopes a toast with', () => {
     const next = toastReducer(null, {
       type: 'show',
       id: 7,
-      request: { kind: 'success', text: 'Approved · Restart host', sourceId: 'appr-1' },
+      request: {
+        kind: 'success',
+        text: 'Approved · Restart host',
+        owner: 'approval',
+        sourceId: 'appr-1',
+      },
     });
+    expect(next?.owner).toBe('approval');
     expect(next?.sourceId).toBe('appr-1');
   });
 
   it('dismisses the current toast by id', () => {
-    const current: ToastEntry = { id: 3, kind: 'success', text: 'Comment added', sourceId: null };
+    const current: ToastEntry = {
+      id: 3,
+      kind: 'success',
+      text: 'Comment added',
+      owner: null,
+      sourceId: null,
+    };
     expect(toastReducer(current, { type: 'dismiss', id: 3 })).toBeNull();
   });
 
@@ -53,7 +66,13 @@ describe('toastReducer', () => {
    * full hold.
    */
   it('ignores a dismiss from a toast that has already been replaced', () => {
-    const current: ToastEntry = { id: 5, kind: 'error', text: 'Latest', sourceId: null };
+    const current: ToastEntry = {
+      id: 5,
+      kind: 'error',
+      text: 'Latest',
+      owner: null,
+      sourceId: null,
+    };
     expect(toastReducer(current, { type: 'dismiss', id: 4 })).toBe(current);
   });
 

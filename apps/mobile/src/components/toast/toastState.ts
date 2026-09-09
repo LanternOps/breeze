@@ -15,6 +15,14 @@ export interface ToastRequest {
   kind: ToastKind;
   text: string;
   /**
+   * Which surface posted this toast. Optional, and only ApprovalScreen reads
+   * it — the takeover has to tell its own confirmations apart from the
+   * background toasts that keep firing underneath it (ApprovalGate leaves the
+   * navigator mounted on purpose), or an unrelated notice would paint over a
+   * live approval prompt. See `APPROVAL_TOAST_OWNER`.
+   */
+  owner?: string | null;
+  /**
    * Opaque id of the row this toast is about. Optional, and only ApprovalScreen
    * uses it: a decision confirmation is dropped once focus rolls onto a
    * DIFFERENT pending approval (see `approvalDecidedTransition.ts`).
@@ -27,6 +35,7 @@ export interface ToastEntry {
   id: number;
   kind: ToastKind;
   text: string;
+  owner: string | null;
   sourceId: string | null;
 }
 
@@ -51,6 +60,7 @@ export function toastReducer(state: ToastEntry | null, action: ToastAction): Toa
         id: action.id,
         kind: action.request.kind,
         text: action.request.text,
+        owner: action.request.owner ?? null,
         sourceId: action.request.sourceId ?? null,
       };
     case 'dismiss':
