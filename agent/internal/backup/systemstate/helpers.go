@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -102,4 +104,74 @@ func copyTree(srcRoot, dstRoot string) error {
 		}
 		return nil
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Windows registry hive collection and Certificate Services detection
+//
+// These live here (rather than in state_windows.go, which is build-tagged
+// windows) so the decision logic — which hives failed, whether AD CS looks
+// installed — is exercisable in unit tests on any platform, without a real
+// Windows machine or reg.exe/certutil.exe. The package-level var seams below
+// are overridden by tests; state_windows.go uses the defaults unmodified.
+// ---------------------------------------------------------------------------
+
+// runRegSave executes `reg save HKLM\<hive> <outPath> /y`, capturing combined
+// output for diagnostics. It is a package-level var (rather than a direct
+// exec.Command call in collectRegistryHives) purely so tests can substitute a
+// fake.
+var runRegSave = func(hive, outPath string) ([]byte, error) {
+	return exec.Command("reg", "save", `HKLM\`+hive, outPath, "/y").CombinedOutput()
+}
+
+// registrySaveError reports that one or more registry hives failed to save.
+// FailedHives names exactly which ones, so callers can log or surface the
+// specific hive instead of only "the registry step failed".
+type registrySaveError struct {
+	FailedHives []string
+	Err         error // the first hive's error, representative of the failure
+}
+
+func (e *registrySaveError) Error() string {
+	return fmt.Sprintf("reg save failed for hive(s) %v: %s", e.FailedHives, e.Err)
+}
+
+func (e *registrySaveError) Unwrap() error { return e.Err }
+
+// collectRegistryHives saves each named hive from dir via runRegSave. Hives
+// that succeed are kept as artifacts even when others fail — a partial
+// registry capture is more useful for diagnosis than none — while a non-nil
+// *registrySaveError tells the caller exactly which hive(s) are missing so it
+// can decide whether that's acceptable.
+func collectRegistryHives(dir, stagingDir string, hives []string) ([]Artifact, error) {
+	var artifacts []Artifact
+	var failed []string
+	var firstErr error
+	for _, hive := range hives {
+		outPath := filepath.Join(dir, hive)
+		out, err := runRegSave(hive, outPath)
+		if err != nil {
+			slog.Warn("systemstate: reg save failed", "hive", hive, "error", err.Error(), "output", string(out))
+			failed = append(failed, hive)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		artifacts = append(artifacts, artifactFromFile("registry_"+hive, "registry", outPath, stagingDir))
+	}
+	if len(failed) > 0 {
+		return artifacts, &registrySaveError{FailedHives: failed, Err: firstErr}
+	}
+	return artifacts, nil
+}
+
+// certSvcInstalled reports whether the AD CS (Certificate Services) role
+// appears to be installed, checked the same way collectIIS checks for IIS:
+// existence of the role's binary under %WINDIR%\system32. A package-level var
+// so tests can fake it without a real Windows machine.
+var certSvcInstalled = func() bool {
+	certsrv := filepath.Join(os.Getenv("WINDIR"), "system32", "certsrv.exe")
+	_, err := os.Stat(certsrv)
+	return err == nil
 }

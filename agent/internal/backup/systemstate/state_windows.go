@@ -96,31 +96,29 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 // Registry hives
 // ---------------------------------------------------------------------------
 
+// registryHives are the hives captured for a bootable bare-metal restore.
+//
+// SECURITY routinely fails to save: `reg save HKLM\SECURITY` trips Microsoft
+// Defender's ML detector (Trojan:Win32/Commando.A!ml) and gets blocked
+// outright — confirmed live on Windows Server 2022 (Defender event 1116/1117
+// at the exact `reg save` timestamp) — so a missing SECURITY hive is the
+// normal case on a Defender-protected host, not an edge case. The durable fix
+// is to read the hive files out of a VSS shadow copy of
+// %SystemRoot%\System32\config instead of spawning reg.exe (which is what
+// trips the ML detector); tracked as O13 in
+// docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md and
+// NOT implemented here. Until then, collectRegistry hard-fails whenever any
+// hive (including SECURITY) is missing, per the 2026-07-15 "hard-fail on
+// required artifacts" decision — see windowsRequiredSteps above.
+var registryHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
+
 func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "registry")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
-	hives := []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
-	var artifacts []Artifact
-	for _, hive := range hives {
-		outPath := filepath.Join(dir, hive)
-		cmd := exec.Command("reg", "save", `HKLM\`+hive, outPath, "/y")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			slog.Warn("systemstate: reg save failed", "hive", hive, "error", err.Error(), "output", string(out))
-			continue
-		}
-		artifacts = append(artifacts, artifactFromFile("registry_"+hive, "registry", outPath, stagingDir))
-	}
-	// Every Windows machine has SYSTEM/SOFTWARE hives, so capturing none is a
-	// real failure (e.g. the helper lacks the required privilege), not an
-	// "optional artifact absent" case. Report it so CollectState flags the
-	// step incomplete rather than silently producing an unbootable backup.
-	if len(artifacts) == 0 {
-		return nil, fmt.Errorf("reg save captured no registry hives")
-	}
-	return artifacts, nil
+	return collectRegistryHives(dir, stagingDir, registryHives)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +166,15 @@ func (c *WindowsCollector) collectDrivers(stagingDir string) ([]Artifact, error)
 // ---------------------------------------------------------------------------
 
 func (c *WindowsCollector) collectCertificates(stagingDir string) ([]Artifact, error) {
+	// AD CS (Certificate Services) is an optional role; most machines don't
+	// have it, and certutil -backupDB fails loudly (0x80070002) when it's
+	// absent. Mirror collectIIS's appcmd.exe-absent pattern below: check
+	// first and skip cleanly instead of reporting a spurious incomplete step.
+	if !certSvcInstalled() {
+		slog.Info("systemstate: AD CS (CertSvc) not installed, skipping")
+		return nil, nil
+	}
+
 	dir := filepath.Join(stagingDir, "certs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err

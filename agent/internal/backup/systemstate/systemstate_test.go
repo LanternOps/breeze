@@ -2,7 +2,12 @@ package systemstate
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -303,5 +308,118 @@ func TestMissingRequired(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Registry hive collection (collectRegistryHives) and CertSvc detection
+// (certSvcInstalled) — the platform-independent seams behind the Windows
+// registry/certs steps (state_windows.go). Both are package-level vars/funcs
+// defined in helpers.go specifically so this logic is exercisable here, on
+// any GOOS, without a real Windows machine or reg.exe/certutil.exe. See O12
+// and O13 in docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md.
+// ---------------------------------------------------------------------------
+
+func TestCollectRegistryHivesPartialFailure(t *testing.T) {
+	orig := runRegSave
+	defer func() { runRegSave = orig }()
+
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		if hive == "SECURITY" {
+			return []byte("access is denied"), fmt.Errorf("exit status 5")
+		}
+		if err := os.WriteFile(outPath, []byte("hive-"+hive), 0o600); err != nil {
+			return nil, err
+		}
+		return []byte("ok"), nil
+	}
+
+	dir := t.TempDir()
+	artifacts, err := collectRegistryHives(dir, dir, []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"})
+
+	if err == nil {
+		t.Fatal("collectRegistryHives: expected error, got nil")
+	}
+	var rsErr *registrySaveError
+	if !errors.As(err, &rsErr) {
+		t.Fatalf("collectRegistryHives: error type = %T, want *registrySaveError", err)
+	}
+	if want := []string{"SECURITY"}; !reflect.DeepEqual(rsErr.FailedHives, want) {
+		t.Errorf("FailedHives = %v, want %v", rsErr.FailedHives, want)
+	}
+	if !strings.Contains(err.Error(), "SECURITY") {
+		t.Errorf("error %q does not name SECURITY", err.Error())
+	}
+	if len(artifacts) != 3 {
+		t.Errorf("artifacts = %d, want 3 (hives that succeeded are kept despite the failure)", len(artifacts))
+	}
+}
+
+func TestCollectRegistryHivesAllSucceed(t *testing.T) {
+	orig := runRegSave
+	defer func() { runRegSave = orig }()
+
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		if err := os.WriteFile(outPath, []byte("hive-"+hive), 0o600); err != nil {
+			return nil, err
+		}
+		return []byte("ok"), nil
+	}
+
+	dir := t.TempDir()
+	hives := []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
+	artifacts, err := collectRegistryHives(dir, dir, hives)
+	if err != nil {
+		t.Fatalf("collectRegistryHives: unexpected error: %v", err)
+	}
+	if len(artifacts) != len(hives) {
+		t.Errorf("artifacts = %d, want %d", len(artifacts), len(hives))
+	}
+}
+
+func TestCollectRegistryHivesAllFail(t *testing.T) {
+	orig := runRegSave
+	defer func() { runRegSave = orig }()
+
+	runRegSave = func(hive, outPath string) ([]byte, error) {
+		return []byte("boom"), fmt.Errorf("exit status 1")
+	}
+
+	dir := t.TempDir()
+	hives := []string{"SYSTEM", "SOFTWARE"}
+	artifacts, err := collectRegistryHives(dir, dir, hives)
+	if err == nil {
+		t.Fatal("collectRegistryHives: expected error when every hive fails, got nil")
+	}
+	if len(artifacts) != 0 {
+		t.Errorf("artifacts = %d, want 0", len(artifacts))
+	}
+	var rsErr *registrySaveError
+	if !errors.As(err, &rsErr) || !reflect.DeepEqual(rsErr.FailedHives, hives) {
+		t.Errorf("FailedHives = %v, want %v", rsErr, hives)
+	}
+}
+
+func TestCertSvcInstalledChecksCertsrvExe(t *testing.T) {
+	origWindir := os.Getenv("WINDIR")
+	defer os.Setenv("WINDIR", origWindir)
+
+	tmp := t.TempDir()
+	os.Setenv("WINDIR", tmp)
+
+	if certSvcInstalled() {
+		t.Error("certSvcInstalled() = true before certsrv.exe exists, want false")
+	}
+
+	sys32 := filepath.Join(tmp, "system32")
+	if err := os.MkdirAll(sys32, 0o700); err != nil {
+		t.Fatalf("mkdir system32: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sys32, "certsrv.exe"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("write certsrv.exe: %v", err)
+	}
+
+	if !certSvcInstalled() {
+		t.Error("certSvcInstalled() = false after certsrv.exe created, want true")
 	}
 }
