@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   AlertTriangle,
+  AlertCircle,
   Loader2,
   Monitor,
   ChevronLeft
@@ -36,6 +37,13 @@ export type ServicesManagerProps = {
   deviceOs?: 'windows' | 'macos' | 'linux';
   services?: WindowsService[];
   loading?: boolean;
+  /**
+   * Reason the last service-list fetch failed, or null/undefined for none.
+   * Rendered INSTEAD of the empty state so an offline device's 503 can never
+   * fall through and read as "No Services Available" (mirrors ProcessManager
+   * post-#4935).
+   */
+  loadError?: string | null;
   onRefresh?: () => void;
   onStartService?: (name: string) => Promise<void>;
   onStopService?: (name: string) => Promise<void>;
@@ -80,6 +88,7 @@ export default function ServicesManager({
   deviceOs = 'windows',
   services = [],
   loading = false,
+  loadError,
   onRefresh,
   onStartService,
   onStopService,
@@ -237,7 +246,13 @@ export default function ServicesManager({
           <div>
             <h2 className="text-lg font-semibold">{t('servicesManager.title')}</h2>
             <p className="text-sm text-muted-foreground">
-              {t('servicesManager.summary', { shown: filteredServices.length, total: services.length, device: deviceName })}
+              {/* A failed fetch must not report counts that were never
+                  actually fetched (same fix as ProcessManager's tiles, #4935). */}
+              {t('servicesManager.summary', {
+                shown: loadError ? '-' : filteredServices.length,
+                total: loadError ? '-' : services.length,
+                device: deviceName
+              })}
             </p>
           </div>
         </div>
@@ -387,6 +402,26 @@ export default function ServicesManager({
                 <td colSpan={7} className="px-4 py-12 text-center">
                   <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                   <p className="mt-2 text-sm text-muted-foreground">{t('servicesManager.loading')}</p>
+                </td>
+              </tr>
+            ) : loadError ? (
+              // Checked BEFORE the empty state so a failed fetch (e.g. an
+              // offline device's 503) can never fall through and read as "No
+              // Services Available" (#4935-style regression, same fix as
+              // ProcessManager).
+              <tr>
+                <td colSpan={7} className="px-4 py-12 text-center">
+                  <div className="flex flex-col items-center gap-2">
+                    <AlertCircle className="h-8 w-8 text-red-500" />
+                    <p className="text-sm text-red-500">{loadError}</p>
+                    <button
+                      type="button"
+                      onClick={onRefresh}
+                      className="text-xs text-primary hover:underline"
+                    >
+                      {t('common:actions.retry')}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ) : paginatedServices.length === 0 ? (
