@@ -105,7 +105,7 @@ wait_job() {
     j=$(job "$id"); st=$(echo "$j" | jq -r .status)
     case "$st" in completed|failed|cancelled|partial) echo "$j"; return 0 ;; esac
     [ $((SECONDS - start)) -lt "$timeout" ] || { echo "$j"; echo "TIMEOUT waiting for job $id (status $st)" >&2; return 1; }
-    sleep 3
+    sleep 5
   done
 }
 snapshots() { api GET "/backup/snapshots?deviceId=$1" | jq -c '(.data // .)[] | {id, backupType, sizeBytes, fileCount, createdAt, expiresAt, location}'; }
@@ -119,7 +119,7 @@ wait_restore() {
     r=$(restore_get "$id"); st=$(echo "$r" | jq -r .status)
     case "$st" in completed|failed|cancelled|partial) echo "$r"; return 0 ;; esac
     [ $((SECONDS - start)) -lt "$timeout" ] || { echo "$r"; echo "TIMEOUT waiting for restore $id (status $st)" >&2; return 1; }
-    sleep 3
+    sleep 5
   done
 }
 verify() { api POST /backup/verify "$(jq -cn --arg d "$1" --arg s "$2" --arg t "${3:-integrity}" '{deviceId:$d,snapshotId:$s,verificationType:$t}')" | jq -r '.data.verification.id // .data.id // .id'; }
@@ -130,7 +130,7 @@ wait_verify() {
     v=$(verify_get "$id"); st=$(echo "$v" | jq -r .status)
     case "$st" in passed|failed|partial) echo "$v"; return 0 ;; esac
     [ $((SECONDS - start)) -lt "$timeout" ] || { echo "$v"; echo "TIMEOUT waiting for verification $id (status $st)" >&2; return 1; }
-    sleep 3
+    sleep 5
   done
 }
 cancel_job() { api POST "/backup/jobs/$1/cancel" | jq -c '{id, status, warning}'; }
@@ -143,7 +143,7 @@ bmr_media_wait() {
     m=$(api GET "/backup/bmr/media/$id"); st=$(echo "$m" | jq -r .status)
     case "$st" in ready|ready_signed|legacy_unsigned|failed|expired) echo "$m"; return 0 ;; esac
     [ $((SECONDS - start)) -lt "$timeout" ] || { echo "$m"; echo "TIMEOUT media $id ($st)" >&2; return 1; }
-    sleep 3
+    sleep 5
   done
 }
 bmr_media_download() { curl -sS -L -o "$2" "$LAB_API/backup/bmr/media/$1/download?orgId=$(org)" -H "authorization: Bearer $(tok)"; ls -la "$2"; }
