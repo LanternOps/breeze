@@ -3380,7 +3380,13 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
     "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
-    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification.",
+    "passkeyStepUpHeading": "Verify your existing sign-in factor",
+    "passkeyStepUpIntro": "This account already has multi-factor authentication enabled. Confirm it before adding another passkey.",
+    "passkeyStepUpNoUsableFactor": "Your account's current factor can't be confirmed here. Contact an administrator for help adding a passkey.",
+    "passkeyStepUpIncorrectCode": "Incorrect code. Please try again.",
+    "passkeyStepUpTooManyAttempts": "Too many attempts. Please try again in a few minutes.",
+    "passkeyStepUpVerificationExpired": "Verification expired. Please verify again."
   },
   "roleManager": {
     "roles": "Roles",

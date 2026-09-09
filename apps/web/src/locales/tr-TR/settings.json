@@ -3380,7 +3380,13 @@
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
     "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
-    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı."
+    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı.",
+    "passkeyStepUpHeading": "Mevcut oturum açma faktörünüzü doğrulayın",
+    "passkeyStepUpIntro": "Bu hesapta zaten çok faktörlü kimlik doğrulama etkin. Başka bir geçiş anahtarı eklemeden önce bunu onaylayın.",
+    "passkeyStepUpNoUsableFactor": "Hesabınızın mevcut faktörü burada onaylanamıyor. Geçiş anahtarı eklemek için bir yöneticiyle iletişime geçin.",
+    "passkeyStepUpIncorrectCode": "Kod hatalı. Lütfen tekrar deneyin.",
+    "passkeyStepUpTooManyAttempts": "Çok fazla deneme. Lütfen birkaç dakika içinde tekrar deneyin.",
+    "passkeyStepUpVerificationExpired": "Doğrulamanın süresi doldu. Lütfen tekrar doğrulayın."
   },
   "roleManager": {
     "roles": "Roller",

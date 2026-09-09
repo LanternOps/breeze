@@ -3375,7 +3375,13 @@
     "verifyWithYourIdentityProvider": "Vérifier auprès de votre fournisseur d'identité",
     "passkeyIdpVerificationRequired": "Vérifiez auprès de votre fournisseur d'identité avant d'ajouter une clé d'accès.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",
-    "couldNotStartIdentityProviderVerification": "Impossible de lancer la vérification par le fournisseur d'identité."
+    "couldNotStartIdentityProviderVerification": "Impossible de lancer la vérification par le fournisseur d'identité.",
+    "passkeyStepUpHeading": "Vérifiez votre facteur de connexion existant",
+    "passkeyStepUpIntro": "L'authentification multifacteur est déjà activée pour ce compte. Confirmez-la avant d'ajouter une autre clé d'accès.",
+    "passkeyStepUpNoUsableFactor": "Le facteur actuel de votre compte ne peut pas être confirmé ici. Contactez un administrateur pour ajouter une clé d'accès.",
+    "passkeyStepUpIncorrectCode": "Code incorrect. Veuillez réessayer.",
+    "passkeyStepUpTooManyAttempts": "Trop de tentatives. Veuillez réessayer dans quelques minutes.",
+    "passkeyStepUpVerificationExpired": "La vérification a expiré. Veuillez vérifier à nouveau."
   },
   "roleManager": {
     "roles": "Rôles",
