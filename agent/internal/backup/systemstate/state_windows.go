@@ -70,7 +70,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 	}
 
 	if len(manifest.Artifacts) == 0 {
-		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
+		return manifest, fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
 	}
 
 	// Registry hives and boot config are required for a bootable bare-metal
@@ -78,7 +78,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 	// rather than shipping a partial that looks complete. Other steps (certs,
 	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
 	if missing := missingRequired(manifest.IncompleteSteps, windowsRequiredSteps); len(missing) > 0 {
-		return manifest, fmt.Errorf("system state collection missing required artifact(s) %v — image would not be restorable", missing)
+		return manifest, fmt.Errorf("system state collection missing required artifact(s) %v - image would not be restorable", missing)
 	}
 
 	// Attach hardware profile (best-effort).
@@ -100,8 +100,8 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 //
 // SECURITY routinely fails to save: `reg save HKLM\SECURITY` trips Microsoft
 // Defender's ML detector (Trojan:Win32/Commando.A!ml) and gets blocked
-// outright — confirmed live on Windows Server 2022 (Defender event 1116/1117
-// at the exact `reg save` timestamp) — so a missing SECURITY hive is the
+// outright - confirmed live on Windows Server 2022 (Defender event 1116/1117
+// at the exact `reg save` timestamp) - so a missing SECURITY hive is the
 // normal case on a Defender-protected host, not an edge case. The durable fix
 // is to read the hive files out of a VSS shadow copy of
 // %SystemRoot%\System32\config instead of spawning reg.exe (which is what
@@ -109,7 +109,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 // docs/testing/backup-assurance/2026-09-09-backup-assurance-campaign.md and
 // NOT implemented here. Until then, collectRegistry hard-fails whenever any
 // hive (including SECURITY) is missing, per the 2026-07-15 "hard-fail on
-// required artifacts" decision — see windowsRequiredSteps above.
+// required artifacts" decision - see windowsRequiredSteps above.
 var registryHives = []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}
 
 func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error) {
@@ -272,7 +272,7 @@ func (c *WindowsCollector) collectFeatures(stagingDir string) ([]Artifact, error
 }
 
 // ---------------------------------------------------------------------------
-// IIS configuration (optional — skip if appcmd not found)
+// IIS configuration (optional - skip if appcmd not found)
 // ---------------------------------------------------------------------------
 
 func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {

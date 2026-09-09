@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -508,17 +509,69 @@ func TestRunBackup_SystemImage_CollectionFailureFailsLoud(t *testing.T) {
 	// A system-state-only run whose collection fails entirely must fail loudly,
 	// not fall through to a green empty snapshot (it has no file paths to fall
 	// back on). The bug this guards: silently "protecting nothing".
+	//
+	// D11 (proven live on Windows Server 2022, helper 0.112.1): the collector
+	// text must ride the returned error VERBATIM, and the run must never reach
+	// createSnapshot/upload — asserted here via the fake provider's upload
+	// call log, since a system-state-only run has no file paths to fall back
+	// on and any upload would mean a snapshot was created from nothing.
+	collectorErr := "system state collection missing required artifact(s) [registry] - image would not be restorable"
 	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
-		return nil, "", fmt.Errorf("forced collection failure")
+		return nil, "", fmt.Errorf("%s", collectorErr)
 	})
 
-	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{Provider: provider, SystemStateEnabled: true})
 	job, err := mgr.RunBackup()
 	if err == nil {
 		t.Fatal("expected failed collection to surface as an error")
 	}
+	if !strings.Contains(err.Error(), collectorErr) {
+		t.Fatalf("collector error not carried verbatim: got %q, want it to contain %q", err.Error(), collectorErr)
+	}
 	if job == nil || job.Status != jobStatusFailed {
 		t.Fatalf("status = %v, want %q", job, jobStatusFailed)
+	}
+	if job.Snapshot != nil {
+		t.Fatalf("no snapshot should be created on a fail-loud system-state-only run, got %+v", job.Snapshot)
+	}
+	if len(provider.uploadCalls) != 0 {
+		t.Fatalf("expected zero uploads (no createSnapshot call) on a fail-loud system-state-only run, got %d: %+v",
+			len(provider.uploadCalls), provider.uploadCalls)
+	}
+}
+
+// TestBackupJob_FailedRunJSON_OmitsNullSnapshot is the wire-shape half of D11.
+// RunBackupContext already failed the job loudly (see
+// TestRunBackup_SystemImage_CollectionFailureFailsLoud above) with job.Snapshot
+// left nil, but marshaling that job with a bare `json:"snapshot"` tag emits an
+// explicit `"snapshot":null` key. The API's backupCommandResultSchema models
+// `snapshot` as `backupSnapshotResultSchema.optional()` (apps/api/src/routes/
+// backup/resultSchemas.ts) — Zod's `.optional()` accepts a MISSING key but
+// rejects an explicit `null`, so the whole result 400'd with "snapshot:
+// Invalid input: expected object, received null" and the real failure reason
+// (carried correctly in Stderr/job.Error, see the test above) never reached
+// the job record. The key must be absent, not present-and-null, whenever no
+// snapshot was created — on this failure path and on any other.
+func TestBackupJob_FailedRunJSON_OmitsNullSnapshot(t *testing.T) {
+	job := &BackupJob{
+		ID:     "job-3",
+		Status: jobStatusFailed,
+		// Snapshot deliberately left nil — the exact shape RunBackupContext
+		// returns for a fail-loud system-state-only run.
+	}
+
+	encoded, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal backup job: %v", err)
+	}
+
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("backup job must marshal to a JSON object: %v", err)
+	}
+	if _, present := decoded["snapshot"]; present {
+		t.Fatalf(`a nil Snapshot must be OMITTED from the wire payload, not sent as null: %s`, encoded)
 	}
 }
 

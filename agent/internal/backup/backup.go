@@ -115,10 +115,21 @@ type BackupConfig struct {
 // `bytesBackedUp`, `filesBackedUp`). Without tags Go emits PascalCase and the
 // server can't record snapshot id / size (total_size stays null).
 type BackupJob struct {
-	ID            string    `json:"id"`
-	StartedAt     time.Time `json:"startedAt"`
-	CompletedAt   time.Time `json:"completedAt"`
-	Snapshot      *Snapshot `json:"snapshot"`
+	ID          string    `json:"id"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	// Snapshot is nil whenever no snapshot was created — most notably a
+	// fail-loud run (D11: e.g. a system-state-only run whose collection
+	// errored). `omitempty` is load-bearing, not cosmetic: the API's
+	// backupCommandResultSchema models this field as
+	// `backupSnapshotResultSchema.optional()` (apps/api/src/routes/backup/
+	// resultSchemas.ts), and Zod's `.optional()` accepts a MISSING key but
+	// rejects an explicit `null`. Without `omitempty` a failed run's body
+	// carries `"snapshot":null`, which 400s the whole result at the API and
+	// discards the real failure reason (Stderr/job.Error) the job otherwise
+	// carried correctly — see TestBackupJob_FailedRunJSON_OmitsNullSnapshot
+	// and TestMarshalBackupRunResultFailedSystemImageRunOmitsNullSnapshot.
+	Snapshot      *Snapshot `json:"snapshot,omitempty"`
 	FilesBackedUp int       `json:"filesBackedUp"`
 	BytesBackedUp int64     `json:"bytesBackedUp"`
 	Status        string    `json:"status"`
