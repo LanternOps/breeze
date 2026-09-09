@@ -4,7 +4,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { Toast } from '../../components/Toast';
-import { reportInternalError } from '../../lib/errorReporting';
+import { safeReportInternalError as safeReport } from '../../lib/errorReporting';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
 import { getDevice } from '../../services/api';
 import { getFinding, isFindingNotFound, patchFinding } from '../../services/findings';
@@ -62,11 +62,16 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
         dispatch({ type: 'notFound' });
         return;
       }
-      reportInternalError(err, 'finding-detail');
+      // Resolve the spinner FIRST. `reportInternalError` calls straight into
+      // Sentry with no no-throw guard of its own, so reporting before this
+      // would let a throwing reporter skip the state update and strand the
+      // screen on `loading` forever — the same trap `useSystemsData` documents
+      // in its own catch.
       dispatch({
         type: 'failed',
         message: err instanceof Error ? err.message : 'Could not load this finding',
       });
+      safeReport(err, 'finding-detail');
     }
   }, [findingId]);
 
@@ -77,34 +82,55 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
   const runAction = useCallback(
     async (action: FleetFindingAction, notes?: string) => {
       dispatch({ type: 'actionStarted', action });
+      let updated;
       try {
-        await patchFinding(findingId, action, notes);
-        // PATCH answers with the finding row only — no members — so re-read
-        // the detail rather than rendering a device list of zero.
-        dispatch({ type: 'actionSucceeded', finding: await getFinding(findingId) });
+        updated = await patchFinding(findingId, action, notes);
       } catch (err) {
-        // A 404 from either the PATCH or the re-read means the finding is no
-        // longer there — most often the reconciler resolved it mid-action.
-        // The counts are stale either way, and the honest answer is the empty
-        // state, not a red "could not acknowledge".
+        // A 404 on the PATCH means the finding is no longer there — most often
+        // the reconciler resolved it. The honest answer is the empty state,
+        // not a red "could not acknowledge".
         if (isFindingNotFound(err)) {
           dispatch({ type: 'notFound' });
           markFindingsChanged();
+          safeReport(err, 'finding-action');
           return;
         }
-        reportInternalError(err, 'finding-action');
         dispatch({
           type: 'actionFailed',
           message: err instanceof Error ? err.message : `Could not ${action} this finding`,
         });
         setToast({ text: `Could not ${action} this finding`, kind: 'error' });
+        safeReport(err, 'finding-action');
         return;
       }
+
+      // Past this line the mutation HAS landed. Everything below is refresh,
+      // and a failure in it must never be reported as the action failing: the
+      // tech would retry, and the server's state machine would answer
+      // "Cannot acknowledge a finding with status 'acknowledged'" — a
+      // confusing 400 for something they were told did not happen.
+      //
       // The Systems hero and Home strip both read the counts endpoint, whose
-      // focus refresh is debounced to 60s — without this the tab would keep
+      // focus refresh is debounced to 60s; without this the tab would keep
       // claiming "1 open finding" for up to a minute after it was cleared.
       markFindingsChanged();
       setToast({ text: findingActionSuccessMessage(action), kind: 'success' });
+
+      try {
+        // PATCH answers with the finding row only — no members — so prefer a
+        // re-read.
+        dispatch({ type: 'actionSucceeded', finding: await getFinding(findingId) });
+      } catch (err) {
+        if (isFindingNotFound(err)) {
+          dispatch({ type: 'notFound' });
+          return;
+        }
+        // Fall back to the row the PATCH itself returned. It carries the new
+        // status, and a lifecycle action does not change membership, so the
+        // members already on screen remain correct.
+        dispatch({ type: 'actionSettled', row: updated });
+        safeReport(err, 'finding-action-refresh');
+      }
     },
     [findingId],
   );
@@ -130,8 +156,8 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
         const device = await getDevice(member.deviceId);
         navigation.navigate('SystemsDeviceDetail', { device });
       } catch (err) {
-        reportInternalError(err, 'finding-member-open');
         setToast({ text: 'That device is no longer available', kind: 'error' });
+        safeReport(err, 'finding-member-open');
       } finally {
         setOpeningDeviceId(null);
       }
@@ -220,6 +246,17 @@ export function FindingDetailScreen({ route }: Props): React.JSX.Element {
             </View>
           ))}
         </View>
+
+        {/* A refresh that failed with the finding already on screen is a
+            banner, not a wipe — the reducer keeps the finding deliberately, so
+            without this the RefreshControl would just stop spinning and the
+            tech would never learn the reload failed. Same rule as the list
+            screen. */}
+        {state.phase === 'error' && state.errorMessage ? (
+          <Text style={[type.meta, { color: theme.deny, marginTop: spacing[4] }]}>
+            {state.errorMessage}
+          </Text>
+        ) : null}
 
         {state.actionErrorMessage ? (
           <Text style={[type.meta, { color: theme.deny, marginTop: spacing[4] }]}>

@@ -11,7 +11,7 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
-import { reportInternalError } from './errorReporting';
+import { reportInternalError, safeReportInternalError } from './errorReporting';
 
 beforeEach(() => {
   sentry.captureException.mockReset();
@@ -87,5 +87,19 @@ describe('reportInternalError', () => {
     );
 
     expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+});
+
+describe('safeReportInternalError', () => {
+  it('swallows a throwing reporter so the caller can never be stranded', () => {
+    sentry.captureException.mockImplementationOnce(() => {
+      throw new Error('Sentry transport is down');
+    });
+    expect(() => safeReportInternalError(new Error('boom'), 'findings')).not.toThrow();
+  });
+
+  it('still reports normally when nothing throws', () => {
+    safeReportInternalError(new Error('boom'), 'findings');
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
   });
 });

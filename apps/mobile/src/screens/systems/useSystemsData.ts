@@ -143,6 +143,14 @@ export function useSystemsData() {
   // acknowledge is confirmed, which can be 13-15s after the callback was
   // created) instead of a value captured in a stale closure.
   const activeAlertsGenerationRef = useRef<number>(0);
+  // The same primitive for the FINDINGS slice (#5365). `fetchAll`'s boolean
+  // return is an aggregate — "at least one of six slices landed" — and its own
+  // doc comment warns it is not a freshness signal for any single slice. The
+  // findings-changed bypass below must be consumed only when the counts call
+  // itself resolved, or a transient failure on that one call while the other
+  // five succeed would mark the bypass as spent and leave the hero showing a
+  // count the tech already cleared for another full minute.
+  const findingsGenerationRef = useRef<number>(0);
   const [activeAlertsGeneration, setActiveAlertsGeneration] = useState<number>(0);
   const getActiveAlertsGeneration = useCallback(() => activeAlertsGenerationRef.current, []);
 
@@ -204,6 +212,8 @@ export function useSystemsData() {
         activeAlertsGenerationRef.current += 1;
         setActiveAlertsGeneration(activeAlertsGenerationRef.current);
       }
+      // Same reasoning, for the slice the findings-changed bypass cares about.
+      if (findings.status === 'fulfilled') findingsGenerationRef.current += 1;
       // The raw messages are internal (function name + HTTP status) — report
       // them to Sentry and keep only a static string in UI state (issue #3141).
       for (const reason of rejectionReasons(results)) {
@@ -341,8 +351,9 @@ export function useSystemsData() {
   // finding detail screen leaves the hero and the ACTIVE ISSUES findings rows
   // claiming a count the tech just cleared, for up to a minute — the counts
   // endpoint is the only source for those numbers and nothing else invalidates
-  // it. The revision is only marked as seen once a fetch actually landed, so a
-  // call that coalesced into an in-flight request does not consume the signal.
+  // it. The revision is only marked as seen once the findings counts themselves
+  // came back, so neither a coalesced call nor a round where only the other
+  // slices landed consumes the signal.
   const FOCUS_DEBOUNCE_MS = 60_000;
   const seenFindingsRevision = useRef<number>(findingsChangedRevision());
   const refreshIfStale = useCallback(() => {
@@ -358,8 +369,13 @@ export function useSystemsData() {
     ) {
       return;
     }
-    void fetchAll('refresh').then((arrived) => {
-      if (arrived) seenFindingsRevision.current = signalRevision;
+    const generationBefore = findingsGenerationRef.current;
+    void fetchAll('refresh').then(() => {
+      // Consume the bypass only if the COUNTS call actually resolved this
+      // round — not merely because some other slice did.
+      if (findingsGenerationRef.current !== generationBefore) {
+        seenFindingsRevision.current = signalRevision;
+      }
     });
   }, [fetchAll]);
 

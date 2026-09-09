@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
-import { reportInternalError } from '../../lib/errorReporting';
+import { safeReportInternalError as safeReport } from '../../lib/errorReporting';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
 import { isFindingNotFound, listFindings } from '../../services/findings';
 import { spacing, type, useApprovalTheme } from '../../theme';
@@ -50,11 +50,13 @@ export function FindingsListScreen({ route }: Props): React.JSX.Element {
         dispatch({ type: 'empty' });
         return;
       }
-      reportInternalError(err, 'findings-list');
+      // Resolve the spinner FIRST: a throwing reporter must not be able to skip
+      // this update and strand the screen on `loading` (see `safeReport`).
       dispatch({
         type: 'failed',
         message: err instanceof Error ? err.message : 'Could not load findings',
       });
+      safeReport(err, 'findings-list');
     }
   }, [orgId]);
 

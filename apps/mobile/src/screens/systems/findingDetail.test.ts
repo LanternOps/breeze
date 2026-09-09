@@ -272,3 +272,54 @@ describe('outcome copy', () => {
     });
   });
 });
+
+describe('actionSettled — the action landed but the re-read did not', () => {
+  const loaded: FindingDetailState = {
+    ...initialFindingDetailState,
+    phase: 'ready',
+    finding: finding({ status: 'open', members: [member()] }),
+    pendingAction: 'acknowledge',
+  };
+
+  it('folds the PATCH row in and keeps the members already on screen', () => {
+    const next = findingDetailReducer(loaded, {
+      type: 'actionSettled',
+      row: {
+        ...finding(),
+        status: 'acknowledged',
+      },
+    });
+    expect(next.phase).toBe('ready');
+    expect(next.finding?.status).toBe('acknowledged');
+    // A lifecycle action does not change membership, so the list we already
+    // hold is still the truth — dropping it would blank the device list on a
+    // refresh blip.
+    expect(next.finding?.members).toEqual([member()]);
+  });
+
+  it('clears the pending action so the buttons come back enabled', () => {
+    const next = findingDetailReducer(loaded, {
+      type: 'actionSettled',
+      row: { ...finding(), status: 'acknowledged' },
+    });
+    expect(next.pendingAction).toBeNull();
+    expect(isActionBusy(next)).toBe(false);
+  });
+
+  it('does not report the action as failed', () => {
+    const next = findingDetailReducer(loaded, {
+      type: 'actionSettled',
+      row: { ...finding(), status: 'acknowledged' },
+    });
+    expect(next.actionErrorMessage).toBeNull();
+  });
+
+  it('is a no-op on pendingAction alone when nothing is on screen to merge into', () => {
+    const next = findingDetailReducer(
+      { ...initialFindingDetailState, pendingAction: 'acknowledge' },
+      { type: 'actionSettled', row: { ...finding(), status: 'acknowledged' } },
+    );
+    expect(next.finding).toBeNull();
+    expect(next.pendingAction).toBeNull();
+  });
+});

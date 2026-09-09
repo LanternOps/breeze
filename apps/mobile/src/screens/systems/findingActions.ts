@@ -16,7 +16,7 @@ export type FleetFindingStatus = 'open' | 'acknowledged' | 'dismissed' | 'resolv
 export type FleetFindingSeverity = 'info' | 'warning' | 'error' | 'critical';
 export type FleetFindingAction = 'acknowledge' | 'dismiss' | 'reopen';
 
-/** Matches the server's `notes` max on `PATCH /fleet/findings/:id`. */
+/** Matches the server's `z.string().max(2000)` on `PATCH /fleet/findings/:id`. */
 export const DISMISS_NOTES_MAX_LENGTH = 2000;
 
 export function canAcknowledge(status: FleetFindingStatus): boolean {
@@ -48,9 +48,15 @@ export type DismissNoteResult =
   | { ok: false; reason: 'required' | 'too_long' };
 
 /**
- * A dismiss without a note is a 400 from the API, so the sheet blocks it
- * locally rather than round-tripping. The length is measured on the trimmed
- * value because that is what gets sent.
+ * The API takes `notes` as optional on every action
+ * (`apps/api/src/routes/fleetFindings.ts:79`) — requiring one on dismiss is a
+ * PRODUCT rule, enforced client-side, and the web drawer enforces exactly the
+ * same one. A dismissal with no recorded reason is indistinguishable from a
+ * mis-tap to whoever reads the finding next, which is the whole reason the
+ * field exists.
+ *
+ * The length is measured on the trimmed value because that is what gets sent,
+ * and the cap matches the server's `z.string().max(2000)`.
  */
 export function validateDismissNote(raw: string): DismissNoteResult {
   const notes = raw.trim();

@@ -34,6 +34,14 @@ export interface FindingMember {
   lastSeenAt: string;
 }
 
+/**
+ * A finding WITHOUT its member devices — the shape `PATCH /fleet/findings/:id`
+ * answers with. The lifecycle actions never change membership, so a row of
+ * this shape can be folded into what is already on screen without losing the
+ * device list.
+ */
+export type FindingDetailRow = Omit<FindingDetailData, 'members'>;
+
 export interface FindingDetailData {
   id: string;
   orgId: string;
@@ -77,6 +85,12 @@ export type FindingDetailEvent =
   | { type: 'failed'; message: string }
   | { type: 'actionStarted'; action: FleetFindingAction }
   | { type: 'actionSucceeded'; finding: FindingDetailData }
+  /**
+   * The PATCH landed but the follow-up read did not. The mutation is real, so
+   * this is NOT a failure: fold the row the PATCH itself returned into what is
+   * on screen and keep the members already held.
+   */
+  | { type: 'actionSettled'; row: FindingDetailRow }
   | { type: 'actionFailed'; message: string };
 
 export function findingDetailReducer(
@@ -115,6 +129,17 @@ export function findingDetailReducer(
         ...state,
         phase: 'ready',
         finding: event.finding,
+        pendingAction: null,
+        actionErrorMessage: null,
+      };
+    case 'actionSettled':
+      // Without a finding on screen there is nothing to merge into — the only
+      // thing left to do is release the buttons.
+      if (!state.finding) return { ...state, pendingAction: null };
+      return {
+        ...state,
+        phase: 'ready',
+        finding: { ...state.finding, ...event.row },
         pendingAction: null,
         actionErrorMessage: null,
       };
