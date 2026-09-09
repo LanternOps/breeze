@@ -800,6 +800,7 @@
     "activeFilters": "Filtros ativos:"
   },
   "deviceGroupsPage": {
+    "viewDevices": "Ver dispositivos",
     "failedToFetchDeviceGroups": "Falha ao buscar grupos de dispositivos",
     "windows": "windows",
     "put": "PUT",
@@ -2201,6 +2202,7 @@
     }
   },
   "filterValueEditor": {
+    "deviceGroups": "Grupos de dispositivos",
     "any": "Qualquer",
     "csvPlaceholder": "nomes de aplicativos separados por vírgulas",
     "noMatches": "Nenhuma correspondência",

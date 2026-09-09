@@ -75,4 +75,22 @@ describe('DeviceFilterToolbar — device search', () => {
 
     await applyLocale('en');
   });
+
+  // The `groups` prop was accepted and discarded (`groups: _groups`) after the
+  // chip-bar rewrite; this pins the toolbar → Chip → summarizeCondition path.
+  it('resolves a groupId chip to the group name through the toolbar', () => {
+    const groups = [{ id: '33333333-3333-3333-3333-333333333333', name: 'Domain Controllers', type: 'static' as const, deviceCount: 3 }];
+    render(
+      <DeviceFilterToolbar
+        value={{ operator: 'AND', conditions: [{ field: 'groupId', operator: 'in', value: [groups[0].id] }] }}
+        onChange={vi.fn()}
+        listFilters={{ search: '' }}
+        onListFiltersChange={vi.fn()}
+        groups={groups}
+      />
+    );
+    const chip = screen.getByTestId('filter-chip-groupId');
+    expect(chip.textContent).toContain('Domain Controllers');
+    expect(chip.textContent).not.toContain('33333333');
+  });
 });

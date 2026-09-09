@@ -800,6 +800,7 @@
     "activeFilters": "Aktif filtreler:"
   },
   "deviceGroupsPage": {
+    "viewDevices": "Cihazları görüntüle",
     "failedToFetchDeviceGroups": "Cihaz grupları getirilemedi",
     "windows": "pencereler",
     "put": "PUT",
@@ -2201,6 +2202,7 @@
     }
   },
   "filterValueEditor": {
+    "deviceGroups": "Cihaz grupları",
     "any": "Herhangi biri",
     "csvPlaceholder": "virgülle ayrılmış uygulama adları",
     "noMatches": "Eşleşme yok",
