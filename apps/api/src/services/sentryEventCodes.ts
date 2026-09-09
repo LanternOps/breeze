@@ -217,6 +217,15 @@ export const SENTRY_EVENT_CODES = [
    *  partner row was readable — the recipient got English. A steady stream
    *  for one partner means misconfiguration or an RLS-invisible row. */
   'recipient_locale_unresolved',
+
+  // --- command dispatch tenancy (#5264) ---------------------------------
+  /** A background caller asked to dispatch a device command under an org the
+   *  device is no longer in — the device moved tenants between the decision
+   *  and the dispatch. The command was REFUSED before any `device_commands`
+   *  row existed, so this is a blocked attempt, not a leak. Any occurrence
+   *  is worth a look: either a real org move raced a queued act/task (benign
+   *  but should be rare), or a caller is threading the wrong org. */
+  'command_dispatch_cross_tenant_refused',
 ] as const;
 
 /**

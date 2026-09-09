@@ -454,6 +454,10 @@ async function readServiceStatus(
   const result = await deps.executeCommandFn(
     run.deviceId, 'list_services', { search: serviceName }, {
       userId: agentAuth.user.id, timeoutMs: SERVICE_STATUS_READ_TIMEOUT_MS,
+      // #5264: the precheck below this runs under a system scope with RLS
+      // off, so the run's own org is what keeps the read inside this tenant
+      // if the device has been moved since the run started.
+      expectedOrgId: run.orgId,
     });
   if (result.status !== 'completed') {
     return { ok: false, detail: `service status read did not complete (${result.status})` };

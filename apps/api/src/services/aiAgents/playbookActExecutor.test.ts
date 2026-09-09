@@ -408,8 +408,13 @@ describe('runPlaybookSteps — verify (service_status)', () => {
     // `name`, which the agent's ListServices command ignores — the read-back
     // must go through `search` directly, or it silently returns page 1 of an
     // unfiltered list on a real device.
+    // #5264: the org must be the RUN's, not the device's current org — the
+    // whole point is that they can differ once a device has been moved. An
+    // `objectContaining` that omits this key would pass against either, so
+    // the value is asserted explicitly.
     expect(executeCommandFn).toHaveBeenCalledWith(
-      'device-1', 'list_services', { search: 'Spooler' }, expect.objectContaining({ userId: 'agent-1' }),
+      'device-1', 'list_services', { search: 'Spooler' },
+      expect.objectContaining({ userId: 'agent-1', expectedOrgId: RUN.orgId }),
     );
     expect(deps.executeToolFn).not.toHaveBeenCalled();
   });

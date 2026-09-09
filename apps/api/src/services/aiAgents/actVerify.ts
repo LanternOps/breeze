@@ -131,15 +131,16 @@ function commandExecutionVerdict(output: string, isError: boolean): ActExecution
  */
 export async function verifyServiceRunningForTask(
   target: { serviceName: string },
-  device: { deviceId: string },
+  device: { deviceId: string; orgId: string },
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
   return verifyServiceRunning(
     { kind: 'service', serviceName: target.serviceName } as Extract<ActTarget, { kind: 'service' }>,
-    // Only `deviceId` is read by `verifyServiceRunning`; the other three
-    // fields exist to satisfy the act-lane shape. Empty strings would be a
-    // lie if anything read them, so this cast documents that nothing does.
-    { id: '', orgId: '', agentId: '', deviceId: device.deviceId },
+    // `deviceId` and `orgId` are both REAL and both read: the org is the
+    // tenant the task was decided under and now gates the dispatch itself
+    // (#5264 — it used to be `''`, i.e. unread filler). `id`/`agentId` exist
+    // only to satisfy the act-lane shape and are still read by nothing.
+    { id: '', orgId: device.orgId, agentId: '', deviceId: device.deviceId },
     agentUserId,
   );
 }
@@ -158,6 +159,9 @@ async function verifyServiceRunning(
   const result = await executeCommandWithSystemPrecheck(
     run.deviceId, 'list_services', { search: target.serviceName }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
+      // #5264: the run's org is the tenant this verification was authorized
+      // under. A device that has since moved must not be read from here.
+      expectedOrgId: run.orgId,
     });
 
   if (result.status !== 'completed') {
@@ -200,6 +204,8 @@ async function verifyProcessAbsent(
   const result = await executeCommandWithSystemPrecheck(
     run.deviceId, 'list_processes', { search: target.processName, limit: 200 }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
+      // #5264 — see `verifyServiceRunning`.
+      expectedOrgId: run.orgId,
     });
 
   if (result.status !== 'completed') {
