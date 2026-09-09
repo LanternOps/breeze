@@ -108,6 +108,105 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.111.1 — hotfix for a v0.111.0 upgrade-blocking migration
+
+<Aside type="danger" title="Install v0.111.1, not v0.111.0">
+  If you have not yet upgraded to v0.111.0, install **v0.111.1** instead — it
+  contains everything in v0.111.0 plus this fix, and skips straight past the
+  problem below. If you are already on v0.111.0 and it started up normally,
+  your database was not affected and you can upgrade to v0.111.1 at your
+  leisure. Everything else in this guide's [v0.111.0 section](#v01110--offline-work-queue-script-cancellation-organization-record-page)
+  still applies.
+</Aside>
+
+One of the migrations that shipped in v0.111.0,
+`2026-10-14-100100-discovered-assets-manual-source.sql`, backfills a new
+provenance column on discovered network assets. On a database where those
+`discovered_assets` rows span **more than one organization or partner**, the
+backfill's two update statements can request the partner-export lock
+hierarchy out of order, which Postgres rejects. The migration transaction
+rolls back, `autoMigrate` retries it on the next boot, and **the API never
+finishes starting** — a crash loop, not a degraded mode. A single-partner or
+empty install is not affected.
+
+v0.111.1 adds a new migration,
+`2026-10-14-100050-discovered-assets-source-backfill-prelock.sql`, which sorts
+immediately before the failing one. It acquires every partner and
+organization lock the backfill will need, up front and in the correct order,
+so that by the time the original migration replays, it has nothing left to
+do and completes normally.
+
+**If your API is already crash-looping on v0.111.0**, you have two ways out:
+
+1. **Upgrade to v0.111.1** (recommended). The failed migration's transaction
+   rolled back cleanly, so nothing is half-applied — pulling v0.111.1 and
+   restarting is sufficient on its own.
+2. **Apply the fix-forward SQL below by hand** against your database, using
+   the same role your migrations run as, then restart the API on v0.111.0
+   before upgrading further:
+
+   ```sql
+   BEGIN;
+
+   -- The failed migration rolled back its own CREATE TYPE / ADD COLUMN, so in the
+   -- crash-loop state the `source` column does NOT exist yet: create it first
+   -- (guarded, so this is also safe where it already exists).
+   DO $$ BEGIN
+     CREATE TYPE public.discovered_asset_source AS ENUM ('scan', 'unifi', 'manual');
+   EXCEPTION WHEN duplicate_object THEN NULL;
+   END $$;
+   ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS source public.discovered_asset_source;
+   ALTER TABLE public.discovered_assets ADD COLUMN IF NOT EXISTS url text;
+
+   -- Required: the lock helpers read organizations, and discovered_assets is
+   -- FORCE ROW LEVEL SECURITY. Without this the discovery SELECTs return no rows
+   -- and the UPDATEs match nothing, silently.
+   SELECT set_config('breeze.scope', 'system', true);
+
+   -- Acquire every affected partner (shared) and organization (exclusive) export
+   -- lock in ascending order BEFORE the backfill, so the per-row triggers find
+   -- them already held.
+   SELECT public.breeze_partner_export_lock_partners_shared(ARRAY(
+     SELECT DISTINCT o.partner_id
+       FROM public.discovered_assets d
+       JOIN public.organizations o ON o.id = d.org_id
+      WHERE d.source IS NULL AND o.partner_id IS NOT NULL
+      ORDER BY 1));
+
+   SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
+     SELECT DISTINCT d.org_id
+       FROM public.discovered_assets d
+      WHERE d.source IS NULL AND d.org_id IS NOT NULL
+      ORDER BY 1));
+
+   UPDATE public.discovered_assets a
+      SET source = 'unifi'
+    WHERE a.source IS NULL
+      AND (a.detected_type_source = 'unifi_controller'
+           OR EXISTS (SELECT 1 FROM public.unifi_devices u
+                       WHERE u.discovered_asset_id = a.id));
+
+   UPDATE public.discovered_assets SET source = 'scan' WHERE source IS NULL;
+
+   COMMIT;
+   ```
+
+   This is idempotent: on a database where the migration already succeeded,
+   every statement is a no-op.
+
+**Recovery for a deployment that is already stuck in the crash loop:**
+
+1. Set `BREEZE_VERSION=0.111.1` in `.env` (or apply the fix-forward SQL above
+   against v0.111.0 first, if you cannot upgrade immediately).
+2. `docker compose pull api web portal && docker compose up -d binaries-init api`.
+3. Wait for the API to report healthy (`curl -sf https://yourdomain/health`).
+4. Once the API is healthy, bring the rest of the stack back up:
+   `docker compose up -d web portal`.
+
+No schema shape changes beyond v0.111.0: the same enum, the same two columns,
+the same constraints. The new migration only moves the backfill earlier and
+wraps it in the correct lock order.
+
 ### v0.111.0 — offline work queue, script cancellation, organization record page
 
 **No breaking API changes and no new *required* environment variables.** But
