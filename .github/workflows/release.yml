@@ -39,28 +39,43 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Export the runtime Dockerfile's compiled files. The publisher consumes
+      # these exact artifacts through a named context after create-release.
+      - name: Build and export API distribution
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: .node-version
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build API
-        run: pnpm build --filter=@breeze/api
+          context: .
+          file: apps/api/Dockerfile
+          target: release-dist
+          outputs: type=local,dest=${{ runner.temp }}/api-release
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: |
+            type=gha,scope=server-api-build
+            type=gha,scope=server-api
+          cache-to: type=gha,mode=max,scope=server-api-build
 
       - name: Upload API artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: api-dist
-          path: apps/api/dist
+          path: ${{ runner.temp }}/api-release/apps/api/dist
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload built-in workspace web bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: api-workspace-dist
+          path: ${{ runner.temp }}/api-release/ee/workspace/dist
+          if-no-files-found: error
           retention-days: 30
 
   build-web:
@@ -72,34 +87,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: ${{ env.PNPM_VERSION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version-file: .node-version
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Get version from tag
-        id: web-version
+        id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Web
-        env:
-          PUBLIC_APP_VERSION: ${{ steps.web-version.outputs.version }}
-        run: pnpm build --filter=@breeze/web
+      # Export the runtime Dockerfile's compiled files. The publisher consumes
+      # these exact artifacts through a named context after create-release.
+      - name: Build and export Web distribution
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          target: release-dist
+          outputs: type=local,dest=${{ runner.temp }}/web-release
+          build-args: |
+            PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: |
+            type=gha,scope=server-web-build
+            type=gha,scope=server-web
+          cache-to: type=gha,mode=max,scope=server-web-build
 
       - name: Upload Web artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: web-dist
-          path: apps/web/dist
+          path: ${{ runner.temp }}/web-release/apps/web/dist
+          if-no-files-found: error
           retention-days: 30
 
   build-agent:
@@ -2758,8 +2774,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-binaries
+          cache-to: type=gha,mode=max,scope=server-binaries
 
   build-docker-api:
     name: Build & Push API Docker Image
@@ -2784,7 +2800,13 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: api-dist
-          path: apps/api/dist
+          path: ${{ runner.temp }}/release-dist/apps/api/dist
+
+      - name: Download built-in workspace web bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: api-workspace-dist
+          path: ${{ runner.temp }}/release-dist/ee/workspace/dist
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -2817,13 +2839,17 @@ jobs:
         with:
           context: .
           file: apps/api/Dockerfile
+          build-contexts: |
+            release-dist=${{ runner.temp }}/release-dist
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=server-api-build
+            type=gha,scope=server-api
+          cache-to: type=gha,mode=max,scope=server-api
 
   build-docker-m365-graph-read-executor:
     name: Build & Push M365 Graph Read Executor Image
@@ -2876,8 +2902,8 @@ jobs:
           context: .
           file: apps/m365-graph-read-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-graph-read-executor
+          cache-to: type=gha,mode=max,scope=server-m365-graph-read-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -2972,8 +2998,8 @@ jobs:
           context: .
           file: apps/m365-graph-actions-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-actions-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-graph-actions-executor
+          cache-to: type=gha,mode=max,scope=server-m365-graph-actions-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -3068,8 +3094,8 @@ jobs:
           context: .
           file: apps/m365-communications-executor/Dockerfile
           outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-communications-executor,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-m365-communications-executor
+          cache-to: type=gha,mode=max,scope=server-m365-communications-executor
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -3136,7 +3162,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: web-dist
-          path: apps/web/dist
+          path: ${{ runner.temp }}/release-dist/apps/web/dist
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -3169,13 +3195,17 @@ jobs:
         with:
           context: .
           file: apps/web/Dockerfile
+          build-contexts: |
+            release-dist=${{ runner.temp }}/release-dist
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=server-web-build
+            type=gha,scope=server-web
+          cache-to: type=gha,mode=max,scope=server-web
 
   build-docker-portal:
     name: Build & Push Portal Docker Image
@@ -3228,5 +3258,5 @@ jobs:
           build-args: |
             PORTAL_BASE_PATH=/portal
             PUBLIC_API_URL=
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=server-portal
+          cache-to: type=gha,mode=max,scope=server-portal

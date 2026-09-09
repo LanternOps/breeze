@@ -59,6 +59,11 @@ COPY tsconfig.json ./
 WORKDIR /app/apps/web
 RUN pnpm build
 
+# Export only compiled files. Release jobs replace this stage with a named
+# context containing these same-run artifacts; ordinary builds use builder.
+FROM scratch AS release-dist
+COPY --from=builder /app/apps/web/dist /apps/web/dist
+
 # Stage 4: Production runner
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 WORKDIR /app
@@ -81,8 +86,8 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 # Copy built application and dependencies while preserving pnpm workspace symlink layout.
 # /app/apps/web/node_modules links into /app/node_modules/.pnpm.
-COPY --from=builder --chown=astro:nodejs /app/apps/web/dist ./apps/web/dist
-COPY --from=builder --chown=astro:nodejs /app/apps/web/package.json ./apps/web/package.json
+COPY --from=release-dist --chown=astro:nodejs /apps/web/dist ./apps/web/dist
+COPY --from=deps --chown=astro:nodejs /app/apps/web/package.json ./apps/web/package.json
 COPY --from=deps --chown=astro:nodejs /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps --chown=astro:nodejs /app/node_modules ./node_modules
 
