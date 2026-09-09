@@ -17,7 +17,7 @@ Breeze supports several restore methods depending on what you need to recover â€
 Before restoring, you can inspect what a snapshot contains:
 
 <Steps>
-1. Go to **Operations > Backup**.
+1. Go to **Backup > Device Backup**.
 2. Find the device in the job list or device backup tab.
 3. Open the **Snapshot Browser** and select a snapshot from the dropdown.
 4. Navigate the file tree â€” expand folders to see their contents, including file names, sizes, and modification dates.
@@ -67,6 +67,10 @@ Before restoring, you can inspect what a snapshot contains:
 5. Choose the destination path (the same "Original location" caveat above applies).
 6. Review and click **Restore**.
 </Steps>
+
+<Aside type="caution">
+  Selective restore currently matches files by path **prefix**, not by exact folder boundary. If you select `/home/alice`, a sibling folder like `/home/alice2` or `/home/alice-old` is also included in the restore, since its path starts with the same characters. Review the file list carefully before confirming a selective restore of folders with similar names.
+</Aside>
 
 ---
 

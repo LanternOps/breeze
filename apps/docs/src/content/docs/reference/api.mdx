@@ -755,16 +755,16 @@ Saved reports schedule via `schedule` (`daily` / `weekly` / `monthly`) plus a `c
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/audit` | List audit events |
-| `GET` | `/audit/logs` | List audit logs (paginated) |
-| `GET` | `/audit/logs/:id` | Get log entry |
-| `GET` | `/audit/search` | Search audit logs |
-| `GET` | `/audit/export` | Export as CSV/JSON |
-| `POST` | `/audit/export` | Export with filters |
-| `GET` | `/audit/reports/user-activity` | User activity report |
-| `GET` | `/audit/reports/security-events` | Security events report |
-| `GET` | `/audit/reports/compliance` | Compliance report |
-| `GET` | `/audit/stats` | Audit statistics |
+| `GET` | `/audit-logs` | List audit events |
+| `GET` | `/audit-logs/logs` | List audit logs (paginated) |
+| `GET` | `/audit-logs/logs/:id` | Get log entry |
+| `GET` | `/audit-logs/search` | Search audit logs |
+| `GET` | `/audit-logs/export` | Export as CSV/JSON |
+| `POST` | `/audit-logs/export` | Export with filters |
+| `GET` | `/audit-logs/reports/user-activity` | User activity report |
+| `GET` | `/audit-logs/reports/security-events` | Security events report |
+| `GET` | `/audit-logs/reports/compliance` | Compliance report |
+| `GET` | `/audit-logs/stats` | Audit statistics |
 
 ## Notifications
 
@@ -1283,7 +1283,7 @@ List endpoints support cursor-based pagination:
 curl "https://breeze.yourdomain.com/api/v1/devices?limit=50&cursor=eyJ..."
 ```
 
-`GET /devices` accepts a `limit` of up to **500** per page (default 50) so partners can pull large fleets in fewer round trips; other list endpoints keep the standard default of 100. The dashboard's devices list has its own per-page selector (10–200).
+`GET /devices` accepts a `limit` of up to **1000** per page (default **500**) so partners can pull large fleets in fewer round trips; other list endpoints use their own, generally smaller, defaults and caps. The dashboard's devices list has its own per-page selector (10–200).
 
 Response:
 
@@ -1291,8 +1291,8 @@ Response:
 {
   "data": [...],
   "pagination": {
-    "hasMore": true,
-    "cursor": "eyJ..."
+    "nextCursor": "eyJ...",
+    "limit": 500
   }
 }
 ```
@@ -1312,5 +1312,5 @@ All errors follow a consistent format:
 ```
 
 <Aside>
-  Enable the interactive Swagger UI by setting `ENABLE_API_DOCS=true` and `ENABLE_API_DOCS_UI=true` in your environment.
+  Enable the interactive Swagger UI by setting `ENABLE_API_DOCS_UI=true` in your environment (on by default outside production).
 </Aside>

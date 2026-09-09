@@ -45,20 +45,23 @@ import {
 import { weekStartFor } from '../screens/time/timesheetWeek';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../services/timeEntryAccess';
 import { stopRunningTimer } from '../screens/tickets/timerActions';
-import { stopOutcomeEffects } from '../screens/tickets/timerOutcomeEffects';
+import {
+  stopComposerTicketId,
+  stopOutcomeEffects,
+} from '../screens/tickets/timerOutcomeEffects';
 import {
   isQueueWedged,
   isRunningTimerLong,
   isTimerBarVisible,
   shouldReplayNow,
   shouldShowWaitingToSync,
-  toastClearanceOffset,
   WAITING_TO_SYNC_GRACE_MS,
 } from './timerBarLogic';
 import { useNetworkConnected } from '../lib/useNetworkConnected';
 import { formatElapsed, formatMinutes } from '../lib/timeFormat';
 import { ticketRef } from '../screens/tickets/ticketCopy';
-import { Toast } from './Toast';
+import { navigateToTicket } from '../navigation/navigationRef';
+import { useToast } from './toast/ToastHost';
 
 /**
  * Persistent running-timer affordance, mounted above the tab bar.
@@ -84,7 +87,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
 
   const [now, setNow] = useState(() => new Date());
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
   /**
    * The head write keeps failing on a status the queue (correctly) retains —
    * usually a 403, which issue #4251 makes the ORDINARY state for a default
@@ -260,7 +263,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       // nothing behind it can move until somebody acts.
       setWedged(isQueueWedged(result));
       if (result.needsAttention.length > 0) {
-        setToast({
+        showToast({
           kind: 'error',
           text:
             result.needsAttention.length === 1
@@ -270,7 +273,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       } else if (result.sent > 0) {
         // Only writes that actually reached the server are reported as synced —
         // never ones that merely moved to needs-attention.
-        setToast({ kind: 'success', text: `Synced ${result.sent} offline time ${result.sent === 1 ? 'entry' : 'entries'}` });
+        showToast({ kind: 'success', text: `Synced ${result.sent} offline time ${result.sent === 1 ? 'entry' : 'entries'}` });
       }
       // A reconciled or externally started entry can be running without the
       // store knowing, so the server stays the authority on what is live.
@@ -405,22 +408,34 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
       if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
       if (effects.refreshQueueDepth) await refreshQueueDepth();
       if (effects.refreshNeedsAttention) await refreshNeedsAttention();
-      if (mounted.current) setToast(effects.toast);
+      if (mounted.current) showToast(effects.toast);
+      /**
+       * #5366. A stop that actually recorded a span opens the ticket with the
+       * internal-note composer focused, so what was just done is written while
+       * it is still in the technician's head — the entry used to land as
+       * `No description` because the only way back to the ticket was to find
+       * it again.
+       *
+       * `stopComposerTicketId` decides which ticket (or none) — shared with
+       * TicketDetailScreen's own stop handler, see timerOutcomeEffects.ts.
+       */
+      const composerTicketId = stopComposerTicketId(outcome, running);
+      if (mounted.current && composerTicketId !== null) {
+        navigateToTicket(composerTicketId, { composeMode: 'internal', focusComposer: true });
+      }
     } finally {
       stopInFlight.current = false;
       if (mounted.current) setBusy(false);
     }
   }, [connected, dispatch, refreshQueueDepth, refreshNeedsAttention, running]);
 
-  // The toast is a child of this bar, not a portal: unmounting on an emptied
-  // queue would swallow the "N offline time entries could not be saved"
-  // warning in exactly the case it exists for.
+  // The bar no longer has to outlive the queue to report on it: replay toasts
+  // go to the app-wide host (#5368), which is not a child of this bar.
   const visible = isTimerBarVisible({
     hasRunningTimer: running !== null,
     // A standing "needs attention" count keeps the bar mounted on its own: it
     // is the only place unbilled work is reported once the toast has gone.
     pendingCount: pendingCount + needsAttentionCount,
-    hasToast: toast !== null,
   });
   if (!visible) return null;
 
@@ -480,23 +495,6 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
           <Text style={styles.stopText}>{busy ? '…' : 'Stop'}</Text>
         </Pressable>
       ) : null}
-
-      {/*
-        The Toast's absolute-positioned parent is this small row, not the
-        whole screen: a bottomOffset sized for a full-screen toast (the
-        component's own default, and the spacing['16'] this used before)
-        rises well above the row's own height and overlaps whatever screen
-        content sits directly above the bar — reported as "Timer stopped"
-        covering the Ask Breeze composer on Home (#5105). A small clearance
-        keeps the toast within/just above the bar's own footprint instead.
-      */}
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-        bottomOffset={toastClearanceOffset(0, spacing['1'])}
-      />
     </View>
   );
 

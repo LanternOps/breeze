@@ -900,7 +900,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
-  get_fleet_status: { resource: 'devices', action: 'read' },
+  get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.
   get_fleet_findings: { resource: 'devices', action: 'read' },

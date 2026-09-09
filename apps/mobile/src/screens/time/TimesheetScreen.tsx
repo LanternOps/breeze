@@ -23,7 +23,7 @@ import {
   type TimesheetWeek,
 } from '../../services/timeEntries';
 import { classifyTimeEntryDenial, isAccountLevelDenial } from '../../services/timeEntryAccess';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { formatMinutes } from '../../lib/timeFormat';
 import { isLongEntry } from './timesheetLongEntry';
 import { reportInternalError } from '../../lib/errorReporting';
@@ -121,7 +121,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftDescription, setDraftDescription] = useState('');
   const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
 
   const mounted = useRef(true);
   const saveInFlight = useRef(false);
@@ -228,7 +228,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         // durations and day totals, and a locally-edited row would disagree
         // with the weekly total sitting right above it.
         await load(weekStart);
-        if (mounted.current) setToast({ kind: 'success', text: 'Time entry updated' });
+        if (mounted.current) showToast({ kind: 'success', text: 'Time entry updated' });
       } catch (error: unknown) {
         const denied = classifyTimeEntryDenial(error);
         if (denied !== null) {
@@ -237,7 +237,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
           // they replace the whole Time tab and strip the Stop button off a
           // running timer, for a manager having approved a week from the web.
           if (isAccountLevelDenial(denied)) dispatch(timeAccessDenied(denied));
-          if (mounted.current) setToast({ kind: 'error', text: denied.message });
+          if (mounted.current) showToast({ kind: 'error', text: denied.message });
           // Our copy of the row is stale — that is how the tap was offered at
           // all — so re-read rather than leaving the chips inviting a retry.
           if (!isAccountLevelDenial(denied)) await load(weekStart);
@@ -251,7 +251,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
             apiError.code === 'ENTRY_BILLED'
               ? 'That entry is on an invoice; only its description can still be changed.'
               : apiError.message || 'Could not update the time entry.';
-          setToast({ kind: 'error', text });
+          showToast({ kind: 'error', text });
         }
       } finally {
         saveInFlight.current = false;
@@ -473,12 +473,6 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         </ScrollView>
       )}
 
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'success'}
-        onHidden={() => setToast(null)}
-      />
     </KeyboardAvoidingView>
   );
 }

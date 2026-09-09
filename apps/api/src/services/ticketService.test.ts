@@ -2130,6 +2130,77 @@ describe('updateTicketFields', () => {
   //   submitterEmail changed, no login -> re-resolve by (org, lower(email))
   //   submitterName only   -> neither id is touched
 
+  // #5367: naming the CONTACT directly. The three rules above derive the link
+  // from a login or an address; an explicit `requesterContactId` states it, and
+  // wins — the same precedence createTicket gives a named contact.
+  it('sets the requester contact named explicitly and backfills the name/email snapshot', async () => {
+    // selects in order: ticket, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: 'Tess Tech', submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      requesterContactId: 'ct-1',
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@acme.test',
+    });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+  });
+
+  it('rejects a requesterContactId from another org and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.test' }]);
+
+    const err = await updateTicketFields('t-1', { requesterContactId: 'ct-x' }, actor).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('REQUESTER_CONTACT_WRONG_ORG');
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('clears the contact link on requesterContactId: null without touching the snapshot', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { requesterContactId: null }, actor);
+
+    const payload = setMock.mock.calls[0]![0];
+    expect(payload).toMatchObject({ requesterContactId: null });
+    expect(payload).not.toHaveProperty('submitterName');
+    expect(payload).not.toHaveProperty('submitterEmail');
+  });
+
+  it('keeps the login-derived name/email when a contact is named alongside a portal user', async () => {
+    // selects in order: ticket, portal user, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, submitterName: null, submitterEmail: null, requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Login Name', email: 'login@acme.test', contactId: 'ct-login' }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, requesterContactId: 'ct-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1', requesterContactId: 'ct-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: 'pu-1',
+      // The explicit contact wins the LINK...
+      requesterContactId: 'ct-1',
+      // ...but the login still owns the snapshot, exactly as on create.
+      submitterName: 'Login Name',
+      submitterEmail: 'login@acme.test',
+    });
+  });
+
   it('leaves requesterContactId ALONE when only submitterName changes', async () => {
     dbMocks.selectResult.mockResolvedValue([
       { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },

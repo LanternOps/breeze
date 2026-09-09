@@ -832,7 +832,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     quarantineDir: safePath.optional(),
   }),
 
-  get_fleet_status: z.object({}),
+  get_invite_funnel: z.object({}),
 
   delete_tenant: z.object({
     tenant_id: uuid,

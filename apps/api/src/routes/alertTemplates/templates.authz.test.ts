@@ -54,6 +54,7 @@ function makeApp() {
 }
 
 const TEMPLATE_ID = '5d4c3b2a-1111-4222-8333-444455556666';
+const ALERTS_READ = 'alerts:read';
 const ALERTS_WRITE = 'alerts:write';
 
 describe('alert templates authz (Finding #6)', () => {
@@ -65,6 +66,21 @@ describe('alert templates authz (Finding #6)', () => {
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
       partnerId: null, orgId: 'org-1', accessibleOrgIds: null, canAccessOrg: () => true,
     } as typeof authRef.current;
+  });
+
+  it.each([
+    '/alert-templates/templates',
+    '/alert-templates/templates/built-in',
+    `/alert-templates/templates/${TEMPLATE_ID}`,
+  ])('403 on GET %s without ALERTS_READ', async (path) => {
+    const res = await makeApp().request(path);
+    expect(res.status).toBe(403);
+  });
+
+  it('passes the template list read gate when ALERTS_READ is granted', async () => {
+    grantedRef.current.add(ALERTS_READ);
+    const res = await makeApp().request('/alert-templates/templates');
+    expect(res.status).not.toBe(403);
   });
 
   it('403 on POST /alert-templates/templates without ALERTS_WRITE', async () => {

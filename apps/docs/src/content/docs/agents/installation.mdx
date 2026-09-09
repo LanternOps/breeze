@@ -123,7 +123,7 @@ Instead of running manual enrollment commands, you can download a ready-to-run i
 
 <Steps>
 1. Open the **Add Device** dialog from the Devices page.
-2. Select **Download Installer** and choose **Windows MSI** or **macOS PKG**.
+2. Select **Download Installer** and choose **Windows MSI** or **macOS**.
 3. Set a **device count** to control how many devices can enroll with this installer.
 4. Run the installer on the target machine. The agent enrolls automatically with the correct organization and site -- no enrollment commands needed.
 </Steps>
@@ -158,16 +158,16 @@ The GUI installer uses bootstrap tokens generated server-side from an enrollment
 
 ### Windows MSI Zero-Config Enrollment
 
-Windows MSI installers downloaded from the dashboard or via a public link also auto-enroll with zero configuration. The enrollment token is embedded directly in the downloaded filename as a `[TOKEN@HOST]` block — for example:
+Windows MSI installers downloaded from the dashboard or via a public link also auto-enroll with zero configuration. The enrollment token is embedded directly in the downloaded filename as a `(TOKEN@HOST)` block — for example:
 
 ```
-breeze-agent [ABCD1234XY@breeze.example.com].msi
+Breeze Agent (ABCD1234XY@breeze.example.com).msi
 ```
 
-The installer parses this block at runtime using a regex search anywhere in the filename, so a browser-added dedup suffix such as `(1)` — producing `breeze-agent [ABCD1234XY@breeze.example.com] (1).msi` — does not break enrollment. Just run the file as downloaded.
+The installer parses this block at runtime using a regex search anywhere in the filename, so a browser-added dedup suffix such as `(1)` — producing `Breeze Agent (ABCD1234XY@breeze.example.com) (1).msi` — does not break enrollment. Just run the file as downloaded. (Older installer downloads used square brackets, `[TOKEN@HOST]`; the installer still recognizes that legacy form too.)
 
 <Aside type="note">
-  If you rename the MSI before deploying it, preserve the `[TOKEN@HOST]` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
+  If you rename the MSI before deploying it, preserve the `(TOKEN@HOST)` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
 </Aside>
 
 ---
@@ -226,7 +226,7 @@ During enrollment, the agent:
 3. Receives a unique `brz_` bearer token
 4. Stores configuration in `/etc/breeze/agent.yaml` (Linux), `/Library/Application Support/Breeze/agent.yaml` (macOS), or `C:\ProgramData\Breeze\agent.yaml` (Windows)
 5. Stores secrets in a separate `secrets.yaml` file with `0600` permissions
-6. Sets file permissions: `0750` for directory, `0640` for config file (`agent.yaml`), `0600` for secrets file (`secrets.yaml`)
+6. Sets file permissions: `0755` for directory, `0644` for config file (`agent.yaml`), `0600` for secrets file (`secrets.yaml`)
 
 <Aside>
   The enrollment secret (`AGENT_ENROLLMENT_SECRET`) is different from the agent's bearer token. The enrollment secret is a shared secret used once during registration. The bearer token is unique per device and used for all subsequent communication.
@@ -261,7 +261,7 @@ After enrollment, the agent stores its configuration at:
 | Windows | `C:\ProgramData\Breeze\agent.yaml` | `C:\ProgramData\Breeze\secrets.yaml` |
 
 ```yaml
-# agent.yaml (0640 — readable by Breeze Helper)
+# agent.yaml (0644 — readable by Breeze Helper)
 server_url: "https://breeze.yourdomain.com"
 agent_id: "hex-agent-id"
 auth_token: "brz_..."
@@ -275,5 +275,5 @@ auth_token: "brz_..."
 ```
 
 <Aside type="danger">
-  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0640` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
+  The `secrets.yaml` file contains the agent's bearer token and is restricted to `0600` (owner-only read/write). The `auth_token` is intentionally duplicated in `agent.yaml` (which uses `0644` permissions) so the Breeze Helper process can discover the token without needing root access to `secrets.yaml`. Do not change these permissions.
 </Aside>

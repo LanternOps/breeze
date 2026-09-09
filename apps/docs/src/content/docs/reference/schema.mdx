@@ -36,7 +36,7 @@ The central table for managed endpoints:
 | `agentVersion` | varchar(20) | Installed agent version |
 | `status` | enum | `online`, `offline`, `maintenance`, `updating`, `pending`, `decommissioned`, `quarantined` |
 | `lastSeenAt` | timestamp | Last telemetry received |
-| `lastSeenIp` | inet | Source IP recorded on the most recent heartbeat; changes raise an `agent.source.ip.changed` audit event. |
+| `lastSeenIp` | varchar(45) | Source IP recorded on the most recent heartbeat; changes raise an `agent.source.ip.changed` audit event. |
 | `mainAgentSilentSince` | timestamp | Set by the server when the main agent stops heartbeating but the watchdog is still online. Cleared when the agent resumes. |
 | `watchdogStatus` | enum | `connected`, `failover`, `offline` — last reported watchdog state. |
 | `watchdogLastSeenAt` | timestamp | Last watchdog check-in. |

@@ -1,6 +1,6 @@
 ---
 title: Storage Configuration
-description: Set up backup storage targets for Amazon S3 (or any S3-compatible service, including Backblaze B2, Wasabi, and MinIO) or a local path, with connectivity testing and multiple configurations.
+description: Set up backup storage targets for S3 (and S3-compatible services like MinIO, Wasabi, and Backblaze B2) or local NAS, with connectivity testing and multiple configurations.
 sidebar:
   order: 2
   label: "Storage Configuration"
@@ -17,25 +17,24 @@ Before you can run backups, you need at least one storage configuration that tel
 The storage configuration wizard walks you through four steps:
 
 <Steps>
-1. **Select a provider.** Breeze supports exactly two provider types: **Amazon S3 (or S3-compatible)** and **Local**. Each option shows a brief description to help you decide.
+1. **Select a provider.** Choose Amazon S3 or Local/NAS. Each option shows a brief description to help you decide.
 
 2. **Enter provider settings.** The fields change based on your provider:
 
    <Tabs>
-     <TabItem label="Amazon S3 / S3-Compatible">
-       - **Region** — AWS region (e.g., `us-east-1`). Required unless it can be derived from a recognized endpoint hostname (AWS, Backblaze B2, Wasabi, and DigitalOcean Spaces endpoints encode a region); for anything else — including MinIO by IP address or a custom domain — you must set it explicitly.
+     <TabItem label="Amazon S3">
+       - **Region** — AWS region (e.g., `us-east-1`)
        - **Bucket Name** — the S3 bucket to store backups in
-       - **Path Prefix** *(optional)* — a key prefix for organizing objects in the bucket. This field is accepted and stored but the agent does not currently apply it — every device backing up to the same bucket writes under the same top-level layout regardless of what you enter here.
+       - **Base Path** — optional prefix within the bucket (e.g., `breeze-backups/`)
        - **Access Key** and **Secret Key** — IAM credentials with `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, and `s3:DeleteObject` permissions
-       - **Custom Endpoint** *(optional)* — set this to use an S3-compatible service instead of AWS: MinIO, Wasabi, Backblaze B2, Cloudflare R2, or similar all work through this field — there is no separate provider type for them. Enter the endpoint as a host (`s3.example.com`) or host and port (`minio.local:9000`), optionally prefixed with `http://` or `https://`; a scheme-less endpoint is treated as `https://`. Other schemes (such as `s3://` or `ftp://`) are rejected with a validation error rather than failing later at backup time. Setting a custom endpoint always addresses the bucket path-style (`https://endpoint/bucket/key`), never as a subdomain.
+
+       Also works with S3-compatible services like MinIO, Wasabi, and Backblaze B2 — just set the endpoint URL accordingly. Enter the endpoint as a host (`s3.example.com`) or host and port (`minio.local:9000`), optionally prefixed with `http://` or `https://`; a scheme-less endpoint is treated as `https://`. Other schemes (such as `s3://` or `ftp://`) are rejected with a validation error rather than failing later at backup time.
      </TabItem>
-     <TabItem label="Local">
-       - **Local Path** — a directory path on the device itself (e.g., `/mnt/backups` or `\\nas\breeze` mounted locally). Breeze does not talk to a NAS or network share over the network on your behalf — the path must already be reachable as a local filesystem path on the device running the backup.
+     <TabItem label="Local / NAS">
+       - **Local Path** — mount point or UNC path (e.g., `/mnt/backups` or `\\nas\breeze`)
        - **Retention Tier** — storage tier classification
      </TabItem>
    </Tabs>
-
-   Breeze does not have a separate Azure Blob Storage, Google Cloud Storage, or Backblaze B2 provider type — creating a storage configuration with a `provider` other than `s3` or `local` is rejected. Use the S3-compatible endpoint field above for Backblaze B2, Wasabi, MinIO, R2, and similar services.
 
 3. **Set a schedule.** Choose how often backups run:
    - **Daily** — pick a start time and backup window duration
@@ -43,22 +42,22 @@ The storage configuration wizard walks you through four steps:
    - **Cron** — enter a custom cron expression for advanced scheduling
 
 4. **Configure retention.** Choose a preset or customize:
-   - **Standard** — 30 days, 12 versions
-   - **Extended** — 90 days, 36 versions
-   - **Compliance** — 365 days, 120 versions
+   - **Standard** — 30 days, 5 versions
+   - **Extended** — 90 days, 10 versions
+   - **Compliance** — 365 days, 20 versions
    - **Custom** — set your own day count and version count
 
-   Optionally enable encryption and configure key rotation (every 30, 60, or 90 days).
+   Optionally enable encryption. This is only enforceable for S3 destinations with server-side encryption (SSE-S3 or SSE-KMS) configured — see [Encryption](/backup/encryption/) for details. Local/NAS destinations do not support enabling this toggle.
 
-   :::note[What retention removes today]
-   When a restore point passes its retention window it is removed from Breeze: it no longer appears in the
-   snapshot list and can no longer be restored or verified. The objects it wrote to the storage target are
-   handled by a separate background sweep that only deletes data no remaining restore point references,
-   after a 48-hour grace period. In the current release that sweep does not yet reclaim the data of expired
-   restore points themselves, so bucket usage does not shrink when restore points expire. This is tracked in
-   [issue #5429](https://github.com/LanternOps/breeze/issues/5429); plan bucket capacity for growth until it
-   lands.
-   :::
+   <Aside type="note" title="What retention removes today">
+     When a restore point passes its retention window it is removed from Breeze: it no longer appears in the
+     snapshot list and can no longer be restored or verified. The objects it wrote to the storage target are
+     handled by a separate background sweep that only deletes data no remaining restore point references,
+     after a 48-hour grace period. In the current release that sweep does not yet reclaim the data of expired
+     restore points themselves, so bucket usage does not shrink when restore points expire. This is tracked in
+     [issue #5429](https://github.com/LanternOps/breeze/issues/5429); plan bucket capacity for growth until it
+     lands.
+   </Aside>
 </Steps>
 
 Click **Publish Configuration** to make it active, or **Save as Draft** to finish later.
@@ -92,7 +91,7 @@ Click the **Edit** action on any configuration to reopen the wizard. Changes are
 Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.
 
 <Aside type="caution">
-  Deleting a storage configuration does not delete the backup data already stored at that target. The data remains in S3 (or your S3-compatible bucket) or your local path until you remove it manually.
+  Deleting a storage configuration does not delete the backup data already stored at that target. The data remains in S3 or your local path until you remove it manually.
 </Aside>
 
 ---
@@ -104,8 +103,8 @@ You can create different configurations for different use cases:
 | Use case | Recommended setup |
 |----------|-------------------|
 | **Critical servers** | S3 (off-site) + local vault (fast restore) |
-| **Workstations** | Local vault path with 30-day retention |
-| **Compliance** | S3 or an S3-compatible bucket with 365-day retention and encryption |
+| **Workstations** | Local NAS with 30-day retention |
+| **Compliance** | S3 with 365-day retention and server-side encryption |
 | **Development/test** | Local storage with minimal retention |
 
 Assign each configuration to the appropriate devices through [backup policies](/backup/policies/).

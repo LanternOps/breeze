@@ -281,7 +281,10 @@ vi.mock('./policyDecide', () => ({
 // logic (already covered by actionLabel.test.ts).
 vi.mock('./actionLabel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./actionLabel')>();
-  return { buildActionLabel: vi.fn(actual.buildActionLabel) };
+  // Spread the real module: intentService also imports `hasDeviceIdStub`
+  // (#5363), and a mock that returns only `buildActionLabel` would hand it
+  // `undefined` at call time.
+  return { ...actual, buildActionLabel: vi.fn(actual.buildActionLabel) };
 });
 
 vi.mock('drizzle-orm', () => ({
@@ -1587,6 +1590,102 @@ describe('runDeferredHumanFanout', () => {
     for (const [args] of calls) {
       expect(args.deviceHostname).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5363 — the approval HEADLINE names the device, on every intent path
+//
+// #5106 only populated `deviceHostname` inside the ai_agent branch's scoped
+// device read, so every human-originated intent (chat, mcp_api) — and an
+// agent intent with no explicit scope — persisted the raw
+// "on device 6eae0f70..." stub that buildApprovalDescription emits. These
+// tests assert the value the MOBILE takeover actually renders: the
+// `action_label` column of the fanned-out approval_requests rows.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline device name (#5363)', () => {
+  /** Exactly what aiGuardrails.buildApprovalDescription emits for this call. */
+  const RESTART_DESCRIPTION = `RESTART service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`;
+
+  function restartInput(overrides?: Partial<CreateActionIntentInput>): CreateActionIntentInput {
+    return baseInput({
+      toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      ...overrides,
+    });
+  }
+
+  /** One eligible approver + the insert results a successful fan-out needs. */
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  beforeEach(() => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: RESTART_DESCRIPTION,
+    });
+  });
+
+  it('resolves the argument device name into the headline of a user-principal intent', async () => {
+    // displayName wins over hostname, matching the scoped-agent read #5106 added.
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-named');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    const labels = persistedApprovalLabels();
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain('on KIT');
+    expect(labels[0]).not.toContain('on device');
+  });
+
+  it('falls back to the hostname when the device has no display name', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit-01', displayName: null }]);
+    queueFanout('intent-5363-hostname');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on kit-01');
+  });
+
+  it('leaves the stub intact (and does not throw) when the device cannot be resolved', async () => {
+    // Deleted, or an id from another tenant — the org-pinned read returns
+    // nothing and the headline degrades to exactly what it says today.
+    dbState.selectDevicesResults.push([]);
+    queueFanout('intent-5363-missing');
+
+    await createActionIntent(makeAuth(), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toBe(
+      `Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`,
+    );
+  });
+
+  it('never rewrites a stub that names a DIFFERENT device than this call', async () => {
+    // A caller-supplied label mentioning some other device's id prefix must
+    // not be relabelled with THIS call's device name.
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-other');
+
+    await createActionIntent(
+      makeAuth(),
+      restartInput({ actionLabel: `Restart service "Spooler" on device ${OTHER_ORG_ID.slice(0, 8)}...` }),
+    );
+
+    const label = persistedApprovalLabels()[0];
+    expect(label).toContain(`on device ${OTHER_ORG_ID.slice(0, 8)}...`);
+    expect(label).not.toContain('KIT');
   });
 });
 

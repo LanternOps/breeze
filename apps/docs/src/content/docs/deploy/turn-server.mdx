@@ -184,9 +184,10 @@ Add or update these variables in your Breeze `.env` file:
 TURN_HOST=YOUR_TURN_IP
 TURN_PORT=3478
 TURN_SECRET=YOUR_TURN_SECRET_HERE
-TURN_REALM=breeze.local
 TURN_CREDENTIAL_TTL_SECONDS=600
 ```
+
+`TURN_REALM` only configures the **bundled** coturn container's `--realm` flag in `docker-compose.yml` — the API never reads it when generating credentials, so it has no effect here. Set the realm directly in your external coturn's own config instead.
 
 <Aside type="danger">
   The `TURN_SECRET` is a shared HMAC key used to generate temporary credentials. Never share it publicly. Treat it like a database password — it should only exist in your `.env` and in the coturn config.
@@ -270,7 +271,7 @@ Clients never see `TURN_SECRET` — they only receive short-lived derived creden
 **Coturn starts but clients can't allocate**
 - Check `external-ip` in `/etc/turnserver.conf` — it must be the server's actual public IP
 - Verify `static-auth-secret` matches `TURN_SECRET` in Breeze's `.env`
-- Check for `realm` mismatch between coturn config and `TURN_REALM`
+- Check the `realm` value in your external coturn's own config — Breeze's `TURN_REALM` only configures the bundled coturn container and has no effect on an external one
 
 **High bandwidth usage on the TURN server**
 - TURN relays all media when direct P2P fails. Each desktop session at 5 Mbps = ~2.25 GB/hour

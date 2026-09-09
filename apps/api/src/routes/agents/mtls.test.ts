@@ -57,6 +57,8 @@ const {
   txUpdateMock,
   txInsertMock,
   mfaGate,
+  permissionSiteScope,
+  issueMtlsCertForDeviceMock,
 } = vi.hoisted(() => {
   const txSelect = vi.fn();
   const txUpdate = vi.fn();
@@ -72,6 +74,13 @@ const {
       fn({ select: txSelect, update: txUpdate, insert: txInsert }),
     ),
     mfaGate: { deny: false },
+    permissionSiteScope: { allowedSiteIds: undefined as string[] | undefined },
+    issueMtlsCertForDeviceMock: vi.fn(async (): Promise<{
+      certificate: string;
+      privateKey: string;
+      expiresAt: string;
+      serialNumber: string;
+    } | null> => null),
   };
 });
 
@@ -91,7 +100,10 @@ vi.mock('../../db/schema', () => ({
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
     agentId: 'devices.agentId',
+    status: 'devices.status',
+    quarantinedAt: 'devices.quarantinedAt',
     agentTokenHash: 'devices.agentTokenHash',
     previousTokenHash: 'devices.previousTokenHash',
   },
@@ -123,7 +135,13 @@ vi.mock('../../middleware/auth', () => ({
     });
     return next();
   }),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    c.set('permissions', {
+      permissions: [{ resource: 'devices', action: 'write' }],
+      allowedSiteIds: permissionSiteScope.allowedSiteIds,
+    });
+    return next();
+  }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
     if (mfaGate.deny) return c.json({ error: 'MFA required' }, 403);
     return next();
@@ -195,7 +213,7 @@ vi.mock('@breeze/shared', () => ({
 vi.mock('./helpers', () => ({
   getOrgMtlsSettings: vi.fn(async () => ({ certLifetimeDays: 30, expiredCertPolicy: 'quarantine' })),
   getOrgHelperSettings: vi.fn(async () => ({ enabled: true })),
-  issueMtlsCertForDevice: vi.fn(async () => null),
+  issueMtlsCertForDevice: issueMtlsCertForDeviceMock,
   isObject: (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v),
 }));
 
@@ -522,6 +540,9 @@ function baseActiveDeviceRow(overrides: Record<string, unknown> = {}) {
 
 function resetAllMocksForTest() {
   vi.clearAllMocks();
+  mfaGate.deny = false;
+  permissionSiteScope.allowedSiteIds = undefined;
+  issueMtlsCertForDeviceMock.mockReset().mockResolvedValue(null);
   redisState.clear();
   redisStringState.clear();
   issueCertMock.mockReset();
@@ -703,6 +724,241 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     expect(setArg.status).toBe('decommissioned');
     expect(setArg.decommissionedAt).toBeInstanceOf(Date);
   });
+});
+
+describe('quarantine administration site boundary', () => {
+  const ALLOWED_SITE_ID = '66666666-6666-4666-8666-666666666666';
+  const HIDDEN_SITE_ID = '77777777-7777-4777-8777-777777777777';
+
+  beforeEach(() => {
+    resetAllMocksForTest();
+    permissionSiteScope.allowedSiteIds = [ALLOWED_SITE_ID];
+  });
+
+  it('narrows the quarantined-device list to the caller site allowlist', async () => {
+    const where = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    dbSelectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where }),
+    } as any);
+
+    const res = await buildApp().request('/agents/quarantined', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(where.mock.calls[0]![0])).toContain(ALLOWED_SITE_ID);
+  });
+
+  it('makes an empty site allowlist an empty quarantined-device result', async () => {
+    permissionSiteScope.allowedSiteIds = [];
+    const where = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    dbSelectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where }),
+    } as any);
+
+    const res = await buildApp().request('/agents/quarantined', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(where.mock.calls[0]![0])).toContain('false');
+  });
+
+  it.each(['approve', 'deny'] as const)(
+    'rejects %s for a quarantined device outside the caller site allowlist before side effects',
+    async (action) => {
+      mockDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: HIDDEN_SITE_ID,
+        agentId: AGENT_ID,
+        hostname: 'hidden-host',
+        status: 'quarantined',
+      });
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(dbUpdateMock).not.toHaveBeenCalled();
+      expect(issueMtlsCertForDeviceMock).not.toHaveBeenCalled();
+      expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['approve', 'deny'] as const)(
+    'allows %s for a quarantined device inside the caller site allowlist',
+    async (action) => {
+      mockDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE_ID,
+        agentId: AGENT_ID,
+        hostname: 'allowed-host',
+        status: 'quarantined',
+      });
+      if (action === 'approve') {
+        issueMtlsCertForDeviceMock.mockResolvedValueOnce({
+          certificate: 'synthetic-certificate',
+          privateKey: 'synthetic-private-key',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+          serialNumber: 'synthetic-serial',
+        });
+      }
+
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(dbUpdateMock).toHaveBeenCalled();
+      if (action === 'approve') {
+        expect(issueMtlsCertForDeviceMock).toHaveBeenCalledWith(DEVICE_ID, ORG_ID);
+        expect(await res.json()).toMatchObject({
+          success: true,
+          mtls: { certificate: 'synthetic-certificate', serialNumber: 'synthetic-serial' },
+        });
+      } else {
+        expect(issueMtlsCertForDeviceMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('keeps a foreign-organization device opaque before mutation', async () => {
+    mockDeviceLookup({
+      id: DEVICE_ID,
+      orgId: '88888888-8888-4888-8888-888888888888',
+      siteId: ALLOWED_SITE_ID,
+      agentId: AGENT_ID,
+      hostname: 'foreign-host',
+      status: 'quarantined',
+    });
+
+    const res = await buildApp().request(`/agents/${DEVICE_ID}/deny`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(dbUpdateMock).not.toHaveBeenCalled();
+    expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+  });
+
+  it.each(['approve', 'deny'] as const)(
+    'fails %s closed when a concurrent state or site change wins the conditional update',
+    async (action) => {
+      mockDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE_ID,
+        agentId: AGENT_ID,
+        hostname: 'racing-host',
+        status: 'quarantined',
+      });
+      mockDbUpdateOk(0);
+
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      expect(issueMtlsCertForDeviceMock).not.toHaveBeenCalled();
+      expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['approve', 'deny'] as const)(
+    'fails %s closed when the device moves between two sites in the same allowlist',
+    async (action) => {
+      const SECOND_ALLOWED_SITE_ID = '99999999-9999-4999-8999-999999999999';
+      permissionSiteScope.allowedSiteIds = [ALLOWED_SITE_ID, SECOND_ALLOWED_SITE_ID];
+      mockDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE_ID,
+        agentId: AGENT_ID,
+        hostname: 'moving-host',
+        status: 'quarantined',
+      });
+      // The mocked zero-row CAS represents site A -> site B after preflight.
+      mockDbUpdateOk(0);
+
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      const whereArg = (dbUpdateMock.mock.results[0]!.value as {
+        set: ReturnType<typeof vi.fn>;
+      }).set.mock.results[0]!.value.where.mock.calls[0]![0];
+      const serializedWhere = JSON.stringify(whereArg);
+      // Site A appears once in the exact preflight-state comparison and once
+      // in the authorization allowlist. Merely retaining IN (A, B) would only
+      // produce one occurrence and would not stop the same-allowlist move.
+      expect(serializedWhere.split(ALLOWED_SITE_ID)).toHaveLength(3);
+      expect(serializedWhere).toContain(SECOND_ALLOWED_SITE_ID);
+      expect(issueMtlsCertForDeviceMock).not.toHaveBeenCalled();
+      expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['approve', 'deny'] as const)(
+    'fails %s closed when an unrestricted caller races a null-site assignment',
+    async (action) => {
+      permissionSiteScope.allowedSiteIds = undefined;
+      mockDeviceLookup({
+        id: DEVICE_ID,
+        orgId: ORG_ID,
+        siteId: null,
+        agentId: AGENT_ID,
+        hostname: 'unassigned-host',
+        status: 'quarantined',
+      });
+      // The mocked zero-row CAS represents null -> a concrete site after preflight.
+      mockDbUpdateOk(0);
+
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      const whereArg = (dbUpdateMock.mock.results[0]!.value as {
+        set: ReturnType<typeof vi.fn>;
+      }).set.mock.results[0]!.value.where.mock.calls[0]![0];
+      expect(JSON.stringify(whereArg)).toContain(' is null');
+      expect(issueMtlsCertForDeviceMock).not.toHaveBeenCalled();
+      expect(terminateDeviceRemoteSessions).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['approve', 'deny'] as const)(
+    'requires MFA before %s reads or mutates a quarantined device',
+    async (action) => {
+      mfaGate.deny = true;
+
+      const res = await buildApp().request(`/agents/${DEVICE_ID}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(dbSelectMock).not.toHaveBeenCalled();
+      expect(dbUpdateMock).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('POST /renew-cert — cert-issuing fail-closed guards', () => {

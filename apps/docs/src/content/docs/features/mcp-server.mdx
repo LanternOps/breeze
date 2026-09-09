@@ -241,7 +241,8 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
 
 | Tool | Tier | Description |
 |---|---|---|
-| `manage_policies` | 1/2/3 | Compliance policy lifecycle: list, get, compliance status/summary, evaluate, create, update, activate/deactivate, delete, remediate. |
+| `manage_configuration_policy` | 2/3 | Configuration policy lifecycle: activate/deactivate (Tier 2); create, update, delete (Tier 3). |
+| `configuration_policy_compliance` | 1 | Compliance status: org-wide summary across all configuration policies, or per-device status for one policy. |
 | `manage_deployments` | 1/2/3 | Staged software deployments: list, get, device status, create, start, pause, resume, cancel. |
 | `manage_patches` | 1/2/3 | Patch management. List and compliance are Tier 1. Scan, approve/decline/defer, and bulk approve are Tier 2. Install and rollback are Tier 3. |
 | `manage_groups` | 1/2/3 | Device group lifecycle: list, get, preview dynamic filters, membership log, create, update, delete, add/remove devices. |
@@ -411,7 +412,8 @@ Each tool has its own sliding-window rate limit, enforced per user:
 | `manage_services` | 10 | 5 min |
 | `analyze_disk_usage` | 10 | 5 min |
 | `disk_cleanup` | 3 | 10 min |
-| `manage_policies` | 20 | 5 min |
+| `manage_configuration_policy` | 20 | 5 min |
+| `configuration_policy_compliance` | 30 | 5 min |
 | `manage_deployments` | 10 | 10 min |
 | `manage_patches` | 15 | 5 min |
 | `manage_groups` | 20 | 5 min |

@@ -1,6 +1,6 @@
 ---
 title: Encryption Key Management
-description: Manage AES-256 and RSA-2048 key records used for S3 server-side encryption bookkeeping. Actual backup data protection at rest is Amazon S3 server-side encryption (SSE-S3/SSE-KMS) only — local vault backups are not encrypted.
+description: How backup data is actually encrypted at rest today (S3 server-side encryption), and the early-access client-managed key manager for a future client-side encryption model.
 sidebar:
   order: 11
   label: "Encryption"
@@ -8,75 +8,50 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
+Backup data at rest is protected by your storage destination's own encryption, not by a Breeze-managed cipher on the agent. Today that means **S3 server-side encryption (SSE)** — there is no agent-side encryption step, and no client-managed key is currently used to encrypt or decrypt any live backup.
+
+---
+
+## What's Actually Enforced
+
+Encryption is a toggle on your [storage configuration](/backup/storage/), and it's only enforceable for **Amazon S3** (or S3-compatible) destinations:
+
+- **SSE-S3 (AES-256)** — set `serverSideEncryption` to `AES256` in the provider config. S3 encrypts every object with an AWS-managed key.
+- **SSE-KMS** — set `serverSideEncryption` to `aws:kms` and provide a `kmsKeyId` (or `keyArn`). S3 encrypts objects using your own KMS key.
+
+If you enable encryption on a **Local/NAS** destination, or on S3 without a recognized `serverSideEncryption` value, Breeze rejects the configuration as unsupported — there is no client-side fallback cipher for those cases.
+
+---
+
+## Encryption Keys Manager (Early Access)
+
+Go to **Backup > Device Backup > Encryption** to see the key manager.
+
 <Aside type="caution">
-  The only encryption that actually protects backup data at rest today is Amazon S3 server-side encryption (SSE-S3 or SSE-KMS), and only when your storage configuration is `s3`/S3-compatible. The key records managed on this page are metadata only — no backup or restore code path reads them to encrypt or decrypt backup bytes. Backups written to a `local` storage destination are **not encrypted at rest** by Breeze.
+  This page is early access and is **not wired to any live backup data**. Creating, rotating, or deactivating a key here does not encrypt, protect, or otherwise affect any actual backup or snapshot today — the agent has no encryption capability of its own to apply these keys to. It exists ahead of a planned client-side (envelope) encryption model.
 </Aside>
 
----
-
-## What Actually Encrypts Backup Data
-
-- **In transit** — backup data is transferred over HTTPS (TLS 1.2+) between the agent, the Breeze API, and S3.
-- **At rest, S3 destinations only** — when a storage configuration has `encryption` enabled, the backup run requires an explicit S3 server-side encryption setting: `AES256` (SSE-S3) or `aws:kms` with a KMS key ID (SSE-KMS). Breeze passes this setting to S3 on every upload; S3 encrypts the object server-side. If you enable encryption on a configuration but don't provide one of these SSE settings, the backup run fails outright rather than starting unencrypted.
-- **At rest, local destinations** — enabling encryption on a `local` storage configuration is not supported; the backup run fails rather than silently skipping encryption. There is no way to have Breeze encrypt a local-vault backup at rest today.
-- **Client-side encryption does not exist yet.** The agent has a code interface for a provider to encrypt data before upload and decrypt it after download, but no storage provider (S3, local) implements it. No backup payload is ever encrypted or decrypted by Breeze itself, independent of the destination's own storage-level encryption.
-
----
-
-## Managing Key Records
-
-Go to **Operations > Backup > Encryption** to see your encryption key records.
-
-These are metadata records — a name, a type, and (optionally) a fingerprint and an encrypted private-key blob you supply — that Breeze stores for your own tracking and bookkeeping. They are not consulted by the backup or restore pipeline. The key list shows:
+The key list shows:
 - Key name
 - Key type (AES-256 or RSA-2048)
 - Status: **Active** (green), **Rotated** (gray), or **Deactivated** (red)
 - Created date
 - Expiry date (if set)
 
----
-
-## Creating a Key Record
-
 <Steps>
 1. Click **Create New Key**.
 2. Enter a descriptive name (e.g., "Production AES Key 2026").
-3. Select the key type:
-   - **AES-256** — symmetric, recommended for most use cases
-   - **RSA-2048** — asymmetric, useful when you want separate encrypt/decrypt permissions in your own key-management process
+3. Select the key type (AES-256 or RSA-2048).
 4. Click **Create**.
-5. The key's fingerprint (SHA-256 hash) is displayed. Record this for your own records.
+5. The key's fingerprint (SHA-256 hash) is displayed once, at creation time.
 </Steps>
 
-<Aside type="danger">
-  The key fingerprint is shown only at creation time. Store it securely if you need it for your own tracking — Breeze does not use it to encrypt or decrypt any backup data.
-</Aside>
+Keys can also be rotated (the old key moves to **Rotated**, a new one becomes **Active**) or deactivated. Rotation is manual only — there is no scheduled or automatic rotation.
 
 ---
 
-## Rotating a Key Record
+## How to Actually Protect Backup Data Today
 
-Rotating creates a new key record and moves the old one to **Rotated** status. This is a bookkeeping action only — it does not re-encrypt any stored backup data, because no backup data is encrypted using these key records in the first place.
-
-<Steps>
-1. Click the **Rotate** action on an active key.
-2. Confirm the rotation.
-3. The old key moves to **Rotated** status. A new active key record is created.
-</Steps>
-
----
-
-## Deactivating a Key Record
-
-Click **Deactivate** on a key record to mark it inactive. This has no effect on any backup or restore operation — deactivating a key record does not touch S3 server-side encryption settings on your storage configurations, and no snapshot's ability to be restored depends on a key record's status.
-
----
-
-## S3 Server-Side Encryption Setup
-
-To get real at-rest protection for a backup destination today, configure S3 server-side encryption on the [storage configuration](/backup/storage/) itself (provider must be `s3`), not on this page:
-
-- **SSE-S3** — S3 encrypts objects with keys S3 manages entirely; set the algorithm to `AES256`.
-- **SSE-KMS** — S3 encrypts objects using a key in AWS KMS you control; you must supply a KMS key ID.
-
-Local-vault destinations have no equivalent option.
+- **In transit** — all backup data is transferred over HTTPS (TLS 1.2+)
+- **At rest** — for S3 destinations, enable server-side encryption (SSE-S3 or SSE-KMS) on the storage configuration, as described above
+- For Local/NAS destinations, rely on your own disk/volume-level encryption — Breeze does not encrypt data written to a local path

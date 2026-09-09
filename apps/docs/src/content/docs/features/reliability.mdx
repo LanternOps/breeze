@@ -61,21 +61,13 @@ The practical effect: a laptop that is shut down overnight but otherwise crash-f
 | Crashes | 25% | Penalizes crash events. Recent crashes (7-day) are weighted more heavily than 30-day crashes |
 | Hangs | 15% | Penalizes application hangs, with extra penalty for unresolved hangs |
 | Service Failures | 15% | Penalizes service failures, with partial credit for auto-recovered services |
-| Hardware Errors | 15% | Penalizes hardware errors by severity: critical (-30), error (-15), warning (-5) per event |
+| Hardware Errors | 15% | Penalizes hardware errors by severity, weighted roughly 2:1:0.34 for critical:error:warning, fed into the saturating rate-normalized curve described below (not a flat per-event deduction) |
 
 ### Score Calculation
 
 Each sub-score starts at 100 and is reduced as faults accumulate. The reduction is **rate-normalized by observed up-days**: faults are weighed against how many days the device was actually up and reporting, so a device that was offline for two weeks is not punished for events it could not have generated. Scores are also **de-saturated** so they spread across the full 0–100 range — heavily-faulting devices that previously all collapsed to the same low number now separate out, and sparse or newly-enrolled devices no longer read as artificially healthy.
 
 The five sub-scores are combined using the weighted factors in the table above. The result is clamped to 0–100.
-
-<Aside type="note">
-  Scores shift after the v0.85.0 agent update. Once agents in your fleet are promoted to v0.85.0, existing device scores will visibly change as the improved algorithm takes effect. This is expected behavior — not device degradation. If you have alert rules or thresholds based on reliability scores, re-baseline them after your fleet has updated and settled.
-
-  As of v0.86.0, the same classification cleanup applies to macOS and Linux devices, and runs **server-side** — so those scores shift when your server is upgraded to v0.86.0, regardless of agent version (the server also cleans historical data and data from devices still on older agents). The v0.85.0 Windows improvement, by contrast, takes effect as agents are promoted.
-
-  v0.89.0 adds two further server-side corrections: memory/disk event IDs are only counted as hardware errors when they come from a genuine hardware source (see [Hardware Errors](#hardware-errors)), and failures of Breeze's own services no longer count against the service-failure factor (see [Service Failures](#service-failures)). Both apply on the next recompute — affected scores rise without an agent update.
-</Aside>
 
 ### Trend Direction
 
@@ -111,7 +103,7 @@ System-level crashes that indicate an unexpected shutdown or critical failure.
 |------------|-------------|-----------|
 | `bsod` | Blue Screen of Death / bugcheck | Windows |
 | `kernel_panic` | Kernel panic or oops | Windows, macOS, Linux |
-| `system_crash` | General system or application crash | Windows, macOS |
+| `system_crash` | Critical-level system shutdown event | macOS |
 | `oom_kill` | Out-of-memory kill | Linux |
 | `unknown` | Unclassified crash event | All |
 
@@ -156,13 +148,15 @@ Hardware-level errors from WHEA (Windows), MCE, disk I/O, and memory subsystems.
   An event that matches a memory/disk **event ID** alone (13/50/51 or 7/11/15) is only counted as a hardware error when it was actually logged by a hardware-related source — a disk controller, storage or memory driver, WHEA, and the like. Software services reuse those same event IDs: Windows' Volume Shadow Copy service, for example, routinely logs its own event ID 13, which older versions miscounted as a memory error, unfairly dragging scores on healthy devices. Events whose message contains a hardware keyword ("machine check", "memory", "i/o error", etc.) are still classified as hardware regardless of source. Previously miscounted data self-heals automatically on the next score recompute — no reinstall or data migration needed.
 </Aside>
 
-Hardware errors are further classified by severity:
+Hardware errors are further classified by severity, and each severity carries a different relative weight when computing the hardware-error sub-score:
 
-| Severity | Weight in Score |
+| Severity | Relative Weight |
 |----------|-----------------|
-| `critical` | -30 per event |
-| `error` | -15 per event |
-| `warning` | -5 per event |
+| `critical` | 2 |
+| `error` | 1 |
+| `warning` | 0.34 |
+
+These weights feed into the same rate-normalized, saturating curve described in [Score Calculation](#score-calculation) above -- they are not flat per-event point deductions. A single critical hardware error drops the hardware-error sub-score to roughly 51; two criticals to roughly 26.
 
 ---
 
@@ -173,16 +167,12 @@ Hardware errors are further classified by severity:
     The Windows collector reads from the Windows Event Log via the `EventLogCollector`. Detected signals include:
 
     - **BSOD/Bugcheck**: Event IDs 1001, 6008; messages containing "bugcheck", "blue screen", or "unexpected shutdown"
-    - **Service failures**: Event ID 7034; messages with "service terminated" or "service failed"
+    - **Service failures**: Service Control Manager event IDs 7000, 7022, 7023, 7024, 7026, 7031, or 7034; messages with "service terminated" or "service failed"
     - **Application hangs**: Messages containing "hang" or "not responding"
     - **Hardware errors**: WHEA events, disk errors, memory errors
     - **System crashes**: Critical-level system events containing "crash"
 
     Windows provides the richest reliability telemetry due to the structured Event Log system.
-
-    **v0.85.0 classification improvements**: Starting with the v0.85.0 agent, Windows event classification is more accurate. Routine component timeouts (such as driver or firmware response timeouts that Windows recovers from automatically) are no longer counted as application crashes. Additionally, System log entries that were previously categorized as hardware failures are now classified more precisely — generic System log noise no longer inflates the hardware error count. Fault counts will decrease for most Windows devices after updating to v0.85.0, which will raise their reliability scores.
-
-    **v0.89.0 classification improvements**: Memory and disk hardware errors identified by event ID alone (13/50/51, 7/11/15) now also require the event to originate from a genuine hardware source. Benign software events that reuse those IDs — most notably Volume Shadow Copy's event 13 — no longer count as hardware errors. The fix applies server-side on the next score recompute, so previously affected scores rise without an agent update.
   </TabItem>
   <TabItem label="macOS">
     The macOS collector reads from system logs. Detected signals include:
@@ -193,8 +183,6 @@ Hardware errors are further classified by severity:
     - **Service failures**: launchd messages containing "exited" or "failed"
     - **System crashes**: Critical-level system events containing "shutdown"
     - **Hardware errors**: Messages with "i/o error" or "memory" keywords
-
-    **v0.86.0 classification improvements**: Breeze now filters macOS reliability data server-side. Non-hardware system-log noise (IOKit plugin chatter, App Store activity, and similar routine messages) no longer inflates the hardware-error count, and routine per-application crash reports are weighted far below a kernel panic. Expect macOS scores to rise after the server is upgraded to v0.86.0 — this applies even to devices still on older agents, because the cleanup runs on the server.
   </TabItem>
   <TabItem label="Linux">
     The Linux collector reads from journald/syslog. Detected signals include:
@@ -204,8 +192,6 @@ Hardware errors are further classified by severity:
     - **Service failures**: systemd messages containing "failed" or "failure"
     - **Process hangs**: Messages containing "hang", "not responding", or "blocked for more than"
     - **Hardware errors**: Messages with "i/o error", "edac", or "mce" keywords
-
-    **v0.86.0 classification improvements**: Breeze now filters Linux reliability data server-side. Routine kernel chatter (USB and ACPI messages, and similar non-fault log noise) no longer inflates the hardware-error count, and routine per-application crash reports are weighted far below a kernel panic. Expect Linux scores to rise after the server is upgraded to v0.86.0 — this applies even to devices still on older agents, because the cleanup runs on the server.
   </TabItem>
 </Tabs>
 

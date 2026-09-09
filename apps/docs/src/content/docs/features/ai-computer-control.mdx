@@ -9,6 +9,10 @@ The Breeze AI assistant is not limited to answering questions about your fleet. 
 
 This page documents every tool the AI can use to control devices, the safety mechanisms that protect against unintended actions, and the permissions required at each level.
 
+<Aside type="note">
+  Three of these tools give the AI direct visual and input control over a device's desktop, each Tier 3 (human approval required): `take_screenshot` captures the device screen for visual analysis; `analyze_screen` captures a screenshot and analyzes what's visible against a context you describe (for example, "error dialogs" or "performance issues"); `computer_control` sends mouse and keyboard input (clicks, scrolling, typing) and returns a screenshot after each action. This page's tool table below does not yet cover these three -- treat their presence here as a placeholder pending a fuller pass.
+</Aside>
+
 ---
 
 ## Available Tools
@@ -121,7 +125,7 @@ Executes a system command on a single online device. The AI selects from a set o
 
 `list_services` and `event_logs_query` stay Tier 3 even though they're reads: service records can carry credentials in their binary path/arguments, and event-log entries (particularly the Security log) can carry a mistyped password or other sensitive text in their message body.
 
-The device must be online (WebSocket connected) to receive commands. Commands have a 30-second timeout.
+The device must be online (WebSocket connected) to receive commands. Commands have a 120-second timeout.
 
 ```
 "What processes are running on SERVER-01?"
@@ -135,7 +139,7 @@ The device must be online (WebSocket connected) to receive commands. Commands ha
 
 ### run_script
 
-Executes a script from the Breeze script library on one or more devices (up to 10 per invocation). Scripts are referenced by their library UUID, not inline code. Each device receives the script independently with a 60-second timeout.
+Executes a script from the Breeze script library on one or more devices (up to 10 per invocation). Scripts are referenced by their library UUID, not inline code. Each device receives the script independently with a 120-second timeout.
 
 ```
 "Run the disk health check script on all Denver servers"
@@ -199,7 +203,7 @@ Performs file system operations on a device. Listing a directory auto-executes (
 | `mkdir` | Tier 3 | **Yes** | Create a directory |
 | `rename` | Tier 3 | **Yes** | Rename or move a file |
 
-The device must be online for all file operations. Commands have a 30-second timeout.
+The device must be online for all file operations. Commands have a 60-second timeout.
 
 ```
 "List the files in C:\Users\jsmith\Desktop"
@@ -302,7 +306,7 @@ Runs security scans and manages detected threats on a device. All actions are Ti
 | `remove` | Remove a detected threat (requires `threatId`) |
 | `restore` | Restore a quarantined item (requires `threatId`) |
 
-Scans have a 60-second timeout. Threat management actions (`quarantine`, `remove`, `restore`) require the `threatId` from a previous scan or status check.
+Scans have a 120-second timeout. Threat management actions (`quarantine`, `remove`, `restore`) require the `threatId` from a previous scan or status check.
 
 ```
 "Run a security scan on DESKTOP-FINANCE-01"
@@ -516,7 +520,7 @@ Read-only Tier 1 tools (`query_devices`, `get_device_details`, `analyze_metrics`
 ## Troubleshooting
 
 **Tool execution times out.**
-Device commands have a 30-second default timeout (60 seconds for scripts and security scans, 120 seconds for network discovery). If a device is under heavy load or has a slow network connection, commands may time out. Verify the device is online and responsive, then retry.
+Device commands have a 60-second default timeout (120 seconds for `execute_command`, scripts, security scans, network discovery, screenshots, and computer control). If a device is under heavy load or has a slow network connection, commands may time out. Verify the device is online and responsive, then retry.
 
 **"Device not online" error when running a command.**
 The `execute_command`, `manage_services`, `file_operations` (all actions), and `network_discovery` tools require the device to have an active WebSocket connection. Check the device's status in the dashboard. If the device shows as online but commands fail, the agent may need to be restarted.

@@ -495,7 +495,7 @@ All filesystem endpoints are prefixed with `/api/v1/devices/:deviceId`. Replace 
 |--------|------|-------------|------------|
 | `GET` | `/devices/:id/filesystem` | Get latest filesystem analysis snapshot | `devices.read` |
 | `POST` | `/devices/:id/filesystem/scan` | Trigger a filesystem scan | `devices.execute` |
-| `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe cleanup candidates | `devices.read` |
+| `POST` | `/devices/:id/filesystem/cleanup-preview` | Preview safe cleanup candidates | `devices.execute` |
 | `POST` | `/devices/:id/filesystem/cleanup-execute` | Execute cleanup on approved paths | `devices.execute` |
 
 ---

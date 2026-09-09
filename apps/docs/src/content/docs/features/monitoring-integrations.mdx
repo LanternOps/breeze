@@ -17,7 +17,15 @@ Open it from **Integrations → Monitoring** (`/integrations#monitoring`).
   Monitoring integrations are configured **per organization**. Select a specific organization first — while the **All orgs** view is active there is no single org to load or save against, and the tab shows a prompt asking you to switch to one organization to view or edit its settings.
 </Aside>
 
-Each provider block has its own **enabled** toggle, a **Test connection** button that reports a live status badge (Not tested / Testing / Active / Failed), and a per-provider result message. Nothing is persisted until you click **Save settings** in the header — an **Unsaved changes** indicator appears while you have pending edits.
+Each provider block has its own **enabled** toggle, a **Test connection** button that reports a status badge (Not tested / Testing / Active / Failed), and a per-provider result message. Nothing is persisted until you click **Save settings** in the header — an **Unsaved changes** indicator appears while you have pending edits.
+
+<Aside type="caution">
+  **Save settings** stores monitoring integration settings in the API process's memory, not the database. They do not survive an API restart or redeploy, and are not shared across multiple API instances -- expect to re-enter them after a deploy.
+</Aside>
+
+<Aside type="caution">
+  **Test connection** does not currently make a live request to the provider -- it always reports success. Use it to confirm the form accepted your input, not to verify the endpoint, key, or service ID is actually correct and reachable.
+</Aside>
 
 ---
 
@@ -39,7 +47,7 @@ Publish Breeze metrics so a Prometheus server can scrape them on a schedule you 
 
 3. Choose which metrics are exposed in the [Metric export](#metric-selection) panel — only selected metrics are surfaced to external monitors.
 
-4. Click **Test connection** to verify reachability. The status badge turns **Active** on success or **Failed** with a message on error.
+4. Click **Test connection** — the status badge turns **Active** (see the caution above: this does not actually check reachability yet).
 
 5. Click **Save settings** in the page header to persist the configuration.
 </Steps>

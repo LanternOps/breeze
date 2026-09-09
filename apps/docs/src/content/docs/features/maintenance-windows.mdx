@@ -291,10 +291,10 @@ Matching devices are rebooted right away -- Breeze doesn't wait for the window t
 
 <Tabs>
 <TabItem label="Windows">
-Breeze issues a scheduled reboot with a 15-minute grace period. The signed-in user gets a "save your work" warning about 5 minutes before the reboot fires.
+Breeze issues a scheduled reboot with a grace period pulled from the device's effective patch Configuration Policy — the same [`rebootDelayMinutes`](/features/patch-management/#patch-settings-fields) setting used after a patch job installs updates (default 15 minutes; 15 is also the fallback if the policy can't be resolved). The signed-in user is warned as soon as the reboot is scheduled, with a reminder ladder counting down to the reboot.
 </TabItem>
 <TabItem label="Linux">
-Breeze schedules the reboot 15 minutes out (equivalent to running `shutdown -r +15`), which also warns any logged-in users.
+Breeze schedules the reboot using the same effective-policy grace period (equivalent to running `shutdown -r +N`), which also warns any logged-in users.
 </TabItem>
 <TabItem label="macOS">
 Not supported. Breeze cannot detect a pending-reboot state on macOS, so macOS devices are never rebooted by this feature -- reboot them manually or through a script instead.

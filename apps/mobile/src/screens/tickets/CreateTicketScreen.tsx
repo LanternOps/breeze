@@ -18,9 +18,10 @@ import { palette, radii, spacing, type } from '../../theme';
 import { useAppSelector } from '../../store';
 import { createTicket, type TicketPriority } from '../../services/tickets';
 import { listOrganizations } from '../../services/organizations';
+import { listOrgContacts } from '../../services/orgContacts';
 import { listAssignableUsers } from '../../services/users';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
-import { Toast } from '../../components/Toast';
+import { useToast } from '../../components/toast/ToastHost';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel } from './ticketCopy';
@@ -28,17 +29,23 @@ import {
   assigneeOptions,
   buildCreateTicketBody,
   canSubmitTicket,
+  contactOptions,
+  contactSelectionForOrg,
   defaultAssigneeId,
   DEFAULT_TICKET_PRIORITY,
   isExpectedAssigneeLoadFailure,
+  isExpectedContactLoadFailure,
+  NO_CONTACT_LABEL,
   preselectOrg,
   SUBJECT_MAX_LENGTH,
   TICKET_PRIORITY_OPTIONS,
   type AssigneeUser,
+  type OrgContactOption,
   type OrgOption,
 } from './createTicketForm';
 import { OrgPickerSheet } from './components/OrgPickerSheet';
 import { AssigneePickerSheet } from './components/AssigneePickerSheet';
+import { ContactPickerSheet } from './components/ContactPickerSheet';
 
 type Nav = NativeStackNavigationProp<TicketsStackParamList, 'CreateTicket'>;
 
@@ -57,11 +64,20 @@ export function CreateTicketScreen() {
   const [assigneeId, setAssigneeId] = useState<string | null>(() => defaultAssigneeId(user));
   const [assigneeSheetVisible, setAssigneeSheetVisible] = useState(false);
 
+  // #5367: the requester contact. `null` contacts = still loading for the
+  // current org; `contactsForbidden` hides the row outright for a technician
+  // without `organizations:read` (see isExpectedContactLoadFailure).
+  const [contacts, setContacts] = useState<OrgContactOption[] | null>(null);
+  const [contactsForbidden, setContactsForbidden] = useState(false);
+  const [contactId, setContactId] = useState<string | null>(null);
+  const [contactSearch, setContactSearch] = useState('');
+  const [contactSheetVisible, setContactSheetVisible] = useState(false);
+
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<TicketPriority>(DEFAULT_TICKET_PRIORITY);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const { show: showToast } = useToast();
 
   const loadOrgs = useCallback(
     async (search: string) => {
@@ -106,12 +122,56 @@ export function CreateTicketScreen() {
     };
   }, []);
 
+  // #5367: contacts are ORG-SCOPED, so this refetches on every org change and
+  // the in-flight result of the previous org is discarded rather than shown
+  // against the new one. A failure leaves the row visible but empty ("No
+  // contact" only) — the field is optional, so it must never block the form.
+  useEffect(() => {
+    if (!orgId) {
+      setContacts(null);
+      return;
+    }
+    let cancelled = false;
+    setContacts(null);
+    listOrgContacts(orgId)
+      .then((rows) => {
+        if (!cancelled) setContacts(rows);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setContacts([]);
+        if (isExpectedContactLoadFailure(err)) {
+          setContactsForbidden(true);
+          return;
+        }
+        reportInternalError(err, 'CreateTicketScreen.loadOrgContacts');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
+
+  const contactChoices = useMemo(
+    () => (contacts === null ? null : contactOptions(contacts, contactSearch)),
+    [contacts, contactSearch]
+  );
+  const contactLabel =
+    (contacts === null ? null : contactOptions(contacts).find((o) => o.id === contactId)?.label) ??
+    NO_CONTACT_LABEL;
+
   const me: AssigneeUser | null = user ? { id: user.id, name: user.name, email: user.email } : null;
   const assigneeChoices = useMemo(() => assigneeOptions(staff, me), [staff, me]);
   const assigneeLabel = assigneeChoices.find((o) => o.id === assigneeId)?.label ?? 'Unassigned';
 
   const submit = async () => {
-    const built = buildCreateTicketBody({ orgId, subject, description, priority, assigneeId });
+    const built = buildCreateTicketBody({
+      orgId,
+      subject,
+      description,
+      priority,
+      assigneeId,
+      requesterContactId: contactId,
+    });
     if (!built.ok) return;
     // #5171: without this, the spinner ran with the keyboard still up, and
     // `navigation.replace('TicketDetail', …)` below swapped in the next
@@ -127,7 +187,7 @@ export function CreateTicketScreen() {
       navigation.replace('TicketDetail', { ticketId: created.id });
     } catch (err) {
       reportInternalError(err, 'CreateTicketScreen.submit');
-      setToast({ kind: 'error', text: 'Could not create the ticket. Check the connection and try again.' });
+      showToast({ kind: 'error', text: 'Could not create the ticket. Check the connection and try again.' });
       setBusy(false);
     }
   };
@@ -191,6 +251,27 @@ export function CreateTicketScreen() {
                 <Text style={styles.error}>{orgError}</Text>
               </Pressable>
             ) : null}
+          </>
+        )}
+
+        {contactsForbidden ? null : (
+          <>
+            <Text style={styles.label}>CONTACT</Text>
+            <Pressable
+              onPress={() => setContactSheetVisible(true)}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !orgId }}
+              disabled={!orgId}
+              style={[styles.selectorRow, !orgId && styles.selectorDisabled]}
+            >
+              <Text
+                style={[styles.selectorText, contactId === null && styles.selectorPlaceholder]}
+                numberOfLines={1}
+              >
+                {contactLabel}
+              </Text>
+              <Text style={styles.chevron}>{'\u203a'}</Text>
+            </Pressable>
           </>
         )}
 
@@ -262,12 +343,6 @@ export function CreateTicketScreen() {
           )}
         </Pressable>
       </ScrollView>
-      <Toast
-        visible={toast !== null}
-        text={toast?.text ?? ''}
-        kind={toast?.kind ?? 'error'}
-        onHidden={() => setToast(null)}
-      />
       <OrgPickerSheet
         visible={orgSheetVisible}
         orgs={orgs}
@@ -281,10 +356,34 @@ export function CreateTicketScreen() {
         }}
         onRetry={() => void loadOrgs(orgSearch)}
         onSelect={(id) => {
+          // #5367: contacts belong to the org, so a different org invalidates
+          // the pick. Guarded by the pure helper so "reselected the same org"
+          // does not silently drop a deliberate choice.
+          setContactId((current) => contactSelectionForOrg({ orgId, contactId: current }, id));
+          setContactSearch('');
+          // Only a REAL org change re-opens the question of whether contacts
+          // are readable. Reselecting the same org changes no state the effect
+          // below keys on, so clearing the flag unconditionally would unhide
+          // the row without ever refetching it.
+          if (id !== orgId) setContactsForbidden(false);
           setOrgId(id);
           setOrgSheetVisible(false);
         }}
         onCancel={() => setOrgSheetVisible(false)}
+      />
+      <ContactPickerSheet
+        visible={contactSheetVisible}
+        options={contactChoices}
+        totalOptions={contacts?.length ?? 0}
+        search={contactSearch}
+        selectedId={contactId}
+        onSearchChange={setContactSearch}
+        onSelect={(id) => {
+          setContactId(id);
+          setContactSearch('');
+          setContactSheetVisible(false);
+        }}
+        onCancel={() => setContactSheetVisible(false)}
       />
       <AssigneePickerSheet
         visible={assigneeSheetVisible}
@@ -335,6 +434,7 @@ const styles = StyleSheet.create({
   },
   selectorText: { ...type.body, color: palette.dark.textHi, flex: 1, marginRight: spacing['2'] },
   selectorPlaceholder: { color: palette.dark.textLo },
+  selectorDisabled: { opacity: 0.5 },
   chevron: { ...type.body, color: palette.dark.textLo },
   error: { ...type.meta, color: palette.deny.base, marginTop: spacing['2'] },
   priorityRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing['2'], marginTop: spacing['2'] },

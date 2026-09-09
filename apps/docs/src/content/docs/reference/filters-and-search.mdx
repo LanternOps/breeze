@@ -191,7 +191,7 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
 ```
 
 <Aside type="tip">
-  The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, ensuring a balanced mix when the query matches broadly.
+  The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, capped at **8 per category** regardless of how high `limit` is set, ensuring a balanced mix when the query matches broadly.
 </Aside>
 
 ### Advanced Filtering
@@ -204,7 +204,7 @@ The two systems complement each other:
 |---|---|---|
 | Multi-category results | Yes (devices, scripts, alerts, settings) | No (devices only) |
 | Substring matching | Yes | Yes (via `contains` operator) |
-| Typed field operators | No | Yes (30+ operators) |
+| Typed field operators | No | Yes (24 operators) |
 | Nested AND/OR logic | No | Yes |
 | Hardware/metrics/network fields | No | Yes |
 | Saveable and reusable | No | Yes |
@@ -306,7 +306,7 @@ Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AN
 
 | Field Key | Label | Description |
 |---|---|---|
-| `software.installed` | Has Software Installed | Check if software name contains value (`contains`, `notContains`) |
+| `software.installed` | Has Software Installed | Match software name: `contains`, `notContains`, `equals`, `in`, `hasAny`, `hasAll` |
 | `software.notInstalled` | Missing Software | Check if software is not installed (`contains`) |
 
   </TabItem>

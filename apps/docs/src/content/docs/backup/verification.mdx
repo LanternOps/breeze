@@ -18,7 +18,7 @@ A backup you can't restore is worthless. The Verification tab helps you continuo
 
 ## Verification Types
 
-Go to **Operations > Backup > Verification** to access verification controls.
+Go to **Backup > Device Backup > Verification** to access verification controls.
 
 | Type | Duration | What it checks | Impact |
 |------|----------|----------------|--------|
@@ -32,7 +32,7 @@ Go to **Operations > Backup > Verification** to access verification controls.
 ### Running a Verification
 
 <Steps>
-1. Go to **Operations > Backup > Verification**.
+1. Go to **Backup > Device Backup > Verification**.
 2. Click **Run Integrity Check** or **Test Restore**.
 3. Confirm the action in the dialog.
 4. The verification appears in the history table with a status of **Running**.
@@ -59,8 +59,8 @@ Breeze runs verifications automatically on a schedule:
 | Check | Frequency | What it does |
 |-------|-----------|-------------|
 | **Post-backup integrity** | Every 10 minutes | Validates the most recent completed backup when the device is available |
-| **Weekly test restore** | Sundays at 03:00 UTC | Runs a restore test for recent backups when the device is available |
-| **Readiness score recalculation** | Daily at 02:00 UTC | Updates recovery readiness scores for all devices |
+| **Weekly test restore** | Sundays at 03:38 UTC | Runs a restore test for recent backups when the device is available |
+| **Readiness score recalculation** | Daily at 02:18 UTC | Updates recovery readiness scores for all devices |
 | **Timeout detection** | Every 5 minutes | Flags verifications that have been running too long |
 
 No setup is needed — automated verifications run as soon as backup is configured. If a device is offline when a scheduled verification window arrives, Breeze skips that run and logs the skip instead of creating a synthetic verification record.

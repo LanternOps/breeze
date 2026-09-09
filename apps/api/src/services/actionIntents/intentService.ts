@@ -1,4 +1,5 @@
-import { buildActionLabel } from './actionLabel';
+import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { actionIntentTaskContextSchema, type ActionIntentTaskContext, type AssuranceLevel } from '@breeze/shared';
@@ -1373,14 +1374,26 @@ export async function createActionIntent(
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
+  const labelReason = input.actionLabel ?? guardrail.description ?? null;
+  // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
+  // agent device — the one device row this function already loads. #5363:
+  // every other path (chat, mcp_api, an agent intent with no explicit scope)
+  // left the raw stub as the mobile takeover's headline, so resolve the
+  // device THESE arguments name. One indexed, org-pinned read, and only when
+  // the label really carries this call's stub — no read at all for the many
+  // tools whose description never mentions a device.
+  let labelDeviceName = scopedDeviceHostname;
+  if (!labelDeviceName && labelReason) {
+    const argDeviceId = argumentDeviceId(input.input);
+    if (argDeviceId && hasDeviceIdStub(labelReason, argDeviceId)) {
+      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
+    }
+  }
   const actionLabel = buildActionLabel({
     toolName: input.toolName,
     input: input.input,
-    reason: input.actionLabel ?? guardrail.description ?? null,
-    // #5106: turns "on device 6eae0f70..." into "on <hostname>" for the
-    // approval headline. Only populated for a scoped (sweep) agent intent —
-    // the one place this function loads a device row before this call.
-    deviceHostname: scopedDeviceHostname,
+    reason: labelReason,
+    deviceHostname: labelDeviceName,
   });
   const expiresAt = computeExpiresAt(input.source, approvalScope);
   const requestingClientLabel = input.requestingClientLabel
