@@ -350,3 +350,4 @@ One issue per root cause, each carrying the campaign evidence and the fix commit
 | [#5415](https://github.com/LanternOps/breeze/issues/5415) | [Agent][Backup] Failed system_image job's errorLog duplicates the failure reason and omits the hive name |
 | [#5416](https://github.com/LanternOps/breeze/issues/5416) | [Agent][Backup] bmr-recover may hang silently with no timeout during an API outage (unconfirmed) |
 | [#5417](https://github.com/LanternOps/breeze/issues/5417) | [Agent][Backup] No in-file progress reporting — the UI progress bar freezes during a single large file upload |
+| [#5419](https://github.com/LanternOps/breeze/issues/5419) | [API][Backup] Expired-snapshot cleanup aborts on a NO ACTION foreign key and stops retention for the whole deployment (D17) |
