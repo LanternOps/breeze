@@ -69,6 +69,13 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // handful of requests. The Stripe-backed mutations (/pay, /settle-return)
   // carry an additional per-token limiter inside the route.
   { prefix: '/api/v1/invoices/public/', name: 'invoicepublic', limit: 60 },
+  // Bare-metal recovery (2026-09-09 assurance campaign, D13): the recovery
+  // helper fetches ONE object per file through /backup/bmr/recover/download,
+  // so a 10k-file server would be capped at 300 files/min by the shared
+  // bucket. The routes are token-authenticated and path-scoped to a single
+  // snapshot, and carry their own per-token limiter inside the route, so the
+  // isolated bucket only needs to stay below "runaway client" territory.
+  { prefix: '/api/v1/backup/bmr/recover/', name: 'bmrrecover', limit: 12_000 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {
