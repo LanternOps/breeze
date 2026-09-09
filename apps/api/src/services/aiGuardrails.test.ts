@@ -356,6 +356,36 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       }
     );
 
+    // sweep 2026-09-08 row 19: models calling execute_command directly send
+    // `payload.serviceName` (the field name manage_services exposes on ITS
+    // OWN input schema) rather than `payload.name` (what manage_services
+    // internally normalizes it to before calling into commandQueue). The
+    // persisted action_arguments for a real approval looked like
+    // `{ commandType: 'restart_service', payload: { serviceName: 'Spooler' } }`
+    // — the builder read only `payload.name`, got null, and fell back to the
+    // generic "Execute \"restart_service\" command" wording.
+    it.each([
+      ['start_service', 'Start service "Spooler" on device 74e15ef8...'],
+      ['stop_service', 'Stop service "Spooler" on device 74e15ef8...'],
+      ['restart_service', 'Restart service "Spooler" on device 74e15ef8...'],
+    ])('%s names the service from payload.serviceName (row 19)', (commandType, expected) => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType,
+        payload: { serviceName: 'Spooler' },
+      });
+      expect(result.description).toBe(expected);
+    });
+
+    it('prefers payload.serviceName over payload.name when both are present', () => {
+      const result = checkGuardrails('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'restart_service',
+        payload: { serviceName: 'Spooler', name: 'ignored' },
+      });
+      expect(result.description).toBe('Restart service "Spooler" on device 74e15ef8...');
+    });
+
     it('file_read names the target path', () => {
       const result = checkGuardrails('execute_command', {
         deviceId: DEVICE_ID,
