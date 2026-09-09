@@ -95,7 +95,11 @@ async function publishAlertTriggeredOrRollback(opts: {
       await db.delete(alerts).where(eq(alerts.id, alertId));
     } catch (deleteError) {
       // Now the row IS stranded — unpublished and undeletable. Nothing else
-      // will notice it, so this needs to page rather than only log.
+      // will notice it, so report it under its own errorId. Note that
+      // `captureException` is a no-op when Sentry is not initialised (the
+      // common self-hosted shape), so on those deployments the console.error
+      // below is the only durable trace — operators who want to be paged on
+      // this need a log-based alert on it.
       captureException(deleteError, undefined, {
         errorId: 'alert-triggered-orphan-rollback-failed',
         alertId,
