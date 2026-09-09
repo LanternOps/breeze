@@ -32,6 +32,9 @@ export default function ForcedMfaSetupPage() {
   const [info, setInfo] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | undefined>();
+  // #5319: forced enrollment is mandatory — a QR image alone is unusable
+  // without a second device or with a screen reader.
+  const [totpSecret, setTotpSecret] = useState<string | undefined>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | undefined>();
   const [forced, setForced] = useState(false);
   const [options, setOptions] = useState<MfaEnrollmentOptions>();
@@ -130,6 +133,7 @@ export default function ForcedMfaSetupPage() {
         return;
       }
       setQrCodeDataUrl(data.qrCodeDataUrl);
+      setTotpSecret(typeof data.secret === 'string' ? data.secret : undefined);
       setStep('enroll');
     } catch (err) {
       // Session died and fetchWithAuth is already redirecting to /login — don't
@@ -287,6 +291,7 @@ export default function ForcedMfaSetupPage() {
         <>
           <MFASetupForm
             qrCodeDataUrl={qrCodeDataUrl}
+            totpSecret={totpSecret}
             onSubmit={handleEnable}
             errorMessage={error}
             loading={loading}
