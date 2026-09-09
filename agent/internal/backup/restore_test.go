@@ -842,3 +842,84 @@ func TestRestoreFromSnapshot_LandsUnderOriginalPathUnderVSS(t *testing.T) {
 		t.Fatalf("file was restored under the shadow-copy path %q instead of the original path", shadowPath)
 	}
 }
+
+// alwaysFailDownloadProvider wraps a LocalProvider and fails every Download
+// call whose remotePath is in the fail set, so a test can force a
+// deterministic per-file download failure.
+type alwaysFailDownloadProvider struct {
+	*providers.LocalProvider
+	fail map[string]bool
+}
+
+func (p *alwaysFailDownloadProvider) Download(remotePath, localPath string) error {
+	if p.fail[remotePath] {
+		return errors.New("injected download failure")
+	}
+	return p.LocalProvider.Download(remotePath, localPath)
+}
+
+// TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS proves the
+// silent-failure fix from the PR #5418 review: filterFiles/pathSelection/
+// targetPath were switched to restoreSourcePath(file), but result.FailedFiles
+// (and Warnings/progress) still reported the raw, per-run-ephemeral VSS
+// shadow-device SourcePath on failure — meaningless (and possibly already
+// gone) by the time an operator reads the result. A file whose SourcePath is
+// the shadow path and whose OriginalPath is the real location, that fails to
+// download, must report FailedFiles[0] as the real OriginalPath.
+func TestRestoreFromSnapshot_FailedFilesUseOriginalPathUnderVSS(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "vss-shadow-fail-snap"
+	prefix := filepath.Join("snapshots", snapshotID)
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("vss-shadow-fail-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	backupPath := filepath.Join(prefix, "files", "x.gz")
+	if err := base.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	const shadowSourcePath = "/vss-shadow-copy-1/assure/src/x"
+	const originalPath = "/assure/src/x"
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{SourcePath: shadowSourcePath, OriginalPath: originalPath, BackupPath: filepath.ToSlash(backupPath), Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	manifestData, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestTmp := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestTmp, manifestData, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := base.Upload(manifestTmp, filepath.Join(prefix, "manifest.json")); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+
+	provider := &alwaysFailDownloadProvider{
+		LocalProvider: base,
+		fail:          map[string]bool{filepath.ToSlash(backupPath): true},
+	}
+
+	targetDir := t.TempDir()
+	result, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: targetDir}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FilesFailed != 1 || len(result.FailedFiles) != 1 {
+		t.Fatalf("expected exactly 1 failed file, got FilesFailed=%d FailedFiles=%v", result.FilesFailed, result.FailedFiles)
+	}
+	if result.FailedFiles[0] != originalPath {
+		t.Fatalf("FailedFiles[0] = %q, want the real path %q (not the VSS shadow path %q)", result.FailedFiles[0], originalPath, shadowSourcePath)
+	}
+}

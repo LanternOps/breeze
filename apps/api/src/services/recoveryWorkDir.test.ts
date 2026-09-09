@@ -90,6 +90,39 @@ describe('resolveRecoveryWorkDir', () => {
     expect(resolved).toBe(join(dataRoot, 'recovery-work'));
   });
 
+  it('logs a warning naming the candidate, its source, and the reason when RECOVERY_MEDIA_WORK_DIR is unwritable', async () => {
+    const blockerFile = join(await scratchDir(), 'not-a-directory');
+    await writeFile(blockerFile, 'x');
+    const explicitDir = join(blockerFile, 'nested', 'work');
+    process.env.RECOVERY_MEDIA_WORK_DIR = explicitDir;
+
+    const dataRoot = await scratchDir();
+    process.env.PATCH_REPORT_STORAGE_PATH = join(dataRoot, 'patch-reports');
+
+    // Capture the real error text the environment actually throws (rather
+    // than hardcoding an error code that could vary by platform), so the
+    // assertion below proves the warning carries the true caught reason,
+    // not just a generic message.
+    let expectedErrorMessage = '';
+    try {
+      await mkdir(explicitDir, { recursive: true });
+    } catch (err) {
+      expectedErrorMessage = err instanceof Error ? err.message : String(err);
+    }
+    expect(expectedErrorMessage).not.toBe('');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { resolveRecoveryWorkDir } = await import('./recoveryWorkDir');
+    await resolveRecoveryWorkDir();
+
+    const skipWarning = warnSpy.mock.calls.find(
+      ([msg]) => typeof msg === 'string' && msg.includes('RECOVERY_MEDIA_WORK_DIR')
+    );
+    expect(skipWarning).toBeDefined();
+    expect(skipWarning?.[0]).toContain(explicitDir);
+    expect(skipWarning?.[0]).toContain(expectedErrorMessage);
+  });
+
   it('removes stale bmr-bundle-*/recovery-boot-media-* subdirectories older than 24h on first use', async () => {
     const baseDir = await scratchDir();
     process.env.RECOVERY_MEDIA_WORK_DIR = baseDir;

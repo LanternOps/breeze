@@ -128,7 +128,8 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 
 		current := int64(i + 1)
-		targetPath := resolveTargetPath(cfg.TargetPath, restoreSourcePath(file))
+		displayPath := restoreSourcePath(file)
+		targetPath := resolveTargetPath(cfg.TargetPath, displayPath)
 
 		// Skip already-completed files (resume)
 		if resumeState.CompletedFiles[file.BackupPath] {
@@ -137,7 +138,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 				result.BytesRestored += file.Size
 				if progressFn != nil {
 					progressFn("restoring", current, total,
-						fmt.Sprintf("skipped (resumed): %s", file.SourcePath))
+						fmt.Sprintf("skipped (resumed): %s", displayPath))
 				}
 				continue
 			}
@@ -148,16 +149,16 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		stagingFile := filepath.Join(stagingDir, stagingFileName(file.BackupPath))
 		if err := os.MkdirAll(filepath.Dir(stagingFile), 0o755); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to create staging subdir",
-				"file", file.SourcePath, "error", err.Error())
+				"file", displayPath, "error", err.Error())
 			continue
 		}
 
 		dlErr := provider.Download(file.BackupPath, stagingFile)
 		if dlErr != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to download file",
 				"backupPath", file.BackupPath, "error", dlErr.Error())
 			continue
@@ -176,7 +177,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			cleaned := filepath.Clean(targetPath)
 			cleanBase := filepath.Clean(base)
 			if !strings.HasPrefix(cleaned, cleanBase+string(filepath.Separator)) && cleaned != cleanBase {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", file.SourcePath))
+				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
 				result.FilesFailed++
 				os.Remove(stagingFile)
 				continue
@@ -186,7 +187,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Create target directory
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			os.Remove(stagingFile)
 			slog.Warn("failed to create target dir",
 				"target", targetPath, "error", err.Error())
@@ -196,7 +197,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// Move from staging to target
 		if err := moveFile(stagingFile, targetPath); err != nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			os.Remove(stagingFile)
 			slog.Warn("failed to move file to target",
 				"staging", stagingFile, "target", targetPath, "error", err.Error())
@@ -211,23 +212,23 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// always checked; the SHA-256 when the manifest carries one.
 		if info, statErr := os.Stat(targetPath); statErr != nil || info == nil {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			slog.Warn("failed to stat restored file", "target", targetPath, "error", fmt.Sprint(statErr))
 			continue
 		} else if info.Size() != file.Size {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", file.SourcePath, file.Size, info.Size()))
+				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", displayPath, file.Size, info.Size()))
 			slog.Warn("restored file failed size check",
 				"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
 			continue
 		}
 		if file.Checksum != "" && !checksumMatches(targetPath, file.Checksum) {
 			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.FailedFiles = append(result.FailedFiles, displayPath)
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("restored %s failed checksum check (manifest %s)", file.SourcePath, file.Checksum))
+				fmt.Sprintf("restored %s failed checksum check (manifest %s)", displayPath, file.Checksum))
 			slog.Warn("restored file failed checksum check", "target", targetPath)
 			continue
 		}
@@ -241,7 +242,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if file.Mode != 0 {
 			if err := os.Chmod(targetPath, os.FileMode(file.Mode).Perm()); err != nil {
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), file.SourcePath, err))
+					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), displayPath, err))
 				slog.Warn("failed to reapply file mode on restore",
 					"target", targetPath, "mode", file.Mode, "error", err.Error())
 			}
@@ -249,7 +250,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		if !file.ModTime.IsZero() {
 			if err := os.Chtimes(targetPath, file.ModTime, file.ModTime); err != nil {
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mtime to %s: %v", file.SourcePath, err))
+					fmt.Sprintf("could not reapply mtime to %s: %v", displayPath, err))
 				slog.Warn("failed to reapply mtime on restore",
 					"target", targetPath, "error", err.Error())
 			}
@@ -267,7 +268,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 		if progressFn != nil {
 			progressFn("restoring", current, total,
-				fmt.Sprintf("restored: %s", file.SourcePath))
+				fmt.Sprintf("restored: %s", displayPath))
 		}
 	}
 

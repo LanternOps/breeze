@@ -41,14 +41,21 @@ const STALE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // paying a readdir + stat-per-entry cost on every bundle/ISO build.
 let staleSweepDone = false;
 
-async function isWritableDir(candidate: string): Promise<boolean> {
+async function isWritableDir(candidate: string, source: string): Promise<boolean> {
   try {
     await mkdir(candidate, { recursive: true });
     const probePath = join(candidate, `.recovery-work-probe-${randomUUID()}`);
     await writeFile(probePath, '');
     await unlink(probePath);
     return true;
-  } catch {
+  } catch (err) {
+    // Surface WHY a candidate was skipped — an operator's explicit
+    // RECOVERY_MEDIA_WORK_DIR pointing at something unwritable was
+    // previously dropped with no trace, silently degrading to the next
+    // candidate (or the 64MB tmpfs fallback) with nothing in the logs to
+    // explain why the override had no effect.
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[recoveryWorkDir] skipping unwritable candidate (${source}): ${candidate} — ${reason}`);
     return false;
   }
 }
@@ -96,15 +103,18 @@ async function sweepStaleWorkDirs(baseDir: string): Promise<void> {
  * writable (the os.tmpdir() last resort excepted, which is trusted as-is).
  */
 export async function resolveRecoveryWorkDir(): Promise<string> {
-  const candidates: string[] = [];
+  const candidates: Array<{ path: string; source: string }> = [];
   const envOverride = process.env.RECOVERY_MEDIA_WORK_DIR?.trim();
-  if (envOverride) candidates.push(envOverride);
-  candidates.push(dataDirRecoveryWorkCandidate());
+  if (envOverride) candidates.push({ path: envOverride, source: 'RECOVERY_MEDIA_WORK_DIR env var' });
+  candidates.push({
+    path: dataDirRecoveryWorkCandidate(),
+    source: 'data-dir default (derived from PATCH_REPORT_STORAGE_PATH)',
+  });
 
   for (const candidate of candidates) {
-    if (await isWritableDir(candidate)) {
-      await sweepStaleWorkDirs(candidate);
-      return candidate;
+    if (await isWritableDir(candidate.path, candidate.source)) {
+      await sweepStaleWorkDirs(candidate.path);
+      return candidate.path;
     }
   }
 

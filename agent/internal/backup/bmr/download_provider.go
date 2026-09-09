@@ -35,10 +35,23 @@ const (
 )
 
 // retrySleep is a seam for tests to skip the real backoff delay while still
-// exercising the retry loop's attempt/duration accounting. Defaults to
-// time.Sleep in production. Mirrors renameRetrySleep in
-// agent/internal/config/config.go.
-var retrySleep = time.Sleep
+// exercising the retry loop's attempt/duration accounting, and — in
+// production — the mechanism that makes a backoff step cooperatively
+// cancellable: the retry loop can wait up to downloadRetryMaxTotalWait (5
+// minutes) across a recovery, so a cancelled context must interrupt an
+// in-flight sleep immediately rather than being noticed only after it
+// elapses. Returns ctx.Err() if ctx is cancelled/expires before d passes,
+// else nil. Mirrors renameRetrySleep in agent/internal/config/config.go.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 // downloadStatusError is a typed HTTP-status download failure so callers
 // (shouldRefresh, the retry loop) can branch on the status code directly
@@ -101,12 +114,21 @@ func rewriteDescriptorOrigin(serverURL string, descriptor *AuthenticatedDownload
 	}
 
 	serverParsed, err := url.Parse(serverURL)
-	if err != nil || serverParsed.Host == "" {
+	if err != nil {
+		slog.Warn("bmr: could not parse --server URL, leaving download descriptor origin unchanged",
+			"server", serverURL, "error", err.Error())
+		return descriptor
+	}
+	if serverParsed.Host == "" {
+		slog.Warn("bmr: --server URL has no host, leaving download descriptor origin unchanged",
+			"server", serverURL)
 		return descriptor
 	}
 
 	descParsed, err := url.Parse(descriptor.URL)
 	if err != nil {
+		slog.Warn("bmr: could not parse download descriptor URL, leaving it unchanged",
+			"url", descriptor.URL, "error", err.Error())
 		return descriptor
 	}
 
@@ -234,7 +256,9 @@ func (p *recoveryDownloadProvider) downloadWithRetry(remotePath, localPath strin
 			retried = true
 		}
 
-		retrySleep(wait)
+		if sleepErr := retrySleep(p.ctx, wait); sleepErr != nil {
+			return fmt.Errorf("bmr: download cancelled during retry backoff: %w", sleepErr)
+		}
 		totalWaited += wait
 
 		delay *= 2

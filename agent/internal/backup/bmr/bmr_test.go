@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -666,5 +667,121 @@ func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
 	}
 	if !info.ModTime().Truncate(time.Second).Equal(wantMTime) {
 		t.Errorf("modTime = %v, want %v", info.ModTime(), wantMTime)
+	}
+}
+
+// TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles proves
+// the silent-failure review's item 2 fix: the chmod/chtimes post-restore
+// fidelity warnings (added alongside O20's mode/mtime reapply) bypassed
+// D14's cap by appending directly to warnings, so a systematic chmod
+// failure across a large recovery could still blow past the API's warnings
+// size limit the same way D14 fixed for download failures. Since the file's
+// BYTES are restored fine when only the metadata reapply fails, these
+// failures also must NOT count toward failedFiles/FailedFiles — that field
+// means "bytes not restored".
+func TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles(t *testing.T) {
+	const totalFiles = 10000
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-fidelity-mass-failure"
+	restoreRoot := t.TempDir()
+
+	// Upload one shared object and reference it from every manifest entry —
+	// exercises 10,000 real downloads (and therefore 10,000 real chmod
+	// calls) without the cost of 10,000 separate uploads.
+	srcPath := filepath.Join(t.TempDir(), "shared")
+	if err := os.WriteFile(srcPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "shared.gz"))
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	files := make([]manifestFile, totalFiles)
+	for i := 0; i < totalFiles; i++ {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: backupPath,
+			Size:       1,
+			Mode:       0o644,
+		}
+	}
+	manifest := &snapshotManifest{ID: snapshotID, Files: files, Size: totalFiles}
+
+	origChmod := chmodFile
+	chmodFile = func(string, os.FileMode) error { return errors.New("injected chmod failure") }
+	defer func() { chmodFile = origChmod }()
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings head: %v)", err, warnings[:min(5, len(warnings))])
+	}
+	if filesRestored != totalFiles {
+		t.Fatalf("filesRestored = %d, want %d", filesRestored, totalFiles)
+	}
+	if failedFiles != 0 {
+		t.Fatalf("failedFiles = %d, want 0 (bytes were restored fine; only metadata reapply failed)", failedFiles)
+	}
+	if len(warnings) > maxRecoveryWarnings+2 {
+		t.Fatalf("len(warnings) = %d, want capped near %d (one summary line), not one entry per failure", len(warnings), maxRecoveryWarnings)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "more metadata failures") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a summary line mentioning 'more metadata failures', got %d warnings, tail: %v", len(warnings), warnings[max(0, len(warnings)-3):])
+	}
+}
+
+// TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped proves the
+// cap is on warning STRINGS, not files: a single chtimes failure below the
+// cap still produces a readable per-file warning (not silently dropped),
+// and the file still counts as restored.
+func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-fidelity-single"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "x")
+	content := []byte("fidelity-single-content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "x")
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content)), ModTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		},
+		Size: int64(len(content)),
+	}
+
+	origChtimes := chtimesFile
+	chtimesFile = func(string, time.Time, time.Time) error { return errors.New("injected chtimes failure") }
+	defer func() { chtimesFile = origChtimes }()
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "could not reapply mtime") {
+		t.Fatalf("warnings = %v, want exactly one mtime-reapply warning", warnings)
 	}
 }

@@ -27,6 +27,14 @@ const (
 	maxRecoveryWarnings = 50
 )
 
+// chmodFile and chtimesFile are seams over os.Chmod/os.Chtimes so tests can
+// force deterministic post-restore fidelity failures without depending on
+// filesystem-specific chmod/chtimes error behavior.
+var (
+	chmodFile   = os.Chmod
+	chtimesFile = os.Chtimes
+)
+
 // RunRecovery orchestrates a full bare metal recovery.
 //
 // Steps:
@@ -311,6 +319,22 @@ func restoreFiles(
 		}
 	}
 
+	// addFidelityFailure records a post-restore metadata (chmod/chtimes)
+	// failure. Unlike addFailure, it does NOT increment failedFiles: the
+	// file's bytes were already downloaded and verified successfully, only
+	// the permission/mtime reapply failed, so this is not a restore
+	// failure. It still shares the same maxRecoveryWarnings cap on
+	// individual warning strings (D14) — a systematic chmod/chtimes failure
+	// (e.g. a read-only restore target) must not blow past the API's
+	// warnings size limit any more than a wave of download failures may.
+	fidelityFailures := 0
+	addFidelityFailure := func(format string, args ...any) {
+		fidelityFailures++
+		if len(warnings) < maxRecoveryWarnings {
+			warnings = append(warnings, fmt.Sprintf(format, args...))
+		}
+	}
+
 	for _, file := range manifest.Files {
 		if ctx != nil && ctx.Err() != nil {
 			if filesRestored > 0 {
@@ -350,17 +374,15 @@ func restoreFiles(
 		// Mode==0 / a zero ModTime means "unknown" (pre-fidelity manifest) →
 		// leave the OS default (O20).
 		if file.Mode != 0 {
-			if chmodErr := os.Chmod(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
-				warnings = append(warnings,
-					fmt.Sprintf("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error()))
+			if chmodErr := chmodFile(targetPath, os.FileMode(file.Mode).Perm()); chmodErr != nil {
+				addFidelityFailure("could not reapply mode %o to %s: %s", os.FileMode(file.Mode).Perm(), origPath, chmodErr.Error())
 				slog.Warn("bmr: failed to reapply file mode on restore",
 					"target", targetPath, "mode", file.Mode, "error", chmodErr.Error())
 			}
 		}
 		if !file.ModTime.IsZero() {
-			if chtimesErr := os.Chtimes(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
-				warnings = append(warnings,
-					fmt.Sprintf("could not reapply mtime to %s: %s", origPath, chtimesErr.Error()))
+			if chtimesErr := chtimesFile(targetPath, file.ModTime, file.ModTime); chtimesErr != nil {
+				addFidelityFailure("could not reapply mtime to %s: %s", origPath, chtimesErr.Error())
 				slog.Warn("bmr: failed to reapply mtime on restore",
 					"target", targetPath, "error", chtimesErr.Error())
 			}
@@ -373,6 +395,10 @@ func restoreFiles(
 	if failedFiles > maxRecoveryWarnings {
 		warnings = append(warnings,
 			fmt.Sprintf("... and %d more file restore failures", failedFiles-maxRecoveryWarnings))
+	}
+	if fidelityFailures > maxRecoveryWarnings {
+		warnings = append(warnings,
+			fmt.Sprintf("... and %d more metadata failures", fidelityFailures-maxRecoveryWarnings))
 	}
 
 	if filesRestored == 0 && len(manifest.Files) > 0 {

@@ -3,6 +3,7 @@ package bmr
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -146,6 +147,91 @@ func TestRewriteDescriptorOriginLeavesSameOriginUnchanged(t *testing.T) {
 	}
 }
 
+// TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnServerParseError proves
+// the silent-failure review's item 3 fix: a serverURL that fails to parse
+// must not silently pass the descriptor through unchanged with no trace —
+// it must log a slog.Warn carrying the raw serverURL and the parse error,
+// so a misconfigured --server value is diagnosable instead of surfacing
+// only as a mysterious later download failure.
+func TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnServerParseError(t *testing.T) {
+	descriptor := &AuthenticatedDownloadDescriptor{
+		URL:        "https://example.com/api/v1/backup/bmr/recover/download",
+		PathPrefix: "snapshots/x",
+	}
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	got := rewriteDescriptorOrigin(":", descriptor)
+	if got != descriptor {
+		t.Fatalf("expected the descriptor unchanged when serverURL fails to parse, got a rewritten copy: %+v", got)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Fatalf("expected a WARN log for the unparseable serverURL, got: %s", logged)
+	}
+	if !strings.Contains(logged, "missing protocol scheme") {
+		t.Fatalf("expected the warning to carry the parse error, got: %s", logged)
+	}
+}
+
+// TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnNoHostServerURL covers
+// the sibling silent branch: serverURL parses without error but yields no
+// Host (e.g. a scheme-less value), which is just as unusable for rewriting
+// the descriptor's origin.
+func TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnNoHostServerURL(t *testing.T) {
+	descriptor := &AuthenticatedDownloadDescriptor{
+		URL:        "https://example.com/api/v1/backup/bmr/recover/download",
+		PathPrefix: "snapshots/x",
+	}
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	got := rewriteDescriptorOrigin("not-a-url", descriptor)
+	if got != descriptor {
+		t.Fatalf("expected the descriptor unchanged when serverURL has no host, got a rewritten copy: %+v", got)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Fatalf("expected a WARN log for the host-less serverURL, got: %s", logged)
+	}
+	if !strings.Contains(logged, "not-a-url") {
+		t.Fatalf("expected the warning to carry the raw serverURL, got: %s", logged)
+	}
+}
+
+// TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnDescriptorParseError
+// covers the third silent branch: the descriptor's own URL (as sent by the
+// server) failing to parse.
+func TestRewriteDescriptorOriginLogsAndLeavesUnchangedOnDescriptorParseError(t *testing.T) {
+	descriptor := &AuthenticatedDownloadDescriptor{
+		URL:        "http://[::1]:bad",
+		PathPrefix: "snapshots/x",
+	}
+
+	var logBuf bytes.Buffer
+	origLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(origLogger)
+
+	got := rewriteDescriptorOrigin("http://10.0.2.2:8080", descriptor)
+	if got != descriptor {
+		t.Fatalf("expected the descriptor unchanged when its own URL fails to parse, got a rewritten copy: %+v", got)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Fatalf("expected a WARN log for the unparseable descriptor URL, got: %s", logged)
+	}
+	if !strings.Contains(logged, "[::1]:bad") {
+		t.Fatalf("expected the warning to carry the raw descriptor URL, got: %s", logged)
+	}
+}
+
 func TestRecoveryDownloadProviderResolvesRelativeDescriptorAgainstServer(t *testing.T) {
 	var sawPath, sawQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +304,10 @@ func withFakeRetrySleep(t *testing.T) *[]time.Duration {
 	t.Helper()
 	var recorded []time.Duration
 	orig := retrySleep
-	retrySleep = func(d time.Duration) { recorded = append(recorded, d) }
+	retrySleep = func(ctx context.Context, d time.Duration) error {
+		recorded = append(recorded, d)
+		return nil
+	}
 	t.Cleanup(func() { retrySleep = orig })
 	return &recorded
 }
@@ -360,5 +449,51 @@ func TestRecoveryDownloadProviderGivesUpAfterFiveMinuteRetryBudget(t *testing.T)
 		if d > 30*time.Second {
 			t.Fatalf("recorded sleep [%d] = %v, want capped at 30s", i, d)
 		}
+	}
+}
+
+// TestRecoveryDownloadProviderRetryBackoffIsContextAware proves item 4's
+// fix: retrySleep must respect ctx cancellation instead of blocking out the
+// full backoff — the retry loop can wait up to downloadRetryMaxTotalWait (5
+// minutes) across a recovery, and before this fix a cancelled recovery
+// waited out whatever backoff step was in flight (up to 30s) rather than
+// stopping immediately. Uses the real (non-faked) retrySleep deliberately,
+// so this exercises the actual select-on-ctx behavior, not a test double.
+func TestRecoveryDownloadProviderRetryBackoffIsContextAware(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":"service unavailable"}`)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := newRecoveryDownloadProvider(ctx, server.URL, "brz_rec_test", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/provider-snapshot-1",
+	})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	start := time.Now()
+	err := provider.Download("snapshots/provider-snapshot-1/f.bin", dest)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error when the context is cancelled mid-backoff")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want it to wrap context.Canceled", err)
+	}
+	// The first backoff step is the 1s initial delay; cancellation fires at
+	// 50ms, so a context-aware sleep returns in well under that 1s, and
+	// nowhere near the 5-minute retry budget a non-context-aware sleep could
+	// eventually run out via repeated real waits.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("Download took %v after cancellation, want it to return promptly (well under the 1s backoff step)", elapsed)
 	}
 }
