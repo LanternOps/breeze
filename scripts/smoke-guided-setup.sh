@@ -151,10 +151,24 @@ csrf_from_jar() {
   awk -v name="${CSRF_COOKIE}" '$6 == name { print $7 }' "$1" | tail -1
 }
 
+# bootstrap_binding <jar> <origin> -- seeds a durable breeze_auth_binding
+# cookie in <jar> the way a real browser client does before any
+# session-issuance call. Every such route (login, refresh, mfa/passkey
+# verify, ...) now requires a valid binding cookie and 428s
+# auth_binding_rotation_required without one — see
+# apps/api/src/routes/auth/binding.ts and services/authBrowserTransition.ts.
+bootstrap_binding() {
+  local jar="$1" origin="$2" status
+  status="$(http -c "${jar}" -o /dev/null -w '%{http_code}' -X POST "${origin}/api/v1/auth/browser-binding/bootstrap" \
+    -H "Origin: ${origin}")"
+  [[ "${status}" == "204" ]] || fail "auth binding bootstrap at ${origin} returned ${status} (expected 204)"
+}
+
 # login <jar> <origin> -> prints access token
 login() {
   local jar="$1" origin="$2" body
-  body="$(http -c "${jar}" -X POST "${origin}/api/v1/auth/login" \
+  bootstrap_binding "${jar}" "${origin}"
+  body="$(http -b "${jar}" -c "${jar}" -X POST "${origin}/api/v1/auth/login" \
     -H 'Content-Type: application/json' -H "Origin: ${origin}" \
     --data "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")" \
     || fail "login request to ${origin} failed"

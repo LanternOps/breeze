@@ -2578,7 +2578,22 @@ jobs:
       - name: Login and export token
         id: login
         run: |
+          # Every session-issuance route now requires a durable browser
+          # binding cookie (breeze_auth_binding) and 428s
+          # auth_binding_rotation_required without one — see
+          # routes/auth/binding.ts and services/authBrowserTransition.ts.
+          # Bootstrap one first, the way a real browser client does, and
+          # carry it through the login call via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST http://localhost:3001/api/v1/auth/browser-binding/bootstrap)
+          echo "auth binding bootstrap -> ${BOOTSTRAP_STATUS}"
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -d '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
           TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
