@@ -7,15 +7,32 @@ import (
 	"testing"
 )
 
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStripEnrollment_RemovesIdentityKeysKeepsServer(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "etc", "breeze")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\norg_id: o1\nsite_id: s1\nauth_token: t1\nwatchdog_auth_token: w1\nhelper_auth_token: h1\nlog_level: info\n"), 0o644)
-	os.WriteFile(filepath.Join(dir, "secrets.yaml"), []byte("auth_token: t1\n"), 0o600)
-	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
-	os.WriteFile(filepath.Join(root, "etc", "machine-id"), []byte("abc\n"), 0o644)
-	os.WriteFile(filepath.Join(root, "etc", "hostname"), []byte("srv-1\n"), 0o644)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, "agent.yaml"), "server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\norg_id: o1\nsite_id: s1\nauth_token: t1\nwatchdog_auth_token: w1\nhelper_auth_token: h1\nlog_level: info\n")
+	mustWriteFile(t, filepath.Join(dir, "secrets.yaml"), "auth_token: t1\n")
+	mustMkdirAll(t, filepath.Join(root, "etc"))
+	mustWriteFile(t, filepath.Join(root, "etc", "machine-id"), "abc\n")
+	mustWriteFile(t, filepath.Join(root, "etc", "hostname"), "srv-1\n")
 
 	if err := applyNewIdentity(root); err != nil {
 		t.Fatal(err)

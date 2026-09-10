@@ -58,7 +58,9 @@ func TestRebuildCommand_DryRunWritesResultJSON(t *testing.T) {
 	}
 	dir := t.TempDir()
 	provFile := filepath.Join(dir, "prov.json")
-	os.WriteFile(provFile, []byte(`{"provider":"local","providerConfig":{"path":"`+filepath.Join(dir, "store")+`"}}`), 0o600)
+	if err := os.WriteFile(provFile, []byte(`{"provider":"local","providerConfig":{"path":"`+filepath.Join(dir, "store")+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// No snapshot seeded — this only asserts the wiring: an unknown snapshot
 	// yields a refused result written to --result-json, and a non-nil error.
 	out := filepath.Join(dir, "result.json")

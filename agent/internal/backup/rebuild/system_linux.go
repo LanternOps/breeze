@@ -45,10 +45,10 @@ func (s realSystem) AttachImage(path string, sizeBytes int64) (string, func() er
 			return "", nil, err
 		}
 		if err := f.Truncate(sizeBytes); err != nil {
-			f.Close()
+			_ = f.Close()
 			return "", nil, err
 		}
-		f.Close()
+		_ = f.Close()
 	}
 	out, err := s.Run(context.Background(), "losetup", "--find", "--show", "--partscan", path)
 	if err != nil {

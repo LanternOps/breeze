@@ -42,7 +42,7 @@ func DownloadSystemState(ctx context.Context, provider providers.BackupProvider,
 	}
 	tmpPath := tmpFile.Name()
 	_ = tmpFile.Close()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if dlErr := provider.Download(stateManifestKey, tmpPath); dlErr != nil {
 		if expect {

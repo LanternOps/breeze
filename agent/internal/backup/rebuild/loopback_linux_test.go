@@ -41,7 +41,7 @@ func TestRun_LoopbackRealSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer detach()
+	defer func() { _ = detach() }()
 	out, _ := exec.Command("blkid", "-o", "export", partitionDevice(dev, 3)).CombinedOutput()
 	if !strings.Contains(string(out), "UUID=9f7a-root") || !strings.Contains(string(out), "TYPE=ext4") {
 		t.Fatalf("root partition: %s", out)
@@ -51,11 +51,13 @@ func TestRun_LoopbackRealSystem(t *testing.T) {
 		t.Fatalf("efi partition: %s", out)
 	}
 	mnt := filepath.Join(dir, "verify")
-	os.MkdirAll(mnt, 0o755)
+	if err := os.MkdirAll(mnt, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if out, err := exec.Command("mount", partitionDevice(dev, 3), mnt).CombinedOutput(); err != nil {
 		t.Fatalf("mount: %s", out)
 	}
-	defer exec.Command("umount", mnt).Run()
+	defer func() { _ = exec.Command("umount", mnt).Run() }()
 	if b, err := os.ReadFile(filepath.Join(mnt, "etc", "hostname")); err != nil || string(b) != "srv-1-restored\n" {
 		t.Fatalf("hostname = %q err=%v", b, err)
 	}

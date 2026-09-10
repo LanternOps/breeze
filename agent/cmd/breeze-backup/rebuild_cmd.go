@@ -43,11 +43,11 @@ func newRebuildCommand() *cobra.Command {
 				StateDir: stateDir, DryRun: dryRun, ForceReprovision: force, AllowPartialRestore: allowPartial,
 				RegenerateInitramfs: !noInitramfs, SkipBoot: skipBoot,
 				Progress: func(ph rebuild.Phase, msg string, cur, total int64) {
-					fmt.Fprintf(cmd.ErrOrStderr(), "[%s] %s", ph, msg)
+					line := fmt.Sprintf("[%s] %s", ph, msg)
 					if total > 0 {
-						fmt.Fprintf(cmd.ErrOrStderr(), " (%d/%d)", cur, total)
+						line += fmt.Sprintf(" (%d/%d)", cur, total)
 					}
-					fmt.Fprintln(cmd.ErrOrStderr())
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), line)
 				},
 			}
 			if markerFile != "" {

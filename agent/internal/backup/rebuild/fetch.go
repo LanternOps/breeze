@@ -22,8 +22,8 @@ func fetchLayout(ctx context.Context, provider providers.BackupProvider, snapsho
 		return nil, err
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := provider.Download(path.Join("snapshots", snapshotID, "layout.json"), tmpPath); err != nil {
 		return nil, &RefusalError{Reason: layout.ReasonNilManifest + " for snapshot " + snapshotID + " (was the backup taken with the whole-machine profile?)"}
 	}
@@ -50,8 +50,8 @@ func fetchManifest(ctx context.Context, provider providers.BackupProvider, snaps
 		return nil, err
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := provider.Download(path.Join("snapshots", snapshotID, "manifest.json"), tmpPath); err != nil {
 		return nil, &RefusalError{Reason: "snapshot manifest not found for " + snapshotID}
 	}
