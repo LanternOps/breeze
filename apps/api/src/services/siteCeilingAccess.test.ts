@@ -50,6 +50,30 @@ describe('siteCeilingAccess', () => {
     }
   });
 
+  // contract-site-ceiling-gate §7B: ai_agent principals are governed by
+  // exactly this helper, no special-casing. agentAuthContext.ts
+  // (buildAgentAuthContext) sets allowedSiteIds only for device-bound runs —
+  // these two shapes mirror what that function actually produces (see
+  // services/aiAgents/agentAuthContext.test.ts for the end-to-end version
+  // through buildAgentAuthContext itself).
+  it('device-bound agent run shape (allowedSiteIds: [siteId]) cannot mutate org-wide governance', () => {
+    const deviceBoundAgentAuth = { scope: 'organization' as const, allowedSiteIds: ['site-A'] };
+    expect(hasSiteCeiling(deviceBoundAgentAuth)).toBe(true);
+    expect(canMutateOrgWideGovernance(deviceBoundAgentAuth)).toBe(false);
+  });
+
+  it('device-bound agent run with no resolvable site (allowedSiteIds: []) also cannot mutate org-wide governance', () => {
+    const deviceBoundAgentAuthNoSite = { scope: 'organization' as const, allowedSiteIds: [] };
+    expect(hasSiteCeiling(deviceBoundAgentAuthNoSite)).toBe(true);
+    expect(canMutateOrgWideGovernance(deviceBoundAgentAuthNoSite)).toBe(false);
+  });
+
+  it('org-wide (non-device-bound) agent run shape (allowedSiteIds undefined) has no ceiling here', () => {
+    const orgWideAgentAuth = { scope: 'organization' as const, allowedSiteIds: undefined };
+    expect(hasSiteCeiling(orgWideAgentAuth)).toBe(false);
+    expect(canMutateOrgWideGovernance(orgWideAgentAuth)).toBe(true);
+  });
+
   it('exposes a stable denial message and error class', () => {
     expect(SITE_CEILING_WRITE_DENIED_MESSAGE).toMatch(/site-restricted/i);
     const err = new SiteCeilingWriteDeniedError();
