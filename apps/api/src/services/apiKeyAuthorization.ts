@@ -12,8 +12,10 @@ import { servicePrincipals } from '../db/schema';
  * CURRENT permissions and:
  *   1. DENY if the creator has no live membership/role on the key's tenant
  *      (getUserPermissions returns null when neither the org nor the partner
- *      axis yields a role row) — this is both the off-boarding/membership gate
- *      and the fail-closed rule for a contextless/errored read.
+ *      axis yields a role row) — the off-boarding/membership gate, reported as
+ *      `no_membership`. A contextless/errored read also denies, but as
+ *      `lookup_error`: it proves nothing about the creator (see the reason
+ *      union below).
  *   2. RE-CLAMP the key's stored scopes against those live permissions; a scope
  *      the creator no longer holds DENIES (a permission reduction after mint
  *      cannot be out-run by a key minted while the creator was more powerful).
@@ -38,7 +40,21 @@ export type ApiKeyAuthorizationResult =
       allowedSiteIds: string[] | undefined;
       clampedScopes: string[];
     }
-  | { ok: false; reason: 'no_membership' | 'scope_exceeds_current_permissions'; detail?: Record<string, unknown> };
+  | {
+      ok: false;
+      /**
+       * `no_membership` is a FINDING: the creator/principal genuinely has no
+       * live authority. `lookup_error` is an ABSENCE of a finding: the read
+       * itself failed, so nothing is known. Both deny on the request path
+       * (every caller there tests only `ok`), but they must stay distinct for
+       * callers that treat "provably dead" as permission to act — see the
+       * DELETE recovery carve-out in `routes/apiKeys.ts`, where collapsing the
+       * two would let a transient DB/Redis blip authorize revoking a LIVE key.
+       * Emitted by `authorizeHumanApiKeyCreator` only.
+       */
+      reason: 'no_membership' | 'lookup_error' | 'scope_exceeds_current_permissions';
+      detail?: Record<string, unknown>;
+    };
 
 export async function authorizeHumanApiKeyCreator(input: {
   createdBy: string;
@@ -54,8 +70,10 @@ export async function authorizeHumanApiKeyCreator(input: {
     });
   } catch {
     // FAIL CLOSED: a DB/RLS error is indistinguishable from "no access" and
-    // must never be read as "unrestricted".
-    return { ok: false, reason: 'no_membership' };
+    // must never be read as "unrestricted". It is NOT `no_membership` either:
+    // that reason asserts the creator was looked up and found to have no live
+    // authority, which a failed read has not established.
+    return { ok: false, reason: 'lookup_error' };
   }
 
   if (!permissions) {
