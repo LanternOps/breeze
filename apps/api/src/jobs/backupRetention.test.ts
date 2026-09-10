@@ -53,7 +53,9 @@ function notFoundError(): Error {
 // without every pre-existing test needing to queue a second entry. Tests that
 // DO care about system-state behavior override this per-call via
 // `mockImplementation`/explicit `.Once` queuing, same as any other vi.fn().
-const fetchBackupObjectTextMock = vi.fn(async () => {
+const fetchBackupObjectTextMock = vi.fn<
+  (input: { provider: string | null | undefined; providerConfig: unknown; key: string }) => Promise<string>
+>(async () => {
   throw notFoundError();
 });
 const listBackupObjectsUnderPrefixMock = vi.fn();
