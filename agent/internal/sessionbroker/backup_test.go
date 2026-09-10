@@ -513,7 +513,7 @@ func TestBackupSessionRegistrationRequiresClaimedReservation(t *testing.T) {
 	b.backup = &backupHelper{spawnDone: make(chan struct{}), reservation: reservation, process: &os.Process{Pid: 42}}
 
 	unclaimed, unclaimedClient := newPairedSession(t, "unclaimed", "0")
-	defer unclaimedClient.Close()
+	defer func() { _ = unclaimedClient.Close() }()
 	unclaimed.HelperRole = backupipc.HelperRoleBackup
 	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, unclaimed, reservation); !errors.Is(err, errBackupHelperNotReserved) {
 		t.Fatalf("unclaimed registration error = %v, want %v", err, errBackupHelperNotReserved)
@@ -524,7 +524,7 @@ func TestBackupSessionRegistrationRequiresClaimedReservation(t *testing.T) {
 		t.Fatalf("claim exact reservation: %v", err)
 	}
 	accepted, acceptedClient := newPairedSession(t, "accepted", "0")
-	defer acceptedClient.Close()
+	defer func() { _ = acceptedClient.Close() }()
 	accepted.HelperRole = backupipc.HelperRoleBackup
 	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, accepted, claimed); err != nil {
 		t.Fatalf("claimed registration: %v", err)
@@ -534,7 +534,7 @@ func TestBackupSessionRegistrationRequiresClaimedReservation(t *testing.T) {
 	}
 
 	replay, replayClient := newPairedSession(t, "replay", "0")
-	defer replayClient.Close()
+	defer func() { _ = replayClient.Close() }()
 	replay.HelperRole = backupipc.HelperRoleBackup
 	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, replay, claimed); !errors.Is(err, errBackupHelperNotReserved) {
 		t.Fatalf("replayed registration error = %v, want %v", err, errBackupHelperNotReserved)
@@ -557,7 +557,7 @@ func TestBackupSessionRegistrationDoesNotReplaceLiveOwner(t *testing.T) {
 	}
 
 	replacement, replacementClient := newPairedSession(t, "replacement", "0")
-	defer replacementClient.Close()
+	defer func() { _ = replacementClient.Close() }()
 	replacement.HelperRole = backupipc.HelperRoleBackup
 	if err := b.registerNonLifecycleSession("0", backupipc.HelperRoleBackup, replacement, claimed); !errors.Is(err, errBackupHelperAlreadyConnected) {
 		t.Fatalf("replacement registration error = %v, want %v", err, errBackupHelperAlreadyConnected)

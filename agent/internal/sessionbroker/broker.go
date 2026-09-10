@@ -2319,7 +2319,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 				Reason:    "backup helper was not started by the agent",
 				Permanent: true,
 			})
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 	}
