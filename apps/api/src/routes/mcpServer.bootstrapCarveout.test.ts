@@ -177,7 +177,7 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.error?.code).toBe(-32001);
   });
 
-  it('authed key → authTools surface in tools/list AND dispatch to handler', async () => {
+  it('authed key cannot list or execute approval-required bootstrap tools', async () => {
     state.apiKey = {
       id: 'key-authtool',
       orgId: 'org-1',
@@ -223,8 +223,7 @@ describe('MCP bootstrap carve-out', () => {
     const sendTool = listBody.result.tools.find(
       (tool: any) => tool.name === 'send_deployment_invites',
     );
-    expect(sendTool).toBeDefined();
-    expect(sendTool?.inputSchema?.type).toBe('object');
+    expect(sendTool).toBeUndefined();
 
     const callRes = await mcpServerRoutes.request('/message', {
       method: 'POST',
@@ -239,19 +238,10 @@ describe('MCP bootstrap carve-out', () => {
     expect(callRes.status).toBe(200);
     const callBody = await callRes.json();
     expect(callBody.error).toBeUndefined();
-    expect(mocks.bootstrapHandler).toHaveBeenCalledTimes(1);
-    const [calledInput, calledCtx] = mocks.bootstrapHandler.mock.calls[0] as unknown as [any, any];
-    expect(calledInput).toEqual({ emails: ['a@b.com'] });
-    expect(calledCtx.apiKey).toMatchObject({
-      id: 'key-authtool',
-      partnerId: 'partner-1',
-      defaultOrgId: 'org-1',
-      partnerAdminEmail: 'admin@acme.com',
-    });
-    expect(JSON.parse(callBody.result.content[0].text)).toEqual({
-      invites_sent: 2,
-      invite_ids: ['i1', 'i2'],
-      skipped_duplicates: 0,
-    });
+    const payload = JSON.parse(callBody.result.content[0].text);
+    expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+    expect(callBody.result.isError).toBe(true);
+    expect(mocks.bootstrapHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 });
