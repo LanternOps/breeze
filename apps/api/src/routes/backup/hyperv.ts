@@ -17,6 +17,11 @@ import {
   markBackupJobFailedIfInFlight,
 } from '../../services/backupResultPersistence';
 import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from '../../services/backupProviderConfig';
+import {
   hypervBackupSchema,
   hypervRestoreSchema,
   hypervCheckpointSchema,
@@ -299,6 +304,22 @@ hypervRoutes.post(
       return c.json({ error: 'A provider-backed backup configuration is required on this device' }, 400);
     }
 
+    // D20b item A: the helper only builds a manager from the command payload
+    // when it has no agent.yaml backup config (mgr == nil — the normal state
+    // for every policy-managed device); without provider/providerConfig here
+    // the helper fails every on-demand hyperv_backup with "backup not
+    // configured on this device", even though a provider-backed config
+    // resolved just above. Same builder backupWorker.ts's
+    // prepareBackupDispatchTargets uses for a profile-scheduled run.
+    const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, orgId);
+    if (!destinationResult.ok) {
+      return c.json(
+        { error: destinationResult.message, reason: destinationResult.reason },
+        destinationResult.reason === 'encryption_unsupported' ? 422 : 400
+      );
+    }
+    const { destination } = destinationResult;
+
     const [backupJob] = await db
       .insert(backupJobs)
       .values({
@@ -327,6 +348,10 @@ hypervRoutes.post(
         // result — which arrives as a second, unsolicited command_result
         // frame after a queue-admission ack — back to this backup_jobs row.
         jobId: backupJob.id,
+        configId: resolvedConfig.configId,
+        provider: destination.provider,
+        providerConfig: destination.providerConfig,
+        storageEncryption: destination.storageEncryption,
         vmName: payload.vmName,
         consistencyType: payload.consistencyType,
       },
@@ -444,6 +469,7 @@ hypervRoutes.post(
         id: backupSnapshots.id,
         providerSnapshotId: backupSnapshots.snapshotId,
         metadata: backupSnapshots.metadata,
+        configId: backupSnapshots.configId,
       })
       .from(backupSnapshots)
       .where(
@@ -466,6 +492,19 @@ hypervRoutes.post(
       return c.json({ error: 'Snapshot is not a Hyper-V export artifact' }, 400);
     }
 
+    // D20b item D: the helper builds its read provider from the RESTORE
+    // command's own payload (restoreProviderForCommand), the same way
+    // backup_restore already does (routes/backup/restore.ts) — mirroring the
+    // destination the BACKUP command wrote this snapshot to, not whatever the
+    // device's CURRENT config happens to be.
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      return c.json({ error: message, reason }, 422);
+    }
+
     const result = await executeCommand(
       payload.deviceId,
       CommandTypes.HYPERV_RESTORE,
@@ -473,6 +512,8 @@ hypervRoutes.post(
         snapshotId: snapshot.providerSnapshotId,
         vmName: payload.vmName,
         generateNewId: payload.generateNewId,
+        provider: backupProviderConfig.provider,
+        providerConfig: backupProviderConfig.providerConfig,
       },
       { userId: auth?.user?.id, timeoutMs: 600000 }
     );

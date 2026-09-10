@@ -20,6 +20,11 @@ import {
   markBackupJobFailedIfInFlight,
 } from '../../services/backupResultPersistence';
 import {
+  resolveBackupWriteCommandDestination,
+  resolveBackupProviderConfig,
+  resolveBackupDestinationError,
+} from '../../services/backupProviderConfig';
+import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
@@ -210,10 +215,24 @@ mssqlRoutes.post(
     // build — a plain single JSON.parse would see the object TEXT as a
     // string, `data?.instances` would be undefined, and this upsert would
     // silently never run.
+    //
+    // D20b item C: execMSSQLDiscover (agent/cmd/breeze-backup/exec_hyperv.go)
+    // marshals the bare []SQLInstance slice straight to stdout — there is no
+    // `{"instances":[...]}` wrapper on the wire. `data?.instances` is always
+    // undefined for an array (arrays have no `.instances` property), so this
+    // upsert silently never ran and sql_instances stayed empty forever even
+    // though GET /mssql/discover's own response (`c.json({ data })`) looked
+    // correct — `data` was just echoed straight back. Accept EITHER shape:
+    // the real bare-array one, and a possible future/legacy wrapped one.
     try {
       const data = result.stdout ? parseAgentJsonStdout(result.stdout) as any : null;
-      if (data?.instances && Array.isArray(data.instances)) {
-        for (const inst of data.instances) {
+      const instances = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.instances)
+          ? data.instances
+          : null;
+      if (instances) {
+        for (const inst of instances) {
           await db
             .insert(sqlInstances)
             .values({
@@ -276,6 +295,22 @@ mssqlRoutes.post(
       return c.json({ error: 'A provider-backed backup configuration is required on this device' }, 400);
     }
 
+    // D20b item A: the helper only builds a manager from the command payload
+    // when it has no agent.yaml backup config (mgr == nil — the normal state
+    // for every policy-managed device); without provider/providerConfig here
+    // the helper fails every on-demand mssql_backup with "backup not
+    // configured on this device", even though a provider-backed config
+    // resolved just above. Same builder backupWorker.ts's
+    // prepareBackupDispatchTargets uses for a profile-scheduled run.
+    const destinationResult = await resolveBackupWriteCommandDestination(resolvedConfig.configId, orgId);
+    if (!destinationResult.ok) {
+      return c.json(
+        { error: destinationResult.message, reason: destinationResult.reason },
+        destinationResult.reason === 'encryption_unsupported' ? 422 : 400
+      );
+    }
+    const { destination } = destinationResult;
+
     const [backupJob] = await db
       .insert(backupJobs)
       .values({
@@ -304,6 +339,10 @@ mssqlRoutes.post(
         // result — which arrives as a second, unsolicited command_result
         // frame after a queue-admission ack — back to this backup_jobs row.
         jobId: backupJob.id,
+        configId: resolvedConfig.configId,
+        provider: destination.provider,
+        providerConfig: destination.providerConfig,
+        storageEncryption: destination.storageEncryption,
         instance: payload.instance,
         database: payload.database,
         backupType: payload.backupType,
@@ -433,6 +472,7 @@ mssqlRoutes.post(
         id: backupSnapshots.id,
         providerSnapshotId: backupSnapshots.snapshotId,
         metadata: backupSnapshots.metadata,
+        configId: backupSnapshots.configId,
       })
       .from(backupSnapshots)
       .where(
@@ -465,6 +505,19 @@ mssqlRoutes.post(
       return c.json({ error: 'Snapshot is missing MSSQL backup file metadata' }, 400);
     }
 
+    // D20b item D: the helper builds its read provider from the RESTORE
+    // command's own payload (restoreProviderForCommand), the same way
+    // backup_restore already does (routes/backup/restore.ts) — mirroring the
+    // destination the BACKUP command wrote this snapshot to, not whatever the
+    // device's CURRENT config happens to be.
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      return c.json({ error: message, reason }, 422);
+    }
+
     const result = await executeCommand(
       payload.deviceId,
       CommandTypes.MSSQL_RESTORE,
@@ -482,6 +535,8 @@ mssqlRoutes.post(
         backupFileName,
         targetDatabase: payload.targetDatabase,
         noRecovery: payload.noRecovery,
+        provider: backupProviderConfig.provider,
+        providerConfig: backupProviderConfig.providerConfig,
       },
       { userId: auth?.user?.id, timeoutMs: 600000 }
     );
@@ -528,6 +583,7 @@ mssqlRoutes.post(
         deviceId: backupSnapshots.deviceId,
         providerSnapshotId: backupSnapshots.snapshotId,
         metadata: backupSnapshots.metadata,
+        configId: backupSnapshots.configId,
       })
       .from(backupSnapshots)
       .where(
@@ -564,6 +620,18 @@ mssqlRoutes.post(
       );
     }
 
+    // D20b item D (extended to verify, not just restore — same mgr==nil gap:
+    // the helper's execMSSQLVerify resolves its read provider from mgr, and
+    // stageMSSQLSnapshotArtifact fails "backup provider is required" without
+    // one — this route never sent provider/providerConfig either).
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      return c.json({ error: message, reason }, 422);
+    }
+
     const result = await executeCommand(
       snapshot.deviceId,
       CommandTypes.MSSQL_VERIFY,
@@ -571,6 +639,8 @@ mssqlRoutes.post(
         instance,
         snapshotId: snapshot.providerSnapshotId,
         backupFileName,
+        provider: backupProviderConfig.provider,
+        providerConfig: backupProviderConfig.providerConfig,
       },
       { userId: auth?.user?.id, timeoutMs: 120000 }
     );

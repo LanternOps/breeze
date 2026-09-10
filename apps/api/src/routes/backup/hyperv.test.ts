@@ -24,6 +24,21 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+
+// D20b item A/D: resolveBackupWriteCommandDestination / resolveBackupProviderConfig
+// (services/backupProviderConfig.ts) run for real against the mocked db, so
+// every on-demand backup/restore request now needs a backup_configs row
+// queued for the destination-resolution select.
+function queueDestinationConfigSelect(
+  overrides: Partial<{ provider: string; providerConfig: unknown; encryption: boolean }> = {}
+) {
+  selectMock.mockReturnValueOnce(chainMock([{
+    provider: 'local',
+    providerConfig: { path: '/tmp/backups' },
+    encryption: false,
+    ...overrides,
+  }]));
+}
 let authState = {
   principal: { kind: 'user_session' as const },
   user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -60,6 +75,14 @@ vi.mock('../../db/schema', () => ({
     orgId: 'backup_snapshots.org_id',
     snapshotId: 'backup_snapshots.snapshot_id',
     metadata: 'backup_snapshots.metadata',
+    configId: 'backup_snapshots.config_id',
+  },
+  backupConfigs: {
+    id: 'backup_configs.id',
+    orgId: 'backup_configs.org_id',
+    provider: 'backup_configs.provider',
+    providerConfig: 'backup_configs.provider_config',
+    encryption: 'backup_configs.encryption',
   },
   hypervVms: {
     id: 'hyperv_vms.id',
@@ -314,6 +337,7 @@ describe('hyperv routes', () => {
     insertMock.mockReturnValueOnce(
       chainMock([{ id: '44444444-4444-4444-8444-444444444444' }])
     );
+    queueDestinationConfigSelect();
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({
@@ -346,6 +370,15 @@ describe('hyperv routes', () => {
         // result — which arrives as a second, unsolicited command_result
         // frame after a queue-admission ack — back to this backup_jobs row.
         jobId: '44444444-4444-4444-8444-444444444444',
+        // D20b item A: same provider/providerConfig/storageEncryption shape
+        // backupWorker.ts attaches to a profile-scheduled hyperv_backup — the
+        // helper only builds a manager from THIS payload when it has no
+        // agent.yaml backup config, which is the normal state for every
+        // policy-managed device.
+        configId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
+        storageEncryption: { required: false, mode: 'disabled' },
         vmName: 'Accounting VM',
         consistencyType: 'application',
       },
@@ -359,6 +392,29 @@ describe('hyperv routes', () => {
     );
   });
 
+  // D20b item A: a resolved config id whose backup_configs row has since
+  // been deleted must fail clearly and never create an orphaned job or
+  // dispatch a command the helper can't act on.
+  it('D20b: fails the Hyper-V backup dispatch when the destination config no longer resolves', async () => {
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/hyperv/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        vmName: 'Accounting VM',
+        consistencyType: 'application',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.reason).toBe('config_not_found');
+    expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   // D20-C: a queued/starting agent acks admission with {"queued":true}/
   // {"started":true} instead of the real backup outcome — before this fix the
   // route ran that straight through backupCommandResultSchema, which does not
@@ -368,6 +424,7 @@ describe('hyperv routes', () => {
   it('D20-C: reports 202/running when the agent acks queue admission', async () => {
     const jobId = '44444444-4444-4444-8444-444444444444';
     insertMock.mockReturnValueOnce(chainMock([{ id: jobId }]));
+    queueDestinationConfigSelect();
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ queued: true }),
@@ -396,6 +453,7 @@ describe('hyperv routes', () => {
   it('D20-A: recognizes a double-encoded queue-ack from a pre-fix agent', async () => {
     const jobId = '44444444-4444-4444-8444-444444444444';
     insertMock.mockReturnValueOnce(chainMock([{ id: jobId }]));
+    queueDestinationConfigSelect();
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify(JSON.stringify({ queued: true })),
@@ -422,9 +480,15 @@ describe('hyperv routes', () => {
             id: '55555555-5555-4555-8555-555555555555',
             providerSnapshotId: 'hyperv-accounting-1',
             metadata: { backupKind: 'hyperv_export' },
+            configId: 'config-1',
           },
       ])
     );
+    // D20b item D: the helper builds its READ provider from THIS command's
+    // own payload (restoreProviderForCommand) the same way backup_restore
+    // already does — resolveBackupProviderConfig looks up the destination
+    // config the BACKUP wrote this snapshot to.
+    queueDestinationConfigSelect();
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ status: 'completed' }),
@@ -449,9 +513,44 @@ describe('hyperv routes', () => {
         snapshotId: 'hyperv-accounting-1',
         vmName: 'Recovered VM',
         generateNewId: true,
+        provider: 'local',
+        providerConfig: { path: '/tmp/backups' },
       },
       expect.objectContaining({ userId: 'user-123' })
     );
+  });
+
+  // D20b item D: a snapshot that predates destination tracking (configId
+  // NULL) must fail with a clear, distinct error — never silently dispatch a
+  // restore the helper can't act on, and never guess the device's CURRENT
+  // config (the snapshot's objects may live at a different destination).
+  it('D20b: fails restore with a clear reason for a snapshot that predates destination tracking', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+          {
+            id: '55555555-5555-4555-8555-555555555555',
+            providerSnapshotId: 'hyperv-accounting-1',
+            metadata: { backupKind: 'hyperv_export' },
+            configId: null,
+          },
+      ])
+    );
+
+    const res = await app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: '55555555-5555-4555-8555-555555555555',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.reason).toBe('legacy_snapshot');
+    expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
   it('validates Hyper-V checkpoint action enum', async () => {
