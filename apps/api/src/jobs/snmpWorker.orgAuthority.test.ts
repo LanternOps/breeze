@@ -186,12 +186,21 @@ function selectForUpdateChain(rows: unknown[]) {
 
 /** Records every `snmp_devices` UPDATE by which write it is. */
 const updateLog: string[] = [];
+/** Every `.set()` payload, in order, so tests can assert the recorded outcome. */
+const updatePayloads: Record<string, unknown>[] = [];
 function updateChain() {
   return {
     set: (payload: Record<string, unknown>) => ({
       where: async () => {
+        updatePayloads.push(payload);
         updateLog.push(
-          !('consecutiveFailures' in payload) ? 'attemptStamp' : 'dispatchCount'
+          !('consecutiveFailures' in payload)
+            ? 'attemptStamp'
+            // A site-authority refusal writes a literal string status; the
+            // dispatch counter writes a CASE expression instead.
+            : typeof payload.lastStatus === 'string'
+              ? 'siteAuthorityFailure'
+              : 'dispatchCount'
         );
       },
     }),
@@ -234,6 +243,7 @@ describe('snmpWorker org authority (#3226)', () => {
     vi.clearAllMocks();
     eqCalls.length = 0;
     updateLog.length = 0;
+    updatePayloads.length = 0;
     // mockReset, not clearAllMocks: several tests deliberately leave part of the
     // `mockReturnValueOnce` chain unconsumed (the org guard short-circuits before
     // the template and agent selects). `clearAllMocks` clears recorded calls but
@@ -384,15 +394,35 @@ describe('snmpWorker org authority (#3226)', () => {
 
   describe('asset-bound polls use current site authority', () => {
     it('selects the polling agent from the asset current site after a move before decrypting or dispatching', async () => {
-      wireAssetDispatch([{ siteId: CURRENT_SITE }]);
+      // Poll the SAME snmp_devices row twice across a simulated asset move.
+      // Nothing on the SNMP row records a site, so the only way the second poll
+      // can bind CURRENT_SITE is by re-reading the locked asset each time. The
+      // first pass is what makes PREVIOUS_SITE a value the code demonstrably
+      // CAN bind — without it the "not PREVIOUS_SITE" assertion below is
+      // unfalsifiable, since that id appears nowhere else in the fixture.
+      wireAssetDispatch([{ siteId: PREVIOUS_SITE }], [{ agentId: 'agent-in-previous-site' }]);
 
-      const result = await processPollDevice({
+      const before = await processPollDevice({
         type: 'poll-device',
         deviceId: DEVICE_ID,
         orgId: LIVE_ORG,
       });
 
-      expect(result).toEqual({ dispatched: true, agentId: 'agent-in-current-site' });
+      expect(before).toEqual({ dispatched: true, agentId: 'agent-in-previous-site' });
+      expect(eqCalls).toContainEqual(['devices.siteId', PREVIOUS_SITE]);
+
+      // The asset moves. Same job payload, same SNMP row, new asset site.
+      eqCalls.length = 0;
+      vi.clearAllMocks();
+      wireAssetDispatch([{ siteId: CURRENT_SITE }]);
+
+      const after = await processPollDevice({
+        type: 'poll-device',
+        deviceId: DEVICE_ID,
+        orgId: LIVE_ORG,
+      });
+
+      expect(after).toEqual({ dispatched: true, agentId: 'agent-in-current-site' });
       expect(eqCalls).toContainEqual(['discoveredAssets.id', ASSET_ID]);
       expect(eqCalls).toContainEqual(['discoveredAssets.orgId', LIVE_ORG]);
       expect(eqCalls).toContainEqual(['devices.siteId', CURRENT_SITE]);
@@ -411,6 +441,11 @@ describe('snmpWorker org authority (#3226)', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Asset ${ASSET_ID} not found`));
       expect(decryptMock).not.toHaveBeenCalled();
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      // Durable, not just a log line: nothing else will poll this device, so
+      // the refusal must reach the row the dashboard and alerting read.
+      expect(updateLog).toContain('siteAuthorityFailure');
+      expect(updatePayloads.at(-1)?.lastStatus).toBe('asset_missing');
+      expect(updatePayloads.at(-1)).toHaveProperty('consecutiveFailures');
       warn.mockRestore();
     });
 
@@ -424,6 +459,9 @@ describe('snmpWorker org authority (#3226)', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(`Asset ${ASSET_ID} has no site`));
       expect(decryptMock).not.toHaveBeenCalled();
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      expect(updateLog).toContain('siteAuthorityFailure');
+      expect(updatePayloads.at(-1)?.lastStatus).toBe('asset_no_site');
+      expect(updatePayloads.at(-1)).toHaveProperty('consecutiveFailures');
       warn.mockRestore();
     });
 
@@ -437,6 +475,12 @@ describe('snmpWorker org authority (#3226)', () => {
       expect(eqCalls).toContainEqual(['devices.siteId', CURRENT_SITE]);
       expect(decryptMock).not.toHaveBeenCalled();
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      // The whole point of refusing the cross-site fallback: this device is now
+      // unpolled, and it must SAY so rather than sitting on its last-known
+      // status forever.
+      expect(updateLog).toContain('siteAuthorityFailure');
+      expect(updatePayloads.at(-1)?.lastStatus).toBe('no_agent_in_site');
+      expect(updatePayloads.at(-1)).toHaveProperty('consecutiveFailures');
       warn.mockRestore();
     });
 
@@ -447,6 +491,27 @@ describe('snmpWorker org authority (#3226)', () => {
 
       expect(result).toEqual({ dispatched: true, agentId: 'legacy-org-agent' });
       expect(eqCalls).not.toContainEqual(['devices.siteId', CURRENT_SITE]);
+    });
+
+    it('leaves the org-wide no-agent branch uncounted, as before', async () => {
+      // The org having no online agent at all is a transient Breeze-side
+      // condition (an MSP's only agent host rebooting) and has always been
+      // deliberately uncounted — counting it would mark healthy switches
+      // offline. Only the site-scoped refusals above are recorded.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      wireDispatchSelects(LIVE_ORG, '');
+      mockDb.select.mockReset();
+      mockDb.select
+        .mockReturnValueOnce(selectChain([deviceRow(LIVE_ORG)]) as never)
+        .mockReturnValueOnce(selectChain([{ oids: [{ oid: '1.3.6.1.2.1.1.3.0' }] }]) as never)
+        .mockReturnValueOnce(selectChain([]) as never);
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`No online agent for org ${LIVE_ORG}`));
+      expect(updateLog).not.toContain('siteAuthorityFailure');
+      warn.mockRestore();
     });
   });
 

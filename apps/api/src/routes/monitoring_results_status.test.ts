@@ -130,6 +130,7 @@ vi.mock('../services/permissions', () => ({
 import { monitoringRoutes } from './monitoring';
 import { db } from '../db';
 import { devices } from '../db/schema';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const ORG_ID = 'org-111';
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
@@ -559,8 +560,19 @@ describe('monitoring routes', () => {
       ]);
       expect(changeJoin).toHaveBeenCalledWith(devices, expect.anything());
       expect(checkJoin).toHaveBeenCalledWith(devices, expect.anything());
-      expect(JSON.stringify(changeWhere.mock.calls)).toContain(SITE_ALLOWED);
-      expect(JSON.stringify(checkWhere.mock.calls)).toContain(SITE_ALLOWED);
+
+      // Compile the WHERE and assert on the BOUND PARAMETERS, not a
+      // JSON.stringify deep-search of the mock call graph. A deep-search
+      // matches any string anywhere in the object tree — including schema-stub
+      // values and drizzle-internal metadata — so it can report success for a
+      // site id that never became a bound predicate.
+      const dialect = new PgDialect();
+      const changeQuery = dialect.sqlToQuery(changeWhere.mock.calls[0]![0]);
+      const checkQuery = dialect.sqlToQuery(checkWhere.mock.calls[0]![0]);
+      expect(changeQuery.params).toContain(SITE_ALLOWED);
+      expect(checkQuery.params).toContain(SITE_ALLOWED);
+      expect(changeQuery.params).not.toContain(SITE_DENIED);
+      expect(checkQuery.params).not.toContain(SITE_DENIED);
     });
 
     it('returns an empty autocomplete without database access for an empty site ceiling', async () => {

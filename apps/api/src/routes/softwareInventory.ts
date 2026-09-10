@@ -378,11 +378,17 @@ softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('
     return c.json({ data: [] });
   }
 
+  // Same org-axis resolution as the sibling read routes (`GET /` and the
+  // observations route): honour an explicit `?orgId=` after an access check
+  // instead of silently ignoring it and aggregating every reachable org.
+  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
+  if ('error' in orgScope) return c.json({ error: orgScope.error }, orgScope.status);
+
   const conditions: SQL[] = [
     eq(devices.isEphemeral, false),
     sql`${softwareInventory.name} ILIKE ${pattern}`,
   ];
-  const orgCondition = auth.orgCondition(devices.orgId);
+  const orgCondition = orgScope.applyTo(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
   if (perms?.allowedSiteIds) {
     conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
