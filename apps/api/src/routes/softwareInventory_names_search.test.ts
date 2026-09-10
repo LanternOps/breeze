@@ -81,6 +81,8 @@ vi.mock('../services/softwarePolicyService', () => ({ recordSoftwarePolicyAudit:
 
 import { softwareInventoryRoutes } from './softwareInventory';
 import { db } from '../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 function dumpSql(value: unknown, seen = new WeakSet<object>()): string {
   if (value === null || value === undefined) return '';
@@ -169,6 +171,32 @@ describe('GET /software-inventory/names', () => {
     const querySql = dumpSql(executedSql[1]);
     expect(querySql).toContain('devices.siteId');
     expect(querySql).toContain('LIMIT');
+  });
+
+  it('honours an accessible ?orgId= as a bound predicate instead of ignoring it', async () => {
+    mockTransaction([{ name: 'Scoped App' }]);
+
+    const res = await app.request(
+      '/software-inventory/names?q=a&orgId=11111111-1111-1111-1111-111111111111',
+      { headers: { Authorization: 'Bearer token' } },
+    );
+
+    expect(res.status).toBe(200);
+    // Bound param, not a deep-search of the object graph: the org must reach
+    // the WHERE clause, not merely exist somewhere in the mock tree.
+    const compiled = new PgDialect().sqlToQuery(executedSql[1] as SQL);
+    expect(compiled.params).toContain('11111111-1111-1111-1111-111111111111');
+  });
+
+  it('rejects an inaccessible ?orgId= instead of silently aggregating every reachable org', async () => {
+    const res = await app.request(
+      '/software-inventory/names?q=a&orgId=99999999-9999-4999-8999-999999999999',
+      { headers: { Authorization: 'Bearer token' } },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this organization denied' });
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 
   it('returns an empty result without touching the database for an empty site ceiling', async () => {
