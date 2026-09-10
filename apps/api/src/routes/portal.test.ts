@@ -179,8 +179,10 @@ const portalUser = {
   email: 'portal@example.com',
   name: 'Portal User',
   passwordHash: 'hash',
+  authMethod: 'password',
   receiveNotifications: true,
-  status: 'active'
+  status: 'active',
+  authEpoch: 1,
 };
 
 describe('portal routes', () => {
@@ -336,7 +338,8 @@ describe('portal routes', () => {
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
-            orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001'
+            orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+            authMethod: 'password'
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // password reset defaults enabled
@@ -364,6 +367,7 @@ describe('portal routes', () => {
           id: 'portal-user-1',
           email: 'portal@example.com',
           orgId: 'f1b0c8a6-45d1-4f84-8b8b-0ad0ce620001',
+          authMethod: 'password',
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
 
@@ -390,7 +394,8 @@ describe('portal routes', () => {
           {
             id: 'portal-user-1',
             email: 'portal@example.com',
-            orgId: 'org-123'
+            orgId: 'org-123',
+            authMethod: 'password'
           }
         ]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // issuance feature flag
@@ -404,14 +409,20 @@ describe('portal routes', () => {
         })
       });
 
+      const resetUpdate = vi.fn();
       vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
+        set: vi.fn((value) => {
+          resetUpdate(value);
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'portal-user-1' }])
+            })
+          };
         })
       } as any);
 
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-123' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-123', authMethod: 'password' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any); // consumption feature flag
 
       const res = await app.request('/portal/auth/reset-password', {
@@ -426,6 +437,7 @@ describe('portal routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(resetUpdate).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
     });
 
     it('should reject invalid token', async () => {
@@ -450,6 +462,7 @@ describe('portal routes', () => {
           id: 'portal-user-reset-disabled',
           email: 'reset-disabled@example.com',
           orgId: 'org-reset-disabled',
+          authMethod: 'password',
         }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: true }]) as any);
 
@@ -460,7 +473,7 @@ describe('portal routes', () => {
       });
 
       vi.mocked(db.select)
-        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-reset-disabled' }]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ orgId: 'org-reset-disabled', authMethod: 'password' }]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ enablePasswordReset: false }]) as any);
 
       const res = await app.request('/portal/auth/reset-password', {
@@ -1233,8 +1246,7 @@ describe('portal routes', () => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           name: 'Updated User',
-          receiveNotifications: false,
-          password: 'NewStrongPass123'
+          receiveNotifications: false
         })
       });
 

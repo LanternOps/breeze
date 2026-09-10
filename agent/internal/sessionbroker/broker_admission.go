@@ -246,12 +246,36 @@ func (b *Broker) canAdmitWithoutEviction(identityKey string) bool {
 	return b.idleQuotaVictimLocked(identityKey) != nil
 }
 
-// registerNonLifecycleSession preserves the original authoritative
-// registration path for Unix and Windows assist/watchdog/backup helpers.
-func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.HelperRole, session *Session) error {
+// registerNonLifecycleSession is the authoritative registration path for Unix
+// helpers and Windows assist/watchdog/backup helpers. Backup additionally
+// requires the exact single-use process reservation claimed during handshake.
+func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.HelperRole, session *Session, backupReservation *backupSpawnReservation) error {
 	b.mu.Lock()
+	var bh *backupHelper
+	if helperRole == backupipc.HelperRoleBackup {
+		bh = b.backup
+		if bh == nil {
+			b.mu.Unlock()
+			return errBackupHelperNotReserved
+		}
+		bh.mu.Lock()
+		if bh.reservation != backupReservation || backupReservation == nil ||
+			!backupReservation.claimed || backupReservation.committed {
+			bh.mu.Unlock()
+			b.mu.Unlock()
+			return errBackupHelperNotReserved
+		}
+		if bh.session != nil && bh.session != session {
+			bh.mu.Unlock()
+			b.mu.Unlock()
+			return errBackupHelperAlreadyConnected
+		}
+	}
 	admitted, victim := b.tryAdmitLocked(identityKey)
 	if !admitted {
+		if bh != nil {
+			bh.mu.Unlock()
+		}
 		b.mu.Unlock()
 		return errMaxConnectionsPerIdentity
 	}
@@ -259,14 +283,7 @@ func (b *Broker) registerNonLifecycleSession(identityKey string, helperRole ipc.
 	b.sessions[session.SessionID] = session
 	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
 	if helperRole == backupipc.HelperRoleBackup {
-		if b.backup == nil {
-			b.backup = &backupHelper{}
-		}
-		bh := b.backup
-		// bh.session is protected by bh.mu, not b.mu (see backup.go) — nest
-		// it here (b.mu is already held) rather than dropping b.mu first,
-		// since b.mu is still needed below for publishSnapshotLocked etc.
-		bh.mu.Lock()
+		backupReservation.committed = true
 		bh.session = session
 		bh.mu.Unlock()
 	}

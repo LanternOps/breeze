@@ -29,6 +29,10 @@ const { evaluateCapability, partnerTrustMode, requireCapability } = vi.hoisted((
   };
 });
 
+const { routeAuth } = vi.hoisted(() => ({
+  routeAuth: { current: null as Record<string, unknown> | null },
+}));
+
 vi.mock("../services/partnerTrust", () => ({ evaluateCapability, requireCapability }));
 vi.mock("../config/partnerTrustMode", () => ({ partnerTrustMode }));
 
@@ -73,8 +77,10 @@ vi.mock("../services/installerBootstrapToken", () => ({
 }));
 
 vi.mock("../middleware/auth", () => ({
+  siteAccessCheck: (allowed?: string[]) => (siteId?: string | null) =>
+    allowed === undefined || (!!siteId && allowed.includes(siteId)),
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set("auth", {
+    c.set("auth", routeAuth.current ?? {
       scope: "system",
       orgId: null,
       partnerId: "22222222-2222-4222-8222-222222222222",
@@ -213,6 +219,30 @@ const SITE_ID = randomUUID();
 const KEY_ID = randomUUID();
 const CHILD_KEY_ID = randomUUID();
 
+/** Awaitable Drizzle limit result that also supports a terminal SHARE lock. */
+function lockableLimitRows<T>(rows: T[]) {
+  const result = Promise.resolve(rows) as Promise<T[]> & {
+    for: (mode: string) => Promise<T[]>;
+  };
+  result.for = (mode: string) => {
+    expect(mode).toBe('share');
+    return Promise.resolve(rows);
+  };
+  return result;
+}
+
+function restrictOrganizationToSites(siteIds: string[]) {
+  routeAuth.current = {
+    scope: "organization",
+    orgId: ORG_ID,
+    partnerId: null,
+    user: { id: "user-restricted", email: "restricted@example.com" },
+    canAccessOrg: (id: string) => id === ORG_ID,
+    accessibleOrgIds: [ORG_ID],
+    allowedSiteIds: siteIds,
+  };
+}
+
 function makeKeyRow(overrides: Record<string, unknown> = {}) {
   return {
     id: KEY_ID,
@@ -221,6 +251,7 @@ function makeKeyRow(overrides: Record<string, unknown> = {}) {
     name: "Test Key",
     key: "hashed:rawkey",
     keySecretHash: null,
+    credentialGeneration: 1,
     shortCode: null,
     installerPlatform: null,
     maxUsage: 10,
@@ -259,6 +290,7 @@ function makeChildKeyRow(overrides: Record<string, unknown> = {}) {
 // that calls mockEnrollmentDefaults() would otherwise leak its cap into every
 // later test in the file.
 beforeEach(() => {
+  routeAuth.current = null;
   partnerTrustMode.mockReturnValue("off");
   evaluateCapability.mockResolvedValue({ allow: true });
   assertTtlWithinCapMock.mockReset();
@@ -364,6 +396,26 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
     app.route("/enrollment-keys", enrollmentKeyRoutes);
+  });
+
+  it("denies a restricted organization caller before creating a hidden-site link", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    const parentRow = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([parentRow]) }),
+      }),
+    } as any);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform: "windows" }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(issueDownloadHandleMock).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
   });
 
   it("returns shortUrl in response", async () => {
@@ -776,7 +828,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -846,7 +898,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -1135,7 +1187,7 @@ describe("GET /s/:code", () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([shortLinkRow]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([shortLinkRow])),
         }),
       }),
     } as any);
@@ -2008,6 +2060,27 @@ describe("POST /:id/bootstrap-token", () => {
     app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
 
+  it("denies a restricted organization caller before issuing a hidden-site token", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeKeyRow()]) }),
+      }),
+    } as any);
+
+    const issueSpy = vi.spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey");
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/bootstrap-token`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ maxUsage: 1 }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(issueSpy).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    issueSpy.mockRestore();
+  });
+
   it("issues a bootstrap token for a valid parent key", async () => {
     const parent = makeKeyRow();
 
@@ -2015,7 +2088,7 @@ describe("POST /:id/bootstrap-token", () => {
     const parentSelectMock = {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any;
@@ -2047,7 +2120,7 @@ describe("POST /:id/bootstrap-token", () => {
   });
 
   it("rejects unknown parent key with 404", async () => {
-    vi.mocked(db.select).mockReturnValueOnce({
+    vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
           limit: vi.fn().mockResolvedValue([]),
@@ -2090,7 +2163,7 @@ describe("POST /:id/bootstrap-token", () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any);
@@ -2256,10 +2329,10 @@ describe("POST /:id/bootstrap-token", () => {
   it("allows a ttlMinutes at exactly the partner cap on the bootstrap-token route (#2776)", async () => {
     mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
     const parent = makeKeyRow();
-    vi.mocked(db.select).mockReturnValueOnce({
+    vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parent]),
+          limit: vi.fn().mockReturnValue(lockableLimitRows([parent])),
         }),
       }),
     } as any);
@@ -2697,6 +2770,27 @@ describe("POST / - siteId ownership validation", () => {
 // both paths must be gated. Capping only ttlMinutes would leave expiresAt as
 // a wide-open bypass.
 // ============================================================
+describe("POST /:id/download-handle — site ceiling", () => {
+  it("denies a restricted organization caller before issuing a handle for a hidden-site key", async () => {
+    restrictOrganizationToSites([randomUUID()]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeKeyRow()]) }),
+      }),
+    } as any);
+    const app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+
+    const res = await app.request(`/enrollment-keys/${KEY_ID}/download-handle`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rawToken: "rawkey" }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(issueDownloadHandleMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST / - partner cap enforcement (fix round 1, #2776)", () => {
   let app: Hono;
 
