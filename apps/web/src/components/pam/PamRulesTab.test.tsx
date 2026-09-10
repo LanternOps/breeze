@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PamRulesTab from './PamRulesTab';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import type { PamRule } from './types';
 
 vi.mock('../../stores/auth', () => ({
@@ -18,6 +19,7 @@ vi.mock('@/lib/navigation', () => ({
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
   return {
@@ -227,6 +229,85 @@ describe('PamRulesTab', () => {
       render(<PamRulesTab />);
       await waitFor(() => screen.getByTestId('pam-rule-row-rule-1'));
       expect(screen.queryByTestId('pam-rule-stale-tier-rule-1')).toBeNull();
+    });
+  });
+
+  describe('suspended auto_approve rule — re-approval (§6B, fix/pam-dedicated-permissions)', () => {
+    const suspendedRule: PamRule = {
+      ...signedRule,
+      id: 'rule-suspended',
+      name: 'Auto-elevate installer',
+      verdict: 'require_approval',
+      suspendedVerdict: 'auto_approve',
+      reapprovedAt: null,
+      reapprovedByUserId: null,
+    };
+
+    it('shows the "suspended pending re-approval" badge and a Re-approve action', async () => {
+      installFetchRoutes({ rules: [suspendedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-suspended'));
+      expect(screen.getByTestId('pam-rule-suspended-badge-rule-suspended')).toBeInTheDocument();
+      expect(screen.getByTestId('pam-rule-reapprove-rule-suspended')).toBeInTheDocument();
+    });
+
+    it('does NOT show the badge for an ordinary require_approval rule (no suspendedVerdict)', async () => {
+      const ordinaryRule: PamRule = { ...signedRule, id: 'rule-ordinary', verdict: 'require_approval' };
+      installFetchRoutes({ rules: [ordinaryRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-ordinary'));
+      expect(screen.queryByTestId('pam-rule-suspended-badge-rule-ordinary')).toBeNull();
+      expect(screen.queryByTestId('pam-rule-reapprove-rule-ordinary')).toBeNull();
+    });
+
+    it('does NOT show the badge once reapprovedAt is stamped (already handled)', async () => {
+      const reapprovedRule: PamRule = {
+        ...suspendedRule,
+        id: 'rule-reapproved',
+        verdict: 'auto_approve',
+        suspendedVerdict: null,
+        reapprovedAt: '2026-10-16T00:00:00.000Z',
+      };
+      installFetchRoutes({ rules: [reapprovedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-reapproved'));
+      expect(screen.queryByTestId('pam-rule-suspended-badge-rule-reapproved')).toBeNull();
+    });
+
+    it('clicking Re-approve PATCHes { reapprove: true } through runAction and refetches', async () => {
+      installFetchRoutes({ rules: [suspendedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      fireEvent.click(screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      await waitFor(() => {
+        expect(findMutationCall('/pam/rules/rule-suspended', 'PATCH')).toBeDefined();
+      });
+      expect(bodyOf(findMutationCall('/pam/rules/rule-suspended', 'PATCH'))).toEqual({ reapprove: true });
+    });
+
+    it('surfaces a failed re-approve via a toast (runAction error path)', async () => {
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (url === '/pam/rules/rule-suspended' && method === 'PATCH') {
+          return makeJsonResponse({ error: 'Rule is not suspended pending re-approval' }, false, 400);
+        }
+        if (url === '/pam/config' && method === 'GET') {
+          return makeJsonResponse({ success: true, config: { orgId: 'org-1', defaultUnmatchedVerdict: 'require_approval' } });
+        }
+        return makeJsonResponse({ success: true, rules: [suspendedRule] });
+      });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      fireEvent.click(screen.getByTestId('pam-rule-reapprove-rule-suspended'));
+
+      await waitFor(() => {
+        expect(showToastMock).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error' }),
+        );
+      });
     });
   });
 

@@ -208,6 +208,37 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     }
   };
 
+  // §6B (fix/pam-dedicated-permissions): re-approve a legacy auto_approve
+  // rule the 2026-10-15-150200 migration quarantined to require_approval.
+  const reapproveRule = async (rule: PamRule) => {
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/pam/rules/${rule.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ reapprove: true }),
+          }),
+        errorFallback: t('pamPamRulesTab.errors.reapproveRule', {
+          defaultValue: 'Failed to re-approve rule',
+        }),
+        successMessage: t('pamPamRulesTab.toasts.ruleReapproved', {
+          defaultValue: 'Rule "{{name}}" re-approved — auto-approve restored',
+          name: rule.name,
+        }),
+        onUnauthorized: () => void navigateTo('/login', { replace: true }),
+      });
+      void fetchRules();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: 'error',
+          message: t('pamPamRulesTab.errors.reapproveRule', { defaultValue: 'Failed to re-approve rule' }),
+        });
+      }
+    }
+  };
+
   const confirmDeleteRule = async () => {
     if (!deleteTarget || deleting) return;
     const rule = deleteTarget;
@@ -363,7 +394,26 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       ? siteNames[rule.siteId] ?? rule.siteId
                       : t('pamPamRulesTab.table.orgWide', { defaultValue: 'Org-wide' })}
                   </td>
-                  <td className={`${tdClass} whitespace-nowrap`}>{VERDICT_LABELS[rule.verdict]}</td>
+                  <td className={`${tdClass} whitespace-nowrap`}>
+                    <div className="flex items-center gap-1.5">
+                      <span>{VERDICT_LABELS[rule.verdict]}</span>
+                      {rule.suspendedVerdict && !rule.reapprovedAt && (
+                        <span
+                          data-testid={`pam-rule-suspended-badge-${rule.id}`}
+                          title={t('pamPamRulesTab.suspendedBadge.tooltip', {
+                            defaultValue:
+                              'This rule auto-approved matching requests before an upgrade. It now requires manual approval until an admin re-approves it.',
+                          })}
+                          className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+                          {t('pamPamRulesTab.suspendedBadge.label', {
+                            defaultValue: 'Auto-approve suspended — re-approve',
+                          })}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className={tdClass}>
                     <Switch
                       checked={rule.enabled}
@@ -373,6 +423,16 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                   </td>
                   <td className={`${tdClass} whitespace-nowrap text-right`}>
                     <div className="inline-flex items-center gap-1.5">
+                      {rule.suspendedVerdict && !rule.reapprovedAt && (
+                        <button
+                          type="button"
+                          onClick={() => void reapproveRule(rule)}
+                          data-testid={`pam-rule-reapprove-${rule.id}`}
+                          className={btnPrimaryClass}
+                        >
+                          {t('pamPamRulesTab.actions.reapprove', { defaultValue: 'Re-approve' })}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setEditing(rule)}
