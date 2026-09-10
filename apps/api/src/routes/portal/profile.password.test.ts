@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 
 const verifyPasswordMock = vi.fn(async (_hash: string, _plaintext: string) => true);
 const hashPasswordMock = vi.fn(async (_plaintext: string) => 'new-hash');
+const updateSetSpy = vi.fn();
 
 const dbState: { userRow: unknown } = {
   userRow: {
@@ -107,8 +108,12 @@ function buildSelectChain() {
 
 function buildUpdateChain() {
   vi.mocked(db.update as any).mockReturnValue({
-    set: vi.fn().mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
+    set: vi.fn((value) => {
+      updateSetSpy(value);
+      return { where: vi.fn(() => ({
+        returning: vi.fn(() => updateReturningMock()),
+        then: (resolve: (value: undefined) => unknown) => Promise.resolve(undefined).then(resolve),
+      })) };
     }),
   });
 }
@@ -136,6 +141,7 @@ describe('POST /profile/password', () => {
     buildSelectChain();
     buildUpdateChain();
     updateReturningMock.mockClear();
+    updateSetSpy.mockClear();
   });
 
   it('happy path: a correct current password still succeeds', async () => {
@@ -151,6 +157,7 @@ describe('POST /profile/password', () => {
       expect.anything(),
       expect.objectContaining({ action: 'portal.profile.password.change' })
     );
+    expect(updateSetSpy).toHaveBeenCalledWith(expect.objectContaining({ authEpoch: expect.anything() }));
   });
 
   // The core #4797 fix: a wrong guess must never collide with the session
@@ -247,5 +254,23 @@ describe('POST /profile/password', () => {
       body: JSON.stringify({ currentPassword: 'wrong', newPassword: 'battery-staple-9' }),
     });
     expect(otherUserRes.status).toBe(400); // rejected on password, not throttled
+  });
+});
+
+describe('PATCH /profile compatibility writer', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('rejects the removed legacy password field without a credential or epoch write', async () => {
+    const res = await app().request('/profile', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'battery-staple-9' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(hashPasswordMock).not.toHaveBeenCalled();
+    expect(verifyPasswordMock).not.toHaveBeenCalled();
+    expect(updateSetSpy).not.toHaveBeenCalled();
+    expect(writePortalAudit).not.toHaveBeenCalled();
   });
 });

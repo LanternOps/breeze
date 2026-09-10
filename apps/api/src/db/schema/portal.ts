@@ -56,6 +56,9 @@ export const portalUsers = pgTable('portal_users', {
   entraOid: text('entra_oid'),
   entraTenantId: text('entra_tenant_id'),
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
+  // Durable generation snapshotted by portal and client-AI sessions. Redis
+  // deletion is cleanup; live authorization compares this column instead.
+  authEpoch: integer('auth_epoch').notNull().default(1),
   linkedUserId: uuid('linked_user_id').references(() => users.id),
   // A portal user is a LOGIN attached to a contact, not a second kind of
   // person (#3258). Nullable because the link is established after the fact by
