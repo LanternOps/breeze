@@ -1530,6 +1530,29 @@ describe('PATCH /pam/rules/:id — reapprove a suspended auto_approve rule (§6B
       }),
     );
   });
+
+  // An explicit verdict edit on a suspended rule supersedes the quarantine:
+  // without clearing suspendedVerdict here, a later plain Re-approve click
+  // (payload.reapprove, no explicit verdict) would restore the STALE
+  // pre-suspension verdict and silently overwrite the admin's fresh edit.
+  it('an explicit verdict edit on a suspended rule also clears suspended_verdict', async () => {
+    mockExistingRule(suspendedRule);
+    const { setCalls } = rigUpdate();
+
+    const res = await app().request(`/pam/rules/${RULE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verdict: 'auto_deny' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setCalls[0]).toEqual(
+      expect.objectContaining({
+        verdict: 'auto_deny',
+        suspendedVerdict: null,
+      }),
+    );
+  });
 });
 
 // ============================================================

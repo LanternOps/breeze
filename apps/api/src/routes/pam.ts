@@ -1495,6 +1495,15 @@ pamRoutes.patch('/rules/:id', requirePamManagePolicy, requireMfa(), zValidator('
       ...(payload.matchNegate !== undefined ? { matchNegate: payload.matchNegate } : {}),
       ...(payload.timeWindow !== undefined ? { timeWindow: payload.timeWindow } : {}),
       ...(payload.verdict !== undefined ? { verdict: payload.verdict } : {}),
+      // An explicit verdict edit supersedes any pending quarantine: without
+      // this, a later plain Re-approve click (payload.reapprove) would
+      // restore the STALE pre-suspension verdict from suspendedVerdict and
+      // silently overwrite the admin's fresh edit. payload.verdict and
+      // payload.reapprove are mutually exclusive (rejected together above),
+      // so this never fights the reapprove branch below.
+      ...(payload.verdict !== undefined && existing.suspendedVerdict !== null
+        ? { suspendedVerdict: null }
+        : {}),
       ...(payload.approvalDurationMinutes !== undefined
         ? { approvalDurationMinutes: payload.approvalDurationMinutes }
         : {}),
