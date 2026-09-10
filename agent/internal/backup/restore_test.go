@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -999,5 +1000,85 @@ func TestMoveFile_ReadOnlyDestination_CopyFallbackPath(t *testing.T) {
 	}
 	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
 		t.Fatalf("src still exists after copyAndDelete: err=%v", statErr)
+	}
+}
+
+// W02: restore recreates symlinks and directories from content-less
+// manifest entries (never downloaded), and reapplies full mode bits
+// (including setuid, which a non-root owner CAN set on its own file) —
+// ownership itself is root-gated and produces one summary warning when not
+// running as root.
+func TestRestore_RecreatesSymlinksDirsAndModes(t *testing.T) {
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"usr/bin/tool": "#!/bin/sh\n"})
+	// Append content-less entries + a setuid file to the manifest.
+	manifestKey := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "manifest.json"))
+	tmp := filepath.Join(t.TempDir(), "m.json")
+	if err := provider.Download(manifestKey, tmp); err != nil {
+		t.Fatal(err)
+	}
+	var snap Snapshot
+	data, _ := os.ReadFile(tmp)
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	for i := range snap.Files {
+		snap.Files[i].ModeBits = uint32(os.ModeSetuid | 0o755) // setuid tool
+	}
+	snap.Files = append(snap.Files,
+		SnapshotFile{SourcePath: "/original/bin", Kind: KindSymlink, LinkTarget: "usr/bin", ModTime: time.Now().UTC()},
+		SnapshotFile{SourcePath: "/original/var/empty", Kind: KindDir, ModeBits: 0o700, ModTime: time.Now().UTC()},
+		SnapshotFile{SourcePath: "/original/usr/bin", Kind: KindDir, ModeBits: uint32(os.ModeSticky | 0o777), ModTime: time.Now().UTC()},
+	)
+	snap.FormatVersion = manifestFormatFidelity
+	out, _ := json.Marshal(snap)
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(tmp, manifestKey); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "completed" || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	if res.FilesRestored != 4 {
+		t.Errorf("FilesRestored = %d, want 4 (1 file + 1 link + 2 dirs)", res.FilesRestored)
+	}
+	link := filepath.Join(target, "original", "bin")
+	if got, err := os.Readlink(link); err != nil || got != "usr/bin" {
+		t.Fatalf("symlink = %q err=%v", got, err)
+	}
+	if fi, err := os.Stat(filepath.Join(target, "original", "var", "empty")); err != nil || !fi.IsDir() {
+		t.Fatalf("empty dir missing: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, _ := os.Stat(filepath.Join(target, "original", "var", "empty"))
+		if fi.Mode().Perm() != 0o700 {
+			t.Errorf("empty dir perm = %o", fi.Mode().Perm())
+		}
+		fi, _ = os.Stat(filepath.Join(target, "original", "usr", "bin"))
+		if fi.Mode()&os.ModeSticky == 0 || fi.Mode().Perm() != 0o777 {
+			t.Errorf("usr/bin mode = %v, want sticky 1777 applied AFTER files were placed", fi.Mode())
+		}
+		fi, _ = os.Stat(filepath.Join(target, "original", "usr", "bin", "tool"))
+		if fi.Mode()&os.ModeSetuid == 0 {
+			t.Errorf("tool mode = %v, want setuid", fi.Mode())
+		}
+		if os.Geteuid() != 0 {
+			found := false
+			for _, w := range res.Warnings {
+				if strings.Contains(w, "not running as root") {
+					found = true
+				}
+			}
+			if len(res.Warnings) > 0 && !found {
+				t.Errorf("warnings = %v", res.Warnings)
+			}
+		}
 	}
 }
