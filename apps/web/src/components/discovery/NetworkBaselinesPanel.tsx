@@ -335,6 +335,19 @@ export default function NetworkBaselinesPanel({
     );
   };
 
+  // SEC-2026-09-05-146: a schedule whose arming authority no longer resolves is
+  // held, not silently running. Re-saving it through the existing edit control
+  // re-arms it under the current user's authority.
+  const renderScheduleBlocked = (baseline: NetworkBaseline) =>
+    baseline.scheduleBlockedReason ? (
+      <div
+        className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400"
+        data-testid={`baseline-schedule-blocked-${baseline.id}`}
+      >
+        {t('networkBaselinesPanel.scheduleBlocked')}
+      </div>
+    ) : null;
+
   const renderSchedule = (baseline: NetworkBaseline) => (
     <>
       <div className="text-sm">
@@ -345,6 +358,7 @@ export default function NetworkBaselinesPanel({
       <div className="text-xs text-muted-foreground">
         {t('networkBaselinesPanel.next', { time: formatDateTime(baseline.scanSchedule.nextScanAt, timezone) })}
       </div>
+      {renderScheduleBlocked(baseline)}
     </>
   );
 
