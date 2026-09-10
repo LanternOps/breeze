@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+const { authorizeLiveRemoteSessionAccessMock } = vi.hoisted(() => ({
+  authorizeLiveRemoteSessionAccessMock: vi.fn(),
+}));
+
 // -------------------------------------------------------------------
 // Mocks — must be declared before any import that triggers the modules.
 // Shapes mirror desktopWs_lifecycle.test.ts so module resolution matches.
@@ -18,7 +22,14 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  remoteSessions: { id: 'remoteSessions.id', deviceId: 'remoteSessions.deviceId', status: 'remoteSessions.status', userId: 'remoteSessions.userId' },
+  remoteSessions: {
+    id: 'remoteSessions.id',
+    deviceId: 'remoteSessions.deviceId',
+    status: 'remoteSessions.status',
+    userId: 'remoteSessions.userId',
+    desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
+    desktopPromptMode: 'remoteSessions.desktopPromptMode',
+  },
   devices: { id: 'devices.id' },
   users: { id: 'users.id', status: 'users.status' },
   patchPolicies: {},
@@ -81,6 +92,9 @@ vi.mock('./remote/helpers', () => ({
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
   buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
+  createDesktopStartCommandId: vi.fn((sessionId: string) =>
+    `desk-start-${sessionId}-22222222-2222-4222-8222-222222222222`
+  ),
 }));
 
 // Permissive offer schema so zValidator('json', webrtcOfferSchema) passes and
@@ -99,6 +113,11 @@ vi.mock('../services/clientIp', () => ({
 
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
+}));
+
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeConsumedRemoteWsTicket: vi.fn(),
+  authorizeLiveRemoteSessionAccess: authorizeLiveRemoteSessionAccessMock,
 }));
 
 // -------------------------------------------------------------------
@@ -148,6 +167,23 @@ function offerRequest(token = 'valid.viewer.token') {
 
 /** Single-row join select used by validateViewerSessionAccess. */
 function mockViewerSelect(row: unknown) {
+  if (row === undefined) {
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({ ok: false, status: 404, reason: 'session_missing' });
+  } else {
+    const live = row as { session: typeof ACTIVE_SESSION; device: typeof DEVICE; user: typeof USER };
+    authorizeLiveRemoteSessionAccessMock.mockImplementation(async (_subject, accessMode = 'live') => {
+      const session = live.session as typeof ACTIVE_SESSION & { errorMessage?: string | null };
+      const readingFailure = accessMode === 'failure-diagnostics' &&
+        (session.status === 'failed' || (session.status === 'disconnected' && !!session.errorMessage));
+      const reason = live.user.status !== 'active' ? 'user_inactive'
+        : live.session.userId !== USER_ID ? 'session_not_owned'
+          : live.session.type !== 'desktop' ? 'session_missing'
+            : ['disconnected', 'failed'].includes(live.session.status) && !readingFailure ? 'session_inactive' : null;
+      if (reason) return { ok: false, status: reason === 'session_missing' ? 404 : 403, reason };
+      const policy = await checkRemoteAccess(live.device.id, 'webrtcDesktop');
+      return policy.allowed ? { ok: true, ...live } : { ok: false, status: 403, reason: 'policy_denied' };
+    });
+  }
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
       innerJoin: vi.fn().mockReturnValue({
@@ -322,10 +358,7 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
 
   it('returns 403 and sends NO start_desktop when remote access is denied', async () => {
     primeHappyPath();
-    vi.mocked(checkRemoteAccess).mockResolvedValue({
-      allowed: false,
-      reason: 'Remote desktop is disabled by policy',
-    } as never);
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({ ok: false, status: 403, reason: 'policy_denied' });
 
     const res = await offerRequest();
     expect(res.status).toBe(403);
@@ -333,6 +366,38 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     // Policy denial happens during validation, before any session mutation.
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['site_denied', 'Access to this site denied'],
+    ['permission_denied', 'Remote access permission denied'],
+  ] as const)('returns 403 for live %s and performs no offer side effects', async (reason, error) => {
+    primeHappyPath();
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({ ok: false, status: 403, reason });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a signed viewer email that no longer matches the live user', async () => {
+    primeHappyPath();
+    authorizeLiveRemoteSessionAccessMock.mockResolvedValue({
+      ok: true,
+      session: ACTIVE_SESSION,
+      device: DEVICE,
+      user: { ...USER, email: 'renamed@example.com' },
+    });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Viewer token does not match session owner' });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
   // --- happy path positive control -----------------------------------
@@ -432,7 +497,17 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     mockViewerSelect({ session: { ...failedSession, status: 'disconnected' }, device: DEVICE, user: USER });
     const res = await request();
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ id: SESSION_ID, status: 'disconnected', errorMessage });
+    expect(await res.json()).toMatchObject({ id: SESSION_ID, status: 'disconnected', errorMessage, webrtcAnswer: null });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('preserves the negotiated answer for an authorized active status response', async () => {
+    vi.mocked(isViewerSessionRevoked).mockResolvedValue(false);
+    mockViewerSelect({ session: { ...failedSession, status: 'active', errorMessage: null }, device: DEVICE, user: USER });
+    const res = await request();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'active', webrtcAnswer: 'v=0 stale-answer' });
     expect(db.update).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
@@ -528,7 +603,7 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     vi.mocked(checkRemoteAccess).mockResolvedValue({ allowed: false, reason: 'Disabled by policy' });
     const res = await request();
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Disabled by policy' });
+    expect(await res.json()).toEqual({ error: 'Remote desktop is disabled by policy' });
   });
 
   it('rejects a missing session', async () => {
@@ -538,6 +613,6 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
 
   it('rejects non-desktop sessions', async () => {
     mockViewerSelect({ session: { ...failedSession, type: 'terminal' }, device: DEVICE, user: USER });
-    expect((await request()).status).toBe(400);
+    expect((await request()).status).toBe(404);
   });
 });

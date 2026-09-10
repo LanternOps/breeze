@@ -21,20 +21,27 @@
  * is gone — it only ever reached a CONNECTED agent, which a removed device
  * usually is not, and it raced the cascade that deleted its own command row.
  *
- * Callers own authorisation and the transaction. Nothing here reads `auth`.
+ * Callers own the initial authorization and the transaction. Purge callers
+ * also pass the request-time site ceiling so an implicit group dissolve is
+ * checked again under member locks; this service never accepts an AuthContext.
  */
 import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
-import { dissolveLinkGroupIfBelowMinimum } from './deviceLinkGroups';
+import { dissolveLinkGroupIfBelowMinimum, LinkGroupSiteAccessError } from './deviceLinkGroups';
 import {
   releaseDeviceRemoveReason,
   UNINSTALL_REASON_DEVICE_REMOVE,
   type Tx,
 } from './deviceUninstallDrain';
 
-export type DeviceLifecycleCode = 'NOT_FOUND' | 'NOT_REMOVED' | 'UNINSTALL_PENDING';
+export type DeviceLifecycleCode =
+  | 'NOT_FOUND'
+  | 'NOT_REMOVED'
+  | 'UNINSTALL_PENDING'
+  | 'SITE_ACCESS_DENIED'
+  | 'STATE_CHANGED';
 
 export class DeviceLifecycleError extends Error {
   constructor(
@@ -45,7 +52,8 @@ export class DeviceLifecycleError extends Error {
     this.name = 'DeviceLifecycleError';
   }
 
-  get status(): 404 | 409 {
+  get status(): 403 | 404 | 409 {
+    if (this.code === 'SITE_ACCESS_DENIED') return 403;
     return this.code === 'NOT_FOUND' ? 404 : 409;
   }
 }
@@ -87,6 +95,7 @@ export const DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS = 3000;
 interface LockedRow {
   id: string;
   status: string;
+  site_id: string | null;
   link_group_id: string | null;
 }
 
@@ -105,7 +114,7 @@ async function lockDevice(tx: Tx, deviceId: string): Promise<LockedRow> {
     : null;
 
   const rows = (await tx.execute(
-    sql`SELECT id, status, link_group_id FROM devices WHERE id = ${deviceId} FOR UPDATE`,
+    sql`SELECT id, status, site_id, link_group_id FROM devices WHERE id = ${deviceId} FOR UPDATE`,
   )) as unknown as LockedRow[];
 
   // Restored only on the success path, deliberately — see deviceDeletion.ts:
@@ -184,9 +193,32 @@ export const UNINSTALL_PENDING_MESSAGE =
  * collectable: `device_commands` is in the device cascade, so purging now
  * destroys the only thing that will ever remove the agent from the endpoint,
  * leaving a zombie agent nobody can see or reach.
+ *
+ * A defined site ceiling is re-applied to any sibling devices an implicit
+ * dissolve would unlink. The check happens in this transaction; denial throws
+ * so callers must translate it only after the transaction rolls back.
  */
-export async function purgeRemovedDevice(tx: Tx, deviceId: string): Promise<PurgeResult> {
+export async function purgeRemovedDevice(
+  tx: Tx,
+  deviceId: string,
+  allowedSiteIds?: readonly string[],
+): Promise<PurgeResult> {
   const row = await lockDevice(tx, deviceId);
+
+  // The route/producer checked this device before entering the system-scoped
+  // transaction, but a concurrent site move can commit between that preflight
+  // and this row lock. Re-check the locked value before any cascade statement.
+  // Null is denied for a restricted caller even though the current schema is
+  // NOT NULL, keeping this boundary fail-closed if legacy/drifted data exists.
+  if (
+    allowedSiteIds !== undefined
+    && (typeof row.site_id !== 'string' || !allowedSiteIds.includes(row.site_id))
+  ) {
+    throw new DeviceLifecycleError(
+      'SITE_ACCESS_DENIED',
+      'The device moved to an inaccessible site before deletion',
+    );
+  }
 
   if (await hasPendingDeviceRemoveUninstall(tx, deviceId)) {
     throw new DeviceLifecycleError('UNINSTALL_PENDING', UNINSTALL_PENDING_MESSAGE);
@@ -200,7 +232,30 @@ export async function purgeRemovedDevice(tx: Tx, deviceId: string): Promise<Purg
   // lookup: the caller's copy predates the lock and can be stale.
   let linkGroupDissolved = false;
   if (row.link_group_id) {
-    linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, row.link_group_id);
+    try {
+      // This path already holds the target row before locking the remaining
+      // group members, whereas link-group PATCH locks the whole set in id
+      // order. That can form bounded lock contention when the target is not
+      // the lowest id. DEVICE_LIFECYCLE_LOCK_TIMEOUT_MS makes the loser abort
+      // and roll back instead of hanging or partially mutating; pre-reading a
+      // group id to reverse the order would authorize a stale membership.
+      linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(
+        tx,
+        row.link_group_id,
+        allowedSiteIds,
+      );
+    } catch (err) {
+      if (err instanceof LinkGroupSiteAccessError) {
+        // Keep the response deliberately opaque. The caller knows the target
+        // device, but must not learn whether the conflicting linked member is
+        // merely concurrent, null-site, or outside their site ceiling.
+        throw new DeviceLifecycleError(
+          'STATE_CHANGED',
+          'Device access or linked state changed before deletion',
+        );
+      }
+      throw err;
+    }
   }
 
   return { linkGroupId: row.link_group_id, linkGroupDissolved };

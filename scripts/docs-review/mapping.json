@@ -3858,6 +3858,34 @@
         "migration/overview.mdx",
         "migration/syncro.mdx"
       ]
+    },
+    {
+      "pattern": "agent/internal/collectors/software_linux.go",
+      "docs": [
+        "agents/installation.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/patching/defaults_linux.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/patch-management.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/desktop/x11/**",
+      "docs": [
+        "agents/installation.mdx",
+        "features/remote-access.mdx",
+        "agents/helper.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/heartbeat/desktop_access_linux.go",
+      "docs": [
+        "agents/installation.mdx",
+        "features/remote-access.mdx"
+      ]
     }
   ]
 }

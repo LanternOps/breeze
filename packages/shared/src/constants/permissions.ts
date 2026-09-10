@@ -26,6 +26,13 @@ export const PERMISSION_GRANTS = {
   // Signed, resource-bound rollback of customer-machine agent components.
   AGENT_ROLLBACK_CREATE: { resource: 'agent_rollback', action: 'create' },
 
+  // Built-in Workspace extension. Keep content/source administration and
+  // credential use distinct from read-only visibility and crawl execution.
+  WORKSPACE_READ: { resource: 'workspace', action: 'read' },
+  WORKSPACE_WRITE: { resource: 'workspace', action: 'write' },
+  WORKSPACE_CREDENTIALS: { resource: 'workspace', action: 'credentials' },
+  WORKSPACE_EXECUTE: { resource: 'workspace', action: 'execute' },
+
   // Network topology (discovery topology view + saved layout — #1728)
   TOPOLOGY_READ: { resource: 'topology', action: 'read' },
   TOPOLOGY_WRITE: { resource: 'topology', action: 'write' },
@@ -94,6 +101,12 @@ export const PERMISSION_GRANTS = {
   ORGS_READ: { resource: 'organizations', action: 'read' },
   ORGS_WRITE: { resource: 'organizations', action: 'write' },
   ORGS_DELETE: { resource: 'organizations', action: 'delete' },
+
+  // Partner-wide OAuth/MCP connected applications. These are deliberately
+  // separate from organization administration: one disconnect revokes every
+  // grant for the shared client under the partner.
+  CONNECTED_APPS_READ: { resource: 'connected_apps', action: 'read' },
+  CONNECTED_APPS_MANAGE: { resource: 'connected_apps', action: 'manage' },
 
   // SSO administration: configure providers + manage verified domains. A
   // higher-trust capability than organizations:write (security review #2 H-2).

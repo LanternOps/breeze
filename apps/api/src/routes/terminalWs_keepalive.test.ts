@@ -46,6 +46,11 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   isViewerSessionRevoked: vi.fn().mockResolvedValue(false),
 }));
 
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeConsumedRemoteWsTicket: vi.fn(),
+  revalidateRemoteWsAuthorityBounded: vi.fn(async () => ({ ok: true })),
+}));
+
 import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';

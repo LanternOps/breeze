@@ -47,6 +47,37 @@ clear message instead of installing a binary that can't run.
   shipped features -- reach out if this is blocking you.
 </Aside>
 
+### Supported Linux Distributions
+
+The Linux agent is a statically linked binary, so it runs on any amd64 or
+arm64 distribution, and it is installed as a **systemd** service. What works
+beyond that depends on the distribution's package manager and display server:
+
+| Capability | Debian, Ubuntu | RHEL, Fedora, Rocky, AlmaLinux | openSUSE | Arch, other systemd distributions |
+|---|---|---|---|---|
+| Install, enrollment, heartbeat, monitoring, alerts | Yes | Yes | Yes | Yes |
+| Remote terminal, scripts, automations | Yes | Yes | Yes | Yes |
+| Software inventory | Yes (dpkg) | Yes (rpm) | Yes (rpm) | No (pacman not collected) |
+| OS patch management | Yes (apt) | Yes (dnf/yum) | No (zypper) | No (pacman) |
+| Disk encryption (LUKS) and firewall (ufw, firewalld) status | Yes | Yes | Yes | Yes |
+| Remote desktop and screenshots | X11 sessions only | X11 sessions only | X11 sessions only | X11 sessions only |
+
+<Aside type="caution" title="Wayland sessions">
+  Remote desktop and screenshots require an X11 session. Wayland-only
+  sessions -- the default GNOME and KDE sessions on current Ubuntu and Fedora
+  releases, and compositors such as Hyprland and Sway -- are not supported
+  yet. When no X11 display exists the device page reports **Wayland
+  Unsupported** and **Connect Desktop** is disabled; on compositors that run
+  XWayland the agent may attach to that display instead and show only X11
+  application windows. Everything else works normally. Where the login
+  screen offers an X11 session, selecting it restores remote desktop.
+</Aside>
+
+Distributions without systemd (for example Alpine with OpenRC) can run the
+binary but are not supported by the service installer. There is no `.deb`,
+`.rpm`, or Arch package -- see [Mass Deployment](/migration/mass-deployment/)
+for the script-based fleet install.
+
 ## Quick Install
 
 <Tabs>

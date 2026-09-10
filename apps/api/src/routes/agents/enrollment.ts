@@ -34,6 +34,10 @@ import {
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
 import {
+  disconnectAgentCredentialGeneration,
+  publishAgentCredentialRevocation,
+} from '../agentWs';
+import {
   raiseDeviceIdentityCollisionAlert,
   type DeviceIdentityCollisionAlertInput,
 } from '../../services/deviceIdentityCollisionAlert';
@@ -41,6 +45,10 @@ import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability, trustDenyBody, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import { enqueueIpClassify } from '../../services/ipClassify';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
+import {
+  admitPartnerDeviceCapacity,
+  PartnerDeviceCapacityError,
+} from '../../services/partnerDeviceCapacity';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -122,8 +130,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   // reliabilityWorker.ts's processScanOrgs (#2640).
   const enrollmentOutcome = await withSystemDbAccessContext(async (): Promise<
     | Response
-    | {
+      | {
         deviceId: string;
+        replacedAgentId?: string;
+        replacedCredentialHashes?: string[];
         collision?: DeviceIdentityCollisionAlertInput;
         responseBody: Record<string, unknown>;
       }
@@ -408,9 +418,10 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
       return c.json({ error: 'Enrollment tenant is not active', reason: 'tenant_inactive' }, 403);
     }
 
-    // Fetch partner device limit (used inside transaction below)
+    // Resolve the owning partner from the already-authorized organization. The
+    // shared admission primitive re-validates this mapping and re-reads the
+    // limit under the partner lock inside the device transaction.
     let deviceLimitPartnerId: string | null = null;
-    let maxDevices: number | null = null;
     const [org] = await db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
@@ -422,15 +433,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     if (org) {
       deviceLimitPartnerId = org.partnerId;
-      const [partner] = await db
-        .select({ maxDevices: partners.maxDevices })
-        .from(partners)
-        .where(eq(partners.id, org.partnerId))
-        .limit(1);
-
-      if (partner?.maxDevices != null) {
-        maxDevices = partner.maxDevices;
-      }
     }
 
     const agentId = generateAgentId();
@@ -454,10 +456,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     const collidingDevices = await db
       .select({
         id: devices.id,
+        agentId: devices.agentId,
         status: devices.status,
         agentTokenHash: devices.agentTokenHash,
         previousTokenHash: devices.previousTokenHash,
         previousTokenExpiresAt: devices.previousTokenExpiresAt,
+        pendingTokenHash: devices.pendingTokenHash,
         agentTokenSuspendedAt: devices.agentTokenSuspendedAt,
       })
       .from(devices)
@@ -696,6 +700,52 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     let device;
     try {
       device = await db.transaction(async (tx) => {
+      if (insertFreshRow && !isSupportEnrollment) {
+        if (!deviceLimitPartnerId) {
+          throw new PartnerDeviceCapacityError(
+            'PARTNER_NOT_FOUND',
+            'Enrollment organization has no owning partner',
+          );
+        }
+        const admission = await admitPartnerDeviceCapacity(tx, {
+          orgId: key.orgId,
+          expectedPartnerId: deviceLimitPartnerId,
+        });
+        if (!admission.allowed) {
+          dispatchHook('device-limit', deviceLimitPartnerId, {
+            currentDevices: admission.activeCount,
+            maxDevices: admission.maxDevices,
+          }).catch((err) => {
+            console.error('[Enrollment] Failed to dispatch device-limit hook:', err instanceof Error ? err.message : err);
+          });
+          writeAuditEvent(c, {
+            orgId: key.orgId,
+            actorType: 'system',
+            action: 'agent.enroll',
+            resourceType: 'device',
+            resourceName: data.hostname,
+            details: {
+              reason: 'device_limit_reached',
+              enrollmentKeyId: key.id,
+              partnerId: deviceLimitPartnerId,
+              currentDevices: admission.activeCount,
+              maxDevices: admission.maxDevices,
+            },
+            result: 'denied',
+            errorMessage: 'Partner device limit reached',
+          });
+          recordAgentEnrollment('error', deviceLimitPartnerId);
+          throw new HTTPException(403, {
+            message: JSON.stringify({
+              error: 'Device limit reached',
+              code: 'DEVICE_LIMIT_REACHED',
+              currentDevices: admission.activeCount,
+              maxDevices: admission.maxDevices,
+            }),
+          });
+        }
+      }
+
       if (partnerTrustMode() !== 'off' && deviceLimitPartnerId) {
         const [trustRow] = await tx
           .select({
@@ -746,80 +796,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             .update(partners)
             .set({ probationEnrollments: sql`${partners.probationEnrollments} + 1` })
             .where(eq(partners.id, deviceLimitPartnerId));
-        }
-      }
-
-      // Device limit check inside transaction to prevent TOCTOU race.
-      // Runs when no existing row OR when the decom-bypass-fresh-id path
-      // (#914) is going to INSERT a new active row — both grow net active
-      // count by 1. Skipped on the normal UPDATE-in-place re-enroll path,
-      // which is count-neutral.
-      //
-      // Also skipped entirely for Quick Support: an ephemeral device is a
-      // minutes-long remote-assist session on a machine the MSP does not
-      // manage, not a licensed endpoint. A partner sitting at their cap must
-      // still be able to help a caller — and since the row is excluded from
-      // the count below, admitting it cannot push the fleet past the cap.
-      if (maxDevices != null && deviceLimitPartnerId && insertFreshRow && !isSupportEnrollment) {
-        const partnerOrgIds = tx
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, deviceLimitPartnerId));
-
-        const [countResult] = await tx
-          .select({ count: sql<number>`count(*)` })
-          .from(devices)
-          .where(
-            and(
-              sql`${devices.orgId} IN (${partnerOrgIds})`,
-              ne(devices.status, 'decommissioned'),
-              // Quick Support devices are not licensed endpoints — they live in
-              // the hidden per-partner support org for the length of one
-              // session and are purged by the reaper. Counting them would let a
-              // busy support day silently consume a partner's device
-              // entitlement and block real enrollments.
-              eq(devices.isEphemeral, false)
-            )
-          );
-
-        const activeCount = Number(countResult?.count ?? 0);
-        if (activeCount >= maxDevices) {
-          // Fire-and-forget hook outside transaction (non-blocking)
-          dispatchHook('device-limit', deviceLimitPartnerId, {
-            currentDevices: activeCount,
-            maxDevices,
-          }).catch((err) => {
-            console.error('[Enrollment] Failed to dispatch device-limit hook:', err instanceof Error ? err.message : err);
-          });
-          // Device-cap denials are org-attributable (the key was already
-          // resolved) and must land in audit_logs like every other denial
-          // path — otherwise this signal is invisible to the abuse-signals
-          // sweep's `denied` CTE (heuristics.ts).
-          writeAuditEvent(c, {
-            orgId: key.orgId,
-            actorType: 'system',
-            action: 'agent.enroll',
-            resourceType: 'device',
-            resourceName: data.hostname,
-            details: {
-              reason: 'device_limit_reached',
-              enrollmentKeyId: key.id,
-              partnerId: deviceLimitPartnerId,
-              currentDevices: activeCount,
-              maxDevices,
-            },
-            result: 'denied',
-            errorMessage: 'Partner device limit reached',
-          });
-          recordAgentEnrollment('error', deviceLimitPartnerId);
-          throw new HTTPException(403, {
-            message: JSON.stringify({
-              error: 'Device limit reached',
-              code: 'DEVICE_LIMIT_REACHED',
-              currentDevices: activeCount,
-              maxDevices,
-            }),
-          });
         }
       }
 
@@ -1049,6 +1025,9 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           // Preserve non-JSON HTTPExceptions for the application's normal handler.
         }
       }
+      if (err instanceof PartnerDeviceCapacityError) {
+        return c.json({ error: 'Device admission state changed; retry' }, 409);
+      }
       throw err;
     }
 
@@ -1163,6 +1142,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     return {
       deviceId: device.id,
+      // Preserve the pre-update connection key. In-place re-enrollment mints
+      // a new agentId, while the stale socket is still indexed by the old one.
+      replacedAgentId: !insertFreshRow ? existingDevice?.agentId : undefined,
+      replacedCredentialHashes: !insertFreshRow && existingDevice
+        ? [
+            existingDevice.agentTokenHash,
+            existingDevice.previousTokenHash,
+            existingDevice.pendingTokenHash,
+          ].filter((hash): hash is string => typeof hash === 'string')
+        : undefined,
       // #2764: raised AFTER this context closes (see below). Only when the
       // colliding row is currently ONLINE — that is the lookalike signal;
       // a stale offline row is the ordinary reimage case and would be pure
@@ -1202,6 +1191,23 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   if (enrollmentOutcome instanceof Response) {
     // Error path — no device was enrolled, so no warranty sync to queue.
     return enrollmentOutcome;
+  }
+
+  // Run only after the credential replacement transaction commits. The live
+  // DB generation check remains authoritative across API instances; this
+  // eagerly severs a stale socket owned by the current process.
+  if (enrollmentOutcome.replacedAgentId) {
+    disconnectAgentCredentialGeneration(
+      enrollmentOutcome.replacedAgentId,
+      enrollmentOutcome.replacedCredentialHashes ?? [],
+      'Agent credentials replaced by re-enrollment',
+    );
+    if (enrollmentOutcome.replacedCredentialHashes?.length) {
+      void publishAgentCredentialRevocation({
+        agentId: enrollmentOutcome.replacedAgentId,
+        revokedTokenHashes: enrollmentOutcome.replacedCredentialHashes,
+      });
+    }
   }
 
   // #1105: fire-and-forget BullMQ enqueue now runs after the transaction has
