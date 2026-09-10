@@ -22,6 +22,7 @@ import {
 import { requireMfa, requirePermission } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -150,6 +151,9 @@ profilesRoutes.post(
   zValidator('json', createBackupProfileSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const payload = c.req.valid('json');
 
     // Ownership axis: partner-wide profiles apply to devices in ALL orgs under
@@ -207,6 +211,9 @@ profilesRoutes.patch(
   zValidator('json', updateBackupProfileSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
@@ -251,6 +258,9 @@ profilesRoutes.delete(
   zValidator('param', profileIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
 
     const existing = await getProfileWithAccess(id, auth);

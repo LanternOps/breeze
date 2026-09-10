@@ -33,8 +33,8 @@ const EVENT = {
   metadata: { correlationId: 'c1', timestamp: new Date().toISOString() }
 };
 
-const WEBHOOK = { id: 'webhook-1', orgId: 'org-1', url: 'https://example.test/hook' };
-const WEBHOOK_B = { id: 'webhook-2', orgId: 'org-1', url: 'https://example.test/hook-b' };
+const WEBHOOK = { id: 'webhook-1', orgId: 'org-1', approvalGeneration: 1 };
+const WEBHOOK_B = { id: 'webhook-2', orgId: 'org-1', approvalGeneration: 1 };
 
 const recorded = (deliveryId: string) => ({ created: true as const, deliveryId });
 const deduped = (existing: {
@@ -283,7 +283,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
     expect(createDeliveryRecord).toHaveBeenCalledTimes(2);
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-    expect((queueDeliveryMock.mock.calls[0]![0] as { id: string }).id).toBe('webhook-2');
+    expect(queueDeliveryMock.mock.calls[0]![0]).toBe('webhook-2');
 
     const payload = structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_ROUTING_FAILED');
     expect(payload).toMatchObject({ webhookId: 'webhook-1', eventId: 'event-1' });
@@ -311,7 +311,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     // recovery sweep's job. What must NOT happen is webhook-2 losing its
     // delivery because webhook-1's LPUSH died first.
     expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
-    expect((queueDeliveryMock.mock.calls[1]![0] as { id: string }).id).toBe('webhook-2');
+    expect(queueDeliveryMock.mock.calls[1]![0]).toBe('webhook-2');
   });
 
   it('does not throw when every webhook in the fan-out succeeds', async () => {

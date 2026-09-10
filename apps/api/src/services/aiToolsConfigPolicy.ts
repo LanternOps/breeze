@@ -10,6 +10,7 @@ import {
   onedriveHelperInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { describeFirstZodIssue } from '../lib/zodIssues';
 import {
   resolveEffectiveConfig,
@@ -523,6 +524,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_configuration_policy', async (input, auth) => {
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const action = input.action as string;
 
       if (action === 'create') {
@@ -839,6 +843,11 @@ For link-only types, set featurePolicyId instead of inlineSettings:
     handler: safeHandler('manage_policy_feature_link', async (input, auth) => {
       const action = input.action as string;
       const configPolicyId = input.configPolicyId as string;
+
+      // Reads (list) are not gated by the site-ceiling — only add/update/remove.
+      if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       // Verify access to the parent policy
       const policy = await getConfigPolicy(configPolicyId, auth);

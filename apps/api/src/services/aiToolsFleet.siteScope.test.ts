@@ -752,3 +752,28 @@ describe('manage_maintenance_windows — site-axis read scoping (#3654)', () => 
     expect(raw).not.toContain('site-FORBIDDEN');
   });
 });
+
+describe('manage_patches setup_auto_approval — site-ceiling gate (contract-site-ceiling-gate §7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // setup_auto_approval is disabled for EVERY caller (see the unconditional
+  // early-return in aiToolsFleet.ts) — patch policies must be configured via
+  // manage_policy_feature_link instead. The org configuration_policies insert
+  // further down the handler is therefore dead code today; it carries its own
+  // canMutateOrgWideGovernance check as defense-in-depth in case the disabled
+  // gate is ever lifted (same convention as the canManagePartnerWidePolicies
+  // check a few lines above it). These two cases pin the LIVE behavior: the
+  // action is blocked identically for a site-restricted and an unrestricted
+  // caller, i.e. there is no live bypass through this action today.
+  it('is blocked for a site-restricted caller (via the disabled-action gate, not reachable)', async () => {
+    const r = await handlerFor('manage_patches')({ action: 'setup_auto_approval' }, makeAuth(['site-A'])) as string;
+    expect(r).toContain('disabled');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('is blocked identically for an unrestricted caller (no live bypass either way)', async () => {
+    const r = await handlerFor('manage_patches')({ action: 'setup_auto_approval' }, makeAuth(undefined)) as string;
+    expect(r).toContain('disabled');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+});

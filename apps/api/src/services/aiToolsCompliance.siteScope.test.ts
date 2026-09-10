@@ -194,3 +194,46 @@ describe('remediate_software_violation — site narrowing of the org-wide fallba
     expect(scheduleSoftwareRemediation).toHaveBeenCalledWith('pol-1', ['d1']);
   });
 });
+
+describe('manage_software_policy — site-ceiling gate (contract-site-ceiling-gate §2/§7A)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(['create', 'update', 'delete'])(
+    'action=%s: site-restricted caller is denied before any DB access',
+    async (action) => {
+      const result = JSON.parse(await handlerFor('manage_software_policy')({
+        action,
+        policyId: 'pol-1',
+        name: 'Block USB Storage',
+        mode: 'blocklist',
+      }, makeAuth(['s1'])));
+
+      expect(result.error).toMatch(/site-restricted/i);
+      expect(mockDb.select).not.toHaveBeenCalled();
+    }
+  );
+
+  it('empty allowedSiteIds ([]) is also denied', async () => {
+    const result = JSON.parse(await handlerFor('manage_software_policy')({
+      action: 'create', name: 'p', mode: 'blocklist',
+    }, makeAuth([])));
+    expect(result.error).toMatch(/site-restricted/i);
+  });
+
+  it('"list" and "get" actions are reads and NOT gated for a site-restricted caller', async () => {
+    mockDb.select.mockReturnValue(chain([]));
+    const listResult = JSON.parse(await handlerFor('manage_software_policy')({ action: 'list' }, makeAuth(['s1'])));
+    expect(listResult.error).toBeUndefined();
+  });
+
+  it('unrestricted caller (allowedSiteIds undefined) is unaffected', async () => {
+    mockDb.select.mockReturnValue(chain([]));
+    (db.insert as any).mockReturnValue({
+      values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ id: 'pol-1', orgId: 'org-1', name: 'p', rules: {} }])) })),
+    });
+    const result = JSON.parse(await handlerFor('manage_software_policy')({
+      action: 'create', name: 'p', mode: 'blocklist', software: [{ name: 'x' }],
+    }, makeAuth(undefined)));
+    expect(result.error).toBeUndefined();
+  });
+});
