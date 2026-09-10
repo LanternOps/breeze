@@ -775,6 +775,21 @@ cheap local model, not `$0`. For accurate accounting, add the served model id to
 `MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
 
+## Warranty lookups
+
+The warranty worker looks each physical device's serial number up against its manufacturer so the device page and [warranty-expiry alerts](/features/warranty-tracking/) carry real coverage dates. Every vendor is off until configured; an unconfigured vendor leaves its devices at status `unknown`. Apple coverage is reported by the macOS agent and needs no configuration.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DELL_CLIENT_ID` | — | OAuth client ID from Dell's [TechDirect](https://techdirect.dell.com) Warranty API |
+| `DELL_CLIENT_SECRET` | — | Matching Dell OAuth client secret. Both are required for Dell lookups. |
+| `LENOVO_API_KEY` | — | ClientID for Lenovo's official [Warranty API](https://supportapi.lenovo.com/Documentation/Warranty.html) (`supportapi.lenovo.com`), issued through a Lenovo partner manager |
+| `LENOVO_WARRANTY_ENABLED` | — | `true` enables credential-free Lenovo lookups through the JSON endpoint behind Lenovo's public warranty-lookup page. It is not documented by Lenovo and may stop working without notice, so it is opt-in. |
+
+<Aside>
+  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP has no lookup yet — HP's Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown`.
+</Aside>
+
 ## Breeze AI for Office (add-ins, optional)
 
 | Variable | Default | Description |
