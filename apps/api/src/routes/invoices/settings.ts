@@ -1,7 +1,7 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { authMiddleware, requireScope, requirePermission } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
@@ -9,6 +9,10 @@ import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
 import { computeReportingTotal, parseGroupsParam, resolvePartnerReportingCurrency } from '../../services/reportingTotals';
 import { ExchangeRateServiceError } from '../../services/exchangeRateService';
 import { invoiceActorFrom, handleServiceError } from './invoices';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../../services/partnerWideAccess';
 
 // Mounted at the api root (not under the /invoices hub) so the paths read
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
@@ -18,8 +22,14 @@ import { invoiceActorFrom, handleServiceError } from './invoices';
 export const invoiceSettingsRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
+const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
+  if (!canManagePartnerWidePolicies(c.get('auth'))) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  await next();
+};
 
-invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm,
+invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm, requireMfa(), requirePartnerWideBillingAdmin,
   zValidator('json', partnerBillingSettingsSchema),
   async (c) => {
     try { return c.json({ data: await updatePartnerBillingSettings(c.req.valid('json'), invoiceActorFrom(c)) }); }
