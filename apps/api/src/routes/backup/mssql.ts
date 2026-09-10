@@ -23,6 +23,8 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
+import { parseAgentJsonStdout } from '../../services/agentCommandStdout';
+import { applyBackupStartedAck, isBackupQueuedAck, isBackupStartedAck } from '../../services/backupProgress';
 
 export const mssqlRoutes = new Hono();
 
@@ -203,9 +205,13 @@ mssqlRoutes.post(
       );
     }
 
-    // Parse discovery result and upsert instances
+    // Parse discovery result and upsert instances. D20-A/F: parseAgentJsonStdout
+    // tolerates a double-encoded stdout from any agent still on a pre-D20-B
+    // build — a plain single JSON.parse would see the object TEXT as a
+    // string, `data?.instances` would be undefined, and this upsert would
+    // silently never run.
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) as any : null;
       if (data?.instances && Array.isArray(data.instances)) {
         for (const inst of data.instances) {
           await db
@@ -293,6 +299,11 @@ mssqlRoutes.post(
       payload.deviceId,
       CommandTypes.MSSQL_BACKUP,
       {
+        // D20-E: lets agentWs.ts's processCommandResult (and
+        // handleProviderBackedBackupResult) correlate the REAL terminal
+        // result — which arrives as a second, unsolicited command_result
+        // frame after a queue-admission ack — back to this backup_jobs row.
+        jobId: backupJob.id,
         instance: payload.instance,
         database: payload.database,
         backupType: payload.backupType,
@@ -304,7 +315,23 @@ mssqlRoutes.post(
     let snapshotDbId: string | null = null;
     let providerSnapshotId: string | null = null;
     try {
-      parsedData = result.stdout ? JSON.parse(result.stdout) : {};
+      // D20-A: tolerates a double-encoded stdout from an agent still on a
+      // pre-D20-B build.
+      parsedData = parseAgentJsonStdout(result.stdout);
+
+      // D20-C: a queued/starting agent acks admission with
+      // {"queued":true}/{"started":true} instead of the real outcome — that
+      // is not a parse failure, and must not fail the job. Report it as still
+      // running; the real result is applied later when it actually arrives
+      // (agentWs.ts processCommandResult / handleProviderBackedBackupResult).
+      if (isBackupQueuedAck(parsedData) || isBackupStartedAck(parsedData)) {
+        const queued = isBackupQueuedAck(parsedData);
+        await applyBackupStartedAck({ jobId: backupJob.id, deviceId: payload.deviceId, queued });
+        return c.json({
+          data: { backupJobId: backupJob.id, status: 'running', queued },
+        }, 202);
+      }
+
       const parsedBackup = backupCommandResultSchema.safeParse(parsedData);
       if (!parsedBackup.success) {
         throw new Error(describeZodIssues(parsedBackup.error));
@@ -464,7 +491,7 @@ mssqlRoutes.post(
     }
 
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
       return c.json({ data });
     } catch {
       return c.json({ data: result.stdout });
@@ -556,7 +583,7 @@ mssqlRoutes.post(
     }
 
     try {
-      const data = result.stdout ? JSON.parse(result.stdout) : null;
+      const data = result.stdout ? parseAgentJsonStdout(result.stdout) : null;
       return c.json({ data });
     } catch {
       return c.json({ data: result.stdout });

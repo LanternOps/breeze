@@ -91,10 +91,24 @@ vi.mock('../../services/featureConfigResolver', () => ({
 }));
 
 const applyBackupCommandResultToJobMock = vi.fn();
+const markBackupJobFailedIfInFlightMock = vi.fn();
 vi.mock('../../services/backupResultPersistence', () => ({
   applyBackupCommandResultToJob: (...args: unknown[]) =>
     applyBackupCommandResultToJobMock(...(args as [])),
+  markBackupJobFailedIfInFlight: (...args: unknown[]) =>
+    markBackupJobFailedIfInFlightMock(...(args as [])),
 }));
+
+// D20-C: keep the REAL isBackupQueuedAck/isBackupStartedAck predicates (pure,
+// no DB) and mock only the DB-touching applyBackupStartedAck.
+const applyBackupStartedAckMock = vi.fn();
+vi.mock('../../services/backupProgress', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/backupProgress')>();
+  return {
+    ...actual,
+    applyBackupStartedAck: (...args: unknown[]) => applyBackupStartedAckMock(...(args as [])),
+  };
+});
 
 vi.mock('../../services/commandQueue', () => ({
   executeCommand: (...args: unknown[]) => executeCommandMock(...(args as [])),
@@ -260,6 +274,30 @@ describe('hyperv routes', () => {
     expect(body.total).toBe(0);
   });
 
+  // D20-F: with the stdout double-encoded (any agent still on a pre-D20-B
+  // build), this route's existing double-unwrap (`typeof parsed === 'string'
+  // ? JSON.parse(parsed) : parsed`) already tolerated it — this pins that it
+  // keeps working now that the unwrap runs through the shared
+  // parseAgentJsonStdout instead of a bespoke inline check.
+  it('D20-F: persists hypervVms from a double-encoded discovery payload (pre-fix agent)', async () => {
+    const vms = [{ id: 'vm-1', name: 'Accounting VM', generation: 2, state: 'running' }];
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify(JSON.stringify(vms)),
+    });
+
+    const res = await app.request(`/backup/hyperv/discover/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.vms[0]).toMatchObject({ id: 'vm-1', name: 'Accounting VM' });
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+
   it('validates required Hyper-V backup fields', async () => {
     const res = await app.request('/backup/hyperv/backup', {
       method: 'POST',
@@ -303,6 +341,11 @@ describe('hyperv routes', () => {
       DEVICE_ID,
       'HYPERV_BACKUP',
       {
+        // D20-E: lets agentWs.ts's processCommandResult (and
+        // handleProviderBackedBackupResult) correlate the REAL terminal
+        // result — which arrives as a second, unsolicited command_result
+        // frame after a queue-admission ack — back to this backup_jobs row.
+        jobId: '44444444-4444-4444-8444-444444444444',
         vmName: 'Accounting VM',
         consistencyType: 'application',
       },
@@ -314,6 +357,62 @@ describe('hyperv routes', () => {
         resultStatus: 'completed',
       })
     );
+  });
+
+  // D20-C: a queued/starting agent acks admission with {"queued":true}/
+  // {"started":true} instead of the real backup outcome — before this fix the
+  // route ran that straight through backupCommandResultSchema, which does not
+  // recognize either shape, and 500'd with "expected object, received string"
+  // (proven live against agent 0.112.5, same mechanism as MSSQL). The route
+  // must recognize the ack and report the job as still running.
+  it('D20-C: reports 202/running when the agent acks queue admission', async () => {
+    const jobId = '44444444-4444-4444-8444-444444444444';
+    insertMock.mockReturnValueOnce(chainMock([{ id: jobId }]));
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify({ queued: true }),
+    });
+
+    const res = await app.request('/backup/hyperv/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        vmName: 'Accounting VM',
+        consistencyType: 'application',
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.data).toEqual({ backupJobId: jobId, status: 'running', queued: true });
+    expect(applyBackupStartedAckMock).toHaveBeenCalledWith({ jobId, deviceId: DEVICE_ID, queued: true });
+    expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+    expect(markBackupJobFailedIfInFlightMock).not.toHaveBeenCalled();
+  });
+
+  // D20-A/B: a queue-ack forwarded by an agent that hasn't picked up the
+  // D20-B fix yet still arrives double-JSON-encoded.
+  it('D20-A: recognizes a double-encoded queue-ack from a pre-fix agent', async () => {
+    const jobId = '44444444-4444-4444-8444-444444444444';
+    insertMock.mockReturnValueOnce(chainMock([{ id: jobId }]));
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify(JSON.stringify({ queued: true })),
+    });
+
+    const res = await app.request('/backup/hyperv/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        vmName: 'Accounting VM',
+        consistencyType: 'application',
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(applyBackupStartedAckMock).toHaveBeenCalledWith({ jobId, deviceId: DEVICE_ID, queued: true });
   });
 
   it('dispatches Hyper-V restore using a backup_snapshots UUID', async () => {

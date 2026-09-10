@@ -13,6 +13,8 @@ const authorizeResilienceResourcesMock = vi.fn();
 const resolveBackupConfigForDeviceMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
 const applyBackupCommandResultToJobMock = vi.fn();
+const markBackupJobFailedIfInFlightMock = vi.fn();
+const applyBackupStartedAckMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -118,7 +120,18 @@ vi.mock('../../services/featureConfigResolver', () => ({
 
 vi.mock('../../services/backupResultPersistence', () => ({
   applyBackupCommandResultToJob: (...args: unknown[]) => applyBackupCommandResultToJobMock(...(args as [])),
+  markBackupJobFailedIfInFlight: (...args: unknown[]) => markBackupJobFailedIfInFlightMock(...(args as [])),
 }));
+
+// D20-C: keep the REAL isBackupQueuedAck/isBackupStartedAck predicates (pure,
+// no DB) and mock only the DB-touching applyBackupStartedAck.
+vi.mock('../../services/backupProgress', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/backupProgress')>();
+  return {
+    ...actual,
+    applyBackupStartedAck: (...args: unknown[]) => applyBackupStartedAckMock(...(args as [])),
+  };
+});
 
 vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
@@ -142,6 +155,8 @@ describe('mssql routes', () => {
     resolveBackupConfigForDeviceMock.mockReset();
     resolveAllBackupAssignedDevicesMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
+    markBackupJobFailedIfInFlightMock.mockReset();
+    applyBackupStartedAckMock.mockReset();
     authState = {
       principal: { kind: 'user_session' },
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -260,6 +275,36 @@ describe('mssql routes', () => {
     );
   });
 
+  // D20-F: with the stdout double-encoded (any agent still on a pre-D20-B
+  // build), the upsert used to never run at all — a single JSON.parse yielded
+  // the object TEXT as a string, `data?.instances` was undefined on a string,
+  // and GET /mssql/instances stayed empty forever for that device.
+  it('D20-F: persists sqlInstances from a double-encoded discovery payload (pre-fix agent)', async () => {
+    const instances = [{
+      name: 'MSSQLSERVER',
+      version: '16.0.1000',
+      edition: 'Standard',
+      port: 1433,
+      authType: 'windows',
+      databases: ['AppDb'],
+      status: 'online',
+    }];
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify(JSON.stringify({ instances })),
+    });
+
+    const res = await app.request(`/backup/mssql/discover/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.instances).toEqual(instances);
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+
   it('validates required MSSQL backup fields', async () => {
     const res = await app.request('/backup/mssql/backup', {
       method: 'POST',
@@ -328,6 +373,12 @@ describe('mssql routes', () => {
       DEVICE_ID,
       'MSSQL_BACKUP',
       expect.objectContaining({
+        // D20-E: the command payload must carry jobId so
+        // handleProviderBackedBackupResult (services/commandResultHandlers.ts)
+        // can correlate the REAL terminal result — that arrives as a second,
+        // unsolicited command_result frame after a queue-admission ack — back
+        // to this backup_jobs row.
+        jobId: 'job-1',
         instance: 'MSSQLSERVER',
         database: 'AppDb',
         backupType: 'full',
@@ -344,6 +395,98 @@ describe('mssql routes', () => {
     const body = await res.json();
     expect(body.data.snapshotDbId).toBe('snapshot-db-1');
     expect(body.data.snapshotId).toBe('provider-snapshot-1');
+  });
+
+  // D20-C: a queued/starting agent acks admission with {"queued":true}/
+  // {"started":true} instead of the real backup outcome — before this fix the
+  // route ran that straight through backupCommandResultSchema, which does not
+  // recognize either shape, and 500'd with "expected object, received string"
+  // (proven live against agent 0.112.5). The route must recognize the ack and
+  // report the job as still running rather than failing it.
+  it('reports 202/running (not a parse failure) when the agent acks queue admission', async () => {
+    insertMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
+    resolveBackupConfigForDeviceMock.mockResolvedValueOnce({
+      configId: 'config-1',
+      featureLinkId: 'feature-1',
+    });
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify({ queued: true }),
+    });
+
+    const res = await app.request('/backup/mssql/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.data).toEqual({ backupJobId: 'job-1', status: 'running', queued: true });
+    expect(applyBackupStartedAckMock).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      deviceId: DEVICE_ID,
+      queued: true,
+    });
+    // Never treated as a completed-but-malformed terminal result.
+    expect(applyBackupCommandResultToJobMock).not.toHaveBeenCalled();
+    expect(markBackupJobFailedIfInFlightMock).not.toHaveBeenCalled();
+  });
+
+  it('reports 202/running for a legacy {"started":true} ack too', async () => {
+    insertMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
+    resolveBackupConfigForDeviceMock.mockResolvedValueOnce({
+      configId: 'config-1',
+      featureLinkId: 'feature-1',
+    });
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify({ started: true }),
+    });
+
+    const res = await app.request('/backup/mssql/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.data).toEqual({ backupJobId: 'job-1', status: 'running', queued: false });
+    expect(applyBackupStartedAckMock).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      deviceId: DEVICE_ID,
+      queued: false,
+    });
+  });
+
+  // D20-A/B: a queue-ack forwarded by an agent that hasn't picked up the
+  // D20-B fix yet still arrives double-JSON-encoded. The route must recognize
+  // it as an ack via the SAME tolerant parser used everywhere else, not just
+  // the single-encoded (post-fix) shape.
+  it('recognizes a double-encoded queue-ack from a pre-fix agent', async () => {
+    insertMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
+    resolveBackupConfigForDeviceMock.mockResolvedValueOnce({
+      configId: 'config-1',
+      featureLinkId: 'feature-1',
+    });
+    executeCommandMock.mockResolvedValueOnce({
+      status: 'completed',
+      stdout: JSON.stringify(JSON.stringify({ queued: true })),
+    });
+
+    const res = await app.request('/backup/mssql/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, instance: 'MSSQLSERVER', database: 'AppDb' }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(applyBackupStartedAckMock).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      deviceId: DEVICE_ID,
+      queued: true,
+    });
   });
 
   it('restores MSSQL from snapshot metadata instead of a local backup path', async () => {
