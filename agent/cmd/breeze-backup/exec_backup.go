@@ -156,6 +156,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 			SystemStateEnabled: true,
 			VSSEnabled:         vssEnabled,
 			AgentID:            helperAgentID,
+			AgentVersion:       version,
 		}), nil
 	}
 	if len(p.Paths) == 0 {
@@ -169,11 +170,12 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
 	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider:   provider,
-		Paths:      p.Paths,
-		Retention:  0,
-		VSSEnabled: vssEnabled,
-		AgentID:    helperAgentID,
+		Provider:     provider,
+		Paths:        p.Paths,
+		Retention:    0,
+		VSSEnabled:   vssEnabled,
+		AgentID:      helperAgentID,
+		AgentVersion: version,
 	}), nil
 }
 

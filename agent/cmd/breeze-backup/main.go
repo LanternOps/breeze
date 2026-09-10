@@ -420,6 +420,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,
 		StagingDir:         stagingDir,
 		AgentID:            cfg.AgentID,
+		AgentVersion:       version,
 	})
 
 	return mgr
