@@ -31,12 +31,22 @@ const (
 	maxRecoveryWarnings = 50
 )
 
-// chmodFile and chtimesFile are seams over os.Chmod/os.Chtimes so tests can
-// force deterministic post-restore fidelity failures without depending on
-// filesystem-specific chmod/chtimes error behavior.
+// chmodFile, chtimesFile, and lchownFile are seams over
+// os.Chmod/os.Chtimes/os.Lchown so tests can force deterministic
+// post-restore fidelity failures without depending on filesystem-specific
+// chmod/chtimes/chown error behavior. lchownFile is also used by
+// applyArtifactMetadata (system-state artifacts) — see its doc comment for
+// why ownership is best-effort (EPERM is common when not running as root).
 var (
 	chmodFile   = os.Chmod
 	chtimesFile = os.Chtimes
+	lchownFile  = os.Lchown
+	// symlinkFile is a seam over os.Symlink (used by applySystemState's
+	// symlink-artifact branch) so tests can force a deterministic
+	// symlink-creation failure without depending on filesystem permission
+	// quirks — e.g. a test running as root bypasses the directory-write
+	// check that would otherwise produce the failure.
+	symlinkFile = os.Symlink
 )
 
 // maxConsecutiveDownloadFailures bounds how many per-file restore failures
@@ -381,13 +391,36 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		if ctx != nil && ctx.Err() != nil {
 			return systemStateResult{manifestFound: true, warnings: warnings, serviceUnits: enabledSystemdUnitsFromStaging(stagingDir)}
 		}
-		remoteKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, artifact.Path)
 		localPath := filepath.Join(stagingDir, artifact.Path)
 		if mkErr := os.MkdirAll(filepath.Dir(localPath), 0o750); mkErr != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to create dir for %s: %s", artifact.Name, mkErr.Error()))
 			verificationFailed = true
 			continue
 		}
+
+		if artifact.LinkTarget != "" {
+			// Symlink artifact (systemstate.Artifact.LinkTarget's doc
+			// comment): no bytes were uploaded for this one — the manifest
+			// entry alone is enough to recreate the link. Never downloaded,
+			// never checksum/size-verified (SizeBytes==0, Checksum=="" by
+			// construction), and no metadata (Mode/UID/GID/ModTime) to
+			// reapply — a symlink has no independent content or POSIX
+			// metadata of its own worth restoring separately from the link
+			// itself.
+			if rmErr := os.Remove(localPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				warnings = append(warnings, fmt.Sprintf("failed to clear existing path before creating symlink %s: %s", artifact.Name, rmErr.Error()))
+				verificationFailed = true
+				continue
+			}
+			if symErr := symlinkFile(artifact.LinkTarget, localPath); symErr != nil {
+				warnings = append(warnings, fmt.Sprintf("failed to create symlink %s -> %s: %s", artifact.Name, artifact.LinkTarget, symErr.Error()))
+				verificationFailed = true
+				continue
+			}
+			continue
+		}
+
+		remoteKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, artifact.Path)
 		if dlErr := provider.Download(remoteKey, localPath); dlErr != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to download %s: %s", artifact.Name, dlErr.Error()))
 			verificationFailed = true
@@ -404,6 +437,7 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			// failure — accept it best-effort but flag it, per plan §2/B1c.
 			warnings = append(warnings, fmt.Sprintf("artifact %s has no checksum (older manifest schema), unverified", artifact.Name))
 		}
+		warnings = append(warnings, applyArtifactMetadata(localPath, artifact)...)
 	}
 
 	// Capture the Linux enabled-services list from staging BEFORE it's
@@ -468,12 +502,73 @@ func verifyArtifactIntegrity(localPath string, artifact systemstate.Artifact) er
 	return nil
 }
 
+// applyArtifactMetadata reapplies a downloaded regular artifact's staged
+// mode, ownership, and modification time to localPath — best effort,
+// mirroring restoreFiles' post-download fidelity step (chmodFile/
+// chtimesFile) for ordinary backed-up files: a failure here (most commonly
+// EPERM chowning to a uid/gid this process doesn't have privilege for) is
+// recorded as a warning, never folded into verificationFailed, since the
+// artifact's BYTES already downloaded and verified fine — only the
+// metadata reapply failed. Each field is applied only when non-zero (see
+// systemstate.Artifact's Mode/UID/GID/ModTime doc comments: zero means
+// "unavailable at collection time or artifact predates this field", not
+// "explicitly zero"). Never called for a symlink artifact — see the
+// LinkTarget branch in applySystemState's artifact loop, which never
+// reaches this function.
+func applyArtifactMetadata(localPath string, artifact systemstate.Artifact) []string {
+	var warnings []string
+	if artifact.Mode != 0 {
+		if err := chmodFile(localPath, fileModeFromArtifactMode(artifact.Mode)); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mode %04o to %s: %s", artifact.Mode, artifact.Name, err.Error()))
+		}
+	}
+	if artifact.UID != 0 || artifact.GID != 0 {
+		if err := lchownFile(localPath, artifact.UID, artifact.GID); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply ownership %d:%d to %s: %s", artifact.UID, artifact.GID, artifact.Name, err.Error()))
+		}
+	}
+	if !artifact.ModTime.IsZero() {
+		if err := chtimesFile(localPath, artifact.ModTime, artifact.ModTime); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mtime to %s: %s", artifact.Name, err.Error()))
+		}
+	}
+	return warnings
+}
+
+// fileModeFromArtifactMode inverts systemstate.modeFromInfo: it converts
+// Artifact.Mode's traditional POSIX st_mode & 07777 encoding (permission
+// bits OR'd with setuid/setgid/sticky at their traditional octal positions
+// 04000/02000/01000) back into a Go os.FileMode with the corresponding
+// os.ModeSetuid/os.ModeSetgid/os.ModeSticky bits set — those live at
+// entirely different bit positions in Go's FileMode than in the raw octal
+// encoding, so a bare cast would silently drop them. Only os.Chmod (via
+// chmodFile) needs this; a raw permission-only cast would restore the file
+// world-writable-safe but silently lose a legitimately staged setuid/setgid
+// bit (e.g. /usr/bin/sudo, ping) on every BMR restore.
+func fileModeFromArtifactMode(raw uint32) os.FileMode {
+	fm := os.FileMode(raw & 0o777)
+	if raw&0o4000 != 0 {
+		fm |= os.ModeSetuid
+	}
+	if raw&0o2000 != 0 {
+		fm |= os.ModeSetgid
+	}
+	if raw&0o1000 != 0 {
+		fm |= os.ModeSticky
+	}
+	return fm
+}
+
 func sha256HexFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	// Read-only handle: nothing buffered to lose, so a Close failure here
+	// (already-closed fd, or a similarly benign race) is not worth
+	// propagating — discard explicitly rather than leaving it unchecked
+	// (mirrors systemstate.sha256File's identical seam).
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err

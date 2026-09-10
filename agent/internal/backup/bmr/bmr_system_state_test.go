@@ -8,13 +8,30 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
+
+// countingDownloadProvider wraps a *providers.LocalProvider and counts
+// Download calls, so a test can assert a symlink artifact triggers ZERO
+// downloads (see systemstate.Artifact.LinkTarget's doc comment: the
+// publisher never uploads bytes for a symlink artifact, so a consumer that
+// tried to download one would always fail against real storage).
+type countingDownloadProvider struct {
+	*providers.LocalProvider
+	downloadCalls int
+}
+
+func (p *countingDownloadProvider) Download(remotePath, localPath string) error {
+	p.downloadCalls++
+	return p.LocalProvider.Download(remotePath, localPath)
+}
 
 // fakeStateRestorer is a Restorer double for exercising applySystemState /
 // RunRecoveryContext without shelling out to reg/systemctl/cp on a real OS.
@@ -530,5 +547,265 @@ func TestRunRecoveryContext_ExpectSystemStateTrue_NotApplied_NeverCompleted(t *t
 	// bmrCompleteSchema accepts (completed/failed/partial).
 	if result.Status != "partial" {
 		t.Fatalf("status = %q, want partial (files restored fine, only state failed)", result.Status)
+	}
+}
+
+// --- Symlink artifacts and staged-metadata reapply (W01's LinkTarget/Mode/UID/GID/ModTime) ---
+
+// TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink proves (a)
+// from the symlink-artifact contract: an artifact with LinkTarget set must
+// never be downloaded (the publisher uploads no bytes for it — see
+// systemstate.Artifact.LinkTarget's doc comment) and must be recreated as a
+// real symlink in staging, pointing at the recorded target exactly.
+func TestApplySystemState_SymlinkArtifact_NoDownloadCreatesSymlink(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-symlink"
+
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+		Artifacts: []systemstate.Artifact{
+			{Name: "resolv-conf-link", Category: "config", Path: "etc/resolv.conf", LinkTarget: "/run/systemd/resolve/stub-resolv.conf"},
+		},
+	})
+	provider := &countingDownloadProvider{LocalProvider: base}
+
+	var gotIsSymlink bool
+	var gotTarget string
+	var readlinkErr error
+	restorer := useFakeRestorer(t, &fakeStateRestorer{
+		onRestore: func(stagingDir string) {
+			linkPath := filepath.Join(stagingDir, "etc", "resolv.conf")
+			info, statErr := os.Lstat(linkPath)
+			if statErr != nil {
+				t.Fatalf("lstat staged symlink: %v", statErr)
+			}
+			gotIsSymlink = info.Mode()&os.ModeSymlink != 0
+			gotTarget, readlinkErr = os.Readlink(linkPath)
+		},
+	})
+
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.err != nil {
+		t.Fatalf("unexpected fatal error: %v", result.err)
+	}
+	if !result.applied {
+		t.Fatalf("expected applied=true, warnings: %v", result.warnings)
+	}
+	// Exactly one Download call total: the state manifest.json itself.
+	// Zero of those are for the symlink artifact — the publisher never
+	// uploads bytes for one (see systemstate.Artifact.LinkTarget's doc
+	// comment), so a consumer that tried would always fail against real
+	// storage.
+	if provider.downloadCalls != 1 {
+		t.Fatalf("expected exactly 1 Download call (the manifest only, none for the symlink artifact), got %d", provider.downloadCalls)
+	}
+	if restorer.restoreCalls != 1 {
+		t.Fatalf("expected the restorer to run once, got %d", restorer.restoreCalls)
+	}
+	if !gotIsSymlink {
+		t.Fatal("expected a real symlink to be created in staging, not a regular file")
+	}
+	if readlinkErr != nil {
+		t.Fatalf("readlink staged symlink: %v", readlinkErr)
+	}
+	if gotTarget != "/run/systemd/resolve/stub-resolv.conf" {
+		t.Fatalf("symlink target = %q, want %q", gotTarget, "/run/systemd/resolve/stub-resolv.conf")
+	}
+}
+
+// TestApplySystemState_SymlinkArtifact_CreationFailureCountsAsVerificationFailure
+// proves a symlink that fails to create (e.g. os.Symlink error) blocks
+// `applied` exactly like any other per-artifact failure, rather than being
+// silently ignored.
+func TestApplySystemState_SymlinkArtifact_CreationFailureCountsAsVerificationFailure(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-symlink-failure"
+
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "broken-link", Category: "config", Path: "etc/broken-link", LinkTarget: "/somewhere"},
+		},
+	})
+	provider := &countingDownloadProvider{LocalProvider: base}
+
+	// Force a deterministic symlink-creation failure via the injectable
+	// seam, rather than relying on a filesystem permission quirk that a
+	// root-running test process would bypass.
+	origSymlink := symlinkFile
+	t.Cleanup(func() { symlinkFile = origSymlink })
+	symlinkFile = func(string, string) error { return os.ErrPermission }
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false when a symlink artifact fails to create")
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "symlink") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning about the failed symlink, got: %v", result.warnings)
+	}
+}
+
+// TestApplySystemState_RegularArtifact_MetadataReapplied proves (b) from
+// the staged-metadata contract: after a regular artifact downloads and
+// verifies successfully, its staged Mode/UID/GID/ModTime must be reapplied
+// to the staging copy (which the Linux restorer then propagates onto
+// /etc — W03).
+func TestApplySystemState_RegularArtifact_MetadataReapplied(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-metadata"
+
+	content := []byte("metadata artifact content")
+	uploadSystemStateArtifact(t, provider, snapshotID, "config/meta.txt", content)
+
+	wantMTime := time.Date(2024, 3, 1, 8, 0, 0, 0, time.UTC)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+		Artifacts: []systemstate.Artifact{
+			{
+				Name: "meta", Category: "config", Path: "config/meta.txt",
+				SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content),
+				Mode: 0o640, UID: 1000, GID: 1000, ModTime: wantMTime,
+			},
+		},
+	})
+
+	type chownCall struct {
+		path     string
+		uid, gid int
+	}
+	var gotChown chownCall
+	origLchown := lchownFile
+	t.Cleanup(func() { lchownFile = origLchown })
+	lchownFile = func(name string, uid, gid int) error {
+		gotChown = chownCall{path: name, uid: uid, gid: gid}
+		return nil
+	}
+
+	var gotMode os.FileMode
+	var gotModTime time.Time
+	useFakeRestorer(t, &fakeStateRestorer{
+		onRestore: func(stagingDir string) {
+			info, statErr := os.Stat(filepath.Join(stagingDir, "config", "meta.txt"))
+			if statErr != nil {
+				t.Fatalf("stat staged artifact: %v", statErr)
+			}
+			gotMode = info.Mode()
+			gotModTime = info.ModTime()
+		},
+	})
+
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+	if result.err != nil {
+		t.Fatalf("unexpected fatal error: %v", result.err)
+	}
+	if !result.applied {
+		t.Fatalf("expected applied=true, warnings: %v", result.warnings)
+	}
+
+	if runtime.GOOS != "windows" {
+		if gotMode.Perm() != 0o640 {
+			t.Errorf("mode = %o, want 0640", gotMode.Perm())
+		}
+	}
+	if !gotModTime.Truncate(time.Second).Equal(wantMTime) {
+		t.Errorf("modTime = %v, want %v", gotModTime, wantMTime)
+	}
+	if !strings.HasSuffix(gotChown.path, filepath.Join("config", "meta.txt")) {
+		t.Errorf("lchown called with path %q, want it to target the staged meta.txt", gotChown.path)
+	}
+	if gotChown.uid != 1000 || gotChown.gid != 1000 {
+		t.Errorf("lchown called with uid=%d gid=%d, want 1000/1000", gotChown.uid, gotChown.gid)
+	}
+}
+
+// TestApplySystemState_ZeroMetadataFields_NotReapplied proves the
+// "only when non-zero" gate: an artifact with no Mode/UID/GID/ModTime (an
+// older pre-metadata capture, or collection-time stat failure) must not
+// invoke chmod/chown/chtimes at all.
+func TestApplySystemState_ZeroMetadataFields_NotReapplied(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-zero-metadata"
+
+	content := []byte("no metadata recorded")
+	uploadSystemStateArtifact(t, provider, snapshotID, "legacy.txt", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "legacy", Category: "config", Path: "legacy.txt", SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content)},
+		},
+	})
+
+	chmodCalled, chownCalled, chtimesCalled := false, false, false
+	origChmod, origChtimes, origLchown := chmodFile, chtimesFile, lchownFile
+	t.Cleanup(func() {
+		chmodFile, chtimesFile, lchownFile = origChmod, origChtimes, origLchown
+	})
+	chmodFile = func(string, os.FileMode) error { chmodCalled = true; return nil }
+	chtimesFile = func(string, time.Time, time.Time) error { chtimesCalled = true; return nil }
+	lchownFile = func(string, int, int) error { chownCalled = true; return nil }
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.err != nil {
+		t.Fatalf("unexpected fatal error: %v", result.err)
+	}
+	if !result.applied {
+		t.Fatalf("expected applied=true, warnings: %v", result.warnings)
+	}
+	if chmodCalled || chownCalled || chtimesCalled {
+		t.Fatalf("expected no metadata reapply calls for zero-value fields: chmod=%v chown=%v chtimes=%v", chmodCalled, chownCalled, chtimesCalled)
+	}
+}
+
+// TestApplySystemState_LchownFailure_WarnsButStillApplied proves ownership
+// reapply is best-effort: an Lchown failure (commonly EPERM when not
+// running as root) must produce a warning but must NOT block `applied` —
+// the artifact's bytes already downloaded and verified fine.
+func TestApplySystemState_LchownFailure_WarnsButStillApplied(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-lchown-eperm"
+
+	content := []byte("owned by someone else")
+	uploadSystemStateArtifact(t, provider, snapshotID, "owned.txt", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "owned", Category: "config", Path: "owned.txt", SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content), UID: 1000, GID: 1000},
+		},
+	})
+
+	origLchown := lchownFile
+	t.Cleanup(func() { lchownFile = origLchown })
+	lchownFile = func(string, int, int) error { return os.ErrPermission }
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.err != nil {
+		t.Fatalf("unexpected fatal error: %v", result.err)
+	}
+	if !result.applied {
+		t.Fatalf("expected applied=true despite the chown failure (best-effort), warnings: %v", result.warnings)
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "ownership") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning about the failed ownership reapply, got: %v", result.warnings)
 	}
 }
