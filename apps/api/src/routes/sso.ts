@@ -93,7 +93,7 @@ import {
   hashSsoPendingLinkToken,
   SSO_PENDING_LINK_TTL_SECONDS,
 } from '../services/ssoPendingLink';
-import { requestAuthBinding } from './auth/binding';
+import { installAuthBindingReplacement, requestAuthBinding } from './auth/binding';
 import {
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
@@ -367,11 +367,20 @@ async function captureSsoBrowserTransition(c: any): Promise<
     return captured;
   } catch (error) {
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-    if (error instanceof AuthBindingRotationRequiredError
-      || error instanceof AuthBindingUnavailableError
+    // These callers are GET /sso/login/... handlers — top-level browser
+    // navigations the SPA sends the browser to directly, not fetch/XHR
+    // calls. A raw JSON 409/428 body renders as plain text in the browser
+    // instead of landing the user anywhere useful, so redirect to /login
+    // instead — installing the replacement binding cookie first (as every
+    // other issuance entry point does) so the next attempt succeeds.
+    if (error instanceof AuthBindingRotationRequiredError) {
+      installAuthBindingReplacement(c, error.replacement);
+      return { response: c.redirect('/login?error=binding') };
+    }
+    if (error instanceof AuthBindingUnavailableError
       || error instanceof AuthIssuanceConflictError
       || error instanceof AuthIssuanceCapabilityError) {
-      return { response: c.json({ error: 'Authentication bootstrap required' }, 409) };
+      return { response: c.redirect('/login?error=binding') };
     }
     throw error;
   }

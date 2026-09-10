@@ -546,7 +546,9 @@ describe('GET /cf-access-login', () => {
 
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('/login?');
+    expect(res.headers.get('Location')).toContain('reason=binding');
     expect(dbState.lastLoginUpdated).toBe(false);
     expect(servicesState.mintCalls).toEqual([]);
     expect(cookieState.set).toBeNull();
@@ -608,7 +610,11 @@ describe('GET /cf-access-login', () => {
     expect(transitionState.legacyMetrics).toEqual([]);
   });
 
-  it('maps an invalid presented binding to the exact 428 replacement response', async () => {
+  it('installs the replacement binding cookie and redirects to /login on a binding rotation (not raw 428 JSON)', async () => {
+    // This is a top-level browser navigation (the CF Access redirect flow),
+    // not an XHR/fetch call — a raw JSON 428 body renders as plain text in
+    // the browser instead of landing the user back on /login. The cookie
+    // install must still happen so the next attempt succeeds.
     envState.enabled = true;
     transitionState.bindingValue = 'invalid-binding';
     transitionState.finishError = new transitionState.AuthBindingRotationRequiredError({
@@ -623,10 +629,9 @@ describe('GET /cf-access-login', () => {
 
     const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
 
-    expect(res.status).toBe(428);
-    expect(await res.json()).toEqual({
-      error: 'Authentication binding refresh required', reason: 'binding_refresh',
-    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('/login?');
+    expect(res.headers.get('Location')).toContain('reason=binding');
     expect(transitionState.replacement).toBe('b'.repeat(64));
   });
 
@@ -647,9 +652,27 @@ describe('GET /cf-access-login', () => {
       'x-breeze-auth-transition': 'v1',
     });
 
-    expect(res.status).toBe(428);
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('/login?');
     expect(transitionState.replacement).toBe('c'.repeat(64));
     expect(transitionState.legacyMetrics).toEqual([]);
+  });
+
+  it('redirects to /login instead of a raw 409 when auth issuance is temporarily unavailable', async () => {
+    envState.enabled = true;
+    transitionState.beginError = new transitionState.AuthBindingUnavailableError('unavailable');
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience,
+        iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, authEpoch: 3, mfaEpoch: 2 };
+
+    const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toContain('/login?');
+    expect(res.headers.get('Location')).toContain('reason=binding');
   });
 
   it('mints a session and redirects to / with cf-access-login=success on success', async () => {

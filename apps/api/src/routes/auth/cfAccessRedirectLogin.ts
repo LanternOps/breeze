@@ -85,19 +85,21 @@ function loginErrorRedirect(reason: string): Response {
 export const cfAccessRedirectLoginRoutes = new Hono();
 
 function cfAccessIssuanceError(c: Parameters<typeof installAuthBindingReplacement>[0], error: unknown): Response | null {
+  // This handler backs a top-level browser navigation (CF Access redirects
+  // the browser here, not an XHR/fetch call). A raw JSON 428/409 body
+  // renders as plain text in the browser instead of landing the user
+  // anywhere useful — every failure mode below must 302 back to /login
+  // instead, same as every other error branch in this route.
   if (error instanceof AuthBindingRotationRequiredError) {
     installAuthBindingReplacement(c, error.replacement);
-    return c.json({
-      error: 'Authentication binding refresh required',
-      reason: 'binding_refresh',
-    }, 428);
+    return loginErrorRedirect('binding');
   }
   if (
     error instanceof AuthBindingUnavailableError
     || error instanceof AuthIssuanceConflictError
     || error instanceof AuthIssuanceCapabilityError
   ) {
-    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+    return loginErrorRedirect('binding');
   }
   return null;
 }

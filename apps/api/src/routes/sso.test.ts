@@ -34,7 +34,14 @@ vi.mock('../services/redis', () => ({
 }));
 
 const authTransitionMocks = vi.hoisted(() => {
-  class AuthBindingRotationRequiredError extends Error {}
+  class AuthBindingRotationRequiredError extends Error {
+    constructor(
+      readonly replacement: { kind: 'browser' | 'native'; value: string } = { kind: 'browser', value: 'r'.repeat(64) },
+      readonly reason?: string,
+    ) {
+      super('rotation required');
+    }
+  }
   class AuthBindingUnavailableError extends Error {}
   class AuthIssuanceCapabilityError extends Error {}
   class AuthIssuanceConflictError extends Error {}
@@ -3298,15 +3305,36 @@ describe('sso routes', () => {
       expect(setCookie).toContain('breeze_sso_state=');
     });
 
-    it('refuses direct partner SSO initiation when no valid browser binding is present', async () => {
+    it('installs the replacement binding cookie and redirects to /login instead of a raw 409 (top-level nav)', async () => {
+      // GET /sso/login/... is a top-level browser navigation (the SPA sends
+      // the browser here to be redirected on to the IdP) — a raw JSON 409
+      // body renders as plain text instead of landing the user back on
+      // /login. The cookie install must still happen so a retry succeeds.
       vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
       authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
-        new authTransitionMocks.AuthBindingRotationRequiredError(),
+        new authTransitionMocks.AuthBindingRotationRequiredError({ kind: 'browser', value: 'r'.repeat(64) }),
       );
 
       const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
 
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
+      expect(res.headers.get('set-cookie') ?? '').toContain('breeze_auth_binding=');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('redirects to /login instead of a raw 409 when auth issuance is otherwise unavailable', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
+      authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
+        new authTransitionMocks.AuthBindingUnavailableError('unavailable'),
+      );
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
       expect(db.insert).not.toHaveBeenCalled();
     });
 
@@ -3407,6 +3435,23 @@ describe('sso routes', () => {
       expect(res.status).toBe(429);
       expect(vi.mocked(rateLimiter).mock.calls[1]?.[1]).toMatch(/^sso:login:org:/);
       expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('installs the replacement binding cookie and redirects to /login instead of a raw 409 (top-level nav)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        providerSelectChain([{ ...ACTIVE_OIDC_PROVIDER_ROW, orgId: ORG_UUID, partnerId: null }]) as any
+      );
+      authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
+        new authTransitionMocks.AuthBindingRotationRequiredError({ kind: 'browser', value: 'r'.repeat(64) }),
+      );
+
+      const res = await app.request(`/sso/login/${ORG_UUID}`);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?');
+      expect(res.headers.get('location')).toContain('error=binding');
+      expect(res.headers.get('set-cookie') ?? '').toContain('breeze_auth_binding=');
       expect(db.insert).not.toHaveBeenCalled();
     });
   });
