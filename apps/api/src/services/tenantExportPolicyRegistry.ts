@@ -350,7 +350,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "plugin_instances": tablePolicy("org_id", {"included":["id","plugin_id","org_id","enabled","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
   "plugins": tablePolicy("org_id", {"included":["id","org_id","name","slug","version","description","author","homepage","manifest_url","entry_point","status","is_system","installed_at","updated_at","error_message","last_active_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["permissions","hooks","settings"]}),
   "portal_branding": tablePolicy("org_id", {"included":["id","org_id","logo_url","favicon_url","primary_color","secondary_color","accent_color","custom_domain","domain_verified","welcome_message","support_email","support_phone","footer_text","custom_css","enable_tickets","enable_asset_checkout","enable_self_service","created_at","updated_at","enable_dashboard","enable_security","enable_backups","enable_reports","enable_support_usage"],"reviewedIncluded":["enable_password_reset"],"excludedSensitive":[],"excludedOpen":[]}),
-  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash"],"excludedOpen":[]}),
+  // auth_epoch is server-side bearer-session revocation state, not portable
+  // customer content. Exporting it would disclose credential/status transition
+  // history and invite consumers to treat an internal generation as restorable
+  // identity state. Keep it with the password verifier outside tenant exports.
+  "portal_users": tablePolicy("org_id", {"included":["id","org_id","email","name","entra_oid","entra_tenant_id","auth_method","linked_user_id","contact_id","receive_notifications","last_login_at","status","created_at","updated_at"],"reviewedIncluded":["invited_by","invited_at"],"excludedSensitive":["password_hash","auth_epoch"],"excludedOpen":[]}),
   "provision_credential_handles": tablePolicy("org_id", {"included":["id","org_id","device_id","created_by","created_at","expires_at","consumed_at","consumed_from_ip"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":["credentials"]}),
   // partner_id (epic #2135, 2026-08-17): dual ownership — org_id XOR partner_id.
   // A tenant identifier like org_id, so `included`. Note the org export only
