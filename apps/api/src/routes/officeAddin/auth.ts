@@ -29,6 +29,7 @@ import { verifyPassword, hashPassword } from '../../services/password';
 import { consumeMFAToken } from '../../services/mfa';
 import { decryptMfaSecretForMigration } from '../auth/helpers';
 import { ENABLE_2FA } from '../auth/schemas';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
 /**
  * POST /office-addin/auth/exchange — neutral Entra ID token → persona
@@ -365,8 +366,17 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
     }
 
     if (ENABLE_2FA) {
-      if (!user.mfaEnabled || !user.mfaSecret) {
+      if (!user.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
         return { deny: 403, error: 'mfa_enrollment_required' };
+      }
+      const policy = await getEffectiveMfaPolicy({
+        scope: 'partner',
+        userId: user.id,
+        orgId: null,
+        partnerId: user.partnerId,
+      }, { failClosedMethods: true });
+      if (!policy.allowedMethods.totp) {
+        return { deny: 403, error: 'mfa_method_not_allowed' };
       }
       const { plaintext: secret } = decryptMfaSecretForMigration(user.mfaSecret);
       if (!secret || !(await consumeMFAToken(secret, mfaCode, user.id))) {
@@ -380,6 +390,7 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
       userId: user.id,
       partnerId: user.partnerId,
       boundAuthEpoch: user.authEpoch,
+      boundMfaEpoch: user.mfaEpoch,
       mfaVerifiedAt: new Date(),
     });
 

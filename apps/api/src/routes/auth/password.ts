@@ -29,7 +29,12 @@ import {
   requireCurrentPasswordStepUp
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
-import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
+import {
+  advanceUserEpochs,
+  EpochAdvancePreconditionError,
+  revokeAllRefreshFamilies,
+  runPostCommitCleanup,
+} from '../../services/authLifecycle';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -233,19 +238,32 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   // advance, and the durable refresh-family revoke all land in ONE
   // transaction — a successful reset must atomically supersede every
   // sibling reset token AND every existing session/refresh family.
-  await withSystemDbAccessContext(async () =>
-    db.transaction(async (tx) => {
-      await tx.update(users)
-        .set({
-          passwordHash,
-          passwordChangedAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(users.id, userId));
-      await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
-      await revokeAllRefreshFamilies(tx, userId, 'password-reset');
-    })
-  );
+  try {
+    await withSystemDbAccessContext(async () =>
+      db.transaction(async (tx) => {
+        await tx.update(users)
+          .set({
+            passwordHash,
+            passwordChangedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, userId));
+        await advanceUserEpochs(
+          tx,
+          userId,
+          { auth: true, passwordReset: true },
+          { passwordResetEpoch: envelope.passwordResetEpoch, email: live.email },
+        );
+        await revokeAllRefreshFamilies(tx, userId, 'password-reset');
+      })
+    );
+  } catch (error) {
+    if (!(error instanceof EpochAdvancePreconditionError)) throw error;
+    // The password write above is in the same transaction and was rolled back.
+    // Treat a generation/email change during hashing exactly like any other
+    // superseded reset artifact; never disclose which authorizing fact moved.
+    return c.json({ error: 'Invalid or expired reset token' }, 400);
+  }
 
   // Invalidate all sessions — separate legacy mechanism, not absorbed by the
   // lifecycle service (overseer decision 2026-07-11); best-effort, password
@@ -278,6 +296,15 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
 passwordRoutes.post('/change-password', authMiddleware, zValidator('json', changePasswordSchema), async (c) => {
   const auth = c.get('auth');
   const { currentPassword, newPassword } = c.req.valid('json');
+
+  // authMiddleware requires and validates this live generation for every user
+  // session. Retain it as the final mutation precondition so a password reset,
+  // status transition, or competing password change that commits while this
+  // request performs Argon2 work wins rather than being overwritten.
+  const expectedAuthEpoch = auth.token?.aep;
+  if (!Number.isSafeInteger(expectedAuthEpoch)) {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
 
   try {
     await assertPasswordAuthAllowedBySso({
@@ -339,17 +366,34 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
   // so the user-id-scoped refresh_token_families RLS policy admits the
   // write and the `users` self-update passes the self policy — no
   // system-context wrap needed (unlike the two pre-auth paths above).
-  await db.transaction(async (tx) => {
-    await tx.update(users)
-      .set({
-        passwordHash,
-        passwordChangedAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-    await advanceUserEpochs(tx, auth.user.id, { auth: true, passwordReset: true });
-    await revokeAllRefreshFamilies(tx, auth.user.id, 'password-change');
-  });
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(users)
+        .set({
+          passwordHash,
+          passwordChangedAt: new Date(),
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+      await advanceUserEpochs(
+        tx,
+        auth.user.id,
+        { auth: true, passwordReset: true },
+        { authEpoch: expectedAuthEpoch },
+      );
+      await revokeAllRefreshFamilies(tx, auth.user.id, 'password-change');
+    });
+  } catch (error) {
+    if (!(error instanceof EpochAdvancePreconditionError)) throw error;
+    // The verified password belonged to an older credential generation. The
+    // attempted write rolled back with the failed CAS, so answer exactly like
+    // a current-password mismatch and perform no post-commit cleanup/audit.
+    return c.json({
+      error: 'Current password is incorrect',
+      message: 'Current password is incorrect',
+      code: 'invalid_credentials',
+    }, 400);
+  }
 
   // Invalidate all sessions — separate legacy mechanism, not absorbed by the
   // lifecycle service (overseer decision 2026-07-11); best-effort, password

@@ -6,12 +6,16 @@ const {
   revokeAllRefreshFamiliesMock,
   runPostCommitCleanupMock,
   terminateUserRemoteSessionsMock,
+  getRedisMock,
+  revokeTechSessionsForUserMock,
 } = vi.hoisted(() => ({
   dbTransactionMock: vi.fn(),
   advanceUserEpochsMock: vi.fn(),
   revokeAllRefreshFamiliesMock: vi.fn(),
   runPostCommitCleanupMock: vi.fn(),
   terminateUserRemoteSessionsMock: vi.fn(),
+  getRedisMock: vi.fn(),
+  revokeTechSessionsForUserMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -31,12 +35,20 @@ vi.mock('./remoteSessionTeardown', () => ({
   TEARDOWN_FAILED: -1,
 }));
 
+vi.mock('./redis', () => ({ getRedis: getRedisMock }));
+vi.mock('./officeAddin/techSession', () => ({
+  revokeTechSessionsForUser: revokeTechSessionsForUserMock,
+}));
+
 import { invalidateMfaAssuranceAfterFactorChange } from './mfaAssurance';
 import { TEARDOWN_FAILED } from './remoteSessionTeardown';
 
 describe('invalidateMfaAssuranceAfterFactorChange', () => {
   const userId = 'user-123';
-  const fakeTx = { marker: 'tx' } as unknown;
+  const bindingRevokeWhereMock = vi.fn(async () => undefined);
+  const bindingRevokeSetMock = vi.fn(() => ({ where: bindingRevokeWhereMock }));
+  const bindingRevokeUpdateMock = vi.fn(() => ({ set: bindingRevokeSetMock }));
+  const fakeTx = { marker: 'tx', update: bindingRevokeUpdateMock } as unknown;
   const epochRow = { authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 };
 
   beforeEach(() => {
@@ -46,6 +58,8 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     revokeAllRefreshFamiliesMock.mockResolvedValue(undefined);
     runPostCommitCleanupMock.mockResolvedValue({ redisOk: true, permissionCacheOk: true, oauthOk: true });
     terminateUserRemoteSessionsMock.mockResolvedValue(3);
+    getRedisMock.mockReturnValue({ marker: 'redis' });
+    revokeTechSessionsForUserMock.mockResolvedValue(undefined);
   });
 
   // (a) User/family authority is acquired before route-specific factor rows.
@@ -75,6 +89,9 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     revokeAllRefreshFamiliesMock.mockImplementation(async () => {
       callOrder.push('revokeAllRefreshFamilies');
     });
+    bindingRevokeWhereMock.mockImplementation(async () => {
+      callOrder.push('revokeOfficeBinding');
+    });
     runPostCommitCleanupMock.mockImplementation(async () => {
       callOrder.push('runPostCommitCleanup');
       return { redisOk: true, permissionCacheOk: true, oauthOk: true };
@@ -82,6 +99,9 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     terminateUserRemoteSessionsMock.mockImplementation(async () => {
       callOrder.push('terminateUserRemoteSessions');
       return 3;
+    });
+    revokeTechSessionsForUserMock.mockImplementation(async () => {
+      callOrder.push('revokeTechSessions');
     });
 
     const result = await invalidateMfaAssuranceAfterFactorChange(userId, 'test-reason', mutate);
@@ -91,13 +111,17 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     expect(callOrder).toEqual([
       'advanceUserEpochs',
       'revokeAllRefreshFamilies',
+      'revokeOfficeBinding',
       'mutate',
       'runPostCommitCleanup',
+      'revokeTechSessions',
       'terminateUserRemoteSessions',
     ]);
     expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, undefined);
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'test-reason');
+    expect(bindingRevokeUpdateMock).toHaveBeenCalledTimes(1);
     expect(runPostCommitCleanupMock).toHaveBeenCalledWith(userId);
+    expect(revokeTechSessionsForUserMock).toHaveBeenCalledWith({ marker: 'redis' }, userId);
     expect(terminateUserRemoteSessionsMock).toHaveBeenCalledWith(userId);
     expect(result).toEqual({
       mfaEpoch: epochRow.mfaEpoch,
@@ -112,6 +136,16 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true }, undefined);
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'no-mutate');
     expect(result.mfaEpoch).toBe(epochRow.mfaEpoch);
+  });
+
+  it('keeps the durable revoke effective and continues teardown when Redis session cleanup fails', async () => {
+    revokeTechSessionsForUserMock.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    await expect(invalidateMfaAssuranceAfterFactorChange(userId, 'redis-failure')).resolves.toEqual(
+      expect.objectContaining({ mfaEpoch: epochRow.mfaEpoch })
+    );
+    expect(bindingRevokeUpdateMock).toHaveBeenCalledTimes(1);
+    expect(terminateUserRemoteSessionsMock).toHaveBeenCalledWith(userId);
   });
 
   // (c) TEARDOWN_FAILED must be surfaced, not swallowed and not thrown.

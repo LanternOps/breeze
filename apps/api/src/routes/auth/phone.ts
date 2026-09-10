@@ -119,6 +119,76 @@ async function installReplacementSession(
   }
 }
 
+// Send a code to the authenticated user's LIVE SMS factor for a purpose-bound
+// MFA step-up. This is distinct from /mfa/sms/send, whose tempToken authorizes
+// a pre-login challenge. Never accept a caller-supplied phone number here.
+phoneRoutes.post('/mfa/step-up/sms/send', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) return mfaDisabledResponse(c);
+
+  const auth = c.get('auth');
+  const redis = getRedis();
+  if (!redis) return c.json({ error: 'Service temporarily unavailable' }, 503);
+
+  const [user] = await db
+    .select({
+      mfaEnabled: users.mfaEnabled,
+      mfaMethod: users.mfaMethod,
+      phoneVerified: users.phoneVerified,
+      phoneNumber: users.phoneNumber,
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosed: true, failClosedMethods: true });
+  if (
+    !user?.mfaEnabled
+    || user.mfaMethod !== 'sms'
+    || user.phoneVerified !== true
+    || !user.phoneNumber
+    || !policy.allowedMethods.sms
+  ) {
+    return rejectProof(c, 'Invalid credentials', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
+  }
+
+  const userRate = await rateLimiter(
+    redis,
+    `sms:stepup-send:${auth.user.id}`,
+    smsLoginSendLimiter.limit,
+    smsLoginSendLimiter.windowSeconds,
+  );
+  if (!userRate.allowed) return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+
+  const phoneRate = await rateLimiter(
+    redis,
+    `sms:stepup-global:${user.phoneNumber}`,
+    smsLoginGlobalLimiter.limit,
+    smsLoginGlobalLimiter.windowSeconds,
+  );
+  if (!phoneRate.allowed) return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+
+  const twilio = getTwilioService();
+  if (!twilio) return c.json({ error: 'SMS service not configured' }, 501);
+  const result = await twilio.sendVerificationCode(user.phoneNumber);
+  if (!result.success) return c.json({ error: 'Failed to send SMS code' }, 500);
+
+  const orgId = await resolveUserAuditOrgId(auth.user.id);
+  writeAuthAudit(c, {
+    orgId: orgId ?? undefined,
+    action: 'auth.mfa.stepup.sms.sent',
+    result: 'success',
+    userId: auth.user.id,
+    email: auth.user.email,
+    details: { phoneLast4: user.phoneNumber.slice(-4) },
+  });
+  return c.json({ success: true, message: 'SMS code sent' });
+});
+
 // Phone verification - send code (authenticated)
 phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
   if (!ENABLE_2FA) {
@@ -554,6 +624,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
+  c.header('Cache-Control', 'no-store');
   return c.json({
     success: true,
     recoveryCodes: result.recoveryCodes,

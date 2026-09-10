@@ -91,6 +91,15 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '203.0.113.10'),
 }));
 
+const ipAllowlistState = vi.hoisted(() => ({
+  decision: { decision: 'allow' as 'allow' | 'deny', reason: 'matched' },
+}));
+
+vi.mock('../../services/ipAllowlist', () => ({
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+  enforceIpAllowlist: vi.fn(async () => ipAllowlistState.decision),
+}));
+
 vi.mock('../../services/ssoDomainVerification', () => ({
   isDomainVerifiedForOrg: vi.fn().mockResolvedValue(true),
   isSsoProvisioningBlocked: vi.fn().mockResolvedValue(false),
@@ -152,6 +161,8 @@ const USER_ROW = {
   email: 'v@example.com',
   name: 'V',
   orgId: null,
+  partnerId: '00000000-0000-4000-8000-0000000000dd',
+  isPlatformAdmin: false,
   status: 'active',
   passwordHash: '$argon2id$hash',
   mfaEnabled: false,
@@ -199,6 +210,7 @@ function lastRejectionReason(): unknown {
 beforeEach(() => {
   vi.clearAllMocks();
   tableRows.clear();
+  ipAllowlistState.decision = { decision: 'allow', reason: 'matched' };
   vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as never);
   vi.mocked(isDomainVerifiedForOrg).mockResolvedValue(true);
   vi.mocked(isSsoProvisioningBlocked).mockResolvedValue(false);
@@ -229,6 +241,17 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
     expect(linked).toBeTruthy();
+  });
+
+  it('consumes but does not mint a federated link when the completion IP is outside the partner allowlist', async () => {
+    wire();
+    ipAllowlistState.decision = { decision: 'deny', reason: 'not_in_list' };
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+
+    expect(outcome).toEqual({ ok: false, error: 'completion_failed' });
+    expect(lastRejectionReason()).toBe('ip_not_allowed');
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('reuses an already-admitted MFA capability instead of reserving a second operation', async () => {

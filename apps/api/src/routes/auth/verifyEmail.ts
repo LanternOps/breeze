@@ -49,23 +49,17 @@ import {
   type AuthIssuanceCapability,
 } from '../../services/authBrowserTransition';
 import {
-  authBrowserTransitionsEnforced,
   bindIssuedUserSession,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   type AuthorizedUserSession,
   type UserSessionIdentity,
 } from '../../services/userSession';
-import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import {
   getClientRateLimitKey,
   writeAuthAudit,
   toPublicTokens,
-  isAuthTransitionV1Request,
-  authClientUpgradeRequiredResponse,
   installAuthorizedUserSessionCookies,
-  installLegacyUserSessionCookiesDuringTransition,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
@@ -411,8 +405,7 @@ interface RegistrationFacts {
 
 type RegistrationCommit =
   | Readonly<{ kind: 'sign_in' }>
-  | Readonly<{ kind: 'created_guarded'; facts: RegistrationFacts; issued: AuthorizedUserSession }>
-  | Readonly<{ kind: 'created_legacy'; facts: RegistrationFacts }>;
+  | Readonly<{ kind: 'created'; facts: RegistrationFacts; issued: AuthorizedUserSession }>;
 
 async function createRegistrationAccount(
   tx: AuthLifecycleTransaction,
@@ -599,36 +592,21 @@ async function finalizePendingRegistration(
     return c.json({ error: 'Invalid or expired verification link' }, 400);
   }
 
-  const transitionV1 = isAuthTransitionV1Request(c);
-  if (!transitionV1 && authBrowserTransitionsEnforced()) {
-    return authClientUpgradeRequiredResponse(c);
-  }
-
   let committed: RegistrationCommit;
   let capability: AuthIssuanceCapability | null = null;
   try {
-    if (transitionV1) {
-      capability = await beginAuthIssuance(requestAuthBinding(c));
-      const guardedCapability = capability;
-      committed = await finishAuthIssuance(guardedCapability, async (tx) => {
-        const facts = await createRegistrationAccount(tx, rec);
-        if (!facts) return { kind: 'sign_in' as const };
-        const issued = await issueUserSession(registrationIdentity(facts), {
-          tx,
-          capability: guardedCapability,
-          expectedEpochs: { authEpoch: facts.authEpoch, mfaEpoch: facts.mfaEpoch },
-        });
-        return { kind: 'created_guarded' as const, facts, issued };
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    const guardedCapability = capability;
+    committed = await finishAuthIssuance(guardedCapability, async (tx) => {
+      const facts = await createRegistrationAccount(tx, rec);
+      if (!facts) return { kind: 'sign_in' as const };
+      const issued = await issueUserSession(registrationIdentity(facts), {
+        tx,
+        capability: guardedCapability,
+        expectedEpochs: { authEpoch: facts.authEpoch, mfaEpoch: facts.mfaEpoch },
       });
-    } else {
-      const facts = await withSystemDbAccessContext(() =>
-        db.transaction((tx) => createRegistrationAccount(tx, rec)));
-      if (!facts) {
-        committed = { kind: 'sign_in' };
-      } else {
-        committed = { kind: 'created_legacy', facts };
-      }
-    }
+      return { kind: 'created' as const, facts, issued };
+    });
   } catch (error) {
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     if (isPgUniqueViolation(error)) {
@@ -680,9 +658,7 @@ async function finalizePendingRegistration(
       console.warn('[VerifyEmail] Failed to queue signup IP classification:', err instanceof Error ? err.message : err);
     });
   }
-  if (committed.kind === 'created_guarded') {
-    await bindIssuedUserSession(committed.issued);
-  }
+  await bindIssuedUserSession(committed.issued);
 
   try {
     if (facts.partnerRow.trustState === 'probation') {
@@ -752,26 +728,10 @@ async function finalizePendingRegistration(
       }
     }
 
-    if (statusChange && committed.kind === 'created_guarded') {
+    if (statusChange) {
       const issued = await applyGuardedRegistrationStatusChange(c, facts, statusChange);
-      committed = { kind: 'created_guarded', facts, issued };
+      committed = { kind: 'created', facts, issued };
       effectiveStatus = statusChange;
-    }
-
-    if (statusChange && committed.kind === 'created_legacy') {
-      if (facts.partnerRow.status === 'pending' && statusChange === 'active') {
-        const activation = await withSystemDbAccessContext(() => db.transaction((tx) =>
-          activatePendingPartnerAndInvalidateSessions(tx, facts.created.partnerId)));
-        const adminEpochs = activation.epochs.find(
-          (entry) => entry.userId === facts.created.adminUserId,
-        );
-        if (!activation.activated || !adminEpochs) {
-          throw new AuthIssuanceCapabilityError();
-        }
-        effectiveStatus = statusChange;
-      } else {
-        updateSet.status = statusChange;
-      }
     }
 
     if (Object.keys(updateSet).length > 0) {
@@ -780,11 +740,6 @@ async function finalizePendingRegistration(
         await withSystemDbAccessContext(() =>
           db.update(partners).set(updateSet).where(eq(partners.id, facts.created.partnerId)),
         );
-        if (
-          statusChange
-          && committed.kind === 'created_legacy'
-          && 'status' in updateSet
-        ) effectiveStatus = statusChange;
       } catch (statusErr) {
         console.error('[verify-email] hook status/banner update failed', {
           partnerId: facts.created.partnerId,
@@ -827,23 +782,6 @@ async function finalizePendingRegistration(
       enrollUrl: facts.mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
       ...(redirectUrl ? { redirectUrl } : {}),
     };
-    if (committed.kind === 'created_guarded') {
-      writeAuthAudit(c, {
-        action: 'auth.email_verified',
-        result: 'success',
-        userId: facts.created.adminUserId,
-        email: facts.userRow.email,
-        details: { partnerId: facts.created.partnerId, registration: true },
-      });
-      installAuthorizedUserSessionCookies(c, committed.issued);
-      return c.json({
-        ...responseBase,
-        tokens: toPublicTokens(committed.issued),
-      });
-    }
-
-    recordAuthTransitionLegacyIssuer('registration', 'web');
-    const issued = await issueUserSessionLegacyDuringTransition(registrationIdentity(facts));
     writeAuthAudit(c, {
       action: 'auth.email_verified',
       result: 'success',
@@ -851,10 +789,10 @@ async function finalizePendingRegistration(
       email: facts.userRow.email,
       details: { partnerId: facts.created.partnerId, registration: true },
     });
-    installLegacyUserSessionCookiesDuringTransition(c, issued);
+    installAuthorizedUserSessionCookies(c, committed.issued);
     return c.json({
       ...responseBase,
-      tokens: toPublicTokens(issued),
+      tokens: toPublicTokens(committed.issued),
     });
   } catch (err) {
     const response = registrationIssuanceError(c, err);

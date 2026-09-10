@@ -372,23 +372,8 @@ export async function getFamilyForJti(jti: string): Promise<string | null> {
   }
 }
 
-/**
- * Atomically marks the family as revoked in both Redis (hot-path sentinel)
- * and Postgres (durable audit row). Idempotent: a second call against an
- * already-revoked family is a no-op for the PG row's first revocation
- * timestamp (uses `WHERE revoked_at IS NULL`).
- *
- * Uses `withSystemDbAccessContext` for the DB write because reuse-detection
- * runs before the user-scope is established in /refresh — and even if it
- * did run user-scoped, the system-scope path is the conservative choice
- * (it never fails RLS).
- */
-export async function revokeFamily(familyId: string, reason: string): Promise<void> {
-  const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
-
-  // Best-effort Redis flip first. Failure here is logged but the DB update
-  // still goes through — fail-closed semantics live in isFamilyRevoked,
-  // which prefers Redis but falls back to PG on Redis miss.
+/** Publish only the hot-path family sentinel after a caller's durable transaction commits. */
+export async function publishFamilyRevocationSentinel(familyId: string): Promise<boolean> {
   const redis = getRedis();
   if (redis) {
     try {
@@ -397,12 +382,32 @@ export async function revokeFamily(familyId: string, reason: string): Promise<vo
         REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
         '1'
       );
+      return true;
     } catch (error) {
       console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
     }
   } else {
     console.error('[token-revocation] Redis unavailable while revoking family — DB row will still be updated');
   }
+  return false;
+}
+
+/**
+ * Marks the family as revoked in Redis (hot path) and Postgres (durable audit).
+ * Idempotent: a second call preserves the PG row's first revocation timestamp
+ * and reason. Callers that already revoked inside their own transaction should
+ * use publishFamilyRevocationSentinel only after that transaction commits.
+ *
+ * Uses `withSystemDbAccessContext` for the DB write because reuse-detection
+ * runs before the user-scope is established in /refresh.
+ */
+export async function revokeFamily(familyId: string, reason: string): Promise<void> {
+  const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
+
+  // Best-effort Redis flip first. Failure here is logged but the DB update
+  // still goes through — fail-closed semantics live in isFamilyRevoked,
+  // which prefers Redis but falls back to PG on Redis miss.
+  await publishFamilyRevocationSentinel(familyId);
 
   // Durable audit: stamp revoked_at on the PG row (idempotent — only the
   // first revocation wins). Bypass RLS via system scope so the call works

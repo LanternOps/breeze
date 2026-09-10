@@ -2584,7 +2584,22 @@ jobs:
       - name: Login and export token
         id: login
         run: |
+          # Every session-issuance route now requires a durable browser
+          # binding cookie (breeze_auth_binding) and 428s
+          # auth_binding_rotation_required without one — see
+          # routes/auth/binding.ts and services/authBrowserTransition.ts.
+          # Bootstrap one first, the way a real browser client does, and
+          # carry it through the login call via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST http://localhost:3001/api/v1/auth/browser-binding/bootstrap)
+          echo "auth binding bootstrap -> ${BOOTSTRAP_STATUS}"
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           RESPONSE=$(curl -sf -X POST http://localhost:3001/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -d '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
           TOKEN=$(echo "${RESPONSE}" | jq -r '.tokens.accessToken // .token // .accessToken // empty')
@@ -2852,7 +2867,19 @@ jobs:
           if [ -z "${SEEDED_DEVICE}" ]; then
             DEVICE_ID=00000000-0000-4000-8000-000000000000
           fi
+          # Session issuance requires the durable browser binding; bootstrap one
+          # first (as the guided smoke's own login() helper does) and carry it
+          # through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -H 'Origin: https://localhost' \
+            -X POST https://localhost/api/v1/auth/browser-binding/bootstrap)
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
@@ -2928,7 +2955,6 @@ jobs:
       AUTO_MIGRATE: 'false'
       API_PORT: '3005'
       FORCE_HTTPS: 'false'
-      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true'
       AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true'
       CF_ACCESS_TRUST_ENABLED: 'true'
       CF_ACCESS_TEAM_DOMAIN: ci-browser-contract.cloudflareaccess.com
@@ -3133,7 +3159,17 @@ jobs:
       - name: Verify hydration fixture MFA posture
         run: |
           BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          # Session issuance requires the durable browser binding; bootstrap
+          # one first and carry it through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST "${BASE}/api/v1/auth/browser-binding/bootstrap")
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             --data "$(jq -c '.admin' .breeze-stack.json)")
           jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {

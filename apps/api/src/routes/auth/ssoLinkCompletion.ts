@@ -27,6 +27,7 @@ import {
 } from '../../services/ssoPendingLink';
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { auditLogin } from './helpers';
+import { enforceIpAllowlist, isBlocked } from '../../services/ipAllowlist';
 
 /**
  * Shared tail of every SSO-completed sign-in: MFA-claim evaluation, axis
@@ -54,6 +55,8 @@ type UserRow = {
   email: string;
   name: string;
   orgId: string | null;
+  partnerId: string | null;
+  isPlatformAdmin: boolean | null;
   mfaEnabled: boolean | null;
   authEpoch: number;
   mfaEpoch: number;
@@ -89,6 +92,8 @@ export type SsoCompletionErrorCode =
   | 'invalid_role_scope'
   | 'identity_in_use'
   | 'provider_unavailable'
+  | 'ip_not_allowed'
+  | 'ip_check_failed'
   | 'epoch_unavailable';
 
 export type SsoCompletionResult =
@@ -125,6 +130,21 @@ export async function completeSsoLogin(
     tokenExpiresAt,
   } = params;
   const tx = params.tx;
+
+  let ipDecision;
+  try {
+    ipDecision = await enforceIpAllowlist(c, {
+      partnerId: user.partnerId,
+      isPlatformAdmin: user.isPlatformAdmin === true,
+      actorId: user.id,
+      actorEmail: user.email,
+    });
+  } catch {
+    return { ok: false, error: 'ip_check_failed' };
+  }
+  if (isBlocked(ipDecision)) {
+    return { ok: false, error: 'ip_not_allowed' };
+  }
 
   // IdP-asserted MFA — axis-independent, so it is computed here (above the
   // membership branch) and shared by both the org and partner token payloads.

@@ -15,8 +15,9 @@ import {
   partnerUsers,
 } from '../db/schema';
 import { approvalRequests } from '../db/schema/approvals';
-import { authMiddleware, requirePermission } from '../middleware/auth';
-import { rateLimiter, getRedis } from '../services';
+import { authMiddleware, requirePermission, withAuthDbAccessContext } from '../middleware/auth';
+import { rateLimiter, getRedis, publishFamilyRevocationSentinel } from '../services';
+import { revokeMobileDeviceRefreshFamilies } from '../services/authLifecycle';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeClientFamilies } from '../oauth/revocationService';
 import { resolveUserAuditOrgId } from './auth/helpers';
@@ -195,25 +196,42 @@ lifecycleRoutes.post(
     }
 
     const now = new Date();
-    const [updated] = await db
-      .update(mobileDevices)
-      .set({
-        status: 'blocked',
-        blockedAt: now,
-        blockedByUserId: userId,
-        blockedReason: body.reason ?? null,
-        // Clear push tokens so we can't fan out to the revoked device.
-        fcmToken: null,
-        apnsToken: null,
-        notificationsEnabled: false,
-        updatedAt: now,
-      })
-      .where(and(eq(mobileDevices.id, targetId), eq(mobileDevices.userId, userId)))
-      .returning();
+    const { updated, revokedFamilyIds } = await withAuthDbAccessContext(c.get('auth'), async () => {
+      const [blockedDevice] = await db
+        .update(mobileDevices)
+        .set({
+          status: 'blocked',
+          blockedAt: now,
+          blockedByUserId: userId,
+          blockedReason: body.reason ?? null,
+          // Clear push tokens so we can't fan out to the revoked device.
+          fcmToken: null,
+          apnsToken: null,
+          notificationsEnabled: false,
+          updatedAt: now,
+        })
+        .where(and(eq(mobileDevices.id, targetId), eq(mobileDevices.userId, userId)))
+        .returning();
+      if (!blockedDevice) return { updated: null, revokedFamilyIds: [] as string[] };
+      const familyIds = await revokeMobileDeviceRefreshFamilies(
+        db,
+        userId,
+        blockedDevice.deviceId,
+        'mobile-device-blocked',
+      );
+      return { updated: blockedDevice, revokedFamilyIds: familyIds };
+    });
 
     if (!updated) {
       return c.json({ error: 'Failed to block device' }, 500);
     }
+
+    // The explicit context above has committed. Publish hot Redis sentinels
+    // only now; the durable rows plus central mobile check remain authoritative
+    // if publication fails.
+    await Promise.all(revokedFamilyIds.map((familyId) =>
+      publishFamilyRevocationSentinel(familyId)
+    ));
 
     const auditOrgId = await resolveUserAuditOrgId(userId);
     writeRouteAudit(c, {
@@ -389,6 +407,7 @@ async function adminCanReachUser(
   auth: ReturnType<import('hono').Context['get']> & {
     scope: 'system' | 'partner' | 'organization';
     partnerId?: string | null;
+    partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
     accessibleOrgIds?: string[] | null;
     canAccessOrg?: (orgId: string) => boolean;
   },
@@ -404,9 +423,17 @@ async function adminCanReachUser(
       const [partnerRow] = await db
         .select({ partnerId: partnerUsers.partnerId })
         .from(partnerUsers)
-        .where(eq(partnerUsers.userId, targetUserId))
+        .where(
+          and(
+            eq(partnerUsers.userId, targetUserId),
+            eq(partnerUsers.partnerId, auth.partnerId)
+          )
+        )
         .limit(1);
-      if (partnerRow?.partnerId === auth.partnerId) return true;
+      // Partner staff are a partner-wide administrative target. Selected/none
+      // org scope must not become authority over staff merely because the
+      // caller and target share a partner.
+      if (partnerRow) return auth.partnerOrgAccess === 'all';
 
       // Org user under one of partner's orgs
       const [orgRow] = await db
@@ -474,8 +501,8 @@ lifecycleAdminRoutes.post(
     }
 
     const now = new Date();
-    const [updated] = await asSystem(() =>
-      db
+    const { updated, revokedFamilyIds } = await asSystem(async () => {
+      const [blockedDevice] = await db
         .update(mobileDevices)
         .set({
           status: 'blocked',
@@ -488,12 +515,24 @@ lifecycleAdminRoutes.post(
           updatedAt: now,
         })
         .where(eq(mobileDevices.id, targetId))
-        .returning()
-    );
+        .returning();
+      if (!blockedDevice) return { updated: null, revokedFamilyIds: [] as string[] };
+      const familyIds = await revokeMobileDeviceRefreshFamilies(
+        db,
+        userId,
+        blockedDevice.deviceId,
+        'mobile-device-blocked',
+      );
+      return { updated: blockedDevice, revokedFamilyIds: familyIds };
+    });
 
     if (!updated) {
       return c.json({ error: 'Failed to block device' }, 500);
     }
+
+    await Promise.all(revokedFamilyIds.map((familyId) =>
+      publishFamilyRevocationSentinel(familyId)
+    ));
 
     const auditOrgId = await resolveUserAuditOrgId(userId);
     writeRouteAudit(c, {

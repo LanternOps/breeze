@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
@@ -18,6 +18,7 @@ import {
   redactWebhookHeaders,
 } from '../services/notificationChannelSecrets';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../services/outboundHeaders';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
 
@@ -503,6 +504,23 @@ webhookRoutes.patch(
     // form. Mirrors the isMaskedIntegrationSecret no-clobber guard for `secret`.
     const urlUnchanged =
       data.url !== undefined && data.url === redactUrlForLogs(decryptWebhookUrl(webhook));
+    const changedOrigin = data.url !== undefined
+      && !urlUnchanged
+      && urlOriginChanged(decryptWebhookUrl(webhook), data.url);
+
+    if (changedOrigin) {
+      const storedHeaders = normalizeHeaders(decryptWebhookHeaders(webhook.headers));
+      if (storedHeaders.length > 0 && data.headers === undefined) {
+        return c.json({
+          error: 'Custom headers must be re-entered or explicitly cleared when changing the webhook origin',
+        }, 400);
+      }
+      if (data.headers?.some((header) => isMaskedIntegrationSecret(header.value))) {
+        return c.json({
+          error: 'Custom headers must be re-entered or explicitly cleared when changing the webhook origin',
+        }, 400);
+      }
+    }
 
     if (data.url && !urlUnchanged) {
       const urlErrors = await validateWebhookUrlSafetyWithDns(data.url);
@@ -531,14 +549,26 @@ webhookRoutes.patch(
     if (data.headers !== undefined) updatePayload.headers = encryptWebhookHeaders(data.headers, webhook.headers);
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
+    // Bind the endpoint and its outbound headers as one optimistic tuple. DNS
+    // validation above may be slow, so do not hold a row lock across it; the
+    // expected-state predicates instead make a concurrent URL/header editor
+    // lose cleanly rather than attaching one origin's authorization to the
+    // other's destination.
+    const expectedHeaders = webhook.headers === null
+      ? isNull(webhooksTable.headers)
+      : eq(webhooksTable.headers, webhook.headers);
     const [updated] = await db
       .update(webhooksTable)
       .set(updatePayload)
-      .where(eq(webhooksTable.id, webhookId))
+      .where(and(
+        eq(webhooksTable.id, webhookId),
+        eq(webhooksTable.url, webhook.url),
+        expectedHeaders,
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Webhook not found' }, 404);
+      return c.json({ error: 'Webhook changed concurrently; reload and retry' }, 409);
     }
 
     writeRouteAudit(c, {

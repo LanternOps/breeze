@@ -24,6 +24,7 @@ const {
   enableTwoFactorRef,
   assertActiveTenantContextMock,
   TenantInactiveErrorClass,
+  getEffectiveMfaPolicyMock,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
@@ -55,6 +56,7 @@ const {
     enableTwoFactorRef: { current: true },
     assertActiveTenantContextMock: vi.fn(() => Promise.resolve()),
     TenantInactiveErrorClass,
+    getEffectiveMfaPolicyMock: vi.fn(),
   };
 });
 
@@ -100,6 +102,10 @@ vi.mock('../../services/password', () => ({
 
 vi.mock('../../services/mfa', () => ({
   consumeMFAToken: consumeMFATokenMock,
+}));
+
+vi.mock('../../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: getEffectiveMfaPolicyMock,
 }));
 
 vi.mock('../auth/helpers', () => ({
@@ -160,6 +166,7 @@ const ELIGIBLE_BOUND = {
     userId: USER_ID,
     partnerId: PARTNER_ID,
     boundAuthEpoch: 1,
+    boundMfaEpoch: 1,
     mfaVerifiedAt: new Date(),
   },
   user: {
@@ -168,6 +175,7 @@ const ELIGIBLE_BOUND = {
     name: 'Tech User',
     status: 'active',
     authEpoch: 1,
+    mfaEpoch: 1,
     partnerId: PARTNER_ID,
   },
 };
@@ -210,8 +218,10 @@ const BIND_USER = {
   partnerId: PARTNER_ID,
   passwordHash: 'argon2-hash',
   mfaEnabled: true,
+  mfaMethod: 'totp',
   mfaSecret: 'encrypted-secret',
   authEpoch: 1,
+  mfaEpoch: 7,
 };
 
 function buildApp() {
@@ -265,6 +275,11 @@ beforeEach(() => {
   createBindingMock.mockResolvedValue({ id: BINDING_ID });
   hashPasswordMock.mockResolvedValue('dummy-hash');
   assertActiveTenantContextMock.mockResolvedValue(undefined);
+  getEffectiveMfaPolicyMock.mockResolvedValue({
+    required: true,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false },
+  });
 });
 
 // ── Tests: the exchange matrix (spec §9) ────────────────────────────────────
@@ -459,6 +474,7 @@ describe('POST /office-addin/auth/bind', () => {
       userId: USER_ID,
       partnerId: PARTNER_ID,
       boundAuthEpoch: 1,
+      boundMfaEpoch: 7,
       mfaVerifiedAt: expect.any(Date),
     });
     expect(writeAuditEventMock).toHaveBeenCalledWith(
@@ -508,6 +524,39 @@ describe('POST /office-addin/auth/bind', () => {
     const res = await postBind(buildApp());
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'invalid_mfa' });
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('policy-prohibited TOTP is rejected before code consumption or binding creation', async () => {
+    getEffectiveMfaPolicyMock.mockResolvedValue({
+      required: true,
+      allowedMethods: { totp: false, sms: true, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+    });
+
+    const res = await postBind(buildApp());
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'mfa_method_not_allowed' });
+    expect(getEffectiveMfaPolicyMock).toHaveBeenCalledWith({
+      scope: 'partner',
+      userId: USER_ID,
+      orgId: null,
+      partnerId: PARTNER_ID,
+    }, { failClosedMethods: true });
+    expect(consumeMFATokenMock).not.toHaveBeenCalled();
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('a lingering TOTP secret is rejected when TOTP is not the active factor', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, mfaMethod: 'sms' });
+
+    const res = await postBind(buildApp());
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'mfa_enrollment_required' });
+    expect(getEffectiveMfaPolicyMock).not.toHaveBeenCalled();
+    expect(consumeMFATokenMock).not.toHaveBeenCalled();
     expect(createBindingMock).not.toHaveBeenCalled();
   });
 

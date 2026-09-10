@@ -747,7 +747,7 @@ describe('POST /devices/provision', () => {
         );
       }
 
-      it('records the fallback (null), not a spoofed cf-connecting-ip, when the peer is untrusted (SR2-16)', async () => {
+      it('records the socket peer, not a spoofed cf-connecting-ip, in direct mode (SR2-16)', async () => {
         process.env.TRUST_PROXY_HEADERS = 'false';
         delete process.env.TRUSTED_PROXY_CIDRS;
 
@@ -773,10 +773,10 @@ describe('POST /devices/provision', () => {
         const res = await fetchReqWithPeer({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77');
         expect(res.status).toBe(200);
         expect(capturedSet).not.toBeNull();
-        // GUARD-BITE: RED today — provision.ts reads the header raw, so the
-        // persisted consumedFromIp is the spoof '203.0.113.5' instead of null.
+        // Forwarded headers remain untrusted, while the transport peer is
+        // authentic request metadata and must remain available to the audit.
         expect((capturedSet as any).consumedFromIp).not.toBe('203.0.113.5');
-        expect((capturedSet as any).consumedFromIp).toBeNull();
+        expect((capturedSet as any).consumedFromIp).toBe('198.51.100.77');
       });
 
       it('records the real cf-connecting-ip when the peer is a trusted proxy (SR2-16)', async () => {

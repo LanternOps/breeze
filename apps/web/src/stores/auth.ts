@@ -1511,6 +1511,14 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
         if (path !== '/auth/mfa/setup') {
           window.location.href = '/auth/mfa/setup?forced=1';
         }
+      } else if (body?.reason === 'auth_binding_rotation_required') {
+        // The server already installed the replacement `breeze_auth_binding`
+        // cookie on THIS response (Set-Cookie) before answering 428 — the
+        // browser's cookie jar picks it up automatically on the next fetch
+        // via `credentials: 'include'`. So the fix is a bare replay of the
+        // exact same request, once. If the replay 428s again, fall through
+        // and hand it back to the caller exactly like any other error.
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
       }
     } catch {
       // Not JSON or parse failed — surface as a normal 428 to caller

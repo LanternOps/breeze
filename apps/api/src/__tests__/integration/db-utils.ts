@@ -33,6 +33,76 @@ function db() {
 }
 
 // ============================================
+// Durable Session-Binding Utilities
+// ============================================
+
+export interface AuthBindingFixture {
+  /** Raw 64-hex binding value (the `breeze_auth_binding` cookie's value). */
+  value: string;
+  /** Ready-to-send `Cookie` header value, e.g. `breeze_auth_binding=<value>`. */
+  cookie: string;
+}
+
+/**
+ * Bootstraps a fresh durable session-binding the way a real browser client
+ * does before calling any session-issuance route (login, mfa/passkey verify,
+ * refresh, verify-email, accept-invite, register-partner, recovery-code
+ * login, SSO callback, ...). Every such issuance path now requires a valid
+ * `breeze_auth_binding` cookie (or the signed native header for mobile) and
+ * answers 428 `auth_binding_rotation_required` without one — see
+ * services/authBrowserTransition.ts. Mirrors the pattern used by
+ * `freshBrowserBinding` in auth-browser-transition.integration.test.ts.
+ *
+ * Imports `routes/auth/binding` LAZILY (inside the function, not at this
+ * file's top level): that module transitively loads `routes/auth/schemas.ts`,
+ * which freezes module-level consts like `ENABLE_REGISTRATION` from
+ * `process.env` at first import. Several integration suites (e.g.
+ * registerPartnerMfaPolicy, emailRecoveryRegistration) set those env vars in
+ * `beforeAll` and only THEN dynamically import the route modules that read
+ * them — a static top-level import here would have forced that freeze at this
+ * file's own (much earlier) import time, silently reading the pre-`beforeAll`
+ * (unset) value instead. db-utils.ts is imported statically by nearly every
+ * integration test file, so this file must never force-load route modules at
+ * its own top level.
+ */
+export async function bootstrapAuthBinding(): Promise<AuthBindingFixture> {
+  const { AUTH_BINDING_COOKIE_NAME, authBindingRoutes } = await import('../../routes/auth/binding');
+  const response = await authBindingRoutes.request('/browser-binding/bootstrap', { method: 'POST' });
+  if (response.status !== 204) {
+    throw new Error(`auth binding bootstrap failed: ${response.status} ${await response.text()}`);
+  }
+  const setCookie = response.headers.get('set-cookie') ?? '';
+  const value = new RegExp(`(?:^|,\\s*)${AUTH_BINDING_COOKIE_NAME}=([0-9a-f]{64})`).exec(setCookie)?.[1];
+  if (!value) throw new Error(`bootstrap did not return an auth binding cookie: ${setCookie}`);
+  return { value, cookie: `${AUTH_BINDING_COOKIE_NAME}=${value}` };
+}
+
+/**
+ * Bootstraps a binding AND opens + immediately releases one issuance lease
+ * against it, returning the live `{transitionId, generation}` pair that a
+ * completion route (e.g. POST /auth/mfa/verify, POST /auth/mfa/passkey/verify)
+ * independently re-derives from the SAME binding cookie at completion time.
+ *
+ * Use this when a test seeds a pending-MFA (or similar) record directly,
+ * bypassing the real /auth/login step that would normally have captured this
+ * pair — the pending record's `transitionId` / `browserGeneration` must match
+ * what the completion route recomputes from the binding cookie it is sent, or
+ * it 409s `Invalid or expired MFA session` (see routes/auth/mfa.ts and
+ * routes/auth/passkeys.ts). `cancelAuthIssuance` releases the operation lease
+ * without touching the transition's state/generation, exactly as a real
+ * login's finishAuthIssuance does for its own capability.
+ */
+export async function bootstrapAuthTransition(): Promise<
+  AuthBindingFixture & { transitionId: string; generation: number }
+> {
+  const { beginAuthIssuance, cancelAuthIssuance } = await import('../../services/authBrowserTransition');
+  const binding = await bootstrapAuthBinding();
+  const capability = await beginAuthIssuance({ kind: 'browser', value: binding.value });
+  await cancelAuthIssuance(capability);
+  return { ...binding, transitionId: capability.transitionId, generation: capability.generation };
+}
+
+// ============================================
 // User Utilities
 // ============================================
 

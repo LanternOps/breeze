@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { writeRouteAudit } from '../services/auditEvents';
 import { Hono } from 'hono';
 
 const { queueDeliveryMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => ({
@@ -852,4 +853,103 @@ describe('webhook routes', () => {
     // db.delete must not have been called — no mutation on foreign resource
     expect(db.delete).not.toHaveBeenCalled();
   });
+
+  it('does not carry stored custom headers to a changed webhook origin', async () => {
+    const { encryptSecret } = await import('../services/secretCrypto');
+    const { encryptWebhookHeaders } = await import('../services/notificationChannelSecrets');
+    const encryptedUrl = encryptSecret('https://hooks.example.com/deliver') as string;
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([{
+      id: WEBHOOK_ID_1,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Credentialed Hook',
+      url: encryptedUrl,
+      secret: null,
+      events: ['device.created'],
+      headers: encryptWebhookHeaders([{ key: 'Authorization', value: 'Bearer stored' }]),
+      status: 'active',
+      createdBy: 'user-123',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastDeliveryAt: null,
+    }]) as any);
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ url: 'https://attacker.example/deliver' }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/headers.*re-entered/i),
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('allows a webhook origin change when stored headers are explicitly cleared', async () => {
+    const { encryptSecret } = await import('../services/secretCrypto');
+    const { encryptWebhookHeaders } = await import('../services/notificationChannelSecrets');
+    const stored = {
+      id: WEBHOOK_ID_1,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Credentialed Hook',
+      url: encryptSecret('https://hooks.example.com/deliver') as string,
+      secret: null,
+      events: ['device.created'],
+      headers: encryptWebhookHeaders([{ key: 'Authorization', value: 'Bearer stored' }]),
+      status: 'active',
+      createdBy: 'user-123',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastDeliveryAt: null,
+    };
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([stored]) as any);
+    const setSpy = vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...stored, ...values }]) })),
+    }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ url: 'https://replacement.example/deliver', headers: [] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ headers: [] }));
+  });
+
+  it('returns a conflict with no audit or delivery when the endpoint tuple changed concurrently', async () => {
+    const { encryptSecret } = await import('../services/secretCrypto');
+    const stored = {
+      id: WEBHOOK_ID_1,
+      orgId: '11111111-1111-1111-1111-111111111111',
+      name: 'Credentialed Hook',
+      url: encryptSecret('https://hooks.example.com/deliver') as string,
+      secret: null,
+      events: ['device.created'],
+      headers: [],
+      status: 'active',
+      createdBy: 'user-123',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastDeliveryAt: null,
+    };
+    vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([stored]) as any);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => []) })),
+      })),
+    } as any);
+
+    const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'Stale edit' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(queueDeliveryMock).not.toHaveBeenCalled();
+  });
+
 });

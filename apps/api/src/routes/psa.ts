@@ -14,6 +14,7 @@ import {
 import { db } from '../db';
 import { devices, organizationExternalLinks, organizations, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { userRateLimit } from '../middleware/userRateLimit';
+import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
 import { writeRouteAudit } from '../services/auditEvents';
 import { MAX_IMPORT_ROWS, commitOrgImport, previewOrgImport } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
@@ -44,6 +45,7 @@ import {
   validateProviderCredentials,
   validatePsaCredentialBaseUrl
 } from '../services/psa/credentials';
+import { urlOriginChanged } from '../services/credentialOriginBinding';
 
 export const psaRoutes = new Hono();
 
@@ -507,6 +509,7 @@ psaRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   zValidator('json', createConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -672,6 +675,7 @@ psaRoutes.patch(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   zValidator('json', updateConnectionSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -716,7 +720,33 @@ psaRoutes.patch(
       // username/password kept the PAT, which the adapter keeps preferring, so
       // the rotation silently did nothing (#3291 review).
       const existingCredentials = decryptCredentials(existing.credentials) ?? {};
-      const merged = mergeProviderCredentials(existing.provider, existingCredentials, data.credentials);
+      const existingBaseUrl = existingCredentials.baseUrl;
+      const nextBaseUrl = data.credentials.baseUrl;
+      const originChanged = (
+        typeof nextBaseUrl === 'string'
+        && (typeof existingBaseUrl !== 'string' || urlOriginChanged(existingBaseUrl, nextBaseUrl))
+      );
+      let merged: Record<string, unknown>;
+      if (originChanged) {
+        // Start from an empty credential set. Some providers have optional
+        // authorization material (for example ConnectWise clientId), so merely
+        // validating the required replacement keys is insufficient: a merge
+        // could still carry an optional stored secret to the new receiver.
+        const replacement = mergeProviderCredentials(existing.provider, {}, data.credentials);
+        try {
+          validateProviderCredentials(existing.provider, replacement);
+        } catch (error) {
+          if (error instanceof PsaConfigError) {
+            return c.json({
+              error: `All PSA credentials must be re-entered when changing the endpoint origin: ${error.message}`,
+            }, 400);
+          }
+          throw error;
+        }
+        merged = replacement;
+      } else {
+        merged = mergeProviderCredentials(existing.provider, existingCredentials, data.credentials);
+      }
 
       const baseUrlError = validatePsaCredentialBaseUrl(merged);
       if (baseUrlError) {
@@ -790,6 +820,7 @@ psaRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -837,6 +868,7 @@ psaRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
@@ -950,6 +982,7 @@ psaRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireOrgWideIntegrationAccess,
   async (c) => {
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;

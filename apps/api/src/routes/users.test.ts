@@ -2341,7 +2341,17 @@ describe('user routes', () => {
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
-          calls.push('mfaEpoch' in values ? 'epochs' : 'revokedReason' in values ? 'families' : 'mfaSecret' in values ? 'clear-factors' : 'update');
+          calls.push(
+            'mfaEpoch' in values
+              ? 'epochs'
+              : 'revokedReason' in values
+                ? 'families'
+                : 'revokedAt' in values && 'revokedBy' in values
+                  ? 'office-binding'
+                  : 'mfaSecret' in values
+                    ? 'clear-factors'
+                    : 'update'
+          );
           return {
             where: () => {
               const ret: any = Promise.resolve(undefined);
@@ -2379,8 +2389,9 @@ describe('user routes', () => {
       // Cross-user write went through the system-context escape.
       expect(runOutsideDbContext).toHaveBeenCalled();
       expect(withSystemDbAccessContext).toHaveBeenCalled();
-      // One transaction: mfa_epoch bump → families → users clear → passkey delete.
-      expect(calls).toEqual(['epochs', 'families', 'clear-factors', 'delete-passkeys']);
+      // One transaction: mfa_epoch bump → families → Office binding revoke →
+      // users clear → passkey delete.
+      expect(calls).toEqual(['epochs', 'families', 'office-binding', 'clear-factors', 'delete-passkeys']);
       expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
       expect(capturedUpdates.some((v) => 'mfaEpoch' in v)).toBe(true);
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);

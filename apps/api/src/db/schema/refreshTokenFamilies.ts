@@ -43,9 +43,16 @@ export const refreshTokenFamilies = pgTable(
     // Nullable only during the staged W07 rollout. New guarded issuers write a
     // domain-separated digest and rotations compare/swap it under row lock.
     currentRefreshJtiDigest: varchar('current_refresh_jti_digest', { length: 64 }),
+    // Signed mobile installation binding copied from the token identity at
+    // family creation. Nullable for web/SSO families and pre-migration rows.
+    // Deliberately no FK: login can precede mobile_devices registration.
+    mobileDeviceId: varchar('mobile_device_id', { length: 255 }),
   },
   (t) => ({
     userIdx: index('refresh_token_families_user_idx').on(t.userId),
+    userMobileDeviceIdx: index('refresh_token_families_user_mobile_device_idx')
+      .on(t.userId, t.mobileDeviceId)
+      .where(sql`${t.mobileDeviceId} IS NOT NULL`),
     familyUserUnique: unique('refresh_token_families_family_user_unique').on(t.familyId, t.userId),
     currentRefreshJtiDigestCheck: check(
       'refresh_token_families_current_refresh_jti_digest_chk',
