@@ -367,3 +367,26 @@ runDb('scenario 8: a swept retirement row is pruned after 30 days past sweptAt',
   );
   expect(rows).toEqual([]);
 });
+
+runDb('scenario 8b: a retirement swept less than 30 days ago is NOT pruned', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const root = await mkdtemp(join(tmpdir(), 'breeze-gc-'));
+
+  const retirementId = await withSystemDbAccessContext(async () => {
+    const seed = await seedOrgDeviceConfig(unique, root);
+    const [row] = await db.insert(backupSnapshotRetirements).values({
+      orgId: seed.orgId, configId: seed.configId, deviceId: seed.deviceId,
+      snapshotId: 'RECENTLYGONE', storageIdentity: seed.identity, backupType: 'file', reason: 'expired',
+      retiredAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
+      sweptAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // swept only 10 days ago
+    }).returning({ id: backupSnapshotRetirements.id });
+    return row!.id;
+  });
+
+  await sweepUnreferencedBackupObjects();
+
+  const rows = await withSystemDbAccessContext(() =>
+    db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.id, retirementId)),
+  );
+  expect(rows).toHaveLength(1);
+});
