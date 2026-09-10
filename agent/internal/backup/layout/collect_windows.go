@@ -15,6 +15,26 @@ var runCommand = func(ctx context.Context, name string, args ...string) ([]byte,
 
 const collectTimeout = 60 * time.Second
 
+// windowsLayoutScript is run by the Windows collector through
+// `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command`.
+// Get-BitLockerVolume is absent on editions without the BitLocker module, so
+// it is best-effort and reported as Incomplete "bitlocker". Lives in this
+// windows-tagged file (not windows_parse.go, which has no build tag) so it
+// is never flagged "unused" when this package is compiled for a non-Windows
+// GOOS — only collect_windows.go references it.
+const windowsLayoutScript = `$ErrorActionPreference='Stop'
+$disks = @(Get-Disk | Select-Object Number,FriendlyName,SerialNumber,Size,PartitionStyle,IsSystem,IsBoot,LogicalSectorSize,BusType)
+$parts = @(Get-Partition | Select-Object DiskNumber,PartitionNumber,Guid,GptType,Offset,Size,DriveLetter,IsSystem,IsBoot,IsActive,IsHidden,Type,AccessPaths)
+$vols  = @(Get-Volume | Select-Object DriveLetter,Path,UniqueId,FileSystem,FileSystemLabel,Size,SizeRemaining)
+$bl = $null
+try { $bl = @(Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus) } catch { $bl = $null }
+[pscustomobject]@{
+  firmware = [string]$env:firmware_type
+  os       = (Get-CimInstance Win32_OperatingSystem).Caption
+  hostname = $env:COMPUTERNAME
+  disks = $disks; partitions = $parts; volumes = $vols; bitlocker = $bl
+} | ConvertTo-Json -Depth 6 -Compress`
+
 // Collect captures the Windows disk layout through one PowerShell invocation.
 func Collect(ctx context.Context) (*Manifest, error) {
 	ctx, cancel := context.WithTimeout(ctx, collectTimeout)

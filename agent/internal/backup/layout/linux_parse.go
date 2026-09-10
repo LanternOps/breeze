@@ -9,10 +9,6 @@ import (
 	"strings"
 )
 
-// lsblkColumns is the exact -o list the Linux collector requests. Every
-// column exists in util-linux ≥ 2.33 (Ubuntu 20.04 / RHEL 8 baseline).
-const lsblkColumns = "NAME,PATH,TYPE,SIZE,MODEL,SERIAL,RM,PTTYPE,PARTTYPE,PARTUUID,PARTFLAGS,FSTYPE,UUID,LABEL,MOUNTPOINT,FSUSED,START,LOG-SEC"
-
 // flexInt64 decodes a JSON number, a quoted number (util-linux < 2.37) or
 // null.
 type flexInt64 int64

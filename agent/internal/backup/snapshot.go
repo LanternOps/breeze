@@ -1200,7 +1200,9 @@ func publishLayoutManifest(ctx context.Context, provider providers.BackupProvide
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		// Best-effort: we are already returning the write error, a Close
+		// failure on this already-broken fd has nothing new to add.
+		_ = tmp.Close()
 		return fmt.Errorf("stage layout manifest: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

@@ -22,6 +22,14 @@ var (
 
 const collectTimeout = 30 * time.Second
 
+// lsblkColumns is the exact -o list the Linux collector requests. Every
+// column exists in util-linux ≥ 2.33 (Ubuntu 20.04 / RHEL 8 baseline).
+// Lives in this linux-tagged file (not linux_parse.go, which has no build
+// tag) so it is never flagged "unused" when this package is compiled for a
+// non-Linux GOOS — only collect_linux.go and its own tagged test reference
+// it; parseLsblk itself does not.
+const lsblkColumns = "NAME,PATH,TYPE,SIZE,MODEL,SERIAL,RM,PTTYPE,PARTTYPE,PARTUUID,PARTFLAGS,FSTYPE,UUID,LABEL,MOUNTPOINT,FSUSED,START,LOG-SEC"
+
 // Collect captures the Linux disk layout. lsblk is required; every other
 // input is optional and recorded in Manifest.Incomplete when missing.
 func Collect(ctx context.Context) (*Manifest, error) {

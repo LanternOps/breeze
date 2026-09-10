@@ -6,23 +6,6 @@ import (
 	"strings"
 )
 
-// windowsLayoutScript is run by the Windows collector through
-// `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command`.
-// Get-BitLockerVolume is absent on editions without the BitLocker module, so
-// it is best-effort and reported as Incomplete "bitlocker".
-const windowsLayoutScript = `$ErrorActionPreference='Stop'
-$disks = @(Get-Disk | Select-Object Number,FriendlyName,SerialNumber,Size,PartitionStyle,IsSystem,IsBoot,LogicalSectorSize,BusType)
-$parts = @(Get-Partition | Select-Object DiskNumber,PartitionNumber,Guid,GptType,Offset,Size,DriveLetter,IsSystem,IsBoot,IsActive,IsHidden,Type,AccessPaths)
-$vols  = @(Get-Volume | Select-Object DriveLetter,Path,UniqueId,FileSystem,FileSystemLabel,Size,SizeRemaining)
-$bl = $null
-try { $bl = @(Get-BitLockerVolume | Select-Object MountPoint,ProtectionStatus) } catch { $bl = $null }
-[pscustomobject]@{
-  firmware = [string]$env:firmware_type
-  os       = (Get-CimInstance Win32_OperatingSystem).Caption
-  hostname = $env:COMPUTERNAME
-  disks = $disks; partitions = $parts; volumes = $vols; bitlocker = $bl
-} | ConvertTo-Json -Depth 6 -Compress`
-
 type winDisk struct {
 	Number            int    `json:"Number"`
 	FriendlyName      string `json:"FriendlyName"`
