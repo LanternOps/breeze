@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#5449
+---
+
 # Wave 02 — API: GC Sweep Reclaims Retired and Orphaned Prefixes Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1535,15 +1539,15 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
 
 - [ ] Step 5: Commit: `git add apps/api/src/jobs/backupRetention.ts apps/api/src/jobs/backupRetention.test.ts && git commit -m "feat(backup-gc): NULL rows always roots, deferral runs today's algorithm, cap/skip-set/swept_at correctness (D18 §3.4/§3.6 v3)"`
 
-### Task 8: `backupWorker.ts` — log the four new result fields (no worker restructuring — W01 owns that)
+### Task 8: `backupWorker.ts` — remove the sweep's wrapping DB context and log the four new result fields
 
-**Scope correction (read before starting):** W01, not this wave, owns moving `cleanup-expired-snapshots` out of `createBackupWorker`'s blanket `runWithSystemDbAccess` wrap (spec §3.7 point 2 — the job-dispatch-side half of the transaction-boundary fix). This wave's **consumed interface** from W01 is: *"the `cleanup-expired-snapshots` job handler runs retention, then calls `await sweepUnreferencedBackupObjects()`, both outside the blanket per-job DB context — i.e. `sweepUnreferencedBackupObjects` is always invoked at depth 0."* This task does **not** touch `createBackupWorker`'s job-dispatch switch (`~99-118`) at all. It also does **not** rename `sweepUnreferencedBackupObjects` — W01's call site (`processCleanupExpiredSnapshots`, `~366`) depends on that exact export name and signature being unchanged, which is why Task 7 keeps the name as-is throughout. This wave's own defense of the depth-0 assumption is the `assertOutsideHeldDbContext` tripwire added inside `sweepStorageIdentity` in Task 7 — not a restructure here.
+**Scope correction (read before starting):** W01, not this wave, owns moving `cleanup-expired-snapshots` out of `createBackupWorker`'s blanket `runWithSystemDbAccess` wrap (spec §3.7 point 2 — the job-dispatch-side half of the transaction-boundary fix), and this task does **not** touch `createBackupWorker`'s job-dispatch switch (`~99-118`) at all. But per spec §3.7's last paragraph, W01's `processCleanupExpiredSnapshots` calls the sweep as `await withSystemDbAccessContext(() => sweepUnreferencedBackupObjects())` — ONE system context wrapping the ENTIRE sweep call, opened after retention has committed per row (today's read shape, kept so the sweep's reads still had working GUCs at the point W01 hands off). This task's actual code change is to **remove that wrapper** so the call becomes bare (`await sweepUnreferencedBackupObjects();`) at depth 0 — Task 7's sweep now opens its own short per-identity contexts internally and does every storage call outside them, so a context still wrapping the whole call would defeat that split. This task also does **not** rename `sweepUnreferencedBackupObjects` — its exact export name and signature stay unchanged, which is why Task 7 keeps the name as-is throughout. This wave's own defense of the depth-0 assumption is both this wrapper removal AND the `assertOutsideHeldDbContext` tripwire added inside `sweepStorageIdentity` in Task 7.
 
 **Files:** Modify `apps/api/src/jobs/backupWorker.ts:324-390` (`processCleanupExpiredSnapshots` only — its return type, its `try` block around the `sweepUnreferencedBackupObjects()` call, and its `return`). No other part of `backupWorker.ts` is touched by this task.
 
 **Interfaces:**
-- Consumes: the extended `BackupGcResult` from Task 7 (`sweepUnreferencedBackupObjects(): Promise<BackupGcResult>`, name and call depth unchanged — W01's consumed-interface guarantee above).
-- Produces: extended return type `{ deleted, skipped, prunedByMaxVersions, failed, gcDeleted, gcSkippedIdentities, gcBlockedIdentities, gcRetiredSwept, gcOrphansSwept, gcDeferredIdentities, gcUnreachableIdentities }`.
+- Consumes: the extended `BackupGcResult` from Task 7, and W01's `processCleanupExpiredSnapshots` shape — per spec §3.7's last paragraph, W01 calls the sweep as `await withSystemDbAccessContext(() => sweepUnreferencedBackupObjects())` (ONE system context wrapping the whole sweep call, opened after retention has committed per row — today's read shape, kept so the sweep's DB reads still have working GUCs at the call site W01 hands off from).
+- Produces: that same call site with the `withSystemDbAccessContext(...)` wrapper REMOVED — `await sweepUnreferencedBackupObjects();` bare, at depth 0 — since Task 7's `sweepUnreferencedBackupObjects` now opens its own short per-identity contexts internally and does every storage call outside them; plus the extended return type `{ deleted, skipped, prunedByMaxVersions, failed, gcDeleted, gcSkippedIdentities, gcBlockedIdentities, gcRetiredSwept, gcOrphansSwept, gcDeferredIdentities, gcUnreachableIdentities }`.
 
 **Cross-wave coordination note:** W01 restructures `processCleanupExpiredSnapshots`'s retention half (per-row short contexts) and moves its own call site out of the blanket wrap. This task's diff is scoped to the `try`/`return` around the `sweepUnreferencedBackupObjects()` call inside that same function — a small, easily-mergeable hunk, but still touching a function W01 is also editing. Whichever branch merges second should rebase onto the other's version of `processCleanupExpiredSnapshots` rather than blindly overwriting it (flagged in the PR checklist below), though the surface area of overlap is now much smaller than a full dispatch-switch restructure.
 
@@ -1595,6 +1599,11 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   let gcDeferredIdentities = 0;
   let gcUnreachableIdentities = 0;
   try {
+    // W01 hands this off as `await withSystemDbAccessContext(() =>
+    // sweepUnreferencedBackupObjects())` — remove that wrapper here. The
+    // sweep (Task 7) now opens its own short per-identity contexts and does
+    // every storage call outside them, so wrapping the whole call in one
+    // context would defeat that split (§3.7) — the call must be bare, depth 0.
     const gcResult = await sweepUnreferencedBackupObjects();
     gcDeleted = gcResult.deleted;
     gcSkippedIdentities = gcResult.skippedIdentities;

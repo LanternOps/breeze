@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#5449
+---
+
 # Wave 03 — Agent/helper: server-owned dedupe base, leases, never delete — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#5449
+---
+
 # Wave 01 — API: server-chosen base, pins, leases, retirements, storage identity, lineage — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -23,7 +27,7 @@
   - `BACKUP_BASE_LEASE_MS` — default 7 d (`604_800_000`), production floor 1 h.
   - `BACKUP_RESTORE_PIN_LINGER_MS` — default 7 d, production floor 1 h.
   - `BACKUP_PUBLISH_MARGIN_MS` — default 1 h (`3_600_000`), production floor 5 min.
-- `normalizeStorageIdentity(provider, providerConfig)` (exported, `apps/api/src/jobs/backupRetention.ts:661`) is the ONE identity function for live TypeScript code paths. The migration's backfill replicates its logic in PL/pgSQL for a **guarded** subset of rows only (spec §3.6) — see Task 1's open question on fidelity.
+- `normalizeStorageIdentity(provider, providerConfig)` (exported, `apps/api/src/jobs/backupRetention.ts:661`) is the ONE identity function for live TypeScript code paths. Migration `140005` does NOT replicate it in SQL and does not backfill `backup_snapshots.storage_identity` at all (coordinator decision, spec §3.6/§4 amended) — every row starts NULL and is self-healed later by the W02 GC sweep from a live bucket listing.
 - Registries to touch: `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`), `apps/api/src/routes/devices/core.ts` (`CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`), `apps/api/src/services/tenantExportPolicyRegistry.ts` (`CORE_TENANT_EXPORT_POLICY`). `rls-coverage.integration.test.ts` needs NO new allowlist entry (shape 1 = plain `org_id` column = auto-discovered).
 - Lock order for the base pin is **job, then snapshot** (mirrors `routes/devices/moveOrg.ts:248-253`'s "lock parents in a fixed order as the transaction's first statements" pattern).
 
@@ -33,6 +37,7 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 
 - `apps/api/src/db/schema/backup.ts:207-278` (`backupJobs`) — no `baseSnapshotId`/`publishLeaseExpiresAt`/`storageIdentity` columns exist yet. `:247` `snapshotId varchar(BACKUP_SNAPSHOT_ID_MAX_LENGTH)`.
 - `apps/api/src/db/schema/backup.ts:280-337` (`backupSnapshots`) — `:300` `isIncremental boolean default(false)` and `:305-308` `parentSnapshotId` self-FK `ON DELETE SET NULL` already exist (D17, migration `2026-10-15-140004`) and are never written by the live write path. No `storageIdentity` column yet.
+- `apps/api/src/db/schema/backup.ts:330-332` — `snapshotIdIdx: index('backup_snapshots_snapshot_id_idx').on(table.snapshotId)` is a PLAIN, NON-UNIQUE index — `backup_snapshots.snapshot_id` (the agent-supplied string) carries no uniqueness constraint of any kind at the DB level. Review fix implication: every lookup in this plan that matches a row by a bare `snapshotId` string (dispatch's base-candidate re-check, retention's backup-pin check, the late-result fence's base lookup, reconcile's base-existence check) must ALSO be scoped by `storageIdentity`, or it is not guaranteed to identify one specific row.
 - `apps/api/src/db/schema/backup.ts:62` — `IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const`, exported from this module.
 - `apps/api/migrations/2026-10-15-140004-backup-snapshot-lineage-fk-set-null.sql` (full file read) — the newest shipped migration; confirmed via `ls apps/api/migrations/*.sql | sort | tail -1` that no later-sorting file exists, so `140005`/`140006` are free, correctly-ordered slots.
 - `apps/api/src/jobs/backupRetention.ts:661-672` — `normalizeStorageIdentity` verbatim:
@@ -54,7 +59,7 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 - `apps/api/src/jobs/backupWorker.ts:60-64` — `const { db } = dbModule;` and `runWithSystemDbAccess = (fn) => typeof dbModule.withSystemDbAccessContext === 'function' ? dbModule.withSystemDbAccessContext(fn) : fn()`.
 - `apps/api/src/jobs/backupWorker.ts:77-130` (`createBackupWorker`, full read) — the BullMQ processor. `dispatch-backup` is special-cased **outside** the blanket wrap at `:89-99` (comment `:82-88` explains why: Redis/WS I/O via `agentCommandRelay` must not pin a pooled connection idle-in-transaction). Every other job type — including `cleanup-expired-snapshots` at `:109-111` — runs inside `return runWithSystemDbAccess(async () => { switch (data.type) { ... } })` at `:101`. `withDbAccessContext`/`withSystemDbAccessContext` (`apps/api/src/db/index.ts:525-554,610`) open exactly one real Postgres transaction (`baseDb.transaction(...)`) when no ambient context is already active, and are a no-op passthrough when nested inside one that already is. **This is the bug §3.7 fixes**: today, every retirement insert + row delete `cleanupExpiredSnapshots` performs, across every org and every candidate row, plus the entire GC sweep that follows it, all share the ONE transaction opened at `:101` — a later `failed > 0` throw or any savepoint rollback undoes retirements that already "committed" from the caller's point of view.
 - `apps/api/src/jobs/backupWorker.ts:325-395` — `processCleanupExpiredSnapshots` verbatim: loops `db.selectDistinct({ orgId }).from(backupSnapshots)`, calls `cleanupExpiredSnapshots(orgId)` per org, then `sweepUnreferencedBackupObjects()` once (try/catch, GC failure never fails the job), then the deliberate D17 `if (failed > 0) throw ...` **last**, after the sweep has already run.
-- `apps/api/src/jobs/backupRetention.ts:982` — `sweepUnreferencedBackupObjects` has **no internal `withSystemDbAccessContext`/`withDbAccessContext` call of its own** — it relies entirely on the ambient context the caller already opened. Pulling `cleanup-expired-snapshots` out of the blanket wrap (as this wave must) would leave it running with NO context at all unless its call site is separately wrapped — Task 8 wraps the call site (not its internals; internal per-identity context splitting is W02's §3.4/§3.7-item-2 job).
+- `apps/api/src/jobs/backupRetention.ts:982` — `sweepUnreferencedBackupObjects` has **no internal `withSystemDbAccessContext`/`withDbAccessContext` call of its own** — it relies entirely on the ambient context the caller already opened. Pulling `cleanup-expired-snapshots` out of the blanket wrap (as this wave must) would leave this function's DB reads running with NO context at all unless Task 8's call site compensates. Per the coordinator's authoritative call-shape contract, Task 8 wraps the sweep call in exactly ONE `runWithSystemDbAccess`/`withSystemDbAccessContext` call (matching today's shape, so the function's existing GUC-dependent reads keep working) — internal per-identity context splitting is left entirely to W02 (§3.4/§3.7 item 2).
 - `apps/api/src/jobs/backupWorker.ts:609-778` (`prepareBackupDispatchTargets`, full read) — builds `targets` (`:652`), loops `for (let i = 0; i < targets.length; i++)` (`:703`), creates a child `backup_jobs` row via `.insert(backupJobs)...returning()` for `i > 0` (`:713-733`, reusing `data.jobId` for `i === 0`), then builds `command.payload` at `:742-762`: `{ jobId, configId, provider, providerConfig: commandProviderConfig, storageEncryption, ...target.payload }` — no base/lease/identity fields today. This is the exact insertion point.
 - `apps/api/src/jobs/backupWorker.ts:399-431` — `resolveBackupTargets`: `case 'file'` and `case 'system_image'` both return `commandType: 'backup_run'`; hyperv/mssql return `hyperv_backup`/`mssql_backup` — never base-pinned. `system_image` payload is `{ systemImage: true }`; `file` payload is `{ paths, excludes? }`.
 - `apps/api/src/jobs/backupWorker.ts:26` — drizzle-orm import is `eq, ne, and, sql, isNull, lt, inArray` — `desc`, `or`, `gt` are NOT yet imported and must be added.
@@ -76,10 +81,17 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 - `apps/api/src/jobs/backupRetention.test.ts:1-75` (full read) — the `chainable(rows)` mock helper (`from/where/leftJoin/innerJoin/orderBy/limit` all return `obj`, `.then()` resolves `rows`), a FIFO `selectQueue` consumed by `mockDb.select`, `vi.mock('../db', () => ({ db: mockDb }))`. **No `.for()` method on `chainable`, no `insert`, no `withSystemDbAccessContext` export from the mock today** — Task 9's test setup must add all three.
 - `apps/api/src/jobs/backupWorker.test.ts:1-59` (full read) — `mockDb` with `select/from/where/limit` chainable via `mockReturnThis()`, `vi.mock('../db', () => ({ db: mockDb, withSystemDbAccessContext: undefined, runOutsideDbContext: (fn) => fn(), SYSTEM_DB_ACCESS_CONTEXT: {...} }))`, `cleanupExpiredSnapshots`/`sweepUnreferencedBackupObjects` mocked wholesale from `./backupRetention`, `__testOnly` exported from `backupWorker.ts` for driving `processDispatchBackup` directly. No `mockDb.transaction` today — Task 6's test adds one.
 - `apps/api/src/__tests__/integration/staleBackupReaper.integration.test.ts` (full read) — the real-DB integration-test convention this wave's new suites mirror: `import './setup'`, `it.runIf(!!process.env.DATABASE_URL)`, seed via `withSystemDbAccessContext(async () => { ... insert partner/org/site/device/config/job ... })`, exercise the real function, assert via a second `withSystemDbAccessContext` read.
+- **Round-2 review findings, independently re-verified:**
+  - `apps/api/src/db/index.ts:124-129` — the REAL `DbAccessContext` interface: `{ scope: DbAccessScope; orgId: string | null; accessibleOrgIds: string[] | null; accessiblePartnerIds?: string[] | null; userId?: string | null; currentPartnerId?: string | null; ... }`. There is NO `partnerId` field — an earlier draft's `{ scope, orgId, partnerId: null }` in the RLS forge test was simply a no-op extra property, not a real context value.
+  - `apps/api/src/__tests__/integration/agentRollbackRls.integration.test.ts:12-13` — the established `orgContext(orgId)` helper convention: `{ scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null }`. `:105` confirms a Drizzle `.insert(...)` rejection wraps the real Postgres error under `.cause` (`rejects.toMatchObject({ cause: { code: '23505' } })`), while `:128`'s raw `db.execute(sql\`...\`)` rejection carries `.code` at the top level instead — the two are NOT interchangeable.
+  - `apps/api/src/__tests__/integration/db-utils.ts:59,106,146` — `createUser`/`createPartner`/`createOrganization` are the established seed helpers this suite's integration tests use in preference to hand-rolled inserts; no `createDevice` helper exists there (device rows are inserted directly, as `staleBackupReaper.integration.test.ts` and this plan's own tests already do).
+  - `apps/api/scripts/check-drift.ts:1-31` (header) — `db:check-drift` verifies ONLY that the hand-written migration set applies cleanly and that `breeze_migrations` has one row per file; its own comment block is explicit that "Schema-vs-live-DB structural drift" is deliberately NOT checked here (drizzle-kit's introspect/generate round-trip produces too many false positives in this repo) — that is covered instead by the real-DB integration tests and PR review. It CANNOT fail or pass based on a Drizzle schema TypeScript change alone.
+  - `apps/api/src/testUtils/integrationDatabaseSafety.ts` — `assertTestDatabaseUrlSafe` REFUSES any connection whose database name doesn't match `/^breeze_test(_[a-z0-9]+)?$/`, whose host isn't in a local allowlist, or whose port is `5432` (the dev/prod default) — the dev-DB URL used elsewhere in this repo's docs (`postgresql://breeze:breeze@localhost:5432/breeze`) is exactly the shape this rejects. `apps/api/src/__tests__/integration/setup.ts:32-33` defaults `DATABASE_URL`/`DATABASE_URL_APP` to `postgresql://breeze_test:breeze_test@localhost:5433/breeze_test` when unset, and `docker-compose.test.yml:27-33` provisions exactly that database on port 5433 — the integration runner needs NO `DATABASE_URL` override at all locally as long as that compose service is up.
+  - `apps/api/src/jobs/queueSchemas.ts` — `backupSnapshotSummarySchema` (the block starting `const backupSnapshotSummarySchema = z.object({`) is `.strict()` and today declares only `id`/`timestamp`/`size`/`files` — none of this wave's `baseSnapshotId`/`formatVersion`/`backupIdentity` fields. `apps/api/src/jobs/backupEnqueue.ts:79-117` — `ProcessResultsResult` is a plain (non-Zod) TS interface with the same gap at its `snapshot?: {...}` sub-type (`:105-115`). `enqueueBackupResults` (`:161-187`) parses its `result` argument through `backupQueueJobDataSchema.parse(...)` — the same schema `backupWorker.ts`'s `parseQueueJobData` uses at `:81` — so a `.strict()` mismatch either throws at enqueue time or silently strips the fields, and either way the lineage data added in `resultSchemas.ts` (the WS-ingress schema) never reaches `backupResultPersistence.ts`.
 
 ## File structure
 
-- **Create** `apps/api/migrations/2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql` — new `backup_jobs` columns + partial index; nullable `backup_snapshots.storage_identity` + guarded SQL backfill.
+- **Create** `apps/api/migrations/2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql` — new `backup_jobs` columns + partial index; nullable `backup_snapshots.storage_identity` column, DDL only, no backfill.
 - **Create** `apps/api/migrations/2026-10-15-140006-backup-snapshot-retirements.sql` — new table + shape-1 RLS.
 - **Create** `apps/api/src/services/backupGcKnobs.ts` + `apps/api/src/services/backupGcKnobs.test.ts` — shared per-run env-knob resolver.
 - **Modify** `apps/api/src/db/schema/backup.ts` — add columns to `backupJobs`/`backupSnapshots`, new `backupSnapshotRetirements` table.
@@ -88,19 +100,20 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 - **Modify** `apps/api/src/jobs/staleCommandReaper.ts` — new `reapCommandlessPendingRestores` domain.
 - **Modify** `apps/api/src/jobs/backupRetention.ts` — per-row system-context retention with pin checks + retirement insert.
 - **Modify** `apps/api/src/routes/backup/resultSchemas.ts` — lineage fields on `backupSnapshotResultSchema`.
-- **Modify** `apps/api/src/services/backupResultPersistence.ts` — lineage on write + late-result fence.
-- **Modify** `apps/api/src/services/backupSnapshotReconcile.ts` — forward lineage, refuse retired/too-old/base-missing adoption.
-- **Modify** `apps/api/src/routes/backup/configs.ts` — `warnings: ['storage_identity_changed']` on PATCH.
-- **Test (modify)** `apps/api/src/jobs/backupWorker.test.ts`, `apps/api/src/jobs/backupRetention.test.ts`, `apps/api/src/jobs/staleCommandReaper.test.ts`, `apps/api/src/services/backupResultPersistence.test.ts`, `apps/api/src/services/backupSnapshotReconcile.test.ts`, `apps/api/src/routes/backup/configs.test.ts`.
+- **Modify** `apps/api/src/services/backupResultPersistence.ts` — lineage on write + late-result fence (device-scoped, `FOR UPDATE`-atomic, identity-scoped).
+- **Modify** `apps/api/src/jobs/queueSchemas.ts`, `apps/api/src/jobs/backupEnqueue.ts` — propagate the new lineage fields through the BullMQ queue schema and `ProcessResultsResult` interface (review fix — otherwise stripped/rejected before persistence ever sees them).
+- **Modify** `apps/api/src/services/backupSnapshotReconcile.ts` — forward lineage, refuse retired/too-old/base-missing/late-result-fenced adoption; scope the base-existence lookup by `storageIdentity`.
+- **Modify** `apps/api/src/routes/backup/configs.ts` — `warnings: string[]` (always present) on PATCH.
+- **Test (modify)** `apps/api/src/jobs/backupWorker.test.ts`, `apps/api/src/jobs/backupRetention.test.ts`, `apps/api/src/jobs/staleCommandReaper.test.ts`, `apps/api/src/services/backupResultPersistence.test.ts`, `apps/api/src/services/backupSnapshotReconcile.test.ts`, `apps/api/src/routes/backup/configs.test.ts`, `apps/api/src/jobs/backupEnqueue.test.ts` (new queue round-trip case).
 - **Test (new)** `apps/api/src/__tests__/integration/backupRetentionPins.integration.test.ts`, `apps/api/src/__tests__/integration/backupSnapshotRetirementsRls.integration.test.ts`.
 
 ---
 
-### Task 1: Migration 140005 — `backup_jobs` pin/identity columns + guarded SQL backfill for `backup_snapshots.storage_identity`
+### Task 1: Migration 140005 — `backup_jobs` pin/identity columns + nullable `backup_snapshots.storage_identity` (DDL only)
 
 **Files:** Create `apps/api/migrations/2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql`.
 
-**Decision (backfill mechanism):** the spec (§3.6/§4) is explicit that this must be a SQL backfill inside the migration, guarded to only touch rows whose config was **not** edited after the snapshot (`backup_configs.updated_at <= backup_snapshots.timestamp`) — everything else, including every NULL-`config_id` row, stays NULL and is self-healed later by the GC sweep (W02) from the storage listing. This supersedes a TS-script approach an earlier draft of this plan used; the guard exists precisely so the fidelity gap between `normalizeStorageIdentity`'s `path.resolve()`/`new URL()` semantics and a hand-written SQL equivalent only matters for the *unguarded* (self-healing) rows, not the ones this migration commits. See the open question below for what's still imperfect even inside the guard.
+**Decision (no backfill — coordinator directive, spec §3.6/§4 amended):** this migration is DDL only. `backup_snapshots.storage_identity` is added nullable with **no UPDATE and no `breeze.scope` elevation** — every existing row is simply left NULL. W02's sweep self-heals each NULL row by matching it against a live bucket listing (per row id), so no SQL or TS backfill of any kind is needed here. This replaces an earlier draft of this task that ported `normalizeStorageIdentity` into PL/pgSQL for a guarded subset of rows — dropped entirely, not merely deferred.
 
 - [ ] Step 1: Write the failing test — this migration has no unit-testable TS surface; the "red" step is observing the column/table absence against a real DB.
   Command: `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "\d backup_jobs"` → confirm `base_snapshot_id`/`publish_lease_expires_at`/`storage_identity` are absent.
@@ -119,14 +132,13 @@ All of the below was verified directly against the worktree at `/Users/toddhebeb
 -- (base or not) at DISPATCH time only — it is never renewed (no delivery
 -- channel exists to renew it; see backupWorker.ts's stampDispatchPinAndIdentity
 -- docstring). storage_identity on backup_snapshots is nullable FOREVER: no
--- follow-up NOT NULL migration exists for it. Rows this migration cannot
--- confidently attribute (config edited after the snapshot, or no config_id at
--- all) are left NULL and self-healed later by the GC sweep (W02) from the live
--- storage listing.
+-- follow-up NOT NULL migration exists for it, and this migration does NOT
+-- backfill it — every existing row is left NULL. The W02 GC sweep self-heals
+-- each NULL row by matching it (by row id) against a live bucket listing; no
+-- SQL or TS backfill of any kind is required or attempted here.
 --
--- Idempotent: IF NOT EXISTS on every column/index; the backfill only touches
--- rows where storage_identity IS NULL, so re-running is a no-op once the
--- eligible set has already been filled.
+-- DDL only — no UPDATE, no breeze.scope elevation needed. Idempotent:
+-- IF NOT EXISTS on every column/index.
 
 DO $$
 BEGIN
@@ -143,66 +155,7 @@ CREATE INDEX IF NOT EXISTS backup_jobs_base_snapshot_id_idx
 DO $$
 BEGIN
   ALTER TABLE backup_snapshots ADD COLUMN IF NOT EXISTS storage_identity text;
-  RAISE NOTICE 'backup_snapshots: storage_identity ensured (nullable, no NOT NULL — self-healed by the W02 GC sweep)';
-END $$;
-
--- Guarded backfill (§3.6): only for rows whose config was NOT edited after the
--- snapshot was taken, so the config's CURRENT provider/provider_config is
--- known to be the same one the snapshot was actually written under. This is a
--- best-effort PL/pgSQL port of normalizeStorageIdentity
--- (apps/api/src/jobs/backupRetention.ts:661-672) — see the open question below
--- for where it can diverge from the TS function.
-DO $$
-DECLARE
-  backfilled_count integer := 0;
-  left_null_count integer := 0;
-BEGIN
-  WITH candidates AS (
-    SELECT s.id,
-           c.provider,
-           c.provider_config
-    FROM backup_snapshots s
-    JOIN backup_configs c ON c.id = s.config_id
-    WHERE s.storage_identity IS NULL
-      AND c.updated_at <= s."timestamp"
-  ),
-  computed AS (
-    SELECT
-      id,
-      CASE
-        WHEN provider = 'local' THEN
-          'local::' || regexp_replace(
-            COALESCE(provider_config->>'path', provider_config->>'basePath', ''),
-            '/+$', ''
-          )
-        ELSE
-          provider || '::' ||
-          CASE
-            WHEN provider_config->>'endpoint' IS NULL OR btrim(provider_config->>'endpoint') = '' THEN ''
-            WHEN lower(regexp_replace(regexp_replace(provider_config->>'endpoint', '^[a-zA-Z]+://', ''), '/.*$', ''))
-                 ~ '^s3(\.dualstack)?([.-][a-z0-9-]+)?\.amazonaws\.com(:[0-9]+)?$'
-              THEN ''
-            ELSE lower(regexp_replace(regexp_replace(provider_config->>'endpoint', '^[a-zA-Z]+://', ''), '/.*$', ''))
-          END
-          || '::' ||
-          btrim(COALESCE(provider_config->>'bucket', provider_config->>'bucketName', ''))
-      END AS identity
-    FROM candidates
-  )
-  UPDATE backup_snapshots s
-  SET storage_identity = computed.identity
-  FROM computed
-  WHERE s.id = computed.id;
-
-  GET DIAGNOSTICS backfilled_count = ROW_COUNT;
-  IF backfilled_count > 0 THEN
-    RAISE WARNING 'backup_snapshots storage_identity backfill: % row(s) backfilled from an unedited-since-snapshot config', backfilled_count;
-  END IF;
-
-  SELECT count(*) INTO left_null_count FROM backup_snapshots WHERE storage_identity IS NULL;
-  IF left_null_count > 0 THEN
-    RAISE WARNING 'backup_snapshots storage_identity backfill: % row(s) left NULL (config edited after the snapshot, or config_id NULL) — the W02 GC sweep self-heals these from the storage listing per spec §3.6', left_null_count;
-  END IF;
+  RAISE NOTICE 'backup_snapshots: storage_identity ensured (nullable, no NOT NULL, no backfill — every row starts NULL and is self-healed by the W02 GC sweep from a live bucket listing)';
 END $$;
 ```
 
@@ -210,10 +163,10 @@ END $$;
   Commands:
   - `pnpm db:migrate`
   - `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "\d backup_jobs"` — confirm all three columns present.
-  - `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "SELECT count(*) FROM backup_snapshots WHERE storage_identity IS NOT NULL;"` — non-zero if any pre-existing rows had an unedited config.
+  - `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "SELECT count(*) FROM backup_snapshots WHERE storage_identity IS NOT NULL;"` — expect `0` (no backfill).
 
 - [ ] Step 5: Commit
-  `git add apps/api/migrations/2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql && git commit -m "feat(backup): base-pin/storage-identity columns + guarded backfill (D18 W01)"`
+  `git add apps/api/migrations/2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql && git commit -m "feat(backup): base-pin/storage-identity columns, DDL only, no backfill (D18 W01)"`
 
 ---
 
@@ -221,12 +174,12 @@ END $$;
 
 **Files:** Modify `apps/api/src/db/schema/backup.ts` (add to `backupJobs` after `snapshotId` ~:247, `backupSnapshots` after `backupType` ~:322, new table after `backupSnapshotFiles` ~:356).
 
-**Interfaces:** Produces `backupSnapshotRetirements` Drizzle table export, `backupJobs.baseSnapshotId`/`.publishLeaseExpiresAt`/`.storageIdentity`, `backupSnapshots.storageIdentity`.
+**Interfaces:** Produces `backupSnapshotRetirements` Drizzle table export, `backupJobs.baseSnapshotId`/`.publishLeaseExpiresAt`/`.storageIdentity` (+ a matching partial index), `backupSnapshots.storageIdentity`.
 
-- [ ] Step 1: Write the failing test (schema drift is the mechanical gate here — no unit framework exercises schema files directly per repo convention)
-  Command: `pnpm db:check-drift` — expect FAIL once Task 1's migration is applied but the schema hasn't caught up (or vice versa if this task lands first).
+- [ ] Step 1: There is no automated red/green test for this task. **Correction (review fix):** `pnpm db:check-drift` does NOT compare the Drizzle schema against a live database at all — it verifies migration-ledger parity (every file in `apps/api/migrations/` has exactly one `breeze_migrations` row after a fresh apply; see `scripts/check-drift.ts:17-24`'s own header comment: "What is intentionally NOT checked here. Schema-vs-live-DB drift..."). It cannot fail or pass based on anything in this task. The actual verification for a Drizzle schema change is: (a) `pnpm db:migrate` applies cleanly against a fresh DB, (b) running it a SECOND time is a true no-op (idempotency), and (c) the integration tests written in Task 13 actually insert/query through these Drizzle table objects against real Postgres — that is what proves the TypeScript column definitions match the real column types/names.
+  Command (idempotency check, run against a disposable local DB): `pnpm db:migrate && pnpm db:migrate` — second run must report zero newly-applied migrations.
 
-- [ ] Step 2: Confirm the FAIL is the expected drift (missing columns/table), not a pre-existing unrelated one.
+- [ ] Step 2: (No FAIL step — see Step 1's correction. Proceed directly to Step 3.)
 
 - [ ] Step 3: Implement
 
@@ -303,10 +256,21 @@ export const backupSnapshotRetirements = pgTable(
 );
 ```
 
-  (`text` and `pgEnum` are already imported at the top of `backup.ts` — confirmed at lines 1-15.)
+```ts
+// apps/api/src/db/schema/backup.ts — inside backupJobs' (table) => ({...}) index block
+// (alongside the existing snapshotIdIdx/statusIdx/etc.): a Drizzle-side partial
+// index matching the migration's backup_jobs_base_snapshot_id_idx (Task 1).
+    baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
+      .on(table.baseSnapshotId)
+      .where(sql`base_snapshot_id IS NOT NULL`),
+```
+
+  (`text` and `pgEnum` are already imported at the top of `backup.ts` — confirmed at lines 1-15. `sql` from `drizzle-orm` is already imported in this file, used by the existing `orgDefaultUq`/`snapshotIdIdx` partial-index definitions.)
 
 - [ ] Step 4: Run, expect PASS
-  Command: `pnpm db:check-drift`
+  Commands:
+  - `pnpm db:migrate && pnpm db:migrate` (idempotency — second run is a no-op)
+  - `docker exec -it breeze-postgres psql -U breeze_app -d breeze -c "\d backup_jobs"` — confirm `backup_jobs_base_snapshot_id_idx` exists.
 
 - [ ] Step 5: Commit
   `git add apps/api/src/db/schema/backup.ts && git commit -m "feat(backup): add base-pin/storage-identity columns and backupSnapshotRetirements schema (D18 W01)"`
@@ -349,7 +313,7 @@ CREATE TABLE IF NOT EXISTS backup_snapshot_retirements (
   org_id uuid NOT NULL REFERENCES organizations(id),
   config_id uuid REFERENCES backup_configs(id) ON DELETE CASCADE,
   device_id uuid REFERENCES devices(id) ON DELETE SET NULL,
-  snapshot_id varchar(255) NOT NULL,
+  snapshot_id varchar(200) NOT NULL,
   storage_identity text NOT NULL,
   backup_type backup_type,
   reason backup_snapshot_retirement_reason NOT NULL,
@@ -385,7 +349,7 @@ CREATE POLICY breeze_org_isolation_delete ON backup_snapshot_retirements
   FOR DELETE USING (public.breeze_has_org_access(org_id));
 ```
 
-  Note: `varchar(255)` here (not `BACKUP_SNAPSHOT_ID_MAX_LENGTH`'s literal value) matches the width already used for `backup_jobs.base_snapshot_id` in Task 1 — confirm both stay in sync with the constant if it ever changes.
+  Note: `varchar(200)` matches `BACKUP_SNAPSHOT_ID_MAX_LENGTH` (`apps/api/src/db/schema/backupConstants.ts`, confirmed value `200`) and `backup_jobs.snapshot_id`'s existing width (`apps/api/src/db/schema/backup.ts:247`) — this is deliberately narrower than `backup_jobs.base_snapshot_id`'s `varchar(255)` (Task 1, an explicit spec choice for that column); the two widths are independent and this one is pinned to the constant, not to the other.
 
 - [ ] Step 4: Run, expect PASS
   Commands:
@@ -626,7 +590,7 @@ export function resolveBackupPublishMarginMs(): number {
 
 **Interfaces:**
 - Consumes: `resolveBackupBaseLeaseMs()` from `./services/backupGcKnobs`; `normalizeStorageIdentity` from `./backupRetention`; `backupSnapshotRetirements` schema; `desc`/`or`/`gt` added to the `drizzle-orm` import.
-- Produces: new function `stampDispatchPinAndIdentity(params): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date }>`; payload fields `baseSnapshotId: string` (`""` = full run) and `publishLeaseExpiresAt: string` (RFC3339) added to every `backup_run` command's payload.
+- Produces: new function `stampDispatchPinAndIdentity(params): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null }>`, called for **every** dispatched target regardless of `commandType`. `storage_identity` is stamped on `backup_jobs` for every target, including `hyperv_backup`/`mssql_backup` (review fix — GC must be able to group those rows by identity too), but `publish_lease_expires_at` and `base_snapshot_id` are set/attempted only when `mode` is `'file'`/`'system_image'` (`mode: null` for hyperv/mssql skips the pin/lease logic entirely). Payload fields `baseSnapshotId: string` (`""` = full run) and `publishLeaseExpiresAt: string` (RFC3339) are added only to `backup_run` commands' payloads (unchanged — pins/leases stay file/system_image-only at the wire-protocol level per spec).
 
 - [ ] Step 1: Write the failing test
 
@@ -649,20 +613,22 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
       capturedCommand = command;
       return { status: 'sent', via: 'local' };
     });
-    // First select in the transaction is the base-candidate lookup; second
-    // (inside the `.for('share')` chain) is the re-check lock. Both return a
-    // matching row so the base is pinned.
+    // Three selects in the transaction, in order: (1) the base-candidate
+    // lookup (.limit(1)), (2) the FOR SHARE lock on backup_snapshots ALONE
+    // (.for('share') — no leftJoin, per the Postgres outer-join fix), and
+    // (3) the plain, unlocked retirement-existence check (.limit(1),
+    // returns [] = "not retired"). All three must resolve for the base to
+    // be pinned.
     let selectCall = 0;
     mockDb.select.mockImplementation(() => {
       selectCall += 1;
       return {
         from: vi.fn().mockReturnThis(),
         innerJoin: vi.fn().mockReturnThis(),
-        leftJoin: vi.fn().mockReturnThis(),
         where: vi.fn().mockReturnThis(),
         orderBy: vi.fn().mockReturnThis(),
         limit: vi.fn().mockResolvedValue(
-          selectCall === 1 ? [{ id: 'base-row-id', snapshotId: 'base-snap-1' }] : [{ id: 'base-row-id' }],
+          selectCall === 1 ? [{ id: 'base-row-id', snapshotId: 'base-snap-1' }] : [],
         ),
         for: vi.fn().mockResolvedValue([{ id: 'base-row-id' }]),
       };
@@ -695,6 +661,25 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
     expect(capturedCommand?.payload?.baseSnapshotId).toBe('');
     expect(typeof capturedCommand?.payload?.publishLeaseExpiresAt).toBe('string');
   });
+
+  it('stamps storage_identity (but no lease/pin) on a hyperv_backup target', async () => {
+    // Arrange DATA/resolveBackupTargets so this fan-out includes a hyperv
+    // target (commandType: 'hyperv_backup'). Capture the backupJobs UPDATE
+    // call for that target's job row.
+    let capturedUpdateSet: Record<string, unknown> | undefined;
+    mockDb.update.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => {
+        capturedUpdateSet = values;
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      },
+    }));
+
+    await __testOnly.processDispatchBackup(DATA_WITH_HYPERV_TARGET as any);
+
+    expect(capturedUpdateSet?.storageIdentity).toBeDefined();
+    expect(capturedUpdateSet?.publishLeaseExpiresAt).toBeUndefined();
+    expect(capturedUpdateSet?.baseSnapshotId).toBeUndefined();
+  });
 });
 ```
 
@@ -711,10 +696,31 @@ import { eq, ne, and, or, desc, gt, sql, isNull, lt, inArray } from 'drizzle-orm
 ```
 
 ```ts
-// apps/api/src/jobs/backupWorker.ts — new imports
+// apps/api/src/jobs/backupWorker.ts — new imports. backupSnapshotRetirements
+// is added to the EXISTING barrel import (`import { backupJobs,
+// backupSnapshotFiles, backupSnapshots, backupConfigs, ... } from
+// '../db/schema';`, confirmed at :11-23) rather than a separate line — this
+// file already imports backupJobs/backupSnapshots from that same barrel.
 import { resolveBackupBaseLeaseMs } from '../services/backupGcKnobs';
 import { normalizeStorageIdentity } from './backupRetention';
-import { backupSnapshotRetirements } from '../db/schema/backup';
+```
+
+```ts
+// apps/api/src/jobs/backupWorker.ts:11-23 — add backupSnapshotRetirements to the existing barrel import
+import {
+  backupJobs,
+  backupSnapshotFiles,
+  backupSnapshots,
+  backupSnapshotRetirements,
+  backupConfigs,
+  devices,
+  configurationPolicies,
+  organizations,
+  configPolicyEffectiveFeatureLinks,
+  configPolicyBackupSettings,
+  hypervVms,
+  sqlInstances,
+} from '../db/schema';
 ```
 
 ```ts
@@ -722,31 +728,53 @@ import { backupSnapshotRetirements } from '../db/schema/backup';
 
 /**
  * D18 §3.1/§3.6: stamps this job's storage_identity (from the providerConfig
- * actually placed in the dispatch payload) and a FIXED publish-lease deadline
- * — for EVERY dispatched file/system_image target, base found or not — and,
- * when an eligible incremental-dedupe base exists, pins it.
+ * actually placed in the dispatch payload) on EVERY dispatched target —
+ * including `hyperv_backup`/`mssql_backup` (review fix: GC must be able to
+ * group those rows by identity too, even though they never carry a base pin)
+ * — and, only when `mode` is `'file'`/`'system_image'`, a FIXED publish-lease
+ * deadline plus, when an eligible incremental-dedupe base exists, a pin on it.
+ * `mode: null` (hyperv/mssql) stamps identity only and returns immediately.
  *
  * Lock order is JOB then SNAPSHOT (mirrors the parent-rows-first pattern at
  * routes/devices/moveOrg.ts:248-253): the UPDATE on backup_jobs below takes
- * the job row's lock first; the FOR SHARE re-check on backup_snapshots takes
- * the candidate's lock second. Retention's per-row delete (backupRetention.ts)
- * takes FOR UPDATE on the snapshot row — whichever side gets there first wins:
- * the other either sees the live pin (and skips) or finds the row already
- * gone (and this function falls back to a full run). No FK-column write
- * happens while a lock from the other table is held (cf. #3911's key-share
- * deadlock).
+ * the job row's lock first. The snapshot-row re-check is then done as TWO
+ * separate statements, not one outer-joined `FOR SHARE` — Postgres rejects
+ * `FOR UPDATE`/`FOR SHARE` on the nullable side of an outer join (review
+ * fix: the original draft's `leftJoin(backupSnapshotRetirements, ...)` inside
+ * a `.for('share')` chain is exactly that and would raise `0A000` at
+ * runtime). First, `FOR SHARE` locks `backup_snapshots` ALONE; only once that
+ * lock is held is `backup_snapshot_retirements` checked with a second, plain
+ * (unlocked) SELECT — safe because by the time the FOR SHARE lock is granted,
+ * any concurrent retention transaction that already inserted a retirement row
+ * for this snapshot has either fully committed (so its retirement row is
+ * visible here) or is blocked behind this same lock (so no retirement can
+ * appear between the two selects). Retention's per-row delete
+ * (backupRetention.ts) takes `FOR UPDATE` on the same snapshot row —
+ * whichever side gets there first wins: the other either sees the live pin
+ * (and skips) or finds the row already gone (and this function falls back to
+ * a full run). No FK-column write happens while a lock from the other table
+ * is held (cf. #3911's key-share deadlock).
  */
 async function stampDispatchPinAndIdentity(params: {
   deviceId: string;
   configId: string;
   jobId: string;
-  mode: 'file' | 'system_image';
+  mode: 'file' | 'system_image' | null;
   provider: string;
   providerConfig: Record<string, unknown>;
-}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date }> {
+}): Promise<{ baseSnapshotId: string; publishLeaseExpiresAt: Date | null }> {
+  const storageIdentity = normalizeStorageIdentity(params.provider, params.providerConfig);
+
+  if (params.mode === null) {
+    // hyperv/mssql: identity only — no lease, no pin (spec: pins/leases are
+    // file/system_image only; storage_identity stamping is not).
+    await db.update(backupJobs).set({ storageIdentity }).where(eq(backupJobs.id, params.jobId));
+    return { baseSnapshotId: '', publishLeaseExpiresAt: null };
+  }
+  const mode = params.mode;
+
   const leaseMs = resolveBackupBaseLeaseMs();
   const publishLeaseExpiresAt = new Date(Date.now() + leaseMs);
-  const storageIdentity = normalizeStorageIdentity(params.provider, params.providerConfig);
 
   return db.transaction(async (tx) => {
     const [candidate] = await tx
@@ -757,7 +785,7 @@ async function stampDispatchPinAndIdentity(params: {
         and(
           eq(backupSnapshots.deviceId, params.deviceId),
           eq(backupSnapshots.configId, params.configId),
-          params.mode === 'system_image'
+          mode === 'system_image'
             ? eq(backupSnapshots.backupType, 'system_image')
             : or(eq(backupSnapshots.backupType, 'file'), isNull(backupSnapshots.backupType)),
           or(isNull(backupSnapshots.expiresAt), gt(backupSnapshots.expiresAt, publishLeaseExpiresAt)),
@@ -782,24 +810,32 @@ async function stampDispatchPinAndIdentity(params: {
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
 
-    // SNAPSHOT row second: FOR SHARE re-check that the candidate is still
-    // present and unretired. A concurrent retention delete either already
-    // removed the row (this SELECT returns nothing) or is blocked behind
-    // this lock until commit (its own FOR UPDATE on the same row).
+    // SNAPSHOT row second, locked ALONE (see docstring for why the retirement
+    // check cannot share this statement).
     const [locked] = await tx
       .select({ id: backupSnapshots.id })
       .from(backupSnapshots)
-      .leftJoin(
-        backupSnapshotRetirements,
+      .where(eq(backupSnapshots.id, candidate.id))
+      .for('share');
+
+    if (!locked) {
+      // Row already gone — a concurrent retention delete won the race.
+      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      return { baseSnapshotId: '', publishLeaseExpiresAt };
+    }
+
+    const [retirement] = await tx
+      .select({ id: backupSnapshotRetirements.id })
+      .from(backupSnapshotRetirements)
+      .where(
         and(
           eq(backupSnapshotRetirements.storageIdentity, storageIdentity),
           eq(backupSnapshotRetirements.snapshotId, candidate.snapshotId),
         ),
       )
-      .where(and(eq(backupSnapshots.id, candidate.id), isNull(backupSnapshotRetirements.id)))
-      .for('share');
+      .limit(1);
 
-    if (!locked) {
+    if (retirement) {
       await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
       return { baseSnapshotId: '', publishLeaseExpiresAt };
     }
@@ -811,19 +847,20 @@ async function stampDispatchPinAndIdentity(params: {
 
 ```ts
 // apps/api/src/jobs/backupWorker.ts — inside prepareBackupDispatchTargets's per-target loop,
-// right before `const command: AgentCommand = {` (~:742):
+// right before `const command: AgentCommand = {` (~:742). Called for EVERY
+// target (review fix — identity stamping must cover hyperv/mssql too):
 
-    let dispatchPin: { baseSnapshotId: string; publishLeaseExpiresAt: Date } | null = null;
-    if (target.commandType === 'backup_run') {
-      dispatchPin = await stampDispatchPinAndIdentity({
-        deviceId: data.deviceId,
-        configId: data.configId,
-        jobId: commandJobId,
-        mode: (target.payload as Record<string, unknown>).systemImage === true ? 'system_image' : 'file',
-        provider: config.provider,
-        providerConfig: commandProviderConfig,
-      });
-    }
+    const dispatchPin = await stampDispatchPinAndIdentity({
+      deviceId: data.deviceId,
+      configId: data.configId,
+      jobId: commandJobId,
+      mode:
+        target.commandType === 'backup_run'
+          ? ((target.payload as Record<string, unknown>).systemImage === true ? 'system_image' : 'file')
+          : null,
+      provider: config.provider,
+      providerConfig: commandProviderConfig,
+    });
 
     const command: AgentCommand = {
       id: commandJobId,
@@ -843,10 +880,12 @@ async function stampDispatchPinAndIdentity(params: {
               required: false,
               mode: 'disabled',
             },
-        ...(dispatchPin
+        // Payload fields stay file/system_image-only (spec §3.1) even though
+        // storage_identity is now stamped for every target above.
+        ...(target.commandType === 'backup_run'
           ? {
               baseSnapshotId: dispatchPin.baseSnapshotId,
-              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt.toISOString(),
+              publishLeaseExpiresAt: dispatchPin.publishLeaseExpiresAt!.toISOString(),
             }
           : {}),
         ...target.payload,
@@ -972,7 +1011,9 @@ export const REAPER_DOMAINS = [
 
 **Files:** Modify `apps/api/src/jobs/backupWorker.ts:77-130` (`createBackupWorker`), `:325-395` (`processCleanupExpiredSnapshots`). Test: `apps/api/src/jobs/backupWorker.test.ts`.
 
-**Why this task must land before Task 9:** Task 9 restructures `cleanupExpiredSnapshots` (in `backupRetention.ts`) to open its own real per-row transaction via `withSystemDbAccessContext`. That only works if the call arrives with NO ambient context already open — today it's nested inside the blanket `runWithSystemDbAccess(async () => { switch(...) {...} })` at `backupWorker.ts:101`, where a nested `withSystemDbAccessContext` call is a no-op passthrough (same outer transaction, no new commit boundary). This task removes that ambient wrap for `cleanup-expired-snapshots` the same way `dispatch-backup` is already excluded from it (`:89-99`), and gives the GC sweep call its own separate context so a sweep failure can never roll back a retirement Task 9 already committed.
+**Interfaces — authoritative call shape for W02 (corrected per coordinator's second review pass):** this task's restructure of `processCleanupExpiredSnapshots` is the contract W02 builds on. After row-level retention has committed per row (Task 9), the handler wraps the sweep in exactly **ONE** shared context — `await runWithSystemDbAccess(() => sweepUnreferencedBackupObjects())` — matching today's read shape so `sweepUnreferencedBackupObjects`'s existing internal `db.select(...)` calls keep the working GUCs they rely on today (they have no context management of their own — Ground Truth, `backupRetention.ts:982`). This is deliberately ONE context for the whole sweep, not per-identity — W02 is expected to replace this single wrap with genuinely separate per-identity contexts internally (spec §3.7 item 2: "a separate system context per identity for the DB reads, with every storage call at depth 0"), at which point this call site's wrap is removed and the per-identity splitting moves inside `sweepUnreferencedBackupObjects` itself. This task adds no new fields to `processCleanupExpiredSnapshots`'s returned/logged result shape (`gcDeleted`/`gcSkippedIdentities`/`gcBlockedIdentities` only) — W02 is the one expected to add fields there as its own internal restructuring surfaces more detail.
+
+**Why this task must land before Task 9:** Task 9 restructures `cleanupExpiredSnapshots` (in `backupRetention.ts`) to open its own real per-row transaction via `withSystemDbAccessContext`. That only works if the call arrives with NO ambient context already open — today it's nested inside the blanket `runWithSystemDbAccess(async () => { switch(...) {...} })` at `backupWorker.ts:101`, where a nested `withSystemDbAccessContext` call is a no-op passthrough (same outer transaction, no new commit boundary). This task removes that ambient wrap for `cleanup-expired-snapshots` the same way `dispatch-backup` is already excluded from it (`:89-99`), while the sweep call — which runs strictly AFTER every row's retention has already committed independently — gets its own single, separate context (see Interfaces above), so a sweep failure can never roll back a retirement that already committed.
 
 - [ ] Step 1: Write the failing test — a source-text contract test, mirroring the style of `backupAgentContract.test.ts`'s cross-file literal checks, since this is a structural wiring invariant rather than a behavior a mock can observe.
 
@@ -1098,8 +1139,16 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   let gcSkippedIdentities = 0;
   let gcBlockedIdentities = 0;
   try {
-    // Its own context, separate from every retention row's — a GC failure
-    // must never roll back a retirement that has already committed.
+    // D18 §3.7 (authoritative shape for W02, corrected): ONE shared context
+    // for the whole sweep — matches today's read shape, so
+    // sweepUnreferencedBackupObjects's existing internal db.select(...) calls
+    // keep the working GUCs they rely on (it has no context management of
+    // its own). This runs strictly AFTER every row's retention has already
+    // committed independently (Task 9), so a GC failure here can never roll
+    // back a retirement that already committed, and a GC failure never fails
+    // this job. W02 replaces this single wrap with genuinely separate
+    // per-identity contexts managed inside sweepUnreferencedBackupObjects
+    // itself.
     const gcResult = await runWithSystemDbAccess(() => sweepUnreferencedBackupObjects());
     gcDeleted = gcResult.deleted;
     gcSkippedIdentities = gcResult.skippedIdentities;
@@ -1133,8 +1182,8 @@ export async function processCleanupExpiredSnapshots(): Promise<{
 **Files:** Modify `apps/api/src/jobs/backupRetention.ts:9-31` (imports), `:159-171` (`RetentionCleanupResult`), `:189-221` (`deleteSnapshotRow`/`tryDeleteSnapshotRow`, rewritten), `:231-387` (`cleanupExpiredSnapshots`, read/pin/delete phases re-wrapped). Test: `apps/api/src/jobs/backupRetention.test.ts`.
 
 **Interfaces:**
-- Consumes: `withSystemDbAccessContext` from `../db`; `resolveBackupRestorePinLingerMs`/`resolveBackupPublishMarginMs` from `../services/backupGcKnobs`; `restoreJobs`, `backupSnapshotRetirements`, `IN_FLIGHT_BACKUP_JOB_STATUSES` from `../db/schema/backup`; `recoveryTokens` from `../db/schema/recoveryTokens`; `gt` added to the `drizzle-orm` import.
-- Produces: `RetentionCleanupResult` gains `skippedPinned: number`. `tryDeleteSnapshotRow` now returns `'deleted' | 'pinned' | 'failed'` (was `boolean`) and opens its own `withSystemDbAccessContext` per call — one real top-level transaction per candidate row, per §3.7.
+- Consumes: `withSystemDbAccessContext` from `../db`; `resolveBackupRestorePinLingerMs`/`resolveBackupPublishMarginMs` from `../services/backupGcKnobs`; `restoreJobs`, `backupSnapshotRetirements`, `IN_FLIGHT_BACKUP_JOB_STATUSES` from `../db/schema` (the barrel — resolved open question 3: `backupRetention.test.ts:34` mocks `'../db'` only, not `'../db/schema'`, and this file's existing imports already pull `backupSnapshots`/`backupPolicies`/`backupJobs`/`configPolicyBackupSettings`/`backupConfigs` from that same barrel, so the new symbols join that one import statement rather than a separate `'../db/schema/backup'` line); `recoveryTokens` from `../db/schema/recoveryTokens` (a direct, non-barrel import — the same convention `backupWorker.ts:24` already uses for this specific table); `gt` and `sql` added to the `drizzle-orm` import.
+- Produces: `RetentionCleanupResult` gains `skippedPinned: number` AND `skippedUnresolved: number` (review fix). `tryDeleteSnapshotRow` now returns `'deleted' | 'pinned' | 'legalHold' | 'immutable' | 'unresolved' | 'failed'` (was `boolean`) and opens its own `withSystemDbAccessContext` per call — one real top-level transaction per candidate row, per §3.7. Legal-hold and immutability are now decided ONLY inside `deleteSnapshotRow`, re-read under the `FOR UPDATE` lock — the caller's enumeration-pass copy of those columns is no longer trusted (review fix). A row whose `storageIdentity` is `NULL` is skipped (not retired with an invented identity — the `unknown::<uuid>` fallback is removed entirely) and counted as `skippedUnresolved`; it is retried on a later run once identity resolves. Every lookup that matches a snapshot by its bare (agent-supplied) `snapshotId` string is scoped by `storageIdentity` too, since `backup_snapshots.snapshot_id` carries no uniqueness constraint (`schema/backup.ts:330`, `snapshotIdIdx` is a plain, non-unique index) — a bare `snapshotId` match alone is not guaranteed to identify one row.
 
 - [ ] Step 1: Write the failing test — update the shared `chainable`/`mockDb` fixture first (it currently has no `.for()`, no `insert`, and the `'../db'` mock exports only `db`):
 
@@ -1189,8 +1238,8 @@ describe('cleanupExpiredSnapshots — pins + retirement (D18 W01 §3.2/§3.3/§3
       id: 'snap-1', snapshotId: 'snap-1-provider', metadata: null, legalHold: false,
       isImmutable: false, immutableUntil: null, provider: 's3', providerConfig: {},
       orgId: 'org-1', configId: 'config-1', deviceId: 'device-1', storageIdentity: 's3::e::b', backupType: 'file',
-    }]); // candidate select
-    selectQueue.push([{ id: 'snap-1' }]); // FOR UPDATE lock
+    }]); // candidate select (enumeration pass)
+    selectQueue.push([{ id: 'snap-1', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock, re-reads legal hold/immutability
     selectQueue.push([{ id: 'job-1' }]); // backup pin — found, short-circuits
     selectQueue.push([]); // versionBoundSnapshots pass (empty)
 
@@ -1206,8 +1255,8 @@ describe('cleanupExpiredSnapshots — pins + retirement (D18 W01 §3.2/§3.3/§3
       id: 'snap-2', snapshotId: 'snap-2-provider', metadata: null, legalHold: false,
       isImmutable: false, immutableUntil: null, provider: 's3', providerConfig: { bucket: 'b', endpoint: 'e' },
       orgId: 'org-1', configId: 'config-1', deviceId: 'device-1', storageIdentity: 's3::e::b', backupType: 'file',
-    }]); // candidate select
-    selectQueue.push([{ id: 'snap-2' }]); // FOR UPDATE lock
+    }]); // candidate select (enumeration pass)
+    selectQueue.push([{ id: 'snap-2', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
     selectQueue.push([]); // backup pin — none
     selectQueue.push([]); // restore pin — none
     selectQueue.push([]); // recovery pin — none
@@ -1221,10 +1270,44 @@ describe('cleanupExpiredSnapshots — pins + retirement (D18 W01 §3.2/§3.3/§3
       expect.objectContaining({ snapshotId: 'snap-2-provider', storageIdentity: 's3::e::b', reason: 'expired' }),
     ]);
   });
+
+  it('re-reads legal hold under the FOR UPDATE lock, ignoring the (stale) enumeration-pass value', async () => {
+    // Enumeration pass saw legalHold: false — the row was placed under hold
+    // AFTER enumeration but BEFORE this row's turn. The lock re-read must win.
+    selectQueue.push([{
+      id: 'snap-3', snapshotId: 'snap-3-provider', metadata: null, legalHold: false,
+      isImmutable: false, immutableUntil: null, provider: 's3', providerConfig: {},
+      orgId: 'org-1', configId: 'config-1', deviceId: 'device-1', storageIdentity: 's3::e::b', backupType: 'file',
+    }]);
+    selectQueue.push([{ id: 'snap-3', legalHold: true, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock — now held
+    selectQueue.push([]); // versionBoundSnapshots pass (empty)
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedLegalHold).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(insertedRows.length).toBe(0);
+  });
+
+  it('skips (does not retire) a row with an unresolved storage_identity and counts it as skippedUnresolved', async () => {
+    selectQueue.push([{
+      id: 'snap-4', snapshotId: 'snap-4-provider', metadata: null, legalHold: false,
+      isImmutable: false, immutableUntil: null, provider: 's3', providerConfig: {},
+      orgId: 'org-1', configId: null, deviceId: 'device-1', storageIdentity: null, backupType: 'file',
+    }]);
+    selectQueue.push([{ id: 'snap-4', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
+    selectQueue.push([]); // versionBoundSnapshots pass (empty)
+
+    const result = await cleanupExpiredSnapshots('org-1');
+
+    expect(result.skippedUnresolved).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(insertedRows.length).toBe(0); // no invented 'unknown::<uuid>' retirement is ever written
+  });
 });
 ```
 
-- [ ] Step 2: Run it, expect FAIL — `result.skippedPinned` is `undefined` (field doesn't exist yet); `insertedRows` stays empty in the second case (no retirement is written today).
+- [ ] Step 2: Run it, expect FAIL — `result.skippedPinned`/`result.skippedUnresolved` are `undefined` (fields don't exist yet); `insertedRows` stays empty in the second case (no retirement is written today); the legal-hold re-read case fails because today's code decides legal hold from the enumeration pass, before the FOR UPDATE lock select is even issued.
   Command: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts`
 
 - [ ] Step 3: Implement
@@ -1242,21 +1325,27 @@ import {
   restoreJobs,
   backupSnapshotRetirements,
   IN_FLIGHT_BACKUP_JOB_STATUSES,
-} from '../db/schema/backup';
+} from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
-import { eq, and, or, lt, gt, desc, inArray, isNull } from 'drizzle-orm';
+import { eq, and, or, lt, gt, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { resolveBackupRestorePinLingerMs, resolveBackupPublishMarginMs } from '../services/backupGcKnobs';
 ```
 
-  (`configPolicyBackupSettings`/`backupConfigs`/`backupPolicies`/`backupSnapshots`/`backupJobs` were previously imported from `'../db/schema'` (the barrel) — switching `restoreJobs`/`backupSnapshotRetirements`/`IN_FLIGHT_BACKUP_JOB_STATUSES` to the concrete `'../db/schema/backup'` module avoids a barrel/mock mismatch in `backupRetention.test.ts`'s `vi.mock('../db/schema', ...)` if one exists — confirm during implementation whether the file's existing imports already come from `'../db/schema'` or `'../db/schema/backup'` and match that convention exactly rather than mixing styles.)
+  (Resolved: `backupRetention.test.ts:34` only mocks `vi.mock('../db', () => ({ db: mockDb }))` — there is no `vi.mock('../db/schema', ...)` in this file at all, so real schema symbols always flow through regardless of which schema path they're imported from. The existing imports (`backupSnapshots`/`backupPolicies`/`backupJobs`/`configPolicyBackupSettings`/`backupConfigs`) already come from the barrel `'../db/schema'`, so `restoreJobs`/`backupSnapshotRetirements`/`IN_FLIGHT_BACKUP_JOB_STATUSES` join that same statement rather than introducing a second, `'../db/schema/backup'`-rooted import for the same underlying module.)
 
 ```ts
-// apps/api/src/jobs/backupRetention.ts:159-171 — RetentionCleanupResult gains a field
+// apps/api/src/jobs/backupRetention.ts:159-171 — RetentionCleanupResult gains fields
 export type RetentionCleanupResult = {
   deleted: number;
   skippedLegalHold: number;
   skippedImmutable: number;
   skippedPinned: number;
+  // D18 review fix: a row whose storage_identity is unresolved (NULL) is
+  // never retired with an invented identity — it is retried on a later run
+  // once identity resolves (a live write stamping it, or W02's sweep
+  // self-heal). Counted separately from skippedPinned so operators can see
+  // "how many rows are stuck on identity resolution" distinctly.
+  skippedUnresolved: number;
   prunedByMaxVersions: number;
   failed: number;
 };
@@ -1264,18 +1353,38 @@ export type RetentionCleanupResult = {
 
 ```ts
 // apps/api/src/jobs/backupRetention.ts:189-221 — replace deleteSnapshotRow + tryDeleteSnapshotRow
+type DeleteSnapshotOutcome = 'deleted' | 'pinned' | 'legalHold' | 'immutable' | 'unresolved';
+
 /**
- * Deletes a `backup_snapshots` ROW ONLY, after checking every pin type (D18
- * §3.2: backup-job base pin via publish_lease_expires_at + margin, restore-job
- * pin, recovery-token pin — legal hold/immutability are checked by the caller
- * before this is ever invoked) and writing a durable retirement tombstone
- * (backup_snapshot_retirements) in the SAME per-row system context as the
- * delete. The caller (`tryDeleteSnapshotRow`) wraps this whole function in its
- * own `withSystemDbAccessContext` call — since `cleanupExpiredSnapshots` is no
+ * Deletes a `backup_snapshots` ROW ONLY, after RE-READING legal hold /
+ * immutability under the row's own `FOR UPDATE` lock (review fix — the
+ * caller's enumeration-pass copy of those columns can be stale by the time
+ * this row's turn comes up: a hold set or cleared in between must be honored
+ * NOW, not then), checking every pin type (D18 §3.2: backup-job base pin via
+ * publish_lease_expires_at + margin, restore-job pin, recovery-token pin),
+ * and writing a durable retirement tombstone (backup_snapshot_retirements) in
+ * the SAME per-row system context as the delete. The caller
+ * (`tryDeleteSnapshotRow`) wraps this whole function in its own
+ * `withSystemDbAccessContext` call — since `cleanupExpiredSnapshots` is no
  * longer invoked from inside any ambient transaction (D18 §3.7,
  * jobs/backupWorker.ts), that call opens a REAL top-level Postgres
  * transaction distinct from every other row's, so a retirement written here
  * commits durably before the next candidate row is even considered.
+ *
+ * A row whose `storage_identity` is NULL is never retired with an invented
+ * identity (review fix — the earlier `unknown::<uuid>` fallback is removed
+ * entirely): a retirement's uniqueness and every lookup against it is keyed
+ * on `(storage_identity, snapshot_id)`, and a fabricated identity would let
+ * two genuinely different unresolved rows collide, or hand GC an identity it
+ * can never match against a real bucket listing. Such a row is left alone
+ * (`'unresolved'`) and retried on a later run once identity resolves.
+ *
+ * Every lookup that matches a row by the bare (agent-supplied) `snapshotId`
+ * string is additionally scoped by `storageIdentity`, since
+ * `backup_snapshots.snapshot_id` carries no uniqueness constraint
+ * (`schema/backup.ts:330` — `snapshotIdIdx` is a plain, non-unique index): a
+ * bare string match alone is not guaranteed to identify the row this
+ * function is actually retiring.
  *
  * Deliberately does NOT touch object storage — under the incremental/
  * synthetic-full manifest model, an incremental snapshot's unchanged files
@@ -1287,10 +1396,6 @@ export type RetentionCleanupResult = {
  * writes is what lets that sweep treat this snapshot's exclusive objects as
  * garbage immediately, with no age-based ambiguity between "expired" and
  * merely "orphaned".
- *
- * Returns 'pinned' (left alone, a pin is still live) or 'deleted' (row
- * removed and retirement written, or the row was already gone — a no-op
- * treated as success).
  */
 async function deleteSnapshotRow(params: {
   id: string;
@@ -1301,14 +1406,20 @@ async function deleteSnapshotRow(params: {
   storageIdentity: string | null;
   backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
   reason: 'expired' | 'max_versions';
-}): Promise<'pinned' | 'deleted'> {
+}): Promise<DeleteSnapshotOutcome> {
+  const now = new Date();
   const restoreLingerMs = resolveBackupRestorePinLingerMs();
   const restoreLingerCutoff = new Date(Date.now() - restoreLingerMs);
   const publishMarginMs = resolveBackupPublishMarginMs();
   const publishMarginCutoff = new Date(Date.now() - publishMarginMs);
 
   const [locked] = await db
-    .select({ id: backupSnapshots.id })
+    .select({
+      id: backupSnapshots.id,
+      legalHold: backupSnapshots.legalHold,
+      isImmutable: backupSnapshots.isImmutable,
+      immutableUntil: backupSnapshots.immutableUntil,
+    })
     .from(backupSnapshots)
     .where(eq(backupSnapshots.id, params.id))
     .for('update');
@@ -1318,17 +1429,26 @@ async function deleteSnapshotRow(params: {
     return 'deleted';
   }
 
+  // Re-read under the lock — authoritative, not the enumeration pass's copy.
+  if (locked.legalHold) return 'legalHold';
+  if (locked.isImmutable && locked.immutableUntil && locked.immutableUntil > now) return 'immutable';
+
+  if (!params.storageIdentity) return 'unresolved';
+  const storageIdentity = params.storageIdentity;
+
   // Backup pin (§3.1/§3.2): a backup_jobs row still building on this snapshot
-  // as its base. status IN (pending, running) covers an in-flight run;
-  // publish_lease_expires_at > now() - margin covers a reaped-but-still-
-  // uploading helper (the same lease+margin the helper itself enforces
-  // before publishing — see spec §3.1's "publish margin").
+  // as its base, SCOPED BY storageIdentity (a bare snapshotId match is not
+  // enough — see docstring). status IN (pending, running) covers an
+  // in-flight run; publish_lease_expires_at > now() - margin covers a
+  // reaped-but-still-uploading helper (the same lease+margin the helper
+  // itself enforces before publishing — see spec §3.1's "publish margin").
   const [backupPin] = await db
     .select({ id: backupJobs.id })
     .from(backupJobs)
     .where(
       and(
         eq(backupJobs.baseSnapshotId, params.snapshotId),
+        eq(backupJobs.storageIdentity, storageIdentity),
         or(
           inArray(backupJobs.status, IN_FLIGHT_BACKUP_JOB_STATUSES),
           gt(backupJobs.publishLeaseExpiresAt, publishMarginCutoff),
@@ -1338,11 +1458,12 @@ async function deleteSnapshotRow(params: {
     .limit(1);
   if (backupPin) return 'pinned';
 
-  // Restore pin (§3.2, F8): the in-flight status check only counts once a
-  // command exists (a commandless pending row is reaped by
-  // staleCommandReaper's own 1h rule, Task 7, instead of pinning forever);
-  // the linger separately covers both that crash window and a helper reading
-  // past the server's restore timeout.
+  // Restore pin (§3.2, F8): scoped by the row's own uuid (backupSnapshots.id)
+  // — unambiguous already, no storageIdentity scoping needed here. The
+  // in-flight status check only counts once a command exists (a commandless
+  // pending row is reaped by staleCommandReaper's own 1h rule, Task 7,
+  // instead of pinning forever); the linger separately covers both that
+  // crash window and a helper reading past the server's restore timeout.
   const [restorePin] = await db
     .select({ id: restoreJobs.id })
     .from(restoreJobs)
@@ -1358,9 +1479,9 @@ async function deleteSnapshotRow(params: {
     .limit(1);
   if (restorePin) return 'pinned';
 
-  // Recovery pin (§3.2): active/authenticated token, or one not yet
-  // completed and still within its expiry + the same linger (covers a BMR
-  // session mid-download).
+  // Recovery pin (§3.2): also scoped by the row's own uuid — unambiguous.
+  // Active/authenticated token, or one not yet completed and still within
+  // its expiry + the same linger (covers a BMR session mid-download).
   const [recoveryPin] = await db
     .select({ id: recoveryTokens.id })
     .from(recoveryTokens)
@@ -1381,7 +1502,7 @@ async function deleteSnapshotRow(params: {
     configId: params.configId,
     deviceId: params.deviceId,
     snapshotId: params.snapshotId,
-    storageIdentity: params.storageIdentity ?? `unknown::${params.id}`,
+    storageIdentity,
     backupType: params.backupType,
     reason: params.reason,
   });
@@ -1410,7 +1531,7 @@ async function tryDeleteSnapshotRow(snap: {
   storageIdentity: string | null;
   backupType: (typeof backupSnapshots.$inferSelect)['backupType'];
   reason: 'expired' | 'max_versions';
-}): Promise<'deleted' | 'pinned' | 'failed'> {
+}): Promise<DeleteSnapshotOutcome | 'failed'> {
   try {
     return await withSystemDbAccessContext(() => deleteSnapshotRow(snap));
   } catch (error) {
@@ -1430,7 +1551,22 @@ async function tryDeleteSnapshotRow(snap: {
 
 ```ts
 // apps/api/src/jobs/backupRetention.ts:231-387 — cleanupExpiredSnapshots, both read phases
-// wrapped in their own context, both delete loops updated to the new outcome type
+// wrapped in their own context, both delete loops route through the same
+// outcome-to-counter mapping. Legal hold / immutability are NO LONGER decided
+// here (review fix) — the enumeration selects below still fetch those columns
+// only because groupRows/versionBoundSnapshots still needs other row fields;
+// the authoritative decision is made inside deleteSnapshotRow, under the lock.
+function applyDeleteOutcome(result: RetentionCleanupResult, outcome: DeleteSnapshotOutcome | 'failed'): void {
+  switch (outcome) {
+    case 'deleted': result.deleted++; break;
+    case 'pinned': result.skippedPinned++; break;
+    case 'legalHold': result.skippedLegalHold++; break;
+    case 'immutable': result.skippedImmutable++; break;
+    case 'unresolved': result.skippedUnresolved++; break;
+    case 'failed': result.failed++; break;
+  }
+}
+
 export async function cleanupExpiredSnapshots(
   orgId: string
 ): Promise<RetentionCleanupResult> {
@@ -1440,32 +1576,27 @@ export async function cleanupExpiredSnapshots(
     skippedLegalHold: 0,
     skippedImmutable: 0,
     skippedPinned: 0,
+    skippedUnresolved: 0,
     prunedByMaxVersions: 0,
     failed: 0,
   };
 
   // D18 §3.7: this read runs with no ambient context (cleanupExpiredSnapshots
   // is no longer called from inside one) — a snapshot-in-time read is fine
-  // here since every candidate is independently re-verified with FOR UPDATE
-  // inside its own per-row commit below.
+  // here since every candidate is independently re-verified (legal hold,
+  // immutability, storage identity, every pin) with FOR UPDATE inside its own
+  // per-row commit below.
   const expired = await withSystemDbAccessContext(() =>
     db
       .select({
         id: backupSnapshots.id,
         snapshotId: backupSnapshots.snapshotId,
-        metadata: backupSnapshots.metadata,
-        legalHold: backupSnapshots.legalHold,
-        isImmutable: backupSnapshots.isImmutable,
-        immutableUntil: backupSnapshots.immutableUntil,
-        provider: backupConfigs.provider,
-        providerConfig: backupConfigs.providerConfig,
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
         storageIdentity: backupSnapshots.storageIdentity,
         backupType: backupSnapshots.backupType,
       })
       .from(backupSnapshots)
-      .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
       .where(
         and(
           eq(backupSnapshots.orgId, orgId),
@@ -1475,17 +1606,6 @@ export async function cleanupExpiredSnapshots(
   );
 
   for (const snap of expired) {
-    if (snap.legalHold) {
-      result.skippedLegalHold++;
-      console.warn(`[BackupRetention] Snapshot ${snap.snapshotId} held by legal hold — skipping deletion`);
-      continue;
-    }
-    if (snap.isImmutable && snap.immutableUntil && snap.immutableUntil > now) {
-      result.skippedImmutable++;
-      console.warn(`[BackupRetention] Snapshot ${snap.snapshotId} immutable until ${snap.immutableUntil.toISOString()} — skipping deletion`);
-      continue;
-    }
-
     const outcome = await tryDeleteSnapshotRow({
       id: snap.id,
       snapshotId: snap.snapshotId,
@@ -1496,9 +1616,7 @@ export async function cleanupExpiredSnapshots(
       backupType: snap.backupType,
       reason: 'expired',
     });
-    if (outcome === 'deleted') result.deleted++;
-    else if (outcome === 'pinned') result.skippedPinned++;
-    else result.failed++;
+    applyDeleteOutcome(result, outcome);
   }
 
   const versionBoundSnapshots = await withSystemDbAccessContext(() =>
@@ -1509,19 +1627,12 @@ export async function cleanupExpiredSnapshots(
         timestamp: backupSnapshots.timestamp,
         deviceId: backupSnapshots.deviceId,
         configId: backupSnapshots.configId,
-        metadata: backupSnapshots.metadata,
-        legalHold: backupSnapshots.legalHold,
-        isImmutable: backupSnapshots.isImmutable,
-        immutableUntil: backupSnapshots.immutableUntil,
-        provider: backupConfigs.provider,
-        providerConfig: backupConfigs.providerConfig,
         storageIdentity: backupSnapshots.storageIdentity,
         backupType: backupSnapshots.backupType,
         retention: configPolicyBackupSettings.retention,
       })
       .from(backupSnapshots)
       .innerJoin(backupJobs, eq(backupSnapshots.jobId, backupJobs.id))
-      .leftJoin(backupConfigs, eq(backupSnapshots.configId, backupConfigs.id))
       .leftJoin(
         configPolicyBackupSettings,
         eq(backupJobs.featureLinkId, configPolicyBackupSettings.featureLinkId),
@@ -1548,15 +1659,6 @@ export async function cleanupExpiredSnapshots(
     if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
-      if (snap.legalHold) {
-        result.skippedLegalHold++;
-        continue;
-      }
-      if (snap.isImmutable && snap.immutableUntil && snap.immutableUntil > now) {
-        result.skippedImmutable++;
-        continue;
-      }
-
       const outcome = await tryDeleteSnapshotRow({
         id: snap.id,
         snapshotId: snap.snapshotId,
@@ -1567,25 +1669,20 @@ export async function cleanupExpiredSnapshots(
         backupType: snap.backupType,
         reason: 'max_versions',
       });
-      if (outcome === 'deleted') {
-        result.deleted++;
-        result.prunedByMaxVersions++;
-      } else if (outcome === 'pinned') {
-        result.skippedPinned++;
-      } else {
-        result.failed++;
-      }
+      if (outcome === 'deleted') result.prunedByMaxVersions++;
+      applyDeleteOutcome(result, outcome);
     }
   }
 
   if (
     result.deleted > 0 || result.skippedLegalHold > 0 || result.skippedImmutable > 0 ||
-    result.skippedPinned > 0 || result.prunedByMaxVersions > 0 || result.failed > 0
+    result.skippedPinned > 0 || result.skippedUnresolved > 0 || result.prunedByMaxVersions > 0 || result.failed > 0
   ) {
     console.log(
       `[BackupRetention] Org ${orgId}: deleted ${result.deleted}, ` +
       `skipped ${result.skippedLegalHold} (legal hold), ${result.skippedImmutable} (immutable), ` +
-      `${result.skippedPinned} (pinned), pruned ${result.prunedByMaxVersions} by maxVersions` +
+      `${result.skippedPinned} (pinned), ${result.skippedUnresolved} (unresolved identity), ` +
+      `pruned ${result.prunedByMaxVersions} by maxVersions` +
       (result.failed > 0 ? `, FAILED ${result.failed} delete(s) (see prior per-row errors — will retry next run)` : '')
     );
   }
@@ -1602,6 +1699,8 @@ export async function cleanupExpiredSnapshots(
 }
 ```
 
+  Note: `applyDeleteOutcome` double-counts `'deleted'` into `prunedByMaxVersions` deliberately in the max-versions loop (increment `prunedByMaxVersions` first, then call the shared helper which ALSO increments `deleted`) — this mirrors the pre-existing behavior where a max-versions prune counts as both a deletion and a prune, unchanged from before this task.
+
 - [ ] Step 4: Run, expect PASS
   Command: `cd apps/api && npx vitest run src/jobs/backupRetention.test.ts`
 
@@ -1612,22 +1711,32 @@ export async function cleanupExpiredSnapshots(
 
 ### Task 10: Lineage on write — `resultSchemas.ts` + `backupResultPersistence.ts` + late-result fence
 
-**Files:** Modify `apps/api/src/routes/backup/resultSchemas.ts:27-32`, `apps/api/src/services/backupResultPersistence.ts:1041-1051` (widen `updatedJob` select), `:972-981` area (new pre-check before the main UPDATE), `:1143-1162` (`snapshotValues`). Test: `apps/api/src/services/backupResultPersistence.test.ts`.
+**Files:** Modify `apps/api/src/routes/backup/resultSchemas.ts:27-32`, `apps/api/src/services/backupResultPersistence.ts:1041-1051` (widen `updatedJob` select), `:972-981` area (new pre-check before the main UPDATE), `:1143-1162` (`snapshotValues`); `apps/api/src/jobs/queueSchemas.ts` (`backupSnapshotSummarySchema`, `.strict()`); `apps/api/src/jobs/backupEnqueue.ts` (`ProcessResultsResult.snapshot` interface). Test: `apps/api/src/services/backupResultPersistence.test.ts`, plus a new queue-round-trip regression test.
 
 **Interfaces:**
 - Produces: `backupSnapshotResultSchema` gains `baseSnapshotId?: string`, `formatVersion?: number`, `backupIdentity?: string`.
-- Produces: `backupSnapshots.parentSnapshotId`/`.isIncremental`/`.storageIdentity` are now set on every successful write; `storageIdentity` is **copied from the job's own stamped `storageIdentity`** (Task 6), never recomputed from the config.
-- Produces: a late result for a reaped-terminal job is rejected with `errorLog` containing `publish_lease_expired` or `base_retired` when the fence fails.
+- Produces: `backupSnapshots.parentSnapshotId`/`.isIncremental`/`.storageIdentity` are now set on every successful write; `storageIdentity` is **copied from the job's own stamped `storageIdentity`** (Task 6), never recomputed from the config; the base-row lookup for `parentSnapshotId` is scoped by `(storageIdentity, snapshotId)`, not `(configId, snapshotId)` — `snapshot_id` carries no uniqueness constraint (review fix, `schema/backup.ts:330`).
+- Produces: a late result for a reaped-terminal job is rejected with `errorLog` containing `publish_lease_expired` (also fires when the lease is NULL — review fix, no implicit pass) or `base_retired` when the fence fails. The whole check-and-write happens inside one `db.transaction` with `FOR UPDATE` on the job row, scoped by `(id, deviceId)` matching the file's own #3036 tenant-scoping convention (review fix — atomic against a concurrently running `staleCommandReaper` pass, and never keyed on job id alone).
+- **P1 queue-schema propagation (review finding):** `apps/api/src/jobs/queueSchemas.ts`'s `backupSnapshotSummarySchema` is `.strict()` and does not yet declare `baseSnapshotId`/`formatVersion`/`backupIdentity` — every one of this task's new fields is silently stripped (or the whole `.strict()` parse throws) before `backupWorker.ts`'s `process-results` handler (`parseQueueJobData` at `:81`) or the earlier `enqueueBackupResults` call in `backupEnqueue.ts` ever sees them, making the lineage fields dead on arrival end to end. This task widens `backupSnapshotSummarySchema` (queue ingress/egress validation) AND the plain TS interface `ProcessResultsResult.snapshot` (`backupEnqueue.ts:105-115`, which has no `baseSnapshotId`/`formatVersion` fields today either) to match `resultSchemas.ts`'s `backupSnapshotResultSchema` shape, and adds a regression test proving a result carrying these fields survives an `enqueueBackupResults` → `parseQueueJobData` round trip.
 
 - [ ] Step 1: Write the failing test
 
 ```ts
-// apps/api/src/services/backupResultPersistence.test.ts — new cases (mirror this file's existing mocking style)
+// apps/api/src/services/backupResultPersistence.test.ts — new cases (mirror this file's existing mocking style;
+// capture the object passed to db.insert(backupSnapshots).values(...) / db.update(backupSnapshots).set(...) via
+// this file's existing insert/update capture mechanism — read the file's current tests for the exact spy shape
+// before writing, since it wasn't fully quoted in Ground Truth)
   it('sets parentSnapshotId/isIncremental/storageIdentity from the job and result (D18 W01)', async () => {
     // Arrange: updatedJob's widened .returning() resolves { id, orgId, configId,
     // backupType, backupMode, baseSnapshotId: 'snap-1', publishLeaseExpiresAt: <future>,
     // storageIdentity: 's3::e::b' }; a lookup for the base row by
-    // (configId, snapshotId='snap-1') returns { id: 'base-db-id' }.
+    // (storageIdentity='s3::e::b', snapshotId='snap-1') returns { id: 'base-db-id' }.
+    let capturedSnapshotValues: Record<string, unknown> | undefined;
+    // Wire this file's backupSnapshots insert/update mock to capture its argument:
+    //   mockDb.insert.mockImplementation((table) => table === backupSnapshots
+    //     ? { values: (v: Record<string, unknown>) => { capturedSnapshotValues = v; return chainable([{ id: 'new-snap-db-id' }]); } }
+    //     : defaultInsertChain(table));
+
     const result = await applyBackupCommandResultToJob({
       jobId: 'job-1', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
       result: {
@@ -1638,15 +1747,19 @@ export async function cleanupExpiredSnapshots(
     });
 
     expect(result.applied).toBe(true);
-    // Assert the values passed to the backup_snapshots insert/update carried
-    // parentSnapshotId = 'base-db-id', isIncremental = true, and
-    // storageIdentity = 's3::e::b' (copied straight from the job row, no
-    // config re-lookup) — via this file's existing capture mechanism.
+    // Discriminating assertions (review fix — applied===true alone proves
+    // nothing about lineage correctness):
+    expect(capturedSnapshotValues?.parentSnapshotId).toBe('base-db-id');
+    expect(capturedSnapshotValues?.isIncremental).toBe(true);
+    expect(capturedSnapshotValues?.storageIdentity).toBe('s3::e::b');
   });
 
   it('fails a late result with publish_lease_expired when the job is reaped-terminal and its lease has passed', async () => {
-    // Arrange: job row is 'failed' with STALE_BACKUP_REAP_MARKER,
-    // publishLeaseExpiresAt in the past.
+    // Arrange: job row (returned by the FOR UPDATE select mock) is 'failed'
+    // with STALE_BACKUP_REAP_MARKER, publishLeaseExpiresAt in the past.
+    let capturedUpdateSet: Record<string, unknown> | undefined;
+    // Wire mockDb.update(backupJobs).set(...) to capture its argument.
+
     const result = await applyBackupCommandResultToJob({
       jobId: 'job-2', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
       result: { snapshotId: 'snap-3', snapshot: { id: 'snap-3' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
@@ -1654,15 +1767,34 @@ export async function cleanupExpiredSnapshots(
     });
 
     expect(result.applied).toBe(true);
-    // The job's own row should have been updated to status 'failed' with
-    // errorLog containing 'publish_lease_expired', NOT flipped to completed.
+    expect(result.snapshotDbId).toBeNull();
+    expect(capturedUpdateSet?.status).toBe('failed');
+    expect(capturedUpdateSet?.errorLog).toContain('publish_lease_expired');
+  });
+
+  it('fails a late result with publish_lease_expired when the lease is NULL (review fix: no implicit pass)', async () => {
+    // Arrange: job row is 'failed' with STALE_BACKUP_REAP_MARKER,
+    // publishLeaseExpiresAt: null (anomalous/legacy — must fail closed, not
+    // be treated as "no fence applies").
+    let capturedUpdateSet: Record<string, unknown> | undefined;
+
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-2b', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'snap-3b', snapshot: { id: 'snap-3b' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+      source: 'agent',
+    });
+
+    expect(result.applied).toBe(true);
+    expect(capturedUpdateSet?.errorLog).toContain('publish_lease_expired');
   });
 
   it('fails a late result with base_retired when the lease is live but the base row is gone', async () => {
     // Arrange: job row is 'failed' with STALE_BACKUP_REAP_MARKER,
-    // publishLeaseExpiresAt in the future, baseSnapshotId set, and the
-    // lookup for that snapshotId finds NO row (retired + swept, or never
-    // existed).
+    // publishLeaseExpiresAt in the future, baseSnapshotId set, storageIdentity
+    // set, and the (storageIdentity, snapshotId)-scoped lookup finds NO row
+    // (retired + swept, or never existed).
+    let capturedUpdateSet: Record<string, unknown> | undefined;
+
     const result = await applyBackupCommandResultToJob({
       jobId: 'job-3', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
       result: { snapshotId: 'snap-4', snapshot: { id: 'snap-4' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
@@ -1670,7 +1802,24 @@ export async function cleanupExpiredSnapshots(
     });
 
     expect(result.applied).toBe(true);
-    // errorLog should contain 'base_retired'.
+    expect(capturedUpdateSet?.errorLog).toContain('base_retired');
+  });
+
+  it('does not fence a late result for a DIFFERENT device carrying the same job id (device predicate, review fix)', async () => {
+    // Arrange: no row matches (id=jobId AND deviceId='device-1') because the
+    // real job row belongs to a different device — the FOR UPDATE select
+    // returns undefined, so the fence must not fire at all (falls through
+    // to the pre-existing terminalJobGuard/statusGuard behavior on the main
+    // UPDATE, unrelated to this fence).
+    const result = await applyBackupCommandResultToJob({
+      jobId: 'job-4', orgId: 'org-1', deviceId: 'device-1', resultStatus: 'completed',
+      result: { snapshotId: 'snap-5', snapshot: { id: 'snap-5' }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+      source: 'agent',
+    });
+    // No fence-triggered update should have happened; whatever `result`
+    // ultimately is depends on the main UPDATE's own device-scoped guard,
+    // not on this fence firing.
+    expect(result.applied).toBe(false);
   });
 ```
 
@@ -1714,26 +1863,36 @@ export const backupSnapshotResultSchema = z.object({
 // apps/api/src/services/backupResultPersistence.ts — new helper, placed above applyBackupCommandResultToJob
 /**
  * D18 §3.1 late-result fence: a result for a job already in the reaped
- * 'failed' terminal status (STALE_BACKUP_REAP_MARKER) is accepted only if
- * its publish_lease_expires_at has not yet passed AND (it has no base pin,
- * or its base row still exists and is not retired). Otherwise the caller
- * must record the result as failed with a distinguishing reason instead of
- * flipping the job to completed — the manifest the agent uploaded may
- * reference storage GC has already started reclaiming.
+ * 'failed' terminal status (STALE_BACKUP_REAP_MARKER) is accepted only if its
+ * publish_lease_expires_at is STRICTLY IN THE FUTURE (review fix: a NULL
+ * lease is now a REJECT, not an implicit pass — every job this wave dispatches
+ * always carries one, so NULL on a reaped-terminal job is anomalous/legacy
+ * and must fail closed) AND (it has no base pin, or its base row still
+ * exists — scoped by the JOB's own storage_identity, since
+ * backup_snapshots.snapshot_id carries no uniqueness constraint,
+ * schema/backup.ts:330 — and is not retired). Otherwise the caller must
+ * record the result as failed with a distinguishing reason instead of
+ * flipping the job to completed.
  */
 async function checkLateResultBaseFence(job: {
   baseSnapshotId: string | null;
   publishLeaseExpiresAt: Date | null;
+  storageIdentity: string | null;
 }): Promise<{ ok: true } | { ok: false; reason: 'publish_lease_expired' | 'base_retired' }> {
-  if (job.publishLeaseExpiresAt && job.publishLeaseExpiresAt.getTime() < Date.now()) {
+  if (!job.publishLeaseExpiresAt || job.publishLeaseExpiresAt.getTime() <= Date.now()) {
     return { ok: false, reason: 'publish_lease_expired' };
   }
   if (!job.baseSnapshotId) return { ok: true };
 
   const [baseRow] = await db
-    .select({ id: backupSnapshots.id, storageIdentity: backupSnapshots.storageIdentity })
+    .select({ id: backupSnapshots.id })
     .from(backupSnapshots)
-    .where(eq(backupSnapshots.snapshotId, job.baseSnapshotId))
+    .where(
+      and(
+        eq(backupSnapshots.snapshotId, job.baseSnapshotId),
+        eq(backupSnapshots.storageIdentity, job.storageIdentity ?? ''),
+      ),
+    )
     .limit(1);
   if (!baseRow) return { ok: false, reason: 'base_retired' };
 
@@ -1742,7 +1901,7 @@ async function checkLateResultBaseFence(job: {
     .from(backupSnapshotRetirements)
     .where(
       and(
-        eq(backupSnapshotRetirements.storageIdentity, baseRow.storageIdentity ?? ''),
+        eq(backupSnapshotRetirements.storageIdentity, job.storageIdentity ?? ''),
         eq(backupSnapshotRetirements.snapshotId, job.baseSnapshotId),
       ),
     )
@@ -1756,40 +1915,56 @@ async function checkLateResultBaseFence(job: {
 // BEFORE the main `db.update(backupJobs)...` (before :1041), when source === 'agent' and isSuccessResult:
 
   if (source === 'agent' && isSuccessResult) {
-    const [currentJob] = await db
-      .select({
-        status: backupJobs.status,
-        errorLog: backupJobs.errorLog,
-        baseSnapshotId: backupJobs.baseSnapshotId,
-        publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
-      })
-      .from(backupJobs)
-      .where(eq(backupJobs.id, jobId))
-      .limit(1);
+    // Review fix: the whole read-decide-write sequence runs inside ONE
+    // transaction with a FOR UPDATE lock on the job row, so the status check,
+    // fence evaluation, and (on failure) the write are atomic against a
+    // concurrently running staleCommandReaper pass — without the lock, the
+    // reaper could re-decide the job's terminal state between this read and
+    // this write. The predicate mirrors the file's own #3036 tenant-scoping
+    // convention (eq(id) AND eq(deviceId) — see the main UPDATE at :1044):
+    // job id alone is not trusted as a sufficient key anywhere else in this
+    // file, and this new code must not be the one exception.
+    const fenceOutcome = await db.transaction(async (tx) => {
+      const [currentJob] = await tx
+        .select({
+          status: backupJobs.status,
+          errorLog: backupJobs.errorLog,
+          baseSnapshotId: backupJobs.baseSnapshotId,
+          publishLeaseExpiresAt: backupJobs.publishLeaseExpiresAt,
+          storageIdentity: backupJobs.storageIdentity,
+        })
+        .from(backupJobs)
+        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)))
+        .for('update');
 
-    const isReapedTerminal =
-      currentJob?.status === 'failed' &&
-      typeof currentJob.errorLog === 'string' &&
-      currentJob.errorLog.includes(STALE_BACKUP_REAP_MARKER);
+      const isReapedTerminal =
+        currentJob?.status === 'failed' &&
+        typeof currentJob.errorLog === 'string' &&
+        currentJob.errorLog.includes(STALE_BACKUP_REAP_MARKER);
 
-    if (isReapedTerminal) {
+      if (!isReapedTerminal) return null;
+
       const fence = await checkLateResultBaseFence(currentJob);
-      if (!fence.ok) {
-        const detail =
-          fence.reason === 'publish_lease_expired'
-            ? 'its publish lease had already expired'
-            : 'its dedupe base was reclaimed';
-        await db
-          .update(backupJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            updatedAt: new Date(),
-            errorLog: `${fence.reason}: late result rejected — ${detail} before this result arrived`,
-          })
-          .where(eq(backupJobs.id, jobId));
-        return { applied: true, snapshotDbId: null, providerSnapshotId };
-      }
+      if (fence.ok) return null;
+
+      const detail =
+        fence.reason === 'publish_lease_expired'
+          ? 'its publish lease had already expired'
+          : 'its dedupe base was reclaimed';
+      await tx
+        .update(backupJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          errorLog: `${fence.reason}: late result rejected — ${detail} before this result arrived`,
+        })
+        .where(and(eq(backupJobs.id, jobId), eq(backupJobs.deviceId, deviceId)));
+      return fence.reason;
+    });
+
+    if (fenceOutcome) {
+      return { applied: true, snapshotDbId: null, providerSnapshotId };
     }
   }
 ```
@@ -1798,11 +1973,21 @@ async function checkLateResultBaseFence(job: {
 // apps/api/src/services/backupResultPersistence.ts:1143-1162 — snapshotValues gains lineage fields
   let parentSnapshotId: string | null = null;
   const baseSnapshotId = result.snapshot?.baseSnapshotId;
-  if (updatedJob.configId && baseSnapshotId) {
+  if (updatedJob.storageIdentity && baseSnapshotId) {
+    // Scoped by storageIdentity, not configId (review fix): snapshot_id
+    // carries no uniqueness constraint (schema/backup.ts:330), and identity
+    // — not configId — is the authoritative scope GC and every other lookup
+    // in this wave use. A config's identity can also drift after the base
+    // was written (§3.6), so configId is not even a reliable proxy here.
     const [baseRow] = await db
       .select({ id: backupSnapshots.id })
       .from(backupSnapshots)
-      .where(and(eq(backupSnapshots.configId, updatedJob.configId), eq(backupSnapshots.snapshotId, baseSnapshotId)))
+      .where(
+        and(
+          eq(backupSnapshots.storageIdentity, updatedJob.storageIdentity),
+          eq(backupSnapshots.snapshotId, baseSnapshotId),
+        ),
+      )
       .limit(1);
     parentSnapshotId = baseRow?.id ?? null;
   }
@@ -1838,21 +2023,96 @@ async function checkLateResultBaseFence(job: {
   } as const;
 ```
 
-  Add `backupSnapshotRetirements` to this file's imports (`import { backupSnapshotRetirements } from '../db/schema/backup';`); `STALE_BACKUP_REAP_MARKER` is already imported (`:11`).
+  Add `backupSnapshotRetirements` to this file's EXISTING barrel import (`apps/api/src/services/backupResultPersistence.ts:3-12`, which already pulls `backupJobs`/`backupSnapshotFiles`/`backupSnapshots`/`backupPolicies`/`configPolicyBackupSettings`/`backupConfigs`/`IN_FLIGHT_BACKUP_JOB_STATUSES`/`STALE_BACKUP_REAP_MARKER` from `'../db/schema'`) — do not add a second, separate `'../db/schema/backup'` import line for the same table.
+
+**P1 review finding — queue schema propagation.** Everything above is dead on arrival without this: `apps/api/src/jobs/queueSchemas.ts`'s `backupSnapshotSummarySchema` is `.strict()` and `apps/api/src/jobs/backupEnqueue.ts`'s `ProcessResultsResult.snapshot` is a plain TS interface — NEITHER declares `baseSnapshotId`/`formatVersion`/`backupIdentity` today, so the fields this task adds to `resultSchemas.ts`'s WS-ingress schema are stripped (or the whole `.strict()` parse throws) before `backupWorker.ts`'s `process-results` handler ever sees them.
+
+```ts
+// apps/api/src/jobs/queueSchemas.ts — widen backupSnapshotSummarySchema (the block starting
+// "const backupSnapshotSummarySchema = z.object({")
+const backupSnapshotSummarySchema = z.object({
+  id: z.string().min(1),
+  timestamp: z.string().min(1).optional(),
+  size: z.number().nonnegative().optional(),
+  files: z.array(backupSnapshotFileSchema).optional(),
+  // D18 (#5429/§3.1): mirrors resultSchemas.ts's backupSnapshotResultSchema —
+  // must be added here too or `.strict()` drops/rejects these before
+  // backupWorker.ts's process-results handler ever sees them.
+  baseSnapshotId: z.string().optional(),
+  formatVersion: z.number().optional(),
+  backupIdentity: z.string().optional(),
+}).strict();
+```
+
+```ts
+// apps/api/src/jobs/backupEnqueue.ts:105-115 — widen the ProcessResultsResult.snapshot interface
+  snapshot?: {
+    id: string;
+    timestamp?: string;
+    size?: number;
+    files?: Array<{
+      sourcePath: string;
+      backupPath: string;
+      size?: number;
+      modTime?: string;
+    }>;
+    // D18 (#5429/§3.1): must mirror backupSnapshotSummarySchema above, or
+    // agentWs.ts's caller can construct a ProcessResultsResult carrying these
+    // fields (from the parsed WS ingress payload) that TypeScript happily
+    // accepts here, then loses at the very next hop when
+    // backupQueueJobDataSchema.parse(...) strict-validates it.
+    baseSnapshotId?: string;
+    formatVersion?: number;
+    backupIdentity?: string;
+  };
+```
+
+- [ ] Queue-propagation regression test:
+
+```ts
+// apps/api/src/jobs/backupEnqueue.test.ts (or co-located queueSchemas.test.ts — confirm which
+// file already covers backupQueueJobDataSchema round-trips and add there)
+  it('round-trips baseSnapshotId/formatVersion/backupIdentity through enqueueBackupResults (D18 W01)', async () => {
+    // Uses backupQueueJobDataSchema.parse directly (the same schema both
+    // enqueueBackupResults and backupWorker.ts's parseQueueJobData use) so
+    // this test exercises the actual contract without needing a running
+    // BullMQ queue.
+    const payload = backupQueueJobDataSchema.parse({
+      type: 'process-results',
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      result: {
+        status: 'completed',
+        snapshotId: 'snap-1',
+        snapshot: { id: 'snap-1', baseSnapshotId: 'snap-0', formatVersion: 2, backupIdentity: 's3::e::b' },
+      },
+      actorType: 'agent',
+      actorId: null,
+      source: 'route:agentWs:backup-result',
+    });
+
+    expect(payload.result.snapshot?.baseSnapshotId).toBe('snap-0');
+    expect(payload.result.snapshot?.formatVersion).toBe(2);
+    expect(payload.result.snapshot?.backupIdentity).toBe('s3::e::b');
+  });
+```
+
+  Run it BEFORE the widening above to confirm it fails with a Zod `.strict()` "unrecognized key(s)" error, then after to confirm PASS: `cd apps/api && npx vitest run src/jobs/backupEnqueue.test.ts` (adjust path once the exact existing test file covering `backupQueueJobDataSchema` is confirmed).
 
 - [ ] Step 4: Run, expect PASS
-  Command: `cd apps/api && npx vitest run src/services/backupResultPersistence.test.ts`
+  Command: `cd apps/api && npx vitest run src/services/backupResultPersistence.test.ts src/jobs/backupEnqueue.test.ts`
 
 - [ ] Step 5: Commit
-  `git add apps/api/src/routes/backup/resultSchemas.ts apps/api/src/services/backupResultPersistence.ts apps/api/src/services/backupResultPersistence.test.ts && git commit -m "feat(backup): lineage fields on write + publish-lease/base-retirement late-result fence (D18 W01 §3.1)"`
+  `git add apps/api/src/routes/backup/resultSchemas.ts apps/api/src/services/backupResultPersistence.ts apps/api/src/services/backupResultPersistence.test.ts apps/api/src/jobs/queueSchemas.ts apps/api/src/jobs/backupEnqueue.ts && git commit -m "feat(backup): lineage fields on write + late-result fence + queue-schema propagation (D18 W01 §3.1)"`
 
 ---
 
 ### Task 11: Reconcile — forward lineage, refuse retired/too-old/base-missing adoption
 
-**Files:** Modify `apps/api/src/services/backupSnapshotReconcile.ts:135-155` (`ReconcileSkipReason`), `:538-585` (`manifestToCommandResult`), `:669-720` (new pre-loop retired-id lookup + in-loop checks), `:864-882` (new base-existence check after the manifest parses). Test: `apps/api/src/services/backupSnapshotReconcile.test.ts`.
+**Files:** Modify `apps/api/src/services/backupSnapshotReconcile.ts:135-155` (`ReconcileSkipReason`), `:538-585` (`manifestToCommandResult`), `:669-720` (new pre-loop retired-id lookup + in-loop checks), the `ClaimingJob` type + `loadClaimsAndSharing` query + the `claimingJob` branch of the per-candidate loop (new "late-result-fenced" check — locate by searching `ADOPTABLE_JOB_STATUSES.includes` in this file), `:864-882` (new base-existence check after the manifest parses). Test: `apps/api/src/services/backupSnapshotReconcile.test.ts`.
 
-**Interfaces:** Consumes `backupSnapshotRetirements` schema. `RECONCILE_ORPHAN_HALF_WINDOW_MS` is a local literal (half of the 9-day default `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS`, which doesn't exist as a named knob until W02) with a `TODO(W02)` to replace it once `backupGcKnobs.ts` grows that export.
+**Interfaces:** Consumes `backupSnapshotRetirements` schema. `RECONCILE_ORPHAN_HALF_WINDOW_MS` is a local literal (half of the 9-day default `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS`, which doesn't exist as a named knob until W02) with a `TODO(W02)` to replace it once `backupGcKnobs.ts` grows that export. **Review fix:** reconcile must also refuse to adopt a job whose late result was already fenced off by Task 10's late-result fence — such a job is `status: 'failed'` with `errorLog` containing `publish_lease_expired` or `base_retired`; re-adopting it via the write-time-window path would resurrect exactly the state the fence exists to prevent. New skip reason `'late-result-fenced'`.
 
 - [ ] Step 1: Write the failing test
 
@@ -1894,6 +2154,16 @@ async function checkLateResultBaseFence(job: {
     expect(candidate?.skipReason).toBe('base-missing');
     expect(candidate?.adopted).toBe(false);
   });
+
+  it('refuses to adopt a job whose late result was already fenced (publish_lease_expired/base_retired)', async () => {
+    // Arrange claims.jobs to include a job-snapshot-id match whose status is
+    // 'failed' and errorLog contains 'base_retired' (Task 10's late-result
+    // fence already fired for this exact job/snapshot pair).
+    const result = await reconcileOrphanedBackupSnapshots({ orgId: 'org-1', configId: 'config-1' });
+    const candidate = result.candidates.find((c) => c.snapshotId === 'FENCED-JOB-SNAP');
+    expect(candidate?.skipReason).toBe('late-result-fenced');
+    expect(candidate?.adopted).toBe(false);
+  });
 ```
 
 - [ ] Step 2: Run it, expect FAIL — `manifestToCommandResult`'s result has no `baseSnapshotId` field, and all three refusal cases adopt instead of skipping.
@@ -1921,7 +2191,12 @@ export type ReconcileSkipReason =
   | 'orphan-too-old-for-adoption'
   /** D18 §3.1/§3.4: the manifest declares a baseSnapshotId with no live,
    *  unretired backup_snapshots row — its references may already dangle. */
-  | 'base-missing';
+  | 'base-missing'
+  /** D18 §3.1 review fix: the claiming job's own late result was already
+   *  rejected by backupResultPersistence.ts's late-result fence
+   *  (errorLog contains publish_lease_expired or base_retired) — re-adopting
+   *  it here would resurrect exactly what that fence exists to prevent. */
+  | 'late-result-fenced';
 ```
 
 ```ts
@@ -1948,8 +2223,9 @@ export type ReconcileSkipReason =
 ```
 
 ```ts
-// apps/api/src/services/backupSnapshotReconcile.ts — new import + constant near the top of the file
-import { backupSnapshotRetirements } from '../db/schema/backup';
+// apps/api/src/services/backupSnapshotReconcile.ts — add backupSnapshotRetirements
+// to the EXISTING barrel import (this file already pulls backupConfigs/
+// backupJobs/backupSnapshots from '../db/schema') rather than a separate line.
 
 // Half of BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS's 9-day default (spec §3.4:
 // "reconcile adopts an orphan only while its manifest is younger than half
@@ -1998,6 +2274,11 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
 
     if (result.snapshot?.baseSnapshotId) {
       const declaredBase = result.snapshot.baseSnapshotId;
+      // WHERE is scoped by storageIdentity too (review fix), not just the
+      // leftJoin condition — backup_snapshots.snapshot_id carries no
+      // uniqueness constraint (schema/backup.ts:330), so without this the
+      // base row lookup itself (not just the retirement check) could match
+      // a same-string snapshot_id belonging to a different identity.
       const [liveBase] = await runInDbContext(() =>
         db
           .select({ id: backupSnapshots.id })
@@ -2009,7 +2290,13 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
               eq(backupSnapshotRetirements.snapshotId, declaredBase),
             ),
           )
-          .where(and(eq(backupSnapshots.snapshotId, declaredBase), isNull(backupSnapshotRetirements.id)))
+          .where(
+            and(
+              eq(backupSnapshots.snapshotId, declaredBase),
+              eq(backupSnapshots.storageIdentity, storageIdentity),
+              isNull(backupSnapshotRetirements.id),
+            ),
+          )
           .limit(1)
       );
       if (!liveBase) {
@@ -2021,7 +2308,27 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
     }
 ```
 
-  Add `inArray`/`isNull` to this file's `drizzle-orm` import if not already present (confirm during implementation — several are already used elsewhere in the file for the claims lookups).
+```ts
+// apps/api/src/services/backupSnapshotReconcile.ts — review fix: refuse a job whose
+// late result was already fenced. Add `errorLog: backupJobs.errorLog` to whatever
+// column-selector `loadClaimsAndSharing` (or its equivalent claims-building query)
+// uses to populate `claims.jobs`'s ClaimingJob values, and widen the ClaimingJob
+// type with `errorLog: string | null`. Then, inside the per-snapshotId loop's
+// `claimingJob` branch — right after the existing
+// `if (!ADOPTABLE_JOB_STATUSES.includes(claimingJob.status as ...))` check and
+// before `adoptable.push(...)` — add:
+
+      if (
+        claimingJob.status === 'failed' &&
+        typeof claimingJob.errorLog === 'string' &&
+        /publish_lease_expired|base_retired/.test(claimingJob.errorLog)
+      ) {
+        skip('late-result-fenced');
+        continue;
+      }
+```
+
+  Add `inArray`/`isNull` to this file's `drizzle-orm` import if not already present (confirm during implementation — several are already used elsewhere in the file for the claims lookups). Verify the exact `ClaimingJob` type definition and `loadClaimsAndSharing`'s query column list against the real file before implementing this block — its precise shape was not fully re-quoted here.
 
 - [ ] Step 4: Run, expect PASS
   Command: `cd apps/api && npx vitest run src/services/backupSnapshotReconcile.test.ts`
@@ -2035,7 +2342,7 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
 
 **Files:** Modify `apps/api/src/routes/backup/configs.ts:440-467`. Test: `apps/api/src/routes/backup/configs.test.ts`.
 
-**Interfaces:** Response from `PATCH /backup/configs/:id` gains an optional `warnings: string[]` field, populated with `'storage_identity_changed'` when the edit changes `normalizeStorageIdentity(provider, providerConfig)` for a config that has at least one `backup_snapshots` row. Never blocks the write.
+**Interfaces:** Response from `PATCH /backup/configs/:id` gains a `warnings: string[]` field, **always present** (possibly empty — a stable contract for the frontend, per coordinator decision), populated with `'storage_identity_changed'` when the edit changes `normalizeStorageIdentity(provider, providerConfig)` for a config that has at least one `backup_snapshots` row. Never blocks the write.
 
 - [ ] Step 1: Write the failing test
 
@@ -2055,7 +2362,7 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
     expect(body.warnings).toEqual(['storage_identity_changed']);
   });
 
-  it('does not warn when the edit does not change storage identity', async () => {
+  it('always includes warnings (empty) when the edit does not change storage identity', async () => {
     // Same config, PATCH body only changes `name`.
     const res = await app.request('/backup/configs/config-1?orgId=org-1', {
       method: 'PATCH',
@@ -2063,7 +2370,7 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
       body: JSON.stringify({ name: 'Renamed' }),
     });
     const body = await res.json();
-    expect(body.warnings ?? []).toEqual([]);
+    expect(body.warnings).toEqual([]);
   });
 ```
 
@@ -2071,6 +2378,13 @@ const RECONCILE_ORPHAN_HALF_WINDOW_MS = (9 * 24 * 60 * 60 * 1000) / 2;
   Command: `cd apps/api && npx vitest run src/routes/backup/configs.test.ts`
 
 - [ ] Step 3: Implement
+
+```ts
+// apps/api/src/routes/backup/configs.ts:13 — widen the existing import (confirmed
+// today: `import { backupConfigs } from '../../db/schema';` — backupSnapshots is
+// NOT currently imported in this file; `eq`/`and` are already imported at :4)
+import { backupConfigs, backupSnapshots } from '../../db/schema';
+```
 
 ```ts
 // apps/api/src/routes/backup/configs.ts — new import
@@ -2104,10 +2418,12 @@ import { normalizeStorageIdentity } from '../../jobs/backupRetention';
       details: { changedFields: Object.keys(payload) },
     });
 
-    return c.json(warnings.length > 0 ? { ...toConfigResponse(row), warnings } : toConfigResponse(row));
+    // Always present (possibly empty) — a stable response shape, per
+    // coordinator decision, rather than an optional field callers must guard.
+    return c.json({ ...toConfigResponse(row), warnings });
 ```
 
-  `backupSnapshots` must already be imported in this route file (it is used elsewhere for other backup routes in this module tree — confirm and add if missing).
+  (Resolved: `backupSnapshots` was NOT already imported in `configs.ts` — confirmed by reading the file's import block; the widened import above adds it.)
 
 - [ ] Step 4: Run, expect PASS
   Command: `cd apps/api && npx vitest run src/routes/backup/configs.test.ts`
@@ -2135,14 +2451,25 @@ import {
   backupJobs,
   backupSnapshots,
   backupSnapshotRetirements,
+  deviceCommands,
   devices,
   organizations,
   partners,
+  recoveryTokens,
+  restoreJobs,
   sites,
 } from '../../db/schema';
 import { cleanupExpiredSnapshots } from '../../jobs/backupRetention';
+import { processCleanupExpiredSnapshots, __testOnly } from '../../jobs/backupWorker';
+import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+// Confirm during implementation whether stampDispatchPinAndIdentity (Task 6)
+// needs to be added to backupWorker.ts's existing `__testOnly` export bag —
+// it is a private `async function` today, not exported, and this suite's
+// concurrent-dispatch-vs-retention test needs to call the REAL function
+// (not a hand-rolled copy of its SQL) from outside the module.
 
 async function seedOrgDeviceConfig(unique: string) {
   const [partner] = await db.insert(partners).values({ name: `RP ${unique}`, slug: `rp-${unique}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
@@ -2241,6 +2568,203 @@ runDb("one row failing on a unique-constraint collision does not undo an earlier
     expect(collideRows.length).toBe(1); // the colliding row's delete never happened — retried next run
   });
 });
+
+// D18 §3.2 restore pin: WITH a command_id, the in-flight status check pins;
+// WITHOUT one, only the linger pins (a commandless pending row is instead
+// reaped by Task 7's staleCommandReaper rule, not by this pin lasting forever).
+runDb('restore pin holds a snapshot with an in-flight, commanded restore', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({ orgId, jobId: job!.id, deviceId, configId, snapshotId: `restore-pin-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    const [command] = await db.insert(deviceCommands).values({ deviceId, type: 'backup_restore', payload: {}, status: 'sent' }).returning({ id: deviceCommands.id });
+    await db.insert(restoreJobs).values({ orgId, deviceId, snapshotId: snap!.id, restoreType: 'full', status: 'running', commandId: command!.id });
+    return { orgId, snapId: snap!.id };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.skippedPinned).toBeGreaterThanOrEqual(1);
+
+  await withSystemDbAccessContext(async () => {
+    const rows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.snapId));
+    expect(rows.length).toBe(1);
+  });
+});
+
+runDb('a COMMANDLESS pending restore pins only for the linger, not indefinitely', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({ orgId, jobId: job!.id, deviceId, configId, snapshotId: `commandless-restore-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    // commandId NULL, status pending, created recently — still within the
+    // 7-day-default linger, so the row IS pinned (linger, not status).
+    await db.insert(restoreJobs).values({ orgId, deviceId, snapshotId: snap!.id, restoreType: 'full', status: 'pending', commandId: null, createdAt: new Date() });
+    return { orgId, snapId: snap!.id };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.skippedPinned).toBeGreaterThanOrEqual(1);
+});
+
+// D18 §3.2 recovery-token pin: an active/authenticated token, or one not yet
+// completed and still within its expiry + linger, pins the snapshot.
+runDb('recovery-token pin holds a snapshot with an active BMR token', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({ orgId, jobId: job!.id, deviceId, configId, snapshotId: `recovery-pin-${unique}`, backupType: 'system_image', storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    await db.insert(recoveryTokens).values({
+      orgId, deviceId, snapshotId: snap!.id, tokenHash: `hash-${unique}`, restoreType: 'bare_metal',
+      status: 'active', expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return { orgId, snapId: snap!.id };
+  });
+
+  const result = await cleanupExpiredSnapshots(ctx.orgId);
+  expect(result.skippedPinned).toBeGreaterThanOrEqual(1);
+});
+
+// D18 §3.2/§4: the maxVersions prune pass must respect the SAME pins as the
+// expiry pass — a pinned row over the version cap is skipped, not pruned.
+runDb('the max-versions prune pass respects an active base pin', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    // A configPolicyBackupSettings row with retention.maxVersions=1, linked
+    // via a job's featureLinkId, is required for the maxVersions branch to
+    // fire — construct the minimal chain this test needs; consult
+    // resolveGfsConfigForJob / the maxVersions query in backupRetention.ts
+    // for the exact featureLinkId wiring before finalizing this fixture.
+    const [oldJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000), completedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) }).returning({ id: backupJobs.id });
+    const [oldSnap] = await db.insert(backupSnapshots).values({ orgId, jobId: oldJob!.id, deviceId, configId, snapshotId: `mv-old-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`, timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    // Pin the OLDER (over-cap) snapshot as an in-flight job's base.
+    await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'running', baseSnapshotId: `mv-old-${unique}`, publishLeaseExpiresAt: new Date(Date.now() + 60 * 60 * 1000) });
+    return { orgId, oldSnapId: oldSnap!.id };
+  });
+
+  await cleanupExpiredSnapshots(ctx.orgId);
+
+  await withSystemDbAccessContext(async () => {
+    const rows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.oldSnapId));
+    expect(rows.length).toBe(1); // pinned — NOT pruned by maxVersions despite being over cap
+  });
+});
+
+// D18 §3.1 late-result fence, through the real applyBackupCommandResultToJob
+// path (not the mocked unit test) — proves the whole chain end to end: a
+// result arriving after the job's publish lease has expired is rejected.
+runDb('a late result is rejected once its publish lease has expired (real DB)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({
+      orgId, configId, deviceId, status: 'failed',
+      errorLog: '[stale-backup-reaper] reaped: no progress',
+      publishLeaseExpiresAt: new Date(Date.now() - 60 * 1000), // already expired
+      storageIdentity: `local::/tmp/gc-test-${unique}`,
+    }).returning({ id: backupJobs.id });
+    return { orgId, deviceId, jobId: job!.id };
+  });
+
+  const result = await applyBackupCommandResultToJob({
+    jobId: ctx.jobId, orgId: ctx.orgId, deviceId: ctx.deviceId, resultStatus: 'completed',
+    result: { snapshotId: `late-${unique}`, snapshot: { id: `late-${unique}` }, filesBackedUp: 1, bytesBackedUp: 1 } as any,
+    source: 'agent',
+  });
+
+  expect(result.applied).toBe(true);
+  await withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.jobId));
+    expect(row!.status).toBe('failed');
+    expect(row!.errorLog ?? '').toContain('publish_lease_expired');
+    // No backup_snapshots row must have been created for the late result.
+    const snaps = await db.select().from(backupSnapshots).where(eq(backupSnapshots.snapshotId, `late-${unique}`));
+    expect(snaps.length).toBe(0);
+  });
+});
+
+// D18 §3.1 concurrent dispatch vs retention, on TWO SEPARATE connections/
+// transactions racing the SAME snapshot row — proves the lock order (job then
+// snapshot, dispatch side; FOR UPDATE, retention side) leaves no dangling
+// pin: either dispatch sees the pin survive (retention skipped it) or
+// retention wins and dispatch falls back to a full run, never both "dispatch
+// pinned a row retention also deleted."
+runDb('concurrent dispatch-vs-retention on the same row never leaves a dangling pin', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const [job] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [snap] = await db.insert(backupSnapshots).values({ orgId, jobId: job!.id, deviceId, configId, snapshotId: `race-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+    return { orgId, deviceId, configId, snapId: snap!.id, dispatchJobId: dispatchJob!.id };
+  });
+
+  // Race the two real code paths concurrently — NOT two manually-opened raw
+  // connections, since the point is to prove the actual functions
+  // (stampDispatchPinAndIdentity via a minimal harness, and
+  // cleanupExpiredSnapshots) interleave safely under Postgres's real lock
+  // semantics, not to hand-roll the SQL twice. Import
+  // `stampDispatchPinAndIdentity` — confirm during implementation whether it
+  // needs exporting from backupWorker.ts (it is `async function`, not
+  // exported today) via `__testOnly`, mirroring the existing
+  // `__testOnly.processDispatchBackup` pattern.
+  const [dispatchOutcome] = await Promise.all([
+    withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
+      deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId,
+      mode: 'file', provider: 'local', providerConfig: { path: `/tmp/gc-test-${unique}` },
+    })),
+    cleanupExpiredSnapshots(ctx.orgId),
+  ]);
+
+  await withSystemDbAccessContext(async () => {
+    if (dispatchOutcome.baseSnapshotId === `race-${unique}`) {
+      // Dispatch won: the snapshot row must still exist (retention saw the pin).
+      const rows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.snapId));
+      expect(rows.length).toBe(1);
+    } else {
+      // Retention won: dispatch must have fallen back to a full run, and the
+      // dispatch job's own base_snapshot_id must be NULL, not dangling.
+      expect(dispatchOutcome.baseSnapshotId).toBe('');
+      const [dispatchJobRow] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId));
+      expect(dispatchJobRow!.baseSnapshotId).toBeNull();
+    }
+  });
+});
+
+// D18 §6(6b) / §3.7 — run through the actual WORKER HANDLER
+// (processCleanupExpiredSnapshots: per-org retention loop → sweep → the D17
+// final throw), not just cleanupExpiredSnapshots directly, proving the
+// worker-level restructuring (Task 8) really does leave earlier retirements
+// committed even when the run as a whole ends in the D17 throw.
+runDb('processCleanupExpiredSnapshots: an org with a failing row still commits every other retirement, then throws', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ctx = await withSystemDbAccessContext(async () => {
+    const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+    const identity = `local::/tmp/gc-test-${unique}`;
+    const [job1] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [okSnap] = await db.insert(backupSnapshots).values({ orgId, jobId: job1!.id, deviceId, configId, snapshotId: `worker-ok-${unique}`, backupType: 'file', storageIdentity: identity, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    const [job2] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+    const [failSnap] = await db.insert(backupSnapshots).values({ orgId, jobId: job2!.id, deviceId, configId, snapshotId: `worker-fail-${unique}`, backupType: 'file', storageIdentity: identity, expiresAt: new Date(Date.now() - 60 * 60 * 1000) }).returning({ id: backupSnapshots.id });
+    // Pre-seed the retirement row the second row's own insert will collide on.
+    await db.insert(backupSnapshotRetirements).values({ orgId, configId, deviceId, snapshotId: `worker-fail-${unique}`, storageIdentity: identity, backupType: 'file', reason: 'manual' });
+    return { orgId, okSnapId: okSnap!.id, failSnapId: failSnap!.id };
+  });
+
+  // processCleanupExpiredSnapshots iterates ALL orgs with expired snapshots
+  // (module-level, not scoped to ctx.orgId) — the D17 throw at the end is
+  // expected given the seeded collision.
+  await expect(processCleanupExpiredSnapshots()).rejects.toThrow(/snapshot row delete\(s\) failed/);
+
+  await withSystemDbAccessContext(async () => {
+    const okRows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.okSnapId));
+    expect(okRows.length).toBe(0); // committed despite the throw happening after it
+    const failRows = await db.select().from(backupSnapshots).where(eq(backupSnapshots.id, ctx.failSnapId));
+    expect(failRows.length).toBe(1); // this one legitimately failed and is retried next run
+  });
+});
 ```
 
 ```ts
@@ -2248,27 +2772,39 @@ runDb("one row failing on a unique-constraint collision does not undo an earlier
 import './setup';
 
 import { expect, it } from 'vitest';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { backupConfigs, backupSnapshotRetirements, devices, organizations, partners, sites } from '../../db/schema';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { backupConfigs, backupSnapshotRetirements, devices, sites } from '../../db/schema';
+import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+// Real DbAccessContext shape (apps/api/src/db/index.ts:124-129) has NO
+// `partnerId` field — an earlier draft of this test used
+// `{ scope, orgId, partnerId: null }`, which is not a real field on the type
+// at all (it would simply be ignored, silently defeating the forge's intent
+// to prove RLS, not "TypeScript accepted an object literal"). Mirrors the
+// established `orgContext` helper convention used elsewhere in this suite
+// (e.g. agentRollbackRls.integration.test.ts:12).
+function orgContext(orgId: string): DbAccessContext {
+  return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+}
 
 // D18 §3.3: shape-1 RLS forge — an org-scoped context for org B must not be
 // able to insert (or read) a retirement row stamped with org A's id.
 runDb('forges a cross-tenant insert on backup_snapshot_retirements and gets 42501', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const { orgAId, orgBId, configId, deviceId } = await withSystemDbAccessContext(async () => {
-    const [partner] = await db.insert(partners).values({ name: `RLSP ${unique}`, slug: `rlsp-${unique}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
-    const [orgA] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: partner!.id, name: `RLSA ${unique}`, slug: `rlsa-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
-    const [orgB] = await db.insert(organizations).values({ currencyCode: 'USD', partnerId: partner!.id, name: `RLSB ${unique}`, slug: `rlsb-${unique}`, type: 'customer', status: 'active' }).returning({ id: organizations.id });
-    const [site] = await db.insert(sites).values({ orgId: orgA!.id, name: `RLSS ${unique}` }).returning({ id: sites.id });
-    const [device] = await db.insert(devices).values({ orgId: orgA!.id, siteId: site!.id, agentId: `rlsa-agent-${unique}`, hostname: `rlsa-host-${unique}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online' }).returning({ id: devices.id });
-    const [config] = await db.insert(backupConfigs).values({ orgId: orgA!.id, name: `RLSC ${unique}`, type: 'file', provider: 'local', providerConfig: {} }).returning({ id: backupConfigs.id });
-    return { orgAId: orgA!.id, orgBId: orgB!.id, configId: config!.id, deviceId: device!.id };
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const [site] = await db.insert(sites).values({ orgId: orgA.id, name: `RLSS ${unique}` }).returning({ id: sites.id });
+    const [device] = await db.insert(devices).values({ orgId: orgA.id, siteId: site!.id, agentId: `rlsa-agent-${unique}`, hostname: `rlsa-host-${unique}`, osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online' }).returning({ id: devices.id });
+    const [config] = await db.insert(backupConfigs).values({ orgId: orgA.id, name: `RLSC ${unique}`, type: 'file', provider: 'local', providerConfig: {} }).returning({ id: backupConfigs.id });
+    return { orgAId: orgA.id, orgBId: orgB.id, configId: config!.id, deviceId: device!.id };
   });
 
   await expect(
-    withDbAccessContext({ scope: 'organization', orgId: orgBId, partnerId: null }, () =>
+    withDbAccessContext(orgContext(orgBId), () =>
       db.insert(backupSnapshotRetirements).values({
         orgId: orgAId, // forged: org B's context, org A's row
         configId,
@@ -2279,14 +2815,21 @@ runDb('forges a cross-tenant insert on backup_snapshot_retirements and gets 4250
         reason: 'manual',
       })
     )
-  ).rejects.toMatchObject({ code: '42501' });
+    // Review fix (SQLSTATE assertion must read the wrapped cause): a Drizzle
+    // `.insert(...)` call's rejection wraps the real Postgres error under
+    // `.cause`, NOT a top-level `.code` — confirmed against
+    // agentRollbackRls.integration.test.ts:105 (`{ cause: { code: '23505' } }`).
+    // A raw `db.execute(sql\`...\`)` call gets `.code` directly instead
+    // (same file, :128) — this test uses the Drizzle insert form, so it must
+    // use the wrapped form.
+  ).rejects.toMatchObject({ cause: { code: '42501' } });
 });
 ```
 
-  Confirm `withDbAccessContext`'s exact parameter shape (`{ scope, orgId, partnerId }` or similar) against `apps/api/src/db/index.ts:525-554` before finalizing — mirror whatever an existing RLS-forge integration test in this repo already uses (e.g. search `rejects.toMatchObject({ code: '42501' })` across `__tests__/integration/`) rather than guessing the context-object shape from scratch.
+  Confirm `createOrganization`/`createPartner`'s exact option shape against `apps/api/src/__tests__/integration/db-utils.ts:106,146` before finalizing (both already used by numerous other suites in this directory).
 
 - [ ] Step 2: Run it, expect FAIL against the current code (before Tasks 1-9 land) or PASS trivially once run after — this task is naturally the LAST implementation task, so by the time it's written Tasks 1-11 should already be in place; if any of these tests fail unexpectedly at this point, that's a real defect in an earlier task, not a sequencing artifact.
-  Command: `cd apps/api && DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupRetentionPins.integration.test.ts src/__tests__/integration/backupSnapshotRetirementsRls.integration.test.ts`
+  Command (NO `DATABASE_URL` override — see Task 14's correction on why the dev DB URL must never be passed to the integration runner): `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupRetentionPins.integration.test.ts src/__tests__/integration/backupSnapshotRetirementsRls.integration.test.ts`
 
 - [ ] Step 3: (No separate implement step — these tests exercise Tasks 1-11's already-implemented code.)
 
@@ -2301,29 +2844,57 @@ runDb('forges a cross-tenant insert on backup_snapshot_retirements and gets 4250
 ### Task 14: Wave verification
 
 - [ ] `cd apps/api && npx tsc --noEmit` (or `pnpm --filter @breeze/api exec tsc --noEmit` — no dedicated `typecheck` script exists in `apps/api/package.json`, confirmed).
-- [ ] `cd apps/api && npx vitest run src/services/backupGcKnobs.test.ts src/jobs/backupWorker.test.ts src/jobs/staleCommandReaper.test.ts src/jobs/backupRetention.test.ts src/services/backupResultPersistence.test.ts src/services/backupSnapshotReconcile.test.ts src/routes/backup/configs.test.ts`.
-- [ ] `pnpm db:check-drift`
-- [ ] `cd apps/api && DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupRetentionPins.integration.test.ts src/__tests__/integration/backupSnapshotRetirementsRls.integration.test.ts`
+- [ ] `cd apps/api && npx vitest run src/services/backupGcKnobs.test.ts src/jobs/backupWorker.test.ts src/jobs/staleCommandReaper.test.ts src/jobs/backupRetention.test.ts src/services/backupResultPersistence.test.ts src/services/backupSnapshotReconcile.test.ts src/routes/backup/configs.test.ts src/jobs/backupEnqueue.test.ts`.
+- [ ] `pnpm db:migrate && pnpm db:migrate` against a disposable local DB — second run applies zero migrations (idempotency; NOT what `db:check-drift` checks — see Task 2's Step 1 correction).
+- [ ] `pnpm db:check-drift` — verifies migration-ledger parity only (every file in `apps/api/migrations/` has one `breeze_migrations` row); run it because it's the standing gate for any new migration file, not because it proves schema correctness.
+- [ ] Integration tests — run with NO `DATABASE_URL` override (the safe default in `apps/api/src/__tests__/integration/setup.ts` already points at the dedicated test database, `postgresql://breeze_test:breeze_test@localhost:5433/breeze_test`; `apps/api/src/testUtils/integrationDatabaseSafety.ts` actively REFUSES a connection string on port 5432 or with a database name other than `breeze_test(_*)`, so the dev DB URL used elsewhere in this repo's docs must never be passed here):
+  `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/backupRetentionPins.integration.test.ts src/__tests__/integration/backupSnapshotRetirementsRls.integration.test.ts`
 - [ ] Contract suites this wave's registry edits are graded against (tenancy/cascade code was touched — run these before PR per CLAUDE.md):
-  - `find apps/api/src -iname "tenantCascade*integration*"` then `npx vitest run <path>` against a real DB.
+  - `find apps/api/src -iname "tenantCascade*integration*"` then `npx vitest run <path>` against the same test DB (no `DATABASE_URL` override needed).
   - `apps/api/src/routes/devices/*.test.ts` matching `cascade`/`moveOrg` (both device-side lists fail in the unit job since they read the Drizzle schema statically — no live DB required).
-  - `apps/api/src/services/tenantExportPolicyRegistry`'s check script/integration test (`grep -n check-tenant-export-policy apps/api/package.json` for the exact invocation) and `tenant-export-policy.integration.test.ts` + `tenantExportErasureRoundtrip.integration.test.ts` (only fail under Integration Tests — run against a real DB before PR).
+  - `apps/api/src/services/tenantExportPolicyRegistry`'s check script/integration test (`grep -n check-tenant-export-policy apps/api/package.json` for the exact invocation) and `tenant-export-policy.integration.test.ts` + `tenantExportErasureRoundtrip.integration.test.ts` (only fail under Integration Tests — run against the test DB before PR).
   - `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` — confirm it still passes with no new allowlist entry needed for shape-1 auto-discovery.
 - [ ] `pnpm lint`
+- [ ] **Explicitly out of scope, handed to W02:** pruning `backup_snapshot_retirements` rows 30 days after `swept_at` is set (spec §3.3: "Rows are pruned 30 d after `swept_at`"). This wave never sets `swept_at` at all (that's the GC sweep's job, §3.4/W02) and adds no pruning job — a pruning task only makes sense once W02's sweep is setting `swept_at` in the first place. W02's plan should include a `swept_at IS NOT NULL AND swept_at < now() - 30d` cleanup pass (a new scheduled job, or folded into the existing GC cadence) as one of its own tasks; it is NOT silently dropped here — call it out in that plan's own Consumes/Produces the same way this note does.
 - [ ] PR body checklist:
   - [ ] Migrations `140005`/`140006` applied and idempotent-verified (`pnpm db:migrate` run twice locally, second run a no-op).
-  - [ ] `pnpm db:check-drift` clean.
-  - [ ] Tenancy contract suites (cascade order, device cascade/denormalized lists, export-policy, rls-coverage) all green against a real DB, not just the unit job.
+  - [ ] `pnpm db:check-drift` clean (ledger parity only — not a schema-correctness proof; see above).
+  - [ ] Tenancy contract suites (cascade order, device cascade/denormalized lists, export-policy, rls-coverage) all green against the real test DB, not just the unit job.
   - [ ] `Closes #<W01 sub-issue>` once this feature is registered via `feature-lifecycle` (per CLAUDE.md's Feature Lifecycle Tracking section, if this plan is executed as a tracked wave).
-  - [ ] Note for W02/W03 reviewers: `backupGcKnobs.ts` currently exports `BACKUP_BASE_LEASE_MS`, `BACKUP_RESTORE_PIN_LINGER_MS`, `BACKUP_PUBLISH_MARGIN_MS` — W02 is expected to migrate `BACKUP_GC_GRACE_MS`/`BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS`/a real `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` into this same module and delete the `RECONCILE_ORPHAN_HALF_WINDOW_MS` local literal in `backupSnapshotReconcile.ts` (Task 11).
+  - [ ] Note for W02/W03 reviewers: `backupGcKnobs.ts` currently exports `BACKUP_BASE_LEASE_MS`, `BACKUP_RESTORE_PIN_LINGER_MS`, `BACKUP_PUBLISH_MARGIN_MS` — W02 is expected to migrate `BACKUP_GC_GRACE_MS`/`BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS`/a real `BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS` into this same module, delete the `RECONCILE_ORPHAN_HALF_WINDOW_MS` local literal in `backupSnapshotReconcile.ts` (Task 11), replace Task 8's single shared `runWithSystemDbAccess` wrap around `sweepUnreferencedBackupObjects()` with genuinely separate per-identity contexts managed inside that function, and add the 30-day `backup_snapshot_retirements` pruning pass noted above.
 
-## Open questions / contradictions
+## Open questions / contradictions — resolved by coordinator 2026-09-09
 
-1. **SQL backfill fidelity vs. `normalizeStorageIdentity` (Task 1).** The PL/pgSQL replica in the migration is a best-effort port, not a proven-identical one: (a) the `local` branch strips only a trailing slash, it does not replicate `path.resolve()`'s handling of `.`/`..` segments or resolving a genuinely relative path against a cwd (impossible to replicate in SQL at all — flagged in the migration's own comment); (b) the S3 branch's endpoint canonicalization strips a leading scheme and anything from the first `/` onward, but does not replicate the TS function's `new URL(...)` parsing exactly for atypical inputs (e.g. userinfo in the URL, IPv6 hosts). Both divergences are bounded to the *guarded* backfill set (config unedited since the snapshot) — a mismatch here means a row is left with a technically-wrong-but-internally-consistent identity, never crossed with a different bucket's rows, and W02's sweep only ever compares against the *live* `normalizeStorageIdentity` output for a listing, so a divergent backfilled identity would show as an "unreachable identity" leak (logged, not silently merged) rather than a cross-tenant/cross-bucket deletion. Still, this was not proven byte-for-byte against real data before landing — recommend a one-off comparison script (SQL backfill's computed identities vs. `normalizeStorageIdentity(row)` in TS) run against a copy of production data before the migration ships, similar in spirit to the Go↔TS contract-test pattern this repo already uses elsewhere (`backupAgentContract.test.ts`), even though no such automated cross-check exists here.
-2. **`RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS` (Task 7) vs. `BACKUP_RESTORE_PIN_LINGER_MS` (Task 9/backupGcKnobs.ts).** The spec's reaper rule is a fixed 1 hour, independent of the (env-tunable) 7-day-default linger retention's own pin check uses. This is intentional per the spec's plain reading (§3.2: "a new reaper rule in staleCommandReaper.ts: commandless pending restore_jobs older than 1h → failed"), but it does mean an operator who raises `BACKUP_RESTORE_PIN_LINGER_MS` well above 1h still gets commandless rows reaped at the fixed 1h mark while status-based pins linger far longer — not a bug, but worth confirming this asymmetry is the intended operator-facing behavior rather than an oversight in the spec itself.
-3. **Task 9's import path for `restoreJobs`/`backupSnapshotRetirements`/`IN_FLIGHT_BACKUP_JOB_STATUSES`.** The plan imports these from the concrete `'../db/schema/backup'` module rather than the `'../db/schema'` barrel that `backupRetention.ts`'s other imports currently use. This needs to be reconciled against whatever `backupRetention.test.ts`'s `vi.mock(...)` setup actually targets (the barrel or the concrete module) during implementation — mixing the two in one file's imports is a code-smell the implementing agent should resolve one way or the other, not leave split.
-4. **Task 11's base-existence check re-queries the DB per adopted candidate inside a loop already doing per-candidate manifest fetches.** This mirrors the existing per-candidate DB-read pattern in `reconcileOrphanedBackupSnapshots` (which already does one write per adopted candidate), so it is consistent with the file's existing performance envelope, but it is an N+1-shaped query pattern that could matter if reconcile is ever run over a very large orphan backlog. Not fixed here — flagged for W02/a future pass if reconcile's throughput becomes a real bottleneck.
-5. **`backup_snapshot_retirements.snapshot_id` width is `varchar(255)`** (Task 3's migration) while `BACKUP_SNAPSHOT_ID_MAX_LENGTH`'s actual numeric value was not independently re-verified in this pass — only that the constant exists and is imported elsewhere. Confirm `BACKUP_SNAPSHOT_ID_MAX_LENGTH`'s actual value during implementation and either use the constant directly in both the migration's hand-written SQL and the Drizzle schema, or confirm `255` matches it, so the two never silently drift.
-6. **Task 6's multi-target dispatch and sequential base selection.** When a profile fans out to multiple targets in one dispatch call (`prepareBackupDispatchTargets`'s per-target loop), each `backup_run` target calls `stampDispatchPinAndIdentity` independently, in its own transaction. Two sibling targets for the SAME `(deviceId, configId, mode)` pair (not a scenario the current profile model appears to produce, since distinct targets carry distinct modes/paths, but not verified as structurally impossible) could theoretically select the same base snapshot and both pin it — harmless (both dispatch fine, retention just sees two pins on the same snapshot instead of one) but not something this plan explicitly proves against. Not treated as a defect; flagged as unverified.
-7. **Task 12's `backupSnapshots` import in `configs.ts`.** The plan assumes `backupSnapshots` needs adding to this route file's imports; whether it's already imported (for an unrelated existing route in the same file) was not independently confirmed — a two-second `grep` during implementation resolves this, called out so it isn't silently skipped.
-8. **PATCH `/backup/configs/:id`'s response-shape change.** Returning `{ ...toConfigResponse(row), warnings }` only when `warnings.length > 0` (rather than always including an empty `warnings: []`) avoids widening every existing PATCH response body, but means callers must treat `warnings` as always-optional. If the web UI consuming this endpoint expects a stable shape, this may need `warnings: []` unconditionally instead — a product/UI-contract decision this plan defers to whoever wires up the frontend warning banner (out of scope for W01, which is API-only).
+All eight items below were raised during drafting and have since been resolved by explicit coordinator decision; the plan text above already reflects each resolution. Kept here as a decision log, not as open items.
+
+1. **RESOLVED — no backfill.** Migration `140005` is DDL only (Task 1): no PL/pgSQL port of `normalizeStorageIdentity`, no UPDATE, no `breeze.scope` elevation. Every `backup_snapshots.storage_identity` starts NULL; W02's sweep self-heals each row from a live bucket listing, matched by row id. The SQL-fidelity concerns that motivated the original open question (path/URL parsing divergence) no longer apply, since no SQL normalization is attempted here at all.
+2. **CONFIRMED — asymmetry intentional.** `staleCommandReaper.ts`'s `RESTORE_COMMANDLESS_PENDING_TIMEOUT_MS` (Task 7) is a fixed 1 hour, independent of the env-tunable, 7-day-default `BACKUP_RESTORE_PIN_LINGER_MS` (Task 9) retention's own pin check uses. Coordinator confirms this is the intended operator-facing behavior, not an oversight.
+3. **RESOLVED — import path.** `backupRetention.test.ts:34` mocks only `vi.mock('../db', () => ({ db: mockDb }))` — there is no mock on `'../db/schema'` in that file. Task 9 now imports `restoreJobs`/`backupSnapshotRetirements`/`IN_FLIGHT_BACKUP_JOB_STATUSES` from the barrel `'../db/schema'` (joining the file's existing barrel import), and `recoveryTokens` from the concrete `'../db/schema/recoveryTokens'` module (matching `backupWorker.ts`'s existing convention for that specific table). Tasks 6/10/11 were also normalized to add `backupSnapshotRetirements` to each file's existing barrel import rather than a separate `'../db/schema/backup'` line.
+4. **ACCEPTED — N+1 query shape.** Task 11's base-existence check re-queries the DB per adopted candidate; accepted as consistent with `reconcileOrphanedBackupSnapshots`'s existing per-candidate DB-read pattern. Flagged for a future pass only if reconcile's throughput over a large orphan backlog becomes a real bottleneck — not addressed in this wave.
+5. **RESOLVED — width.** `BACKUP_SNAPSHOT_ID_MAX_LENGTH = 200` (confirmed, `apps/api/src/db/schema/backupConstants.ts`), matching `backup_jobs.snapshot_id`'s existing `varchar(200)` (`apps/api/src/db/schema/backup.ts:247`). Task 3's migration now uses `varchar(200)` for `backup_snapshot_retirements.snapshot_id` (was `varchar(255)`); Task 2's Drizzle schema already used the `BACKUP_SNAPSHOT_ID_MAX_LENGTH` constant directly and needed no change. `backup_jobs.base_snapshot_id` (Task 1) deliberately stays `varchar(255)` per the spec's own explicit choice for that column — the two widths are independent.
+6. **ACCEPTED — noted, not fixed.** Task 6's sequential per-target base selection in a multi-target dispatch could theoretically let two sibling targets pin the same base snapshot. Coordinator confirms this is fine as-is (harmless: both dispatch normally, retention just sees two pins instead of one) — left as a noted, unverified-as-impossible edge case, not a defect requiring a fix.
+7. **RESOLVED — import.** Confirmed by reading `apps/api/src/routes/backup/configs.ts`'s import block directly: `backupSnapshots` was NOT already imported (only `backupConfigs`, from `'../db/schema'` at line 13). Task 12 now widens that same import line.
+8. **RESOLVED — always include `warnings`.** Per coordinator decision, `PATCH /backup/configs/:id`'s response always includes `warnings: string[]` (empty array when there's nothing to warn about), not an optional field. Task 12's implementation and tests were updated accordingly.
+
+## Round-2 review findings — all fixed in the plan text above
+
+An independent review pass found the following defects; each is fixed in place (not merely noted) in the tasks above.
+
+9. **FIXED — retention never invents an identity.** `unknown::<uuid>` is removed entirely (Task 9); a row with `storageIdentity IS NULL` is skipped and counted as a new `skippedUnresolved` counter, retried on a later run.
+10. **FIXED — legal hold/immutability re-read under the lock.** Moved from the enumeration pass into `deleteSnapshotRow` itself, decided from the `FOR UPDATE`-locked row (Task 9); the enumeration selects no longer fetch or branch on those columns at all.
+11. **FIXED — identity-scoped snapshot_id lookups.** `backup_snapshots.snapshot_id` has no uniqueness constraint (`schema/backup.ts:330`). Every lookup that matches a row by that bare string is now also scoped by `storageIdentity`: retention's backup-pin check (Task 9), the late-result fence's base lookup (Task 10), the `parentSnapshotId` lookup (Task 10, also switched from `configId` to `storageIdentity` scoping), and reconcile's base-existence check (Task 11).
+12. **FIXED — §3.7 sweep call shape corrected.** Task 8 wraps `sweepUnreferencedBackupObjects()` in exactly ONE `runWithSystemDbAccess` call (not bare/depth-0, superseding an earlier, since-corrected instruction) so its existing GUC-dependent reads keep working; W02 replaces the single wrap with genuine per-identity contexts.
+13. **FIXED — queue schema propagation (P1).** `queueSchemas.ts`'s `.strict()` `backupSnapshotSummarySchema` and `backupEnqueue.ts`'s `ProcessResultsResult.snapshot` interface both widened to carry `baseSnapshotId`/`formatVersion`/`backupIdentity`, with a round-trip regression test (Task 10).
+14. **FIXED — dispatch lock query (P1).** The outer-joined `FOR SHARE` (rejected by Postgres — `FOR UPDATE`/`FOR SHARE` cannot apply to the nullable side of an outer join) is split into two statements: `FOR SHARE` on `backup_snapshots` alone, then a plain (unlocked) SELECT against `backup_snapshot_retirements` (Task 6).
+15. **FIXED — rejection branch device predicate (P1).** The late-result fence's SELECT and UPDATE are both scoped by `(id, deviceId)`, matching the file's own #3036 convention at the main UPDATE (Task 10) — never by job id alone.
+16. **FIXED — late-result fence atomicity + NULL lease (P1).** The whole check-and-write sequence runs inside one `db.transaction` with `FOR UPDATE` on the job row (atomic against the reaper); a NULL `publishLeaseExpiresAt` is now a REJECT (`publish_lease_expired`), not an implicit pass (Task 10). Reconcile additionally refuses to adopt a job whose late result was already fenced (new `'late-result-fenced'` skip reason, Task 11).
+17. **FIXED — hyperv/mssql identity stamping (P2).** `stampDispatchPinAndIdentity` is now called for every dispatched target; `storage_identity` is stamped unconditionally, while `publish_lease_expires_at`/`base_snapshot_id` remain file/system_image-only (Task 6).
+18. **FIXED — discriminating test assertions (P2).** Task 10's tests now assert the actual captured `parentSnapshotId`/`isIncremental`/`storageIdentity`/`errorLog` values, not `applied === true` alone. Task 13 gained: restore pin with/without `command_id`, recovery-token pin, max-versions-respects-pins, a real-DB late-result-lease-expired case, a two-path concurrent dispatch-vs-retention race, and a `processCleanupExpiredSnapshots` (worker-handler-level) proof of §6(6b).
+19. **FIXED — compile/setup issues (P2).** `sql` added to `backupRetention.ts`'s widened `drizzle-orm` import (Task 9); the RLS forge test's `DbAccessContext` shape corrected to the real interface (no `partnerId` field) using the established `orgContext` helper convention, with the SQLSTATE assertion corrected to read `.cause.code` for a Drizzle insert (Task 13); all integration-test run commands now use the safe default test DB instead of the dev DB URl, which `testUtils/integrationDatabaseSafety.ts` actively refuses (Tasks 13-14).
+20. **FIXED — migration verification claims (P2).** A Drizzle partial index matching migration `140005`'s `backup_jobs_base_snapshot_id_idx` was added to Task 2's schema edit (previously missing). The plan no longer claims `pnpm db:check-drift` compares the Drizzle schema to a live database — `scripts/check-drift.ts` verifies migration-ledger parity only; a `pnpm db:migrate` run-twice idempotency check was added instead (Tasks 2, 14). The 30-day `backup_snapshot_retirements` pruning pass (spec §3.3) is explicitly handed to W02 (Task 14's Produces/handoff note), since this wave never sets `swept_at` in the first place.
+
+## W02 handoff note (§3.7 call-shape contract — corrected by coordinator's second review pass)
+
+Task 8 makes `processCleanupExpiredSnapshots` call `await runWithSystemDbAccess(() => sweepUnreferencedBackupObjects())` — **ONE shared context for the whole sweep**, opened strictly AFTER every row's retention has already committed independently (Task 9). This matches today's read shape exactly, so `sweepUnreferencedBackupObjects`'s existing internal `db.select(...)` calls keep the working GUCs they rely on (it has no context management of its own — Ground Truth, `backupRetention.ts:982`) — no interim regression is introduced. W02 is expected to replace this single shared wrap with genuinely separate per-identity contexts managed INSIDE `sweepUnreferencedBackupObjects` itself (spec §3.7 item 2: "a separate system context per identity for the DB reads, with every storage call at depth 0"), at which point this call site's wrap is removed entirely and W02 should not need to touch `backupWorker.ts` again beyond that one deletion.
+
+An earlier draft of this plan had this call site bare (no context at all) per an initial, since-superseded coordinator instruction; that was corrected back to the single-wrap shape described above after independent review flagged it would leave the sweep's reads genuinely broken (not merely under-optimized) until W02 landed. The single-wrap shape is the final, authoritative one.

@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#5449
+---
+
 # D18 Wave 04 — Lab Verification on MinIO, Release Notes, Campaign Doc Close-out
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Tasks 1–3 need the lab (`~/breeze-assurance`, MinIO, the Linux rig) and run from the MAIN session (subagents cannot SSH the rigs).
