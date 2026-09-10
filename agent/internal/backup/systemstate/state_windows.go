@@ -32,17 +32,28 @@ func NewCollector() Collector {
 	return &WindowsCollector{}
 }
 
-// CollectState gathers all Windows system state artifacts into stagingDir.
-// Individual collection steps log errors but do not abort the entire run.
-func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
-	hostname, _ := os.Hostname()
-	manifest := &SystemStateManifest{
+// newWindowsManifestSkeleton builds the initial SystemStateManifest before
+// any collection step runs. Factored out of CollectState (rather than an
+// inline struct literal there) so a unit test can construct a manifest via
+// this EXACT function — the same one production uses — marshal it, and
+// assert on the serialized shape: if a future edit ever drops the
+// RequiredSteps assignment here, that test fails immediately instead of only
+// a duplicated/inlined assertion elsewhere silently going stale.
+func newWindowsManifestSkeleton(hostname string) *SystemStateManifest {
+	return &SystemStateManifest{
 		Platform:      runtime.GOOS,
 		OSVersion:     windowsVersion(),
 		Hostname:      hostname,
 		CollectedAt:   time.Now().UTC(),
 		RequiredSteps: sortedRequiredSteps(windowsRequiredSteps),
 	}
+}
+
+// CollectState gathers all Windows system state artifacts into stagingDir.
+// Individual collection steps log errors but do not abort the entire run.
+func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
+	hostname, _ := os.Hostname()
+	manifest := newWindowsManifestSkeleton(hostname)
 
 	type step struct {
 		name string

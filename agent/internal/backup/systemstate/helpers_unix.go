@@ -24,3 +24,17 @@ func lchownBestEffort(path string, info os.FileInfo) {
 			"path", path, "error", err.Error())
 	}
 }
+
+// uidGidFromInfo extracts the owning uid/gid from info (as captured by
+// os.Lstat, which does NOT follow symlinks — same source as
+// lchownBestEffort) for Artifact.UID/GID. Returns (-1, -1) if info carries
+// no *syscall.Stat_t (shouldn't happen on a real unix Lstat result, but this
+// mirrors lchownBestEffort's own defensive type assertion); callers treat a
+// negative return as "leave Artifact.UID/GID unset".
+func uidGidFromInfo(info os.FileInfo) (uid, gid int) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return -1, -1
+	}
+	return int(stat.Uid), int(stat.Gid)
+}

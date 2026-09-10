@@ -244,6 +244,87 @@ func TestHelperArtifactFromFile(t *testing.T) {
 	}
 }
 
+// TestHelperArtifactFromFile_PopulatesMetadata pins the D15 Wave 1 fix
+// (finding #6): artifactFromFile must carry mode/uid/gid/modTime, not just
+// name/size/checksum — a BMR restore (Wave 3) needs these to put the
+// restored file back with its original permissions/ownership/mtime, and the
+// only place that metadata is ever recorded is here, at collection time,
+// while the source is known-good.
+func TestHelperArtifactFromFile_PopulatesMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	wantModTime := time.Date(2020, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := os.Chtimes(testFile, wantModTime, wantModTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	a := artifactFromFile("test_file", "test", testFile, tmpDir)
+
+	if a.Mode&0o777 != 0o640 {
+		t.Errorf("Mode = %#o, want low 9 bits 0640", a.Mode)
+	}
+	if !a.ModTime.Equal(wantModTime) {
+		t.Errorf("ModTime = %v, want %v", a.ModTime, wantModTime)
+	}
+	wantUID, wantGID := currentUIDGID(t)
+	if wantUID >= 0 && a.UID != wantUID {
+		t.Errorf("UID = %d, want %d (current process owner)", a.UID, wantUID)
+	}
+	if wantGID >= 0 && a.GID != wantGID {
+		t.Errorf("GID = %d, want %d (current process group)", a.GID, wantGID)
+	}
+}
+
+// TestArtifact_JSONRoundTrip proves the new metadata fields (LinkTarget,
+// Mode, UID, GID, ModTime) survive a JSON encode/decode cycle unchanged —
+// this is the wire format Wave 2's restorer will consume verbatim.
+func TestArtifact_JSONRoundTrip(t *testing.T) {
+	want := Artifact{
+		Name:      "etc_hostname",
+		Category:  "config",
+		Path:      "etc/hostname",
+		SizeBytes: 12,
+		Checksum:  "abc123",
+		Mode:      0o644,
+		UID:       501,
+		GID:       20,
+		ModTime:   time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC),
+	}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Artifact
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("round-trip mismatch:\n got  %+v\n want %+v", got, want)
+	}
+
+	// A symlink artifact (LinkTarget set, no size/checksum) round-trips too.
+	link := Artifact{
+		Name:       "link_service",
+		Category:   "services",
+		Path:       "services/wants/x.service",
+		LinkTarget: "../x.service",
+	}
+	linkData, err := json.Marshal(link)
+	if err != nil {
+		t.Fatalf("marshal link: %v", err)
+	}
+	var gotLink Artifact
+	if err := json.Unmarshal(linkData, &gotLink); err != nil {
+		t.Fatalf("unmarshal link: %v", err)
+	}
+	if !reflect.DeepEqual(link, gotLink) {
+		t.Errorf("symlink round-trip mismatch:\n got  %+v\n want %+v", gotLink, link)
+	}
+}
+
 // TestHelperArtifactFromFile_MissingFileOmitsChecksum proves a hashing
 // failure (e.g. the file vanished between stat and hash) degrades to an
 // artifact without a checksum rather than panicking or erroring — matching
@@ -292,7 +373,7 @@ func TestCollectSystemState_SchemaVersionSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectSystemState: %v", err)
 	}
-	defer os.RemoveAll(stagingDir)
+	defer func() { _ = os.RemoveAll(stagingDir) }()
 
 	if manifest.SchemaVersion != manifestSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", manifest.SchemaVersion, manifestSchemaVersion)
@@ -448,6 +529,70 @@ func TestHelperCopyTree_PreservesDirModeAndMtime(t *testing.T) {
 	}
 }
 
+// TestHelperCopyTree_NestedRestrictiveDirFixupOrder proves a 0500 (r-x,
+// write-denied but still traversable) parent directory's fixup never blocks
+// a deeper child's own chmod/lchown fixup — i.e. dir fixups are applied in
+// an order that lets every descendant still be reached and fixed up, however
+// restrictive an ancestor's SOURCE mode is. copyTree stages directories at a
+// permissive 0700 DURING the walk specifically so writing children never
+// fails; this test is the other half — the fixup PASS afterward must not
+// re-lock a parent down before its child's own fixup has run.
+func TestHelperCopyTree_NestedRestrictiveDirFixupOrder(t *testing.T) {
+	srcDir := t.TempDir()
+	parent := filepath.Join(srcDir, "parent")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "file.txt"), []byte("nested"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Set restrictive/looser modes AFTER writing content, since MkdirAll with
+	// 0o500 partway through would block creating file.txt itself.
+	if err := os.Chmod(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// Restore write permission before t.TempDir()'s own cleanup tries to
+	// RemoveAll srcDir — otherwise deleting "child" out of a 0500 "parent"
+	// fails. Registered after the chmod above so it runs first (LIFO).
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+
+	dstDir := filepath.Join(t.TempDir(), "copy")
+	stagedParent := filepath.Join(dstDir, "parent")
+	// Same reasoning as srcDir's cleanup above: copyTree replicates the
+	// restrictive mode onto the STAGED parent too, which would otherwise
+	// block this test's own dstDir tempdir cleanup.
+	t.Cleanup(func() { _ = os.Chmod(stagedParent, 0o700) })
+
+	if err := copyTree(srcDir, dstDir); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+
+	stagedChild := filepath.Join(stagedParent, "child")
+	stagedFile := filepath.Join(stagedChild, "file.txt")
+
+	if _, err := os.Stat(stagedFile); err != nil {
+		t.Fatalf("nested file under a restrictive parent was not staged: %v", err)
+	}
+	parentInfo, err := os.Stat(stagedParent)
+	if err != nil {
+		t.Fatalf("stat staged parent: %v", err)
+	}
+	if parentInfo.Mode().Perm() != 0o500 {
+		t.Errorf("staged parent mode = %v, want 0500 (source's mode)", parentInfo.Mode().Perm())
+	}
+	childInfo, err := os.Stat(stagedChild)
+	if err != nil {
+		t.Fatalf("stat staged child: %v", err)
+	}
+	if childInfo.Mode().Perm() != 0o700 {
+		t.Errorf("staged child mode = %v, want 0700 (source's mode) — restrictive parent fixup must not have blocked this", childInfo.Mode().Perm())
+	}
+}
+
 // TestHelperCopyFile_RecreatesSymlink proves a symlink is staged as a real
 // symlink (Lstat + Readlink + Symlink), not dereferenced into a plain-file
 // copy of whatever it currently points at — including a DANGLING link, which
@@ -515,13 +660,13 @@ func TestHelperCopyTree_RecreatesSymlinksAndSkipsSpecialFiles(t *testing.T) {
 	if sockDirErr != nil {
 		t.Fatalf("create short-path temp dir for socket: %v", sockDirErr)
 	}
-	defer os.RemoveAll(sockDir)
+	defer func() { _ = os.RemoveAll(sockDir) }()
 	sockPath := filepath.Join(sockDir, "s")
 	ln, sockErr := net.Listen("unix", sockPath)
 	if sockErr != nil {
 		t.Skipf("cannot create a unix socket in this sandbox, skipping: %v", sockErr)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	if err := os.Rename(sockPath, filepath.Join(srcDir, "test.sock")); err != nil {
 		t.Fatalf("move socket into srcDir: %v", err)
 	}
@@ -545,11 +690,13 @@ func TestHelperCopyTree_RecreatesSymlinksAndSkipsSpecialFiles(t *testing.T) {
 	}
 }
 
-// TestHelperCollectArtifactsInDir_SkipsSymlinks pins the documented choice
-// (see collectArtifactsInDir's doc comment): a staged symlink is excluded
-// from the artifact list entirely, rather than checksummed (which would mean
-// silently following it) or recorded with no checksum.
-func TestHelperCollectArtifactsInDir_SkipsSymlinks(t *testing.T) {
+// TestHelperCollectArtifactsInDir_SymlinksEnumeratedWithLinkTarget pins the
+// D15 Wave 1 fix (finding #5): a staged symlink is now enumerated as its own
+// Artifact — LinkTarget set to the link's target, SizeBytes 0, no checksum —
+// rather than excluded outright. Only enumerated artifacts get published
+// (see publishSystemState), so excluding symlinks silently lost every one of
+// them (e.g. /etc/systemd/system/*.wants/*.service).
+func TestHelperCollectArtifactsInDir_SymlinksEnumeratedWithLinkTarget(t *testing.T) {
 	tmpDir := t.TempDir()
 	dir := filepath.Join(tmpDir, "dir")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -566,11 +713,35 @@ func TestHelperCollectArtifactsInDir_SkipsSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectArtifactsInDir: %v", err)
 	}
-	if len(artifacts) != 1 {
-		t.Fatalf("artifacts = %d, want 1 (symlink excluded)", len(artifacts))
+	if len(artifacts) != 2 {
+		t.Fatalf("artifacts = %d, want 2 (real file + symlink), got %+v", len(artifacts), artifacts)
 	}
-	if artifacts[0].Name != "real.txt" {
-		t.Errorf("artifact name = %q, want %q", artifacts[0].Name, "real.txt")
+	var symlinkArtifact, regularArtifact *Artifact
+	for i := range artifacts {
+		switch artifacts[i].Name {
+		case "link.txt":
+			symlinkArtifact = &artifacts[i]
+		case "real.txt":
+			regularArtifact = &artifacts[i]
+		}
+	}
+	if regularArtifact == nil {
+		t.Fatal("real.txt artifact missing")
+	}
+	if regularArtifact.Checksum == "" {
+		t.Error("regular file artifact should still carry a checksum")
+	}
+	if symlinkArtifact == nil {
+		t.Fatal("link.txt symlink artifact missing")
+	}
+	if symlinkArtifact.LinkTarget != "real.txt" {
+		t.Errorf("symlink LinkTarget = %q, want %q", symlinkArtifact.LinkTarget, "real.txt")
+	}
+	if symlinkArtifact.SizeBytes != 0 {
+		t.Errorf("symlink SizeBytes = %d, want 0", symlinkArtifact.SizeBytes)
+	}
+	if symlinkArtifact.Checksum != "" {
+		t.Errorf("symlink Checksum = %q, want empty (no independent file content)", symlinkArtifact.Checksum)
 	}
 }
 

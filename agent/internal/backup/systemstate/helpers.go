@@ -12,6 +12,29 @@ import (
 	"path/filepath"
 )
 
+// modeFromInfo converts info's os.FileMode into the traditional POSIX
+// st_mode & 07777 encoding: the low 9 bits (permission bits, i.e.
+// info.Mode().Perm()) OR'd with the setuid/setgid/sticky bits translated
+// from Go's os.ModeSetuid/os.ModeSetgid/os.ModeSticky (which use different
+// bit positions than the traditional octal 04000/02000/01000) into those
+// traditional positions. Platform-independent: os.ModeSetuid/Setgid/Sticky
+// are always false on Windows, so this degrades to just the permission bits
+// there, matching Artifact.Mode's doc comment.
+func modeFromInfo(info os.FileInfo) uint32 {
+	fm := info.Mode()
+	mode := uint32(fm.Perm())
+	if fm&os.ModeSetuid != 0 {
+		mode |= 0o4000
+	}
+	if fm&os.ModeSetgid != 0 {
+		mode |= 0o2000
+	}
+	if fm&os.ModeSticky != 0 {
+		mode |= 0o1000
+	}
+	return mode
+}
+
 // sha256File streams a file through SHA-256 and returns the lowercase-hex
 // digest, mirroring backup.sha256File — this package sits below the backup
 // package in the dependency graph (backup imports systemstate) so it cannot
@@ -21,7 +44,10 @@ func sha256File(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	// Read-only handle: nothing buffered to lose, so a Close failure here
+	// (already-closed fd, or a similarly benign race) is not worth
+	// propagating — discard explicitly rather than leaving it unchecked.
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -32,40 +58,43 @@ func sha256File(path string) (string, error) {
 // artifactFromFile creates an Artifact for a single collected file, including
 // its SHA-256 checksum (computed here, at collection time, while the file is
 // known-good — a BMR consumer verifies downloaded bytes against this before
-// applying them).
+// applying them) and its mode/uid/gid/modTime (from os.Lstat, never
+// following a symlink — see Artifact.Mode/UID/GID/ModTime's doc comments),
+// so a BMR restore (Wave 3) can put the restored file back exactly as it was
+// collected.
 func artifactFromFile(name, category, absPath, stagingDir string) Artifact {
 	relPath, _ := filepath.Rel(stagingDir, absPath)
-	var size int64
-	if info, err := os.Stat(absPath); err == nil {
-		size = info.Size()
+	art := Artifact{
+		Name:     name,
+		Category: category,
+		Path:     filepath.ToSlash(relPath),
+	}
+	if info, err := os.Lstat(absPath); err == nil {
+		art.SizeBytes = info.Size()
+		art.Mode = modeFromInfo(info)
+		art.ModTime = info.ModTime()
+		if uid, gid := uidGidFromInfo(info); uid >= 0 {
+			art.UID, art.GID = uid, gid
+		}
 	}
 	checksum, err := sha256File(absPath)
 	if err != nil {
 		slog.Warn("systemstate: checksum failed, artifact recorded without one",
 			"path", absPath, "error", err.Error())
 	}
-	return Artifact{
-		Name:      name,
-		Category:  category,
-		Path:      filepath.ToSlash(relPath),
-		SizeBytes: size,
-		Checksum:  checksum,
-	}
+	art.Checksum = checksum
+	return art
 }
 
-// collectArtifactsInDir walks a directory and returns an Artifact (with
-// checksum — see artifactFromFile's doc comment) for each REGULAR file.
-//
-// Symlinks are deliberately excluded from the artifact list (not just
-// skipped from checksumming): copyTree/copyFile stage a symlink as a real
-// symlink (see copySymlink), so it has no independent file content of its
-// own to checksum — sha256File would either silently follow the link and
-// checksum whatever it currently points at (not what this "artifact" is) or
-// fail outright on a dangling link. The link itself is still staged and
-// still gets restored; it is just not tracked or integrity-checked as its
-// own Artifact entry. This is the documented, simpler-than-the-alternative
-// choice over recording a symlink artifact with its target path — see the
-// D15 plan's Wave 1 addendum.
+// collectArtifactsInDir walks a directory and returns an Artifact for each
+// REGULAR file (with checksum + metadata — see artifactFromFile's doc
+// comment) and each SYMLINK (LinkTarget set instead — see Artifact.
+// LinkTarget's doc comment; no checksum or metadata, since a symlink has no
+// independent file content of its own to hash and copyTree/copyFile don't
+// preserve mode/ownership on the link itself in a way worth restoring
+// separately from recreating the link). Any other non-regular, non-symlink
+// entry (socket, FIFO, device) is skipped entirely, matching copyTree's own
+// choice not to stage them.
 func collectArtifactsInDir(category, dir, stagingDir string) ([]Artifact, error) {
 	var artifacts []Artifact
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
@@ -75,26 +104,50 @@ func collectArtifactsInDir(category, dir, stagingDir string) ([]Artifact, error)
 		if d.IsDir() {
 			return nil
 		}
+		relPath, relErr := filepath.Rel(stagingDir, path)
+		if relErr != nil {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				slog.Warn("systemstate: readlink failed, symlink artifact skipped",
+					"path", path, "error", readErr.Error())
+				return nil
+			}
+			artifacts = append(artifacts, Artifact{
+				Name:       filepath.Base(path),
+				Category:   category,
+				Path:       filepath.ToSlash(relPath),
+				LinkTarget: target,
+			})
+			return nil
+		}
 		if !d.Type().IsRegular() {
-			return nil // symlinks and any other non-regular entry — see doc comment above
+			return nil // socket, FIFO, device — see doc comment above
 		}
 		info, err := d.Info()
 		if err != nil {
 			return nil
 		}
-		relPath, _ := filepath.Rel(stagingDir, path)
 		checksum, sumErr := sha256File(path)
 		if sumErr != nil {
 			slog.Warn("systemstate: checksum failed, artifact recorded without one",
 				"path", path, "error", sumErr.Error())
 		}
-		artifacts = append(artifacts, Artifact{
+		art := Artifact{
 			Name:      filepath.Base(path),
 			Category:  category,
 			Path:      filepath.ToSlash(relPath),
 			SizeBytes: info.Size(),
 			Checksum:  checksum,
-		})
+			Mode:      modeFromInfo(info),
+			ModTime:   info.ModTime(),
+		}
+		if uid, gid := uidGidFromInfo(info); uid >= 0 {
+			art.UID, art.GID = uid, gid
+		}
+		artifacts = append(artifacts, art)
 		return nil
 	})
 	return artifacts, err
@@ -143,7 +196,10 @@ func copyFile(src, dst string) error {
 	}
 
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		// Best-effort cleanup on the failure path: the io.Copy error below is
+		// already the meaningful one to return, and a Close failure here
+		// would just be noise on top of it — discard explicitly.
+		_ = out.Close()
 		return fmt.Errorf("copy %s → %s: %w", src, dst, err)
 	}
 	if err := out.Close(); err != nil {

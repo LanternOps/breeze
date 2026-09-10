@@ -56,8 +56,47 @@ type Artifact struct {
 	// consumer downloading this artifact from remote storage verifies its
 	// bytes against this value before applying it — the same integrity
 	// contract backup.SnapshotFile.Checksum gives ordinary backed-up files.
-	// Empty/omitted only if hashing failed at collection time.
+	// Empty/omitted only if hashing failed at collection time, or if this
+	// artifact is a symlink (see LinkTarget) — a symlink has no independent
+	// file content to hash.
 	Checksum string `json:"checksum,omitempty"`
+
+	// LinkTarget is set when this artifact is a symlink rather than a
+	// regular file — the readlink(2) target, recorded exactly as staged
+	// (absolute or relative, whichever the source symlink used; never
+	// resolved). When set, SizeBytes is 0 and Checksum is empty, and the
+	// publisher does NOT upload any bytes for this artifact (see
+	// publishSystemState) — the manifest entry alone is enough for a
+	// consumer to recreate the link. Symlinks used to be excluded from the
+	// artifact list entirely (see collectArtifactsInDir), which silently
+	// lost every one collected (e.g. /etc/systemd/system/*.wants/*.service).
+	LinkTarget string `json:"linkTarget,omitempty"`
+
+	// Mode carries the artifact's permission bits at collection time: the
+	// low 9 bits (rwxrwxrwx, i.e. os.FileMode.Perm()) OR'd with the
+	// setuid/setgid/sticky bits translated into their traditional octal
+	// positions (04000/02000/01000 respectively) — i.e. equivalent to a
+	// POSIX stat's st_mode & 07777. A BMR restore (Wave 3) chmods the
+	// restored file to this value. Zero/omitted on Windows (no POSIX
+	// permission bits — Windows collection sets Mode via the same helper,
+	// which just yields the low bits Go's os.FileMode reports there) or on
+	// an artifact that predates this field.
+	Mode uint32 `json:"mode,omitempty"`
+	// UID is the artifact's owning user id at collection time, from
+	// os.Lstat (never resolved from a symlink's target — see
+	// uidGidFromInfo). Omitted (left at the zero value) on Windows, which
+	// has no POSIX uid, or if the artifact predates this field. NOTE:
+	// omitempty means a genuine uid 0 (root-owned file) also omits — the
+	// same accepted tradeoff SnapshotFile.Mode's sibling fields make
+	// elsewhere in this codebase; a consumer restoring uid unconditionally
+	// (e.g. always chown, defaulting to 0) is unaffected either way.
+	UID int `json:"uid,omitempty"`
+	// GID is the artifact's owning group id at collection time — see UID.
+	GID int `json:"gid,omitempty"`
+	// ModTime is the artifact's modification time at collection time, so a
+	// BMR restore can set it back on the restored file. Zero/omitted if
+	// unavailable or the artifact predates this field.
+	ModTime time.Time `json:"modTime,omitempty"`
 }
 
 // HardwareProfile captures machine hardware for recovery planning.

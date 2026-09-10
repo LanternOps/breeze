@@ -3,6 +3,7 @@
 package systemstate
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -113,15 +114,36 @@ func TestWindowsCollectCertificatesSkipsWhenCertSvcAbsent(t *testing.T) {
 // SystemStateManifest.RequiredSteps — the field a bare-metal-recovery
 // consumer uses to independently enforce the same required-step policy the
 // collector itself enforces via missingRequired.
+//
+// Deliberately does NOT call sortedRequiredSteps directly and check its
+// return value in isolation (the previous, vacuous version of this test) —
+// that only proves sortedRequiredSteps itself works, not that CollectState
+// actually wires the result onto the manifest it serializes. Instead this
+// builds a manifest via newWindowsManifestSkeleton — the EXACT function
+// CollectState calls — and marshals it to JSON, so dropping the
+// RequiredSteps assignment from that function (or a bad json tag on the
+// field) fails this test.
 func TestWindowsRequiredStepsSerialized(t *testing.T) {
-	got := sortedRequiredSteps(windowsRequiredSteps)
+	manifest := newWindowsManifestSkeleton("test-host")
+
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	var decoded struct {
+		RequiredSteps []string `json:"requiredSteps"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal serialized manifest: %v", err)
+	}
+
 	want := []string{"boot", "registry"}
-	if len(got) != len(want) {
-		t.Fatalf("sortedRequiredSteps(windowsRequiredSteps) = %v, want %v", got, want)
+	if len(decoded.RequiredSteps) != len(want) {
+		t.Fatalf("serialized requiredSteps = %v, want %v", decoded.RequiredSteps, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("sortedRequiredSteps(windowsRequiredSteps)[%d] = %q, want %q", i, got[i], want[i])
+		if decoded.RequiredSteps[i] != want[i] {
+			t.Errorf("serialized requiredSteps[%d] = %q, want %q", i, decoded.RequiredSteps[i], want[i])
 		}
 	}
 }
