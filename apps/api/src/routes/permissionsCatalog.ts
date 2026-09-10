@@ -38,6 +38,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   ai_agents: 'AI Agents',
   approvals: 'Approvals',
   variables: 'Variables',
+  pam: 'Privileged Access',
   workspace: 'Workspace'
 };
 
@@ -59,6 +60,8 @@ const ACTION_LABELS: Record<string, string> = {
   read_all: 'Read All',
   decide: 'Decide',
   create: 'Create',
+  approve: 'Approve',
+  manage_policy: 'Manage policy',
   credentials: 'Manage Credentials'
 };
 

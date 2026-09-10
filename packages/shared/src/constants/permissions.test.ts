@@ -14,6 +14,16 @@ describe('agent rollback grant', () => {
   });
 });
 
+describe('PAM dedicated permissions (pam:approve / pam:manage_policy)', () => {
+  it('exposes a dedicated approve capability, distinct from devices:execute', () => {
+    expect(PERMISSION_GRANTS.PAM_APPROVE).toEqual({ resource: 'pam', action: 'approve' });
+  });
+
+  it('exposes a dedicated policy-management capability, distinct from devices:write', () => {
+    expect(PERMISSION_GRANTS.PAM_MANAGE_POLICY).toEqual({ resource: 'pam', action: 'manage_policy' });
+  });
+});
+
 describe('Workspace extension grants', () => {
   it('keeps read, configuration, credentials, and execution as distinct capabilities', () => {
     expect(PERMISSION_GRANTS.WORKSPACE_READ).toEqual({ resource: 'workspace', action: 'read' });
