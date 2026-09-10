@@ -36,6 +36,65 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
   return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
+function isEmptySiteCeiling(permissions: UserPermissions | undefined): boolean {
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  return allowedSiteIds !== undefined && (!Array.isArray(allowedSiteIds) || allowedSiteIds.length === 0);
+}
+
+async function updateVaultWithinCurrentSite(
+  orgId: string,
+  vaultId: string,
+  updateData: Record<string, unknown>,
+  permissions: UserPermissions | undefined,
+) {
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  if (allowedSiteIds === undefined) {
+    const [row] = await db
+      .update(localVaults)
+      .set(updateData)
+      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
+      .returning();
+    return row;
+  }
+  if (!Array.isArray(allowedSiteIds) || allowedSiteIds.length === 0) return undefined;
+
+  // Device-first locking is shared with device-move paths. If the move wins,
+  // this re-read observes the new site and denies; if this lock wins, the move
+  // waits until the authorized vault mutation commits. The deviceId equality
+  // on the UPDATE is a final CAS against unsupported direct reassignment.
+  return db.transaction(async (tx) => {
+    const [vault] = await tx
+      .select({ deviceId: localVaults.deviceId })
+      .from(localVaults)
+      .where(and(eq(localVaults.id, vaultId), eq(localVaults.orgId, orgId)))
+      .limit(1);
+    if (!vault) return undefined;
+
+    const [device] = await tx
+      .select({ id: devices.id })
+      .from(devices)
+      .where(and(
+        eq(devices.id, vault.deviceId),
+        eq(devices.orgId, orgId),
+        inArray(devices.siteId, allowedSiteIds),
+      ))
+      .limit(1)
+      .for('update');
+    if (!device) return undefined;
+
+    const [row] = await tx
+      .update(localVaults)
+      .set(updateData)
+      .where(and(
+        eq(localVaults.id, vaultId),
+        eq(localVaults.orgId, orgId),
+        eq(localVaults.deviceId, vault.deviceId),
+      ))
+      .returning();
+    return row;
+  });
+}
+
 // GET /vault — list vaults for org (optional ?deviceId filter)
 vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', vaultListSchema), async (c) => {
   const auth = c.get('auth');
@@ -136,6 +195,10 @@ vaultRoutes.patch(
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    if (isEmptySiteCeiling(permissions)) {
+      return c.json({ error: 'Vault not found' }, 404);
+    }
 
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.vaultPath !== undefined) updateData.vaultPath = payload.vaultPath;
@@ -143,11 +206,7 @@ vaultRoutes.patch(
     if (payload.retentionCount !== undefined) updateData.retentionCount = payload.retentionCount;
     if (payload.isActive !== undefined) updateData.isActive = payload.isActive;
 
-    const [row] = await db
-      .update(localVaults)
-      .set(updateData)
-      .where(and(eq(localVaults.id, id), eq(localVaults.orgId, orgId)))
-      .returning();
+    const row = await updateVaultWithinCurrentSite(orgId, id, updateData, permissions);
 
     if (!row) {
       return c.json({ error: 'Vault not found' }, 404);
@@ -179,12 +238,17 @@ vaultRoutes.delete(
   }
 
   const { id } = c.req.valid('param');
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+  if (isEmptySiteCeiling(permissions)) {
+    return c.json({ error: 'Vault not found' }, 404);
+  }
 
-  const [row] = await db
-    .update(localVaults)
-    .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(localVaults.id, id), eq(localVaults.orgId, orgId)))
-    .returning();
+  const row = await updateVaultWithinCurrentSite(
+    orgId,
+    id,
+    { isActive: false, updatedAt: new Date() },
+    permissions,
+  );
 
   if (!row) {
     return c.json({ error: 'Vault not found' }, 404);

@@ -16,7 +16,7 @@ const writeRouteAuditMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'for']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -39,6 +39,10 @@ vi.mock('../../db', () => ({
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
+    transaction: (fn: (tx: unknown) => unknown) => fn({
+      select: (...args: unknown[]) => selectMock(...(args as [])),
+      update: (...args: unknown[]) => updateMock(...(args as [])),
+    }),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
@@ -239,6 +243,41 @@ describe('vault routes', () => {
     expect((await res.json()).vaultPath).toBe('E:/Vault');
   });
 
+  it('hides PATCH from a caller with an empty site ceiling before database or audit work', async () => {
+    permissionsState = { allowedSiteIds: [] };
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ vaultPath: 'E:/Vault' })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ vaultPath: 'E:/Vault' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Vault not found' });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('locks the current selected-site device before PATCH and then applies the vault CAS', async () => {
+    permissionsState = { allowedSiteIds: [SITE_A] };
+    const vaultLookup = chainMock([{ deviceId: DEVICE_ID }]);
+    const deviceLock = chainMock([{ id: DEVICE_ID }]);
+    selectMock.mockReturnValueOnce(vaultLookup).mockReturnValueOnce(deviceLock);
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ vaultPath: 'E:/Vault' })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ vaultPath: 'E:/Vault' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(deviceLock.for).toHaveBeenCalledWith('update');
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
   it('deactivates a vault config', async () => {
     updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
 
@@ -249,6 +288,21 @@ describe('vault routes', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: true, id: VAULT_ID });
+  });
+
+  it('hides DELETE from a caller with an empty site ceiling before database or audit work', async () => {
+    permissionsState = { allowedSiteIds: [] };
+    updateMock.mockReturnValueOnce(chainMock([makeVault({ isActive: false })]));
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Vault not found' });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('dispatches a vault sync command', async () => {
