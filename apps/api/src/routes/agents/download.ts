@@ -933,7 +933,11 @@ if [[ "\$OS" == "darwin" ]]; then
   EXPECTED_PKG_SHA256="$(header_value X-Breeze-Artifact-SHA256)"
   EXPECTED_TEAM_ID="$(header_value X-Breeze-MacOS-Team-ID)"
   EXPECTED_SIGNING_IDENTITY_B64="$(header_value X-Breeze-MacOS-Signing-Identity-Base64)"
-  EXPECTED_SIGNING_IDENTITY="$(printf '%s' "\$EXPECTED_SIGNING_IDENTITY_B64" | /usr/bin/base64 -D 2>/dev/null || true)"
+  # BSD base64 (real macOS /usr/bin/base64) only accepts -D for decode; GNU
+  # base64 (e.g. this script's darwin branch exercised under test on a Linux
+  # runner) only accepts -d. Try both so decoding works on either, without
+  # weakening the authenticated-metadata check below on a genuine failure.
+  EXPECTED_SIGNING_IDENTITY="$(printf '%s' "\$EXPECTED_SIGNING_IDENTITY_B64" | /usr/bin/base64 -D 2>/dev/null || printf '%s' "\$EXPECTED_SIGNING_IDENTITY_B64" | /usr/bin/base64 -d 2>/dev/null || true)"
   if ! [[ "\$EXPECTED_PKG_SHA256" =~ ^[a-f0-9]{64}$ ]] ||
      ! [[ "\$EXPECTED_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] ||
      [[ -z "\$EXPECTED_SIGNING_IDENTITY" ]]; then
