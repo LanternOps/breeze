@@ -95,7 +95,21 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
   'routes/alertTemplates/rules.ts': 'alert RULES are org-owned in practice; partner-wide rule ownership is not exposed by this route',
   'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
-  'routes/softwareInventory.ts': 'read-oriented inventory surface; its policy writes delegate to softwarePolicies routes',
+  // Corrected 2026-09 (site-ceiling gate review): this entry previously read
+  // "read-oriented inventory surface; its policy writes delegate to
+  // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
+  // insert/update software_policies (Default Allowlist/Blocklist) and, via
+  // ensureDefaultConfigPolicyLink, configurationPolicies/
+  // configPolicyFeatureLinks/configPolicyAssignments (lines ~180-235,
+  // 397-480, 518-635). It stays exempt from THIS gate for a real reason: both
+  // resolveOrgId (writes) and every write call site pass a concrete orgId —
+  // resolveOrgId never returns an org-less result, so this route can never
+  // create or modify a partner-wide (org_id NULL) row. The write-authority gap
+  // this route actually had — a site-restricted org user could still silently
+  // mutate org-wide default policies — is closed by the ORTHOGONAL
+  // site-ceiling gate (canMutateOrgWideGovernance) added directly to
+  // /approve, /deny, /clear.
+  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
