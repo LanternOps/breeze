@@ -306,9 +306,10 @@ Filled in as cells execute. One row per cell per rig.
 
 1. **Ubuntu x86 rig** — Tailscale check-mode approval link needed to open the ControlMaster. Default: QEMU
    arm64 covers Linux until approved.
-2. **Lab Hyper-V host access** (LAN-only, no SSH/WinRM exposed) — needed for fresh
-   Windows VMs (Windows BMR B1, Windows 10/11 client, VM snapshots for destructive tests). Default: Windows
-   BMR stays BLOCKED; no destructive restore onto a VM I cannot roll back.
+2. **Lab Hyper-V host access** — RESOLVED 2026-09-10: SSH to the host as a local admin unlocked fresh
+   VMs (WIN-R, WIN10-C), Windows BMR B1 (PASS, §11) and the Windows 10 client cells. **Windows registry
+   restore decision (D15 follow-up): Option B** — recovery applies files, certificates and firewall; hives
+   and BCD stay collected for reference (decision doc updated; implementation [#5470](https://github.com/LanternOps/breeze/issues/5470)).
 3. **Install SQL Server Express + the Hyper-V role on WIN-A** (2.25 GB RAM; nested virt appears exposed).
    Default: proceed — both are removable and the VM is a throwaway lab box.
 4. **In-place overwrite restores on WIN-B** (prod-enrolled). Default: alternate-path only on WIN-B.

@@ -1,13 +1,15 @@
 ---
 title: Windows BMR registry-hive restore — offline apply vs. drop from scope
-status: decision needed
+status: decided — Option B (2026-09-10)
 date: 2026-09-10
 source: docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md §3 ("Windows" paragraph)
 owner: Todd
 tracking_issue: LanternOps/breeze#5439
 ---
 
-# Windows BMR Registry-Hive Restore — Decision Needed
+# Windows BMR Registry-Hive Restore — Decision: Option B
+
+**Decided 2026-09-10 (backup assurance campaign): Option B.** Windows bare-metal recovery applies files, certificates and firewall automatically; registry hives and BCD remain collected for manual reference and are never live-applied. Rationale: live-hive `reg restore` is unsupported on a running OS, and Option A needs a Windows boot-media, ADK, WinPE driver-injection and media-signing pipeline the product does not have, contradicting the reinstall-then-recover model. Implementation tracked in [#5470](https://github.com/LanternOps/breeze/issues/5470); Option A can return as its own feature if registry-level Windows recovery is required.
 
 ## 1. What's true right now
 
