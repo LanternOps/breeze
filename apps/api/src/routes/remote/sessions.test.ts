@@ -35,6 +35,8 @@ const {
   createDesktopConnectCode,
   createWsTicket,
   dispatchCommandToAgent,
+  captureMessage,
+  captureException,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
@@ -50,7 +52,11 @@ const {
   partnerTrustMode: vi.fn(() => 'off'),
   createDesktopConnectCode: vi.fn(),
   createWsTicket: vi.fn(),
-  dispatchCommandToAgent: vi.fn(async () => ({ status: 'sent', via: 'local' })),
+  dispatchCommandToAgent: vi.fn(
+    async (): Promise<{ status: string; via?: string; message?: string }> => ({ status: 'sent', via: 'local' })
+  ),
+  captureMessage: vi.fn(),
+  captureException: vi.fn(),
 }));
 
 // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the real
@@ -180,7 +186,12 @@ vi.mock('../../services/viewerTokenRevocation', () => ({ revokeViewerSession }))
 // against this file's mock db).
 vi.mock('../../services/remoteSessionTeardown', () => ({
   teardownDisconnectedSessions: teardownDisconnectedSessions,
+  // Re-export the real value: both End guards are driven off it, so a mock
+  // that dropped it would make the route compare against `undefined`.
+  ACTIVE_REMOTE_SESSION_STATUSES: ['pending', 'connecting', 'active'] as const,
 }));
+
+vi.mock('../../services/sentry', () => ({ captureMessage, captureException }));
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
   checkRemoteAccess,
@@ -1431,6 +1442,8 @@ describe('POST /remote/sessions/:id/end', () => {
     checkRemoteAccess.mockReturnValue(Promise.resolve({ allowed: true }));
     revokeViewerSession.mockResolvedValue(undefined);
     dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+    captureMessage.mockReset();
+    captureException.mockReset();
     app = new Hono();
     app.route('/remote', sessionRoutes);
   });
@@ -1451,14 +1464,87 @@ describe('POST /remote/sessions/:id/end', () => {
     });
   });
 
+  it('does not await the relay ack — the response lands before the dispatch settles', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    // The relay branch polls Redis for up to 5s. Awaiting it inside the auth
+    // middleware's ambient request transaction is the #1105 pool-poison
+    // pattern, so the handler must return without it.
+    let settle: (o: { status: string; via?: string }) => void = () => {};
+    dispatchCommandToAgent.mockReturnValueOnce(new Promise((resolve) => { settle = resolve; }));
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(200);
+    expect(dispatchCommandToAgent).toHaveBeenCalled();
+    settle({ status: 'sent', via: 'relay' });
+  });
+
+  it('warns and reports to Sentry when the relay reports the stop was NOT delivered', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    // dispatchCommandToAgent RESOLVES with a status; it does not throw. A bare
+    // try/catch around it would therefore be silent for every real
+    // non-delivery — which is the case that leaves the peer-to-peer stream up.
+    dispatchCommandToAgent.mockResolvedValueOnce({ status: 'offline' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await endRequest();
+    expect(res.status).toBe(200);
+
+    await vi.waitFor(() => expect(captureMessage).toHaveBeenCalled());
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'remote_desktop_stop_undelivered' })
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(SESSION_ID));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('offline'));
+    warn.mockRestore();
+  });
+
+  it('distinguishes a faulted relay from an undelivered stop', async () => {
+    rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
+    dispatchCommandToAgent.mockResolvedValueOnce({ status: 'infrastructure_error', message: 'relay enqueue failed' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await endRequest();
+
+    await vi.waitFor(() => expect(captureMessage).toHaveBeenCalled());
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'remote_desktop_stop_dispatch_failed' })
+    );
+    warn.mockRestore();
+  });
+
   it('still answers 200 when the relay throws (teardown is best-effort, the row is already terminal)', async () => {
     rigEndUpdate([{ id: SESSION_ID, status: 'disconnected', endedAt: new Date(), durationSeconds: 1, bytesTransferred: null }]);
     dispatchCommandToAgent.mockRejectedValueOnce(new Error('relay down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await endRequest();
 
     expect(res.status).toBe(200);
     expect(revokeViewerSession).toHaveBeenCalledWith(SESSION_ID);
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalled());
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { event_code: 'remote_desktop_stop_dispatch_failed' }
+    );
+    error.mockRestore();
+  });
+
+  it('refuses to overwrite a `denied` row — both End guards share one live-status list', async () => {
+    getSessionWithOrgCheck.mockResolvedValue({
+      ...liveSession,
+      session: { ...liveSession.session, status: 'denied' },
+    });
+
+    const res = await endRequest();
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Session is already ended', status: 'denied' });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('guards the UPDATE on the live statuses so a concurrently-failed row is not overwritten', async () => {

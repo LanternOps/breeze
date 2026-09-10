@@ -39,8 +39,8 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
-import { captureException } from '../../services/sentry';
-import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
+import { captureException, captureMessage } from '../../services/sentry';
+import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import {
@@ -1203,8 +1203,12 @@ sessionRoutes.post(
     const siteDenial = currentSessionSiteDenial(c, device);
     if (siteDenial) return siteDenial;
 
-    // Don't allow ending already ended sessions
-    if (['disconnected', 'failed'].includes(session.status)) {
+    // Both End guards — this pre-check and the UPDATE predicate below — are
+    // driven off ACTIVE_REMOTE_SESSION_STATUSES so they can never disagree.
+    // They did: the old literal here rejected only `disconnected`/`failed`,
+    // so a `denied` row (the sixth enum value) sailed past and had its
+    // terminal verdict rewritten as an operator-initiated `disconnected`.
+    if (!(ACTIVE_REMOTE_SESSION_STATUSES as readonly string[]).includes(session.status)) {
       return c.json({
         error: 'Session is already ended',
         status: session.status
@@ -1243,7 +1247,7 @@ sessionRoutes.post(
       })
       .where(and(
         eq(remoteSessions.id, sessionId),
-        inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+        inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
       ))
       .returning();
 
@@ -1289,19 +1293,52 @@ sessionRoutes.post(
     // silently returns false — leaving the live WebRTC stream running against a
     // session the operator has already ended. `remoteSessionTeardown` has used
     // the relay for exactly this reason; End was the last stop_desktop sender
-    // still on the socket-local path. Best-effort: the row is already terminal
-    // and the viewer token already revoked, so a dispatch failure is logged,
-    // not fatal.
+    // still on the socket-local path.
+    //
+    // NOT awaited. `dispatchCommandToAgent`'s relay branch polls Redis for the
+    // delivery ack for up to RELAY_DELIVERY_DEADLINE_MS (5 s), and this handler
+    // runs inside the auth middleware's ambient request transaction — awaiting
+    // it would pin a pooled connection idle-in-transaction across that wait on
+    // an operator-triggerable route, the #1105 pool-poison class the
+    // `db_operation_inside_held_context` tripwire exists to catch. The row is
+    // already terminal and the viewer token already revoked, so delivery is
+    // best-effort by design; the trade is that the outcome cannot be reported
+    // synchronously in the response, only logged and captured.
     if (session.type === 'desktop' && device.agentId) {
-      try {
-        await dispatchCommandToAgent(device.agentId, {
-          id: `desk-stop-${sessionId}`,
-          type: 'stop_desktop',
-          payload: { sessionId },
-        });
-      } catch (err) {
+      // `dispatchCommandToAgent` RESOLVES with a status — it does not throw on
+      // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
+      // A bare catch would therefore have been silent for every real
+      // non-delivery, so branch on the status explicitly.
+      void dispatchCommandToAgent(device.agentId, {
+        id: `desk-stop-${sessionId}`,
+        type: 'stop_desktop',
+        payload: { sessionId },
+      }).then((outcome) => {
+        if (outcome.status === 'sent') return;
+        const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
+        console.warn(
+          `[remote/sessions] stop_desktop not delivered for session ${sessionId} `
+          + `(device ${device.id}, agent ${device.agentId}): ${outcome.status}${detail}`
+        );
+        // Two literal call sites, not one with a computed code: the BREEZE-18
+        // scanner (sentryEventCodes.test.ts) requires `eventCode` be a plain
+        // string literal, and the two branches are separately actionable —
+        // one points at the relay, the other at the device.
+        if (outcome.status === 'infrastructure_error') {
+          captureMessage('remote desktop stop_desktop dispatch faulted after End', {
+            eventCode: 'remote_desktop_stop_dispatch_failed',
+            level: 'warning',
+          });
+        } else {
+          captureMessage('remote desktop stop_desktop was not delivered after End', {
+            eventCode: 'remote_desktop_stop_undelivered',
+            level: 'warning',
+          });
+        }
+      }).catch((err) => {
         console.error(`[remote/sessions] Failed to dispatch stop_desktop for session ${sessionId}:`, err);
-      }
+        captureException(err, undefined, { event_code: 'remote_desktop_stop_dispatch_failed' });
+      });
     }
 
     // Log audit event
