@@ -16,6 +16,17 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope, orgId: orgState.jwtOrgId, partnerId: "partner-1" }),
   loginPathWithNext: () => "/login",
 }));
+// SEC-2026-09-05-057: the QuickBooks sub-tab and panel are gated on
+// `accounting:read`. This suite covers tab/sub-tab wiring, so it holds the
+// grant throughout; the negative branch lives in
+// IntegrationsPage.accountingPermissions.test.tsx.
+vi.mock("../../lib/permissions", () => ({
+  usePermissions: () => ({
+    permissions: [{ resource: "accounting", action: "read" }],
+    can: (resource: string, action: string) =>
+      resource === "accounting" && action === "read",
+  }),
+}));
 vi.mock("../../stores/orgStore", () => ({
   useOrgStore: (selector: (value: { currentOrgId: string | null }) => unknown) =>
     selector({ currentOrgId: orgState.currentOrgId }),

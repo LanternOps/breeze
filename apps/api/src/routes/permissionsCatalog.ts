@@ -39,6 +39,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   approvals: 'Approvals',
   variables: 'Variables',
   pam: 'Privileged Access',
+  accounting: 'Accounting',
   workspace: 'Workspace'
 };
 

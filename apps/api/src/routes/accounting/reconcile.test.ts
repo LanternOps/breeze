@@ -18,7 +18,7 @@ const {
   const authState = {
     scope: 'partner' as 'partner' | 'system' | 'organization',
     partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
-    permissions: new Set<string>(['invoices:write']),
+    permissions: new Set<string>(['accounting:read', 'accounting:manage', 'invoices:write']),
     mfa: true,
   };
   return { getConnectionMock, enqueueAccountingReconcileMock, writeRouteAuditMock, authState };
@@ -146,7 +146,7 @@ function connectionRow(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
-  authState.permissions = new Set(['invoices:write']);
+  authState.permissions = new Set(['accounting:read', 'accounting:manage', 'invoices:write']);
   authState.mfa = true;
 });
 
@@ -253,7 +253,7 @@ describe('POST /accounting/:provider/reconcile', () => {
   });
 
   it('denies a partner-scoped caller without INVOICES_WRITE (403)', async () => {
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
 
     const res = await reconcile();
 
@@ -264,7 +264,7 @@ describe('POST /accounting/:provider/reconcile', () => {
 
   it('allows a SYSTEM-scope caller that holds no per-partner role (bypasses the permission check)', async () => {
     authState.scope = 'system';
-    authState.permissions = new Set();
+    authState.permissions = new Set(['accounting:read', 'accounting:manage']);
     getConnectionMock.mockResolvedValue(connectionRow({ id: 'c2', partnerId: 'p9' }));
     enqueueAccountingReconcileMock.mockResolvedValue(true);
 
