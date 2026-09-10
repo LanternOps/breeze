@@ -34,7 +34,11 @@ Packages** in the Breeze docs (`/deploy/sign-your-own-packages/`).
    from the official manifest already verified in step 1. `publish` refuses
    to build a manifest covering an asset that neither accounts for, so a
    component that slips past a signing step fails the run instead of being
-   published as "signed".
+   published as "signed". macOS package attestations additionally record the
+   exact `Developer ID Installer` leaf identity and Apple Team ID after both
+   values are matched against your configured signing secrets. Every manifest
+   entry is also bound to `edition: "self-host"`; this template never produces
+   hosted-edition agent artifacts.
 
 Your agents never trust this repo's key directly — your Breeze API re-signs
 update manifests with its per-deployment key (standard since the BYO-signing

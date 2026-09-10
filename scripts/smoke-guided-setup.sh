@@ -35,7 +35,7 @@
 #   scripts/smoke-guided-setup.sh teardown   disable the unit, remove the stack + volumes
 #
 # Inputs (env):
-#   GUIDED_SMOKE_VERSION             image tag the installer will use (default ci-smoke).
+#   GUIDED_SMOKE_VERSION             image tag the installer will use (default 0.0.0-ci-smoke).
 #                                    ghcr.io/lanternops/breeze/{api,web,portal}:<tag> must
 #                                    exist locally (CI builds them from this checkout).
 #   GUIDED_SMOKE_BINARIES_IMAGE_REF  agent binaries image (default ghcr.io/lanternops/breeze/binaries:latest)
@@ -48,7 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 WORK_DIR="${GUIDED_SMOKE_WORK_DIR:-${HOME}/breeze-guided-smoke}"
-VERSION="${GUIDED_SMOKE_VERSION:-ci-smoke}"
+VERSION="${GUIDED_SMOKE_VERSION:-0.0.0-ci-smoke}"
 BINARIES_IMAGE_REF="${GUIDED_SMOKE_BINARIES_IMAGE_REF:-ghcr.io/lanternops/breeze/binaries:latest}"
 TUNNEL_PORT="${GUIDED_SMOKE_TUNNEL_PORT:-8443}"
 ADMIN_EMAIL="ci-admin@breeze.local"
@@ -210,14 +210,67 @@ mkdir -p "${WORK_DIR}/docker"
 cp "${REPO_ROOT}/docker-compose.yml" "${REPO_ROOT}/.env.example" "${WORK_DIR}/"
 cp "${REPO_ROOT}/docker/Caddyfile.prod" "${WORK_DIR}/docker/"
 cp "${REPO_ROOT}/scripts/guided-setup.sh" "${WORK_DIR}/guided-setup.sh"
+mkdir -p "${WORK_DIR}/scripts/release"
+cp "${REPO_ROOT}/scripts/release/verify-release-images.sh" "${WORK_DIR}/scripts/release/"
 chmod +x "${WORK_DIR}/guided-setup.sh"
 # Seed exactly what a self-hoster would have to type: the version (pinned to the
 # locally built images) and the bootstrap admin. Everything else is the
 # installer's own defaults and generated secrets.
 cp "${WORK_DIR}/.env.example" "${WORK_DIR}/.env"
 chmod 600 "${WORK_DIR}/.env"
+
+# Sign a synthetic release manifest that binds the exact local image IDs. The
+# installer must exercise its real Ed25519 verification path even though this
+# smoke deliberately does not publish or contact GHCR.
+RELEASE_FIXTURE_DIR="${WORK_DIR}/release-fixture"
+mkdir -p "${RELEASE_FIXTURE_DIR}"
+export RELEASE_FIXTURE_DIR VERSION
+API_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/api:${VERSION}" --format '{{.Id}}')"
+WEB_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/web:${VERSION}" --format '{{.Id}}')"
+PORTAL_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/portal:${VERSION}" --format '{{.Id}}')"
+BINARIES_DIGEST="$(docker image inspect "${BINARIES_IMAGE_REF}" --format '{{.Id}}')"
+export API_DIGEST WEB_DIGEST PORTAL_DIGEST BINARIES_DIGEST
+RELEASE_PUBLIC_KEY="$({ node <<'NODE'
+const { generateKeyPairSync, sign } = require('node:crypto');
+const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const core = {
+  api: process.env.API_DIGEST,
+  web: process.env.WEB_DIGEST,
+  portal: process.env.PORTAL_DIGEST,
+  binaries: process.env.BINARIES_DIGEST,
+};
+const names = [
+  'api', 'web', 'portal', 'binaries',
+  'm365-graph-read-executor',
+  'm365-graph-actions-executor',
+  'm365-communications-executor',
+];
+const images = names.map((name, index) => ({
+  digest: core[name] ?? `sha256:${String(index + 1).repeat(64)}`,
+  name,
+  repository: `ghcr.io/lanternops/breeze/${name}`,
+})).sort((left, right) => left.name.localeCompare(right.name));
+const manifest = `${JSON.stringify({
+  assets: [],
+  images,
+  release: `v${process.env.VERSION}`,
+  repository: 'LanternOps/breeze',
+  schemaVersion: 1,
+  sourceCommit: '0'.repeat(40),
+}, null, 2)}\n`;
+writeFileSync(join(process.env.RELEASE_FIXTURE_DIR, 'release-artifact-manifest.json'), manifest);
+writeFileSync(
+  join(process.env.RELEASE_FIXTURE_DIR, 'release-artifact-manifest.json.ed25519'),
+  `${sign(null, Buffer.from(manifest), privateKey).toString('base64')}\n`,
+);
+process.stdout.write(publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('base64'));
+NODE
+} )"
 sed -i \
   -e "s|^BREEZE_VERSION=.*|BREEZE_VERSION=${VERSION}|" \
+  -e "s|^RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=.*|RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=${RELEASE_PUBLIC_KEY}|" \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_EMAIL=.*|BREEZE_BOOTSTRAP_ADMIN_EMAIL=${ADMIN_EMAIL}|" \
   -e "s|^BREEZE_BOOTSTRAP_ADMIN_PASSWORD=.*|BREEZE_BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
   -e "s|^BREEZE_BINARIES_IMAGE_REF=.*|BREEZE_BINARIES_IMAGE_REF=${BINARIES_IMAGE_REF}|" \
@@ -243,6 +296,7 @@ set +e
      BREEZE_SETUP_INSTALL_SYSTEMD=true \
      BREEZE_SETUP_DRY_RUN=false \
      BREEZE_SETUP_GITHUB_API=http://127.0.0.1:9 \
+     BREEZE_SETUP_RELEASE_DOWNLOAD_BASE="file://${RELEASE_FIXTURE_DIR}" \
      ./guided-setup.sh --no-download --yes < /dev/null
 ) 2>&1 | tee "${WORK_DIR}/guided-setup.log"
 installer_status=${PIPESTATUS[0]}
@@ -268,6 +322,10 @@ echo "  OK  ${placeholder} exists and is empty"
 
 step "Assert the generated .env"
 grep -q "^BREEZE_VERSION=${VERSION}\$" "${WORK_DIR}/.env" || fail "BREEZE_VERSION was not pinned to ${VERSION}"
+for image in API WEB PORTAL BINARIES; do
+  grep -Eq "^BREEZE_${image}_IMAGE_REF=ghcr.io/lanternops/breeze/[^@]+@sha256:[0-9a-f]{64}$" "${WORK_DIR}/.env" \
+    || fail "BREEZE_${image}_IMAGE_REF was not resolved from the signed manifest"
+done
 grep -q '^BREEZE_DOMAIN=localhost$' "${WORK_DIR}/.env" || fail "BREEZE_DOMAIN default is not localhost"
 grep -q '^CORS_ALLOWED_ORIGINS=https://localhost$' "${WORK_DIR}/.env" \
   || fail "CORS_ALLOWED_ORIGINS is not the documented default (https://localhost); the tunnel assertion below would not prove anything"

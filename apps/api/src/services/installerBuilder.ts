@@ -1,7 +1,8 @@
 import type { Context } from 'hono';
 import archiver from 'archiver';
+import type { Readable } from 'node:stream';
 import { readFile, stat } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import {
   getBinarySource,
   getGithubAgentPkgUrl,
@@ -12,13 +13,21 @@ import {
   getGithubReleaseArtifactManifestUrl,
   getGithubReleaseRepository,
 } from './binarySource';
-import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import {
+  fetchVerifiedGithubReleaseArtifact,
+  probeSafeReleaseArtifact,
+  verifyGithubReleaseArtifactBuffer,
+  verifyReleaseArtifactBuffer,
+  verifyReleaseArtifactManifestAsset,
+  type VerifiedReleaseArtifact,
+} from './releaseArtifactManifest';
 import { assertGithubFetchableEdition } from './releaseAssetTrust';
+import { getBinaryEdition } from './binaryEdition';
 import {
   InstallerFilenameHostError,
   isEncodedWindowsFilenameApiHost,
 } from './installerFilenameHost';
-import { isS3Configured } from './s3Storage';
+import { getObjectStream, isS3Configured } from './s3Storage';
 
 // --- Enrollment key validation ---
 
@@ -165,6 +174,11 @@ ENROLLMENT_SECRET=$(plutil -extract enrollmentSecret raw -o - "$ENROLLMENT_JSON"
 SITE_ID=$(plutil -extract siteId raw -o - "$ENROLLMENT_JSON" 2>/dev/null || echo "")
 SERVER_URL="\${SERVER_URL%/}"
 
+case "$SERVER_URL" in
+  https://*|http://127.0.0.1:*|http://localhost:*) ;;
+  *) echo "Error: macOS privileged installer downloads require HTTPS. Refusing insecure transport."; exit 1 ;;
+esac
+
 # Detect CPU architecture so Intel and Apple Silicon Macs each receive a
 # compatible binary. A single-arch bundle cannot serve both, and shipping the
 # wrong one causes "Bad CPU type in executable" on enroll (the bug this fixes).
@@ -182,9 +196,10 @@ PKG_URL="\${SERVER_URL}/api/v1/agents/download/darwin/\${ARCH}/pkg"
 TMPPKG_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMPPKG_DIR"; rm -f "$ENROLLMENT_JSON"' EXIT
 TMPPKG="$TMPPKG_DIR/breeze-agent.pkg"
+PKG_HEADERS="$TMPPKG_DIR/headers"
 
 echo "Downloading Breeze Agent installer (\${ARCH})..."
-HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "$TMPPKG" "$PKG_URL" 2>/dev/null)" || true
+HTTP_CODE="$(curl -fsSL -D "$PKG_HEADERS" -w '%{http_code}' -o "$TMPPKG" "$PKG_URL" 2>/dev/null)" || true
 if [ "$HTTP_CODE" != "200" ]; then
   echo "Error: failed to download installer package (HTTP $HTTP_CODE) from $PKG_URL"
   exit 1
@@ -194,10 +209,39 @@ if [ ! -s "$TMPPKG" ]; then
   exit 1
 fi
 
+header_value() {
+  grep -i "^$1:" "$PKG_HEADERS" | tail -1 | cut -d ':' -f 2- | sed -e 's/^[[:space:]]*//' -e 's/\r$//' || true
+}
+EXPECTED_SHA256="$(header_value X-Breeze-Artifact-SHA256)"
+EXPECTED_TEAM_ID="$(header_value X-Breeze-MacOS-Team-ID)"
+EXPECTED_SIGNING_IDENTITY_B64="$(header_value X-Breeze-MacOS-Signing-Identity-Base64)"
+EXPECTED_SIGNING_IDENTITY="$(printf '%s' "$EXPECTED_SIGNING_IDENTITY_B64" | /usr/bin/base64 -D 2>/dev/null || true)"
+if ! [[ "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]] ||
+   ! [[ "$EXPECTED_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] ||
+   [ -z "$EXPECTED_SIGNING_IDENTITY" ]; then
+  echo "Error: server did not provide authenticated installer metadata. Refusing to install."
+  exit 1
+fi
+ACTUAL_SHA256="$(shasum -a 256 "$TMPPKG" | awk '{print $1}')"
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  echo "Error: installer package checksum verification failed. Refusing to install."
+  exit 1
+fi
+
 # Verify the package is Apple-notarized and Developer-ID signed BEFORE installing
 # as root. The \`installer\` CLI does NOT enforce Gatekeeper/notarization on its
 # own (stapling is only checked in the Finder double-click flow), so without this
 # an MITM'd or tampered download would be installed with full root privileges.
+SIGNATURE_DETAILS="$(pkgutil --check-signature "$TMPPKG" 2>&1)" || {
+  echo "Error: installer package signature is invalid. Refusing to install."
+  exit 1
+}
+ACTUAL_SIGNING_IDENTITY="$(printf '%s\n' "$SIGNATURE_DETAILS" | sed -n 's/^[[:space:]]*1\. //p' | head -1)"
+if [ "$ACTUAL_SIGNING_IDENTITY" != "$EXPECTED_SIGNING_IDENTITY" ] ||
+   [[ "$ACTUAL_SIGNING_IDENTITY" != *" ($EXPECTED_TEAM_ID)" ]]; then
+  echo "Error: installer package publisher identity does not match the signed release policy. Refusing to install."
+  exit 1
+fi
 if ! spctl --assess --type install "$TMPPKG" >/dev/null 2>&1; then
   echo "Error: installer package failed Gatekeeper notarization assessment. Refusing to install."
   exit 1
@@ -273,6 +317,186 @@ export async function buildMacosInstallerZip(
 
 // --- Binary fetch helpers (moved from enrollmentKeys.ts) ---
 
+const MAX_MACOS_INSTALLER_BYTES = 128 * 1024 * 1024;
+const MACOS_PLATFORM_TRUST = 'macos-developer-id-notarization-required';
+const VERIFIED_MACOS_PKG_CACHE_MS = 5 * 60 * 1000;
+const verifiedMacosPkgCache = new Map<
+  'amd64' | 'arm64',
+  { expiresAt: number; value: Promise<VerifiedMacosPackage> }
+>();
+
+export function __resetVerifiedMacosPkgCache(): void {
+  verifiedMacosPkgCache.clear();
+}
+
+export interface VerifiedMacosPackage {
+  buffer: Buffer;
+  artifact: VerifiedReleaseArtifact;
+}
+
+function localReleaseManifestPaths(binaryDir: string): {
+  manifestPath: string;
+  signaturePath: string;
+} {
+  const root = dirname(resolve(binaryDir));
+  return {
+    manifestPath: join(root, 'release-artifact-manifest.json'),
+    signaturePath: join(root, 'release-artifact-manifest.json.ed25519'),
+  };
+}
+
+async function readBoundedStream(
+  stream: Readable,
+  expectedSize: number,
+  assetName: string,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array | string>) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > expectedSize) {
+      stream.destroy();
+      throw new Error(`Release artifact ${assetName} exceeded its signed size`);
+    }
+    chunks.push(bytes);
+  }
+  if (size !== expectedSize) {
+    throw new Error(
+      `Release artifact ${assetName} size mismatch: expected ${expectedSize}, got ${size}`,
+    );
+  }
+  return Buffer.concat(chunks, size);
+}
+
+async function loadLocalManifestPair(binaryDir: string): Promise<{
+  manifestBytes: Buffer;
+  signatureBytes: Buffer;
+}> {
+  const paths = localReleaseManifestPaths(binaryDir);
+  try {
+    const [manifestBytes, signatureBytes] = await Promise.all([
+      readFile(paths.manifestPath),
+      readFile(paths.signaturePath),
+    ]);
+    return { manifestBytes, signatureBytes };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('Signed release manifest pair is not staged for local installers');
+    }
+    throw err;
+  }
+}
+
+async function fetchVerifiedLocalArtifact(args: {
+  assetName: string;
+  diskPath: string;
+  s3Key?: string;
+  expectedPlatformTrust: string;
+  requireMacosPublisher: boolean;
+}): Promise<{ buffer: Buffer; verified: VerifiedReleaseArtifact }> {
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const { manifestBytes, signatureBytes } = await loadLocalManifestPair(binaryDir);
+  const expectedRepository = getGithubReleaseRepository();
+  const expectedRelease = getGithubExpectedReleaseTag();
+  const expectedEdition = getBinaryEdition();
+  const selected = await verifyReleaseArtifactManifestAsset({
+    assetName: args.assetName,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository,
+    expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
+  if (selected.size <= 0 || selected.size > MAX_MACOS_INSTALLER_BYTES) {
+    throw new Error(`Release artifact ${args.assetName} is outside the allowed size range`);
+  }
+
+  let buffer: Buffer | null = null;
+  if (args.s3Key && isS3Configured()) {
+    const remote = await getObjectStream(args.s3Key);
+    if (remote.body) {
+      if (remote.contentLength !== null && remote.contentLength !== selected.size) {
+        remote.body.destroy();
+        throw new Error(
+          `Release artifact ${args.assetName} content length does not match its signed size`,
+        );
+      }
+      buffer = await readBoundedStream(remote.body, selected.size, args.assetName);
+    }
+  }
+  if (!buffer) {
+    const diskStat = await stat(args.diskPath);
+    if (diskStat.size !== selected.size || diskStat.size > MAX_MACOS_INSTALLER_BYTES) {
+      throw new Error(`Release artifact ${args.assetName} disk size does not match its signed size`);
+    }
+    buffer = await readFile(args.diskPath);
+  }
+
+  const verified = await verifyReleaseArtifactBuffer({
+    assetName: args.assetName,
+    assetBuffer: buffer,
+    manifestBytes,
+    signatureBytes,
+    expectedRepository,
+    expectedRelease,
+    expectedPlatformTrust: args.expectedPlatformTrust,
+    expectedEdition,
+    requireMacosPublisher: args.requireMacosPublisher,
+  });
+  return { buffer, verified };
+}
+
+export async function fetchVerifiedMacosPkg(
+  arch: 'amd64' | 'arm64',
+): Promise<VerifiedMacosPackage> {
+  const cached = verifiedMacosPkgCache.get(arch);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = fetchVerifiedMacosPkgUncached(arch).catch((err) => {
+    verifiedMacosPkgCache.delete(arch);
+    throw err;
+  });
+  verifiedMacosPkgCache.set(arch, {
+    expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
+    value,
+  });
+  return value;
+}
+
+async function fetchVerifiedMacosPkgUncached(
+  arch: 'amd64' | 'arm64',
+): Promise<VerifiedMacosPackage> {
+  const assetName = `breeze-agent-darwin-${arch}.pkg`;
+  if (getBinarySource() === 'github') {
+    const result = await fetchVerifiedGithubReleaseArtifact({
+      assetName,
+      assetUrl: getGithubAgentPkgUrl('darwin', arch),
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: MACOS_PLATFORM_TRUST,
+      expectedEdition: 'self-host',
+      requireMacosPublisher: true,
+      maxAssetBytes: MAX_MACOS_INSTALLER_BYTES,
+    });
+    assertGithubFetchableEdition({ assetName, edition: result.verified.edition });
+    return { buffer: result.buffer, artifact: result.verified };
+  }
+
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  const result = await fetchVerifiedLocalArtifact({
+    assetName,
+    diskPath: join(binaryDir, assetName),
+    s3Key: `agent/${assetName}`,
+    expectedPlatformTrust: MACOS_PLATFORM_TRUST,
+    requireMacosPublisher: true,
+  });
+  return { buffer: result.buffer, artifact: result.verified };
+}
+
 export async function fetchRegularMsi(): Promise<Buffer> {
   if (getBinarySource() === 'github') {
     const url = getGithubRegularMsiUrl();
@@ -311,24 +535,14 @@ export async function fetchRegularMsi(): Promise<Buffer> {
  */
 export async function assertMacosInstallerPkgsReachable(): Promise<void> {
   const arches = ['amd64', 'arm64'] as const;
-  if (getBinarySource() === 'github') {
-    for (const arch of arches) {
-      const url = getGithubAgentPkgUrl('darwin', arch);
-      const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-      if (!resp.ok) {
-        throw new Error(`macOS ${arch} installer package not reachable: ${resp.status}`);
-      }
-    }
-    return;
-  }
-  // Local mode: the /download/:os/:arch/pkg endpoint resolves S3 then disk at
-  // request time. When S3 is configured we can't verify here without duplicating
-  // that logic, so don't false-fail; otherwise confirm both arch packages exist
-  // on disk (catches the common "binaries not staged" misconfig).
-  if (isS3Configured()) return;
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   for (const arch of arches) {
-    await stat(join(binaryDir, `breeze-agent-darwin-${arch}.pkg`));
+    try {
+      await fetchVerifiedMacosPkg(arch);
+    } catch (err) {
+      throw new Error(`macOS ${arch} installer package failed release verification`, {
+        cause: err,
+      });
+    }
   }
 }
 
@@ -341,31 +555,42 @@ export async function assertMacosInstallerPkgsReachable(): Promise<void> {
 export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
   if (getBinarySource() === 'github') {
     const url = getGithubInstallerAppUrl();
-    const resp = await fetch(url, { redirect: 'follow' });
-    if (resp.status === 404) return null;
-    if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    const verified = await verifyGithubReleaseArtifactBuffer({
-      assetName: 'Breeze Installer.app.zip',
-      assetBuffer: buffer,
-      manifestUrl: getGithubReleaseArtifactManifestUrl(),
-      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
-      expectedRepository: getGithubReleaseRepository(),
-      expectedRelease: getGithubExpectedReleaseTag(),
-      expectedPlatformTrust: 'macos-developer-id-notarization-required',
-    });
-    if (verified) {
+    let result: Awaited<ReturnType<typeof fetchVerifiedGithubReleaseArtifact>>;
+    try {
+      result = await fetchVerifiedGithubReleaseArtifact({
+        assetName: 'Breeze Installer.app.zip',
+        assetUrl: url,
+        manifestUrl: getGithubReleaseArtifactManifestUrl(),
+        signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+        expectedRepository: getGithubReleaseRepository(),
+        expectedRelease: getGithubExpectedReleaseTag(),
+        expectedPlatformTrust: 'macos-developer-id-notarization-required',
+        expectedEdition: 'self-host',
+        maxAssetBytes: MAX_MACOS_INSTALLER_BYTES,
+      });
+    } catch (err) {
+      if (err instanceof Error && /status 404$/.test(err.message)) return null;
+      throw err;
+    }
+    if (result.verified) {
       assertGithubFetchableEdition({
         assetName: 'Breeze Installer.app.zip',
-        edition: verified.edition,
+        edition: result.verified.edition,
       });
     }
-    return buffer;
+    return result.buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   const path = join(binaryDir, 'Breeze Installer.app.zip');
   try {
-    return await readFile(path);
+    await stat(path);
+    const result = await fetchVerifiedLocalArtifact({
+      assetName: 'Breeze Installer.app.zip',
+      diskPath: path,
+      expectedPlatformTrust: MACOS_PLATFORM_TRUST,
+      requireMacosPublisher: false,
+    });
+    return result.buffer;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
@@ -380,11 +605,7 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
   if (getBinarySource() === 'github') {
     const url = getGithubInstallerAppUrl();
     try {
-      const resp = await fetch(url, {
-        method: 'HEAD',
-        redirect: 'follow',
-        signal: AbortSignal.timeout(5_000),
-      });
+      const resp = await probeSafeReleaseArtifact(url);
       if (resp.status === 404) return false;
       return resp.ok;
     } catch (err) {

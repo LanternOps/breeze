@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { fetchVerifiedMacosPkgMock } = vi.hoisted(() => ({
+  fetchVerifiedMacosPkgMock: vi.fn(),
+}));
+
+vi.mock('../../services/installerBuilder', () => ({
+  fetchVerifiedMacosPkg: fetchVerifiedMacosPkgMock,
+}));
+
 vi.mock('../../services/s3Storage', () => ({
   isS3Configured: vi.fn(() => false),
   getPresignedUrl: vi.fn(),
@@ -38,11 +46,12 @@ vi.mock('../../services/promotedAgentVersion', () => ({
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
 import { getPromotedComponentVersion, getRegisteredComponentVersion } from '../../services/promotedAgentVersion';
 
@@ -54,6 +63,7 @@ describe('public agent binary downloads', () => {
     process.env.AGENT_BINARY_DIR = '/tmp/breeze-secret-agent-binaries';
     process.env.HELPER_BINARY_DIR = '/tmp/breeze-secret-helper-binaries';
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    fetchVerifiedMacosPkgMock.mockRejectedValue(new Error('package unavailable'));
   });
 
   afterEach(() => {
@@ -221,18 +231,14 @@ describe('public agent binary downloads', () => {
     expect(badArch.status).toBe(400);
   });
 
-  it('serves the architecture-matched pkg from local disk in non-github mode', async () => {
-    // Intel Macs hitting the per-arch pkg endpoint must resolve to the amd64
-    // package, not a hardcoded arm64 one (the "Bad CPU type" regression).
+  it('fails closed when a local pkg lacks signed release authorization', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
     const body = await res.text();
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(503);
     expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
-    expect(console.warn).toHaveBeenCalledWith(
-      '[pkg-download] Local package missing',
-      { filename: 'breeze-agent-darwin-amd64.pkg' },
-    );
+    expect(body).not.toContain('package unavailable');
   });
 
   it('rejects non-darwin pkg requests', async () => {
@@ -392,18 +398,21 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     expect(res.headers.get('retry-after')).toBe('30');
   });
 
-  it('leaves the macOS .pkg route on env resolution, deliberately', async () => {
-    // install.sh's darwin branch verifies the .pkg with xar magic bytes and
-    // `spctl` Gatekeeper notarization, never a SHA-256 against
-    // /agent-versions/latest — so there is no checksum/bytes pair to keep
-    // consistent here and nothing for #3499 to fix. Pinned as a test so the
-    // one builder without a version parameter reads as intentional rather
-    // than an omission.
-    vi.mocked(getGithubAgentPkgUrl).mockReturnValue('https://github.test/pkg');
+  it('does not use the promoted component row for manifest-verified pkg delivery', async () => {
+    fetchVerifiedMacosPkgMock.mockResolvedValue({
+      buffer: Buffer.from('pkg'),
+      artifact: {
+        assetName: 'breeze-agent-darwin-arm64.pkg', sha256: 'a'.repeat(64), size: 3,
+        release: 'v1.2.3', repository: 'lanternops/breeze',
+        platformTrust: 'macos-developer-id-notarization-required', intendedUse: null,
+        edition: 'self-host', signingIdentity: 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)',
+        signingTeamId: 'D8W6N2JYMA',
+      },
+    });
 
     const res = await downloadRoutes.request('/download/darwin/arm64/pkg');
 
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(200);
     expect(getPromotedComponentVersion).not.toHaveBeenCalled();
   });
 
@@ -685,6 +694,24 @@ describe('public agent .pkg downloads — per-arch serving', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(getBinarySource).mockReturnValue('local');
     vi.mocked(isS3Configured).mockReturnValue(false);
+    fetchVerifiedMacosPkgMock.mockImplementation(async (arch: 'amd64' | 'arm64') => {
+      const buffer = Buffer.from(`${arch.toUpperCase()}-PKG-BODY`);
+      return {
+        buffer,
+        artifact: {
+          assetName: `breeze-agent-darwin-${arch}.pkg`,
+          sha256: 'a'.repeat(64),
+          size: buffer.length,
+          release: 'v1.2.3',
+          repository: 'lanternops/breeze',
+          platformTrust: 'macos-developer-id-notarization-required',
+          intendedUse: null,
+          edition: 'self-host',
+          signingIdentity: 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)',
+          signingTeamId: 'D8W6N2JYMA',
+        },
+      };
+    });
   });
 
   afterEach(() => {
@@ -695,15 +722,10 @@ describe('public agent .pkg downloads — per-arch serving', () => {
     vi.mocked(getBinarySource).mockReset();
     vi.mocked(isS3Configured).mockReset();
     vi.mocked(getPresignedUrl).mockReset();
-    vi.mocked(getGithubAgentPkgUrl).mockReset();
+    fetchVerifiedMacosPkgMock.mockReset();
   });
 
   it('serves amd64 and arm64 as DISTINCT packages (the Bad CPU type regression guard)', async () => {
-    // The whole point of the fix: each arch must resolve to its OWN file, never
-    // a hardcoded one. Write distinct bodies and prove they come back distinct.
-    writeFileSync(join(tmp, 'breeze-agent-darwin-amd64.pkg'), 'AMD64-PKG-BODY');
-    writeFileSync(join(tmp, 'breeze-agent-darwin-arm64.pkg'), 'ARM64-PKG-BODY');
-
     const amd = await downloadRoutes.request('/download/darwin/amd64/pkg');
     const arm = await downloadRoutes.request('/download/darwin/arm64/pkg');
 
@@ -719,66 +741,39 @@ describe('public agent .pkg downloads — per-arch serving', () => {
     expect(amdBody).not.toBe(armBody);
   });
 
-  it('redirects to the GitHub release asset in github mode', async () => {
+  it('proxies verified bytes instead of redirecting in GitHub mode', async () => {
     vi.mocked(getBinarySource).mockReturnValue('github');
-    vi.mocked(getGithubAgentPkgUrl).mockReturnValue(
-      'https://github.test/breeze-agent-darwin-amd64.pkg',
-    );
 
     const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
 
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://github.test/breeze-agent-darwin-amd64.pkg');
-    expect(getGithubAgentPkgUrl).toHaveBeenCalledWith('darwin', 'amd64');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(res.headers.get('x-breeze-artifact-sha256')).toBe('a'.repeat(64));
+    expect(res.headers.get('x-breeze-macos-team-id')).toBe('D8W6N2JYMA');
+    expect(await res.text()).toBe('AMD64-PKG-BODY');
   });
 
-  it('redirects to a presigned S3 URL for the requested arch when S3 is configured', async () => {
+  it('never issues a presigned S3 redirect for a privileged package', async () => {
     vi.mocked(isS3Configured).mockReturnValue(true);
-    vi.mocked(getPresignedUrl).mockResolvedValue('https://s3.test/presigned-arm64');
 
     const res = await downloadRoutes.request('/download/darwin/arm64/pkg');
 
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://s3.test/presigned-arm64');
-    expect(getPresignedUrl).toHaveBeenCalledWith('agent/breeze-agent-darwin-arm64.pkg');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+    expect(getPresignedUrl).not.toHaveBeenCalled();
   });
 
-  it('falls back to disk (and warns) when the S3 object is missing', async () => {
-    vi.mocked(isS3Configured).mockReturnValue(true);
-    vi.mocked(getPresignedUrl).mockRejectedValue(
-      Object.assign(new Error('not found'), { name: 'NoSuchKey' }),
-    );
-    // No file on disk → 404 after fallback; the S3 miss is logged at warn (not error).
-    const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
-
-    expect(res.status).toBe(404);
-    expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining('[pkg-download] S3 object missing'),
-      expect.anything(),
-    );
-  });
-
-  it('returns 500 (not a masked 404) when the S3 presign fails with a transport/auth error', async () => {
-    // issue #1802 item 3: a non-NotFound S3 fault (network/credentials/throttle)
-    // must NOT fall through to disk and 404 — on hosted infra there are no
-    // binaries on disk, so the real error would be hidden as "package not found".
+  it('fails closed with a sanitized response when release verification fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.mocked(isS3Configured).mockReturnValue(true);
-    vi.mocked(getPresignedUrl).mockRejectedValue(
-      Object.assign(new Error('connection reset'), { name: 'TimeoutError' }),
-    );
+    fetchVerifiedMacosPkgMock.mockRejectedValue(new Error('digest mismatch at /private/path'));
 
     const res = await downloadRoutes.request('/download/darwin/amd64/pkg');
     const body = await res.text();
 
-    expect(res.status).toBe(500);
-    // Must not be masked as a not-found, and must not leak internals.
-    expect(body).not.toContain('not found');
-    expect(body).not.toContain('/tmp');
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('[pkg-download] S3 presign failed'),
-      expect.anything(),
-    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect(body).not.toContain('digest mismatch');
+    expect(body).not.toContain('/private/path');
   });
 });
 
@@ -789,6 +784,12 @@ describe('GET /install.sh — generated installer script', () => {
     expect(res.headers.get('content-type')).toContain('text/plain');
     return res.text();
   }
+
+  it('requires authenticated transport for non-loopback macOS package downloads', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('macOS privileged installer downloads require HTTPS');
+    expect(script).toContain('http://127.0.0.1:*');
+  });
 
   it('does not derive the production server URL from the request host', async () => {
     const originalNodeEnv = process.env.NODE_ENV;
@@ -1121,7 +1122,7 @@ describe('install.sh functional pre-flight behavior', () => {
         'tok',
       ]);
       expect(killed).toBe(false);
-      expect(code).not.toBe(0);
+      expect(code, output).not.toBe(0);
       expect(output).toContain('captive portal');
       expect(output).not.toContain('Downloading');
     } finally {
@@ -1157,10 +1158,53 @@ describe('install.sh functional pre-flight behavior', () => {
       expect(output).toContain('Breeze server is reachable');
       // Past the clean pre-flight the tampered download is rejected: linux by the
       // checksum mismatch, macOS by the .pkg xar-magic interception guard.
-      expect(output).toMatch(/Checksum verification failed|intercepting/);
+      expect(output).toMatch(/Checksum verification failed|intercepting|authenticated installer metadata/);
       expect(output).not.toContain('Gatekeeper');
     } finally {
       filter.close();
+    }
+  });
+
+  it('never invokes installer when an otherwise accepted pkg has the wrong Team ID', async () => {
+    const pkg = Buffer.from('xar!synthetic-pkg');
+    const digest = createHash('sha256').update(pkg).digest('hex');
+    const marker = join(tmp, 'installer-ran');
+    writeFileSync(join(shimDir, 'uname'), '#!/bin/sh\n[ "$1" = "-s" ] && echo Darwin || echo arm64\n', { mode: 0o755 });
+    writeFileSync(join(shimDir, 'pkgutil'), '#!/bin/sh\necho "    1. Developer ID Installer: Other Publisher (AAAAAAAAAA)"\n', { mode: 0o755 });
+    writeFileSync(join(shimDir, 'spctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(shimDir, 'installer'), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/agent-versions/latest')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ version: '1.2.3', checksum: 'a'.repeat(64) }));
+        return;
+      }
+      if (req.url?.includes('/download/darwin/arm64/pkg')) {
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'X-Breeze-Artifact-SHA256': digest,
+          'X-Breeze-MacOS-Team-ID': 'D8W6N2JYMA',
+          'X-Breeze-MacOS-Signing-Identity-Base64': Buffer.from(
+            'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)',
+          ).toString('base64'),
+        });
+        res.end(pkg);
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const { code, output } = await runScript([
+        '--server', `http://127.0.0.1:${port}`, '--token', 'tok',
+      ]);
+      expect(code, output).not.toBe(0);
+      expect(output).toContain('publisher identity does not match');
+      expect(() => readFileSync(marker)).toThrow();
+    } finally {
+      server.close();
     }
   });
 

@@ -85,18 +85,18 @@ export function getGithubReleaseRepository(): string {
   return getReleaseSourceRepository();
 }
 
-export function getGithubExpectedReleaseTag(): string | null {
-  const version = getGithubReleaseVersion();
-  if (version === 'latest') return null;
-  return version.startsWith('v') ? version : `v${version}`;
+export function getGithubExpectedReleaseTag(version?: string): string | null {
+  const resolvedVersion = version ?? getGithubReleaseVersion();
+  if (resolvedVersion === 'latest') return null;
+  return resolvedVersion.startsWith('v') ? resolvedVersion : `v${resolvedVersion}`;
 }
 
-export function getGithubReleaseArtifactManifestUrl(): string {
-  return `${githubDownloadBase()}/release-artifact-manifest.json`;
+export function getGithubReleaseArtifactManifestUrl(version?: string): string {
+  return `${githubDownloadBase(version)}/release-artifact-manifest.json`;
 }
 
-export function getGithubReleaseArtifactManifestSignatureUrl(): string {
-  return `${githubDownloadBase()}/release-artifact-manifest.json.ed25519`;
+export function getGithubReleaseArtifactManifestSignatureUrl(version?: string): string {
+  return `${githubDownloadBase(version)}/release-artifact-manifest.json.ed25519`;
 }
 
 export function getGithubAgentUrl(os: string, arch: string, version?: string): string {
@@ -111,9 +111,9 @@ export function getGithubBackupUrl(os: string, arch: string, version?: string): 
   return githubAssetDownloadUrl(filename, version);
 }
 
-export function getGithubAgentPkgUrl(os: string, arch: string): string {
+export function getGithubAgentPkgUrl(os: string, arch: string, version?: string): string {
   const filename = `breeze-agent-${os}-${arch}.pkg`;
-  return githubAssetDownloadUrl(filename);
+  return githubAssetDownloadUrl(filename, version);
 }
 
 export function getGithubWatchdogUrl(os: string, arch: string, version?: string): string {

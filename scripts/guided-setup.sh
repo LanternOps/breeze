@@ -30,6 +30,7 @@ BOOTSTRAP_PASSWORD=""
 BOOTSTRAP_NAME=""
 BOOTSTRAP_SCRUBBED="false"
 STACK_STARTED="false"
+RELEASE_VERIFY_TMP=""
 REVERSE_PROXY_MODE="caddy"
 REVERSE_PROXY_LABEL="Packaged Caddy"
 REVERSE_PROXY_EXTERNAL_CIDRS=""
@@ -198,6 +199,7 @@ CADDYFILE_FILE="${WORK_DIR}/docker/Caddyfile.prod"
 M365_JWK_PLACEHOLDER_FILE="${WORK_DIR}/docker/secrets/.empty-jwk"
 COMPOSE_PROXY_OVERRIDE_FILE="${WORK_DIR}/docker-compose.byo-proxy.yml"
 PROXY_GUIDE_FILE="${WORK_DIR}/reverse-proxy-setup.md"
+RELEASE_IMAGE_VERIFIER_FILE="${WORK_DIR}/scripts/release/verify-release-images.sh"
 COMPOSE_FILES=("${COMPOSE_FILE}")
 
 log() {
@@ -589,7 +591,7 @@ prepare_templates() {
   if [[ -n "${REMOTE_BASE}" ]]; then
     log "Template source: ${REMOTE_BASE}"
   fi
-  if [[ ! -f "${COMPOSE_FILE}" || ! -f "${ENV_EXAMPLE_FILE}" ]]; then
+  if [[ ! -f "${COMPOSE_FILE}" || ! -f "${ENV_EXAMPLE_FILE}" || ! -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]]; then
     need_download="true"
   fi
 
@@ -598,11 +600,13 @@ prepare_templates() {
       subsection "Download Templates"
       download_template "docker-compose.yml"
       download_template ".env.example"
+      download_template "scripts/release/verify-release-images.sh"
       ;;
     never)
       subsection "Use Existing Templates"
       [[ -f "${COMPOSE_FILE}" ]] || fail "Missing ${COMPOSE_FILE}"
       [[ -f "${ENV_EXAMPLE_FILE}" ]] || fail "Missing ${ENV_EXAMPLE_FILE}"
+      [[ -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]] || fail "Missing ${RELEASE_IMAGE_VERIFIER_FILE}"
       log "Using existing docker-compose.yml and .env.example."
       ;;
     ask)
@@ -610,11 +614,13 @@ prepare_templates() {
         subsection "Download Templates"
         download_template "docker-compose.yml"
         download_template ".env.example"
+        download_template "scripts/release/verify-release-images.sh"
       else
         subsection "Template Source"
         if ask_yes_no "Download fresh docker-compose.yml and .env.example into ${WORK_DIR}?" "no"; then
           download_template "docker-compose.yml"
           download_template ".env.example"
+          download_template "scripts/release/verify-release-images.sh"
         else
           log "Using existing docker-compose.yml and .env.example."
         fi
@@ -3386,6 +3392,59 @@ configure_release_manifest_trust_root() {
   log "Using official Breeze release manifest public key trust root."
 }
 
+configure_signed_release_image_refs() {
+  local version tag repo base manifest signature resolved key variable value line_count
+
+  version="$(get_env_value "BREEZE_VERSION")"
+  version="${version#v}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+    || fail "BREEZE_VERSION must be an exact semantic version before resolving signed images."
+  tag="v${version}"
+  repo="$(github_repo_for_release_lookup)"
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || fail "Release repository must be an owner/repository pair."
+  key="$(get_env_value "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS")"
+  [[ -n "$key" ]] || fail "Release manifest public key is required before resolving images."
+
+  RELEASE_VERIFY_TMP="$(mktemp -d)"
+  manifest="${RELEASE_VERIFY_TMP}/release-artifact-manifest.json"
+  signature="${RELEASE_VERIFY_TMP}/release-artifact-manifest.json.ed25519"
+  resolved="${RELEASE_VERIFY_TMP}/images.env"
+  base="${BREEZE_SETUP_RELEASE_DOWNLOAD_BASE:-https://github.com/${repo}/releases/download/${tag}}"
+  base="${base%/}"
+
+  log "Downloading signed image inventory for ${repo} ${tag}."
+  curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 1048576 \
+    "${base}/release-artifact-manifest.json" -o "$manifest" \
+    || fail "Could not download the signed release image inventory for ${tag}."
+  curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --max-filesize 4096 \
+    "${base}/release-artifact-manifest.json.ed25519" -o "$signature" \
+    || fail "Could not download the release image inventory signature for ${tag}."
+
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS="$key" \
+    bash "$RELEASE_IMAGE_VERIFIER_FILE" \
+      --manifest "$manifest" --signature "$signature" \
+      --expected-repository "$repo" --expected-release "$tag" \
+      --emit-env "$resolved" \
+    || fail "Release image inventory verification failed; no image will be pulled."
+
+  line_count="$(wc -l < "$resolved" | tr -d ' ')"
+  [[ "$line_count" -eq 4 ]] || fail "Signed image resolver did not return all four core image refs."
+  while IFS='=' read -r variable value; do
+    case "$variable" in
+      BREEZE_API_IMAGE_REF|BREEZE_WEB_IMAGE_REF|BREEZE_PORTAL_IMAGE_REF|BREEZE_BINARIES_IMAGE_REF) ;;
+      *) fail "Signed image resolver returned an unexpected variable: ${variable}" ;;
+    esac
+    [[ "$value" =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
+      || fail "Signed image resolver returned an invalid digest ref for ${variable}."
+    set_env_value "$variable" "$value"
+  done < "$resolved"
+
+  rm -rf "$RELEASE_VERIFY_TMP"
+  RELEASE_VERIFY_TMP=""
+  log "Pinned API, Web, Portal, and binaries images to the verified signed release digests."
+}
+
 github_repo_for_release_lookup() {
   local repo
 
@@ -3461,13 +3520,10 @@ fetch_latest_github_release_version() {
 # Returns 0 if every Breeze image for this version is pullable from GHCR, 1 if
 # any is definitely absent, and 2 if the registry could not be reached (unknown).
 #
-# A git tag is NOT proof that images exist: release.yml creates the GitHub
-# Release and tag first and only then builds images (`needs: [create-release]`),
-# so a build or signing failure leaves a version that resolves everywhere except
-# the registry. v0.105.2 and v0.106.0 are both in that state today. Selecting one
-# produces a setup that completes happily and then dies on `docker compose up`
-# with `not found` — which is precisely the failure .env.example's stale 0.81.0
-# pin caused for every self-hoster, so it is worth catching here too.
+# A git tag alone is not proof that the signed release image inventory and its
+# exact OCI digests are available. This early availability hint improves the
+# prompt, while configure_signed_release_image_refs remains the authoritative
+# fail-closed check before any pull or start.
 breeze_version_images_published() {
   local version="$1"
   local registry="ghcr.io"
@@ -3835,9 +3891,8 @@ configure_core_env() {
   fi
 
   prompt_breeze_version
-  log "Using Docker image refs from ${ENV_FILE}; defaults track BREEZE_VERSION. Edit .env later only if you need digest-pinned or custom images."
-
   configure_release_manifest_trust_root
+  configure_signed_release_image_refs
 
   section "Database And Redis"
   subsection "Postgres"
@@ -4333,6 +4388,7 @@ on_exit() {
   [[ -n "${ENV_FILE:-}" ]] && rm -f "${ENV_FILE}".tmp.* 2>/dev/null
   [[ -n "${COMPOSE_FILE:-}" ]] && rm -f "${COMPOSE_FILE}".tmp.* 2>/dev/null
   [[ -n "${PROXY_GUIDE_FILE:-}" ]] && rm -f "${PROXY_GUIDE_FILE}".tmp.* 2>/dev/null
+  [[ -n "${RELEASE_VERIFY_TMP:-}" ]] && rm -rf "${RELEASE_VERIFY_TMP}" 2>/dev/null
   if [[ "${STACK_STARTED}" == "true" && "${BOOTSTRAP_SCRUBBED}" != "true" ]]; then
     warn "Bootstrap admin values may still be present in ${ENV_FILE}. Remove BREEZE_BOOTSTRAP_ADMIN_* after first login."
   fi
@@ -4395,4 +4451,6 @@ main() {
   fi
 }
 
-main "$@"
+if [[ "${BREEZE_GUIDED_SETUP_LIBRARY_ONLY:-false}" != "true" ]]; then
+  main "$@"
+fi

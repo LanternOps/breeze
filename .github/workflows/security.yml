@@ -241,7 +241,8 @@ jobs:
         run: |
           node --test \
             .github/scripts/check-workflow-security.test.mjs \
-            scripts/security/pin-github-actions.test.mjs
+            scripts/security/pin-github-actions.test.mjs \
+            scripts/release/attest-macos-pkg.test.mjs
           node .github/scripts/check-workflow-security.mjs
 
       - name: Install actionlint (pinned + checksum-verified)

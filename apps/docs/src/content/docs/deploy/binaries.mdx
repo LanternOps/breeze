@@ -65,6 +65,10 @@ Official releases also publish `*-unsigned` build outputs with manifest entries 
 
 Manifest entries for the Windows assets that *are* Authenticode-signed (the Viewer and Helper installers) additionally record which certificate authority signed them, so the provider behind a given build is auditable from the signed manifest itself.
 
+macOS package entries record `signingIdentity` and `signingTeamId`. The release
+workflow adds these fields only after `pkgutil` reports the exact expected
+Developer ID Installer leaf identity and Apple Team ID for those package bytes.
+
 ### Local Mode
 
 Binaries are served from disk. The API reads from these directories:
@@ -74,6 +78,14 @@ Binaries are served from disk. The API reads from these directories:
 | `AGENT_BINARY_DIR` | `./agent/bin` | Agent binaries (e.g. `breeze-agent-linux-amd64`) |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
 | `HELPER_BINARY_DIR` | `./agent/bin` | Helper binaries (e.g. `breeze-helper-windows.msi`). The bundled `docker-compose.yml` overrides this to `/data/binaries/helper`, alongside the other two directories under the shared `binaries` volume. |
+
+macOS agent packages and `Breeze Installer.app.zip` are privileged installers.
+Local mode serves them only when the release's original
+`release-artifact-manifest.json` and `.ed25519` signature are staged at the
+parent of `AGENT_BINARY_DIR` and verify with
+`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`. A deployment-generated manifest that
+merely signs whatever bytes happen to be on the volume is not a source-authenticity
+substitute.
 
 On startup, the API:
 1. Scans `AGENT_BINARY_DIR` for agent binaries
@@ -124,7 +136,11 @@ When `BINARY_SOURCE=github` (default), the API ignores the local volume and sync
 When `BINARY_SOURCE=local` and S3 credentials are configured, Breeze:
 
 1. **On startup**: syncs local binaries to your S3 bucket
-2. **On download**: returns a 302 redirect to a presigned S3 URL (falls back to disk if presigning fails)
+2. **On download**: returns a 302 redirect to a presigned S3 URL for ordinary
+   artifacts (falls back to disk if the object is absent). Privileged macOS
+   packages are the exception: the API reads them with a signed-size bound,
+   verifies the signed release-manifest digest, and proxies the exact verified
+   bytes instead of redirecting the client.
 
 This offloads download bandwidth from your API server to S3/R2/MinIO.
 
