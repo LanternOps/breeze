@@ -2269,3 +2269,38 @@ func TestPublishSystemState_SkipsUploadingSymlinkArtifacts(t *testing.T) {
 		t.Errorf("published symlink artifact LinkTarget = %q, want %q", gotLink.LinkTarget, "real.txt")
 	}
 }
+
+// W02: SnapshotFile gains content-less entry kinds (symlink/dir), full mode
+// bits and owner — HasContent() distinguishes an uploaded-content entry
+// from a content-less one, and snapshotNeedsFidelityFormat decides whether
+// the manifest must be stamped formatVersion 3. Plain-file JSON must stay
+// byte-identical to before these fields existed (omitempty).
+func TestSnapshotFile_HasContentAndFormatVersion(t *testing.T) {
+	file := SnapshotFile{SourcePath: "/etc/hosts", BackupPath: "snapshots/s/files/path_0/etc/hosts", Size: 3}
+	link := SnapshotFile{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"}
+	dir := SnapshotFile{SourcePath: "/var/empty", Kind: KindDir, ModeBits: 0o755}
+	if !file.HasContent() || link.HasContent() || dir.HasContent() {
+		t.Fatalf("HasContent: file=%v link=%v dir=%v", file.HasContent(), link.HasContent(), dir.HasContent())
+	}
+	if snapshotNeedsFidelityFormat([]SnapshotFile{file}) {
+		t.Error("plain files must not force format 3")
+	}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{file, link}) {
+		t.Error("a symlink entry must force format 3")
+	}
+	owned := SnapshotFile{SourcePath: "/home/x", BackupPath: "k", Owner: &FileOwner{UID: 1000, GID: 1000}}
+	if !snapshotNeedsFidelityFormat([]SnapshotFile{owned}) {
+		t.Error("an owner must force format 3")
+	}
+	// JSON shape: new fields are omitted when zero so old manifests stay byte-identical.
+	data, _ := json.Marshal(file)
+	for _, k := range []string{"kind", "linkTarget", "modeBits", "owner"} {
+		if strings.Contains(string(data), `"`+k+`"`) {
+			t.Errorf("plain file JSON leaked %s: %s", k, data)
+		}
+	}
+	data, _ = json.Marshal(link)
+	if !strings.Contains(string(data), `"kind":"symlink"`) || !strings.Contains(string(data), `"linkTarget":"usr/bin"`) {
+		t.Errorf("symlink JSON = %s", data)
+	}
+}
