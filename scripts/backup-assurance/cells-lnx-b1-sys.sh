@@ -235,13 +235,23 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$MODE" = tamper ]; then
   say "tamper: corrupt one system-state artifact object"
-  TAMPER_PATH=$(jq -r '.artifacts[0].path // empty' "$R/state-manifest.json")
+  # Pick a real, non-empty, checksummed artifact (not a symlink, not a 0-byte file whose
+  # "corruption" would be indistinguishable), and prove the object actually changed size —
+  # an mc wrapper without stdin passthrough silently writes nothing with `mc pipe`.
+  TAMPER_PATH=$(jq -r '[.artifacts[] | select((.linkTarget // "") == "" and (.checksum // "") != "" and (.sizeBytes // 0) > 0)][0].path // empty' "$R/state-manifest.json")
+  TAMPER_SIZE=$(jq -r --arg p "$TAMPER_PATH" '.artifacts[] | select(.path==$p) | .sizeBytes' "$R/state-manifest.json")
   if [ -z "$TAMPER_PATH" ]; then
     echo "no artifact available to tamper" >&2
     exit 1
   fi
-  echo "garbage-$(date +%s)" | "$S"/mc pipe "$BUCKET/system-state/$TAMPER_PATH"
-  echo "tampered object: $BUCKET/system-state/$TAMPER_PATH" | tee "$R/tamper-target.txt"
+  mkdir -p /tmp/mcout; printf 'garbage-%s-%s\n' "$(date +%s)" "$RANDOM$RANDOM" > /tmp/mcout/tamper.bin
+  "$S"/mc cp /out/tamper.bin "$BUCKET/system-state/$TAMPER_PATH" > /dev/null
+  NEWSIZE=$("$S"/mc stat --json "$BUCKET/system-state/$TAMPER_PATH" 2>/dev/null | jq -r '.size // empty' | head -1)
+  echo "tampered object: $BUCKET/system-state/$TAMPER_PATH (manifest size $TAMPER_SIZE, now $NEWSIZE)" | tee "$R/tamper-target.txt"
+  if [ -z "$NEWSIZE" ] || [ "$NEWSIZE" = "$TAMPER_SIZE" ]; then
+    echo "tamper did not change the object — aborting so the negative case is not vacuous" >&2
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -334,10 +344,13 @@ else
   else
     fail "tamper: restore job status is completed — checksum tamper was not caught"
   fi
-  if echo "$RERR" | grep -qi checksum; then
-    pass "tamper: failure names a checksum problem"
+  # The server's restore row has no reason column (only status); the helper's own result
+  # carries the verification failure in `error` or `warnings`. Assert on that.
+  HELPER_REASON=$(jq -r '[.error // empty] + (.warnings // []) | join(" | ")' "$R/recover-result.json" 2>/dev/null)
+  if printf '%s' "$RERR $HELPER_REASON" | grep -qiE 'checksum|verification|mismatch'; then
+    pass "tamper: failure names a verification/checksum problem ($(printf '%s' "$HELPER_REASON" | grep -oiE '[^|]*(checksum|verification|mismatch)[^|]*' | head -1 | cut -c1-140))"
   else
-    fail "tamper: failure reason does not mention checksum ('$RERR')"
+    fail "tamper: failure reason does not mention checksum/verification (server='$RERR' helper='$(printf '%s' "$HELPER_REASON" | cut -c1-160)')"
   fi
 fi
 
