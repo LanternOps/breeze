@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -27,6 +29,10 @@ type commandStorageEncryption struct {
 
 type sseConfigurableProvider interface {
 	SetServerSideEncryption(algorithm, kmsKeyID string)
+}
+
+var backupRestoreWorkRoot = func() string {
+	return filepath.Join(config.GetDataDir(), "backup")
 }
 
 func applyCommandStorageEncryption(provider providers.BackupProvider, payload json.RawMessage) error {
@@ -384,6 +390,7 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 		SnapshotID:    p.SnapshotID,
 		TargetPath:    p.TargetPath,
 		SelectedPaths: p.SelectedPaths,
+		WorkRoot:      backupRestoreWorkRoot(),
 	}
 
 	var progressFn backup.ProgressFunc
@@ -442,7 +449,7 @@ func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, v
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid test restore payload: " + err.Error())
 	}
-	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, nil)
+	result, err := backup.TestRestore(restoreProvider, p.SnapshotID, backupRestoreWorkRoot(), nil)
 	return marshalResult(result, err)
 }
 
@@ -453,7 +460,7 @@ func execBackupCleanup(payload json.RawMessage) backupipc.BackupCommandResult {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fail("invalid cleanup payload: " + err.Error())
 	}
-	if err := backup.CleanupRestoreDir(p.RestorePath); err != nil {
+	if err := backup.CleanupRestoreDir(p.RestorePath, backupRestoreWorkRoot()); err != nil {
 		return fail(err.Error())
 	}
 	return ok(`{"cleaned":true}`)
