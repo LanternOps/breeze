@@ -1080,6 +1080,45 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(createWsTicket).not.toHaveBeenCalled();
       expect(createDesktopConnectCode).not.toHaveBeenCalled();
     });
+
+    it.each([
+      { label: 'WebSocket ticket', path: `/remote/sessions/${SESSION_ID}/ws-ticket`, method: 'POST', body: undefined },
+      { label: 'desktop connect code', path: `/remote/sessions/${SESSION_ID}/desktop-connect-code`, method: 'POST', body: undefined },
+      { label: 'ICE server credentials', path: `/remote/ice-servers?sessionId=${SESSION_ID}`, method: 'GET', body: undefined },
+      { label: 'ICE candidate', path: `/remote/sessions/${SESSION_ID}/ice`, method: 'POST', body: JSON.stringify({ candidate: { candidate: 'candidate:1' } }) },
+    ])(
+      'denies $label after the remote-access policy is disabled mid-session, before any side effect',
+      async ({ path, method, body }) => {
+        // Same device/site the caller IS allowed to reach: the only thing that
+        // changed is the live policy, so this cannot pass on the site branch.
+        getSessionWithOrgCheck.mockResolvedValue({
+          ...forbidden,
+          session: { ...forbidden.session, deviceId: DEVICE_IN_ALLOWED },
+          device: { ...forbidden.device, id: DEVICE_IN_ALLOWED, siteId: ALLOWED_SITE },
+        });
+        // ...Once: the default `{allowed:true}` set in beforeEach must survive
+        // for the suites that follow (vi.clearAllMocks does not restore
+        // implementations, only call records).
+        checkRemoteAccess.mockReturnValueOnce(
+          Promise.resolve({ allowed: false, reason: 'Remote desktop is disabled by policy' })
+        );
+
+        const res = await app.request(path, {
+          method,
+          headers: {
+            Authorization: 'Bearer t',
+            ...(body ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body,
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Remote desktop is disabled by policy' });
+        expect(db.update).not.toHaveBeenCalled();
+        expect(createWsTicket).not.toHaveBeenCalled();
+        expect(createDesktopConnectCode).not.toHaveBeenCalled();
+      }
+    );
   });
 });
 
