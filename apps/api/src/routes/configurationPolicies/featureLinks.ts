@@ -13,6 +13,7 @@ import {
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
@@ -112,6 +113,9 @@ featureLinkRoutes.post(
   zValidator('json', addFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -307,6 +311,9 @@ featureLinkRoutes.patch(
   zValidator('json', updateFeatureLinkSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id, linkId } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -474,6 +481,9 @@ featureLinkRoutes.delete(
   zValidator('param', linkIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id, linkId } = c.req.valid('param');
 
     const policy = await getConfigPolicy(id, auth);
