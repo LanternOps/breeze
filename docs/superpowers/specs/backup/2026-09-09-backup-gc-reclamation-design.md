@@ -276,13 +276,14 @@ copies it from the adoptable job too). GC groups rows by this column, not by the
 current `providerConfig`, so editing a destination cannot un-root snapshots already written to
 the old bucket.
 
-Historical rows: the migration backfills `storage_identity` from the current config **only
-when the config was not edited after the snapshot** (`backup_configs.updated_at <=
-backup_snapshots.timestamp`); everything else stays NULL. The sweep self-heals a NULL row when
-it finds `snapshots/<id>/manifest.json` in the listing of the config's current identity
-(`UPDATE … SET storage_identity = I`); until every NULL row mapped to an identity has been
-resolved, that identity runs the rooted-prefix rule only (§3.4). Rows with NULL `config_id`
-stay NULL and keep wedging the run as today. No `NOT NULL` constraint.
+Historical rows: **no SQL backfill** — replicating `normalizeStorageIdentity` in PL/pgSQL is
+a fidelity risk with no payoff. The sweep self-heals a NULL row when it finds
+`snapshots/<id>/manifest.json` in the listing of the config's current identity
+(`UPDATE … SET storage_identity = I WHERE id = row.id AND storage_identity IS NULL`), which
+resolves every resolvable row on the first GC run after deploy; until every NULL row mapped to
+an identity has been resolved, that identity runs today's algorithm (§3.4). A row still NULL
+after 30 d is logged (`unresolved storage identity <row>`) for operator attention. Rows with
+NULL `config_id` stay NULL and keep wedging the run as today. No `NOT NULL` constraint.
 
 An identity no config points at any more is never listed and therefore leaks; the sweep logs
 `unreachable identity <I>: <n> rows`. `PATCH /backup/configs/:id` warns (does not block) when
@@ -310,7 +311,7 @@ object is deleted only for a snapshot whose retirement is already durable.
 
 | Migration (slots after newest shipped `2026-10-15-140004`) | Content |
 |---|---|
-| `2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql` | `backup_jobs.base_snapshot_id`, `publish_lease_expires_at`, `storage_identity`, partial index; `backup_snapshots.storage_identity` (nullable) + guarded backfill (§3.6, config not edited since snapshot) in SQL replicating `normalizeStorageIdentity`; `SELECT set_config('breeze.scope','system',true)` for the backfill; `GET DIAGNOSTICS` row counts, including how many rows were left NULL |
+| `2026-10-15-140005-backup-jobs-base-pin-and-storage-identity.sql` | `backup_jobs.base_snapshot_id`, `publish_lease_expires_at`, `storage_identity`, partial index; `backup_snapshots.storage_identity` (nullable, no backfill — §3.6 self-heal); DDL only, no `breeze.scope` needed |
 | `2026-10-15-140006-backup-snapshot-retirements.sql` | table + RLS (shape 1, enable+force, four policies) + indexes |
 
 Registries: `tenantExportPolicyRegistry.ts` (`backup_jobs` + 3 cols, `backup_snapshots` + 1
