@@ -822,6 +822,20 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 				return fail(err.Error())
 			}
 			return execMSSQLVerify(req.Payload, payloadMgr)
+		// D20c: hyperv_checkpoint/hyperv_vm_state don't take a *backup.BackupManager
+		// at all — execHypervCheckpoint/execHypervVMState's signatures are
+		// (payload json.RawMessage) only, unlike every other Hyper-V/MSSQL
+		// command here. They still fell through to the generic "backup not
+		// configured on this device" below because their command types were
+		// never added to this switch, even though they need no manager/provider
+		// to run — breaking VM start/stop/pause/resume and checkpoint
+		// create/delete/apply for every policy-managed Hyper-V host (mgr == nil
+		// is the normal state). mssql_discover/hyperv_discover are the same
+		// kind of manager-less command and were already routed correctly above.
+		case "hyperv_checkpoint":
+			return execHypervCheckpoint(req.Payload)
+		case "hyperv_vm_state":
+			return execHypervVMState(req.Payload)
 		default:
 			return fail("backup not configured on this device")
 		}

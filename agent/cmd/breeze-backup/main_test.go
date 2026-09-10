@@ -863,6 +863,83 @@ func TestExecuteCommand_HypervRestoreNilManagerReachesExecFunction(t *testing.T)
 	}
 }
 
+// ── D20c: manager-less Hyper-V commands (hyperv_checkpoint, hyperv_vm_state)
+// run with mgr == nil ──────────────────────────────────────────────────
+//
+// execHypervCheckpoint/execHypervVMState take only a payload, no
+// *backup.BackupManager — unlike every other Hyper-V/MSSQL command handler.
+// Before this fix their command types were never added to executeCommand's
+// mgr == nil switch, so they fell straight through to the generic
+// "backup not configured on this device", even though they need no
+// manager/provider to run at all. mgr == nil is the NORMAL state for every
+// policy-managed device (no agent.yaml backup config), so this broke VM
+// start/stop/pause/resume and checkpoint create/delete/apply for exactly
+// those devices.
+
+func TestExecuteCommand_HypervCheckpointNilManagerRunsWithoutManager(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"vmName":         "Accounting VM",
+		"action":         "create",
+		"checkpointName": "pre-patch",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-checkpoint-nil-mgr",
+		CommandType: "hyperv_checkpoint",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// hyperv.ManageCheckpoint has no test seam and this suite always runs on
+	// the !windows stub (ErrHyperVNotSupported), so a real checkpoint can't be
+	// driven here. What this test CAN prove is that the command routed all
+	// the way through to execHypervCheckpoint instead of stopping at the
+	// nil-manager "backup not configured" fallback: the platform-stub error
+	// is the tell, since execHypervCheckpoint takes no manager at all and so
+	// can never itself report "not configured".
+	if result.Success {
+		t.Fatal("expected failure: hyperv.ManageCheckpoint is not supported on this (non-Windows) test platform")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervCheckpoint: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, hyperv.ErrHyperVNotSupported.Error()) {
+		t.Fatalf("expected the platform-stub error from execHypervCheckpoint, got: %q", result.Stderr)
+	}
+}
+
+func TestExecuteCommand_HypervVMStateNilManagerRunsWithoutManager(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"vmName":      "Accounting VM",
+		"targetState": "start",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := executeCommand(backupipc.BackupCommandRequest{
+		CommandID:   "hyperv-vm-state-nil-mgr",
+		CommandType: "hyperv_vm_state",
+		Payload:     payload,
+	}, nil, nil, nil, newActiveCommandCanceller())
+
+	// Same reasoning as the checkpoint test above: hyperv.ChangeVMState has no
+	// test seam and hits the !windows stub, so the stub error (rather than
+	// the nil-manager fallback) is what proves routing reached
+	// execHypervVMState, which also takes no manager.
+	if result.Success {
+		t.Fatal("expected failure: hyperv.ChangeVMState is not supported on this (non-Windows) test platform")
+	}
+	if result.Stderr == "backup not configured on this device" {
+		t.Fatalf("routing stopped at the nil-manager fallback instead of reaching execHypervVMState: %q", result.Stderr)
+	}
+	if !strings.Contains(result.Stderr, hyperv.ErrHyperVNotSupported.Error()) {
+		t.Fatalf("expected the platform-stub error from execHypervVMState, got: %q", result.Stderr)
+	}
+}
+
 func TestExecuteCommand_HypervRestoreNilManagerNoProviderConfigFailsWithSpecificMessage(t *testing.T) {
 	payload, err := json.Marshal(map[string]any{
 		"snapshotId": "hyperv-some-snapshot",
