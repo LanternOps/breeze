@@ -125,6 +125,27 @@ describe('maxSessionDurationHours clamp [1, 12]', () => {
     warn.mockRestore();
   });
 
+  it('keys the warning on the policy id alone, so many devices on one policy warn once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const settings = { ...getRemoteAccessBaseline(), maxSessionDurationHours: 0 };
+    for (let i = 0; i < 50; i++) {
+      clampSettings(settings, { policyId: 'policy-a', deviceId: `device-${i}` });
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('warns at most once per process for policy-less resolves, never once per device', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const settings = { ...getRemoteAccessBaseline(), maxSessionDurationHours: 0 };
+    clampSettings(settings, { deviceId: 'device-1' });
+    clampSettings(settings, { deviceId: 'device-2' });
+    clampSettings(settings, { policyId: null, deviceId: 'device-3' });
+    clampSettings(settings);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it('does not warn for an in-range value', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     clampSettings({ ...getRemoteAccessBaseline(), maxSessionDurationHours: 8 }, { policyId: 'p' });

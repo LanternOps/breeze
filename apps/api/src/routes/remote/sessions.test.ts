@@ -688,6 +688,17 @@ describe('remote sessions — site-scope enforcement', () => {
       (db as any).insert = vi.fn().mockReturnValue({
         values: vi.fn().mockReturnValue({ returning: insertReturning }),
       });
+
+      // 3. createRemoteSession reads users.permissions_epoch as the revocation-
+      //    lease baseline; without it a desktop create 503s (an unrenewable
+      //    session is refused rather than minted).
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ permissionsEpoch: 1 }]),
+          }),
+        }),
+      } as never);
       return { staleReturning };
     }
 

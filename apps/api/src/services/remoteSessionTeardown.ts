@@ -91,7 +91,17 @@ export async function teardownDisconnectedSessions(
 
   // Signal each session's agent to tear down its stream / PTY, and drop any
   // live terminal socket held locally.
-  for (const row of disconnected) {
+  //
+  // Rows run CONCURRENTLY. Each `dispatchCommandToAgent` carries a 5 s ack
+  // deadline and this function runs inline inside request handlers (role change
+  // / membership removal in `routes/users.ts`, partner suspend in
+  // `routes/admin/abuse.ts`), so awaiting row by row turned N revoked sessions
+  // into N*5 s of request latency. Within a single row the steps stay
+  // sequential — the terminal branch must still learn whether
+  // `closeTerminalSession` closed a LOCAL socket before deciding on the
+  // `terminal_stop` fallback. `allSettled` (not `all`) because the per-row body
+  // is already best-effort and must never reject the whole teardown.
+  await Promise.allSettled(disconnected.map(async (row) => {
     const agentId = agentByDevice.get(row.deviceId);
     if (row.type === 'desktop' && agentId) {
       try {
@@ -153,7 +163,7 @@ export async function teardownDisconnectedSessions(
         }
       }
     }
-  }
+  }));
 }
 
 /**

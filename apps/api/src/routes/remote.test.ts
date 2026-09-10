@@ -280,7 +280,11 @@ describe('remote routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
-        } as any);
+        } as any)
+        // 5. createRemoteSession -> users.permissions_epoch revocation-lease
+        // baseline (a desktop session without it would be unrenewable, so the
+        // create 503s rather than mint one).
+        .mockReturnValueOnce(mockSelectChain([{ permissionsEpoch: 1 }]));
 
       // 1. db.insert for session creation
       // 2. db.insert for audit log

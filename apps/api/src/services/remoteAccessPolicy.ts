@@ -79,6 +79,14 @@ export const MAX_MAX_SESSION_DURATION_HOURS = 12;
 // are clamped here rather than rejected, because rejecting them at the shared
 // Zod schema would discard the WHOLE settings blob and fall back to DEFAULTS —
 // re-enabling clipboard and every other gate the policy meant to close.
+//
+// The key is the POLICY id, never the device: an out-of-range value is a
+// property of the policy, and one bad policy assigned to a 5,000-device fleet
+// would otherwise emit 5,000 identical warnings. Resolves with no source policy
+// (`resolveDesktopSessionPolicy`, which re-clamps already-clamped settings, and
+// the DEFAULTS baseline) share one fixed sentinel key so that case is reported
+// at most once per process rather than once per device.
+const NO_POLICY_WARN_KEY = '(no source policy)';
 const clampWarned = new Set<string>();
 
 function warnClampOnce(key: string, message: string): void {
@@ -108,7 +116,7 @@ export function clampSettings(
 
   if (maxSessionDurationHours !== Math.trunc(requested)) {
     warnClampOnce(
-      context?.policyId ?? `device:${context?.deviceId ?? 'unknown'}`,
+      context?.policyId ?? NO_POLICY_WARN_KEY,
       `[RemoteAccessPolicy] maxSessionDurationHours=${requested} on policy ` +
         `${context?.policyId ?? '(none)'} is outside the supported range ` +
         `[${MIN_MAX_SESSION_DURATION_HOURS}, ${MAX_MAX_SESSION_DURATION_HOURS}] ` +

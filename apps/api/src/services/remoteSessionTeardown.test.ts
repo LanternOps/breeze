@@ -34,7 +34,12 @@ const h = vi.hoisted(() => {
     state,
     // The durable relay, not the socket-local send: teardown must reach the
     // agent even when its command socket lives on another API instance.
-    dispatchCommandToAgent: vi.fn(async () => ({ status: 'sent', via: 'relay' })),
+    dispatchCommandToAgent: vi.fn(
+      async (_agentId?: string, _command?: { payload: { sessionId: string } }) => ({
+        status: 'sent',
+        via: 'relay',
+      }),
+    ),
     revokeViewerSession: vi.fn().mockResolvedValue(undefined),
     captureException: vi.fn(),
     // closeTerminalSession returns true when a live terminal socket existed on
@@ -293,6 +298,110 @@ describe('terminateUserRemoteSessions', () => {
     // Best-effort side effects never ran.
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
     expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Concurrency: each dispatchCommandToAgent carries a 5 s ack deadline, and
+  // this teardown runs INLINE inside routes/users.ts role-change / membership
+  // removal and routes/admin/abuse.ts partner suspend. Serial awaits turn N
+  // revoked sessions into N*5 s of request latency.
+  // -------------------------------------------------------------------------
+
+  it('dispatches stop_desktop for different sessions concurrently, not one after another', async () => {
+    seed(
+      [
+        { id: 's1', type: 'desktop', deviceId: 'd1' },
+        { id: 's2', type: 'desktop', deviceId: 'd2' },
+        { id: 's3', type: 'desktop', deviceId: 'd3' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+        { id: 'd3', agentId: 'agent-3' },
+      ],
+    );
+
+    // Deferred dispatches: nothing resolves until we release them, so the only
+    // way all three can be entered is if the loop did not await row-by-row.
+    let entered = 0;
+    const release: Array<() => void> = [];
+    h.dispatchCommandToAgent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          entered += 1;
+          release.push(() => resolve({ status: 'sent', via: 'relay' }));
+        }),
+    );
+
+    const pending = terminateUserRemoteSessions('u1');
+    await vi.waitFor(() => expect(entered).toBe(3));
+    // All three dispatches are in flight while ZERO have resolved.
+    expect(release).toHaveLength(3);
+
+    for (const r of release) r();
+    await expect(pending).resolves.toBe(3);
+  });
+
+  it('keeps closeTerminalSession before the terminal_stop fallback within a row while rows run in parallel', async () => {
+    seed(
+      [
+        { id: 't1', type: 'terminal', deviceId: 'd1' },
+        { id: 't2', type: 'terminal', deviceId: 'd2' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+      ],
+    );
+
+    const order: string[] = [];
+    const closeRelease: Array<() => void> = [];
+    h.closeTerminalSession.mockImplementation((id: string) => {
+      order.push(`close:${id}`);
+      return new Promise((resolve) => closeRelease.push(() => resolve(false)));
+    });
+    h.dispatchCommandToAgent.mockImplementation(async (_agentId, command) => {
+      order.push(`dispatch:${command!.payload.sessionId}`);
+      return { status: 'sent', via: 'relay' };
+    });
+
+    const pending = terminateUserRemoteSessions('u1');
+    // Both rows reach their close() before either resolves → rows are parallel.
+    await vi.waitFor(() => expect(order).toHaveLength(2));
+    expect(order.slice(0, 2)).toEqual(['close:t1', 'close:t2']);
+
+    for (const r of closeRelease) r();
+    await expect(pending).resolves.toBe(2);
+    // ...and inside each row the fallback still runs AFTER the local close.
+    expect(order.slice(2).sort()).toEqual(['dispatch:t1', 'dispatch:t2']);
+  });
+
+  it('logs and continues when one row\'s stop_desktop dispatch rejects', async () => {
+    seed(
+      [
+        { id: 's1', type: 'desktop', deviceId: 'd1' },
+        { id: 's2', type: 'desktop', deviceId: 'd2' },
+      ],
+      [
+        { id: 'd1', agentId: 'agent-1' },
+        { id: 'd2', agentId: 'agent-2' },
+      ],
+    );
+    const err = new Error('relay down');
+    h.dispatchCommandToAgent.mockImplementation(async (_agentId, command) => {
+      if (command!.payload.sessionId === 's1') throw err;
+      return { status: 'sent', via: 'relay' };
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(terminateUserRemoteSessions('u1')).resolves.toBe(2);
+
+    expect(consoleError).toHaveBeenCalledWith(
+      '[remoteSessionTeardown] Failed to send stop_desktop for session s1:',
+      err,
+    );
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
+    consoleError.mockRestore();
   });
 });
 

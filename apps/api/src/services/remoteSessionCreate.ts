@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, supportSessions, tunnelSessions, users } from '../db/schema';
 import { partnerTrustMode } from '../config/partnerTrustMode';
@@ -32,6 +33,33 @@ export class RemoteSessionDeniedError extends Error {
   ) {
     super(`Partner trust ${code}: remote control denied (${reason})`);
     this.name = 'RemoteSessionDeniedError';
+  }
+}
+
+/**
+ * The revocation-lease epoch baseline could not be established, so a desktop
+ * session must NOT be created.
+ *
+ * A desktop session without `permissionsEpochSnapshot` is unrenewable: the
+ * renew recheck treats a null baseline as a definitive negative, so the
+ * session would be revoked at the first renew (~25 s in) and present to the
+ * operator as a session that silently dies. Failing the create is the honest
+ * outcome, and it is transient (a DB blip), so it is a 503 — the same
+ * `lease_unavailable` shape the renew paths use.
+ *
+ * Extends `HTTPException` so the app-level `onError` handler in `index.ts`
+ * renders it as a 503 without every create call site needing its own branch
+ * (the existing `RemoteSessionDeniedError` -> 403 mapping is untouched).
+ */
+export class RemoteSessionLeaseBaselineError extends HTTPException {
+  readonly code = 'lease_unavailable' as const;
+
+  constructor(readonly userId: string) {
+    super(503, {
+      message:
+        'Remote desktop is temporarily unavailable: the session revocation baseline could not be read. Please retry.',
+    });
+    this.name = 'RemoteSessionLeaseBaselineError';
   }
 }
 
@@ -84,6 +112,12 @@ export async function createRemoteSession(
     // role force_mfa flip ends the live session. Redis caches only the lease
     // TTL and can be flushed; this row cannot.
     const permissionsEpochSnapshot = await readPermissionsEpoch(remote.userId);
+    if (permissionsEpochSnapshot === null && remote.type === 'desktop') {
+      // Fail closed rather than mint an unrenewable desktop session. Terminal
+      // and file-transfer sessions carry no revocation lease, so they keep
+      // today's behaviour.
+      throw new RemoteSessionLeaseBaselineError(remote.userId);
+    }
     const [created] = await db
       .insert(remoteSessions)
       .values({
@@ -121,9 +155,10 @@ export async function createRemoteSession(
  * Read under a fresh system context: session creation runs inside the caller's
  * request scope, and a partner-scoped caller's RLS view of `users` does not
  * necessarily include the row (the #1375 0-row trap). Returns null when the
- * read fails or the user is gone — the session is still created, and the renew
- * recheck treats a null baseline as a definitive negative (fail closed) rather
- * than silently trusting an unprovable authority.
+ * read fails or the user is gone. For a desktop session that is fatal — the
+ * caller raises {@link RemoteSessionLeaseBaselineError} (503) instead of
+ * creating a session the first renew would immediately revoke. Non-desktop
+ * session types carry no revocation lease and are created without a baseline.
  */
 async function readPermissionsEpoch(userId: string): Promise<number | null> {
   try {
