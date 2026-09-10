@@ -8,6 +8,15 @@ import type { PamRule } from './types';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // usePermissions() (PAM RBAC UI gating, PR review fix) reads grants off the
+  // store; grant the admin wildcard here so this file's existing tests (which
+  // predate the gating) keep exercising full functionality. Negative gating
+  // is covered in the sibling PamRulesTab.permissions.test.tsx-style suite.
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -272,6 +281,28 @@ describe('PamRulesTab', () => {
       render(<PamRulesTab />);
       await waitFor(() => screen.getByTestId('pam-rule-row-rule-reapproved'));
       expect(screen.queryByTestId('pam-rule-suspended-badge-rule-reapproved')).toBeNull();
+    });
+
+    // PR review fix: `suspendedVerdict` alone is the live signal — it is
+    // nulled out by the PATCH { reapprove: true } handler AND by an explicit
+    // verdict edit (decideApprovalRequest/pam.ts's `payload.verdict !==
+    // undefined` branch). `reapprovedAt` is a permanent historical stamp
+    // that is never cleared, so a rule that was re-approved once before and
+    // later got a fresh suspendedVerdict set (e.g. quarantined again) must
+    // still show the badge/action — gating on `!rule.reapprovedAt` as well
+    // would wrongly hide it forever after the first re-approval.
+    it('shows the badge/action based on suspendedVerdict alone, even when a stale reapprovedAt is still stamped from an earlier cycle', async () => {
+      const reQuarantinedRule: PamRule = {
+        ...suspendedRule,
+        id: 'rule-requarantined',
+        suspendedVerdict: 'auto_approve',
+        reapprovedAt: '2026-09-01T00:00:00.000Z',
+      };
+      installFetchRoutes({ rules: [reQuarantinedRule] });
+      render(<PamRulesTab />);
+      await waitFor(() => screen.getByTestId('pam-rule-row-rule-requarantined'));
+      expect(screen.getByTestId('pam-rule-suspended-badge-rule-requarantined')).toBeInTheDocument();
+      expect(screen.getByTestId('pam-rule-reapprove-rule-requarantined')).toBeInTheDocument();
     });
 
     it('clicking Re-approve PATCHes { reapprove: true } through runAction and refetches', async () => {
