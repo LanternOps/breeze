@@ -12,6 +12,18 @@ type RecoveryConfig struct {
 	SnapshotID    string            `json:"snapshotId"`
 	DeviceID      string            `json:"deviceId"`
 	TargetPaths   map[string]string `json:"targetPaths,omitempty"` // original -> target path overrides
+
+	// ExpectSystemState is derived from the recovery bootstrap payload (see
+	// session.go, RunRecoveryWithTokenContext) rather than set by a caller:
+	// it is true when bootstrap.Snapshot.SystemStateManifest is present and
+	// non-null, i.e. the snapshot's producer captured system state for this
+	// run. applySystemState (bmr.go) uses it to distinguish "this snapshot
+	// never had system state" (fine — the existing soft-skip path) from
+	// "state was advertised but couldn't be downloaded/applied" (fatal).
+	// Before this field existed, both cases looked identical to bmr.go, so a
+	// snapshot advertising system state that failed to download it still
+	// reported StateApplied=false with status "completed" (D15/O10).
+	ExpectSystemState bool `json:"expectSystemState,omitempty"`
 }
 
 type AuthenticatedProviderConfig struct {

@@ -405,9 +405,34 @@ describe('tenant export + erasure round-trip (live DB)', () => {
 
   it('export manifest reflects only the target org rows', async () => {
     const {
-      orgA, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
+      orgA, orgB, groupId, groupName, quoteId, siteId, siteName, prohibitedSentinels,
       customFieldValueSentinel,
     } = await seedTwoOrgs();
+
+    // Integer epochs are portable lifecycle metadata. Neither they nor a
+    // parent identifier replace the excluded credentials required to redeem.
+    const enrollmentId = crypto.randomUUID();
+    const bootstrapId = crypto.randomUUID();
+    for (const [orgId, keyId, tokenId, epoch] of [
+      [orgA, enrollmentId, bootstrapId, 7],
+      [orgB, crypto.randomUUID(), crypto.randomUUID(), 11],
+    ] as const) {
+      const key = `export-key-${keyId}`;
+      const keyHash = keyId.replaceAll('-', '').repeat(2);
+      const shortCode = `EX${crypto.randomUUID().slice(0, 8)}`;
+      const token = `export-token-${tokenId}`;
+      prohibitedSentinels.push(key, keyHash, shortCode, token);
+      await getTestDb().execute(sql`
+        INSERT INTO enrollment_keys
+          (id, org_id, name, key, key_secret_hash, short_code, credential_generation)
+        VALUES (${keyId}, ${orgId}, 'Export epoch fixture', ${key}, ${keyHash}, ${shortCode}, ${epoch})
+      `);
+      await getTestDb().execute(sql`
+        INSERT INTO installer_bootstrap_tokens
+          (id, org_id, token, parent_enrollment_key_id, parent_credential_generation, expires_at)
+        VALUES (${tokenId}, ${orgId}, ${token}, ${keyId}, ${epoch}, now() + interval '1 hour')
+      `);
+    }
 
     const { manifest, zipBuffer } = await buildOrgExportZip(orgA, PERFORMED_BY, PERFORMED_EMAIL);
 
@@ -441,6 +466,24 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(manifest.orgId).toBe(orgA);
 
     const archive = await JSZip.loadAsync(zipBuffer);
+    expect(byName.get('enrollment_keys.json')?.rowCount).toBe(1);
+    expect(byName.get('installer_bootstrap_tokens.json')?.rowCount).toBe(1);
+    const enrollmentRows = await archiveTable(archive, 'enrollment_keys');
+    expect(enrollmentRows).toEqual([
+      expect.objectContaining({ id: enrollmentId, org_id: orgA, credential_generation: 7 }),
+    ]);
+    const bootstrapRows = await archiveTable(archive, 'installer_bootstrap_tokens');
+    expect(bootstrapRows).toEqual([
+      expect.objectContaining({
+        id: bootstrapId, org_id: orgA,
+        parent_enrollment_key_id: enrollmentId, parent_credential_generation: 7,
+      }),
+    ]);
+    for (const secret of ['key', 'key_secret_hash', 'short_code']) {
+      expect(enrollmentRows[0]).not.toHaveProperty(secret);
+    }
+    expect(bootstrapRows[0]).not.toHaveProperty('token');
+
     // The value must be READABLE in the archive, not just counted: `field_key`
     // is denormalized onto the row precisely because `readOrgRows` is a bare
     // column projection with no joins, so a definition_id-only row would export

@@ -160,9 +160,9 @@ jobs:
   # Builds and scans every container image this repo publishes, using the SAME
   # Dockerfile the release lanes ship.
   #
-  # This list used to be hand-maintained beside the publish lists in release.yml
-  # and hosted-images.yml, and the two drifted: the job built the
-  # `docker/Dockerfile.api|web` compose variants while release/hosted shipped
+  # This list used to be hand-maintained beside the publish list in release.yml,
+  # and the two drifted: the job built the
+  # `docker/Dockerfile.api|web` compose variants while release.yml shipped
   # `apps/api|web/Dockerfile`, so the two most widely deployed images in the
   # product were gated by nothing and shipped a known HIGH CVE
   # (issues #4273 / #4260). `apps/api/src/config/dockerfileImageScanCoverage.test.ts`
@@ -175,7 +175,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- Published to GHCR by release.yml and hosted-images.yml ---
+          # --- Published to GHCR by release.yml (emergency manual builds go
+          # through `docker buildx` + a GHCR push from a maintainer machine
+          # instead of a workflow) ---
           - image: api
             dockerfile: apps/api/Dockerfile
           - image: web
