@@ -11,6 +11,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
@@ -181,6 +182,9 @@ channelsRoutes.post(
   zValidator('json', createChannelSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const data = c.req.valid('json');
 
     // Resolve the ownership axis (#2130): partner-wide creation requires the
@@ -262,6 +266,9 @@ channelsRoutes.put(
   zValidator('json', updateChannelSchema),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const channelId = c.req.param('id')!;
     const data = c.req.valid('json');
 
@@ -363,6 +370,9 @@ channelsRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const channelId = c.req.param('id')!;
 
     const channel = await getNotificationChannelWithOrgCheck(channelId, auth);
@@ -400,6 +410,9 @@ channelsRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const channelId = c.req.param('id')!;
 
     // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES

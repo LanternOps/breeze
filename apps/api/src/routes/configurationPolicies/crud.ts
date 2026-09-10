@@ -21,6 +21,7 @@ import {
   PolicyHasChildrenError,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { MFA_GATED_FEATURE_TYPES } from './featureLinks';
 import {
   createConfigPolicySchema,
@@ -64,6 +65,9 @@ crudRoutes.post(
   zValidator('json', createConfigPolicySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const data = c.req.valid('json');
 
     // MFA follows EFFECTIVENESS, not the verb (#5080). Creating a child of a
@@ -248,6 +252,9 @@ crudRoutes.patch(
   zValidator('json', updateConfigPolicySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
     const data = c.req.valid('json');
 
@@ -287,6 +294,9 @@ crudRoutes.delete(
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
     const { id } = c.req.valid('param');
 
     let deleted;

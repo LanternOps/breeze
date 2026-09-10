@@ -132,6 +132,15 @@ export const backupConfigs = pgTable(
     isDefault: boolean('is_default').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    /**
+     * Bumped on every PATCH (site-ceiling gate contract §3). Snapshotted onto
+     * the queued job / backup_jobs row at schedule time and compared at
+     * dispatch by backupWorker; mismatch fails the job closed
+     * (`backup_config_changed`) instead of dispatching against a
+     * since-edited destination, and the scheduler re-enqueues against the
+     * new generation.
+     */
+    approvalGeneration: integer('approval_generation').notNull().default(1),
   },
   (table) => ({
     orgIdIdx: index('backup_configs_org_id_idx').on(table.orgId),
