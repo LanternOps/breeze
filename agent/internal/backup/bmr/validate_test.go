@@ -167,10 +167,14 @@ func TestParseSystemdEnabledUnits(t *testing.T) {
 
 // TestEnabledSystemdUnitsFromStaging_MissingArtifactReturnsNil proves the
 // non-Linux / older-capture case: no services/systemd.txt in staging simply
-// yields nil, not an error.
+// yields (nil, nil), not an error.
 func TestEnabledSystemdUnitsFromStaging_MissingArtifactReturnsNil(t *testing.T) {
 	stagingDir := t.TempDir()
-	if got := enabledSystemdUnitsFromStaging(stagingDir); got != nil {
+	got, err := enabledSystemdUnitsFromStaging(stagingDir)
+	if err != nil {
+		t.Fatalf("expected no error for a missing (not-exist) artifact, got: %v", err)
+	}
+	if got != nil {
 		t.Fatalf("expected nil for a staging dir with no services artifact, got %v", got)
 	}
 }
@@ -188,8 +192,76 @@ func TestEnabledSystemdUnitsFromStaging_ReadsStagedArtifact(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	got := enabledSystemdUnitsFromStaging(stagingDir)
+	got, err := enabledSystemdUnitsFromStaging(stagingDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got) != 1 || got[0] != "cron.service" {
 		t.Fatalf("got %v, want [cron.service]", got)
+	}
+}
+
+// TestEnabledSystemdUnitsFromStaging_OtherReadError_Propagates proves the
+// P2 fix: a non-not-exist read failure (e.g. permission denied) must
+// propagate as an error, not be silently treated the same as "no services
+// artifact staged" — see enabledSystemdUnitsFromStaging's doc comment.
+func TestEnabledSystemdUnitsFromStaging_OtherReadError_Propagates(t *testing.T) {
+	orig := readServicesArtifact
+	t.Cleanup(func() { readServicesArtifact = orig })
+	injected := errors.New("simulated permission denied")
+	readServicesArtifact = func(string) ([]byte, error) { return nil, injected }
+
+	units, err := enabledSystemdUnitsFromStaging(t.TempDir())
+	if err == nil {
+		t.Fatal("expected a non-nil error for a non-not-exist read failure")
+	}
+	if !errors.Is(err, injected) {
+		t.Fatalf("expected the injected error to be wrapped/propagated, got: %v", err)
+	}
+	if units != nil {
+		t.Fatalf("expected nil units on error, got %v", units)
+	}
+}
+
+// TestApplyServiceValidation_EnumerationError_FailsValidation proves the
+// other half of the P2 fix: applyServiceValidation (the piece of Validate
+// that checks services) must turn a non-nil serviceUnitsErr into a failed,
+// not-passed result — never silently checking zero services and passing,
+// which is what would happen if the error were dropped upstream.
+func TestApplyServiceValidation_EnumerationError_FailsValidation(t *testing.T) {
+	result := &ValidationResult{Passed: true}
+	applyServiceValidation(result, nil, errors.New("permission denied reading services/systemd.txt"))
+
+	if result.Passed {
+		t.Fatal("expected Passed=false when service enumeration failed")
+	}
+	if result.ServicesRunning {
+		t.Fatal("expected ServicesRunning=false when service enumeration failed")
+	}
+	found := false
+	for _, f := range result.Failures {
+		if strings.Contains(f, "permission denied") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a failure message recording the enumeration error, got: %v", result.Failures)
+	}
+}
+
+// TestApplyServiceValidation_NoErrorFallsThroughToCheckServices proves
+// applyServiceValidation's normal (nil-error) path is unaffected: it still
+// dispatches to checkServices exactly as before.
+func TestApplyServiceValidation_NoErrorFallsThroughToCheckServices(t *testing.T) {
+	withGOOS(t, "linux")
+	withServiceProbeCommand(t, func(name string, args ...string) ([]byte, error) {
+		return []byte("active\n"), nil
+	})
+
+	result := &ValidationResult{Passed: true}
+	applyServiceValidation(result, []string{"cron"}, nil)
+
+	if !result.Passed || !result.ServicesRunning {
+		t.Fatalf("expected Passed=true, ServicesRunning=true, got Passed=%v ServicesRunning=%v Failures=%v", result.Passed, result.ServicesRunning, result.Failures)
 	}
 }

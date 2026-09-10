@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -253,11 +254,18 @@ func TestApplySystemState_SizeMismatch_FailsEvenWithoutChecksum(t *testing.T) {
 	}
 }
 
-// TestApplySystemState_ManifestWithZeroArtifacts_Applies proves the
-// vacuous-truth case: a manifest with no artifacts at all (nothing to
-// verify) still counts as applied once the restorer succeeds against an
-// empty staging dir.
-func TestApplySystemState_ManifestWithZeroArtifacts_Applies(t *testing.T) {
+// TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateFalse_SoftPath
+// proves the vacuous-truth case is preserved when the bootstrap never
+// advertised system state for this snapshot: a manifest with no artifacts
+// at all (e.g. one that only recorded a HardwareProfile) still counts as
+// applied once the restorer succeeds against an empty staging dir.
+//
+// This used to be named …_Applies with no ExpectSystemState set at all,
+// which review flagged as asserting the wrong thing once the fatal
+// zero-artifacts gate below was added — that gate only fires when
+// ExpectSystemState is true, and this test's scenario needed to say so
+// explicitly rather than merely default to it.
+func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateFalse_SoftPath(t *testing.T) {
 	baseDir := t.TempDir()
 	provider := providers.NewLocalProvider(baseDir)
 	snapshotID := "snap-zero-artifacts"
@@ -267,7 +275,7 @@ func TestApplySystemState_ManifestWithZeroArtifacts_Applies(t *testing.T) {
 	})
 
 	restorer := useFakeRestorer(t, &fakeStateRestorer{})
-	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: false}, provider)
 
 	if result.err != nil {
 		t.Fatalf("unexpected fatal error: %v", result.err)
@@ -277,6 +285,42 @@ func TestApplySystemState_ManifestWithZeroArtifacts_Applies(t *testing.T) {
 	}
 	if restorer.restoreCalls != 1 {
 		t.Fatalf("expected the restorer to run once, got %d", restorer.restoreCalls)
+	}
+}
+
+// TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateTrue_Fatal
+// proves the flip side (review P1): when the bootstrap DID advertise system
+// state for this snapshot, a manifest that decodes to zero artifacts is a
+// contradiction, not a legitimate empty capture — it must be a fatal error
+// naming the problem, never StateApplied=true, and the restorer must never
+// even run (nothing to apply, and the gate fires before staging is
+// created).
+func TestApplySystemState_ManifestWithZeroArtifacts_ExpectSystemStateTrue_Fatal(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-zero-artifacts-expected"
+
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		SchemaVersion: 1,
+	})
+
+	restorer := useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID, ExpectSystemState: true}, provider)
+
+	if result.err == nil {
+		t.Fatal("expected a fatal error when ExpectSystemState=true and the manifest has zero artifacts")
+	}
+	if !strings.Contains(result.err.Error(), "no artifacts") {
+		t.Fatalf("expected the error to mention 'no artifacts', got: %v", result.err)
+	}
+	if result.applied {
+		t.Fatal("expected applied=false")
+	}
+	if !result.manifestFound {
+		t.Fatal("expected manifestFound=true (the manifest itself was found and decoded)")
+	}
+	if restorer.restoreCalls != 0 {
+		t.Fatalf("expected the restorer to NEVER run when the manifest has zero artifacts and state was expected, got %d calls", restorer.restoreCalls)
 	}
 }
 
@@ -807,5 +851,255 @@ func TestApplySystemState_LchownFailure_WarnsButStillApplied(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected a warning about the failed ownership reapply, got: %v", result.warnings)
+	}
+}
+
+// --- Review round findings: staging path confinement, partial-download cleanup, size==0, chown/chmod order ---
+
+// partialWriteThenErrorProvider simulates a download that writes some bytes
+// to the destination before the underlying transfer fails (e.g. a
+// connection drop mid-stream) — a realistic shape a naive
+// io.Copy-then-check-err provider implementation can produce.
+type partialWriteThenErrorProvider struct {
+	*providers.LocalProvider
+	failSubstring string
+}
+
+func (p *partialWriteThenErrorProvider) Download(remotePath, localPath string) error {
+	if strings.Contains(remotePath, p.failSubstring) {
+		if err := os.WriteFile(localPath, []byte("PARTIAL-CONTENT-ONLY"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("simulated network failure mid-download")
+	}
+	return p.LocalProvider.Download(remotePath, localPath)
+}
+
+// TestApplySystemState_PathTraversal_RelativeParentEscape_Rejected proves
+// the P1 staging-confinement fix: an artifact Path containing a ".."
+// segment must be rejected before any filesystem write is attempted for
+// it, and must never write a file outside the staging directory.
+func TestApplySystemState_PathTraversal_RelativeParentEscape_Rejected(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-traversal-parent"
+
+	content := []byte("malicious content")
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "escape", Category: "config", Path: "../escape.txt", SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content)},
+		},
+	})
+	provider := &countingDownloadProvider{LocalProvider: base}
+
+	var stagingParent string
+	useFakeRestorer(t, &fakeStateRestorer{
+		onRestore: func(stagingDir string) { stagingParent = filepath.Dir(stagingDir) },
+	})
+
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false for a path-traversal artifact")
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "escape") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning naming the rejected artifact, got: %v", result.warnings)
+	}
+	// Exactly one Download call total: the manifest. Zero attempted for the
+	// rejected artifact.
+	if provider.downloadCalls != 1 {
+		t.Fatalf("expected no download attempt for the rejected artifact, got %d download calls", provider.downloadCalls)
+	}
+	if stagingParent == "" {
+		t.Fatal("onRestore never fired — test fixture broken")
+	}
+	if _, statErr := os.Stat(filepath.Join(stagingParent, "escape.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no file written outside the staging directory, stat err = %v", statErr)
+	}
+}
+
+// TestApplySystemState_PathTraversal_AbsolutePath_Rejected is the absolute-
+// path half of the same P1 fix.
+func TestApplySystemState_PathTraversal_AbsolutePath_Rejected(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-traversal-absolute"
+
+	outsideTarget := filepath.Join(t.TempDir(), "absolute-escape.txt")
+	content := []byte("malicious content")
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "escape-abs", Category: "config", Path: filepath.ToSlash(outsideTarget), SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content)},
+		},
+	})
+	provider := &countingDownloadProvider{LocalProvider: base}
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false for an absolute-path artifact")
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "escape-abs") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning naming the rejected artifact, got: %v", result.warnings)
+	}
+	if provider.downloadCalls != 1 {
+		t.Fatalf("expected no download attempt for the rejected artifact, got %d download calls", provider.downloadCalls)
+	}
+	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no file written at the absolute target path, stat err = %v", statErr)
+	}
+}
+
+// TestApplySystemState_ArtifactUnderStagedSymlink_Rejected proves the P1
+// symlink-ancestor fix: an artifact staged as a symlink pointing outside
+// the staging directory, followed by a LATER artifact whose Path resolves
+// underneath that symlink, must NOT let the later artifact's content land
+// at the symlink's real target — it must be rejected outright.
+func TestApplySystemState_ArtifactUnderStagedSymlink_Rejected(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-symlink-escape"
+	outsideDir := t.TempDir() // sibling temp dir, NOT nested in staging
+
+	content := []byte("should never land outside staging")
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "linkdir", Category: "config", Path: "linkdir", LinkTarget: outsideDir},
+			{Name: "evil", Category: "config", Path: "linkdir/evil.txt", SizeBytes: int64(len(content)), Checksum: sha256Hex(t, content)},
+		},
+	})
+	provider := &countingDownloadProvider{LocalProvider: base}
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false: the second artifact resolves beneath a staged symlink")
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "evil") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning naming the rejected artifact, got: %v", result.warnings)
+	}
+	entries, err := os.ReadDir(outsideDir)
+	if err != nil {
+		t.Fatalf("read outside dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected nothing written outside staging via the symlink, found: %v", entries)
+	}
+	// One download for the manifest; the symlink artifact never downloads
+	// (see the earlier symlink test), and "evil" must be rejected before
+	// any download is attempted for it either.
+	if provider.downloadCalls != 1 {
+		t.Fatalf("expected exactly 1 download call (the manifest only), got %d", provider.downloadCalls)
+	}
+}
+
+// TestApplySystemState_DownloadError_RemovesPartialFile proves the P1 fix:
+// a download that fails after writing partial content must never leave
+// that partial file behind for the restorer to pick up as if it were
+// complete.
+func TestApplySystemState_DownloadError_RemovesPartialFile(t *testing.T) {
+	baseDir := t.TempDir()
+	base := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-partial-download"
+
+	uploadSystemStateManifest(t, base, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "flaky", Category: "config", Path: "flaky.txt", SizeBytes: 100, Checksum: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+		},
+	})
+	provider := &partialWriteThenErrorProvider{LocalProvider: base, failSubstring: "flaky.txt"}
+
+	var existedAfterDownload bool
+	useFakeRestorer(t, &fakeStateRestorer{
+		onRestore: func(stagingDir string) {
+			_, statErr := os.Stat(filepath.Join(stagingDir, "flaky.txt"))
+			existedAfterDownload = statErr == nil
+		},
+	})
+
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false")
+	}
+	if existedAfterDownload {
+		t.Fatal("expected the partially-downloaded file to be removed after a download error, before the restorer runs")
+	}
+}
+
+// TestApplySystemState_ZeroSizeBytes_NonEmptyContent_Fails proves the P2
+// fix: SizeBytes must be compared unconditionally, INCLUDING when it's 0
+// (an artifact asserted to be empty) — previously the `> 0` guard let a
+// corrupted download of a nominally-empty, checksum-less artifact through
+// unverified.
+func TestApplySystemState_ZeroSizeBytes_NonEmptyContent_Fails(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "snap-zero-size-mismatch"
+
+	content := []byte("x")
+	uploadSystemStateArtifact(t, provider, snapshotID, "empty.txt", content)
+	uploadSystemStateManifest(t, provider, snapshotID, systemstate.SystemStateManifest{
+		Artifacts: []systemstate.Artifact{
+			{Name: "empty", Category: "config", Path: "empty.txt", SizeBytes: 0},
+		},
+	})
+
+	useFakeRestorer(t, &fakeStateRestorer{})
+	result := applySystemState(context.Background(), RecoveryConfig{SnapshotID: snapshotID}, provider)
+
+	if result.applied {
+		t.Fatal("expected applied=false when SizeBytes=0 but the downloaded content is non-empty")
+	}
+	found := false
+	for _, w := range result.warnings {
+		if strings.Contains(w, "empty") && strings.Contains(w, "verification") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a verification-failure warning, got: %v", result.warnings)
+	}
+}
+
+// TestApplyArtifactMetadata_LchownRunsBeforeChmod proves the P2 fix:
+// ownership must be reapplied BEFORE mode, because chown(2)/lchown(2)
+// clears setuid/setgid bits on Linux — doing this in the opposite order
+// would silently drop a setuid/setgid bit chmod just applied.
+func TestApplyArtifactMetadata_LchownRunsBeforeChmod(t *testing.T) {
+	var order []string
+	origChmod, origLchown := chmodFile, lchownFile
+	t.Cleanup(func() { chmodFile, lchownFile = origChmod, origLchown })
+	chmodFile = func(string, os.FileMode) error { order = append(order, "chmod"); return nil }
+	lchownFile = func(string, int, int) error { order = append(order, "lchown"); return nil }
+
+	warnings := applyArtifactMetadata("/tmp/does-not-need-to-exist-for-this-unit-test", systemstate.Artifact{
+		Name: "x", Mode: 0o640, UID: 1000, GID: 1000,
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(order) != 2 || order[0] != "lchown" || order[1] != "chmod" {
+		t.Fatalf("call order = %v, want [lchown chmod] (chown must run before chmod: chown clears setuid/setgid on Linux)", order)
 	}
 }

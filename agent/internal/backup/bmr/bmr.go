@@ -162,7 +162,7 @@ func RunRecoveryContext(ctx context.Context, cfg RecoveryConfig, provider provid
 	if checkCancelled() {
 		return result, ctx.Err()
 	}
-	validation, valErr := Validate(stateResult.serviceUnits)
+	validation, valErr := Validate(stateResult.serviceUnits, stateResult.serviceUnitsErr)
 	if valErr != nil {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("validation error: %s", valErr.Error()))
 	} else {
@@ -324,6 +324,115 @@ type systemStateResult struct {
 	// staging dir is removed so validate.go's post-restore service probe
 	// can check them. See enabledSystemdUnitsFromStaging (validate.go).
 	serviceUnits []string
+	// serviceUnitsErr is set when reading services/systemd.txt from
+	// staging failed for a reason OTHER than the artifact simply not being
+	// there (enabledSystemdUnitsFromStaging maps a not-exist error to
+	// (nil, nil) — that's the ordinary "no services artifact" case, not a
+	// failure). A non-nil value here must fail post-restore validation
+	// outright (Validate, validate.go) rather than silently treating an
+	// unreadable list the same as an empty one.
+	serviceUnitsErr error
+}
+
+// resolveStagingArtifactPath validates artifact.Path — an untrusted,
+// server-supplied manifest field, exactly like every other value in a
+// downloaded manifest — and resolves it to a location strictly inside
+// stagingDir, or returns an error naming why it was rejected. Called for
+// EVERY artifact (symlink or regular) before any filesystem call
+// (MkdirAll/Download/Symlink) ever touches the computed path. Three checks:
+//
+//  1. Reject an absolute path or one containing a ".." segment, BEFORE any
+//     filesystem access. path.Clean alone is not a defense on its own — it
+//     silently collapses "a/../../etc/passwd" rather than rejecting it — so
+//     the escape must be detected explicitly on the cleaned result, never
+//     "fixed" by re-rooting the string (which would hide the attack, not
+//     reject it).
+//  2. Reject if any ALREADY-STAGED ancestor directory component is itself a
+//     symlink (ensureNoStagedSymlinkAncestor, via os.Lstat — never os.Stat,
+//     which follows the very thing being checked for and would hide it). A
+//     manifest can legitimately stage a symlink artifact (Path "etc/link",
+//     LinkTarget "/some/real/path" — see systemstate.Artifact.LinkTarget's
+//     doc comment) and then include a LATER artifact with Path
+//     "etc/link/passwd": naively joining and MkdirAll/Download-ing through
+//     "etc/link" would follow the symlink via ordinary Stat-following
+//     filesystem calls and write that later artifact's content onto the
+//     REAL filesystem location the symlink points at — entirely outside
+//     stagingDir.
+//  3. As defense in depth beyond this artifact loop's own symlinks, resolve
+//     the deepest already-existing ancestor via filepath.EvalSymlinks and
+//     confirm it's still inside stagingDir's own resolved form.
+func resolveStagingArtifactPath(stagingDir, artifactPath string) (string, error) {
+	cleaned := path.Clean(artifactPath)
+	if path.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path %q is absolute or escapes the staging directory", artifactPath)
+	}
+
+	localPath := filepath.Join(stagingDir, filepath.FromSlash(cleaned))
+
+	if err := ensureNoStagedSymlinkAncestor(stagingDir, localPath); err != nil {
+		return "", err
+	}
+
+	resolvedStagingDir, err := filepath.EvalSymlinks(stagingDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve staging directory: %w", err)
+	}
+	resolvedAncestor, err := filepath.EvalSymlinks(deepestExistingAncestor(localPath))
+	if err != nil {
+		return "", fmt.Errorf("resolve staging path: %w", err)
+	}
+	if resolvedAncestor != resolvedStagingDir && !strings.HasPrefix(resolvedAncestor, resolvedStagingDir+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolved path %q escapes the staging directory", artifactPath)
+	}
+
+	return localPath, nil
+}
+
+// ensureNoStagedSymlinkAncestor walks every already-existing ancestor
+// directory between stagingDir and target — EXCLUSIVE of target's own final
+// path segment, which legitimately may not exist yet (this artifact hasn't
+// been written) — and rejects the path if any of them was staged as a
+// symlink rather than a real directory. Stops (returns nil) at the first
+// ancestor segment that doesn't exist yet: nothing has been staged that
+// deep, so there is nothing further to walk through.
+func ensureNoStagedSymlinkAncestor(stagingDir, target string) error {
+	rel, err := filepath.Rel(stagingDir, target)
+	if err != nil {
+		return fmt.Errorf("resolve relative staging path: %w", err)
+	}
+	segments := strings.Split(filepath.ToSlash(rel), "/")
+	current := stagingDir
+	for _, seg := range segments[:len(segments)-1] {
+		current = filepath.Join(current, seg)
+		info, lstatErr := os.Lstat(current)
+		if lstatErr != nil {
+			if os.IsNotExist(lstatErr) {
+				return nil
+			}
+			return fmt.Errorf("stat staged path %q: %w", current, lstatErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %q was staged as a symlink by an earlier artifact — refusing to write beneath it", current)
+		}
+	}
+	return nil
+}
+
+// deepestExistingAncestor walks up from p until it finds a path segment
+// that actually exists on disk (stagingDir itself always does, so this
+// always terminates), for filepath.EvalSymlinks — which errors on a path
+// that doesn't exist yet.
+func deepestExistingAncestor(p string) string {
+	for {
+		if _, err := os.Lstat(p); err == nil {
+			return p
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return p
+		}
+		p = parent
+	}
 }
 
 func applySystemState(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) systemStateResult {
@@ -379,6 +488,20 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		warnings = append(warnings, fmt.Sprintf("system state capture incomplete for non-required steps: %s", strings.Join(nonRequired, ", ")))
 	}
 
+	// A snapshot whose bootstrap advertised system state (ExpectSystemState)
+	// but whose manifest decodes to zero artifacts is a contradiction, not a
+	// legitimate empty capture — fail loud rather than silently reporting
+	// StateApplied=true with nothing actually restored. When
+	// ExpectSystemState is false (or unset), the vacuous-truth soft path
+	// below is preserved: a manifest can legitimately have zero artifacts
+	// (e.g. a capture that only recorded HardwareProfile).
+	if cfg.ExpectSystemState && len(stateManifest.Artifacts) == 0 {
+		return systemStateResult{
+			manifestFound: true,
+			err:           fmt.Errorf("bmr: system-state manifest has no artifacts"),
+		}
+	}
+
 	// Download artifacts to staging directory.
 	stagingDir, stagingErr := os.MkdirTemp("", "bmr-state-staging-*")
 	if stagingErr != nil {
@@ -389,9 +512,22 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	verificationFailed := false
 	for _, artifact := range stateManifest.Artifacts {
 		if ctx != nil && ctx.Err() != nil {
-			return systemStateResult{manifestFound: true, warnings: warnings, serviceUnits: enabledSystemdUnitsFromStaging(stagingDir)}
+			units, unitsErr := enabledSystemdUnitsFromStaging(stagingDir)
+			return systemStateResult{manifestFound: true, warnings: warnings, serviceUnits: units, serviceUnitsErr: unitsErr}
 		}
-		localPath := filepath.Join(stagingDir, artifact.Path)
+
+		// artifact.Path (and, for a symlink artifact, LinkTarget) is
+		// server-supplied manifest data — untrusted. resolveStagingArtifactPath
+		// rejects path traversal / absolute paths and any path that would
+		// resolve underneath a symlink an earlier artifact in this same
+		// manifest staged, BEFORE any MkdirAll/Download/Symlink call ever
+		// touches the filesystem with it.
+		localPath, pathErr := resolveStagingArtifactPath(stagingDir, artifact.Path)
+		if pathErr != nil {
+			warnings = append(warnings, fmt.Sprintf("artifact %s rejected: %s", artifact.Name, pathErr.Error()))
+			verificationFailed = true
+			continue
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(localPath), 0o750); mkErr != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to create dir for %s: %s", artifact.Name, mkErr.Error()))
 			verificationFailed = true
@@ -406,7 +542,15 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 			// construction), and no metadata (Mode/UID/GID/ModTime) to
 			// reapply — a symlink has no independent content or POSIX
 			// metadata of its own worth restoring separately from the link
-			// itself.
+			// itself. LinkTarget's own value is NOT path-validated the way
+			// artifact.Path is: it is legitimately an absolute path to a
+			// real filesystem location outside staging (e.g.
+			// /run/systemd/resolve/stub-resolv.conf) — that's the whole
+			// point of restoring it as a symlink later. The danger this
+			// function guards against is a LATER artifact resolving
+			// underneath THIS symlink once staged (see
+			// resolveStagingArtifactPath's doc comment), not this target
+			// value itself.
 			if rmErr := os.Remove(localPath); rmErr != nil && !os.IsNotExist(rmErr) {
 				warnings = append(warnings, fmt.Sprintf("failed to clear existing path before creating symlink %s: %s", artifact.Name, rmErr.Error()))
 				verificationFailed = true
@@ -423,6 +567,10 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 		remoteKey := path.Join(snapshotRootDir, cfg.SnapshotID, systemStatePath, artifact.Path)
 		if dlErr := provider.Download(remoteKey, localPath); dlErr != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to download %s: %s", artifact.Name, dlErr.Error()))
+			// The provider may have written partial content before
+			// failing — never let that reach the restorer as if it were a
+			// complete, verified file.
+			_ = os.Remove(localPath)
 			verificationFailed = true
 			continue
 		}
@@ -444,16 +592,17 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	// removed (the defer above fires when this function returns) — Validate
 	// runs later, in RunRecoveryContext step 4, well after this staging dir
 	// is gone.
-	serviceUnits := enabledSystemdUnitsFromStaging(stagingDir)
+	serviceUnits, serviceUnitsErr := enabledSystemdUnitsFromStaging(stagingDir)
 
 	// Apply system state via platform-specific restorer.
 	restorer := newRestorerFunc()
 	if restoreErr := restorer.RestoreSystemState(stagingDir); restoreErr != nil {
 		return systemStateResult{
-			manifestFound: true,
-			warnings:      warnings,
-			err:           fmt.Errorf("bmr: restore system state: %w", restoreErr),
-			serviceUnits:  serviceUnits,
+			manifestFound:   true,
+			warnings:        warnings,
+			err:             fmt.Errorf("bmr: restore system state: %w", restoreErr),
+			serviceUnits:    serviceUnits,
+			serviceUnitsErr: serviceUnitsErr,
 		}
 	}
 
@@ -468,25 +617,31 @@ func applySystemState(ctx context.Context, cfg RecoveryConfig, provider provider
 	}
 
 	return systemStateResult{
-		applied:       !verificationFailed,
-		drivers:       drivers,
-		warnings:      warnings,
-		manifestFound: true,
-		serviceUnits:  serviceUnits,
+		applied:         !verificationFailed,
+		drivers:         drivers,
+		warnings:        warnings,
+		manifestFound:   true,
+		serviceUnits:    serviceUnits,
+		serviceUnitsErr: serviceUnitsErr,
 	}
 }
 
 // verifyArtifactIntegrity checks a downloaded system-state artifact against
-// the manifest's recorded size and (when present) sha256 checksum. A
-// missing Checksum (older manifest schema, or a collection-time hashing
-// failure) is NOT an error here — the caller logs an "unverified" warning
-// for that case instead; only an actual mismatch fails the artifact.
+// the manifest's recorded size and (when present) sha256 checksum. Size is
+// always compared, INCLUDING when SizeBytes==0 (a manifest asserting the
+// artifact is empty) — an unconditional `> 0` guard here would let a
+// corrupted/truncated-the-other-way download of a nominally-empty artifact
+// through unverified, since an empty artifact by definition also has no
+// Checksum to catch it via the sha256 comparison below. A missing Checksum
+// (older manifest schema, or a collection-time hashing failure) is NOT an
+// error here — the caller logs an "unverified" warning for that case
+// instead; only an actual size or checksum mismatch fails the artifact.
 func verifyArtifactIntegrity(localPath string, artifact systemstate.Artifact) error {
 	info, statErr := os.Stat(localPath)
 	if statErr != nil {
 		return fmt.Errorf("stat downloaded artifact: %w", statErr)
 	}
-	if artifact.SizeBytes > 0 && info.Size() != artifact.SizeBytes {
+	if info.Size() != artifact.SizeBytes {
 		return fmt.Errorf("size mismatch: downloaded %d bytes, manifest says %d", info.Size(), artifact.SizeBytes)
 	}
 	if artifact.Checksum == "" {
@@ -517,14 +672,19 @@ func verifyArtifactIntegrity(localPath string, artifact systemstate.Artifact) er
 // reaches this function.
 func applyArtifactMetadata(localPath string, artifact systemstate.Artifact) []string {
 	var warnings []string
-	if artifact.Mode != 0 {
-		if err := chmodFile(localPath, fileModeFromArtifactMode(artifact.Mode)); err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not reapply mode %04o to %s: %s", artifact.Mode, artifact.Name, err.Error()))
-		}
-	}
+	// Ownership MUST be reapplied BEFORE mode: on Linux, chown(2)/lchown(2)
+	// clears a file's setuid/setgid bits as a kernel-enforced anti-privilege-
+	// escalation measure whenever the owner or group actually changes.
+	// Reversing this order would silently drop a setuid/setgid bit this
+	// same call just (re)applied via chmod moments earlier.
 	if artifact.UID != 0 || artifact.GID != 0 {
 		if err := lchownFile(localPath, artifact.UID, artifact.GID); err != nil {
 			warnings = append(warnings, fmt.Sprintf("could not reapply ownership %d:%d to %s: %s", artifact.UID, artifact.GID, artifact.Name, err.Error()))
+		}
+	}
+	if artifact.Mode != 0 {
+		if err := chmodFile(localPath, fileModeFromArtifactMode(artifact.Mode)); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mode %04o to %s: %s", artifact.Mode, artifact.Name, err.Error()))
 		}
 	}
 	if !artifact.ModTime.IsZero() {

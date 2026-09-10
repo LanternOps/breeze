@@ -47,8 +47,11 @@ var windowsCriticalServices = []string{
 // serviceUnits is the list of systemd unit names the Linux restorer staged
 // for this run (see applySystemState's enabledSystemdUnitsFromStaging,
 // bmr.go) — ignored on Windows (a fixed critical set is checked instead)
-// and on macOS (no-op probe, see checkServices' default case).
-func Validate(serviceUnits []string) (*ValidationResult, error) {
+// and on macOS (no-op probe, see checkServices' default case). serviceUnitsErr
+// is applySystemState's error (if any) from reading that staged list — see
+// applyServiceValidation's doc comment for why this must fail validation
+// outright rather than being treated the same as "no services staged".
+func Validate(serviceUnits []string, serviceUnitsErr error) (*ValidationResult, error) {
 	result := &ValidationResult{Passed: true}
 
 	// Check network connectivity.
@@ -66,16 +69,7 @@ func Validate(serviceUnits []string) (*ValidationResult, error) {
 	}
 
 	// Check key services.
-	servicesRunning, inactive := checkServices(serviceUnits)
-	result.ServicesRunning = servicesRunning
-	if !servicesRunning {
-		result.Passed = false
-		if len(inactive) > 0 {
-			result.Failures = append(result.Failures, fmt.Sprintf("services not running: %s", strings.Join(inactive, ", ")))
-		} else {
-			result.Failures = append(result.Failures, "one or more critical services are not running")
-		}
-	}
+	applyServiceValidation(result, serviceUnits, serviceUnitsErr)
 
 	slog.Info("bmr: validation complete",
 		"passed", result.Passed,
@@ -165,6 +159,40 @@ func checkServices(serviceUnits []string) (bool, []string) {
 	}
 }
 
+// applyServiceValidation runs the service-health portion of Validate and
+// records the outcome into result. Split out from Validate itself so it can
+// be unit-tested directly, without also exercising Validate's real network
+// dial (checkNetwork) and OS file checks (checkCriticalFiles).
+//
+// serviceUnitsErr, if non-nil, means applySystemState (bmr.go) could not
+// even determine which services this run was supposed to restore — e.g. a
+// permission error reading the staged services/systemd.txt artifact, as
+// opposed to that artifact simply not existing (enabledSystemdUnitsFromStaging
+// maps a not-exist error to (nil, nil), the ordinary "nothing staged"
+// case). That is NOT the same as "no services to check" and must not
+// silently pass validation the way an empty serviceUnits list does —
+// otherwise a corrupted/unreadable service list would validate as if
+// nothing needed restoring at all.
+func applyServiceValidation(result *ValidationResult, serviceUnits []string, serviceUnitsErr error) {
+	if serviceUnitsErr != nil {
+		result.ServicesRunning = false
+		result.Passed = false
+		result.Failures = append(result.Failures, fmt.Sprintf("could not determine restored services: %s", serviceUnitsErr.Error()))
+		return
+	}
+
+	servicesRunning, inactive := checkServices(serviceUnits)
+	result.ServicesRunning = servicesRunning
+	if !servicesRunning {
+		result.Passed = false
+		if len(inactive) > 0 {
+			result.Failures = append(result.Failures, fmt.Sprintf("services not running: %s", strings.Join(inactive, ", ")))
+		} else {
+			result.Failures = append(result.Failures, "one or more critical services are not running")
+		}
+	}
+}
+
 func checkServicesLinux(units []string) (bool, []string) {
 	var inactive []string
 	for _, unit := range units {
@@ -190,20 +218,37 @@ func checkServicesWindows() (bool, []string) {
 	return len(inactive) == 0, inactive
 }
 
+// readServicesArtifact is a seam over os.ReadFile so tests can inject a
+// deterministic non-not-exist read failure (e.g. simulating EACCES)
+// without depending on filesystem permission behavior that a root-running
+// test process would bypass.
+var readServicesArtifact = os.ReadFile
+
 // enabledSystemdUnitsFromStaging reads the staged services/systemd.txt
 // artifact (written by systemstate.LinuxCollector.collectServices as the
 // raw output of `systemctl list-unit-files --type=service`,
 // agent/internal/backup/systemstate/state_linux.go) and returns the unit
 // names whose STATE column reads "enabled" — the same units restore_linux.go
 // (a sibling wave's file, not touched here) enables during
-// RestoreSystemState. Returns nil if the artifact wasn't staged (non-Linux
-// platform, or a capture that skipped the services step).
-func enabledSystemdUnitsFromStaging(stagingDir string) []string {
-	data, err := os.ReadFile(filepath.Join(stagingDir, "services", "systemd.txt"))
+// RestoreSystemState.
+//
+// Returns (nil, nil) if the artifact simply wasn't staged (os.IsNotExist —
+// non-Linux platform, or a capture that skipped the services step): that is
+// the ordinary "nothing to check" case. Any OTHER read error (permission
+// denied, I/O error, ...) is returned as-is rather than being swallowed the
+// same way — the caller (applySystemState, bmr.go) threads it through to
+// Validate's applyServiceValidation, which must fail validation outright
+// rather than silently treating "couldn't tell what to check" the same as
+// "nothing needs checking".
+func enabledSystemdUnitsFromStaging(stagingDir string) ([]string, error) {
+	data, err := readServicesArtifact(filepath.Join(stagingDir, "services", "systemd.txt"))
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read staged services list: %w", err)
 	}
-	return parseSystemdEnabledUnits(data)
+	return parseSystemdEnabledUnits(data), nil
 }
 
 // parseSystemdEnabledUnits extracts unit names from the output of
