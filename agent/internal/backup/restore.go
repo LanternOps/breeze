@@ -264,9 +264,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		// chown failure must not fail an otherwise-good restore, but IS
 		// surfaced in result.Warnings so the caller knows fidelity was
 		// partial.
-		for _, w := range applyEntryMetadata(targetPath, file, applyOwnership) {
-			result.Warnings = append(result.Warnings, w)
-		}
+		result.Warnings = append(result.Warnings, applyEntryMetadata(targetPath, file, applyOwnership)...)
 		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
 			warnOwnership()
 		}
