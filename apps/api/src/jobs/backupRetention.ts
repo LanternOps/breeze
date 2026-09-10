@@ -7,6 +7,7 @@
  */
 
 import { resolve as resolveLocalPath } from 'node:path';
+import { realpath as fsRealpath } from 'node:fs/promises';
 import { db, withSystemDbAccessContext, assertOutsideHeldDbContext } from '../db';
 import {
   backupSnapshots,
@@ -862,35 +863,70 @@ function groupBackupConfigsByStorageIdentity(
 }
 
 /**
+ * Coarse signature for alias detection — deliberately CRUDER than
+ * normalizeStorageIdentity, to catch a physical-location alias it doesn't
+ * yet know to collapse. Parses the ALREADY-NORMALIZED identity key string
+ * (not raw providerConfig), so the SAME function works both for a live
+ * identity object (built from a current backupConfigs row) and for a bare,
+ * STALE identity string pulled from `backup_snapshots.storage_identity` that
+ * no longer has any config behind it at all (review round 1 finding: an
+ * edited-away config's old identity is exactly the case
+ * detectSuspiciousStorageIdentityCollisions could never see, since it only
+ * ever iterated CURRENT configs).
+ *
+ * s3: bucket lowercased, endpoint reduced to host-only (port dropped) — a
+ * cruder collapse than normalizeStorageIdentity's own (virtual-hosted vs
+ * path-style, an IP vs its hostname, or a non-default port some
+ * self-hosted/MinIO deployments ignore).
+ * local: resolved via the REAL filesystem (`fs.realpath`, follows symlinks
+ * and bind mounts) — normalizeStorageIdentity's own `path.resolve` is purely
+ * LEXICAL and does not collapse a symlink/bind-mount alias, which is exactly
+ * review round 1's second finding (local was previously exempted from this
+ * check entirely). A path that doesn't exist yet (fresh config, no backups
+ * written) or can't be stat'd falls back to its lexically-resolved form —
+ * fail toward "can't prove a collision" here, never toward crashing the run.
+ */
+async function coarseStorageSignatureFromKey(key: string): Promise<string> {
+  if (key.startsWith('local::')) {
+    const rawPath = key.slice('local::'.length);
+    if (!rawPath) return 'local::';
+    try {
+      return `local::${await fsRealpath(rawPath)}`;
+    } catch {
+      return `local::${rawPath}`;
+    }
+  }
+  // Normalized non-local keys are always `${provider}::${endpoint}::${bucket}`
+  // (see normalizeStorageIdentity) — endpoint never itself contains `::`, so
+  // splitting on the first two occurrences and rejoining the remainder keeps
+  // this correct even in the (S3-illegal, but not worth crashing over) event
+  // a bucket name were to contain the separator.
+  const [provider = '', endpoint = '', ...bucketParts] = key.split('::');
+  const bucket = bucketParts.join('::').toLowerCase();
+  const hostOnly = endpoint.split(':')[0];
+  return `${provider}::${hostOnly}::${bucket}`;
+}
+
+/**
  * Belt-and-braces: even after normalizeStorageIdentity, an unanticipated
  * cosmetic variant could still produce two DIFFERENT identity keys for the
- * SAME physical bucket. Cross-check with a CRUDER comparison and fail-closed
- * (exclude ALL of them) if it collapses two identities normalizeStorageIdentity
- * kept apart.
+ * SAME physical bucket/directory — among CURRENT configs. Cross-check every
+ * identity (S3 AND local, review round 1: local was previously skipped
+ * entirely) with the cruder coarseStorageSignatureFromKey comparison and
+ * fail-closed (exclude ALL of them) if it collapses two identities
+ * normalizeStorageIdentity kept apart. This catches two live configs
+ * aliasing each other; it does NOT catch a config that was EDITED AWAY from
+ * an identity old rows still carry — see the separate stale-alias check in
+ * sweepUnreferencedBackupObjects, which uses this same coarse signature
+ * against `logUnreachableStorageIdentities`'s output.
  */
-function detectSuspiciousStorageIdentityCollisions(
+async function detectSuspiciousStorageIdentityCollisions(
   identities: Map<string, BackupGcStorageIdentity>,
-): Set<string> {
+): Promise<Set<string>> {
   const coarseGroups = new Map<string, Set<string>>();
 
   for (const identity of identities.values()) {
-    if (identity.provider === 'local') continue;
-
-    const providerConfig = asRecord(identity.providerConfig);
-    const bucket = (getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName') || '')
-      .trim()
-      .toLowerCase();
-    const rawEndpoint = getStringValue(providerConfig, 'endpoint');
-    let hostOnly = '';
-    if (rawEndpoint?.trim()) {
-      try {
-        hostOnly = new URL(rawEndpoint.includes('://') ? rawEndpoint : `https://${rawEndpoint}`).hostname.toLowerCase();
-      } catch {
-        hostOnly = rawEndpoint.trim().toLowerCase();
-      }
-    }
-    const coarseKey = `${identity.provider}::${hostOnly}::${bucket}`;
-
+    const coarseKey = await coarseStorageSignatureFromKey(identity.key);
     let identityKeys = coarseGroups.get(coarseKey);
     if (!identityKeys) {
       identityKeys = new Set();
@@ -904,9 +940,9 @@ function detectSuspiciousStorageIdentityCollisions(
     if (identityKeys.size <= 1) continue;
     console.error(
       `[BackupGC] ${identityKeys.size} DIFFERENT normalized storage identities (${[...identityKeys].join(', ')}) ` +
-      `all resolve to the same bucket+host (${coarseKey}) under a cruder comparison — normalizeStorageIdentity ` +
+      `all resolve to the same physical location (${coarseKey}) under a cruder comparison — normalizeStorageIdentity ` +
       `likely missed a cosmetic variant. Excluding all of them from this run (fail-closed) to avoid two ` +
-      `overlapping sweeps on the same physical bucket.`,
+      `overlapping sweeps on the same physical bucket/directory.`,
     );
     for (const key of identityKeys) suspicious.add(key);
   }
@@ -986,12 +1022,24 @@ export function orphanManifestSnapshotIds(
  * survives a later providerConfig edit. An identity with rows but no current
  * config producing that exact key is unreachable — it is never listed (no
  * config = no provider/providerConfig to list with), so it leaks silently
- * unless logged here. This is visibility only; reclaiming an unreachable
- * identity needs manual tooling (deferred).
+ * unless logged here.
+ *
+ * Review round 1 finding: this used to be visibility-only (a warning, no
+ * effect on the run). That's unsafe — an edited config (e.g. a virtual-hosted
+ * vs path-style S3 endpoint, or an IP swapped for its hostname) can produce a
+ * DIFFERENT normalized identity string while pointing at the SAME physical
+ * bucket. Rows still carrying the OLD string become unreachable by this
+ * function's own definition, but their objects are NOT actually gone — they
+ * sit in the bucket the NEW identity is about to sweep, invisible to the
+ * NEW identity's root query, and (once old enough) indistinguishable from
+ * genuine orphan garbage. Returning the unreachable KEYS (not just a count)
+ * lets the caller cross-check each identity it's about to sweep against
+ * them via coarseStorageSignatureFromKey and defer instead of reclaim on a
+ * coarse match — see sweepUnreferencedBackupObjects.
  */
 async function logUnreachableStorageIdentities(
   identities: Map<string, BackupGcStorageIdentity>,
-): Promise<number> {
+): Promise<{ count: number; keys: string[] }> {
   const usage = await db
     .select({
       storageIdentity: backupSnapshots.storageIdentity,
@@ -1000,16 +1048,16 @@ async function logUnreachableStorageIdentities(
     .from(backupSnapshots)
     .groupBy(backupSnapshots.storageIdentity);
 
-  let unreachable = 0;
+  const keys: string[] = [];
   for (const row of usage) {
     // A NULL storage_identity is not "unreachable" — it's an unresolved row
     // the self-heal path owns.
     if (row.storageIdentity === null) continue;
     if (identities.has(row.storageIdentity)) continue;
-    unreachable++;
+    keys.push(row.storageIdentity);
     console.warn(`[BackupGC] unreachable identity ${row.storageIdentity}: ${row.count} rows`);
   }
-  return unreachable;
+  return { count: keys.length, keys };
 }
 
 /**
@@ -1223,6 +1271,10 @@ async function sweepStorageIdentity(
   orphansSwept: number; // best-effort metric — see the accepted-approximation note above
   selfHealRowIds: string[]; // backup_snapshots.id values to self-heal
   unresolvedNullIdentityCount: number;
+  // Review round 1: an operator seeing "N unresolved rows" in the log has
+  // nothing to query. These are the actual snapshot ids so the deferral is
+  // actionable (`SELECT * FROM backup_snapshots WHERE snapshot_id IN (...)`).
+  unresolvedSnapshotIds: string[];
   deletesUsed: number;
 }> {
   assertOutsideHeldDbContext('backupGC.sweepStorageIdentity');
@@ -1248,8 +1300,10 @@ async function sweepStorageIdentity(
   // orphan-window aging that a plain, row-less listed manifest would face) —
   // that unconditional-once-resolved guarantee is the "§3.6 v3 P1" fix.
   const resolvedNullRows = nullIdentityRows.filter((r) => groups.get(r.snapshotId)?.manifestItem);
+  const unresolvedNullRows = nullIdentityRows.filter((r) => !groups.get(r.snapshotId)?.manifestItem);
   const selfHealRowIds = resolvedNullRows.map((r) => r.id);
-  const unresolvedNullIdentityCount = nullIdentityRows.length - resolvedNullRows.length;
+  const unresolvedNullIdentityCount = unresolvedNullRows.length;
+  const unresolvedSnapshotIds = unresolvedNullRows.map((r) => r.snapshotId);
   const alwaysRootedIds = new Set([...retainedSnapshotIds, ...resolvedNullRows.map((r) => r.snapshotId)]);
 
   // §3.4: EITHER condition defers the WHOLE identity to exactly today's
@@ -1334,6 +1388,21 @@ async function sweepStorageIdentity(
     const liveSet = await markLiveBackupObjects(identity, rootsForMark);
     if (liveSet === null) throw new Error('mark phase failed — see prior log line for the specific snapshot/manifest');
 
+    // Review round 1 (suggestion, accepted as a known limitation rather than
+    // fixed): the per-run cap is spent in LISTING order across groups here
+    // (each group's own candidates are sorted oldest-first internally, via
+    // deleteCandidatesWithCap, but there is no global oldest-first ordering
+    // ACROSS groups within this identity, unlike the pre-D18 implementation
+    // which collected every deletable item for the whole identity before
+    // sorting once). A busy, recently-modified retired/orphan prefix
+    // appearing early in the listing can therefore exhaust the cap before an
+    // older, more overdue prefix later in iteration order is even reached.
+    // Not fixed this wave: the identity-wide collect-then-sort shape doesn't
+    // compose cleanly with the two-phase (non-manifest, then manifest)
+    // per-group rule without buffering every candidate across every group
+    // before deciding anything — a larger restructure than this finding
+    // warrants on its own. The garbage is never lost, only delayed to a
+    // later run (the sweep is resumable by construction either way).
     for (const [snapshotId, group] of groups) {
       if (remaining <= 0) break;
       if (rootsForMark.has(snapshotId)) { await sweepRootedLoose(group, liveSet); continue; }
@@ -1354,7 +1423,11 @@ async function sweepStorageIdentity(
     if (!groups.has(snapshotId)) retiredSweptIds.push(retirementId);
   }
 
-  return { deleted, retiredSweptIds, orphansSwept, selfHealRowIds, unresolvedNullIdentityCount, deletesUsed: deletesRemaining - remaining };
+  return {
+    deleted, retiredSweptIds, orphansSwept, selfHealRowIds,
+    unresolvedNullIdentityCount, unresolvedSnapshotIds,
+    deletesUsed: deletesRemaining - remaining,
+  };
 }
 
 /**
@@ -1493,14 +1566,19 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
   const orphanWindowMs = Math.max(resolveBackupOrphanManifestMaxAgeMs(), resolveBackupBaseLeaseMs() + graceMs);
   const manifestlessWindowMs = resolveBackupManifestlessPrefixMaxAgeMs();
 
-  const { unattributedCount, identities, unreachableIdentities } = await withSystemDbAccessContext(async () => {
+  const { unattributedCount, identities, unreachableIdentities, unreachableIdentityKeys } = await withSystemDbAccessContext(async () => {
     const unattributedRows = await db.select({ id: backupSnapshots.id }).from(backupSnapshots).where(isNull(backupSnapshots.configId));
     const destinations = await db
       .select({ id: backupConfigs.id, provider: backupConfigs.provider, providerConfig: backupConfigs.providerConfig })
       .from(backupConfigs);
     const identitiesInner = groupBackupConfigsByStorageIdentity(destinations);
     const unreachable = await logUnreachableStorageIdentities(identitiesInner);
-    return { unattributedCount: unattributedRows.length, identities: identitiesInner, unreachableIdentities: unreachable };
+    return {
+      unattributedCount: unattributedRows.length,
+      identities: identitiesInner,
+      unreachableIdentities: unreachable.count,
+      unreachableIdentityKeys: unreachable.keys,
+    };
   });
 
   await pruneSweptRetirements(nowMs);
@@ -1523,13 +1601,27 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     };
   }
 
-  const suspiciousIdentityKeys = detectSuspiciousStorageIdentityCollisions(identities);
+  const suspiciousIdentityKeys = await detectSuspiciousStorageIdentityCollisions(identities);
   if (suspiciousIdentityKeys.size > 0) {
     captureException(new Error(
       `[BackupGC] ${suspiciousIdentityKeys.size} storage identity/identities excluded this run: a cruder ` +
       `bucket+host comparison collapses identities normalizeStorageIdentity kept apart — likely an ` +
       `unhandled cosmetic config variant.`,
     ));
+  }
+
+  // Review round 1 (CRITICAL): a config edit can change the NORMALIZED
+  // identity string while still pointing at the same physical bucket/
+  // directory — old rows keep the old string, which logUnreachableStorageIdentities
+  // reports but (until this fix) never acted on. Cross-checking every
+  // identity we're about to sweep against the COARSE signature of every
+  // unreachable (stale) identity catches this: a coarse match means "this
+  // bucket/directory may still hold objects a stale identity string's rows
+  // still reference", so that identity is forced into the deferred
+  // (rooted-prefix-rule-only) path instead of reclaiming anything unrooted.
+  const unreachableCoarseSignatures = new Set<string>();
+  for (const staleKey of unreachableIdentityKeys) {
+    unreachableCoarseSignatures.add(await coarseStorageSignatureFromKey(staleKey));
   }
 
   let deleted = 0;
@@ -1559,22 +1651,40 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
       continue;
     }
 
+    // Review round 1 (CRITICAL): defer, don't reclaim, on an identity that
+    // coarsely aliases a STALE (unreachable) identity — see the comment on
+    // unreachableCoarseSignatures above.
+    const identityCoarseSignature = await coarseStorageSignatureFromKey(identity.key);
+    const aliasDeferred = unreachableCoarseSignatures.has(identityCoarseSignature);
+
     try {
       const state = await loadIdentityGcState(identity, nowMs);
+      const legacyOrAliasDeferred = state.legacyHelper.deferred || aliasDeferred;
       if (state.legacyHelper.deferred) {
         deferredIdentities++;
-        console.warn(`[BackupGC] reclamation deferred: legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version}`);
+        console.warn(`[BackupGC] identity ${identity.key}: reclamation deferred (legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version})`);
+      }
+      if (aliasDeferred) {
+        if (!state.legacyHelper.deferred) deferredIdentities++; // avoid double-counting one identity for both reasons
+        console.warn(
+          `[BackupGC] identity ${identity.key}: reclamation deferred — coarsely aliases a stale/unreachable ` +
+          `identity (${identityCoarseSignature}); a config edit may have changed the identity string while ` +
+          `still pointing at the same physical bucket/directory. Investigate before reclamation resumes.`,
+        );
       }
 
       const identityResult = await sweepStorageIdentity(
         identity, state.retainedSnapshotIds, state.nullIdentityRows, state.retiredSnapshotIds,
         nowMs, deletesRemaining, graceMs, orphanWindowMs, manifestlessWindowMs,
-        state.legacyHelper.deferred,
+        legacyOrAliasDeferred,
       );
 
       if (identityResult.unresolvedNullIdentityCount > 0) {
-        console.warn(`[BackupGC] identity deferred: ${identityResult.unresolvedNullIdentityCount} unresolved rows`);
-        if (!state.legacyHelper.deferred) deferredIdentities++; // avoid double-counting one identity for both reasons
+        console.warn(
+          `[BackupGC] identity ${identity.key}: deferred — ${identityResult.unresolvedNullIdentityCount} unresolved ` +
+          `row(s) (snapshot ids: ${identityResult.unresolvedSnapshotIds.join(', ')})`,
+        );
+        if (!legacyOrAliasDeferred) deferredIdentities++; // avoid double-counting one identity across all 3 deferral reasons
       }
 
       deleted += identityResult.deleted;

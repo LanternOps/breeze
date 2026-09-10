@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { backupSnapshots } from '../db/schema';
 
 // ── Chainable Drizzle mock ────────────────────────────────────────────────
@@ -30,6 +33,11 @@ function chainable(rows: unknown[]) {
 
 const selectQueue: unknown[][] = [];
 const insertedRows: unknown[] = [];
+// Captures every db.update(<table>).set(<payload>) call so a test can assert
+// WHICH row(s) a write targeted (review round 1, finding 5: proving the
+// cross-identity snapshotId self-heal collision guard needs to see the
+// actual .set() payload, which the generic `chainable` no-op can't record).
+const updateCalls: { table: unknown; payload: Record<string, unknown> }[] = [];
 
 const mockDb = {
   select: vi.fn(() => chainable(selectQueue.shift() ?? [])),
@@ -39,7 +47,12 @@ const mockDb = {
   // selectDistinct call site in backupRetention.ts.
   selectDistinct: vi.fn(() => chainable(selectQueue.shift() ?? [])),
   delete: vi.fn(() => chainable([])),
-  update: vi.fn(() => chainable([])),
+  update: vi.fn((table: unknown) => ({
+    set: (payload: Record<string, unknown>) => {
+      updateCalls.push({ table, payload });
+      return chainable([]);
+    },
+  })),
   insert: vi.fn((_table: unknown) => ({
     values: (v: unknown) => {
       insertedRows.push(v);
@@ -451,6 +464,7 @@ describe('sweepUnreferencedBackupObjects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectQueue.length = 0;
+    updateCalls.length = 0;
     redisAvailableForTest = true;
     redisSmembersMock.mockResolvedValue([]);
     delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
@@ -1186,7 +1200,7 @@ describe('sweepUnreferencedBackupObjects', () => {
         const result = await sweepUnreferencedBackupObjects();
         expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
         expect(result.retiredSwept).toBe(0);
-        expect(warn.mock.calls.some(([msg]) => String(msg).includes('identity deferred: 1 unresolved rows'))).toBe(true);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('deferred') && String(msg).includes('1 unresolved') && String(msg).includes('NEVERWRITTEN'))).toBe(true);
       } finally {
         warn.mockRestore();
       }
@@ -1230,7 +1244,7 @@ describe('sweepUnreferencedBackupObjects', () => {
         expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
         expect(result.deferredIdentities).toBe(1);
         expect(result.retiredSwept).toBe(0);
-        expect(warn.mock.calls.some(([msg]) => String(msg).includes('reclamation deferred: legacy helper device-legacy 0.109.0'))).toBe(true);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('reclamation deferred') && String(msg).includes('legacy helper device-legacy 0.109.0'))).toBe(true);
       } finally {
         warn.mockRestore();
       }
@@ -1424,6 +1438,100 @@ describe('sweepUnreferencedBackupObjects', () => {
     });
   });
 
+  // Review round 1, finding 4 (pr-test-analyzer): every existing test proving
+  // a retired group's manifest survives does so via a hard delete FAILURE.
+  // These prove the OTHER two ways a non-manifest key can remain
+  // undeletable this run — capped out, or skip-set-excluded — each of which
+  // must ALSO block the manifest (the v3 rule is "no DELETABLE non-manifest
+  // key remains", not "no FAILED non-manifest key remains").
+  describe('manifest-last rule also holds when a non-manifest key is capped or skip-set-excluded, not just failed (review round 1, finding 4)', () => {
+    it('does not delete the manifest when the per-run cap is exhausted before its non-manifest sibling is attempted', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-cap', snapshotId: 'CAPPED' }] });
+
+      process.env.BACKUP_GC_MAX_DELETES_PER_RUN = '1';
+      try {
+        const t = new Date(Date.now() - 1000);
+        listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+          { key: 'snapshots/CAPPED/manifest.json', lastModified: t },
+          { key: 'snapshots/CAPPED/files/a.dat', lastModified: t },
+          { key: 'snapshots/CAPPED/files/b.dat', lastModified: t },
+        ]);
+        // Cap is 1: only ONE non-manifest delete attempt happens this run —
+        // a.dat succeeds, b.dat is never even attempted (capped out).
+        deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/CAPPED/files/a.dat'], failedKeys: [] });
+
+        await sweepUnreferencedBackupObjects();
+
+        // Only the one non-manifest delete call happened — the cap was
+        // exhausted, so the manifest was never even considered for deletion.
+        expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalledWith(
+          expect.objectContaining({ keys: expect.arrayContaining(['snapshots/CAPPED/manifest.json']) }),
+        );
+      } finally {
+        delete process.env.BACKUP_GC_MAX_DELETES_PER_RUN;
+      }
+    });
+
+    it('does not delete the manifest when its only non-manifest sibling is skip-set-excluded, not failed', async () => {
+      redisSmembersMock.mockResolvedValueOnce(['snapshots/SKIPPED/files/locked-forever.dat']);
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'retirement-skip', snapshotId: 'SKIPPED' }] });
+
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/SKIPPED/manifest.json', lastModified: t },
+        { key: 'snapshots/SKIPPED/files/locked-forever.dat', lastModified: t }, // in the skip set — never attempted, not "failed"
+      ]);
+
+      await sweepUnreferencedBackupObjects();
+
+      // No delete call at all: the only non-manifest candidate is skip-set
+      // excluded before any attempt, and that alone must still block the
+      // manifest.
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // Review round 1, finding 5 (silent-failure-hunter / pr-test-analyzer):
+  // backup_snapshots.snapshot_id has no uniqueness constraint, so two
+  // DIFFERENT identities can legitimately have a NULL-identity row sharing
+  // the exact same snapshotId string. The self-heal write-back is scoped by
+  // PRIMARY ROW ID (never snapshotId alone) specifically to prevent one
+  // identity's resolution from mis-healing a different identity's
+  // same-named, still-unresolved row.
+  describe('cross-identity snapshotId collision guard on self-heal (review round 1, finding 5)', () => {
+    it('heals only the identity whose OWN listing resolves the row, even though a different identity has an unresolved row with the identical snapshotId', async () => {
+      const destinationB = { id: 'cfg-b', provider: 's3', providerConfig: { bucket: 'other-bucket', region: 'us-east-1' } };
+
+      pushRunLevel([destination, destinationB]);
+      pushIdentity({ nullRows: [{ id: 'row-A', snapshotId: 'DUPLICATE' }] }); // identity A (destination)
+      pushIdentity({ nullRows: [{ id: 'row-B', snapshotId: 'DUPLICATE' }] }); // identity B (destinationB) — same snapshotId, different row
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([])); // A's DUPLICATE manifest fetch (it resolves)
+      const t = new Date(Date.now() - 1000);
+      listBackupObjectsUnderPrefixMock
+        .mockResolvedValueOnce([{ key: 'snapshots/DUPLICATE/manifest.json', lastModified: t }]) // identity A's listing — resolves
+        .mockResolvedValueOnce([]); // identity B's listing — DUPLICATE never appears here, stays unresolved
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await sweepUnreferencedBackupObjects();
+      } finally {
+        warn.mockRestore();
+      }
+
+      // Exactly ONE self-heal write happened this run (identity A's), scoped
+      // to identity A's key — if the guard mismatched by bare snapshotId
+      // instead of row id, identity B's unresolved row could have been
+      // healed too (or healed with the wrong identity's key).
+      const selfHealCalls = updateCalls.filter((c) => 'storageIdentity' in c.payload);
+      expect(selfHealCalls).toHaveLength(1);
+      expect(selfHealCalls[0]!.payload.storageIdentity).toBe(identityKeyFor(destination));
+    });
+  });
+
   describe('unreachable storage identities (no config points at them any more)', () => {
     it('logs and counts a storage_identity with rows but no matching current config, without touching it', async () => {
       selectQueue.push([]); // unattributedRows
@@ -1444,6 +1552,149 @@ describe('sweepUnreferencedBackupObjects', () => {
       } finally {
         warn.mockRestore();
       }
+    });
+  });
+
+  // Review round 1 (CRITICAL): a config edit can change the NORMALIZED
+  // identity string while still pointing at the SAME physical bucket/
+  // directory. Rows recorded under the OLD string are unreachable (no
+  // current config produces that key) but their objects physically sit in
+  // the bucket the NEW identity is about to sweep — invisible to the NEW
+  // identity's root query, and (once old enough) indistinguishable from
+  // genuine orphan garbage. These prove the identity is deferred instead.
+  describe('review round 1: coarse alias detection defers a physical-location alias instead of reclaiming it', () => {
+    it('defers an S3 identity that coarsely aliases a stale/unreachable identity (a port-only difference normalizeStorageIdentity does not collapse)', async () => {
+      const aliasedDestination = {
+        id: 'cfg-alias',
+        provider: 's3',
+        providerConfig: { bucket: 'MyBucket', endpoint: 'nyc3.digitaloceanspaces.com' },
+      };
+      const newKey = normalizeStorageIdentity(aliasedDestination.provider, aliasedDestination.providerConfig);
+      // A stale identity string (no current config produces it) that differs
+      // from newKey only by an explicit port — same host+bucket physically.
+      const staleKey = 's3::nyc3.digitaloceanspaces.com:9000::MyBucket';
+
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([aliasedDestination]); // destinations
+      selectQueue.push([
+        { storageIdentity: staleKey, count: 3 },
+        { storageIdentity: newKey, count: 1 },
+      ]); // identityUsage
+      pushIdentity(); // retained/nullRows/retirements/capability all empty
+
+      // A lone, manifest-only "snapshot" well past ORPHAN_WINDOW — under the
+      // NORMAL (non-deferred) algorithm this would be reclaimed as abandoned
+      // orphan garbage (no row, no retirement, too old to be a young orphan).
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old },
+      ]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        // Deferred -> today's algorithm marks EVERY listed manifest live ->
+        // the lone manifest object is in the live set -> nothing deleted,
+        // where the non-deferred algorithm would have reclaimed it.
+        expect(fetchBackupObjectTextMock).toHaveBeenCalledWith(expect.objectContaining({ key: 'snapshots/OLDORPHAN/manifest.json' }));
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deferredIdentities).toBe(1);
+        expect(
+          warn.mock.calls.some(([msg]) =>
+            String(msg).includes(newKey) && String(msg).includes('aliases a stale/unreachable identity'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('defers a local identity whose config path is a symlink alias of a stale/unreachable identity\'s real directory', async () => {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real-'));
+      const linkPath = join(tmpdir(), `breeze-gc-link-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await symlink(realDir, linkPath, 'dir');
+
+      const destinationViaSymlink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
+      const newKey = normalizeStorageIdentity('local', destinationViaSymlink.providerConfig); // local::<linkPath> — path.resolve is lexical, does NOT follow the symlink
+      const staleKey = `local::${realDir}`; // a stale identity recorded directly against the REAL directory
+
+      selectQueue.push([]); // unattributedRows
+      selectQueue.push([destinationViaSymlink]); // destinations
+      selectQueue.push([
+        { storageIdentity: staleKey, count: 2 },
+        { storageIdentity: newKey, count: 1 },
+      ]); // identityUsage
+      pushIdentity();
+
+      fetchBackupObjectTextMock.mockResolvedValueOnce(manifestJson([]));
+      const old = new Date(Date.now() - 30 * DAY_MS);
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([
+        { key: 'snapshots/OLDORPHAN/manifest.json', lastModified: old },
+      ]);
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deferredIdentities).toBe(1);
+        expect(
+          warn.mock.calls.some(([msg]) =>
+            String(msg).includes(newKey) && String(msg).includes('aliases a stale/unreachable identity'),
+          ),
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does NOT defer an identity whose coarse signature does not match any unreachable identity', async () => {
+      // Sanity control: the previous two tests' mechanism must not defer
+      // EVERY identity — only ones that actually coarse-match something
+      // unreachable. destination/identityKeyFor here shares nothing with the
+      // 'local::/var/orphaned-bucket-nobody-points-at' unreachable key used
+      // elsewhere in this file.
+      selectQueue.push([]);
+      selectQueue.push([destination]);
+      selectQueue.push([
+        { storageIdentity: identityKeyFor(destination), count: 1 },
+        { storageIdentity: 'local::/var/totally-unrelated-stale-path', count: 4 },
+      ]);
+      pushIdentity();
+      listBackupObjectsUnderPrefixMock.mockResolvedValueOnce([]);
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.deferredIdentities).toBe(0);
+      expect(result.unreachableIdentities).toBe(1);
+    });
+  });
+
+  // Review round 1: detectSuspiciousStorageIdentityCollisions previously
+  // exempted 'local' entirely from its coarse-collision check, so two
+  // CURRENT local configs whose paths are lexically different but resolve
+  // (via a symlink) to the SAME physical directory were never caught —
+  // each would see only its own retained snapshots and could delete the
+  // other's live objects.
+  describe('review round 1: local provider is now covered by the current-vs-current coarse collision check', () => {
+    it('fail-closed-skips two CURRENT local configs whose paths are a symlink alias of the same physical directory', async () => {
+      const realDir = await mkdtemp(join(tmpdir(), 'breeze-gc-real2-'));
+      const linkPath = join(tmpdir(), `breeze-gc-link2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      await symlink(realDir, linkPath, 'dir');
+
+      const configReal = { id: 'cfg-real', provider: 'local', providerConfig: { path: realDir } };
+      const configLink = { id: 'cfg-link', provider: 'local', providerConfig: { path: linkPath } };
+
+      expect(normalizeStorageIdentity('local', configReal.providerConfig))
+        .not.toBe(normalizeStorageIdentity('local', configLink.providerConfig));
+
+      pushRunLevel([configReal, configLink]); // 2 identities, symlink-aliased
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(fetchBackupObjectTextMock).not.toHaveBeenCalled();
+      expect(listBackupObjectsUnderPrefixMock).not.toHaveBeenCalled();
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(2);
     });
   });
 });

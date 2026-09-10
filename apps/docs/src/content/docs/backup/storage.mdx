@@ -52,12 +52,12 @@ The storage configuration wizard walks you through four steps:
    <Aside type="note" title="What retention removes today">
      When a restore point passes its retention window, Breeze removes it from the snapshot list — it can no
      longer be restored or verified — and marks its data for reclamation. A background storage sweep then
-     deletes the restore point's exclusive data from the storage target on its next scheduled run, after a
-     short safety grace period (48 hours by default) that protects any object still mid-upload. Data another
-     surviving restore point still depends on (for example, a file shared with an incremental backup) is never
-     deleted, no matter how old it is. An upload that never finished, or whose record could not be reconciled,
-     is reclaimed once it has sat idle for about 9 days — giving Breeze time to recognize and finish adopting
-     it first.
+     deletes the restore point's exclusive data from the storage target on its next scheduled run. Data
+     another surviving restore point still depends on (for example, a file shared with an incremental backup)
+     is never deleted, no matter how old it is. A short safety grace period (48 hours by default) additionally
+     protects any loose object that might still be mid-upload before it is considered for deletion at all. An
+     upload that never finished, or whose record could not be reconciled, is reclaimed once it has sat idle
+     for about 9 days — giving Breeze time to recognize and finish adopting it first.
 
      If a device's Breeze backup helper predates version 0.112.0, storage reclamation beyond an expired
      snapshot's own row stays deferred on that device's destination until every device sharing it has
