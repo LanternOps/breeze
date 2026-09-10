@@ -203,6 +203,16 @@ for image in api web portal; do
   docker image inspect "ghcr.io/lanternops/breeze/${image}:${VERSION}" >/dev/null 2>&1 \
     || fail "ghcr.io/lanternops/breeze/${image}:${VERSION} is not present locally — build it first"
 done
+# Unlike api/web/portal (built from this checkout under the synthetic
+# ci-smoke tag above), the binaries image is a real, published, digest-pinned
+# artifact — this smoke runs the unmodified guided-setup.sh against the
+# unmodified docker-compose.yml, so there is no CI override to stub
+# binaries-init the way the Smoke Test / dev-stack jobs do. Pull it here
+# (idempotent — a no-op if a prior run already cached it) so the signed
+# release-manifest fixture below can inspect a real local digest.
+docker image inspect "${BINARIES_IMAGE_REF}" >/dev/null 2>&1 \
+  || docker pull "${BINARIES_IMAGE_REF}" \
+  || fail "${BINARIES_IMAGE_REF} is not present locally and could not be pulled"
 if systemctl list-unit-files "${SERVICE}" 2>/dev/null | grep -q "^${SERVICE}"; then
   fail "${SERVICE} is already installed on this host; run '$0 teardown' first"
 fi

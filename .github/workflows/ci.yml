@@ -2798,8 +2798,12 @@ jobs:
       # The installer pins images by BREEZE_VERSION; build this checkout's
       # api/web/portal under that tag so `docker compose up` uses them
       # (the pull for these local-only tags fails, which the installer treats
-      # as non-fatal — the documented bring-your-own-images path). The agent
-      # binaries image is pulled from GHCR like the Smoke Test job does.
+      # as non-fatal — the documented bring-your-own-images path). Unlike the
+      # Smoke Test / dev-stack jobs, this job runs guided-setup.sh unmodified
+      # against the unmodified docker-compose.yml (no CI override stubbing
+      # binaries-init), so the agent binaries image is a real published
+      # artifact — scripts/smoke-guided-setup.sh's own preflight pulls it
+      # from GHCR before staging.
       - name: Build api/web/portal images under the synthetic semver tag
         run: |
           set -euo pipefail
