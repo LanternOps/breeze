@@ -12,6 +12,7 @@ import { alerts, devices, notificationChannels } from '../db/schema';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { publishEvent } from './eventBus';
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
@@ -445,6 +446,10 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      // Reads (list) are not gated by the site-ceiling — test/create/update/delete are.
+      if (action !== 'list' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'list') {
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 50);
