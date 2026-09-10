@@ -249,4 +249,26 @@ describe('backupCommandResultSchema — snapshot file manifest originalPath (D12
     expect(parsed.snapshot?.files?.[0]?.originalPath).toBeUndefined();
     expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe('/home/user/file.txt');
   });
+
+  it('parses layoutManifest (open) and bareMetal (closed) result fields', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 'snap-1',
+      backupType: 'system_image',
+      layoutManifest: {
+        schemaVersion: 1,
+        platform: 'linux',
+        bootMode: 'uefi',
+        disks: [{ name: '/dev/sda' }],
+        futureField: true,
+      },
+      bareMetal: { restorable: false, reasons: ['LVM volumes are not supported'] },
+    });
+    expect(parsed.layoutManifest?.schemaVersion).toBe(1);
+    expect((parsed.layoutManifest as Record<string, unknown>).futureField).toBe(true);
+    expect(parsed.bareMetal).toEqual({ restorable: false, reasons: ['LVM volumes are not supported'] });
+  });
+
+  it('rejects a bareMetal verdict without the restorable flag', () => {
+    expect(() => backupCommandResultSchema.parse({ snapshotId: 's', bareMetal: { reasons: [] } })).toThrow();
+  });
 });

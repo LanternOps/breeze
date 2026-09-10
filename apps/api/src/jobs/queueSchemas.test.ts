@@ -314,6 +314,17 @@ describe('backupProcessResultSchema — system_image manifest passthrough', () =
       backupProcessResultSchema.parse({ status: 'completed', systemStateManifest: null }),
     ).not.toThrow();
   });
+
+  it('accepts layoutManifest + bareMetal (strict schema must declare them)', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      layoutManifest: { schemaVersion: 1, platform: 'linux', disks: [] },
+      bareMetal: { restorable: true, reasons: [] },
+    });
+    expect(result.bareMetal).toEqual({ restorable: true, reasons: [] });
+    expect((result.layoutManifest as { platform: string }).platform).toBe('linux');
+  });
 });
 
 describe('backupProcessResultSchema — incremental dedup + partial-success passthrough', () => {

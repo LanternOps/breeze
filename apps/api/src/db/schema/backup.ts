@@ -331,6 +331,11 @@ export const backupSnapshots = pgTable(
     backupType: backupTypeEnum('backup_type').default('file'),
     hardwareProfile: jsonb('hardware_profile'),
     systemStateManifest: jsonb('system_state_manifest'),
+    // Bare-metal recovery (W01): disk layout captured at run time and the
+    // guard verdict. NULL verdict = not assessed (file-only run / old agent).
+    layoutManifest: jsonb('layout_manifest'),
+    bareMetalRestorable: boolean('bare_metal_restorable'),
+    bareMetalReasons: text('bare_metal_reasons').array(),
   },
   (table) => ({
     orgIdIdx: index('backup_snapshots_org_id_idx').on(table.orgId),
