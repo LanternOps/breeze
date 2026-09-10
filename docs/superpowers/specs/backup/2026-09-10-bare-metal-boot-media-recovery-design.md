@@ -62,6 +62,9 @@ Captured by the helper at run start, uploaded with the snapshot, referenced from
 ### 5.3 Restorability guard
 The run computes `bareMetalRestorable` (boolean + reasons) from the layout: unsupported features in the first release are LVM, LUKS/dm-crypt, mdraid, BIOS/MBR, multiple system disks, btrfs subvolume roots, ZFS. Reasons are surfaced as run warnings and on the snapshot, so operators learn before the day they need it.
 
+### 5.4 File fidelity (added 2026-09-10 during planning)
+The `file` mode today skips symbolic links, drops ownership, keeps only the low 9 permission bits, and never records empty or non-default directories. A Linux root restored that way does not boot (`/bin → usr/bin`, systemd `.wants/` links, `sudo`'s setuid bit, `/var/log` ownership). Wave 2 closes this: the manifest gains optional per-entry `kind` (`symlink` | `dir`), `linkTarget`, `modeBits` (full Unix mode) and `owner` (uid/gid); the walker records symlinks (never followed), empty directories and directories with non-default mode/owner; restore recreates links and directories and, when running as root, reapplies owner and setuid/setgid/sticky bits. Manifests without such entries stay byte-identical to today. Hard links, extended attributes/capabilities and Windows ACLs remain out of scope for the first release and are listed in §12.
+
 ## 6. Rebuild engine
 
 Package `agent/internal/backup/rebuild`. Inputs: snapshot id, layout manifest, target, identity mode (`original` | `new`), optional escrowed key, options (target-disk override, dry-run). Output: a structured `RebuildResult` (phase reached, per-phase timings, counts, warnings, refusal reason) that every front reports verbatim.
@@ -93,7 +96,7 @@ Boot → network → "Enter recovery code" → exchange → plan screen (device,
 
 ### 8.1 Recovery codes and state
 - `POST /backup/bmr/recoveries` `{deviceId, snapshotId, identity: original|new, target?: {disk?}}` → creates a `bare_metal_recoveries` row and a recovery token; returns a 9-character one-time code (15 min TTL, rate-limited like `/bmr/tokens`).
-- `bare_metal_recoveries` is tenancy shape 5 with denormalised `org_id` + `device_id`: RLS policy in the creating migration; registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`, and `CORE_TENANT_EXPORT_POLICY` (`result` jsonb → `excludedOpen`). The new `backup_snapshots.layout_manifest_key` and `bare_metal_restorable`/`bare_metal_reasons` columns get export-policy entries in the same PR. Migrations are named to sort after the newest committed file (currently a `2026-10-15-…` name).
+- `bare_metal_recoveries` carries `org_id` (shape 1 RLS, auto-discovered by the coverage test) plus `device_id`: RLS policy in the creating migration; registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`, and `CORE_TENANT_EXPORT_POLICY` (`result` jsonb → `excludedOpen`). The new `backup_snapshots.layout_manifest_key` and `bare_metal_restorable`/`bare_metal_reasons` columns get export-policy entries in the same PR. Migrations are named to sort after the newest committed file (currently a `2026-10-15-…` name).
 - Public `POST /backup/bmr/recover/exchange` `{code}` → recovery token + bootstrap (reuses `recoveryBootstrap`); the code is consumed.
 - Transitions posted by the console/helper with the `RebuildResult`: `created → media_booted → planned → restoring → validated → rebooted`, terminal `checked_in | completed | failed | refused`. For `identity: original`, the heartbeat handler sets `checked_in` when the restored device's first heartbeat carries the marker nonce that matches this pending recovery; the nonce is consumed and the device gets `recovered_at` and `recovered_from_snapshot_id`. For `identity: new`, `validated` moves straight to `completed` (no check-in is expected; a rehearsal VM enrolls, if at all, as a brand-new device).
 - Failure reason and warnings are persisted on the recovery row (closes the gap in #5479).
@@ -119,20 +122,21 @@ Recovery bootstrap tab gains "Bare-metal recovery" (pick snapshot → code → l
 
 ## 10. Testing
 
-- **Engine unit tests** on every platform against loop images / VHDX: provisioning from recorded layouts, UUID reuse, refusal matrix, identity modes, resumability.
+- **Engine unit tests** on every platform against fake mount/exec seams and raw image files (VHDX on Windows in wave 6): provisioning from recorded layouts, UUID reuse, refusal matrix, identity modes, resumability.
 - **CI integration**: build the Linux ISO, boot it in QEMU on the runner, restore a seeded snapshot from a MinIO service, reboot, assert the agent checks in and the recovery reaches `checked_in`. Windows equivalent on a self-hosted Windows runner with ADK (later wave).
 - **Lab** (campaign harness): KIT Hyper-V VMs boot the ISO (Linux first, then Windows media built on WIN-A); a new `cells-bmr-media.sh` records evidence like the existing cells.
 
 ## 11. Waves
 
 1. Layout manifest + whole-machine preset + restorability guard (agent + API + UI preset).
-2. Rebuild engine, Linux, `vhdx`/loop targets, unit tests, W03 restorer `root` parameter.
-3. Linux live media in CI, console, recovery codes and state machine, heartbeat completion, `bmr-recover` integration; lab proof on KIT.
-4. Restore-as-VM / Instant Boot and DR plans on the engine (rehearsal mode).
-5. Windows engine: offline hives, `bcdboot`, DISM injection, `vhdx` target with tests.
-6. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
-7. Docs, UI polish, recovery readiness fed from real results.
+2. File-backup fidelity: symlinks, directories, ownership, full mode bits (§5.4).
+3. Rebuild engine, Linux: disk + raw-image (loop) targets, offline system-state apply, GRUB/EFI boot, unit tests without root, root-gated loopback test.
+4. Linux live media in CI, console, recovery codes and state machine, heartbeat completion; QEMU integration test; lab proof on KIT.
+5. Restore-as-VM / Instant Boot and DR plans on the engine (rehearsal mode); raw image → VHDX conversion for Hyper-V.
+6. Windows engine: offline hives, `bcdboot`, DISM injection, `vhdx` target with tests.
+7. Windows media builder (WinPE) + console; lab proof on KIT via WIN-A.
+8. Docs, UI polish, recovery readiness fed from real results.
 
 ## 12. Out of scope (first release)
 
-Block-level imaging; LVM, LUKS, RAID, BIOS/MBR, multi-disk targets (refused, not silently attempted); macOS bare-metal; dissimilar-boot-mode conversion; unattended fleet recovery (reserved flag only).
+Block-level imaging; LVM, LUKS, RAID, BIOS/MBR, multi-disk targets (refused, not silently attempted); macOS bare-metal; dissimilar-boot-mode conversion; unattended fleet recovery (reserved flag only); hard links, extended attributes/capabilities and Windows ACLs in the file backup (§5.4); crossing filesystem boundaries under `/` beyond the preset's excluded trees (a one-filesystem walk option is a follow-up).
