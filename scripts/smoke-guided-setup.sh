@@ -65,7 +65,9 @@ TUNNEL_PORT="${GUIDED_SMOKE_TUNNEL_PORT:-8443}"
 # throwaway local registry, pushes the three built images to it, and hands
 # the installer the registry's own manifest digest for each — the same shape
 # of reference a real GHCR-published image would get.
-SMOKE_REGISTRY_NAME="breeze-guided-smoke-registry"
+# Not "breeze-*": step [11] asserts no breeze-* container survives `systemctl stop`, and this
+# registry is smoke scaffolding, not part of the installed stack.
+SMOKE_REGISTRY_NAME="guided-smoke-registry"
 SMOKE_REGISTRY_HOST="127.0.0.1:5000"
 SMOKE_REGISTRY_REPO_PREFIX="${SMOKE_REGISTRY_HOST}/lanternops/breeze"
 ADMIN_EMAIL="ci-admin@breeze.local"
