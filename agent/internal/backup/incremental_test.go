@@ -490,3 +490,15 @@ func TestFetchServerOwnedBase(t *testing.T) {
 		}
 	})
 }
+
+// W02: content-less entries (symlinks/directories) are rebuilt from the live
+// filesystem on every run — decideFile must never reference them, even when
+// an entry with the same key exists in the previous manifest.
+func TestDecideFile_ContentlessAlwaysUploadPath(t *testing.T) {
+	link := backupFile{sourcePath: "/bin", snapshotPath: "path_0/bin", kind: KindSymlink, linkTarget: "usr/bin"}
+	prev := map[string]SnapshotFile{"/bin": {SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/lib"}}
+	decision, entry := decideFile(link, prev)
+	if decision != decideUpload || entry.BackupPath != "" {
+		t.Fatalf("decision=%v entry=%+v; content-less entries never dedupe by reference", decision, entry)
+	}
+}

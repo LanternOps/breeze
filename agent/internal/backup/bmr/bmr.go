@@ -236,7 +236,27 @@ type manifestFile struct {
 	// every BMR-restored file landed with drifted permissions/mtimes (O20).
 	Mode    uint32    `json:"mode,omitempty"`
 	ModTime time.Time `json:"modTime"`
+	// Kind, LinkTarget, ModeBits and Owner mirror backup.SnapshotFile's
+	// identically-tagged W02 fields (agent/internal/backup/snapshot.go) —
+	// same deliberately-independent-mirror rationale as OriginalPath/Mode/
+	// ModTime above. Kind is "" for a regular file (content downloaded from
+	// BackupPath) or "symlink"/"dir" for a content-less entry recreated
+	// directly by restoreFiles instead of downloaded — see HasContent.
+	Kind       string             `json:"kind,omitempty"`
+	LinkTarget string             `json:"linkTarget,omitempty"`
+	ModeBits   uint32             `json:"modeBits,omitempty"`
+	Owner      *manifestFileOwner `json:"owner,omitempty"`
 }
+
+// manifestFileOwner mirrors backup.FileOwner.
+type manifestFileOwner struct {
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+}
+
+// HasContent reports whether file has an uploaded object at BackupPath —
+// mirrors backup.SnapshotFile.HasContent.
+func (file manifestFile) HasContent() bool { return file.Kind == "" }
 
 // restoreSourcePath returns the path a BMR restore should re-root file
 // under: file.OriginalPath when VSS rewrote SourcePath to a per-run
@@ -829,6 +849,24 @@ func restoreFiles(
 			targetPath = override
 		}
 
+		// W02: a content-less entry (symlink/directory) is recreated
+		// directly — never downloaded, since its BackupPath is empty (see
+		// manifestFile.HasContent's doc comment and restoreContentlessEntry
+		// below).
+		if !file.HasContent() {
+			if err := restoreContentlessEntry(targetPath, file); err != nil {
+				addFailure("recreate failed for %s: %s", origPath, err.Error())
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			filesRestored++
+			continue
+		}
+
 		dir := filepath.Dir(targetPath)
 		if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil {
 			addFailure("mkdir failed for %s: %s", dir, mkErr.Error())
@@ -927,6 +965,50 @@ func restoreFiles(
 			fmt.Errorf("bmr: %d of %d files failed to restore", len(manifest.Files)-filesRestored, len(manifest.Files))
 	}
 	return filesRestored, bytesRestored, warnings, failedFiles, nil
+}
+
+// restoreContentlessEntry recreates a symlink or directory manifest entry at
+// targetPath — bmr's version of backup.RestoreContentlessEntry
+// (agent/internal/backup/restore.go), kept as a local implementation rather
+// than importing package backup, for the same "deliberately independent
+// mirror" reason manifestFile carries its own Kind/LinkTarget/ModeBits/Owner
+// fields instead of embedding backup.SnapshotFile (see manifestFile's doc
+// comment): package bmr has never otherwise depended on package backup, and
+// nothing else here needs to change that. Ownership is never reapplied by
+// this path (this restore mode — reinstall-then-recover — does not gate on
+// running as root the way the bare-metal rebuild engine's file restore
+// does); mode bits are applied best-effort via the same chmodFile seam the
+// regular-file path above uses, with setuid stripped for directories (a
+// directory legitimately setuid is vanishingly rare and this path never
+// confirms root, so it errs conservative).
+func restoreContentlessEntry(targetPath string, file manifestFile) error {
+	switch file.Kind {
+	case "symlink":
+		if mkErr := os.MkdirAll(filepath.Dir(targetPath), 0o750); mkErr != nil {
+			return mkErr
+		}
+		if existing, statErr := os.Lstat(targetPath); statErr == nil {
+			if existing.Mode()&os.ModeSymlink != 0 {
+				if cur, readErr := os.Readlink(targetPath); readErr == nil && cur == file.LinkTarget {
+					return nil // already correct (resume / idempotent replay)
+				}
+			}
+			if rmErr := os.Remove(targetPath); rmErr != nil {
+				return rmErr
+			}
+		}
+		return symlinkFile(file.LinkTarget, targetPath)
+	case "dir":
+		if mkErr := os.MkdirAll(targetPath, 0o750); mkErr != nil {
+			return mkErr
+		}
+		if file.ModeBits != 0 {
+			return chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid)
+		}
+		return nil
+	default:
+		return fmt.Errorf("entry %s has content; use the download path", file.SourcePath)
+	}
 }
 
 // clearReadOnly clears the owner-write bit on dst so a subsequent

@@ -87,6 +87,11 @@ func VerifyIntegrity(provider providers.BackupProvider, snapshotID string) (*Ver
 
 	// Verify each file by downloading through the provider
 	for _, file := range snapshot.Files {
+		if !file.HasContent() {
+			// Content-less entry (symlink/directory): no uploaded object to
+			// verify — see SnapshotFile.HasContent's doc comment.
+			continue
+		}
 		tempFile, err := os.CreateTemp("", "verify-file-*")
 		if err != nil {
 			result.FilesFailed++
@@ -229,6 +234,16 @@ func TestRestore(provider providers.BackupProvider, snapshotID string, progressF
 	// Restore each file
 	total := len(snapshot.Files)
 	for i, file := range snapshot.Files {
+		if !file.HasContent() {
+			// Content-less entry (symlink/directory): no uploaded object to
+			// restore — see SnapshotFile.HasContent's doc comment. The real
+			// restore path (restore.go) recreates these directly; a test
+			// restore's job is only to prove the uploaded OBJECTS round-trip.
+			if progressFn != nil {
+				progressFn(i+1, total)
+			}
+			continue
+		}
 		destPath := resolveTargetPath(restoreDir, restoreSourcePath(file))
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 			result.FilesFailed++

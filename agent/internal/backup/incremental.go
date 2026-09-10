@@ -209,6 +209,14 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // entry itself after the upload actually completes, exactly as before
 // incremental backups existed.
 func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
+	if f.kind != "" {
+		// Content-less entries (symlinks/directories) are rebuilt from the
+		// live filesystem on every run — see contentlessEntry (snapshot.go).
+		// They never carry uploaded content, so "reference the old bytes"
+		// is meaningless for them regardless of what the previous manifest
+		// says about this key.
+		return decideUpload, SnapshotFile{}
+	}
 	entry, ok := prev[journalLookupKey(f)]
 	if !ok || entry.Size != f.size {
 		return decideUpload, SnapshotFile{}
@@ -235,6 +243,8 @@ func referenceEntry(f backupFile, prevEntry SnapshotFile) SnapshotFile {
 		ModTime:      f.modTime,
 		Checksum:     prevEntry.Checksum,
 		Mode:         uint32(f.mode.Perm()),
+		ModeBits:     f.modeBits,
+		Owner:        f.owner,
 	}
 }
 

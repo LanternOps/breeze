@@ -364,3 +364,55 @@ func TestTestRestore_UsesOriginalPathUnderVSS(t *testing.T) {
 		t.Fatalf("TestRestore destination = %q, want it to end with the original path's relative structure %q", downloadedTo, wantSuffix)
 	}
 }
+
+// W02: VerifyIntegrity must never try to download a content-less entry's
+// (empty) BackupPath — it has no object to verify, so it's simply skipped;
+// only the one real file counts toward FilesVerified.
+func TestVerifyIntegrity_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s1/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s1", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3, Checksum: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s1/manifest.json"] = data
+
+	res, err := VerifyIntegrity(provider, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// W02: TestRestore shares VerifyIntegrity's content-less-entry blind spot —
+// without this fix every fidelity-format snapshot would permanently report
+// "partial" from TestRestore (the symlink/dir entries' empty BackupPath
+// downloads would fail) even though a real restore handles them fine (see
+// restore.go's separate symlink/dir passes, Task 4). Not explicitly in the
+// plan's Task 3 scope, but the identical fix on the identical file for the
+// identical reason.
+func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
+	provider := newMockProvider()
+	fileKey := "snapshots/s2/files/path_0/etc/hosts"
+	provider.files[fileKey] = []byte("abc")
+	manifest := Snapshot{ID: "s2", FormatVersion: manifestFormatFidelity, Files: []SnapshotFile{
+		{SourcePath: "/etc/hosts", BackupPath: fileKey, Size: 3},
+		{SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/bin"},
+		{SourcePath: "/var/empty", Kind: KindDir},
+	}}
+	data, _ := json.Marshal(manifest)
+	provider.files["snapshots/s2/manifest.json"] = data
+
+	res, err := TestRestore(provider, "s2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}

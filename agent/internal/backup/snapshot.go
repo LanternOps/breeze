@@ -271,6 +271,20 @@ func snapshotNeedsFidelityFormat(files []SnapshotFile) bool {
 	return false
 }
 
+// contentlessEntry builds the manifest entry for a symlink or directory:
+// nothing is uploaded, so BackupPath/Checksum/Size stay empty.
+func contentlessEntry(f backupFile) SnapshotFile {
+	return SnapshotFile{
+		SourcePath:   f.sourcePath,
+		OriginalPath: f.originalPath,
+		ModTime:      f.modTime,
+		Kind:         f.kind,
+		LinkTarget:   f.linkTarget,
+		ModeBits:     f.modeBits,
+		Owner:        f.owner,
+	}
+}
+
 // journalEntryKey returns the checkpoint-journal resume key for f:
 // OriginalPath when set (VSS rewrote SourcePath to a per-run-ephemeral
 // shadow-copy device path), else SourcePath itself (the common, non-VSS
@@ -849,6 +863,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if err := ctx.Err(); err != nil {
 			return abortStopped()
 		}
+		if file.kind != "" {
+			// Content-less entry (symlink/directory): nothing to upload,
+			// dedupe against, or checkpoint — see contentlessEntry's doc
+			// comment. Rebuilt from the live filesystem on every run.
+			snapshot.Files = append(snapshot.Files, contentlessEntry(file))
+			markDone(1, 0)
+			emitProgress(false)
+			continue
+		}
 		if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
 			// Already uploaded in a prior (interrupted) run with identical
 			// (size, modTime) — filesDone/bytesDone already reflect this
@@ -1029,6 +1052,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			ModTime:      file.modTime,
 			Checksum:     checksum,
 			Mode:         uint32(file.mode.Perm()),
+			ModeBits:     file.modeBits,
+			Owner:        file.owner,
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += file.size

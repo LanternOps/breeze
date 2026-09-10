@@ -2304,3 +2304,55 @@ func TestSnapshotFile_HasContentAndFormatVersion(t *testing.T) {
 		t.Errorf("symlink JSON = %s", data)
 	}
 }
+
+// W02: content-less entries (symlinks/directories) are never uploaded,
+// never sha256'd, and never opened from disk at all — the manifest carries
+// their metadata straight from backupFile, and the manifest is stamped
+// formatVersion 3.
+func TestCreateSnapshot_ContentlessEntriesNotUploaded(t *testing.T) {
+	provider := newMockProvider()
+	now := time.Now().UTC()
+	tmp := t.TempDir()
+	hosts := pathpkg.Join(tmp, "hosts")
+	if err := os.WriteFile(hosts, []byte("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := []backupFile{
+		{sourcePath: hosts, snapshotPath: "path_0/etc/hosts", size: 3, modTime: now, mode: 0o644, modeBits: 0o644, owner: &FileOwner{UID: 0, GID: 0}},
+		{sourcePath: "/bin", snapshotPath: "path_0/bin", modTime: now, mode: os.ModeSymlink | 0o777, kind: KindSymlink, linkTarget: "usr/bin"},
+		{sourcePath: "/var/empty", snapshotPath: "path_0/var/empty", modTime: now, mode: os.ModeDir | 0o755, kind: KindDir, modeBits: 0o755},
+	}
+
+	snap, err := CreateSnapshot(provider, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.uploadCalls) != 2 { // hosts + manifest.json
+		t.Fatalf("upload calls = %+v, want file + manifest only", provider.uploadCalls)
+	}
+	if snap.FormatVersion != manifestFormatFidelity || len(snap.Files) != 3 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	var link, dir SnapshotFile
+	for _, f := range snap.Files {
+		switch f.Kind {
+		case KindSymlink:
+			link = f
+		case KindDir:
+			dir = f
+		}
+	}
+	if link.BackupPath != "" || link.Checksum != "" || link.LinkTarget != "usr/bin" || link.Size != 0 {
+		t.Errorf("symlink entry = %+v", link)
+	}
+	if dir.BackupPath != "" || dir.ModeBits != 0o755 {
+		t.Errorf("dir entry = %+v", dir)
+	}
+	var stored Snapshot
+	if err := json.Unmarshal(provider.files[path.Join("snapshots", snap.ID, "manifest.json")], &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.FormatVersion != 3 || stored.Files[0].Owner == nil {
+		t.Errorf("stored manifest = %+v", stored)
+	}
+}
