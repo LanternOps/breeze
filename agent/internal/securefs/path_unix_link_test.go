@@ -130,7 +130,7 @@ func TestOpenAbsoluteDirIntermediateLinkRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			base := tc.build(t)
 			want := darwin && tc.allowedOnDarwin
-			_, err := InstallFile(base, "file.txt", writeSource(t, "payload"), 0, time.Time{})
+			_, err := InstallFile(base, "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil)
 			if want && err != nil {
 				t.Fatalf("expected the trusted path to be usable on darwin, got %v", err)
 			}
@@ -180,7 +180,7 @@ func TestLinuxRefusesEveryIntermediateLink(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(filepath.Join(root, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(filepath.Join(root, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("Linux traversed an intermediate symlink in the absolute prefix")
 	}
 }
@@ -203,7 +203,7 @@ func TestOpenAbsoluteDirRejectsForeignOwnedIntermediateLink(t *testing.T) {
 	if err := os.Lchown(link, 65534, 65534); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(filepath.Join(root, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(filepath.Join(root, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("foreign-owned intermediate link was traversed")
 	}
 }
@@ -227,7 +227,7 @@ func TestOpenAbsoluteDirRejectsLinkInForeignOwnedDirectory(t *testing.T) {
 	if err := os.Chown(holder, 65534, 65534); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(filepath.Join(holder, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(filepath.Join(holder, "link", "inner"), "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("link in a foreign-owned directory was traversed")
 	}
 }

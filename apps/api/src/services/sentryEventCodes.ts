@@ -226,6 +226,21 @@ export const SENTRY_EVENT_CODES = [
    *  is worth a look: either a real org move raced a queued act/task (benign
    *  but should be rare), or a caller is threading the wrong org. */
   'command_dispatch_cross_tenant_refused',
+
+  // --- remote desktop teardown (SEC-2026-09-05-038) ----------------------
+  /** `POST /remote/sessions/:id/end` marked the session terminal and revoked
+   *  the viewer token, but the `stop_desktop` never reached the agent (the
+   *  relay reported `offline`/`expired`/`owner_mismatch`/`indeterminate`).
+   *  The Flow-B WebRTC media/input path is peer-to-peer, so an undelivered
+   *  stop means the operator may still hold screen and input until the
+   *  revocation lease expires. Usually the device genuinely went away; a run
+   *  of these against online devices is a delivery fault. */
+  'remote_desktop_stop_undelivered',
+  /** The `stop_desktop` dispatch itself faulted — the relay returned
+   *  `infrastructure_error`, or the call threw. Distinct from
+   *  `remote_desktop_stop_undelivered` because the actionable target is the
+   *  relay (Redis/BullMQ), not the device. */
+  'remote_desktop_stop_dispatch_failed',
 ] as const;
 
 /**

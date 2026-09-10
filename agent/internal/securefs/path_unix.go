@@ -83,8 +83,9 @@ func walkComponents(fd int, components []string, create bool, mode uint32, depth
 		// The final component is the pinned boundary: never resolved through a
 		// link, so a planted base symlink fails closed here.
 		if i == len(components)-1 {
+			described := describeComponentError(fd, component, openErr)
 			_ = unix.Close(fd)
-			return -1, openErr
+			return -1, described
 		}
 		// Only a failure that actually indicates "this is not a directory I can
 		// open without following a link" is a candidate for the trusted-link
@@ -195,13 +196,37 @@ func openRelativeDir(baseFD int, relative string, create bool, mode uint32) (int
 			}
 		}
 		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		_ = unix.Close(fd)
 		if err != nil {
-			return -1, err
+			described := describeComponentError(fd, component, err)
+			_ = unix.Close(fd)
+			return -1, described
 		}
+		_ = unix.Close(fd)
 		fd = next
 	}
 	return fd, nil
+}
+
+// describeComponentError names a symlink explicitly instead of leaving the
+// caller with a bare ELOOP (Linux) or ENOTDIR (darwin's answer for the same
+// thing, and both platforms' answer for a regular file used as a directory).
+// It therefore ASKS the filesystem what the component is rather than guessing
+// from the errno. Every other errno, and a component that turns out not to be
+// a link, is returned untouched — relabelling a real EACCES/ENOENT, or a plain
+// file, as a link problem misdirects whoever reads it. The original error is
+// always wrapped, so errors.Is keeps working.
+func describeComponentError(dirFD int, component string, err error) error {
+	if !errors.Is(err, unix.ELOOP) && !errors.Is(err, unix.ENOTDIR) {
+		return err
+	}
+	var st unix.Stat_t
+	if statErr := unix.Fstatat(dirFD, component, &st, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
+		return err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFLNK {
+		return err
+	}
+	return fmt.Errorf("refusing to write through path component %q: it is a symlink: %w", component, err)
 }
 
 func ensureDir(path string, mode os.FileMode, private bool) error {
@@ -223,7 +248,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
 	baseFD, err := openAbsoluteDir(base, true, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("open target base: %w", err)
@@ -272,12 +297,20 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	// landed at 0644 before this file switched to a 0600 create; keep that
 	// result explicitly, rather than silently tightening every legacy restore
 	// to 0600.
-	applied := mode.Perm()
+	applied := mode
 	if mode == 0 {
 		applied = 0o644
 	}
-	if err := unix.Fchmod(tempFD, uint32(applied)); err != nil {
+	if err := unix.Fchmod(tempFD, syscallMode(applied)); err != nil {
 		warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
+	}
+	// Ownership goes on the pinned descriptor, before publication: a chown by
+	// pathname after the file is visible under its final name is exactly the
+	// race this package exists to remove.
+	if owner != nil {
+		if err := unix.Fchown(tempFD, owner.UID, owner.GID); err != nil {
+			warnings = append(warnings, fmt.Errorf("apply file owner: %w", err))
+		}
 	}
 	if !modTime.IsZero() {
 		times := []unix.Timeval{unix.NsecToTimeval(modTime.UnixNano()), unix.NsecToTimeval(modTime.UnixNano())}
@@ -319,4 +352,97 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	f := os.NewFile(uintptr(fd), filepath.Base(relative))
 	defer func() { _ = f.Close() }()
 	return f.Stat()
+}
+
+// syscallMode converts Go's os.FileMode bit layout to the Unix mode bits
+// fchmod/mkdirat expect, preserving setuid/setgid/sticky. os.FileMode keeps
+// those in high bits (1<<23 and friends), NOT in the traditional octal
+// positions, so a bare uint32(mode) would silently drop all three.
+func syscallMode(mode os.FileMode) uint32 {
+	out := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		out |= unix.S_ISUID
+	}
+	if mode&os.ModeSetgid != 0 {
+		out |= unix.S_ISGID
+	}
+	if mode&os.ModeSticky != 0 {
+		out |= unix.S_ISVTX
+	}
+	return out
+}
+
+// applyOwnerAt chowns name relative to parentFD without following it, so a
+// symlink entry gets its own ownership rather than its target's.
+func applyOwnerAt(parentFD int, name string, owner *Owner) error {
+	if owner == nil {
+		return nil
+	}
+	return unix.Fchownat(parentFD, name, owner.UID, owner.GID, unix.AT_SYMLINK_NOFOLLOW)
+}
+
+func installSymlink(base, relative, linkTarget string, owner *Owner) error {
+	baseFD, err := openAbsoluteDir(base, true, 0o755)
+	if err != nil {
+		return fmt.Errorf("open target base: %w", err)
+	}
+	defer func() { _ = unix.Close(baseFD) }()
+	parentFD, err := openRelativeDir(baseFD, filepath.Dir(relative), true, 0o755)
+	if err != nil {
+		return fmt.Errorf("open target parent: %w", err)
+	}
+	defer func() { _ = unix.Close(parentFD) }()
+
+	name := filepath.Base(relative)
+	var existing unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &existing, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		if existing.Mode&unix.S_IFMT != unix.S_IFLNK {
+			return fmt.Errorf("%s exists and is not a symlink", relative)
+		}
+		buf := make([]byte, unix.PathMax)
+		if n, rerr := unix.Readlinkat(parentFD, name, buf); rerr == nil && n > 0 && string(buf[:n]) == linkTarget {
+			return applyOwnerAt(parentFD, name, owner)
+		}
+		if err := unix.Unlinkat(parentFD, name, 0); err != nil {
+			return err
+		}
+	}
+	if err := unix.Symlinkat(linkTarget, parentFD, name); err != nil {
+		return err
+	}
+	return applyOwnerAt(parentFD, name, owner)
+}
+
+func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {
+	baseFD, err := openAbsoluteDir(base, true, 0o755)
+	if err != nil {
+		return fmt.Errorf("open target base: %w", err)
+	}
+	defer func() { _ = unix.Close(baseFD) }()
+	// openRelativeDir refuses a symlink at EVERY component, so a directory
+	// entry can never be created through an ancestor an earlier pass linked
+	// away — the descriptor-based form of the ancestor-symlink guard.
+	dirFD, err := openRelativeDir(baseFD, relative, true, 0o755)
+	if err != nil {
+		return fmt.Errorf("open target directory: %w", err)
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+
+	if applyMode {
+		if err := unix.Fchmod(dirFD, syscallMode(mode)); err != nil {
+			return fmt.Errorf("apply directory mode: %w", err)
+		}
+	}
+	if owner != nil {
+		if err := unix.Fchown(dirFD, owner.UID, owner.GID); err != nil {
+			return fmt.Errorf("apply directory owner: %w", err)
+		}
+	}
+	if !modTime.IsZero() {
+		times := []unix.Timeval{unix.NsecToTimeval(modTime.UnixNano()), unix.NsecToTimeval(modTime.UnixNano())}
+		if err := unix.Futimes(dirFD, times); err != nil {
+			return fmt.Errorf("apply directory modification time: %w", err)
+		}
+	}
+	return nil
 }

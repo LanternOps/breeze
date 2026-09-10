@@ -35,6 +35,8 @@ import TdSynnexSftpPanel from "../settings/TdSynnexSftpPanel";
 import QuickbooksIntegration from "./QuickbooksIntegration";
 import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
+import AccessDenied from "../shared/AccessDenied";
+import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
 import { useOrgStore } from "../../stores/orgStore";
@@ -307,6 +309,17 @@ export default function IntegrationsPage({
   // null scope on a missing/undecodable token, so only a confirmed 'organization'
   // scope is blocked; everything else falls through to the server's own check.
   const isOrgScoped = claims.scope === "organization";
+
+  // SEC-2026-09-05-057: the QuickBooks routes now require the dedicated
+  // `accounting:read` capability. Gate the QuickBooks sub-tab entry and its
+  // panel on it so a caller without the grant gets the standard
+  // permission-denied state instead of a screen of 403s. The Stripe payments
+  // sub-tab is a separate integration with its own routes and is NOT gated on
+  // the accounting capability. UX only — every route re-checks server-side.
+  const canReadAccounting = usePermissions().can("accounting", "read");
+  const visibleAccountingSubTabs = accountingSubTabs.filter(
+    (sub) => sub.id !== "quickbooks" || canReadAccounting,
+  );
   const visibleCustomerGraphReadResult = callbackOrgId !== null
     && customerGraphReadCallback.orgId === callbackOrgId
     ? customerGraphReadCallback.result
@@ -451,7 +464,7 @@ export default function IntegrationsPage({
       {/* Accounting sub-tabs (hidden for org-scope users, who can't use these APIs) */}
       {activeTab === "accounting" && !isOrgScoped && (
         <div className="flex gap-2">
-          {accountingSubTabs.map((sub) => {
+          {visibleAccountingSubTabs.map((sub) => {
             const isActive = sub.id === accountingSubTab;
             return (
               <button
@@ -536,7 +549,12 @@ export default function IntegrationsPage({
       )}
       {activeTab === "accounting" &&
         !isOrgScoped &&
-        accountingSubTab === "quickbooks" && <QuickbooksIntegration />}
+        accountingSubTab === "quickbooks" &&
+        (canReadAccounting ? (
+          <QuickbooksIntegration />
+        ) : (
+          <AccessDenied testId="accounting-quickbooks-denied" />
+        ))}
       {activeTab === "accounting" &&
         !isOrgScoped &&
         accountingSubTab === "stripe" && <StripePaymentsIntegration />}

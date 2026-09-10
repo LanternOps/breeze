@@ -135,7 +135,7 @@ func rejectReparseOrNonDir(handle windows.Handle, name string) error {
 		return err
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return fmt.Errorf("path component is a reparse point: %q", name)
+		return fmt.Errorf("refusing to write through path component %q: it is a reparse point (a symlink, junction or mount point)", name)
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
 		return fmt.Errorf("path component is not a directory: %q", name)
@@ -374,7 +374,7 @@ func ensureDir(path string, mode os.FileMode, private bool) error {
 	return verifyPrivateDirDACLProtected(chain.leaf())
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
 	parent := base
 	if dir := filepath.Dir(relative); dir != "." {
 		parent = filepath.Join(base, dir)
@@ -426,6 +426,12 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 
 	var warnings []error
+	if owner != nil {
+		// Unix uid/gid has no Windows meaning. #5520's walker never records an
+		// Owner on Windows, so this only happens for a manifest captured
+		// elsewhere; say so rather than silently dropping it.
+		warnings = append(warnings, errors.New("unix ownership is not applied on Windows"))
+	}
 	basic := fileBasicInfo{FileAttributes: windows.FILE_ATTRIBUTE_NORMAL}
 	if mode != 0 && mode.Perm()&0o200 == 0 {
 		basic.FileAttributes = windows.FILE_ATTRIBUTE_READONLY
@@ -636,4 +642,44 @@ func statFile(base, relative string) (os.FileInfo, error) {
 		return nil, fmt.Errorf("target is a link: %q", name)
 	}
 	return f.Stat()
+}
+
+// installSymlink is refused on Windows. Creating a symbolic link needs
+// SeCreateSymbolicLinkPrivilege or developer mode, and #5520's walker never
+// records a symlink entry on Windows in the first place — such a manifest can
+// only have come from another platform. Failing closed keeps the restore
+// honest instead of publishing something that is not a link.
+func installSymlink(_, relative, _ string, _ *Owner) error {
+	return fmt.Errorf("restoring the symbolic link %q is not supported on Windows", relative)
+}
+
+func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {
+	// openVerifiedDir creates each missing component relative to the previous
+	// component's pinned handle and rejects a reparse point at every one, so a
+	// directory entry can never be created through an ancestor an earlier pass
+	// linked away.
+	chain, err := openVerifiedDir(filepath.Join(base, relative), true, nil, windows.FILE_WRITE_ATTRIBUTES)
+	if err != nil {
+		return fmt.Errorf("open target directory: %w", err)
+	}
+	defer chain.close()
+
+	if owner != nil {
+		return errors.New("unix ownership is not applied on Windows")
+	}
+	// Windows has no Unix directory mode; the DACL is the equivalent and a
+	// restored tree inherits the destination's, which is what an operator
+	// restoring into their own tree expects. applyMode is therefore ignored
+	// here rather than mistranslated into FILE_ATTRIBUTE_READONLY.
+	_ = applyMode
+	_ = mode
+	if !modTime.IsZero() {
+		ft := windows.NsecToFiletime(modTime.UnixNano())
+		stamp := int64(ft.HighDateTime)<<32 | int64(ft.LowDateTime)
+		basic := fileBasicInfo{LastWriteTime: stamp, ChangeTime: stamp}
+		if err := setBasicInfo(chain.leaf(), &basic); err != nil {
+			return fmt.Errorf("apply directory modification time: %w", err)
+		}
+	}
+	return nil
 }

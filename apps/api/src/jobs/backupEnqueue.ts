@@ -114,6 +114,10 @@ export interface ProcessResultsResult {
       backupPath: string;
       size?: number;
       modTime?: string;
+      // W02 fidelity: content-less entries (symlinks/directories) — see
+      // backupSnapshotFileResultSchema / backupSnapshotFileSchema.
+      kind?: 'symlink' | 'dir';
+      linkTarget?: string;
     }>;
   };
   error?: string;

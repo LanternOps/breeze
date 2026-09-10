@@ -47,7 +47,7 @@ func tryJunction(link, target string) bool {
 
 func TestInstallFilePositiveControl(t *testing.T) {
 	base := t.TempDir()
-	warnings, err := InstallFile(base, filepath.Join("nested", "file.txt"), writeSource(t, "allowed"), 0o644, time.Time{})
+	warnings, err := InstallFile(base, filepath.Join("nested", "file.txt"), writeSource(t, "allowed"), 0o644, time.Time{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestInstallFileRejectsInvalidPaths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := InstallFile(tc.base, tc.relative, writeSource(t, "denied"), 0, time.Time{}); err == nil {
+			if _, err := InstallFile(tc.base, tc.relative, writeSource(t, "denied"), 0, time.Time{}, nil); err == nil {
 				t.Fatal("invalid path was accepted")
 			}
 		})
@@ -139,7 +139,7 @@ func TestInstallFileRejectsReparsePointAtEveryDepth(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			base, relative, outside := tc.build(t)
-			if _, err := InstallFile(base, relative, writeSource(t, "denied"), 0, time.Time{}); err == nil {
+			if _, err := InstallFile(base, relative, writeSource(t, "denied"), 0, time.Time{}, nil); err == nil {
 				t.Fatal("reparse point was traversed")
 			}
 			entries, err := os.ReadDir(outside)
@@ -165,7 +165,7 @@ func TestInstallFileReplacesFinalLinkWithoutFollowingIt(t *testing.T) {
 	if err := os.Symlink(outside, target); err != nil {
 		t.Skipf("creating a file symlink requires privilege on this host: %v", err)
 	}
-	if _, err := InstallFile(base, "file.txt", writeSource(t, "restored"), 0, time.Time{}); err != nil {
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "restored"), 0, time.Time{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	gotOutside, err := os.ReadFile(outside)
@@ -209,7 +209,7 @@ func TestInstallFileReplacesReadOnlyDestination(t *testing.T) {
 	if err := os.Chmod(dest, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(base, "file.txt", writeSource(t, "new"), 0o644, time.Time{}); err != nil {
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "new"), 0o644, time.Time{}, nil); err != nil {
 		t.Fatalf("read-only destination was not replaced: %v", err)
 	}
 	got, err := os.ReadFile(dest)
@@ -232,7 +232,7 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 	}
 	// A source that cannot be opened aborts the install after the destination
 	// directory has been pinned but before anything is published.
-	if _, err := InstallFile(base, "file.txt", filepath.Join(t.TempDir(), "missing"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(base, "file.txt", filepath.Join(t.TempDir(), "missing"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("install with a missing source succeeded")
 	}
 	got, err := os.ReadFile(dest)
@@ -293,7 +293,7 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
 				source := writeSource(t, fmt.Sprintf("payload-%d-%d", i, j))
-				if _, err := InstallFile(base, "file.txt", source, 0, time.Time{}); err == nil {
+				if _, err := InstallFile(base, "file.txt", source, 0, time.Time{}, nil); err == nil {
 					succeeded.Add(1)
 				} else {
 					firstErr.CompareAndSwap(nil, err.Error())
@@ -454,7 +454,7 @@ func TestInstallFileResistsConcurrentComponentSwap(t *testing.T) {
 	var lastErr error
 	for i := 0; i < 200; i++ {
 		source := writeSource(t, fmt.Sprintf("content-%d", i))
-		if _, err := InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{}); err == nil {
+		if _, err := InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{}, nil); err == nil {
 			succeeded++
 		} else {
 			lastErr = err

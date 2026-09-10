@@ -409,6 +409,12 @@ func TestIsReferenceEntry(t *testing.T) {
 		{"own prefix -> not a reference", "snapshots/snap-A/files/f.txt.gz", "snap-A", false},
 		{"older prefix -> reference", "snapshots/snap-OLD/files/f.txt.gz", "snap-A", true},
 		{"unrelated prefix -> reference", "snapshots/snap-B/files/f.txt.gz", "snap-A", true},
+		// Review finding #3 (PR #5520): a content-less entry (symlink/dir)
+		// always has an empty BackupPath — "" trivially fails a HasPrefix
+		// check against ANY non-empty own-prefix, which used to make it
+		// look like a reference into some other snapshot. It never is one:
+		// it's rebuilt fresh every run (see decideFile's kind!="" branch).
+		{"empty backupPath (content-less entry) -> never a reference", "", "snap-A", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -489,4 +495,16 @@ func TestFetchServerOwnedBase(t *testing.T) {
 			t.Error("expected a non-empty reason")
 		}
 	})
+}
+
+// W02: content-less entries (symlinks/directories) are rebuilt from the live
+// filesystem on every run — decideFile must never reference them, even when
+// an entry with the same key exists in the previous manifest.
+func TestDecideFile_ContentlessAlwaysUploadPath(t *testing.T) {
+	link := backupFile{sourcePath: "/bin", snapshotPath: "path_0/bin", kind: KindSymlink, linkTarget: "usr/bin"}
+	prev := map[string]SnapshotFile{"/bin": {SourcePath: "/bin", Kind: KindSymlink, LinkTarget: "usr/lib"}}
+	decision, entry := decideFile(link, prev)
+	if decision != decideUpload || entry.BackupPath != "" {
+		t.Fatalf("decision=%v entry=%+v; content-less entries never dedupe by reference", decision, entry)
+	}
 }

@@ -30,7 +30,7 @@ func TestInstallFileRejectsInvalidPaths(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := InstallFile(tc.base, tc.relative, writeSource(t, "denied"), 0, time.Time{}); err == nil {
+			if _, err := InstallFile(tc.base, tc.relative, writeSource(t, "denied"), 0, time.Time{}, nil); err == nil {
 				t.Fatal("invalid path was accepted")
 			}
 		})
@@ -46,7 +46,7 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 	if err := os.WriteFile(dest, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(base, "file.txt", filepath.Join(t.TempDir(), "missing"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(base, "file.txt", filepath.Join(t.TempDir(), "missing"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("install with a missing source succeeded")
 	}
 	got, err := os.ReadFile(dest)
@@ -102,7 +102,7 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
-				if _, err := InstallFile(base, "file.txt", writeSource(t, fmt.Sprintf("payload-%d-%d", i, j)), 0, time.Time{}); err != nil {
+				if _, err := InstallFile(base, "file.txt", writeSource(t, fmt.Sprintf("payload-%d-%d", i, j)), 0, time.Time{}, nil); err != nil {
 					t.Errorf("concurrent install failed: %v", err)
 					return
 				}
@@ -166,7 +166,7 @@ func TestInstallFilePublishesWithTheManifestMode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
-			if _, err := InstallFile(base, "file.txt", writeSource(t, "payload"), tc.mode, time.Time{}); err != nil {
+			if _, err := InstallFile(base, "file.txt", writeSource(t, "payload"), tc.mode, time.Time{}, nil); err != nil {
 				t.Fatal(err)
 			}
 			info, err := os.Stat(filepath.Join(base, "file.txt"))

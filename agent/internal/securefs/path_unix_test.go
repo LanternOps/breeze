@@ -22,7 +22,7 @@ func writeSource(t *testing.T, content string) string {
 
 func TestInstallFileAllowedControl(t *testing.T) {
 	base := t.TempDir()
-	warnings, err := InstallFile(base, "nested/file.txt", writeSource(t, "allowed"), 0o640, time.Time{})
+	warnings, err := InstallFile(base, "nested/file.txt", writeSource(t, "allowed"), 0o640, time.Time{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestInstallFileRejectsBaseSymlink(t *testing.T) {
 	if err := os.Symlink(outside, base); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(base, "file.txt", writeSource(t, "denied"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "denied"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("base symlink was accepted")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "file.txt")); !os.IsNotExist(err) {
@@ -58,7 +58,7 @@ func TestInstallFileRejectsIntermediateSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(base, "nested")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(base, "nested/file.txt", writeSource(t, "denied"), 0, time.Time{}); err == nil {
+	if _, err := InstallFile(base, "nested/file.txt", writeSource(t, "denied"), 0, time.Time{}, nil); err == nil {
 		t.Fatal("intermediate symlink was accepted")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "file.txt")); !os.IsNotExist(err) {
@@ -76,7 +76,7 @@ func TestInstallFileReplacesFinalSymlinkWithoutFollowingIt(t *testing.T) {
 	if err := os.Symlink(outside, target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallFile(base, "file.txt", writeSource(t, "restored"), 0, time.Time{}); err != nil {
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "restored"), 0, time.Time{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	gotOutside, err := os.ReadFile(outside)
@@ -156,7 +156,7 @@ func TestInstallFileResistsConcurrentIntermediateSwap(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		source := writeSource(t, fmt.Sprintf("content-%d", i))
-		_, _ = InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{})
+		_, _ = InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{}, nil)
 	}
 	close(stop)
 	wg.Wait()

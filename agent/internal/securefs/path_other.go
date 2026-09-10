@@ -121,7 +121,7 @@ func rejectLinkedPath(base, relative string, create bool) error {
 	return nil
 }
 
-func installFile(base, relative, source string, mode os.FileMode, modTime time.Time) ([]error, error) {
+func installFile(base, relative, source string, mode os.FileMode, modTime time.Time, owner *Owner) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
 		return nil, err
 	}
@@ -160,6 +160,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 		return nil, closeSrcErr
 	}
 	var warnings []error
+	if owner != nil {
+		warnings = append(warnings, fmt.Errorf("ownership is not applied on %s", runtime.GOOS))
+	}
 	if mode != 0 {
 		if err := dst.Chmod(mode.Perm()); err != nil {
 			warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
@@ -204,4 +207,47 @@ func statFile(base, relative string) (os.FileInfo, error) {
 		return nil, fmt.Errorf("target is a link: %q", path)
 	}
 	return info, nil
+}
+
+func installSymlink(base, relative, linkTarget string, owner *Owner) error {
+	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
+		return err
+	}
+	if owner != nil {
+		return fmt.Errorf("ownership is not applied on %s", runtime.GOOS)
+	}
+	destination := filepath.Join(base, relative)
+	if existing, err := os.Lstat(destination); err == nil {
+		if existing.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("%s exists and is not a symlink", destination)
+		}
+		if current, rerr := os.Readlink(destination); rerr == nil && current == linkTarget {
+			return nil
+		}
+		if err := os.Remove(destination); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(linkTarget, destination)
+}
+
+func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {
+	if err := rejectLinkedPath(base, relative, true); err != nil {
+		return err
+	}
+	if owner != nil {
+		return fmt.Errorf("ownership is not applied on %s", runtime.GOOS)
+	}
+	destination := filepath.Join(base, relative)
+	if applyMode {
+		if err := os.Chmod(destination, mode); err != nil {
+			return err
+		}
+	}
+	if !modTime.IsZero() {
+		return os.Chtimes(destination, modTime, modTime)
+	}
+	return nil
 }
