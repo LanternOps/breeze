@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -236,6 +237,100 @@ func TestHelperArtifactFromFile(t *testing.T) {
 	if a.Path != "test.txt" {
 		t.Errorf("path: got %q, want %q", a.Path, "test.txt")
 	}
+	// sha256("hello")
+	wantChecksum := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	if a.Checksum != wantChecksum {
+		t.Errorf("checksum: got %q, want %q", a.Checksum, wantChecksum)
+	}
+}
+
+// TestHelperArtifactFromFile_MissingFileOmitsChecksum proves a hashing
+// failure (e.g. the file vanished between stat and hash) degrades to an
+// artifact without a checksum rather than panicking or erroring — matching
+// the "size 0 / best-effort" tolerance the rest of this helper already has.
+func TestHelperArtifactFromFile_MissingFileOmitsChecksum(t *testing.T) {
+	tmpDir := t.TempDir()
+	missing := filepath.Join(tmpDir, "does-not-exist.txt")
+
+	a := artifactFromFile("missing", "test", missing, tmpDir)
+	if a.Checksum != "" {
+		t.Errorf("checksum for an unreadable file should be empty, got %q", a.Checksum)
+	}
+	if a.SizeBytes != 0 {
+		t.Errorf("sizeBytes for an unreadable file should be 0, got %d", a.SizeBytes)
+	}
+}
+
+// TestHelperCollectArtifactsInDir_Checksums proves every artifact walked out
+// of a directory carries a checksum too (not just the single-file helper),
+// so a BMR consumer can verify EVERY artifact, not a subset.
+func TestHelperCollectArtifactsInDir_Checksums(t *testing.T) {
+	tmpDir := t.TempDir()
+	dir := filepath.Join(tmpDir, "dir")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, err := collectArtifactsInDir("test", dir, tmpDir)
+	if err != nil {
+		t.Fatalf("collectArtifactsInDir: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("artifacts: got %d, want 1", len(artifacts))
+	}
+	wantChecksum := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	if artifacts[0].Checksum != wantChecksum {
+		t.Errorf("checksum: got %q, want %q", artifacts[0].Checksum, wantChecksum)
+	}
+}
+
+func TestCollectSystemState_SchemaVersionSet(t *testing.T) {
+	manifest, stagingDir, err := CollectSystemState()
+	if err != nil {
+		t.Fatalf("CollectSystemState: %v", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	if manifest.SchemaVersion != manifestSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", manifest.SchemaVersion, manifestSchemaVersion)
+	}
+}
+
+func TestSortedRequiredSteps(t *testing.T) {
+	tests := []struct {
+		name     string
+		required map[string]bool
+		want     []string
+	}{
+		{"nil map", nil, nil},
+		{"empty map", map[string]bool{}, nil},
+		{
+			"mixed required/not-required, sorted output",
+			map[string]bool{"boot": true, "registry": true, "certs": false},
+			[]string{"boot", "registry"},
+		},
+		{
+			"none required",
+			map[string]bool{"certs": false, "iis": false},
+			nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sortedRequiredSteps(tt.required)
+			if len(got) != len(tt.want) {
+				t.Fatalf("sortedRequiredSteps(%v) = %v, want %v", tt.required, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("sortedRequiredSteps(%v)[%d] = %q, want %q", tt.required, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
 }
 
 func TestHelperCopyFile(t *testing.T) {
@@ -280,6 +375,202 @@ func TestHelperCopyTree(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("missing file: %s", rel)
 		}
+	}
+}
+
+// TestHelperCopyFile_PreservesModeAndMtime pins the W03-review fix: a staged
+// file must keep the SOURCE's permission bits and modification time, not a
+// hardcoded 0600/now(). Without this, restoring staged /etc entries back onto
+// a live system (the Linux restorer's job) would land every file as
+// root:root 0600 regardless of what it was — e.g. /etc/passwd (normally
+// 0644) turning unreadable to non-root processes.
+func TestHelperCopyFile_PreservesModeAndMtime(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src.txt")
+	dst := filepath.Join(tmpDir, "dst.txt")
+
+	if err := os.WriteFile(src, []byte("mode test"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	wantMtime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(src, wantMtime, wantMtime); err != nil {
+		t.Fatalf("chtimes src: %v", err)
+	}
+
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("dst mode = %v, want 0644 (source's mode)", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(wantMtime) {
+		t.Errorf("dst mtime = %v, want %v (source's mtime)", info.ModTime(), wantMtime)
+	}
+}
+
+// TestHelperCopyTree_PreservesDirModeAndMtime is TestHelperCopyFile_
+// PreservesModeAndMtime's directory counterpart: a staged directory must
+// keep the source directory's mode (e.g. 0750), not a hardcoded 0700.
+func TestHelperCopyTree_PreservesDirModeAndMtime(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "copy")
+
+	subDir := filepath.Join(srcDir, "a")
+	if err := os.MkdirAll(subDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "file1.txt"), []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantMtime := time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(subDir, wantMtime, wantMtime); err != nil {
+		t.Fatalf("chtimes subDir: %v", err)
+	}
+
+	if err := copyTree(srcDir, dstDir); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(dstDir, "a"))
+	if err != nil {
+		t.Fatalf("stat staged dir: %v", err)
+	}
+	if info.Mode().Perm() != 0o750 {
+		t.Errorf("staged dir mode = %v, want 0750 (source's mode)", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(wantMtime) {
+		t.Errorf("staged dir mtime = %v, want %v (source's mtime)", info.ModTime(), wantMtime)
+	}
+}
+
+// TestHelperCopyFile_RecreatesSymlink proves a symlink is staged as a real
+// symlink (Lstat + Readlink + Symlink), not dereferenced into a plain-file
+// copy of whatever it currently points at — including a DANGLING link, which
+// must stage successfully rather than erroring.
+func TestHelperCopyFile_RecreatesSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	target := filepath.Join(tmpDir, "target.txt")
+	if err := os.WriteFile(target, []byte("target contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmpDir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(tmpDir, "dangling")
+	if err := os.Symlink(filepath.Join(tmpDir, "does-not-exist"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	dstLink := filepath.Join(tmpDir, "staged", "link")
+	if err := copyFile(link, dstLink); err != nil {
+		t.Fatalf("copyFile(symlink): %v", err)
+	}
+	gotTarget, err := os.Readlink(dstLink)
+	if err != nil {
+		t.Fatalf("staged entry is not a symlink: %v", err)
+	}
+	if gotTarget != target {
+		t.Errorf("staged symlink target = %q, want %q", gotTarget, target)
+	}
+
+	dstDangling := filepath.Join(tmpDir, "staged", "dangling")
+	if err := copyFile(dangling, dstDangling); err != nil {
+		t.Fatalf("copyFile(dangling symlink) should succeed, got: %v", err)
+	}
+	gotDanglingTarget, err := os.Readlink(dstDangling)
+	if err != nil {
+		t.Fatalf("staged dangling entry is not a symlink: %v", err)
+	}
+	if gotDanglingTarget != filepath.Join(tmpDir, "does-not-exist") {
+		t.Errorf("staged dangling symlink target = %q, want %q", gotDanglingTarget, filepath.Join(tmpDir, "does-not-exist"))
+	}
+}
+
+// TestHelperCopyTree_RecreatesSymlinksAndSkipsSpecialFiles exercises the
+// whole-tree walk: a symlink inside the tree is staged as a symlink, and a
+// Unix socket (a stand-in for any of socket/FIFO/device) is skipped rather
+// than staged or erroring the whole walk.
+func TestHelperCopyTree_RecreatesSymlinksAndSkipsSpecialFiles(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(t.TempDir(), "copy")
+
+	if err := os.WriteFile(filepath.Join(srcDir, "real.txt"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	// AF_UNIX socket paths are capped at ~104-108 bytes on macOS/BSD — well
+	// under what t.TempDir()'s nesting can produce — so this uses its own
+	// short-named temp dir rather than srcDir/t.TempDir() directly.
+	sockDir, sockDirErr := os.MkdirTemp("", "bzss")
+	if sockDirErr != nil {
+		t.Fatalf("create short-path temp dir for socket: %v", sockDirErr)
+	}
+	defer os.RemoveAll(sockDir)
+	sockPath := filepath.Join(sockDir, "s")
+	ln, sockErr := net.Listen("unix", sockPath)
+	if sockErr != nil {
+		t.Skipf("cannot create a unix socket in this sandbox, skipping: %v", sockErr)
+	}
+	defer ln.Close()
+	if err := os.Rename(sockPath, filepath.Join(srcDir, "test.sock")); err != nil {
+		t.Fatalf("move socket into srcDir: %v", err)
+	}
+
+	if err := copyTree(srcDir, dstDir); err != nil {
+		t.Fatalf("copyTree: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dstDir, "real.txt")); err != nil {
+		t.Errorf("regular file was not staged: %v", err)
+	}
+	linkTarget, err := os.Readlink(filepath.Join(dstDir, "link.txt"))
+	if err != nil {
+		t.Fatalf("symlink was not staged as a symlink: %v", err)
+	}
+	if linkTarget != "real.txt" {
+		t.Errorf("staged symlink target = %q, want %q", linkTarget, "real.txt")
+	}
+	if _, err := os.Lstat(filepath.Join(dstDir, "test.sock")); err == nil {
+		t.Error("unix socket should have been skipped, not staged")
+	}
+}
+
+// TestHelperCollectArtifactsInDir_SkipsSymlinks pins the documented choice
+// (see collectArtifactsInDir's doc comment): a staged symlink is excluded
+// from the artifact list entirely, rather than checksummed (which would mean
+// silently following it) or recorded with no checksum.
+func TestHelperCollectArtifactsInDir_SkipsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	dir := filepath.Join(tmpDir, "dir")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	artifacts, err := collectArtifactsInDir("test", dir, tmpDir)
+	if err != nil {
+		t.Fatalf("collectArtifactsInDir: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("artifacts = %d, want 1 (symlink excluded)", len(artifacts))
+	}
+	if artifacts[0].Name != "real.txt" {
+		t.Errorf("artifact name = %q, want %q", artifacts[0].Name, "real.txt")
 	}
 }
 

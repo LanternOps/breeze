@@ -37,10 +37,11 @@ func NewCollector() Collector {
 func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
 	hostname, _ := os.Hostname()
 	manifest := &SystemStateManifest{
-		Platform:    runtime.GOOS,
-		OSVersion:   windowsVersion(),
-		Hostname:    hostname,
-		CollectedAt: time.Now().UTC(),
+		Platform:      runtime.GOOS,
+		OSVersion:     windowsVersion(),
+		Hostname:      hostname,
+		CollectedAt:   time.Now().UTC(),
+		RequiredSteps: sortedRequiredSteps(windowsRequiredSteps),
 	}
 
 	type step struct {

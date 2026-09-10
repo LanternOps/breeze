@@ -108,6 +108,24 @@ func TestWindowsCollectCertificatesSkipsWhenCertSvcAbsent(t *testing.T) {
 	}
 }
 
+// TestWindowsRequiredStepsSerialized pins that windowsRequiredSteps'
+// membership (registry, boot) is exactly what CollectState serializes onto
+// SystemStateManifest.RequiredSteps — the field a bare-metal-recovery
+// consumer uses to independently enforce the same required-step policy the
+// collector itself enforces via missingRequired.
+func TestWindowsRequiredStepsSerialized(t *testing.T) {
+	got := sortedRequiredSteps(windowsRequiredSteps)
+	want := []string{"boot", "registry"}
+	if len(got) != len(want) {
+		t.Fatalf("sortedRequiredSteps(windowsRequiredSteps) = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("sortedRequiredSteps(windowsRequiredSteps)[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestWindowsCollectCertificatesFailsWhenCertSvcPresentButCertutilFails(t *testing.T) {
 	origInstalled := certSvcInstalled
 	defer func() { certSvcInstalled = origInstalled }()

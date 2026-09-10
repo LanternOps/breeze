@@ -20,6 +20,29 @@ type SystemStateManifest struct {
 	// Empty/omitted means every step succeeded.
 	IncompleteSteps []string         `json:"incompleteSteps,omitempty"`
 	HardwareProfile *HardwareProfile `json:"hardwareProfile,omitempty"`
+
+	// SchemaVersion identifies the shape of this manifest, so a future
+	// consumer-side change can detect and branch on an older manifest
+	// explicitly instead of guessing from field presence. Set to 1 by
+	// CollectSystemState; every manifest this package produces carries it.
+	SchemaVersion int `json:"schemaVersion"`
+
+	// CollectorVersion is the agent/helper version string that produced this
+	// manifest. The systemstate package has no notion of "the agent version"
+	// itself (it collects OS state, not agent identity), so this is left for
+	// the caller to fill in — see backup.BackupConfig.AgentVersion, wired the
+	// same way as BackupConfig.AgentID — before the manifest is persisted or
+	// published. Empty when the caller didn't set one (e.g. an older backup
+	// package build, or a test double).
+	CollectorVersion string `json:"collectorVersion,omitempty"`
+
+	// RequiredSteps names the collection steps this platform's collector
+	// treats as required for a restorable image (see missingRequired) — e.g.
+	// registry and boot on Windows. Serialized so a CONSUMER (bare-metal
+	// recovery) can independently enforce the same policy rather than
+	// trusting only the producer's own collection-time gate. Empty/omitted
+	// when the collecting platform defines no required steps.
+	RequiredSteps []string `json:"requiredSteps,omitempty"`
 }
 
 // Artifact is a single collected system state item.
@@ -28,6 +51,13 @@ type Artifact struct {
 	Category  string `json:"category"` // registry, boot, drivers, certs, services, packages, config
 	Path      string `json:"path"`     // path within staging dir
 	SizeBytes int64  `json:"sizeBytes"`
+	// Checksum is the lowercase-hex SHA-256 of the artifact file, computed at
+	// collection time (see artifactFromFile / collectArtifactsInDir). A
+	// consumer downloading this artifact from remote storage verifies its
+	// bytes against this value before applying it — the same integrity
+	// contract backup.SnapshotFile.Checksum gives ordinary backed-up files.
+	// Empty/omitted only if hashing failed at collection time.
+	Checksum string `json:"checksum,omitempty"`
 }
 
 // HardwareProfile captures machine hardware for recovery planning.
