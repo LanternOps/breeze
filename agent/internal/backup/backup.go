@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -460,6 +461,98 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	stopRunKeepalive := startRunKeepalive(runCtx, progressFn)
 	defer stopRunKeepalive()
 
+	// Checkpoint journal: keyed by destination identity (provider kind +
+	// endpoint/bucket/path + the *configured* source paths — never the
+	// VSS-rewritten or system-state-staging paths in backupPaths, which are
+	// ephemeral per run and would defeat identity matching across runs).
+	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
+	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
+	// (a deterministic root-owned filename there is a symlink/tamper surface;
+	// a forged journal can trigger remote snapshot cleanup or silent file
+	// skips). If no secure dir exists, the run simply doesn't journal: resume
+	// is an optimization, never worth a world-writable root-owned write.
+	var journal *snapshotJournal
+	var resumedJournal bool
+	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
+		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
+	} else {
+		var journalErr error
+		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+		if journalErr != nil {
+			// A journal is a best-effort checkpoint, never a correctness
+			// requirement: degrade to a journal-less run rather than failing
+			// the backup over it.
+			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
+			journal = nil
+		}
+	}
+	if journal != nil {
+		if staleID, ok := journal.StaleSnapshotID(); ok {
+			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
+			// journal and the (near-impossible) identity-mismatch case — see
+			// openSnapshotJournal — so the message below is deliberately
+			// generic rather than claiming a specific cause. The agent no
+			// longer cleans up the STALE JOURNAL'S remote prefix itself
+			// (D18 §3.5): that prefix belongs to a PRIOR, different run
+			// (not this run's own in-progress prefix, which is the only
+			// exception §3.5 keeps — see abortStopped/abortSourceGone in
+			// snapshot.go), so it is simply dropped and GC's existing
+			// manifest-less-prefix rule reclaims it.
+			log.Warn("discarding unusable checkpoint journal",
+				"snapshotId", staleID,
+				"maxAge", journalMaxAge.String(),
+			)
+		}
+		if resumedJournal {
+			log.Info("resuming interrupted backup from checkpoint journal",
+				"snapshotId", journal.snapshotID,
+				"resumedBytes", journal.ResumedBytes(),
+			)
+		}
+	}
+
+	// Resume-with-already-published-manifest, checked BEFORE any source
+	// scanning (P2 fix): a resumed run whose manifest is already published
+	// must report success even if the configured source has since vanished
+	// — the len(files)==0 exits later in this function (and in
+	// createSnapshotWithProgress) must never get a chance to fail this run
+	// first. See fetchPublishedManifest's three-state contract: only a
+	// CONFIRMED-absent result falls through to a normal run; any other
+	// error fails the job closed right here.
+	if journal != nil && resumedJournal {
+		resumePrefix := path.Join(snapshotRootDir, journal.snapshotID)
+		existing, fetchErr := fetchPublishedManifest(runCtx, m.config.Provider, resumePrefix)
+		if fetchErr != nil {
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", resumePrefix, fetchErr)
+			return job, job.Error
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping the entire run",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			job.Status = jobStatusCompleted
+			job.CompletedAt = time.Now().UTC()
+			job.Snapshot = existing
+			job.FilesBackedUp = len(existing.Files)
+			job.BytesBackedUp = existing.Size
+			for _, f := range existing.Files {
+				if isReferenceEntry(f, existing.ID) {
+					job.ReferencedFiles++
+					job.ReferencedBytes += f.Size
+				}
+			}
+			return job, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — proceed to
+		// VSS/scan/upload normally, reusing this SAME journal (no second
+		// open) all the way down to createSnapshotWithProgress's call site.
+	}
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if provider, useVSS := m.resolveVSSProvider(); useVSS {
@@ -784,56 +877,6 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// No snapshot exists yet — createSnapshotWithProgress mints the ID
 		// below and emits it on its own first (forced) progress call.
 		progressFn(0, len(files), 0, bytesTotal, "")
-	}
-
-	// Checkpoint journal: keyed by destination identity (provider kind +
-	// endpoint/bucket/path + the *configured* source paths — never the
-	// VSS-rewritten or system-state-staging paths in backupPaths, which are
-	// ephemeral per run and would defeat identity matching across runs).
-	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
-	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
-	// (a deterministic root-owned filename there is a symlink/tamper surface;
-	// a forged journal can trigger remote snapshot cleanup or silent file
-	// skips). If no secure dir exists, the run simply doesn't journal: resume
-	// is an optimization, never worth a world-writable root-owned write.
-	var journal *snapshotJournal
-	var resumedJournal bool
-	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
-		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
-	} else {
-		var journalErr error
-		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
-		if journalErr != nil {
-			// A journal is a best-effort checkpoint, never a correctness
-			// requirement: degrade to a journal-less run rather than failing
-			// the backup over it.
-			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
-			journal = nil
-		}
-	}
-	if journal != nil {
-		if staleID, ok := journal.StaleSnapshotID(); ok {
-			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
-			// journal and the (near-impossible) identity-mismatch case — see
-			// openSnapshotJournal — so the message below is deliberately
-			// generic rather than claiming a specific cause. The agent no
-			// longer cleans up the STALE JOURNAL'S remote prefix itself
-			// (D18 §3.5): that prefix belongs to a PRIOR, different run
-			// (not this run's own in-progress prefix, which is the only
-			// exception §3.5 keeps — see abortStopped/abortSourceGone in
-			// snapshot.go), so it is simply dropped and GC's existing
-			// manifest-less-prefix rule reclaims it.
-			log.Warn("discarding unusable checkpoint journal",
-				"snapshotId", staleID,
-				"maxAge", journalMaxAge.String(),
-			)
-		}
-		if resumedJournal {
-			log.Info("resuming interrupted backup from checkpoint journal",
-				"snapshotId", journal.snapshotID,
-				"resumedBytes", journal.ResumedBytes(),
-			)
-		}
 	}
 
 	// Gate manifest publication whenever server-owned mode is on (D18

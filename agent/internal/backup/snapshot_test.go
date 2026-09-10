@@ -75,7 +75,12 @@ func (m *mockProvider) Download(remotePath, localPath string) error {
 	}
 	data, ok := m.files[remotePath]
 	if !ok {
-		return fmt.Errorf("mock download: file not found: %s", remotePath)
+		// Matches real-provider fidelity (LocalProvider/S3Provider): a
+		// confirmed-missing key wraps providers.ErrObjectNotFound so
+		// fetchPublishedManifest/fetchServerOwnedBase callers can positively
+		// distinguish "confirmed absent" from any other failure mode, which
+		// downloadErr (set above) represents instead.
+		return fmt.Errorf("%w: mock download: file not found: %s", providers.ErrObjectNotFound, remotePath)
 	}
 	return os.WriteFile(localPath, data, 0644)
 }
@@ -1950,5 +1955,75 @@ func TestLeaseGate_RefusesManifestWhenResumedJournalTooOld(t *testing.T) {
 	_, err = createSnapshotWithProgress(context.Background(), gated, files, nil, j2, nil, nil)
 	if !errors.Is(err, ErrJournalExpiredAtPublish) {
 		t.Fatalf("err = %v, want ErrJournalExpiredAtPublish", err)
+	}
+}
+
+func TestFetchPublishedManifest_ConfirmedAbsent_ReturnsNilNil(t *testing.T) {
+	provider := newMockProvider() // never seeded with the manifest key
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/never-published")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot for a confirmed-absent manifest, got %+v", snap)
+	}
+}
+
+func TestFetchPublishedManifest_TransientError_FailsClosed_NotTreatedAsAbsent(t *testing.T) {
+	provider := newMockProvider()
+	provider.downloadErr = errors.New("connection reset by peer") // NOT ErrObjectNotFound
+	snap, err := fetchPublishedManifest(context.Background(), provider, "snapshots/some-id")
+	if err == nil {
+		t.Fatal("expected a non-nil error for a transient failure — must NOT be treated as confirmed absence")
+	}
+	if snap != nil {
+		t.Fatalf("expected nil snapshot on error, got %+v", snap)
+	}
+}
+
+func TestCreateSnapshot_ResumeWithAlreadyPublishedManifest_SkipsUploadAndDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content one")
+	provider := newMockProvider()
+
+	journalDir := t.TempDir()
+	journal, _, err := openSnapshotJournal(journalDir, "resume-published-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+
+	// Simulate a crash AFTER manifest publish but BEFORE journal.Complete():
+	// the manifest already exists at this snapshot's prefix.
+	published := &Snapshot{
+		ID:        journal.snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files:     []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 11}},
+		Size:      11,
+	}
+	storeManifest(t, provider, published)
+	preUploadCount := len(provider.uploadCalls)
+
+	journal.Abandon()
+	journal2, resumed, err := openSnapshotJournal(journalDir, "resume-published-identity", journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal (resume) failed: %v", err)
+	}
+	if !resumed {
+		t.Fatal("expected the journal to resume")
+	}
+
+	files := []backupFile{{sourcePath: file1, snapshotPath: "path_0/file1.txt", size: 11, modTime: time.Now()}}
+	snap, err := createSnapshotWithProgress(context.Background(), provider, files, nil, journal2, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap == nil || snap.ID != journal.snapshotID {
+		t.Fatalf("expected the already-published snapshot to be returned, got %+v", snap)
+	}
+	if len(provider.uploadCalls) != preUploadCount {
+		t.Fatalf("expected zero NEW uploads on an already-published resume, got %d new calls", len(provider.uploadCalls)-preUploadCount)
+	}
+	if len(provider.deleteCalls) != 0 {
+		t.Fatalf("expected zero deletes on an already-published resume, got %v", provider.deleteCalls)
 	}
 }

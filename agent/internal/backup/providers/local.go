@@ -103,10 +103,21 @@ func (p *LocalProvider) Download(remotePath, localPath string) error {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
+	var downloadErr error
 	if strings.HasSuffix(remotePath, ".gz") {
-		return decompressFile(srcPath, localPath)
+		downloadErr = decompressFile(srcPath, localPath)
+	} else {
+		downloadErr = copyFileContext(context.Background(), srcPath, localPath)
 	}
-	return copyFileContext(context.Background(), srcPath, localPath)
+	if downloadErr != nil && errors.Is(downloadErr, fs.ErrNotExist) {
+		// %w wrapping through decompressFile/copyFileContext's own
+		// fmt.Errorf calls preserves the underlying os.PathError, so
+		// errors.Is against fs.ErrNotExist still sees through the chain —
+		// this positively confirms the source object is absent, not merely
+		// that SOME step failed.
+		return fmt.Errorf("%w: %s", ErrObjectNotFound, downloadErr)
+	}
+	return downloadErr
 }
 
 // List enumerates files under the given prefix.

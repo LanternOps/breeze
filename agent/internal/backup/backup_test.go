@@ -1440,3 +1440,53 @@ func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone
+// proves the P2 ordering fix: the resume-with-already-published-manifest
+// check must run BEFORE any source scanning, so a resumed run whose
+// manifest was already published reports success even if the configured
+// source has since vanished.
+func TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	stagingDir := t.TempDir()
+
+	identity := backupIdentity(provider, []string{tmpDir})
+	journal, _, err := openSnapshotJournal(stagingDir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	published := &Snapshot{
+		ID:    journal.snapshotID,
+		Files: []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 7}},
+		Size:  7,
+	}
+	storeManifest(t, provider, published)
+	journal.Abandon()
+
+	// The source is now GONE — remove the file (and its directory) the
+	// configured path pointed at, so a fresh scan would find nothing and,
+	// pre-fix, hit backup.go's len(files)==0 early exit BEFORE the
+	// journal/resume check ever ran.
+	if err := os.RemoveAll(tmpDir); err != nil {
+		t.Fatalf("failed to remove source dir: %v", err)
+	}
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		StagingDir: stagingDir,
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected the resume shortcut to succeed despite the gone source, got err: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q (source-gone must not prevent reporting the already-published manifest)", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil || job.Snapshot.ID != journal.snapshotID {
+		t.Fatalf("expected the already-published snapshot back, got %+v", job.Snapshot)
+	}
+}

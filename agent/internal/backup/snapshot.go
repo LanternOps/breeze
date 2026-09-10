@@ -469,6 +469,39 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	prevIndex := buildPreviousIndex(prevSnapshot)
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
+
+	// Resume-with-already-published-manifest (D18 §3.5): a prior attempt
+	// may have published manifest.json and then crashed before
+	// journal.Complete() removed the journal. Re-uploading now would
+	// overwrite a COMPLETED, restorable manifest — treat its confirmed
+	// presence as "this run already finished" and return it as-is,
+	// uploading nothing. This is a SECOND check: RunBackupContext
+	// (backup.go) performs the same one earlier, before source scanning,
+	// so a source-gone resumed run reports success instead of hitting the
+	// len(files)==0 reject above first — see this task's ordering note.
+	// Kept here too so direct callers of this function (this package's own
+	// unit tests) still exercise and prove the behavior without going
+	// through RunBackupContext.
+	if journal != nil && journal.resumed {
+		existing, fetchErr := fetchPublishedManifest(ctx, provider, prefix)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", prefix, fetchErr)
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping upload",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			completed = true
+			return existing, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — fall through
+		// to a normal upload below.
+	}
+
 	var errs []error
 
 	var bytesTotal int64
@@ -880,6 +913,49 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	}
 
 	return snapshot, nil
+}
+
+// fetchPublishedManifest checks whether prefix's manifest.json has already
+// been published, distinguishing three outcomes (P1 fix — a transient
+// error must NEVER be treated the same as confirmed absence):
+//   - (snapshot, nil): confirmed present and decodable — the caller's
+//     resume-shortcut must return this snapshot, uploading nothing.
+//   - (nil, nil): CONFIRMED absent (providers.ErrObjectNotFound) — safe to
+//     proceed with a normal upload.
+//   - (nil, err): anything else (network error, decode error, corrupt
+//     manifest, context already done) — the caller MUST fail the run
+//     closed: upload nothing, delete nothing, since we genuinely don't
+//     know whether a real manifest exists at this prefix.
+func fetchPublishedManifest(ctx context.Context, provider providers.BackupProvider, prefix string) (*Snapshot, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	manifestKey := path.Join(prefix, snapshotManifestKey)
+	tempFile, err := os.CreateTemp("", "resume-manifest-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file for resume manifest check: %w", err)
+	}
+	tempPath := tempFile.Name()
+	_ = tempFile.Close()
+	defer os.Remove(tempPath)
+
+	if err := provider.Download(manifestKey, tempPath); err != nil {
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to check for an already-published manifest at %s: %w", manifestKey, err)
+	}
+	data, err := os.ReadFile(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read downloaded resume manifest: %w", err)
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("failed to decode resume manifest %s: %w", manifestKey, err)
+	}
+	return &snapshot, nil
 }
 
 // publishSnapshotManifest serializes snapshot's manifest and uploads it under
