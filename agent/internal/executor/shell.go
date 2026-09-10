@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // MaxScriptSize is the maximum allowed script content size
@@ -115,12 +117,10 @@ func WriteScriptFile(content, scriptType string) (string, error) {
 	if strings.ToLower(scriptType) == ScriptTypePowerShell && !strings.HasPrefix(content, utf8BOM) {
 		content = utf8BOM + content
 	}
-	// Each execution owns a fresh 0700 directory created atomically by the OS.
-	// A fixed shared /tmp tree can be pre-created by a less-privileged helper,
-	// allowing that user to replace a root script between write and interpreter
-	// open. The private directory makes the pathname reopen safe from other
-	// identities without changing interpreter invocation semantics.
-	scriptDir, err := os.MkdirTemp("", "breeze-scripts-")
+	// Each execution owns a fresh private directory (see createPrivateScriptDir
+	// — 0700 from the OS on unix, an explicit protected DACL on Windows).
+	securefs.LogLegacyStagingTrees(log.Warn)
+	scriptDir, err := createPrivateScriptDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to create private script directory: %w", err)
 	}

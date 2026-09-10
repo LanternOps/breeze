@@ -60,6 +60,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	if err := validateSnapshotID(cfg.SnapshotID); err != nil {
 		return nil, err
 	}
+	securefs.LogLegacyStagingTrees(slog.Warn)
 	workRoot, ephemeralWorkRoot, err := prepareRestoreWorkRoot(cfg.WorkRoot)
 	if err != nil {
 		return nil, fmt.Errorf("prepare restore work root: %w", err)
