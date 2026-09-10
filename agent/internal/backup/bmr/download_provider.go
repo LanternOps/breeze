@@ -32,6 +32,13 @@ const (
 	downloadRetryInitialDelay = 1 * time.Second
 	downloadRetryMaxDelay     = 30 * time.Second
 	downloadRetryMaxTotalWait = 5 * time.Minute
+
+	// downloadMaxRedirectHops bounds how many redirect hops downloadOnce
+	// will follow for a single object: the first redirect (typically a 302
+	// handing back a presigned storage URL) is always followed, plus up to
+	// 5 further redirects, matching the contract's "at most 5 further
+	// redirects" — 1 + 5 = 6 total hops before giving up.
+	downloadMaxRedirectHops = 6
 )
 
 // retrySleep is a seam for tests to skip the real backoff delay while still
@@ -80,6 +87,98 @@ func isRetryableDownloadStatus(code int) bool {
 	default:
 		return false
 	}
+}
+
+// noAuthRedirectClient is used both for the initial download request and
+// for manually following any redirect Location it returns. CheckRedirect
+// always returns http.ErrUseLastResponse so net/http never auto-follows a
+// redirect on our behalf — see D21: net/http's default redirect policy
+// forwards sensitive headers (Authorization included) to a redirect target
+// whenever the target's *host* matches the original request's host,
+// ignoring port. A presigned storage URL handed back by a 302 on the same
+// host as the API but a different port (the self-hosted shape: API and
+// MinIO/S3 on one box) would otherwise receive the recovery token's
+// Authorization header alongside the presigned query signature, which
+// S3/MinIO reject with 400 ("Only one auth mechanism allowed"). By
+// intercepting every redirect ourselves and building a fresh request with
+// no Authorization / token / cookie headers, the recovery token never
+// leaves the API host.
+var noAuthRedirectClient = &http.Client{
+	Timeout: 30 * time.Minute,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+// isRedirectStatus reports whether code is one of the redirect statuses
+// net/http's own default policy would otherwise auto-follow (see
+// net/http's redirectBehavior). Only these carry a Location header worth
+// chasing.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
+}
+
+// followDownloadRedirects takes the response to the initial download
+// request (already performed via noAuthRedirectClient, so any redirect was
+// returned to us rather than auto-followed) and, while the response is a
+// redirect, issues a fresh GET at the resolved Location with no
+// Authorization / X-Recovery-Token headers and no cookies — the recovery
+// token must never reach a redirect target (D21). Follows up to
+// downloadMaxRedirectHops hops total before giving up. A redirect to a
+// non-http(s) scheme or with an empty/missing Location is a permanent
+// error. Returns the first non-redirect response (success or failure
+// status alike), whose body the caller owns and must close.
+func (p *recoveryDownloadProvider) followDownloadRedirects(resp *http.Response, initialURL *url.URL) (*http.Response, error) {
+	current := initialURL
+	hops := 0
+
+	for isRedirectStatus(resp.StatusCode) {
+		hops++
+		if hops > downloadMaxRedirectHops {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("bmr: too many download redirects (> %d)", downloadMaxRedirectHops)
+		}
+
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		_ = resp.Body.Close()
+		if location == "" {
+			return nil, fmt.Errorf("bmr: download redirect (status %d) missing Location header", resp.StatusCode)
+		}
+
+		locationURL, err := url.Parse(location)
+		if err != nil {
+			return nil, fmt.Errorf("bmr: invalid download redirect location: %w", err)
+		}
+		target := current.ResolveReference(locationURL)
+		if target.Scheme != "http" && target.Scheme != "https" {
+			return nil, fmt.Errorf("bmr: refusing to follow download redirect to non-http(s) scheme %q", target.Scheme)
+		}
+
+		slog.Debug("bmr: following download redirect", "host", target.Host)
+
+		req, err := http.NewRequestWithContext(p.ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("bmr: create download redirect request: %w", err)
+		}
+		// Deliberately no Authorization / token / cookie headers set here —
+		// that is the entire point of handling redirects by hand.
+
+		redirectResp, err := noAuthRedirectClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("bmr: download redirect request failed: %w", err)
+		}
+
+		resp = redirectResp
+		current = target
+	}
+
+	return resp, nil
 }
 
 type recoveryDownloadProvider struct {
@@ -324,10 +423,14 @@ func (p *recoveryDownloadProvider) downloadOnce(remotePath, localPath string) er
 		req.URL = requestURL
 	}
 
-	client := &http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Do(req)
+	resp, err := noAuthRedirectClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("bmr: download request failed: %w", err)
+	}
+
+	resp, err = p.followDownloadRedirects(resp, req.URL)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 
