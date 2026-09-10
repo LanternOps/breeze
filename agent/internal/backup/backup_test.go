@@ -1816,7 +1816,7 @@ func TestRunBackup_Layout_PublishedBeforeOrdinaryManifestAndCarriedOnJob(t *test
 		return -1
 	}
 	li, si, oi := idx(layoutKey), idx(stateKey), idx(ordinaryKey)
-	if li == -1 || si == -1 || oi == -1 || !(si < li && li < oi) {
+	if li == -1 || si == -1 || oi == -1 || si >= li || li >= oi {
 		t.Fatalf("publish order state=%d layout=%d ordinary=%d (want state < layout < ordinary); keys=%v", si, li, oi, providerKeys(provider))
 	}
 	var stored layout.Manifest
