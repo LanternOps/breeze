@@ -224,7 +224,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
 			result.Warnings = append(result.Warnings, err.Error())
-			os.Remove(stagingFile)
+			_ = os.Remove(stagingFile)
 			slog.Warn("refusing to restore through a symlinked ancestor", "target", targetPath, "error", err.Error())
 			continue
 		}
