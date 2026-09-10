@@ -42,6 +42,15 @@ WEB_HOST_PORT="${BREEZE_SETUP_WEB_HOST_PORT:-4321}"
 # BREEZE_SETUP_VERSION preselects the release (skips the GitHub/GHCR lookups) —
 # used by CI to run the installer against locally built images.
 SELECTED_BREEZE_VERSION="${BREEZE_SETUP_VERSION:-}"
+# First release that publishes release-artifact-manifest.json with signed OCI
+# image digests and ships scripts/release/verify-release-images.sh. Releases
+# before this floor have nothing to download or verify: template downloads are
+# pinned to the SELECTED release tag (resolve_template_remote_base), so an
+# older tag's raw.githubusercontent.com tree never contains that script, and
+# no older GitHub Release publishes a signed manifest. Below the floor, image
+# refs keep tracking BREEZE_VERSION exactly as they always have; at/above it,
+# configure_signed_release_image_refs is the fail-closed source of truth.
+SIGNED_IMAGE_INVENTORY_MIN_VERSION="0.112.0"
 BACK_STATUS=42
 BOOTSTRAP_ENV_KEYS=(
   BREEZE_BOOTSTRAP_ADMIN_EMAIL
@@ -588,10 +597,18 @@ prepare_templates() {
   section "Templates"
 
   local need_download="false"
+  # Below SIGNED_IMAGE_INVENTORY_MIN_VERSION the selected release's tag tree
+  # never contains scripts/release/verify-release-images.sh (template
+  # downloads are pinned to that tag), so it is neither required nor fetched.
+  local want_verifier="false"
+  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
+    want_verifier="true"
+  fi
   if [[ -n "${REMOTE_BASE}" ]]; then
     log "Template source: ${REMOTE_BASE}"
   fi
-  if [[ ! -f "${COMPOSE_FILE}" || ! -f "${ENV_EXAMPLE_FILE}" || ! -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]]; then
+  if [[ ! -f "${COMPOSE_FILE}" || ! -f "${ENV_EXAMPLE_FILE}" ]] \
+    || { [[ "${want_verifier}" == "true" ]] && [[ ! -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]]; }; then
     need_download="true"
   fi
 
@@ -600,13 +617,17 @@ prepare_templates() {
       subsection "Download Templates"
       download_template "docker-compose.yml"
       download_template ".env.example"
-      download_template "scripts/release/verify-release-images.sh"
+      if [[ "${want_verifier}" == "true" ]]; then
+        download_template "scripts/release/verify-release-images.sh"
+      fi
       ;;
     never)
       subsection "Use Existing Templates"
       [[ -f "${COMPOSE_FILE}" ]] || fail "Missing ${COMPOSE_FILE}"
       [[ -f "${ENV_EXAMPLE_FILE}" ]] || fail "Missing ${ENV_EXAMPLE_FILE}"
-      [[ -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]] || fail "Missing ${RELEASE_IMAGE_VERIFIER_FILE}"
+      if [[ "${want_verifier}" == "true" ]]; then
+        [[ -f "${RELEASE_IMAGE_VERIFIER_FILE}" ]] || fail "Missing ${RELEASE_IMAGE_VERIFIER_FILE}"
+      fi
       log "Using existing docker-compose.yml and .env.example."
       ;;
     ask)
@@ -614,13 +635,17 @@ prepare_templates() {
         subsection "Download Templates"
         download_template "docker-compose.yml"
         download_template ".env.example"
-        download_template "scripts/release/verify-release-images.sh"
+        if [[ "${want_verifier}" == "true" ]]; then
+          download_template "scripts/release/verify-release-images.sh"
+        fi
       else
         subsection "Template Source"
         if ask_yes_no "Download fresh docker-compose.yml and .env.example into ${WORK_DIR}?" "no"; then
           download_template "docker-compose.yml"
           download_template ".env.example"
-          download_template "scripts/release/verify-release-images.sh"
+          if [[ "${want_verifier}" == "true" ]]; then
+            download_template "scripts/release/verify-release-images.sh"
+          fi
         else
           log "Using existing docker-compose.yml and .env.example."
         fi
@@ -3392,6 +3417,41 @@ configure_release_manifest_trust_root() {
   log "Using official Breeze release manifest public key trust root."
 }
 
+# Numeric compare of two "MAJOR.MINOR.PATCH[-pre][+build]" version strings —
+# only the dotted numeric core decides it, so a pre-release/build suffix never
+# flips the result. Returns 0 (true) when "$1" >= "$2".
+version_at_least() {
+  local version="${1#v}" floor="${2#v}"
+  local -a v_parts f_parts
+  version="${version%%[-+]*}"
+  floor="${floor%%[-+]*}"
+  IFS='.' read -r -a v_parts <<< "${version}"
+  IFS='.' read -r -a f_parts <<< "${floor}"
+  local i v f
+  for i in 0 1 2; do
+    v="${v_parts[i]:-0}"
+    f="${f_parts[i]:-0}"
+    if ((10#${v} > 10#${f})); then
+      return 0
+    elif ((10#${v} < 10#${f})); then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# True when the selected Breeze release publishes a signed image inventory
+# (release-artifact-manifest.json + scripts/release/verify-release-images.sh)
+# — i.e. its version is at or above SIGNED_IMAGE_INVENTORY_MIN_VERSION.
+# Releases below the floor have nothing to download or verify: template
+# downloads are pinned to the selected release tag, so an older tag's tree
+# never contains the verifier script, and no older GitHub Release publishes a
+# signed manifest.
+release_has_signed_image_inventory() {
+  local version="$1"
+  version_at_least "${version}" "${SIGNED_IMAGE_INVENTORY_MIN_VERSION}"
+}
+
 configure_signed_release_image_refs() {
   local version tag repo base manifest signature resolved key variable value line_count
 
@@ -3892,7 +3952,11 @@ configure_core_env() {
 
   prompt_breeze_version
   configure_release_manifest_trust_root
-  configure_signed_release_image_refs
+  if release_has_signed_image_inventory "${SELECTED_BREEZE_VERSION}"; then
+    configure_signed_release_image_refs
+  else
+    warn "Release v${SELECTED_BREEZE_VERSION} predates signed image inventories; image refs track the release tag as before. Upgrade to ${SIGNED_IMAGE_INVENTORY_MIN_VERSION}+ for digest-pinned images."
+  fi
 
   section "Database And Redis"
   subsection "Postgres"

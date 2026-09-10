@@ -35,9 +35,16 @@
 #   scripts/smoke-guided-setup.sh teardown   disable the unit, remove the stack + volumes
 #
 # Inputs (env):
-#   GUIDED_SMOKE_VERSION             image tag the installer will use (default 0.0.0-ci-smoke).
+#   GUIDED_SMOKE_VERSION             image tag the installer will use (default 0.112.0-ci-smoke).
 #                                    ghcr.io/lanternops/breeze/{api,web,portal}:<tag> must
 #                                    exist locally (CI builds them from this checkout).
+#                                    The numeric core MUST stay at or above
+#                                    guided-setup.sh's SIGNED_IMAGE_INVENTORY_MIN_VERSION —
+#                                    this smoke signs and verifies a real image
+#                                    inventory manifest below, which only runs
+#                                    at/above that floor. The below-floor skip
+#                                    path is covered without Docker by
+#                                    scripts/check-guided-setup-signed-image-floor.sh.
 #   GUIDED_SMOKE_BINARIES_IMAGE_REF  agent binaries image (default ghcr.io/lanternops/breeze/binaries:latest)
 #   GUIDED_SMOKE_WORK_DIR            installer work dir (default $HOME/breeze-guided-smoke)
 #   GUIDED_SMOKE_TUNNEL_PORT         local port for the tunnel simulation (default 8443)
@@ -48,7 +55,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 WORK_DIR="${GUIDED_SMOKE_WORK_DIR:-${HOME}/breeze-guided-smoke}"
-VERSION="${GUIDED_SMOKE_VERSION:-0.0.0-ci-smoke}"
+VERSION="${GUIDED_SMOKE_VERSION:-0.112.0-ci-smoke}"
 BINARIES_IMAGE_REF="${GUIDED_SMOKE_BINARIES_IMAGE_REF:-ghcr.io/lanternops/breeze/binaries:latest}"
 TUNNEL_PORT="${GUIDED_SMOKE_TUNNEL_PORT:-8443}"
 ADMIN_EMAIL="ci-admin@breeze.local"
