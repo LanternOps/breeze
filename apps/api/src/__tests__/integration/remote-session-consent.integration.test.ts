@@ -35,7 +35,7 @@ vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => {
 });
 
 import { remoteRoutes } from '../../routes/remote';
-import { devices, remoteSessions } from '../../db/schema';
+import { devices, remoteSessions, users } from '../../db/schema';
 
 async function insertDevice(orgId: string, siteId: string): Promise<string> {
   const agentId = `agent-consent-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -51,6 +51,11 @@ async function insertDevice(orgId: string, siteId: string): Promise<string> {
     architecture: 'x86_64',
     agentVersion: '0.0.0-test',
     status: 'online',
+    // The desktop-start capability gate refuses any device that has not
+    // reported revocation-lease support on a heartbeat (503
+    // `agent_upgrade_required`). This fixture stands in for an up-to-date
+    // agent; the gate itself is covered by remoteRevocationLease.integration.
+    revocationLeaseProtocolVersion: 1,
     enrolledAt: new Date(),
   }).returning({ id: devices.id });
   if (!row) throw new Error('insertDevice: no row returned');
@@ -63,12 +68,22 @@ async function insertSession(input: {
   userId: string;
   status?: 'pending' | 'connecting';
 }): Promise<string> {
+  // A desktop session with no revocation-lease baseline cannot be issued a
+  // lease, so every desktop-start dispatch site refuses it with 503
+  // `lease_unavailable`. `createRemoteSession` sets this; a row inserted
+  // directly by a fixture has to snapshot the live epoch itself.
+  const [live] = await getTestDb()
+    .select({ permissionsEpoch: users.permissionsEpoch })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1);
   const [row] = await getTestDb().insert(remoteSessions).values({
     deviceId: input.deviceId,
     orgId: input.orgId,
     userId: input.userId,
     type: 'desktop',
     status: input.status ?? 'connecting',
+    permissionsEpochSnapshot: Number(live!.permissionsEpoch),
     iceCandidates: [],
   }).returning({ id: remoteSessions.id });
   if (!row) throw new Error('insertSession: no row returned');

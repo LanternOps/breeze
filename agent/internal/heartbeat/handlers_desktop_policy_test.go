@@ -22,6 +22,7 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: true,
 				ClipboardViewerToHost: true,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
@@ -32,6 +33,7 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: false,
 				ClipboardViewerToHost: true,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
@@ -42,6 +44,7 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: false,
 				ClipboardViewerToHost: false,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
@@ -58,7 +61,10 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			},
 		},
 		{
-			name: "zero/absent timeouts mean disabled",
+			// A zero idle timeout still means "disabled". A zero max duration no
+			// longer means "unlimited" — it resolves to the 12h hard cap, the
+			// same as the IPC decoder.
+			name: "zero idle timeout disables idle; zero max duration means the 12h cap",
 			payload: map[string]any{
 				"idleTimeoutMinutes":      float64(0),
 				"maxSessionDurationHours": float64(0),
@@ -66,6 +72,7 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: true,
 				ClipboardViewerToHost: true,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
@@ -81,23 +88,25 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 				ClipboardHostToViewer: true,
 				ClipboardViewerToHost: true,
 				IdleTimeout:           1440 * time.Minute,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
-			name: "over-cap max duration clamped to 7d max",
+			name: "over-cap max duration clamped to the 12h cap",
 			payload: map[string]any{
 				"maxSessionDurationHours": float64(100000),
 			},
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: true,
 				ClipboardViewerToHost: true,
-				MaxDuration:           168 * time.Hour,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 		{
-			// Negative must NOT fail open. <=0 means disabled (consistent with the
-			// IPC decoder), never a negative duration.
-			name: "negative timeouts treated as disabled (not fail-open)",
+			// Negative must NOT fail open: a negative idle timeout disables idle
+			// (never a negative duration), and a negative max duration resolves
+			// to the 12h cap rather than to "no limit".
+			name: "negative timeouts never fail open",
 			payload: map[string]any{
 				"idleTimeoutMinutes":      float64(-5),
 				"maxSessionDurationHours": float64(-1),
@@ -105,6 +114,7 @@ func TestParseDesktopSessionPolicy(t *testing.T) {
 			want: desktop.SessionPolicy{
 				ClipboardHostToViewer: true,
 				ClipboardViewerToHost: true,
+				MaxDuration:           desktop.MaxSessionDurationCap,
 			},
 		},
 	}

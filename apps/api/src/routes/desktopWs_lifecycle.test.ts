@@ -122,11 +122,34 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
 }));
 
+vi.mock('../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  prepareRevocationLeaseForStart: vi.fn(async () => ({
+    ok: true,
+    lease: {
+      token: 'lease-token',
+      expiresAt: 1_000_060_000,
+      hardDeadline: 1_000_600_000,
+      renewEverySec: 25,
+      graceSec: 90,
+    },
+  })),
+  renewRevocationLease: vi.fn(async () => ({
+    status: 'renewed',
+    expiresAt: 1_000_060_000,
+    hardDeadline: 1_000_600_000,
+    renewEverySec: 25,
+    graceSec: 90,
+  })),
+}));
+
 // -------------------------------------------------------------------
 // Imports (after mocks)
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { revalidateRemoteWsAuthorityBounded } from '../services/remoteWsAuthorization';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createAccessToken } from '../services/jwt';
@@ -568,6 +591,97 @@ describe('desktopWs', () => {
 
       expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
       expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('closes the socket when the LEASE recheck revokes, even with no explicit revoke flag', async () => {
+      vi.useFakeTimers();
+
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      // The explicit revoke flag stays FALSE for the whole test: this proves the
+      // lease recheck is an independent cutoff, not a duplicate of it.
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      expect(getActiveDesktopSessionCount()).toBe(1);
+
+      vi.mocked(renewRevocationLease).mockResolvedValue({
+        status: 'revoked',
+        reason: 'membership_removed',
+      } as never);
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    // The lease recheck used to run in its OWN promise chain, outside the
+    // liveAuthorizationInFlight guard's lifetime, and its revoke branch never
+    // cleared `continuationAuthorized`. Two consequences, both asserted here:
+    // the guard's `.finally()` still pinged a socket it had just decided to
+    // revoke, and if the close failed the NEXT tick opened a fresh
+    // authorization round on a socket that should already be dead.
+    it('a LEASE revocation latches the authorization guard: no ping that tick, no second round after', async () => {
+      vi.useFakeTimers();
+
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      ws.send.mockClear();
+      vi.mocked(renewRevocationLease).mockClear();
+
+      vi.mocked(renewRevocationLease).mockResolvedValue({
+        status: 'revoked',
+        reason: 'membership_removed',
+      } as never);
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // The tick that decided to revoke must not also ping the socket.
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ping"'));
+      expect(vi.mocked(renewRevocationLease)).toHaveBeenCalledTimes(1);
+
+      // A later tick must not start a second authorization round.
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS * 2);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(vi.mocked(renewRevocationLease)).toHaveBeenCalledTimes(1);
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ping"'));
+    });
+
+    it('does NOT close the socket when the lease recheck is merely unavailable (DB/Redis blip)', async () => {
+      vi.useFakeTimers();
+
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      ws.close.mockClear();
+
+      vi.mocked(renewRevocationLease).mockResolvedValue({ status: 'unavailable' } as never);
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // An infrastructure hiccup must not disconnect the fleet — the agent's own
+      // grace window covers a control plane that is really gone.
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(getActiveDesktopSessionCount()).toBe(1);
     });
 
     it('negative control: stays open and pings while not revoked', async () => {

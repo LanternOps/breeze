@@ -3,6 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
 import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import {
+  startRevocationLeaseRenewal,
+  LEASE_REVOKED_MESSAGE,
+  LEASE_LOST_MESSAGE,
+} from '../lib/revocationLease';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
@@ -1142,6 +1147,49 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    params.mode === 'desktop' ? params.sessionId : params.tunnelId,
 	    params.deviceId,
 	  ]);
+
+  // Revocation-lease renewal. A live session is peer-to-peer, so once the
+  // answer arrives the server has no other way to reach this viewer: every 25s
+  // we ask it to re-verify that this operator is still authorized for this
+  // session. A definitive "no" (403/410) closes the connection here as well as
+  // agent-side; an inconclusive answer rides the 90s grace window, so an API or
+  // network blip cannot end a session.
+  //
+  // Runs for every desktop transport (WebRTC and the WebSocket fallback) —
+  // both stream the screen and inject input, so both must be revokable.
+  useEffect(() => {
+    if (params.mode !== 'desktop') return;
+    if (status !== 'connected') return;
+    const auth = authRef.current;
+    if (!auth?.sessionId || !auth.accessToken) return;
+
+    const endSession = (message: string) => {
+      userDisconnectRef.current = true; // no auto-reconnect onto a dead session
+      stopReconnect();
+      const prevRtc = webrtcRef.current;
+      webrtcRef.current = null;
+      prevRtc?.close();
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
+      setStatus('error');
+      setConnectedAt(null);
+      setErrorMessage(message);
+      onError(message);
+    };
+
+    return startRevocationLeaseRenewal(
+      {
+        apiUrl: auth.apiUrl,
+        sessionId: auth.sessionId,
+        accessToken: auth.accessToken,
+      },
+      {
+        onRevoked: () => endSession(LEASE_REVOKED_MESSAGE),
+        onLost: () => endSession(LEASE_LOST_MESSAGE),
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, params.mode, stopReconnect, onError]);
 
   // Count WebRTC video frames for the FPS readout. See lib/frameCounter.ts
   // for the rVFC-with-watchdog-fallback strategy: some WebViews (notably

@@ -301,41 +301,49 @@ test('candidate channel always creates a draft release', () => {
   ));
 });
 
-test('every GHCR publisher remains transitively behind create-release', () => {
-  const publishers = [...releaseJobs.values()]
-    .filter((job) => job.lines.some((line) => line.trimmed === 'packages: write'));
-  assert.ok(publishers.length > 0, 'release workflow must contain GHCR publishers');
+test('every official image is built by digest before the signed release manifest', () => {
+  const builders = [
+    'build-binaries-image',
+    'build-docker-api',
+    'build-docker-web',
+    'build-docker-portal',
+    'build-docker-m365-graph-read-executor',
+    'build-docker-m365-graph-actions-executor',
+    'build-docker-m365-communications-executor',
+  ];
+  const createRelease = requiredReleaseJob('create-release');
+  const createReleaseText = jobText(createRelease);
 
-  for (const publisher of publishers) {
-    assert.ok(
-      dependsOn(publisher.name, 'create-release'),
-      `${publisher.name} must depend transitively on create-release`,
-    );
+  for (const name of builders) {
+    const builder = requiredReleaseJob(name);
+    const text = jobText(builder);
+    assert.ok(dependsOn('create-release', name), `create-release must wait for ${name}`);
+    assert.ok(!dependsOn(name, 'create-release'), `${name} must not wait for the signer`);
+    assert.ok(text.includes('push-by-digest=true'), `${name} must push only an unadvertised digest`);
+    assert.ok(text.includes('release-image-manifest.mjs record'), `${name} must record signed-manifest metadata`);
+    assert.ok(!text.includes('docker/metadata-action@'), `${name} must not mint tags before signing`);
+    assert.ok(!text.includes('imagetools create'), `${name} must not promote tags before signing`);
   }
+
+  assert.ok(createReleaseText.includes('"schemaVersion": 1'));
+  assert.ok(createReleaseText.includes('"images": images'));
+  assert.ok(createReleaseText.includes('release-image-manifest.mjs collect'));
+  assert.ok(createReleaseText.includes('signed-release-image-manifest'));
 });
 
-test('prerelease GHCR publishers preserve exact-version and SHA-only tagging', () => {
-  const publishers = [...releaseJobs.values()]
-    .filter((job) => job.lines.some((line) => line.trimmed === 'packages: write'));
+test('the only release tag promotion consumes and verifies the signed manifest', () => {
+  const promotion = requiredReleaseJob('promote-signed-release-images');
+  const text = jobText(promotion);
 
-  for (const publisher of publishers) {
-    const publisherText = jobText(publisher);
-    if (publisherText.includes('docker/metadata-action@')) {
-      const tagBlocks = blockScalarEntries(publisher, 'tags');
-      assert.equal(tagBlocks.length, 1, `${publisher.name} must define one metadata tag block`);
-      assert.deepEqual(tagBlocks[0], [
-        'type=semver,pattern={{version}}',
-        'type=semver,pattern={{major}}.{{minor}}',
-        'type=semver,pattern={{major}}',
-        "type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}",
-        'type=sha',
-      ]);
-      continue;
-    }
+  assert.ok(dependsOn(promotion.name, 'create-release'));
+  assert.ok(text.includes('release-image-manifest.mjs verify'));
+  assert.ok(text.includes('RELEASE_MANIFEST_ED25519_PUBLIC_KEY'));
+  assert.ok(text.includes('docker buildx imagetools create'));
+  assert.ok(!text.includes('docker/build-push-action@'), 'promotion must never rebuild image bytes');
 
-    assert.ok(publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:${VERSION}"'));
-    assert.ok(publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}"'));
-    assert.ok(!publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:latest"'));
+  for (const job of releaseJobs.values()) {
+    if (job.name === promotion.name) continue;
+    assert.ok(!jobText(job).includes('imagetools create'), `${job.name} must not promote a release image`);
   }
 });
 

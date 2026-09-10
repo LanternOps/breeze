@@ -164,18 +164,15 @@ After the files are generated, the script lets you either stop with ready-to-use
 
 On Linux hosts with systemd, the guided setup can also install a reboot startup service for cleaner shutdowns and startups. On shutdown, it asks Docker Compose to stop the Breeze stack before Docker itself stops. On startup, it reruns Compose after Docker and networking are online, helping Breeze bring up Postgres/Redis, API/Web, and optional services in the intended order. The service stores its helper in a root-owned system path and points it at the setup directory you selected. For an existing guided install, run `./guided-setup.sh --install-systemd` from the Breeze setup directory.
 
-### Option 3: Self-Hosted Manual Docker
+### Option 3: Self-Hosted Manual Start
 
 Requires [Docker](https://docs.docker.com/get-docker/) and Docker Compose.
 
 ```bash
 mkdir breeze && cd breeze
-curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/.env.example
-# Caddy config — the compose file bind-mounts this, so it must exist on disk first.
-# (If it's missing, Docker creates docker/Caddyfile.prod as a directory and Caddy fails.)
-curl -fsSL --create-dirs -o docker/Caddyfile.prod https://raw.githubusercontent.com/lanternops/breeze/main/docker/Caddyfile.prod
-cp .env.example .env
+curl -fsSLO https://raw.githubusercontent.com/lanternops/breeze/main/scripts/guided-setup.sh
+chmod +x guided-setup.sh
+./guided-setup.sh --download --no-up
 
 # Edit .env — at minimum set these:
 #   BREEZE_DOMAIN        your domain (or "localhost" for local testing)
@@ -189,8 +186,9 @@ cp .env.example .env
 #   BREEZE_BOOTSTRAP_ADMIN_EMAIL     your admin email, first boot only
 #   BREEZE_BOOTSTRAP_ADMIN_PASSWORD  one-time value from `openssl rand -base64 32`
 #
-# BREEZE_VERSION ships pinned to a known-good release. Bump it to upgrade
-# (see https://github.com/lanternops/breeze/releases for the current version).
+# The setup verifies the selected release's Ed25519-signed image inventory and
+# writes exact repository@sha256 refs. Do not replace those refs with tags or
+# copy digests from the package page. Rerun setup to resolve an upgrade.
 
 # Optional — for remote desktop (WebRTC TURN relay):
 #   TURN_HOST            public IP of your TURN server
@@ -203,6 +201,9 @@ docker compose up -d
 ```
 
 Breeze will be running at `https://your-domain` (or `https://localhost` with a self-signed cert for local testing).
+
+The generated digest refs are the authorization boundary. A bare Compose file
+plus mutable tags is not a supported release installation or upgrade path.
 
 On first production boot against an empty database, Breeze creates the initial Partner Admin only from operator-provided `BREEZE_BOOTSTRAP_ADMIN_EMAIL` and `BREEZE_BOOTSTRAP_ADMIN_PASSWORD` values. If those values are missing, startup refuses to seed the empty production database. The password is never printed to logs. After you sign in and finish setup, remove those bootstrap values from `.env`.
 

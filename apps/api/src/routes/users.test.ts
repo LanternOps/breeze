@@ -2024,6 +2024,22 @@ describe('user routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      // Belt to the permissions-epoch braces: a role change must also END any
+      // live remote session the target holds, not merely make the NEXT
+      // revocation-lease renew fail ~25s later.
+      expect(vi.mocked(terminateUserRemoteSessions)).toHaveBeenCalledWith(
+        '11111111-1111-1111-1111-111111111111',
+      );
+    });
+
+    it('does not tear down remote sessions when the role assignment is refused', async () => {
+      const res = await app.request('/users/user-123/role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roleId: '44444444-4444-4444-4444-444444444444' }),
+      });
+      expect(res.status).toBe(403);
+      expect(vi.mocked(terminateUserRemoteSessions)).not.toHaveBeenCalled();
     });
 
     it('rejects self role assignment', async () => {
@@ -2179,6 +2195,24 @@ describe('user routes', () => {
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
       expect(runPostCommitCleanup).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
       expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
+      // Belt: membership removal must also END any live remote session the
+      // removed member holds, not only advance the permissions epoch that the
+      // next revocation-lease renew will notice.
+      expect(vi.mocked(terminateUserRemoteSessions)).toHaveBeenCalledWith(
+        '11111111-1111-1111-1111-111111111111',
+      );
+    });
+
+    it('does not tear down remote sessions when no membership row was deleted', async () => {
+      mockRemoveMembershipTx({ deletedRows: [] });
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(404);
+      expect(vi.mocked(terminateUserRemoteSessions)).not.toHaveBeenCalled();
     });
 
     it('does not run post-commit cleanup when no row was deleted (404)', async () => {

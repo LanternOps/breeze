@@ -209,10 +209,14 @@ type SecurityCapabilities struct {
 	// Device-control protocols are independently versioned and intentionally
 	// omitted when unsupported. The API treats omission, zero, malformed, and
 	// unknown values as capability 0 on every heartbeat.
-	PeripheralPolicyProtocolVersion int                      `json:"peripheralPolicyProtocolVersion,omitempty"`
-	RollbackProtocolVersion         int                      `json:"rollbackProtocolVersion,omitempty"`
-	PamLifetimeProtocolVersion      int                      `json:"pamLifetimeProtocolVersion,omitempty"`
-	PamReconciliation               *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
+	PamLifetimeProtocolVersion      int `json:"pamLifetimeProtocolVersion,omitempty"`
+	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
+	// session's revocation lease alive and stops streaming when it lapses. The
+	// API refuses to start a desktop session against an agent reporting 0.
+	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
+	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -434,6 +438,11 @@ type Heartbeat struct {
 	pamGateStuckReassertInterval time.Duration
 	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
 	desktopOwners                sync.Map // desktop session ID -> helper session ID
+	// leaseRenewRequester asks the control plane to renew a desktop session's
+	// revocation lease. Indirected through a field (rather than calling the
+	// method directly) so the helper-hosted bridge is observable in tests.
+	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
+	leaseRenewRequester func(sessionID string)
 
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
@@ -1072,6 +1081,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}
 
+	// The desktop watchdog has no transport of its own — this process owns the
+	// command socket, so it drives every lease renewal. Registered
+	// unconditionally (not only in direct mode): the service process runs the
+	// renewals for helper-hosted sessions too.
+	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// Same outbound renew, reached from the IPC side: a helper-hosted session's
+	// watchdog lives in the helper process, so its renewals arrive here as
+	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
+	h.leaseRenewRequester = h.requestRevocationLeaseRenew
+
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
 	h.initializeRollbackController()
@@ -1100,6 +1119,113 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// isn't silently lost after SendResult already reported success. The
 		// next reconnect's OnConnected flush redelivers it. (FIX 3)
 		ws.OnResultWriteFailed = h.preserveUndeliveredResult
+		// Revocation-lease answers from the control plane. This process owns the
+		// command socket, so it performs every renewal — including for sessions
+		// whose capture actually runs in a user helper, which is told to stop
+		// over IPC (handleStopDesktop) rather than talking to the API itself.
+		ws.OnRevocationLease = h.applyRevocationLeaseAnswer
+	}
+}
+
+// applyRevocationLeaseAnswer routes the server's answer to a lease renewal.
+//
+// A revocation stops the session through the SAME path an operator stop takes
+// (handleStopDesktop), so the IPC-helper case is covered without a second
+// teardown implementation: state-based routing sends TypeDesktopStop to the
+// helper that owns the session, and falls back to the direct manager otherwise.
+func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMessage) {
+	if msg.SessionID == "" {
+		return
+	}
+	// The answer must reach whichever process actually hosts the session. On a
+	// service / daemon install that is a user helper, whose SessionManager is a
+	// different object entirely — applying it only to h.desktopMgr is what left
+	// every helper-hosted session unrenewed until its watchdog killed it.
+	//
+	// Unsolicited (SendNotify, not SendCommand) and off this goroutine: an IPC
+	// write is bounded by a 30s deadline, and websocket/client.go documents
+	// that this callback must not block. Reordering two in-flight answers is
+	// harmless — a renewal only ever EXTENDS the expiry and a revocation is
+	// sticky and outranks it, so a late renewal cannot resurrect a revoked
+	// session.
+	go h.forwardRevocationLeaseToHelper(msg)
+
+	if !msg.Revoked {
+		// Deadlines are converted to the monotonic clock at receipt so an NTP
+		// step cannot extend a live lease (desktop.MonotonicDeadline).
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
+			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
+			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		return
+	}
+
+	log.Warn("remote desktop session revoked by the control plane",
+		"sessionId", msg.SessionID, "reason", msg.Reason)
+	// Mark it revoked first — synchronously, so the local watchdog is already
+	// authoritative before anything below can fail or stall.
+	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	// The stop itself runs OFF the read pump: handleStopDesktop does a 10s
+	// synchronous IPC SendCommand and StopSession -> wg.Wait(), and
+	// websocket/client.go documents that this callback must not block. With the
+	// revocation already recorded (and forwarded to the helper above), nothing
+	// here is load-bearing for correctness — it just ends the session sooner
+	// than the next watchdog tick would.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("panic stopping revoked desktop session", "error", fmt.Sprint(r))
+			}
+		}()
+		result := handleStopDesktop(h, Command{
+			ID:      "desk-stop-" + msg.SessionID,
+			Type:    "stop_desktop",
+			Payload: map[string]any{"sessionId": msg.SessionID},
+		})
+		if result.Status != "completed" {
+			log.Warn("failed to stop revoked desktop session",
+				"sessionId", msg.SessionID, "error", result.Error)
+		}
+	}()
+}
+
+// forwardRevocationLeaseToHelper relays a lease answer over IPC to the helper
+// that owns the session, if any. A failure is logged, not escalated: the
+// helper's own watchdog is authoritative and stops the session at
+// expiresAt+grace once answers stop arriving.
+func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLeaseMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("panic forwarding revocation lease update", "error", fmt.Sprint(r))
+		}
+	}()
+	owner := h.desktopOwnerSession(msg.SessionID)
+	if owner == nil {
+		return
+	}
+	update := ipc.DesktopLeaseUpdate{
+		SessionID:          msg.SessionID,
+		ExpiresAtUnixMs:    msg.ExpiresAtUnixMs,
+		HardDeadlineUnixMs: msg.HardDeadlineUnixMs,
+		Revoked:            msg.Revoked,
+		Reason:             msg.Reason,
+	}
+	if err := owner.SendNotify("desk-lease-"+msg.SessionID, ipc.TypeDesktopLeaseUpdate, update); err != nil {
+		log.Warn("failed to forward revocation lease update to the owning helper",
+			"sessionId", msg.SessionID, "error", err.Error())
+	}
+}
+
+// requestRevocationLeaseRenew is the desktop manager's outbound half: it asks
+// the control plane to revalidate and extend a session's lease. Fire-and-forget
+// — the answer lands asynchronously in applyRevocationLeaseAnswer, and a
+// control plane that never answers is exactly what the grace window covers.
+func (h *Heartbeat) requestRevocationLeaseRenew(sessionID string) {
+	if h.wsClient == nil {
+		return
+	}
+	if err := h.wsClient.SendRevocationLeaseRenew(sessionID); err != nil {
+		log.Debug("revocation lease renew request not sent",
+			"sessionId", sessionID, "error", err.Error())
 	}
 }
 
@@ -1229,6 +1355,32 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopLeaseRenew:
+		// A helper-hosted session's lease watchdog lives in the helper, which
+		// holds no command socket. This is the inbound half of the IPC lease
+		// bridge: turn the helper's ask into a renew on the agent's command
+		// WebSocket. The answer comes back asynchronously and is forwarded in
+		// applyRevocationLeaseAnswer.
+		var renew ipc.DesktopLeaseRenewRequest
+		if err := json.Unmarshal(env.Payload, &renew); err != nil {
+			log.Warn("invalid desktop lease renew payload", "error", err.Error())
+			return
+		}
+		if !desktopSessionIDPattern.MatchString(renew.SessionID) {
+			log.Warn("dropping desktop lease renew with invalid session ID",
+				"sessionId", renew.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		// A helper may only renew the sessions it actually owns — otherwise one
+		// helper could keep another's session alive.
+		if owner := h.desktopOwnerSession(renew.SessionID); owner == nil || owner.SessionID != session.SessionID {
+			log.Warn("dropping desktop lease renew for non-owned session",
+				"sessionId", renew.SessionID, "helperSession", session.SessionID)
+			return
+		}
+		if h.leaseRenewRequester != nil {
+			h.leaseRenewRequester(renew.SessionID)
+		}
 	case ipc.TypeDesktopPeerDisconnected:
 		var notice ipc.DesktopPeerDisconnectedNotice
 		if err := json.Unmarshal(env.Payload, &notice); err != nil {
@@ -4165,12 +4317,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: SecurityCapabilities{
-			OutboundNetworkPolicyVersion:    1,
-			ScriptSecretEnvVersion:          1,
-			PeripheralPolicyProtocolVersion: 2,
-			RollbackProtocolVersion:         1,
-		},
+		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
@@ -7178,4 +7325,23 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// overwriting the new version in the database. Block forever so the
 	// service manager kills us.
 	select {}
+}
+
+// compiledSecurityCapabilities is the capability set THIS build implements.
+//
+// Every value here is compiled in, not a runtime toggle, and the server writes
+// them non-sticky on every beat — so a downgrade correctly reports back down
+// and each dispatch gate stops trusting a stale claim. Extracted from
+// sendHeartbeat so the declared set is directly testable: the API refuses to
+// start a remote desktop session against an agent reporting
+// revocationLeaseProtocolVersion 0, which makes a silently dropped declaration
+// a fleet-wide outage rather than a degraded feature.
+func compiledSecurityCapabilities() SecurityCapabilities {
+	return SecurityCapabilities{
+		OutboundNetworkPolicyVersion:    1,
+		ScriptSecretEnvVersion:          1,
+		PeripheralPolicyProtocolVersion: 2,
+		RollbackProtocolVersion:         1,
+		RevocationLeaseProtocolVersion:  1,
+	}
 }
