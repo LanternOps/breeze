@@ -398,7 +398,7 @@ commandsRoutes.post(
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
     // reaper) remains acceptable for non-PAM commands. Every other terminal
     // result preserves the historical short circuit.
-    if (!commandAcceptsAgentResult(command.status, command.result)) {
+    if (!commandAcceptsAgentResult(command.status, command.result, command.type)) {
       return c.json({ success: true });
     }
 
