@@ -117,6 +117,54 @@ describe('buildTenantExportPlan', () => {
     );
   });
 
+  const enrollmentEpochs = [
+    ['enrollment_keys', 'credential_generation', ['key', 'key_secret_hash', 'short_code']],
+    ['installer_bootstrap_tokens', 'parent_credential_generation', ['token']],
+  ] as const;
+
+  it.each(enrollmentEpochs)(
+    'exports the reviewed integer epoch for %s while excluding credentials',
+    async (tableName, epoch, secrets) => {
+      const table = CORE_TENANT_EXPORT_POLICY[tableName]!;
+      mockState.columns = Object.keys(table.columns).map((name, index) =>
+        column(tableName, name, name === epoch ? 'integer' : 'text', index + 1),
+      );
+
+      expect(table.columns[epoch]).toMatchObject({
+        decision: 'include', reviewedSensitiveName: true,
+      });
+      expect(table.columns[epoch]!.rationale).toMatch(/positive integer/i);
+      const [plan] = await buildTenantExportPlan([tableName], CORE_TENANT_EXPORT_POLICY);
+      expect(plan!.includedColumns).toContain(epoch);
+      for (const secret of secrets) {
+        expect(table.columns[secret]!.decision).toBe('exclude');
+        expect(plan!.includedColumns).not.toContain(secret);
+      }
+    },
+  );
+
+  it.each(enrollmentEpochs)(
+    'rejects an unreviewed integer epoch for %s without relaxing the name guard',
+    async (tableName, epoch) => {
+      const table = CORE_TENANT_EXPORT_POLICY[tableName]!;
+      mockState.columns = Object.keys(table.columns).map((name, index) =>
+        column(tableName, name, name === epoch ? 'integer' : 'text', index + 1),
+      );
+      const registry: TenantExportPolicyRegistry = {
+        [tableName]: {
+          ...table,
+          columns: {
+            ...table.columns,
+            [epoch]: { decision: 'include', rationale: 'Unreviewed integer epoch.' },
+          },
+        },
+      };
+      await expect(buildTenantExportPlan([tableName], registry)).rejects.toThrow(
+        new RegExp(`${epoch}.*reviewedSensitiveName`),
+      );
+    },
+  );
+
   it.each([
     ['jsonb type', column('widgets', 'preferences', 'jsonb', 2, 'jsonb')],
     ['bytea type', column('widgets', 'document', 'bytea', 2, 'bytea')],
@@ -276,6 +324,25 @@ describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
       decision: 'include',
       reviewedSensitiveName: true,
     });
+  });
+
+  it('classifies the portal auth epoch but omits it from the export plan', async () => {
+    const portalPolicy = CORE_TENANT_EXPORT_POLICY.portal_users!;
+    mockState.columns = Object.keys(portalPolicy.columns).map((columnName, index) =>
+      column('portal_users', columnName, 'text', index + 1),
+    );
+
+    const [plan] = await buildTenantExportPlan(
+      ['portal_users'],
+      CORE_TENANT_EXPORT_POLICY,
+    );
+
+    expect(portalPolicy.columns.auth_epoch).toMatchObject({
+      decision: 'exclude',
+      reviewedSensitiveName: true,
+    });
+    expect(plan?.includedColumns).not.toContain('auth_epoch');
+    expect(plan?.includedColumns).toContain('status');
   });
 
   it('exports portal report definitions and contact-bound recipients', () => {

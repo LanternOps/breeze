@@ -4075,24 +4075,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/policies/{id}/activate': {
-      post: {
-        operationId: 'activatePolicy',
-        tags: ['Policies'],
-        summary: 'Activate policy',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Policy activated',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/Policy' }
-              }
-            }
-          }
-        }
-      }
-    },
     '/policies/{id}/deactivate': {
       post: {
         operationId: 'deactivatePolicy',
@@ -4105,35 +4087,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Policy' }
-              }
-            }
-          }
-        }
-      }
-    },
-    '/policies/{id}/evaluate': {
-      post: {
-        operationId: 'evaluatePolicy',
-        tags: ['Policies'],
-        summary: 'Evaluate policy',
-        description: 'Force immediate policy evaluation',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Evaluation completed',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    message: { type: 'string' },
-                    policyId: { type: 'string', format: 'uuid' },
-                    devicesEvaluated: { type: 'integer' },
-                    results: { type: 'array', items: { type: 'object' } },
-                    summary: { type: 'object' },
-                    evaluatedAt: { type: 'string', format: 'date-time' }
-                  }
-                }
               }
             }
           }
@@ -4173,34 +4126,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/policies/{id}/remediate': {
-      post: {
-        operationId: 'triggerPolicyRemediation',
-        tags: ['Policies'],
-        summary: 'Trigger policy remediation',
-        description: 'Trigger remediation automation for a policy without running a full evaluation',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Remediation automation triggered',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    message: { type: 'string' },
-                    policyId: { type: 'string', format: 'uuid' },
-                    automationId: { type: 'string', format: 'uuid' },
-                    run: { type: 'object' }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-
     // ============================================
     // REPORT ENDPOINTS
     // ============================================
@@ -4475,25 +4400,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         responses: {
           '200': {
             description: 'Offer submitted',
-            content: {
-              'application/json': {
-                schema: { type: 'object' }
-              }
-            }
-          }
-        }
-      }
-    },
-    '/remote/sessions/{id}/answer': {
-      post: {
-        operationId: 'submitWebRtcAnswer',
-        tags: ['Remote'],
-        summary: 'Submit WebRTC answer',
-        description: 'Submit WebRTC SDP answer from agent',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Answer submitted',
             content: {
               'application/json': {
                 schema: { type: 'object' }

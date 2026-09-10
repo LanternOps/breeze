@@ -46,7 +46,7 @@ The browser and device negotiate a WebRTC peer-to-peer connection through the Br
 1. `POST /remote/sessions` with `type: "desktop"` — creates the session record.
 2. `GET /remote/ice-servers` — retrieve STUN/TURN server configuration.
 3. `POST /remote/sessions/:id/offer` — send the SDP offer from the browser.
-4. `POST /remote/sessions/:id/answer` — relay the device's SDP answer back.
+4. The authenticated device agent returns its answer and any endpoint consent verdict over its command-result channel.
 5. `POST /remote/sessions/:id/ice` — exchange ICE candidates.
 6. `POST /remote/sessions/:id/ws-ticket` — mint a one-time WebSocket ticket.
 7. Connect via WebSocket using the ticket.
@@ -437,7 +437,6 @@ To free session capacity, close active sessions from the Active Sessions list on
 | DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
 | GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
 | POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
-| POST | `/remote/sessions/:id/answer` | Relay device's SDP answer back to browser |
 | POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |
 | POST | `/remote/sessions/:id/ws-ticket` | Mint a one-time WebSocket ticket (required for terminal and desktop) |
 | POST | `/remote/sessions/:id/end` | End a session (optional body: `bytesTransferred`, `recordingUrl` — see [Session Recording](#session-recording)) |
