@@ -17,6 +17,7 @@ const {
   const writeRouteAuditMock = vi.fn();
   const authState = {
     scope: 'partner' as 'partner' | 'system' | 'organization',
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
     permissions: new Set<string>(['invoices:write']),
     mfa: true,
   };
@@ -95,6 +96,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.scope === 'organization' ? null : 'p1',
+      partnerOrgAccess: authState.partnerOrgAccess,
       user: { id: 'u1' },
     });
     await next();
