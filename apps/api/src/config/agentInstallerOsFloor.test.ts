@@ -19,23 +19,33 @@ const WXS_PATH = path.join(REPO_ROOT, 'agent/installer/breeze.wxs');
  * the MSI has a LaunchCondition that blocks the install up front, with a
  * message identifying the real floor -- so a future edit to breeze.wxs
  * can't silently drop the guard.
+ *
+ * 2026-09-10 (v0.111.1): the original `VersionNT >= 1000` condition refused
+ * every fresh install on Windows 10/11, because Windows Installer reports
+ * VersionNT = 603 on all Windows 10+ by design (msiexec.exe is manifested
+ * only up to 8.1; Microsoft KB 3202260). The floor is now the presence of
+ * HKLM\...\CurrentVersion\CurrentMajorVersionNumber via RegistrySearch, and
+ * AppSearch must be scheduled before LaunchConditions. This suite guards
+ * both, alongside agent/installer/wxs_test.go in the agent CI job.
  */
 describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
   const wxs = readFileSync(WXS_PATH, 'utf8');
 
   it('blocks install below the Windows 10 / Server 2016 floor via the registry, not VersionNT', () => {
-    // VersionNT / WindowsBuild are NOT trustworthy: Windows reports a fake
-    // 6.3/9600 (VersionNT=603) to any msiexec client process without a
-    // Windows 10 supportedOS manifest, and NinjaRMM / Action1 script hosts
-    // are such processes. A "VersionNT >= 1000" floor refused a fully
-    // patched Windows 11 24H2 box pushed by Ninja (v0.111.1, 2026-09-10).
-    // HKLM\...\CurrentVersion\CurrentMajorVersionNumber exists only on
+    // VersionNT / WindowsBuild are NOT trustworthy: Windows Installer
+    // reports the Windows 8.1 values (603 / 9600) on every Windows 10+
+    // install by design (msiexec.exe is manifested only up to 8.1, KB
+    // 3202260). First seen as NinjaRMM/Action1 pushes of 0.111.1 refused on
+    // Windows 11 24H2 (2026-09-10). CurrentMajorVersionNumber exists only on
     // Windows 10 / Server 2016+, and registry reads bypass the shim.
-    expect(wxs).toMatch(
-      /<RegistrySearch[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
-    );
-    expect(wxs).toMatch(/<Launch\s+Condition="WINDOWS_CURRENT_MAJOR_VERSION"/);
+    const prop = wxs.match(
+      /<Property\s+Id="([A-Z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"/s,
+    )?.[1];
+    expect(prop, 'a <Property> wrapping the CurrentMajorVersionNumber RegistrySearch').toBeDefined();
     const launchConditions = [...wxs.matchAll(/<Launch\s+Condition="([^"]*)"/g)].map((m) => m[1]);
+    // The Launch condition must read the property the search fills, and
+    // `Installed OR` keeps repair/upgrade/uninstall unblocked.
+    expect(launchConditions).toContain(`Installed OR ${prop}`);
     for (const cond of launchConditions) {
       expect(cond).not.toMatch(/VersionNT\s*[<>=]/);
       expect(cond).not.toContain('WindowsBuild');
@@ -47,12 +57,12 @@ describe('agent installer minimum-OS LaunchCondition (#4608)', () => {
     // the registry-backed property would still be empty when evaluated.
     for (const seq of ['InstallUISequence', 'InstallExecuteSequence']) {
       const block = wxs.match(new RegExp(`<${seq}>([\\s\\S]*?)</${seq}>`))?.[1] ?? '';
-      expect(block, seq).toContain('<AppSearch Before="LaunchConditions" />');
+      expect(block, seq).toMatch(/<AppSearch\s+Before="LaunchConditions"\s*\/>/);
     }
   });
 
   it('gives a clear message naming the supported floor', () => {
-    const match = wxs.match(/<Launch\s+Condition="WINDOWS_CURRENT_MAJOR_VERSION"\s+Message="([^"]+)"/);
+    const match = wxs.match(/<Launch\s+Condition="Installed OR WINDOWS_CURRENT_MAJOR_VERSION"\s+Message="([^"]+)"/);
     expect(match).not.toBeNull();
     const message = match?.[1] ?? '';
     expect(message).toContain('Windows 10');

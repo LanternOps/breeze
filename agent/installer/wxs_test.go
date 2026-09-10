@@ -1,6 +1,6 @@
-// Package installer holds the WiX sources for the Windows MSI. There is no
-// Go code here; this file exists so `go test ./...` guards structural
-// invariants of breeze.wxs that only surface on a real Windows box.
+// Package installer holds the WiX sources for the Windows MSI plus this
+// test, which exists so `go test ./...` guards structural invariants of
+// breeze.wxs that would otherwise only surface on a real Windows box.
 package installer
 
 import (
@@ -33,12 +33,14 @@ func launchConditions(wxs string) []string {
 	return out
 }
 
-// Windows reports a fake 6.3/9600 version (VersionNT = 603) to any msiexec
-// client process lacking a Windows 10 supportedOS manifest — NinjaRMM and
-// Action1 script hosts among them — so a VersionNT/WindowsBuild floor
-// refuses to install on real Windows 11 boxes when pushed by another RMM.
-// The floor must come from the registry, which the version shim does not
-// touch.
+// Windows Installer reports VersionNT = 603 / WindowsBuild = 9600 (the
+// Windows 8.1 values) on every Windows 10+ install by design: msiexec.exe is
+// manifested only up to Windows 8.1 (Microsoft KB 3202260). A
+// VersionNT/WindowsBuild floor therefore cannot express "Windows 10 or
+// later" and refused every fresh install on Windows 10/11 (v0.110.0 to
+// v0.111.1). The floor must come from the registry, which the version shim
+// does not touch, and the property the RegistrySearch fills must be the one
+// the Launch condition reads.
 func TestOsFloorDoesNotUseShimmedVersionProperties(t *testing.T) {
 	wxs := readWxs(t)
 	conds := launchConditions(wxs)
@@ -52,17 +54,23 @@ func TestOsFloorDoesNotUseShimmedVersionProperties(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(wxs, `Name="CurrentMajorVersionNumber"`) {
-		t.Error("expected a RegistrySearch on CurrentMajorVersionNumber to provide the Windows 10 / Server 2016 floor")
+	// The RegistrySearch must sit directly under a <Property>, and that
+	// property's Id must be what the Launch condition reads; otherwise the
+	// condition evaluates an always-empty property and refuses every install.
+	propRe := regexp.MustCompile(`(?s)<Property\s+Id="([A-Z_0-9]+)"[^>]*>\s*<RegistrySearch\s+[^>]*Key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"[^>]*Name="CurrentMajorVersionNumber"`)
+	pm := propRe.FindStringSubmatch(wxs)
+	if pm == nil {
+		t.Fatal("expected a <Property> wrapping a RegistrySearch on HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentMajorVersionNumber to provide the Windows 10 / Server 2016 floor")
 	}
+	prop := pm[1]
 	found := false
 	for _, c := range conds {
-		if strings.Contains(c, "WINDOWS_CURRENT_MAJOR_VERSION") {
+		if c == "Installed OR "+prop {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected a <Launch> condition on WINDOWS_CURRENT_MAJOR_VERSION")
+		t.Errorf("expected a <Launch> condition exactly %q (Installed OR keeps repair/uninstall unblocked)", "Installed OR "+prop)
 	}
 }
 
@@ -77,7 +85,7 @@ func TestAppSearchRunsBeforeLaunchConditionsInBothSequences(t *testing.T) {
 		if m == nil {
 			t.Fatalf("no <%s> block", seq)
 		}
-		if !strings.Contains(m[1], `<AppSearch Before="LaunchConditions" />`) {
+		if !regexp.MustCompile(`<AppSearch\s+Before="LaunchConditions"\s*/>`).MatchString(m[1]) {
 			t.Errorf("<%s> must schedule AppSearch before LaunchConditions", seq)
 		}
 	}
