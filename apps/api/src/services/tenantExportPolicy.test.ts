@@ -269,6 +269,15 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports deployment dependency fingerprints as reviewed integrity provenance', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.software_deployments!.columns.dependency_fingerprint,
+    ).toMatchObject({
+      decision: 'include',
+      reviewedSensitiveName: true,
+    });
+  });
+
   it('exports portal report definitions and contact-bound recipients', () => {
     expect(
       CORE_TENANT_EXPORT_POLICY.reports!.columns.portal_self_service!.decision,

@@ -63,6 +63,7 @@ import {
   authorizeCatalogItemRead,
   getFileExtension,
   insertLatestSoftwareVersion,
+  lockSoftwareCatalogForVersionInsert,
   resolveScopedOrgId,
 } from '../services/softwareVersionShared';
 import { detectionRulesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
@@ -607,6 +608,9 @@ softwareUploadRoutes.post(
       const [catalogItem] = await db.select().from(softwareCatalog)
         .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
       if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+      if (!await lockSoftwareCatalogForVersionInsert(catalogId)) {
+        return c.json({ error: 'Catalog item not found' }, 404);
+      }
 
       // Verify the FILE, not just the DB counter, before hashing anything.
       // `bytesReceived === fileSize` above only proves the row thinks the
