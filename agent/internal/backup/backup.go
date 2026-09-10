@@ -46,6 +46,23 @@ const (
 
 var errBackupStopped = errors.New("backup stopped")
 
+// ErrPublishLeaseExpired is returned when a server-dispatched run (D18
+// §3.1) cannot publish its manifest because the server's publish lease
+// (BackupConfig.PublishLeaseExpiresAt, minus the 1h publishMargin) expired
+// before upload finished. The server treats a late result past lease
+// expiry as failed — returning this distinct, unwrapped-comparable error
+// lets logs and tests tell it apart from an ordinary publish failure. No
+// manifest is uploaded and nothing is deleted: the partial, manifest-less
+// prefix is reclaimed by GC's existing manifest-less-prefix rule.
+var ErrPublishLeaseExpired = errors.New("backup publish lease expired before manifest could be published")
+
+// ErrJournalExpiredAtPublish is the same fail-closed rule as
+// ErrPublishLeaseExpired but keyed on the checkpoint journal's age for a
+// RESUMED run: if journalMaxAge has elapsed by the time upload finishes,
+// the server can no longer distinguish this manifest from an abandoned
+// resume attempt, so publishing is refused.
+var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before manifest could be published")
+
 // collectSystemState is a seam over systemstate.CollectSystemState so tests can
 // exercise the failure and partial-collection paths deterministically — the
 // real collector shells out to OS tools and succeeds on any CI host, which
@@ -117,6 +134,28 @@ type BackupConfig struct {
 	// plumbing (#3269) is free to change the session's shape underneath without
 	// touching this field.
 	VSSProvider vss.Provider
+
+	// BaseSnapshotID switches this run between server-owned base selection
+	// (D18 §3.1) and the legacy bucket-listing previousManifest path. nil
+	// means the dispatching server predates the field (legacy mode,
+	// unchanged behavior — see exec_backup.go's payload decode). A non-nil
+	// pointer to "" means the server explicitly selected no base for this
+	// run (full run, no dedupe attempted). A non-nil pointer to a snapshot
+	// id means the server selected that snapshot as this run's dedupe base
+	// — fetchServerOwnedBase fetches and validates it (D6 identity guard)
+	// before use, failing open to a full run on any problem (download
+	// error, decode error, or identity mismatch).
+	BaseSnapshotID *string
+
+	// PublishLeaseExpiresAt is the deadline (verbatim from the backup_run
+	// payload's publishLeaseExpiresAt field) after which this run must not
+	// publish snapshots/<id>/manifest.json — see leaseGate. Set for every
+	// server-dispatched file/system_image run, base or not (it fences late
+	// results server-side too, D18 §3.1). Zero value means the dispatching
+	// server predates the field, disabling the check entirely (legacy
+	// behavior: publish whenever ready). There is no renewal — this is
+	// exactly what the server chose at dispatch time.
+	PublishLeaseExpiresAt time.Time
 }
 
 // BackupJob tracks the state of a backup run.
@@ -228,11 +267,25 @@ func (m *BackupManager) GetPaths() []string {
 	return m.config.Paths
 }
 
-// GetRetention returns the configured retention count. On the helper's
-// backup_run path this is 0: retention is owned by the server, and 0 makes
-// DeleteSnapshotContext a no-op so the agent never prunes remote storage.
+// GetRetention returns the configured retention count. It is retained for
+// config-shape compatibility only: agent-side retention pruning has been
+// removed entirely (D18 §3.5) — the server is the sole retention/GC
+// authority. This value drives no behavior anywhere in this package.
 func (m *BackupManager) GetRetention() int {
 	return m.config.Retention
+}
+
+// GetBaseSnapshotID returns the server-selected incremental-dedupe base for
+// this run (D18 §3.1): nil in legacy mode, a pointer to "" for an
+// explicit full run, a pointer to a snapshot id otherwise.
+func (m *BackupManager) GetBaseSnapshotID() *string {
+	return m.config.BaseSnapshotID
+}
+
+// GetPublishLeaseExpiresAt returns the deadline this run must publish its
+// manifest by (zero value = no lease, legacy server).
+func (m *BackupManager) GetPublishLeaseExpiresAt() time.Time {
+	return m.config.PublishLeaseExpiresAt
 }
 
 // GetStagingDir returns the configured staging base directory, or an empty
@@ -418,6 +471,118 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	stopRunKeepalive := startRunKeepalive(runCtx, progressFn)
 	defer stopRunKeepalive()
 
+	// Checkpoint journal: keyed by destination identity (provider kind +
+	// endpoint/bucket/path + the *configured* source paths — never the
+	// VSS-rewritten or system-state-staging paths in backupPaths, which are
+	// ephemeral per run and would defeat identity matching across runs).
+	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
+	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
+	// (a deterministic root-owned filename there is a symlink/tamper surface;
+	// a forged journal can trigger remote snapshot cleanup or silent file
+	// skips). If no secure dir exists, the run simply doesn't journal: resume
+	// is an optimization, never worth a world-writable root-owned write.
+	var journal *snapshotJournal
+	var resumedJournal bool
+	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
+		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
+	} else {
+		var journalErr error
+		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
+		if journalErr != nil {
+			// A journal is a best-effort checkpoint, never a correctness
+			// requirement: degrade to a journal-less run rather than failing
+			// the backup over it.
+			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
+			journal = nil
+		}
+	}
+	// The journal is now open earlier than it used to be (before VSS/scan,
+	// P2 fix) — a stop/failure between here and createSnapshotWithProgress's
+	// call site (VSS ctx cancellation, a scan/system-state failure, the
+	// resume-shortcut's own early returns) would otherwise leak the open
+	// file descriptor and leave an unresolved journal on disk. journalOwned
+	// flips true only once the journal's fd lifecycle has been handed off
+	// (to createSnapshotWithProgress, or resolved directly by the
+	// resume-shortcut's own Complete() call below); every other exit path
+	// closes it here via Abandon() (idempotent alongside Complete() — both
+	// just Close() the file; a resumable journal with zero new entries is
+	// harmless to leave for pickup on the next run).
+	journalOwned := false
+	if journal != nil {
+		defer func() {
+			if !journalOwned {
+				journal.Abandon()
+			}
+		}()
+	}
+	if journal != nil {
+		if staleID, ok := journal.StaleSnapshotID(); ok {
+			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
+			// journal and the (near-impossible) identity-mismatch case — see
+			// openSnapshotJournal — so the message below is deliberately
+			// generic rather than claiming a specific cause. The agent no
+			// longer cleans up the STALE JOURNAL'S remote prefix itself
+			// (D18 §3.5): that prefix belongs to a PRIOR, different run
+			// (not this run's own in-progress prefix, which is the only
+			// exception §3.5 keeps — see abortStopped/abortSourceGone in
+			// snapshot.go), so it is simply dropped and GC's existing
+			// manifest-less-prefix rule reclaims it.
+			log.Warn("discarding unusable checkpoint journal",
+				"snapshotId", staleID,
+				"maxAge", journalMaxAge.String(),
+			)
+		}
+		if resumedJournal {
+			log.Info("resuming interrupted backup from checkpoint journal",
+				"snapshotId", journal.snapshotID,
+				"resumedBytes", journal.ResumedBytes(),
+			)
+		}
+	}
+
+	// Resume-with-already-published-manifest, checked BEFORE any source
+	// scanning (P2 fix): a resumed run whose manifest is already published
+	// must report success even if the configured source has since vanished
+	// — the len(files)==0 exits later in this function (and in
+	// createSnapshotWithProgress) must never get a chance to fail this run
+	// first. See fetchPublishedManifest's three-state contract: only a
+	// CONFIRMED-absent result falls through to a normal run; any other
+	// error fails the job closed right here.
+	if journal != nil && resumedJournal {
+		resumePrefix := path.Join(snapshotRootDir, journal.snapshotID)
+		existing, fetchErr := fetchPublishedManifest(runCtx, m.config.Provider, resumePrefix)
+		if fetchErr != nil {
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = fmt.Errorf("resume check failed, refusing to guess whether %s was already published: %w", resumePrefix, fetchErr)
+			return job, job.Error
+		}
+		if existing != nil {
+			log.Info("resume: manifest already published, skipping the entire run",
+				"snapshotId", existing.ID,
+				"files", len(existing.Files),
+			)
+			if err := journal.Complete(); err != nil {
+				log.Warn("failed to remove completed checkpoint journal", "error", err.Error())
+			}
+			journalOwned = true
+			job.Status = jobStatusCompleted
+			job.CompletedAt = time.Now().UTC()
+			job.Snapshot = existing
+			job.FilesBackedUp = len(existing.Files)
+			job.BytesBackedUp = existing.Size
+			for _, f := range existing.Files {
+				if isReferenceEntry(f, existing.ID) {
+					job.ReferencedFiles++
+					job.ReferencedBytes += f.Size
+				}
+			}
+			return job, nil
+		}
+		// existing == nil, fetchErr == nil: confirmed absent — proceed to
+		// VSS/scan/upload normally, reusing this SAME journal (no second
+		// open) all the way down to createSnapshotWithProgress's call site.
+	}
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if provider, useVSS := m.resolveVSSProvider(); useVSS {
@@ -629,6 +794,36 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// see the plan doc's Wave 1 section for why the old check (markSystem-
 	// StateFiles/systemStateArtifactsMissing) is now dead code and was
 	// removed rather than left inert.
+	// Gate manifest publication whenever server-owned mode is on (D18
+	// §3.1) — keyed on BaseSnapshotID being present, NOT on the lease
+	// being non-zero (P1 fix): Task 1's payload validation guarantees a
+	// non-zero lease whenever BaseSnapshotID is set, but the gate's
+	// INSTALLATION must not itself depend on that value, or a payload that
+	// somehow slipped validation with a zero lease would run completely
+	// ungated instead of hitting checkPublish's fail-closed zero-lease
+	// branch. Legacy servers (nil BaseSnapshotID) get the unwrapped
+	// provider and fully unchanged behavior. Applies to full runs too, not
+	// just incremental ones — the server fences every dispatched run's
+	// late-result window this way.
+	//
+	// Built BEFORE the len(files)==0 branch below (moved here on the D15
+	// merge) because that branch's state-only-zero-files publish path
+	// (publishSystemState + publishSnapshotManifest, D15 Wave 1) also
+	// writes snapshots/<id>/system-state/manifest.json and
+	// snapshots/<id>/manifest.json directly — isManifestPath matches both
+	// by basename, so leaseGate fences that path exactly like the ordinary
+	// createSnapshotWithProgress call below. Using the raw m.config.Provider
+	// there instead would let a state-only run publish past its lease with
+	// no fence at all.
+	uploadProvider := m.config.Provider
+	if m.config.BaseSnapshotID != nil {
+		uploadProvider = &leaseGate{
+			BackupProvider:        m.config.Provider,
+			publishLeaseExpiresAt: m.config.PublishLeaseExpiresAt,
+			journal:               journal,
+		}
+	}
+
 	if len(files) == 0 {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
@@ -679,13 +874,13 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				BackupIdentity: m.runBackupIdentity(),
 			}
 			prefix := path.Join(snapshotRootDir, snapshot.ID)
-			if pubErr := publishSystemState(runCtx, m.config.Provider, snapshot.ID, systemStateStagingDir, job.SystemStateManifest); pubErr != nil {
+			if pubErr := publishSystemState(runCtx, uploadProvider, snapshot.ID, systemStateStagingDir, job.SystemStateManifest); pubErr != nil {
 				job.Status = jobStatusFailed
 				job.CompletedAt = time.Now().UTC()
 				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
 				return job, job.Error
 			}
-			if pubErr := publishSnapshotManifest(runCtx, m.config.Provider, snapshot, prefix); pubErr != nil {
+			if pubErr := publishSnapshotManifest(runCtx, uploadProvider, snapshot, prefix); pubErr != nil {
 				job.Status = jobStatusFailed
 				job.CompletedAt = time.Now().UTC()
 				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
@@ -735,11 +930,34 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	var prevSnapshot *Snapshot
 	incrementalDedupeActive := !m.config.SystemStateEnabled || len(m.config.Paths) > 0
 	if incrementalDedupeActive {
-		prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
-		if prev == nil {
-			log.Info("running full backup, no reference dedupe", "reason", reason)
+		if m.config.BaseSnapshotID != nil {
+			// Server-owned mode (D18 §3.1): the protocol switch is presence
+			// of baseSnapshotId in the backup_run payload (see
+			// exec_backup.go). The agent never lists the bucket to choose a
+			// base in this mode.
+			prev, reason := fetchServerOwnedBase(runCtx, m.config.Provider, *m.config.BaseSnapshotID, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", *m.config.BaseSnapshotID,
+					"reason", reason,
+				)
+			} else {
+				prevSnapshot = prev
+				log.Info("using server-selected base for incremental reference dedupe",
+					"mode", "server-owned",
+					"baseSnapshotId", prev.ID,
+				)
+			}
 		} else {
-			prevSnapshot = prev
+			// Legacy mode: server predates the field, fall back to the
+			// original bucket-listing lookup.
+			prev, reason := previousManifest(runCtx, m.config.Provider, runIdentity)
+			if prev == nil {
+				log.Info("running full backup, no reference dedupe", "mode", "legacy", "reason", reason)
+			} else {
+				prevSnapshot = prev
+			}
 		}
 	}
 
@@ -763,51 +981,11 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		progressFn(0, len(files), 0, bytesTotal, "")
 	}
 
-	// Checkpoint journal: keyed by destination identity (provider kind +
-	// endpoint/bucket/path + the *configured* source paths — never the
-	// VSS-rewritten or system-state-staging paths in backupPaths, which are
-	// ephemeral per run and would defeat identity matching across runs).
-	// The journal dir comes from resolveJournalDir: explicit StagingDir, else
-	// a root-owned per-user/agent dir — NEVER the world-writable OS temp dir
-	// (a deterministic root-owned filename there is a symlink/tamper surface;
-	// a forged journal can trigger remote snapshot cleanup or silent file
-	// skips). If no secure dir exists, the run simply doesn't journal: resume
-	// is an optimization, never worth a world-writable root-owned write.
-	var journal *snapshotJournal
-	var resumedJournal bool
-	if journalDir, ok := resolveJournalDir(m.GetStagingDir()); !ok {
-		log.Warn("no secure checkpoint journal directory available, proceeding without resume support")
-	} else {
-		var journalErr error
-		journal, resumedJournal, journalErr = openSnapshotJournal(journalDir, backupIdentity(m.config.Provider, m.config.Paths), journalMaxAge)
-		if journalErr != nil {
-			// A journal is a best-effort checkpoint, never a correctness
-			// requirement: degrade to a journal-less run rather than failing
-			// the backup over it.
-			log.Warn("failed to open checkpoint journal, proceeding without resume support", "error", journalErr.Error())
-			journal = nil
-		}
-	}
-	if journal != nil {
-		if staleID, ok := journal.StaleSnapshotID(); ok {
-			// StaleSnapshotID covers both an actually-stale (>journalMaxAge)
-			// journal and the (near-impossible) identity-mismatch case — see
-			// openSnapshotJournal — so the message below is deliberately
-			// generic rather than claiming a specific cause.
-			log.Warn("discarding unusable checkpoint journal, cleaning up its remote prefix",
-				"snapshotId", staleID,
-				"maxAge", journalMaxAge.String(),
-			)
-			cleanupSnapshotPrefix(m.config.Provider, staleID)
-		}
-		if resumedJournal {
-			log.Info("resuming interrupted backup from checkpoint journal",
-				"snapshotId", journal.snapshotID,
-				"resumedBytes", journal.ResumedBytes(),
-			)
-		}
-	}
-
+	// D18 W03 hoisted the journal-open (and its stale-journal handling) to
+	// before VSS/scan, and removed the agent-side stale-journal remote
+	// cleanup entirely (D18 §3.5) — see that block earlier in this
+	// function. D15's snapshotOpts/withSystemState wiring is independent of
+	// that and slots in here unchanged.
 	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity)}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
@@ -817,7 +995,12 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
 		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
 	}
-	snapshot, snapErr := createSnapshotWithProgress(runCtx, m.config.Provider, files, progressFn, journal, prevSnapshot, sourceLiveness, snapshotOpts...)
+	// Ownership of the journal's fd lifecycle transfers to
+	// createSnapshotWithProgress from here on (it has its own
+	// completed/Abandon defer) — this function's defer above must not also
+	// Abandon() it out from under that call.
+	journalOwned = true
+	snapshot, snapErr := createSnapshotWithProgress(runCtx, uploadProvider, files, progressFn, journal, prevSnapshot, sourceLiveness, snapshotOpts...)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -839,32 +1022,8 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	retentionErr := error(nil)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
-	}
-	// Agent-side retention pruning is DISABLED whenever incremental dedupe is
-	// active for this run. Incremental is now unconditional (previousManifest is
-	// consulted on every file-mode run), and a reference entry carries the
-	// ORIGINAL upload's BackupPath forward: an unchanged file's bytes live under
-	// the OLDEST snapshot's prefix indefinitely while every newer manifest
-	// references back into it. DeleteSnapshotContext deletes an expired
-	// snapshot's ENTIRE prefix with ZERO reference-awareness, so pruning the
-	// oldest prefix here would strand every retained manifest's references as
-	// dangling pointers — an unrestorable backup that only surfaces at restore
-	// time. Only a reference-aware GC may prune, and the server is the sole
-	// retention authority (dispatched runs pin Retention:0 — see exec_backup.go's
-	// server-owns-retention invariant). Reference-aware agent-side pruning for
-	// standalone storage reclamation is deliberately deferred: reimplementing
-	// mark-and-sweep GC on the agent is out of scope and too risky to one-shot.
-	if snapshot != nil && m.config.Retention > 0 && !incrementalDedupeActive {
-		retentionErr = DeleteSnapshotContext(runCtx, m.config.Provider, m.config.Retention)
-		if retentionErr != nil {
-			if errors.Is(retentionErr, errBackupStopped) {
-				return stopBackupRun()
-			}
-			log.Warn("failed to enforce snapshot retention", "error", retentionErr.Error())
-		}
 	}
 
 	if snapErr != nil {
@@ -925,7 +1084,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// failures in a large run still completes, preserving the deliberate
 	// partial-success design above.
 	job.Status = classifyCompletionStatus(job.BytesBackedUp, totalScannedBytes(files), job.ErrorCount, len(files)+len(scanFailures))
-	job.Error = errors.Join(scanErr, retentionErr)
+	job.Error = scanErr
 	log.Info("backup run finished",
 		"status", job.Status,
 		"jobId", job.ID,
