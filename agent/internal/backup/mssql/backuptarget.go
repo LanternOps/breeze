@@ -7,18 +7,24 @@ import (
 	"strings"
 )
 
-// This file resolves the directory BACKUP DATABASE/LOG should write into.
-// It carries no build tag so the resolution logic has real unit test
-// coverage on every platform, same rationale as sqlcmd.go.
+// This file resolves the directory BACKUP DATABASE/LOG writes into, and —
+// since D23b — the directory RESTORE DATABASE/LOG and RESTORE VERIFYONLY
+// read from (see restore.go's ResolveRestoreTargetDir): both operations
+// are executed by the SQL Server service, so both need a directory it can
+// reach, not a directory scoped to the Breeze helper's own process. It
+// carries no build tag so the resolution logic has real unit test coverage
+// on every platform, same rationale as sqlcmd.go.
 //
-// D23: the Breeze helper runs as SYSTEM, so a location chosen from the
-// helper's own perspective (e.g. os.TempDir(), which resolves to
-// C:\Windows\SystemTemp under SYSTEM) is not necessarily writable by the
+// D23/D23b: the Breeze helper runs as SYSTEM, so a location chosen from
+// the helper's own perspective (e.g. os.TempDir(), which resolves to
+// C:\Windows\SystemTemp under SYSTEM) is not necessarily reachable by the
 // process that actually opens the backup file — the SQL Server service,
 // running as NT SERVICE\MSSQL$<instance> or NT SERVICE\MSSQLSERVER. Every
 // BACKUP DATABASE failed there with "Msg 3201 ... Operating system error
-// 5(Access is denied.)". resolveBackupTargetDir always picks a directory
-// from the SQL Server side of that boundary instead.
+// 5(Access is denied.)" (D23), and RESTORE/RESTORE VERIFYONLY failed the
+// same way reading a helper-downloaded file back out of SystemTemp (D23b).
+// resolveBackupTargetDir always picks a directory from the SQL Server side
+// of that boundary instead, for both directions.
 
 // mkdirAllFn creates a directory (and any missing parents). Tests replace
 // it: the directories built here are always Windows paths, which mean

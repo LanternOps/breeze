@@ -677,6 +677,10 @@ func TestExecuteCommand_MSSQLRestoreNilManagerUsesPayloadProvider(t *testing.T) 
 		t.Fatalf("upload manifest: %v", err)
 	}
 
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
+
 	origRunMSSQLRestore := runMSSQLRestore
 	t.Cleanup(func() { runMSSQLRestore = origRunMSSQLRestore })
 	var stagedPath string
@@ -765,6 +769,10 @@ func TestExecuteCommand_MSSQLVerifyNilManagerUsesPayloadProvider(t *testing.T) {
 	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
 		t.Fatalf("upload manifest: %v", err)
 	}
+
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
 
 	origRunMSSQLVerify := runMSSQLVerify
 	t.Cleanup(func() { runMSSQLVerify = origRunMSSQLVerify })

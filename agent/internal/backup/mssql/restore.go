@@ -9,6 +9,22 @@ import (
 	"time"
 )
 
+// ResolveRestoreTargetDir returns the directory RESTORE DATABASE/LOG and
+// RESTORE VERIFYONLY should read the backup artifact from: the same
+// SQL-Server-writable directory RunBackup resolves for writing (D23,
+// resolveBackupTargetDir in backuptarget.go). RESTORE is executed by the
+// SQL Server service account, not the Breeze helper that downloaded the
+// file — exactly the same boundary BACKUP DATABASE/LOG crosses, so a
+// helper-local staging directory is the wrong place for the file here too
+// (D23b).
+func ResolveRestoreTargetDir(instance string) (string, error) {
+	if instance == "" {
+		return "", fmt.Errorf("%w: instance name is required", ErrRestoreFailed)
+	}
+	serverName := buildServerName(instance)
+	return resolveBackupTargetDir(instance, serverName)
+}
+
 // RunRestore restores a SQL Server database from a backup file via sqlcmd.
 // If noRecovery is true, the database is left in RESTORING state for
 // subsequent differential or log restores.

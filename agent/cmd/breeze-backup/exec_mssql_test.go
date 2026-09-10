@@ -173,6 +173,10 @@ func TestExecMSSQLRestoreStagesSnapshotArtifact(t *testing.T) {
 		StagingDir: t.TempDir(),
 	})
 
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
+
 	origRunMSSQLRestore := runMSSQLRestore
 	t.Cleanup(func() {
 		runMSSQLRestore = origRunMSSQLRestore
@@ -259,6 +263,10 @@ func TestExecMSSQLVerifyStagesSnapshotPrefixArtifact(t *testing.T) {
 		Provider:   provider,
 		StagingDir: t.TempDir(),
 	})
+
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return t.TempDir(), nil }
 
 	origRunMSSQLVerify := runMSSQLVerify
 	t.Cleanup(func() {
@@ -416,5 +424,242 @@ func TestExecMSSQLBackupRemovesLocalBackupFileWhenUploadFails(t *testing.T) {
 
 	if _, statErr := os.Stat(backupFile); !os.IsNotExist(statErr) {
 		t.Fatalf("expected local backup file %q to be removed even when upload fails, stat err=%v", backupFile, statErr)
+	}
+}
+
+// setupMSSQLSnapshotFixture uploads a snapshot manifest + backup file to
+// provider and returns the snapshot ID, for tests that only care about
+// where the artifact gets staged / cleaned up, not backup content details.
+func setupMSSQLSnapshotFixture(t *testing.T, provider providers.BackupProvider, snapshotID string, backupBytes []byte) {
+	t.Helper()
+	prefix := path.Join("snapshots", snapshotID)
+	srcPath := filepath.Join(t.TempDir(), "ProductionDB_full_20260331.bak")
+	if err := os.WriteFile(srcPath, backupBytes, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	remoteBackupPath := path.Join(prefix, "files", filepath.Base(srcPath))
+	if err := provider.Upload(srcPath, remoteBackupPath); err != nil {
+		t.Fatalf("upload backup file: %v", err)
+	}
+	manifest := backup.Snapshot{
+		ID:        snapshotID,
+		Timestamp: time.Now().UTC(),
+		Files: []backup.SnapshotFile{
+			{SourcePath: filepath.Base(srcPath), BackupPath: remoteBackupPath, Size: int64(len(backupBytes))},
+		},
+		Size: int64(len(backupBytes)),
+	}
+	if err := uploadMssqlSnapshotManifest(provider, manifest); err != nil {
+		t.Fatalf("upload manifest: %v", err)
+	}
+}
+
+// D23b: RESTORE / RESTORE VERIFYONLY are executed by the SQL Server
+// service account, exactly like BACKUP DATABASE/LOG (D23) — so the helper
+// must download the artifact into the same SQL-readable directory the
+// backup resolver returns, not its own process-local staging directory
+// (which resolves under SystemTemp when the helper runs as SYSTEM).
+
+// (a) the restore's local path is under the resolved dir, never under an
+// ad-hoc staging tempdir.
+func TestExecMSSQLRestoreDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-prod-appdb-restore-targetdir"
+	backupBytes := []byte("restore-target-dir-bytes")
+	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(), // must NOT be where the artifact lands
+	})
+
+	resolvedDir := t.TempDir()
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(instance string) (string, error) {
+		if instance != "MSSQLSERVER" {
+			t.Fatalf("instance = %q", instance)
+		}
+		return resolvedDir, nil
+	}
+
+	origRunMSSQLRestore := runMSSQLRestore
+	t.Cleanup(func() { runMSSQLRestore = origRunMSSQLRestore })
+	var stagedPath string
+	runMSSQLRestore = func(_, backupFile, targetDB string, _ bool) (*mssql.RestoreResult, error) {
+		stagedPath = backupFile
+		return &mssql.RestoreResult{DatabaseName: targetDB, RestoredAs: targetDB, Status: "completed", FilesRestored: 1}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":       "MSSQLSERVER",
+		"snapshotId":     snapshotID,
+		"targetDatabase": "ProductionDB_Restore",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLRestore(payload, mgr)
+	if !result.Success {
+		t.Fatalf("expected success, got stderr %q", result.Stderr)
+	}
+	if stagedPath == "" {
+		t.Fatal("expected restore to receive a staged path")
+	}
+	if got := filepath.Dir(stagedPath); got != resolvedDir {
+		t.Fatalf("staged path dir = %q, want the resolved restore target dir %q (must never be an ad-hoc staging tempdir)", got, resolvedDir)
+	}
+}
+
+// (b) the file is removed after a failed restore too (the success case is
+// already covered by TestExecMSSQLRestoreStagesSnapshotArtifact above).
+func TestExecMSSQLRestoreRemovesLocalArtifactWhenRestoreFails(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-prod-appdb-restore-fails"
+	backupBytes := []byte("restore-fails-bytes")
+	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(),
+	})
+
+	resolvedDir := t.TempDir()
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return resolvedDir, nil }
+
+	origRunMSSQLRestore := runMSSQLRestore
+	t.Cleanup(func() { runMSSQLRestore = origRunMSSQLRestore })
+	var stagedPath string
+	runMSSQLRestore = func(_, backupFile, _ string, _ bool) (*mssql.RestoreResult, error) {
+		stagedPath = backupFile
+		if _, err := os.Stat(backupFile); err != nil {
+			t.Fatalf("staged backup file missing before simulated failure: %v", err)
+		}
+		return nil, fmt.Errorf("simulated restore failure")
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":       "MSSQLSERVER",
+		"snapshotId":     snapshotID,
+		"targetDatabase": "ProductionDB_Restore",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLRestore(payload, mgr)
+	if result.Success {
+		t.Fatal("expected failure")
+	}
+	if stagedPath == "" {
+		t.Fatal("expected restore to receive a staged path before failing")
+	}
+	if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
+		t.Fatalf("expected local artifact to be removed after a failed restore, stat err=%v", err)
+	}
+}
+
+// (c) same for verify: local path under the resolved dir, and removed
+// whether verify succeeds or fails.
+func TestExecMSSQLVerifyDownloadsArtifactIntoResolvedTargetDir(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-prod-appdb-verify-targetdir"
+	backupBytes := []byte("verify-target-dir-bytes")
+	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(),
+	})
+
+	resolvedDir := t.TempDir()
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(instance string) (string, error) {
+		if instance != "MSSQLSERVER" {
+			t.Fatalf("instance = %q", instance)
+		}
+		return resolvedDir, nil
+	}
+
+	origRunMSSQLVerify := runMSSQLVerify
+	t.Cleanup(func() { runMSSQLVerify = origRunMSSQLVerify })
+	var stagedPath string
+	runMSSQLVerify = func(_, backupFile string) (*mssql.VerifyResult, error) {
+		stagedPath = backupFile
+		return &mssql.VerifyResult{BackupFile: backupFile, Valid: true}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"snapshotId": snapshotID,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLVerify(payload, mgr)
+	if !result.Success {
+		t.Fatalf("expected success, got stderr %q", result.Stderr)
+	}
+	if stagedPath == "" {
+		t.Fatal("expected verify to receive a staged path")
+	}
+	if got := filepath.Dir(stagedPath); got != resolvedDir {
+		t.Fatalf("staged path dir = %q, want the resolved restore target dir %q (must never be an ad-hoc staging tempdir)", got, resolvedDir)
+	}
+}
+
+func TestExecMSSQLVerifyRemovesLocalArtifactWhenVerifyFails(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	snapshotID := "mssql-prod-appdb-verify-fails"
+	backupBytes := []byte("verify-fails-bytes")
+	setupMSSQLSnapshotFixture(t, provider, snapshotID, backupBytes)
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(),
+	})
+
+	resolvedDir := t.TempDir()
+	origResolve := resolveMSSQLRestoreTargetDir
+	t.Cleanup(func() { resolveMSSQLRestoreTargetDir = origResolve })
+	resolveMSSQLRestoreTargetDir = func(string) (string, error) { return resolvedDir, nil }
+
+	origRunMSSQLVerify := runMSSQLVerify
+	t.Cleanup(func() { runMSSQLVerify = origRunMSSQLVerify })
+	var stagedPath string
+	runMSSQLVerify = func(_, backupFile string) (*mssql.VerifyResult, error) {
+		stagedPath = backupFile
+		if _, err := os.Stat(backupFile); err != nil {
+			t.Fatalf("staged backup file missing before simulated failure: %v", err)
+		}
+		return nil, fmt.Errorf("simulated verify failure")
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"snapshotId": snapshotID,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLVerify(payload, mgr)
+	if result.Success {
+		t.Fatal("expected failure")
+	}
+	if stagedPath == "" {
+		t.Fatal("expected verify to receive a staged path before failing")
+	}
+	if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
+		t.Fatalf("expected local artifact to be removed after a failed verify, stat err=%v", err)
 	}
 }
