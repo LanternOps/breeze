@@ -20,6 +20,7 @@ import {
 import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
@@ -206,6 +207,10 @@ registerTool({
   },
   handler: async (input, auth) => {
     const action = input.action as string;
+    // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+    if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+      return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    }
 
     if (action === 'list') {
       const conditions: SQL[] = [];
