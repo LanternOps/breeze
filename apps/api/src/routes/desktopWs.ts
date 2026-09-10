@@ -22,6 +22,12 @@ import { getIceServers, logSessionAudit, buildRemoteSessionPromptPayload } from 
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
+import {
+  AGENT_UPGRADE_REQUIRED_CODE,
+  AGENT_UPGRADE_REQUIRED_MESSAGE,
+  prepareRevocationLeaseForStart,
+  renewRevocationLease,
+} from '../services/remoteRevocationLease';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -934,6 +940,33 @@ function createDesktopWsHandlers(
           return;
         }
 
+        // Fail-closed revocation lease, exactly as on the two WebRTC start
+        // paths. The WebSocket fallback transport streams frames and injects
+        // input just as a WebRTC session does, so it must be just as revokable.
+        const streamLease = await prepareRevocationLeaseForStart(sessionId);
+        if (!streamLease.ok) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: streamLease.reason === 'agent_upgrade_required'
+              ? 'AGENT_UPGRADE_REQUIRED'
+              : 'LEASE_UNAVAILABLE',
+            message: streamLease.reason === 'agent_upgrade_required'
+              ? AGENT_UPGRADE_REQUIRED_MESSAGE
+              : 'Unable to authorize this remote session right now. Please try again.',
+          }));
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          ws.close(4003, streamLease.reason === 'agent_upgrade_required'
+            ? 'Agent update required'
+            : 'Lease unavailable');
+          return;
+        }
+
         // Send desktop_stream_start command to agent
         const startCommand = {
           id: `desk-start-${sessionId}`,
@@ -942,7 +975,8 @@ function createDesktopWsHandlers(
             sessionId,
             quality: 60,
             scaleFactor: 1.0,
-            maxFps: 15
+            maxFps: 15,
+            revocationLease: streamLease.lease
           }
         };
 
@@ -1110,6 +1144,51 @@ function createDesktopWsHandlers(
                 });
               }
             });
+          // Revocation-lease recheck on the same cadence. `isViewerSessionRevoked`
+          // above only sees an EXPLICIT revoke flag; this is the live
+          // authorization recheck (membership, role, site ceiling, epoch, MFA,
+          // hard deadline) that nothing else performs for a streaming Flow-A
+          // socket. Only a definitive `revoked` closes: an `unavailable`
+          // (DB/Redis blip) is deliberately ignored so an infrastructure hiccup
+          // cannot disconnect the fleet — the agent's own grace window covers
+          // the case where the control plane really is gone.
+          void renewRevocationLease(sessionId)
+            .then((leaseResult) => {
+              if (
+                leaseResult.status === 'revoked'
+                && connectionIdentity
+                && ownsSafeRemoteConnection(
+                  activeDesktopSessions,
+                  sessionId,
+                  connectionIdentity,
+                  ws,
+                )
+              ) {
+                console.warn(
+                  `[DesktopWs] Session ${sessionId} revoked by lease recheck (${leaseResult.reason}), closing socket`
+                );
+                if (pingInterval) clearInterval(pingInterval);
+                void closeDesktopSessionLifecycle(sessionId, {
+                  expectedWs: ws,
+                  connection: connectionIdentity,
+                  reason: 'revoked',
+                  terminalStatus: 'failed',
+                  notifyAgent: true,
+                }).catch(() => {
+                  reportRetainedDesktopCleanup(sessionId, 'revoked');
+                });
+              }
+            })
+            .catch((leaseErr) => {
+              // renewRevocationLease already converts its own failures into
+              // `unavailable`; a throw here means something unexpected. Log it
+              // rather than tearing the session down on an unknown error.
+              console.error(
+                `[DesktopWs] Revocation-lease renew threw for session ${sessionId}:`,
+                leaseErr
+              );
+            });
+
           try {
             ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
           } catch (err) {
@@ -1564,6 +1643,20 @@ export function createDesktopWsRoutes(
         access.device,
         access.session.userId
       );
+      // Fail-closed revocation lease (same gate as the JWT offer route).
+      const offerLease = await prepareRevocationLeaseForStart(sessionId);
+      if (!offerLease.ok) {
+        if (offerLease.reason === 'agent_upgrade_required') {
+          return c.json({
+            error: AGENT_UPGRADE_REQUIRED_MESSAGE,
+            code: AGENT_UPGRADE_REQUIRED_CODE,
+          }, 503);
+        }
+        return c.json({
+          error: 'Unable to authorize this remote session right now. Please try again.',
+          code: 'lease_unavailable',
+        }, 503);
+      }
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: `desk-start-${sessionId}`,
         type: 'start_desktop',
@@ -1578,6 +1671,7 @@ export function createDesktopWsRoutes(
           clipboard: desktopPolicy.clipboard,
           idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
           maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
+          revocationLease: offerLease.lease,
           ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
           ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
           ...(prompt ? { prompt } : {})
@@ -1594,6 +1688,51 @@ export function createDesktopWsRoutes(
         status: updated.status,
         webrtcOffer: updated.webrtcOffer,
       });
+    }
+  );
+
+  // POST /desktop-ws/:id/viewer/lease/renew
+  //
+  // The viewer-token twin of POST /remote/sessions/:id/lease/renew. apps/viewer
+  // authenticates with a single-session VIEWER token (minted by the connect-code
+  // exchange), not a user JWT, so it cannot reach the JWT route — but it is the
+  // client that holds the live peer connection and must stop streaming the
+  // instant authorization is withdrawn. Same recheck, same answers.
+  app.post(
+    '/:id/viewer/lease/renew',
+    zValidator('param', desktopSessionIdParamSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const payload = await verifyViewerAccessToken(
+        (c.req.header('Authorization') ?? '').replace(/^Bearer /, '')
+      );
+      if (!payload || payload.sessionId !== sessionId) {
+        return c.json({ error: 'Invalid or expired viewer token' }, 401);
+      }
+      if (await isViewerJtiRevoked(payload.jti)) {
+        return c.json({ error: 'Viewer token revoked' }, 401);
+      }
+
+      const result = await renewRevocationLease(sessionId, { expectUserId: payload.sub });
+      switch (result.status) {
+        case 'renewed':
+          return c.json({
+            status: 'renewed',
+            expiresAt: result.expiresAt,
+            hardDeadline: result.hardDeadline,
+            renewEverySec: result.renewEverySec,
+            graceSec: result.graceSec,
+          });
+        case 'revoked':
+          return c.json({ status: 'revoked', reason: result.reason }, 403);
+        case 'forbidden':
+          return c.json({ error: 'Viewer token does not match session owner' }, 403);
+        default:
+          return c.json({
+            error: 'Unable to verify session authorization right now.',
+            code: 'lease_unavailable',
+          }, 503);
+      }
     }
   );
 

@@ -189,6 +189,28 @@ vi.mock('../../services/partnerTrust', () => ({
   }),
 }));
 
+const isRevocationLeaseCapable = vi.fn<() => Promise<boolean>>(async () => true);
+const LEASE_FIXTURE = {
+  token: 'lease-token',
+  expiresAt: 1_000_060_000,
+  hardDeadline: 1_000_600_000,
+  renewEverySec: 25,
+  graceSec: 90,
+};
+const prepareRevocationLeaseForStart = vi.fn<() => Promise<
+  { ok: true; lease: typeof LEASE_FIXTURE } | { ok: false; reason: string }
+>>(async () => ({ ok: true, lease: LEASE_FIXTURE }));
+const renewRevocationLease = vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
+  status: 'renewed', expiresAt: 1, hardDeadline: 2, renewEverySec: 25, graceSec: 90,
+}));
+vi.mock('../../services/remoteRevocationLease', () => ({
+  AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
+  AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
+  isRevocationLeaseCapable: (...a: unknown[]) => isRevocationLeaseCapable(...(a as [])),
+  prepareRevocationLeaseForStart: (...a: unknown[]) => prepareRevocationLeaseForStart(...(a as [])),
+  renewRevocationLease: (...a: unknown[]) => renewRevocationLease(...(a as [])),
+}));
+
 vi.mock('./recordingUrl', () => ({ normalizeRecordingUrl: vi.fn((u: unknown) => u) }));
 
 import { sessionRoutes } from './sessions';
@@ -921,5 +943,218 @@ describe('remote sessions — site-scope enforcement', () => {
       const call = vi.mocked(sendCommandToAgent).mock.calls.at(-1) as unknown as [string, { payload: Record<string, unknown> }];
       expect(call[1].payload.prompt).toEqual(prompt);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revocation-lease capability gate (fail-closed desktop sessions)
+// ---------------------------------------------------------------------------
+
+describe('remote sessions — revocation-lease capability gate', () => {
+  const SESSION_ID2 = '11111111-1111-4111-8111-111111111111';
+  const DEVICE_ID2 = '22222222-2222-4222-8222-222222222222';
+  const ORG_ID2 = '33333333-3333-4333-8333-333333333333';
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isRevocationLeaseCapable.mockResolvedValue(true);
+    prepareRevocationLeaseForStart.mockResolvedValue({
+      ok: true,
+      lease: LEASE_FIXTURE,
+    });
+    partnerTrustMode.mockReturnValue('off');
+    app = new Hono();
+    app.route('/remote', sessionRoutes);
+  });
+
+  function rigDeviceOnline() {
+    getDeviceWithOrgCheck.mockResolvedValue({
+      id: DEVICE_ID2,
+      orgId: ORG_ID2,
+      siteId: null,
+      agentId: 'agent-1',
+      hostname: 'host-1',
+      osType: 'linux',
+      status: 'online',
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as never);
+    (db as any).insert = vi.fn().mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: SESSION_ID2, deviceId: DEVICE_ID2, userId: 'user-1', type: 'desktop', status: 'pending', createdAt: new Date() },
+        ]),
+      }),
+    });
+  }
+
+  it('refuses to CREATE a desktop session against an agent with no lease support (503 agent_upgrade_required)', async () => {
+    rigDeviceOnline();
+    isRevocationLeaseCapable.mockResolvedValue(false);
+
+    const res = await app.request('/remote/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID2, type: 'desktop' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('agent_upgrade_required');
+    expect((db as any).insert).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the capability probe itself throws', async () => {
+    rigDeviceOnline();
+    isRevocationLeaseCapable.mockRejectedValue(new Error('db down'));
+
+    const res = await app.request('/remote/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID2, type: 'desktop' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('agent_upgrade_required');
+  });
+
+  it('does NOT gate terminal sessions on the desktop lease capability', async () => {
+    rigDeviceOnline();
+    isRevocationLeaseCapable.mockResolvedValue(false);
+
+    const res = await app.request('/remote/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID2, type: 'terminal' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(isRevocationLeaseCapable).not.toHaveBeenCalled();
+  });
+
+  function rigOffer() {
+    getSessionWithOrgCheck.mockResolvedValue({
+      session: { id: SESSION_ID2, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_ID2 },
+      device: { id: DEVICE_ID2, orgId: ORG_ID2, siteId: null, agentId: 'agent-1' },
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SESSION_ID2, status: 'connecting', webrtcOffer: 'sdp' }]),
+        }),
+      }),
+    } as never);
+    (db as any).select = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    });
+  }
+
+  const offerBody = JSON.stringify({ offer: 'v=0\r\n' });
+
+  it('refuses the OFFER with 503 agent_upgrade_required and sends NO start_desktop', async () => {
+    rigOffer();
+    prepareRevocationLeaseForStart.mockResolvedValue({ ok: false, reason: 'agent_upgrade_required' });
+
+    const res = await app.request(`/remote/sessions/${SESSION_ID2}/offer`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: offerBody,
+    });
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('agent_upgrade_required');
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses the OFFER with 503 lease_unavailable when the lease cannot be minted', async () => {
+    rigOffer();
+    prepareRevocationLeaseForStart.mockResolvedValue({ ok: false, reason: 'session_unavailable' });
+
+    const res = await app.request(`/remote/sessions/${SESSION_ID2}/offer`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: offerBody,
+    });
+
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('lease_unavailable');
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('carries the revocationLease block in the start_desktop payload', async () => {
+    rigOffer();
+
+    const res = await app.request(`/remote/sessions/${SESSION_ID2}/offer`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: offerBody,
+    });
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+      type: 'start_desktop',
+      payload: expect.objectContaining({
+        revocationLease: expect.objectContaining({ renewEverySec: 25, graceSec: 90 }),
+      }),
+    }));
+  });
+});
+
+describe('POST /remote/sessions/:id/lease/renew', () => {
+  const SESSION_ID3 = '44444444-4444-4444-8444-444444444444';
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/remote', sessionRoutes);
+  });
+
+  it('renews and returns the lease window', async () => {
+    renewRevocationLease.mockResolvedValue({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+    const res = await app.request(`/remote/sessions/${SESSION_ID3}/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+    expect(renewRevocationLease).toHaveBeenCalledWith(SESSION_ID3, { expectUserId: 'user-1' });
+  });
+
+  it('answers 403 with the reason when the session is revoked', async () => {
+    renewRevocationLease.mockResolvedValue({ status: 'revoked', reason: 'permissions_changed' });
+    const res = await app.request(`/remote/sessions/${SESSION_ID3}/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ status: 'revoked', reason: 'permissions_changed' });
+  });
+
+  it('answers 503 lease_unavailable on an infrastructure failure — never a revocation', async () => {
+    renewRevocationLease.mockResolvedValue({ status: 'unavailable' });
+    const res = await app.request(`/remote/sessions/${SESSION_ID3}/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('lease_unavailable');
+  });
+
+  it('answers 403 for a caller who does not own the session', async () => {
+    renewRevocationLease.mockResolvedValue({ status: 'forbidden' });
+    const res = await app.request(`/remote/sessions/${SESSION_ID3}/lease/renew`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).status).toBeUndefined();
   });
 });

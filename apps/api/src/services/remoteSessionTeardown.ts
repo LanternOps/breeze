@@ -2,7 +2,7 @@ import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent } from './agentCommandRelay';
 import { captureException } from './sentry';
 
 // Live statuses a teardown may disconnect. Terminal rows (`disconnected`,
@@ -95,7 +95,13 @@ export async function teardownDisconnectedSessions(
     const agentId = agentByDevice.get(row.deviceId);
     if (row.type === 'desktop' && agentId) {
       try {
-        sendCommandToAgent(agentId, {
+        // Durable relay, NOT the socket-local send: the agent's command socket
+        // very often lives on a DIFFERENT API instance (or on none at all if
+        // this is a worker-role process), and a socket-local send silently
+        // returns false there — leaving the live WebRTC stream running with the
+        // session already marked disconnected. The relay reaches whichever
+        // instance owns the socket, or reports `offline` honestly.
+        await dispatchCommandToAgent(agentId, {
           id: `desk-stop-${row.id}`,
           type: 'stop_desktop',
           payload: { sessionId: row.id },
@@ -132,7 +138,9 @@ export async function teardownDisconnectedSessions(
       }
       if (!closedLocally && agentId) {
         try {
-          sendCommandToAgent(agentId, {
+          // Same durable-relay reasoning as stop_desktop above: this fallback
+          // exists precisely for the case where the socket is NOT local.
+          await dispatchCommandToAgent(agentId, {
             id: `term-stop-${row.id}`,
             type: 'terminal_stop',
             payload: { sessionId: row.id },

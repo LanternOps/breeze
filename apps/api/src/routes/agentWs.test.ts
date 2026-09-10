@@ -341,6 +341,13 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
 // the 0-row CAS branch and this file drives the real helper. Everything else in
 // services/sentry (captureException, the request-scope helpers) stays real, so
 // this must be a partial mock.
+const renewRevocationLeaseMock = vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
+  status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+}));
+vi.mock('../services/remoteRevocationLease', () => ({
+  renewRevocationLease: (...a: unknown[]) => renewRevocationLeaseMock(...(a as [])),
+}));
+
 vi.mock('../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentry')>();
   // captureException is also stubbed (#5128 review round 2): the generic
@@ -4419,5 +4426,85 @@ describe('sw-install WS orphan-result branch', () => {
     await expect(
       processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revocation-lease renewal over the agent command socket
+// ---------------------------------------------------------------------------
+
+describe('agent websocket revocation_lease_renew', () => {
+  const SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+  });
+
+  async function sendRenew(body: Record<string, unknown>) {
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+    await handlers.onMessage({ data: JSON.stringify(body) } as any, ws as any);
+    return ws;
+  }
+
+  it('binds the renew to the socket-authenticated device and answers revocation_lease', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(renewRevocationLeaseMock).toHaveBeenCalledWith(SESSION_ID, {
+      expectDeviceId: 'device-123',
+    });
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease',
+      sessionId: SESSION_ID,
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+    });
+  });
+
+  it('answers revocation_lease_revoked with the reason', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'revoked', reason: 'membership_removed' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'membership_removed',
+    });
+  });
+
+  it('reports a session belonging to another device as revoked, leaking nothing about it', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'forbidden' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'not_authorized',
+    });
+  });
+
+  it('answers revocation_lease_unavailable on an infrastructure failure so the agent rides its grace', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'unavailable' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_unavailable',
+      sessionId: SESSION_ID,
+    });
+  });
+
+  it('drops a malformed renew without touching the lease service', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: 'not-a-uuid' });
+
+    expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 });

@@ -32,7 +32,9 @@ const h = vi.hoisted(() => {
   return {
     chain,
     state,
-    sendCommandToAgent: vi.fn(),
+    // The durable relay, not the socket-local send: teardown must reach the
+    // agent even when its command socket lives on another API instance.
+    dispatchCommandToAgent: vi.fn(async () => ({ status: 'sent', via: 'relay' })),
     revokeViewerSession: vi.fn().mockResolvedValue(undefined),
     captureException: vi.fn(),
     // closeTerminalSession returns true when a live terminal socket existed on
@@ -69,8 +71,11 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id', agentId: 'devices.agent_id' },
 }));
 
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: (...args: unknown[]) => h.dispatchCommandToAgent(...(args as [])),
+}));
 vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: (...args: unknown[]) => h.sendCommandToAgent(...args),
+  sendCommandToAgent: vi.fn(),
 }));
 
 vi.mock('./viewerTokenRevocation', () => ({
@@ -169,13 +174,13 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s2');
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(2);
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: 'desk-stop-s1',
       type: 'stop_desktop',
       payload: { sessionId: 's1' },
     });
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-2', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-2', {
       id: 'desk-stop-s2',
       type: 'stop_desktop',
       payload: { sessionId: 's2' },
@@ -200,7 +205,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(result).toBe(2);
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     // file_transfer has no stream; desktop has no agent → no OS-level teardown.
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(h.closeTerminalSession).not.toHaveBeenCalled();
   });
 
@@ -219,7 +224,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.closeTerminalSession).toHaveBeenCalledWith('s1');
     // closeTerminalSession owns the terminal_stop when the socket is local.
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 
   it('falls back to terminal_stop via the agent when the terminal socket is NOT on this instance', async () => {
@@ -235,8 +240,8 @@ describe('terminateUserRemoteSessions', () => {
 
     expect(result).toBe(1);
     expect(h.closeTerminalSession).toHaveBeenCalledWith('s1');
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(1);
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: 'term-stop-s1',
       type: 'terminal_stop',
       payload: { sessionId: 's1' },
@@ -250,7 +255,7 @@ describe('terminateUserRemoteSessions', () => {
 
     expect(result).toBe(0);
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     // The device-resolution SELECT must not run when nothing was disconnected.
     expect(h.chain.select).not.toHaveBeenCalled();
   });
@@ -273,7 +278,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(result).toBe(2);
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     // Both desktop sessions still get their stop_desktop signal.
-    expect(h.sendCommandToAgent).toHaveBeenCalledTimes(2);
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
   });
 
   it('returns the TEARDOWN_FAILED sentinel and reports to Sentry without propagating when the bulk disconnect throws', async () => {
@@ -287,7 +292,7 @@ describe('terminateUserRemoteSessions', () => {
     expect(h.captureException).toHaveBeenCalledWith(expect.any(Error));
     // Best-effort side effects never ran.
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 });
 
@@ -333,7 +338,7 @@ describe('terminateDeviceRemoteSessions', () => {
 
     expect(result).toBe(1);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
-    expect(h.sendCommandToAgent).toHaveBeenCalledWith('agent-1', {
+    expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
       id: 'desk-stop-s1',
       type: 'stop_desktop',
       payload: { sessionId: 's1' },
@@ -347,7 +352,7 @@ describe('terminateDeviceRemoteSessions', () => {
 
     expect(result).toBe(0);
     expect(h.revokeViewerSession).not.toHaveBeenCalled();
-    expect(h.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(h.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(h.chain.select).not.toHaveBeenCalled();
   });
 
