@@ -644,13 +644,270 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	return f.Stat()
 }
 
-// installSymlink is refused on Windows. Creating a symbolic link needs
-// SeCreateSymbolicLinkPrivilege or developer mode, and #5520's walker never
-// records a symlink entry on Windows in the first place — such a manifest can
-// only have come from another platform. Failing closed keeps the restore
-// honest instead of publishing something that is not a link.
-func installSymlink(_, relative, _ string, _ *Owner) error {
-	return fmt.Errorf("restoring the symbolic link %q is not supported on Windows", relative)
+// symlinkFlagRelative is SYMLINK_FLAG_RELATIVE from ntifs.h; x/sys/windows does
+// not export it.
+const symlinkFlagRelative = 0x00000001
+
+// reparseHeader is REPARSE_DATA_BUFFER's fixed head: tag, data length, and a
+// reserved word. The symlink payload follows immediately.
+type reparseHeader struct {
+	ReparseTag        uint32
+	ReparseDataLength uint16
+	Reserved          uint16
+}
+
+// symlinkReparsePayload is REPARSE_DATA_BUFFER.SymbolicLinkReparseBuffer minus
+// its trailing PathBuffer, which is appended as raw UTF-16.
+type symlinkReparsePayload struct {
+	SubstituteNameOffset uint16
+	SubstituteNameLength uint16
+	PrintNameOffset      uint16
+	PrintNameLength      uint16
+	Flags                uint32
+}
+
+// installSymlink recreates a symbolic link entirely relative to the pinned
+// parent handle: NtCreateFile creates the placeholder under the parent we hold
+// open, then FSCTL_SET_REPARSE_POINT turns THAT HANDLE into a symlink. No path
+// string is resolved, so the link cannot be planted through a component
+// somebody swapped, and no CreateSymbolicLinkW call re-walks the path.
+//
+// Creating a symlink needs SeCreateSymbolicLinkPrivilege, which the agent holds
+// as SYSTEM. Windows distinguishes file and directory symlinks at creation, so
+// the target is probed relative to the same parent handle and the placeholder
+// is created as a directory when the target resolves to one — matching what
+// os.Symlink does, and defaulting to a file link when the target does not exist
+// yet (a dangling link, or one whose target a later pass writes).
+func installSymlink(base, relative, linkTarget string, owner *Owner) error {
+	if owner != nil {
+		return errors.New("unix ownership is not applied on Windows")
+	}
+	parent := base
+	if dir := filepath.Dir(relative); dir != "." {
+		parent = filepath.Join(base, dir)
+	}
+	chain, err := openVerifiedDir(parent, true, nil, 0)
+	if err != nil {
+		return fmt.Errorf("open target parent: %w", err)
+	}
+	defer chain.close()
+	parentHandle := chain.leaf()
+	name := filepath.Base(relative)
+
+	// Resume semantics, matching the unix path: an identical link is left
+	// alone, a stale link is replaced, and anything that is NOT a link is
+	// refused rather than destroyed.
+	switch existingKind, existingTarget, err := inspectRelative(parentHandle, name); {
+	case err == nil && existingKind == entryReparse:
+		if existingTarget == linkTarget {
+			return nil
+		}
+		if err := deleteRelativeAny(parentHandle, name); err != nil {
+			return fmt.Errorf("replace stale link: %w", err)
+		}
+	case err == nil:
+		return fmt.Errorf("%s exists and is not a symlink", relative)
+	case !errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) && !errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
+		return err
+	}
+
+	options := uint32(ntFileOptions)
+	if targetIsDirectory(parentHandle, linkTarget) {
+		options = windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
+	}
+	handle, err := openRelativeComponent(parentHandle, name,
+		windows.GENERIC_WRITE|windows.FILE_WRITE_ATTRIBUTES|windows.DELETE,
+		shareFile, windows.FILE_CREATE, options, nil)
+	if err != nil {
+		return fmt.Errorf("create link placeholder: %w", err)
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+
+	if err := setSymlinkReparsePoint(handle, linkTarget); err != nil {
+		_ = deleteRelativeAny(parentHandle, name)
+		return fmt.Errorf("set link target: %w", err)
+	}
+	return nil
+}
+
+// setSymlinkReparsePoint builds REPARSE_DATA_BUFFER for IO_REPARSE_TAG_SYMLINK
+// and applies it to an already-open, empty placeholder.
+//
+// A relative target is stored verbatim with SYMLINK_FLAG_RELATIVE. An absolute
+// target's SubstituteName needs the NT "\??\" prefix while its PrintName stays
+// the plain path the user sees.
+func setSymlinkReparsePoint(handle windows.Handle, linkTarget string) error {
+	substitute := linkTarget
+	var flags uint32
+	if filepath.IsAbs(linkTarget) {
+		substitute = `\??\` + linkTarget
+	} else {
+		flags = symlinkFlagRelative
+	}
+	substituteUTF16, err := windows.UTF16FromString(substitute)
+	if err != nil {
+		return err
+	}
+	printUTF16, err := windows.UTF16FromString(linkTarget)
+	if err != nil {
+		return err
+	}
+	substituteUTF16 = substituteUTF16[:len(substituteUTF16)-1]
+	printUTF16 = printUTF16[:len(printUTF16)-1]
+
+	var head reparseHeader
+	var payload symlinkReparsePayload
+	headerLen := int(unsafe.Sizeof(head))
+	payloadLen := int(unsafe.Sizeof(payload))
+	pathBytes := (len(substituteUTF16) + len(printUTF16)) * 2
+	if headerLen+payloadLen+pathBytes > windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE {
+		return errors.New("link target is too long for a reparse point")
+	}
+	buf := make([]byte, headerLen+payloadLen+pathBytes)
+
+	h := (*reparseHeader)(unsafe.Pointer(&buf[0]))
+	h.ReparseTag = windows.IO_REPARSE_TAG_SYMLINK
+	h.ReparseDataLength = uint16(payloadLen + pathBytes)
+
+	p := (*symlinkReparsePayload)(unsafe.Pointer(&buf[headerLen]))
+	p.SubstituteNameOffset = 0
+	p.SubstituteNameLength = uint16(len(substituteUTF16) * 2)
+	p.PrintNameOffset = uint16(len(substituteUTF16) * 2)
+	p.PrintNameLength = uint16(len(printUTF16) * 2)
+	p.Flags = flags
+
+	path := (*[windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE / 2]uint16)(unsafe.Pointer(&buf[headerLen+payloadLen]))
+	copy(path[:len(substituteUTF16):len(substituteUTF16)], substituteUTF16)
+	copy(path[len(substituteUTF16):len(substituteUTF16)+len(printUTF16):len(substituteUTF16)+len(printUTF16)], printUTF16)
+
+	var returned uint32
+	return windows.DeviceIoControl(handle, windows.FSCTL_SET_REPARSE_POINT,
+		&buf[0], uint32(len(buf)), nil, 0, &returned, nil)
+}
+
+type relativeEntryKind int
+
+const (
+	entryFile relativeEntryKind = iota
+	entryDirectory
+	entryReparse
+)
+
+// inspectRelative reports what name is, relative to parent, without following
+// it, and the symlink target when it is one.
+func inspectRelative(parent windows.Handle, name string) (relativeEntryKind, string, error) {
+	handle, err := openRelativeComponent(parent, name, windows.FILE_READ_ATTRIBUTES,
+		shareFile, windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, nil)
+	if err != nil {
+		return entryFile, "", err
+	}
+	defer func() { _ = windows.CloseHandle(handle) }()
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return entryFile, "", err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return entryReparse, readSymlinkTarget(handle), nil
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
+		return entryDirectory, "", nil
+	}
+	return entryFile, "", nil
+}
+
+// readSymlinkTarget returns the PrintName of an open symlink, or "" for any
+// other reparse tag — which then simply compares unequal, so a non-symlink
+// reparse point is replaced rather than mistaken for an up-to-date link.
+func readSymlinkTarget(handle windows.Handle) string {
+	buf := make([]byte, windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+	var returned uint32
+	if err := windows.DeviceIoControl(handle, windows.FSCTL_GET_REPARSE_POINT,
+		nil, 0, &buf[0], uint32(len(buf)), &returned, nil); err != nil {
+		return ""
+	}
+	var head reparseHeader
+	var payload symlinkReparsePayload
+	headerLen := int(unsafe.Sizeof(head))
+	payloadLen := int(unsafe.Sizeof(payload))
+	if int(returned) < headerLen+payloadLen {
+		return ""
+	}
+	h := (*reparseHeader)(unsafe.Pointer(&buf[0]))
+	if h.ReparseTag != windows.IO_REPARSE_TAG_SYMLINK {
+		return ""
+	}
+	p := (*symlinkReparsePayload)(unsafe.Pointer(&buf[headerLen]))
+	start := headerLen + payloadLen + int(p.PrintNameOffset)
+	end := start + int(p.PrintNameLength)
+	if p.PrintNameLength == 0 || end > int(returned) || end > len(buf) {
+		return ""
+	}
+	name := make([]uint16, int(p.PrintNameLength)/2)
+	for i := range name {
+		name[i] = *(*uint16)(unsafe.Pointer(&buf[start+i*2]))
+	}
+	return windows.UTF16ToString(name)
+}
+
+// targetIsDirectory probes a link's target relative to the same pinned parent,
+// so the placeholder is created with the right file/directory shape. An
+// unresolvable target yields false, matching os.Symlink's dangling-link
+// behaviour.
+func targetIsDirectory(parent windows.Handle, linkTarget string) bool {
+	if filepath.IsAbs(linkTarget) {
+		info, err := os.Stat(linkTarget)
+		return err == nil && info.IsDir()
+	}
+	clean, err := CleanRelative(linkTarget)
+	if err != nil {
+		return false
+	}
+	current := parent
+	var opened []windows.Handle
+	defer func() {
+		for _, h := range opened {
+			_ = windows.CloseHandle(h)
+		}
+	}()
+	for _, component := range splitWindowsComponents(clean) {
+		handle, err := openRelativeComponent(current, component, windows.FILE_READ_ATTRIBUTES,
+			shareFile, windows.FILE_OPEN, windows.FILE_SYNCHRONOUS_IO_NONALERT, nil)
+		if err != nil {
+			return false
+		}
+		opened = append(opened, handle)
+		current = handle
+	}
+	if current == parent {
+		return false
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(current, &info); err != nil {
+		return false
+	}
+	return info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+// deleteRelativeAny removes a file, directory or reparse point relative to
+// parent. deleteRelative only opens non-directories.
+func deleteRelativeAny(parent windows.Handle, name string) error {
+	for _, options := range []uint32{
+		windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT,
+	} {
+		handle, err := openRelativeComponent(parent, name, windows.DELETE, shareFile, windows.FILE_OPEN, options, nil)
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, 4)
+		buf[0] = 1
+		err = windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &buf[0], uint32(len(buf)))
+		_ = windows.CloseHandle(handle)
+		if err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("could not remove %q", name)
 }
 
 func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {

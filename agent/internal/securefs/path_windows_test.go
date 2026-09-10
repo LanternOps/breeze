@@ -582,3 +582,205 @@ func TestRenameRelativePublishesUnderThePinnedParent(t *testing.T) {
 		})
 	}
 }
+
+// requireSymlinkSupport skips when this host cannot create a symbolic link at
+// all (no SeCreateSymbolicLinkPrivilege and no developer mode). The agent runs
+// as SYSTEM in production, which holds the privilege; an unprivileged test host
+// does not, and that is an environment capability rather than a code defect —
+// unlike the junction assertions, which must never skip.
+func requireSymlinkSupport(t *testing.T) {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe")
+	if err := os.Symlink("target", probe); err != nil {
+		t.Skipf("this host cannot create symbolic links: %v", err)
+	}
+}
+
+// #5520's walker is not GOOS-gated, so a Windows agent running as SYSTEM does
+// record symlink entries. Restoring them must work, and must go through the
+// pinned parent handle rather than a path-resolving CreateSymbolicLinkW.
+func TestInstallSymlinkOnWindows(t *testing.T) {
+	requireSymlinkSupport(t)
+
+	t.Run("positive control creates a link to a file target", func(t *testing.T) {
+		base := t.TempDir()
+		if err := os.WriteFile(filepath.Join(base, "target.txt"), []byte("payload"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, filepath.Join("nested", "link.txt"), "target.txt", nil); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(base, "nested", "link.txt")
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("created entry is not a symlink: mode = %v", info.Mode())
+		}
+		got, err := os.Readlink(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "target.txt" {
+			t.Fatalf("link target = %q, want target.txt", got)
+		}
+	})
+
+	t.Run("a directory target produces a directory symlink", func(t *testing.T) {
+		base := t.TempDir()
+		if err := os.Mkdir(filepath.Join(base, "dir"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(base, "dir", "inside.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, "dirlink", "dir", nil); err != nil {
+			t.Fatal(err)
+		}
+		// Only a DIRECTORY symlink can be walked into; a file symlink to a
+		// directory cannot, which is what makes this discriminating.
+		if _, err := os.Stat(filepath.Join(base, "dirlink", "inside.txt")); err != nil {
+			t.Fatalf("directory symlink is not traversable: %v", err)
+		}
+	})
+
+	t.Run("an absolute target is stored with the NT prefix and reads back plain", func(t *testing.T) {
+		base := t.TempDir()
+		outside := t.TempDir()
+		target := filepath.Join(outside, "abs.txt")
+		if err := os.WriteFile(target, []byte("payload"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, "abslink", target, nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.Readlink(filepath.Join(base, "abslink"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != target {
+			t.Fatalf("link target = %q, want %q", got, target)
+		}
+		content, err := os.ReadFile(filepath.Join(base, "abslink"))
+		if err != nil {
+			t.Fatalf("absolute link does not resolve: %v", err)
+		}
+		if string(content) != "payload" {
+			t.Fatalf("resolved content = %q, want payload", content)
+		}
+	})
+
+	t.Run("refuses to create through a reparse-point ancestor", func(t *testing.T) {
+		base := t.TempDir()
+		outside := t.TempDir()
+		mkJunction(t, filepath.Join(base, "escape"), outside)
+		if err := InstallSymlink(base, filepath.Join("escape", "link"), "anywhere", nil); err == nil {
+			t.Fatal("symlink was created through a junctioned ancestor")
+		}
+		entries, err := os.ReadDir(outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("escaped through the ancestor junction: %v", entries)
+		}
+	})
+
+	t.Run("replaces a stale link but refuses a regular file", func(t *testing.T) {
+		base := t.TempDir()
+		if err := InstallSymlink(base, "link", "old", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, "link", "new", nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.Readlink(filepath.Join(base, "link"))
+		if err != nil || got != "new" {
+			t.Fatalf("link target = %q err=%v, want new", got, err)
+		}
+
+		real := filepath.Join(base, "regular.txt")
+		if err := os.WriteFile(real, []byte("precious"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, "regular.txt", "somewhere", nil); err == nil {
+			t.Fatal("a regular file was replaced by a symlink")
+		}
+		content, err := os.ReadFile(real)
+		if err != nil || string(content) != "precious" {
+			t.Fatalf("regular file was damaged: %q err=%v", content, err)
+		}
+	})
+
+	t.Run("an already-correct link is left alone (resume)", func(t *testing.T) {
+		base := t.TempDir()
+		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+			t.Fatalf("re-installing an identical link failed: %v", err)
+		}
+		got, err := os.Readlink(filepath.Join(base, "link"))
+		if err != nil || got != "target" {
+			t.Fatalf("link target = %q err=%v, want target", got, err)
+		}
+	})
+
+	t.Run("invalid relative paths are refused", func(t *testing.T) {
+		base := t.TempDir()
+		for _, relative := range []string{"", "..", filepath.Join("..", "escape"), `C:\absolute`} {
+			if err := InstallSymlink(base, relative, "target", nil); err == nil {
+				t.Fatalf("relative path %q was accepted", relative)
+			}
+		}
+	})
+}
+
+func TestInstallDirOnWindows(t *testing.T) {
+	t.Run("positive control creates the directory", func(t *testing.T) {
+		base := t.TempDir()
+		if err := InstallDir(base, filepath.Join("var", "empty"), 0o700, true, nil, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(filepath.Join(base, "var", "empty"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() {
+			t.Fatal("not a directory")
+		}
+	})
+
+	t.Run("refuses to create through a reparse-point ancestor", func(t *testing.T) {
+		base := t.TempDir()
+		outside := t.TempDir()
+		mkJunction(t, filepath.Join(base, "escape"), outside)
+		if err := InstallDir(base, filepath.Join("escape", "made"), 0o700, true, nil, time.Time{}); err == nil {
+			t.Fatal("directory was created through a junctioned ancestor")
+		}
+		entries, err := os.ReadDir(outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("escaped through the ancestor junction: %v", entries)
+		}
+	})
+
+	t.Run("existing content survives a re-apply", func(t *testing.T) {
+		base := t.TempDir()
+		if err := InstallDir(base, "d", 0o700, true, nil, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(base, "d", "child"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := InstallDir(base, "d", 0o755, true, nil, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(base, "d", "child")); err != nil {
+			t.Fatalf("existing child was lost: %v", err)
+		}
+	})
+}

@@ -229,3 +229,63 @@ func TestInstallFileAppliesFullModeBitsAndOwner(t *testing.T) {
 		}
 	})
 }
+
+// chown on a non-directory clears setuid/setgid — POSIX mandates it, and Linux
+// does it even for root. So the order matters: chown FIRST, then chmod.
+// Applying them the other way round silently drops the setuid bit off every
+// restored binary while the restore still reports "completed".
+//
+// The strip reproduces with a SAME-uid chown, so the control below runs
+// everywhere, not only as root — which is what let this survive: the suite had
+// a mode test with no owner and an owner test with no special mode bits, and
+// nothing crossed the two.
+func TestInstallFileKeepsSetuidWhenOwnerIsAlsoApplied(t *testing.T) {
+	self := &Owner{UID: os.Geteuid(), GID: os.Getegid()}
+	cases := []struct {
+		name  string
+		mode  os.FileMode
+		owner *Owner
+		want  os.FileMode
+	}{
+		{"setuid with a same-uid owner", os.ModeSetuid | 0o755, self, os.ModeSetuid},
+		{"setgid with a same-uid owner", os.ModeSetgid | 0o750, self, os.ModeSetgid},
+		{"setuid and setgid together", os.ModeSetuid | os.ModeSetgid | 0o755, self, os.ModeSetuid | os.ModeSetgid},
+		{"setuid with no owner at all", os.ModeSetuid | 0o755, nil, os.ModeSetuid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			if _, err := InstallFile(base, "tool", writeSource(t, "payload"), tc.mode, time.Time{}, tc.owner); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(filepath.Join(base, "tool"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&tc.want != tc.want {
+				t.Fatalf("mode = %v, want %v set (chown after chmod strips these)", info.Mode(), tc.want)
+			}
+			if info.Mode().Perm() != tc.mode.Perm() {
+				t.Fatalf("perm = %v, want %v", info.Mode().Perm(), tc.mode.Perm())
+			}
+		})
+	}
+}
+
+// Same crossing for a directory entry: setgid/sticky on a directory that also
+// carries an owner.
+func TestInstallDirKeepsSpecialBitsWhenOwnerIsAlsoApplied(t *testing.T) {
+	self := &Owner{UID: os.Geteuid(), GID: os.Getegid()}
+	base := t.TempDir()
+	want := os.ModeSetgid | os.ModeSticky | 0o770
+	if err := InstallDir(base, "shared", want, true, self, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(base, "shared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSetgid == 0 || info.Mode()&os.ModeSticky == 0 {
+		t.Fatalf("mode = %v, want setgid and sticky set", info.Mode())
+	}
+}

@@ -1693,14 +1693,14 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 8) { throw "expected exactly 8 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That

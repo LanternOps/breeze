@@ -1240,3 +1240,59 @@ func TestRestoreContentlessEntry_RefusesToReplaceRegularFile(t *testing.T) {
 		t.Fatalf("regular file content changed: %q", data)
 	}
 }
+
+// #5520 records ModeBits AND Owner. The suite kept those apart — the W02 test
+// sets ModeBits with no Owner, so nothing exercised a manifest entry that has
+// both. That matters because chown clears setuid/setgid on a non-directory, so
+// applying owner after mode silently strips the bit off every restored setuid
+// binary while the restore still reports "completed". Owner is set to this
+// process's own uid/gid, which still triggers the strip, so this runs without
+// root.
+func TestRestore_SetuidSurvivesWhenTheEntryAlsoCarriesAnOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits and ownership")
+	}
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"usr/bin/tool": "#!/bin/sh\n"})
+
+	manifestKey := filepath.ToSlash(filepath.Join("snapshots", snapshotID, "manifest.json"))
+	tmp := filepath.Join(t.TempDir(), "m.json")
+	if err := provider.Download(manifestKey, tmp); err != nil {
+		t.Fatal(err)
+	}
+	var snap Snapshot
+	data, _ := os.ReadFile(tmp)
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	for i := range snap.Files {
+		snap.Files[i].ModeBits = uint32(os.ModeSetuid | 0o755)
+		snap.Files[i].Owner = &FileOwner{UID: os.Geteuid(), GID: os.Getegid()}
+	}
+	snap.FormatVersion = manifestFormatFidelity
+	out, _ := json.Marshal(snap)
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Upload(tmp, manifestKey); err != nil {
+		t.Fatal(err)
+	}
+
+	target := t.TempDir()
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, WorkRoot: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "completed" || res.FilesFailed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	info, err := os.Stat(filepath.Join(target, "original", "usr", "bin", "tool"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSetuid == 0 {
+		t.Fatalf("setuid was stripped from a restored binary: mode = %v", info.Mode())
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("perm = %v, want 0755", info.Mode().Perm())
+	}
+}

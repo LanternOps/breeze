@@ -301,16 +301,23 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if mode == 0 {
 		applied = 0o644
 	}
-	if err := unix.Fchmod(tempFD, syscallMode(applied)); err != nil {
-		warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
-	}
 	// Ownership goes on the pinned descriptor, before publication: a chown by
 	// pathname after the file is visible under its final name is exactly the
 	// race this package exists to remove.
+	//
+	// It must also come BEFORE the chmod. chown on a non-directory clears
+	// setuid/setgid — POSIX requires it and Linux does it even for root — so
+	// chmod-then-chown silently drops those bits off every restored setuid
+	// binary while the restore still reports success. (Measured on darwin, the
+	// same happens to setgid/sticky on a directory, hence the same order in
+	// installDir.)
 	if owner != nil {
 		if err := unix.Fchown(tempFD, owner.UID, owner.GID); err != nil {
 			warnings = append(warnings, fmt.Errorf("apply file owner: %w", err))
 		}
+	}
+	if err := unix.Fchmod(tempFD, syscallMode(applied)); err != nil {
+		warnings = append(warnings, fmt.Errorf("apply file mode: %w", err))
 	}
 	if !modTime.IsZero() {
 		times := []unix.Timeval{unix.NsecToTimeval(modTime.UnixNano()), unix.NsecToTimeval(modTime.UnixNano())}
@@ -428,14 +435,16 @@ func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *
 	}
 	defer func() { _ = unix.Close(dirFD) }()
 
-	if applyMode {
-		if err := unix.Fchmod(dirFD, syscallMode(mode)); err != nil {
-			return fmt.Errorf("apply directory mode: %w", err)
-		}
-	}
+	// Owner before mode, for the same reason as installFile: chown clears
+	// setuid/setgid, and darwin clears them on directories too.
 	if owner != nil {
 		if err := unix.Fchown(dirFD, owner.UID, owner.GID); err != nil {
 			return fmt.Errorf("apply directory owner: %w", err)
+		}
+	}
+	if applyMode {
+		if err := unix.Fchmod(dirFD, syscallMode(mode)); err != nil {
+			return fmt.Errorf("apply directory mode: %w", err)
 		}
 	}
 	if !modTime.IsZero() {
