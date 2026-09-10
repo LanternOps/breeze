@@ -839,7 +839,25 @@ func restoreFiles(
 			continue
 		}
 
-		if dlErr := provider.Download(file.BackupPath, targetPath); dlErr != nil {
+		dlErr := provider.Download(file.BackupPath, targetPath)
+		if dlErr != nil {
+			// D19b: a destination that already exists with the owner-write
+			// bit cleared (the Windows ReadOnly attribute, or a backup
+			// app config file being restored in place) makes the
+			// provider's destination-file creation fail. The actual
+			// os.Create/os.OpenFile call lives deep inside whichever
+			// providers.BackupProvider is in use (the HTTP
+			// recoveryDownloadProvider in production,
+			// providers.LocalProvider in tests) and this package must not
+			// edit either, so — mirroring restore.go's D19
+			// moveFile/copyAndDelete clearReadOnly retry — clear the bit
+			// here and retry the whole download once.
+			if restored, clearErr := clearReadOnly(targetPath); clearErr == nil && restored {
+				slog.Debug("bmr: cleared read-only attribute on restore target before retrying download", "target", targetPath)
+				dlErr = provider.Download(file.BackupPath, targetPath)
+			}
+		}
+		if dlErr != nil {
 			addFailure("restore failed for %s: %s", file.SourcePath, dlErr.Error())
 			if consecutiveFailures >= maxConsecutiveDownloadFailures {
 				breakerTripped = true
@@ -909,4 +927,34 @@ func restoreFiles(
 			fmt.Errorf("bmr: %d of %d files failed to restore", len(manifest.Files)-filesRestored, len(manifest.Files))
 	}
 	return filesRestored, bytesRestored, warnings, failedFiles, nil
+}
+
+// clearReadOnly clears the owner-write bit on dst so a subsequent
+// destination-file creation can succeed (D19b). This is a local copy of
+// restore.go's clearReadOnly: that one is unexported in package backup, and
+// package backup does not import package bmr, so importing it here would
+// not create a cycle — but it also wouldn't make the unexported helper
+// reachable, hence the duplicate. On Windows, Go maps the
+// FILE_ATTRIBUTE_READONLY attribute to exactly this bit (0o200), so this
+// doubles as "clear the ReadOnly attribute" there. It never touches
+// directories and never follows symlinks (Lstat), and it is a no-op — not
+// an error — when dst is already writable. restored reports whether it
+// actually changed anything, so callers only retry (and only log) when a
+// change was made.
+func clearReadOnly(dst string) (restored bool, err error) {
+	info, err := os.Lstat(dst)
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	perm := info.Mode().Perm()
+	if perm&0o200 != 0 {
+		return false, nil
+	}
+	if err := os.Chmod(dst, perm|0o200); err != nil {
+		return false, err
+	}
+	return true, nil
 }

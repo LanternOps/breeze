@@ -3,8 +3,10 @@ import type { Context, MiddlewareHandler } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 
 import { agentAuthMiddleware } from '../middleware/agentAuth';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa } from '../middleware/auth';
 import { helperAuth } from '../middleware/helperAuth';
+import { getUserPermissions, hasPermission } from '../services/permissions';
+import type { ExtensionRequestAuthorization } from '@breeze/extension-sdk';
 import { recordExtensionRequest } from './metrics';
 import type {
   ExtensionContributionRegistry,
@@ -13,6 +15,58 @@ import type {
 
 type LoaderAuthKind = 'user' | 'agent' | 'helper';
 const LOADER_AUTH_KIND = 'extensionLoaderAuthKind';
+
+declare module 'hono' {
+  interface ContextVariableMap {
+    extensionAuthorization: ExtensionRequestAuthorization;
+  }
+}
+
+/**
+ * Resolve product RBAC once at the host boundary and expose only decisions to
+ * the extension. Tenant reachability remains a separate, outer ceiling.
+ */
+async function loadExtensionAuthorization(
+  c: Context,
+  next: () => Promise<void>,
+): Promise<void> {
+  const auth = c.get('auth');
+  if (!auth) {
+    c.res = c.json({ error: 'Not authenticated' }, 401);
+    return;
+  }
+
+  if (auth.scope === 'system') {
+    if (!auth.user.isPlatformAdmin) {
+      c.res = c.json({ error: 'Permission denied' }, 403);
+      return;
+    }
+    c.set('extensionAuthorization', {
+      hasPermission: () => true,
+      mfaSatisfied: hasSatisfiedMfa(auth),
+    });
+    return next();
+  }
+
+  const userPermissions = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+  });
+  if (!userPermissions) {
+    c.res = c.json({ error: 'Permission denied' }, 403);
+    return;
+  }
+
+  c.set('extensionAuthorization', {
+    hasPermission: (resource, action) =>
+      hasPermission(userPermissions, resource, action),
+    mfaSatisfied: hasSatisfiedMfa(auth),
+    ...(userPermissions.allowedSiteIds === undefined
+      ? {}
+      : { allowedSiteIds: userPermissions.allowedSiteIds }),
+  });
+  return next();
+}
 
 function skipIfLoaderAuthed(
   inner: MiddlewareHandler,
@@ -79,7 +133,7 @@ export function buildExtensionAuthGuard(
       return next();
     }
     c.set(LOADER_AUTH_KIND, 'user');
-    return authMiddleware(c, next);
+    return authMiddleware(c, () => loadExtensionAuthorization(c, next));
   };
 }
 

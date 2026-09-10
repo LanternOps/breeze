@@ -13,7 +13,10 @@ import { logSessionAudit } from './remote/helpers';
 import { getTrustedClientIp } from '../services/clientIp';
 import { createAuditLogAsync } from '../services/auditService';
 import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
-import { authorizeConsumedRemoteWsTicket } from '../services/remoteWsAuthorization';
+import {
+  authorizeConsumedRemoteWsTicket,
+  revalidateRemoteWsAuthorityBounded,
+} from '../services/remoteWsAuthorization';
 import {
   assertRemoteWsUpgradeRuntimeReady,
   getRemoteWsUpgradeConnection,
@@ -69,6 +72,8 @@ interface TerminalSession extends RemoteConnectionLease {
   // E2: audit summary counters
   bytesIn: number;
   bytesOut: number;
+  continuationAuthorized: boolean;
+  liveAuthorizationInFlight: boolean;
   sharedOwner: RemoteWsSharedLeaseClaim;
   sharedLeases: RemoteWsSharedLeaseManager;
   // Exact command id of the `terminal_start` this generation dispatched. A
@@ -672,6 +677,8 @@ function createTerminalWsHandlers(
             orgId: device.orgId,
             startedAt: new Date(),
             lastPongAt: now,
+            continuationAuthorized: true,
+            liveAuthorizationInFlight: false,
           });
         }
         const installed = upgradeContext
@@ -704,6 +711,8 @@ function createTerminalWsHandlers(
                 msgByteTimestamps: [],
                 bytesIn: 0,
                 bytesOut: 0,
+                continuationAuthorized: true,
+                liveAuthorizationInFlight: false,
               }),
             );
         if (!installed.ok) {
@@ -740,6 +749,7 @@ function createTerminalWsHandlers(
               return;
             }
             const sess = activeTerminalSessions.get(sessionId);
+            if (!sess?.continuationAuthorized) return;
             if (sess) {
               sess.bytesOut += Buffer.byteLength(data, 'utf8');
             }
@@ -874,12 +884,20 @@ function createTerminalWsHandlers(
           // client answers pings. This is the cross-instance backstop to the
           // direct socket close done by `closeTerminalSession`. A revoked socket
           // closes within at most one ping interval (PING_INTERVAL_MS). Fails CLOSED.
-          void isViewerSessionRevoked(sessionId)
-            .then((revoked) => {
+          if (termSess.liveAuthorizationInFlight || !termSess.continuationAuthorized) return;
+          termSess.liveAuthorizationInFlight = true;
+          void Promise.all([
+            isViewerSessionRevoked(sessionId),
+            revalidateRemoteWsAuthorityBounded({ sessionId, sessionType: 'terminal', userId: termSess.userId }),
+          ])
+            .then(([revoked, authority]) => {
+              const current = activeTerminalSessions.get(sessionId);
               if (
-                revoked
+                (revoked || !authority.ok)
+                && current
                 && ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)
               ) {
+                current.continuationAuthorized = false;
                 console.warn(`[TerminalWs] Session ${sessionId} revoked mid-session, closing socket`);
                 clearInterval(pingInterval);
                 void closeExactTerminalConnection(sessionId, boundIdentity, {
@@ -902,6 +920,8 @@ function createTerminalWsHandlers(
               );
               clearInterval(pingInterval);
               if (ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) {
+                const current = activeTerminalSessions.get(sessionId);
+                if (current) current.continuationAuthorized = false;
                 void closeExactTerminalConnection(sessionId, boundIdentity, {
                   expectedWs: ws,
                   closeSocket: true,
@@ -911,13 +931,18 @@ function createTerminalWsHandlers(
                   writeSummary: false,
                 }).catch(() => undefined);
               }
+            })
+            .finally(() => {
+              const current = activeTerminalSessions.get(sessionId);
+              if (!current || !ownsSafeRemoteConnection(activeTerminalSessions, sessionId, boundIdentity, ws)) return;
+              current.liveAuthorizationInFlight = false;
+              if (!current.continuationAuthorized) return;
+              try { ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() })); }
+              catch (err) {
+                console.warn(`[TerminalWs] Ping send failed for session ${sessionId}, cleaning up`, err);
+                clearInterval(pingInterval);
+              }
             });
-          try {
-            ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
-          } catch (err) {
-            console.warn(`[TerminalWs] Ping send failed for session ${sessionId}, cleaning up`, err);
-            clearInterval(pingInterval);
-          }
         }, PING_INTERVAL_MS);
 
         // Attach the timer only to the exact entry this handler owns.
@@ -989,6 +1014,8 @@ function createTerminalWsHandlers(
       // replaced generation, or an expired forwarding deadline gets no reply,
       // no agent command, no pong-time update, and no rate-limit accounting.
       if (
+        !termSession.continuationAuthorized
+        ||
         !connectionIdentity
         || !ownsSafeRemoteConnection(activeTerminalSessions, sessionId, connectionIdentity, ws)
       ) {
@@ -1165,6 +1192,8 @@ export function createTerminalWsRoutes(
               msgByteTimestamps: [],
               bytesIn: 0,
               bytesOut: 0,
+              continuationAuthorized: true,
+              liveAuthorizationInFlight: false,
             }),
           );
         },

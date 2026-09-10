@@ -46,7 +46,7 @@ The browser and device negotiate a WebRTC peer-to-peer connection through the Br
 1. `POST /remote/sessions` with `type: "desktop"` — creates the session record.
 2. `GET /remote/ice-servers` — retrieve STUN/TURN server configuration.
 3. `POST /remote/sessions/:id/offer` — send the SDP offer from the browser.
-4. `POST /remote/sessions/:id/answer` — relay the device's SDP answer back.
+4. The authenticated device agent returns its answer and any endpoint consent verdict over its command-result channel.
 5. `POST /remote/sessions/:id/ice` — exchange ICE candidates.
 6. `POST /remote/sessions/:id/ws-ticket` — mint a one-time WebSocket ticket.
 7. Connect via WebSocket using the ticket.
@@ -86,7 +86,11 @@ The `list_sessions` command returns available user sessions by merging the WTS s
 
 The same session broker architecture extends to macOS and Linux. When the agent runs as a LaunchDaemon (macOS) or systemd service (Linux), it has no display access. The agent detects this via the `IsHeadless` flag (checked by `hasConsole()` on Unix).
 
-In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11/Wayland on Linux).
+In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11 on Linux).
+
+<Aside type="caution" title="Wayland sessions are not supported yet">
+  Remote desktop and screenshots on Linux require an X11 session. Wayland-only sessions -- the default GNOME and KDE sessions on current Ubuntu and Fedora releases, and wlroots compositors such as Hyprland and Sway -- cannot be captured. When the device has no X11 display at all, the device page reports **Wayland Unsupported** and the **Connect Desktop** button is disabled. On compositors that run XWayland for legacy apps, the agent may attach to that XWayland display instead, so a session can connect but shows only X11 application windows rather than the desktop. Terminal, scripts, and monitoring are unaffected either way. Where the login screen offers an X11 session, selecting it restores remote desktop. See [Supported Linux Distributions](/agents/installation/#supported-linux-distributions).
+</Aside>
 
 <Aside>
   If no Helper process is connected when a remote desktop session is requested in headless mode, the agent returns an error immediately rather than streaming zero frames.
@@ -437,7 +441,6 @@ To free session capacity, close active sessions from the Active Sessions list on
 | DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
 | GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
 | POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
-| POST | `/remote/sessions/:id/answer` | Relay device's SDP answer back to browser |
 | POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |
 | POST | `/remote/sessions/:id/ws-ticket` | Mint a one-time WebSocket ticket (required for terminal and desktop) |
 | POST | `/remote/sessions/:id/end` | End a session (optional body: `bytesTransferred`, `recordingUrl` — see [Session Recording](#session-recording)) |

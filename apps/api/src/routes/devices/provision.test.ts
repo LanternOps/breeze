@@ -8,12 +8,17 @@ const { authMiddlewareMock, requireScopeMock, requirePermissionMock, requireMfaM
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
 }));
+const { admitPartnerDeviceCapacityMock } = vi.hoisted(() => ({
+  admitPartnerDeviceCapacityMock: vi.fn(),
+}));
 
-// The partner device-limit check reads `partners` through
-// `readWithPartnerAxisVisibility` (#2822), which needs these three context
-// helpers. Without them vitest throws "No <name> export is defined on the mock"
-// the moment a test drives a non-null partnerId — which is exactly how the cap
-// tests below stay honest rather than silently skipping the code.
+vi.mock('../../services/partnerDeviceCapacity', () => ({
+  admitPartnerDeviceCapacity: admitPartnerDeviceCapacityMock,
+  PartnerDeviceCapacityError: class PartnerDeviceCapacityError extends Error {},
+}));
+
+// Device-cap admission leaves the request context and opens a short system
+// transaction, so both context helpers are part of the route contract.
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -36,10 +41,6 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: requireScopeMock,
   requirePermission: requirePermissionMock,
   requireMfa: requireMfaMock,
-}));
-
-vi.mock('./helpers', () => ({
-  stripSensitiveDeviceFields: (d: any) => d,
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -91,6 +92,7 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { issueMtlsCertForDevice } from '../agents/helpers';
 import { provisionRoutes } from './provision';
 
 // Snapshot middleware registration calls before clearAllMocks wipes them
@@ -105,6 +107,7 @@ const registeredMfaCallCount = requireMfaMock.mock.calls.length;
 const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SITE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const OTHER_ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const PARTNER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const BASE_BODY = {
   orgId: ORG_ID,
   siteId: SITE_ID,
@@ -156,36 +159,19 @@ function mockTransactionSuccess(insertedRow: any) {
 }
 
 /** Stages the target-org lookup that precedes the device-limit check. */
-function mockTargetOrg(partnerId: string | null) {
+function mockTargetOrg(partnerId: string) {
   mockSelectRows([{ id: ORG_ID, partnerId }]);
 }
 
-/**
- * Stages the reads the partner device-limit block makes inside its system
- * context (#2822): the `partners.maxDevices` lookup, then — only when a cap
- * exists — the partner-wide active-device count.
- */
+/** Stages the result of the independently tested shared admission primitive. */
 function mockPartnerCap(opts: { maxDevices: number | null; activeCount?: number }) {
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn(() => ({
-      where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue([{ maxDevices: opts.maxDevices }]),
-      })),
-    })),
-  } as any);
-
-  if (opts.maxDevices == null) return;
-
-  // The `partnerOrgIds` subquery: db.select().from().where(), never awaited.
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn(() => ({ where: vi.fn(() => ({})) })),
-  } as any);
-  // The count: db.select().from().where() awaited directly (no .limit()).
-  vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn(() => ({
-      where: vi.fn().mockResolvedValue([{ count: opts.activeCount ?? 0 }]),
-    })),
-  } as any);
+  const activeCount = opts.maxDevices == null ? null : (opts.activeCount ?? 0);
+  admitPartnerDeviceCapacityMock.mockResolvedValueOnce({
+    allowed: opts.maxDevices == null || activeCount! < opts.maxDevices,
+    partnerId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    maxDevices: opts.maxDevices,
+    activeCount,
+  });
 }
 
 /** Mocks `db.insert(...).values(...)` resolving successfully (handle persist). */
@@ -236,6 +222,12 @@ describe('POST /devices/provision', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    admitPartnerDeviceCapacityMock.mockResolvedValue({
+      allowed: true,
+      partnerId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      maxDevices: null,
+      activeCount: null,
+    });
     setAuth();
     app = new Hono();
     app.route('/devices', provisionRoutes);
@@ -259,8 +251,6 @@ describe('POST /devices/provision', () => {
   // scope-dependent bypass of a billing/entitlement control. These tests pin the
   // enforcement that now actually happens.
   describe('partner device limit', () => {
-    const PARTNER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-
     it('rejects with 403 DEVICE_LIMIT_REACHED when the partner fleet is at the cap', async () => {
       mockSelectRows([{ id: SITE_ID }]);   // site-in-org check
       mockSelectRows([]);                   // hostname collision (none)
@@ -280,10 +270,18 @@ describe('POST /devices/provision', () => {
         currentDevices: 5,
         maxDevices: 5,
       });
-      // The cap is checked BEFORE the insert transaction opens, so no device
-      // row is created and no transaction is even started.
+      // Admission and insertion share one system transaction; denial occurs
+      // under the partner lock before the device INSERT.
       expect(txInsert).not.toHaveBeenCalled();
-      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.transaction).toHaveBeenCalledOnce();
+      expect(admitPartnerDeviceCapacityMock).toHaveBeenCalledWith(
+        expect.anything(),
+        { orgId: ORG_ID, expectedPartnerId: PARTNER_ID },
+      );
+      expect(issueMtlsCertForDevice).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('allows provisioning while the partner fleet is below the cap', async () => {
@@ -358,7 +356,7 @@ describe('POST /devices/provision', () => {
     it('creates a device and returns a one-time fetch URL (no inline secrets)', async () => {
       mockSelectRows([{ id: SITE_ID }]);     // site-in-org check
       mockSelectRows([]);                     // hostname collision check (none)
-      mockTargetOrg(null);                    // target org (no partner → no cap)
+      mockTargetOrg(PARTNER_ID);
       mockTransactionSuccess({
         id: 'device-prov-id',
         orgId: ORG_ID,
@@ -425,7 +423,7 @@ describe('POST /devices/provision', () => {
         setAuth();
         mockSelectRows([{ id: SITE_ID }]);
         mockSelectRows([]);
-        mockTargetOrg(null);
+        mockTargetOrg(PARTNER_ID);
         mockTransactionSuccess({
           id: `device-${os}`,
           orgId: ORG_ID,
@@ -562,7 +560,7 @@ describe('POST /devices/provision', () => {
       setAuth({ allowedSiteIds: [SITE_ID] });
       mockSelectRows([{ id: SITE_ID }]); // site-in-org check
       mockSelectRows([]);                 // hostname collision (none)
-      mockTargetOrg(null);                // target org (no partner → no cap)
+      mockTargetOrg(PARTNER_ID);
       mockTransactionSuccess({
         id: 'device-in-scope',
         orgId: ORG_ID,
@@ -589,7 +587,7 @@ describe('POST /devices/provision', () => {
       setAuth(); // no allowedSiteIds → unrestricted
       mockSelectRows([{ id: SITE_ID }]);
       mockSelectRows([]);
-      mockTargetOrg(null);
+      mockTargetOrg(PARTNER_ID);
       mockTransactionSuccess({
         id: 'device-unrestricted',
         orgId: ORG_ID,

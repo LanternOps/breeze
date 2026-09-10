@@ -11,6 +11,7 @@ export type PortalSession = {
   token: string;
   portalUserId: string;
   orgId: string;
+  authEpoch: number;
   createdAt: Date;
   expiresAt: Date;
 };
@@ -52,6 +53,11 @@ export type PortalAuthContext = {
 declare module 'hono' {
   interface ContextVariableMap {
     portalAuth: PortalAuthContext;
+    portalAuthAuditIdentity?: {
+      userId: string;
+      orgId: string;
+      email: string;
+    };
   }
 }
 
@@ -249,7 +255,10 @@ export const checkinSchema = z.object({
 export const updateProfileSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   receiveNotifications: z.boolean().optional(),
-  password: z.string().min(8).optional()
+  // Password changes require current-password proof and session revocation on
+  // POST /profile/password. Keep the legacy field explicit so it is rejected
+  // rather than silently stripped as an unknown compatibility property.
+  password: z.never().optional()
 });
 
 export const changePasswordSchema = z.object({

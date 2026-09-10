@@ -46,28 +46,35 @@ func shouldForwardBackupRunAsync(cmdType string, hasAsyncCapability bool) bool {
 // `completed` only when `result.status === 'completed'`), so the body can never
 // turn a failed run green. It only adds detail to a failure.
 //
+// D20-B: the success arm used to go through tools.NewSuccessResult, which
+// json.Marshal's its `data any` argument. result.Stdout is ALREADY JSON text
+// (the helper marshals it once, e.g. marshalBackupRunResult or the literal
+// `{"queued":true}`/`{"started":true}` acks in cmd/breeze-backup/main.go), so
+// running it through NewSuccessResult double-encoded it — a queue-admission
+// ack landed server-side as the JSON STRING "{\"queued\":true}" rather than
+// the object {"queued":true}, and a single JSON.parse on that (which is all
+// routes/backup/mssql.ts and hyperv.ts spend) yields a string, not an object.
+// That is the exact "expected object, received string" 500 proven live
+// against agent 0.112.5. Both arms now carry Stdout RAW and identically —
+// toWSCommandResult's stdout->Result reparse (heartbeat.go) already handles
+// turning valid JSON text into a structured `Result` for either branch, and
+// the server's own parseAgentJsonStdout tolerates a double-encoded body from
+// an agent that hasn't picked up this fix yet.
+//
 // Pulled out as a pure function so this mapping is testable without a live
 // websocket/IPC connection, matching shouldForwardBackupRunAsync above.
 func backupResultToCommandResult(result backupipc.BackupCommandResult) tools.CommandResult {
 	if !result.Success {
 		failed := tools.NewErrorResult(fmt.Errorf("%s", result.Stderr), result.DurationMs)
-		// Carried RAW, not json.Marshal'd the way NewSuccessResult encodes the
-		// success body — the two branches genuinely need different encodings,
-		// because toWSCommandResult treats them differently:
-		//
-		//   success: Error == "", so it json.Unmarshals Stdout into `Result`.
-		//            The double encoding means that yields the object TEXT as a
-		//            string, and the server's single JSON.parse turns it into
-		//            the object.
-		//   failure: Error != "", so `Result` is never populated and the server
-		//            falls back to `stdout` — with only ONE parse left. A
-		//            double-encoded body would parse to a string, fail
-		//            backupCommandResultSchema, and be reported as a malformed
-		//            payload. Raw object text is what makes that one parse land.
 		failed.Stdout = result.Stdout
 		return failed
 	}
-	return tools.NewSuccessResult(result.Stdout, result.DurationMs)
+	return tools.CommandResult{
+		Status:     "completed",
+		ExitCode:   0,
+		Stdout:     result.Stdout,
+		DurationMs: result.DurationMs,
+	}
 }
 
 // forwardToBackupHelper sends a command to the backup binary via IPC and returns the result.

@@ -169,6 +169,12 @@ x-api-env: &api-env
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASS: ${SMTP_PASS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Hardware warranty lookups (all optional, OFF unless set). See
+  # https://docs.breezermm.com/deploy/environment/#warranty-lookups
+  DELL_CLIENT_ID: ${DELL_CLIENT_ID:-}
+  DELL_CLIENT_SECRET: ${DELL_CLIENT_SECRET:-}
+  LENOVO_API_KEY: ${LENOVO_API_KEY:-}
+  LENOVO_WARRANTY_ENABLED: ${LENOVO_WARRANTY_ENABLED:-}
   # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
   # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
   # stays dark (env.ts defaults to ''), so this must be threaded through compose

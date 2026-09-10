@@ -7,6 +7,7 @@ const DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const USER_ID = 'uuuuuuuu-uuuu-4uuu-8uuu-uuuuuuuuuuuu';
 const AGENT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SITE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 // --- DB join row (tunnelSessions ⋈ devices), driven by the setter below ---
 let joinRow:
@@ -24,7 +25,7 @@ let joinRow:
         startedAt: Date | null;
         lastActivityAt: Date | null;
       };
-      device: { id: string; status: string; agentId: string | null };
+      device: { id: string; siteId: string | null; status: string; agentId: string | null };
     }
   | undefined;
 
@@ -59,7 +60,7 @@ function defaultJoinRow(
       startedAt: 'startedAt' in over ? (over.startedAt ?? null) : null,
       lastActivityAt: 'lastActivityAt' in over ? (over.lastActivityAt ?? null) : null,
     },
-    device: { id: DEVICE_ID, status: over.deviceStatus ?? 'online', agentId: AGENT_ID },
+    device: { id: DEVICE_ID, siteId: SITE_ID, status: over.deviceStatus ?? 'online', agentId: AGENT_ID },
   };
 }
 
@@ -117,6 +118,13 @@ vi.mock('../services/remoteAccessPolicy', () => ({
   checkRemoteAccess: checkRemoteAccessMock,
 }));
 
+const { authorizeContinuationMock } = vi.hoisted(() => ({
+  authorizeContinuationMock: vi.fn(),
+}));
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeRemoteSessionContinuation: authorizeContinuationMock,
+}));
+
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '203.0.113.7'),
 }));
@@ -128,6 +136,7 @@ vi.mock('../services/tunnelAllowlist', () => ({
 }));
 
 import { tunnelHttpRoutes, HTTP_TUNNEL_COOKIE_TTL_SECONDS, HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
+import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
 
 function makeApp() {
   const app = new Hono();
@@ -156,6 +165,18 @@ beforeEach(() => {
   setJoinRow(defaultJoinRow());
   isAgentConnectedMock.mockReturnValue(true);
   checkRemoteAccessMock.mockResolvedValue({ allowed: true });
+  authorizeContinuationMock.mockResolvedValue({
+    ok: true,
+    context: {
+      sessionId: TUNNEL_ID,
+      sessionType: 'tunnel',
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      agentId: AGENT_ID,
+      tunnelType: 'proxy',
+    },
+  });
   sendCommandMock.mockResolvedValue(okAgentResult());
 });
 
@@ -179,6 +200,29 @@ async function mintCookie(app: Hono): Promise<string> {
   if (!m || !m[1]) throw new Error(`no auth cookie in: ${setCookie}`);
   return m[1];
 }
+
+it('fails closed before cookie mint or agent dispatch when live tunnel authority was revoked', async () => {
+  const app = makeApp();
+  authorizeContinuationMock.mockResolvedValueOnce({
+    ok: false,
+    status: 403,
+    reason: 'permission_denied',
+  });
+  consumeWsTicketMock.mockResolvedValueOnce({
+    ok: true,
+    sessionId: TUNNEL_ID,
+    sessionType: 'tunnel-http',
+    userId: USER_ID,
+    expiresAt: Date.now() + 60_000,
+  });
+
+  const response = await app.request(`${BASE}/?__bzt=goodticket`);
+
+  expect(response.status).toBe(403);
+  expect(response.headers.get('set-cookie')).toBeNull();
+  expect(sendCommandMock).not.toHaveBeenCalled();
+  expect(capturedSessionUpdates).toEqual([]);
+});
 
 describe('tunnelHttp auth: ticket + cookie', () => {
   it('returns 401 with no ticket and no cookie', async () => {
@@ -263,6 +307,7 @@ describe('tunnelHttp dispatch (cookie-authed)', () => {
     expect(command.payload.path).toBe('/admin/page?x=1');
     expect(command.payload.tunnelId).toBe(TUNNEL_ID);
     expect(Array.isArray(command.payload.allowlistRules)).toBe(true);
+    expect(getActiveAllowlistPatterns).toHaveBeenCalledWith(ORG_ID, SITE_ID);
     // hop-by-hop + our own auth cookie must not be forwarded
     expect(JSON.stringify(command.payload.headers).toLowerCase()).not.toContain('bz_tunnel');
     expect(await res.text()).toBe('hello');

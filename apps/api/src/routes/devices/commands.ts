@@ -8,7 +8,7 @@ import { db } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, isInteractiveUserSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
+import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
 import {
   MAINTENANCE_ENTRY_ALLOWED_STATUSES,
@@ -711,7 +711,7 @@ commandsRoutes.post(
           },
         });
       }
-      return c.json({ success: true, changed: result.changed, device: result.device });
+      return c.json({ success: true, changed: result.changed, device: projectPublicDevice(result.device) });
     }
 
     // Advisory pre-check so a state denial costs no lock and no write; the
@@ -798,7 +798,7 @@ commandsRoutes.post(
           startedAt: result.startedAt.toISOString(),
           reason: data.reason,
         },
-        device: result.device,
+        device: projectPublicDevice(result.device),
       });
     } catch (err) {
       if (err instanceof MaintenanceStepUpConsumedError) {
