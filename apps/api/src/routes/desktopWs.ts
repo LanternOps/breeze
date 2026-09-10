@@ -1092,11 +1092,33 @@ function createDesktopWsHandlers(
           void Promise.all([
             isViewerSessionRevoked(sessionId),
             revalidateRemoteWsAuthorityBounded({ sessionId, sessionType: 'desktop', userId: deskSess.userId }),
+            // Revocation-lease recheck on the same tick, inside the SAME
+            // in-flight guard. `isViewerSessionRevoked` only sees an EXPLICIT
+            // revoke flag; this is the live authorization recheck (membership,
+            // role, site ceiling, epoch, MFA, hard deadline) that nothing else
+            // performs for a streaming Flow-A socket.
+            //
+            // Only a definitive `revoked` closes. An `unavailable` (DB/Redis
+            // blip) resolves inertly so an infrastructure hiccup cannot
+            // disconnect the fleet — the agent's own grace window covers a
+            // control plane that really is gone. That is also why a THROW is
+            // mapped to `unavailable` here rather than falling through to the
+            // fail-closed .catch() below: renewRevocationLease already converts
+            // its own failures, so an escaping throw is an unknown, and an
+            // unknown must not be stronger evidence than a known outage.
+            renewRevocationLease(sessionId).catch((leaseErr) => {
+              console.error(
+                `[DesktopWs] Revocation-lease renew threw for session ${sessionId}:`,
+                leaseErr
+              );
+              return { status: 'unavailable' as const };
+            }),
           ])
-            .then(([revoked, authority]) => {
+            .then(([revoked, authority, lease]) => {
               const current = activeDesktopSessions.get(sessionId);
+              const leaseRevoked = lease.status === 'revoked';
               if (
-                (revoked || !authority.ok)
+                (revoked || !authority.ok || leaseRevoked)
                 && current
                 && connectionIdentity
                 && ownsSafeRemoteConnection(
@@ -1107,7 +1129,10 @@ function createDesktopWsHandlers(
                 )
               ) {
                 current.continuationAuthorized = false;
-                console.warn(`[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`);
+                console.warn(
+                  `[DesktopWs] Session ${sessionId} revoked mid-session, closing socket`
+                  + (leaseRevoked ? ` (lease: ${lease.reason})` : '')
+                );
                 if (pingInterval) clearInterval(pingInterval);
                 void closeDesktopSessionLifecycle(sessionId, {
                   expectedWs: ws,
@@ -1171,51 +1196,6 @@ function createDesktopWsHandlers(
                 console.warn(`[DesktopWs] Ping send failed for session ${sessionId}, cleaning up`, err);
                 if (pingInterval) clearInterval(pingInterval);
               }
-            });
-
-          // Revocation-lease recheck on the same cadence. `isViewerSessionRevoked`
-          // above only sees an EXPLICIT revoke flag; this is the live
-          // authorization recheck (membership, role, site ceiling, epoch, MFA,
-          // hard deadline) that nothing else performs for a streaming Flow-A
-          // socket. Only a definitive `revoked` closes: an `unavailable`
-          // (DB/Redis blip) is deliberately ignored so an infrastructure hiccup
-          // cannot disconnect the fleet — the agent's own grace window covers
-          // the case where the control plane really is gone.
-          void renewRevocationLease(sessionId)
-            .then((leaseResult) => {
-              if (
-                leaseResult.status === 'revoked'
-                && connectionIdentity
-                && ownsSafeRemoteConnection(
-                  activeDesktopSessions,
-                  sessionId,
-                  connectionIdentity,
-                  ws,
-                )
-              ) {
-                console.warn(
-                  `[DesktopWs] Session ${sessionId} revoked by lease recheck (${leaseResult.reason}), closing socket`
-                );
-                if (pingInterval) clearInterval(pingInterval);
-                void closeDesktopSessionLifecycle(sessionId, {
-                  expectedWs: ws,
-                  connection: connectionIdentity,
-                  reason: 'revoked',
-                  terminalStatus: 'failed',
-                  notifyAgent: true,
-                }).catch(() => {
-                  reportRetainedDesktopCleanup(sessionId, 'revoked');
-                });
-              }
-            })
-            .catch((leaseErr) => {
-              // renewRevocationLease already converts its own failures into
-              // `unavailable`; a throw here means something unexpected. Log it
-              // rather than tearing the session down on an unknown error.
-              console.error(
-                `[DesktopWs] Revocation-lease renew threw for session ${sessionId}:`,
-                leaseErr
-              );
             });
         }, PING_INTERVAL_MS);
 

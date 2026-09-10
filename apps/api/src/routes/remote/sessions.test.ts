@@ -1156,6 +1156,34 @@ describe('remote sessions — revocation-lease capability gate', () => {
     expect((await res.json()).code).toBe('agent_upgrade_required');
   });
 
+  // The 503 must carry a machine-readable `code`, like every sibling lease 503
+  // on this route and in desktopWs.ts. Two renderers have to agree on that:
+  // Hono's DEFAULT handler (which this bare test app uses) calls
+  // `getResponse()`, while the real app installs its own `onError`. A body of
+  // `{error, message}` alone leaves the client unable to tell this apart from
+  // any other 503 and is what shipped first.
+  it('refuses to CREATE a desktop session with 503 lease_unavailable when the epoch baseline cannot be read', async () => {
+    rigDeviceOnline();
+    // db.select is unrigged here, so readPermissionsEpoch throws and resolves
+    // to a null baseline — the "DB blip at create time" case.
+    vi.mocked(db.select).mockImplementation(() => {
+      throw new Error('db down');
+    });
+
+    const res = await app.request('/remote/sessions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID2, type: 'desktop' }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.code).toBe('lease_unavailable');
+    expect(body.error).toMatch(/temporarily unavailable/i);
+    // Fail CLOSED: no unrenewable session row is minted.
+    expect((db as any).insert).not.toHaveBeenCalled();
+  });
+
   it('does NOT gate terminal sessions on the desktop lease capability', async () => {
     rigDeviceOnline();
     isRevocationLeaseCapable.mockResolvedValue(false);

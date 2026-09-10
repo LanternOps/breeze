@@ -169,9 +169,11 @@ func TestRevocationLeaseDeadlinesAreMonotonic(t *testing.T) {
 	if delta := got.Sub(wall); delta > 50*time.Millisecond || delta < -50*time.Millisecond {
 		t.Fatalf("deadline drifted %v from the wall-clock value it was derived from", delta)
 	}
-	// time.Time.Round(0) strips the monotonic reading; a value that still
-	// differs from its stripped form is carrying one.
-	if got.Round(0).Equal(got) && got.String() == got.Round(0).String() {
+	// time.Time.Round(0) strips the monotonic reading. Equal() compares
+	// instants and is therefore ALWAYS true across that strip — only the
+	// formatted form differs, because String() renders a monotonic reading as a
+	// trailing " m=+<seconds>". So the format comparison is the whole test.
+	if got.String() == got.Round(0).String() {
 		t.Fatal("deadline carries no monotonic reading, so a clock step would move it")
 	}
 	if !MonotonicDeadline(0).IsZero() || !MonotonicDeadline(-1).IsZero() {

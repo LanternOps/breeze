@@ -50,16 +50,33 @@ export class RemoteSessionDeniedError extends Error {
  * Extends `HTTPException` so the app-level `onError` handler in `index.ts`
  * renders it as a 503 without every create call site needing its own branch
  * (the existing `RemoteSessionDeniedError` -> 403 mapping is untouched).
+ *
+ * The body carries `code: 'lease_unavailable'` so clients can tell this apart
+ * from any other 503, matching the sibling lease 503s in `remote/sessions.ts`
+ * and `desktopWs.ts`. Both renderers have to be taught that: Hono's DEFAULT
+ * error handler calls `getResponse()` (overridden below), while this app
+ * installs its own `onError`, which builds the body itself and therefore reads
+ * `code` off the error explicitly.
  */
+export const REMOTE_SESSION_LEASE_UNAVAILABLE_CODE = 'lease_unavailable';
+export const REMOTE_SESSION_LEASE_UNAVAILABLE_MESSAGE =
+  'Remote desktop is temporarily unavailable: the session revocation baseline could not be read. Please retry.';
+
 export class RemoteSessionLeaseBaselineError extends HTTPException {
-  readonly code = 'lease_unavailable' as const;
+  readonly code = REMOTE_SESSION_LEASE_UNAVAILABLE_CODE;
 
   constructor(readonly userId: string) {
-    super(503, {
-      message:
-        'Remote desktop is temporarily unavailable: the session revocation baseline could not be read. Please retry.',
-    });
+    super(503, { message: REMOTE_SESSION_LEASE_UNAVAILABLE_MESSAGE });
     this.name = 'RemoteSessionLeaseBaselineError';
+  }
+
+  // A fresh Response every call: a Response body may only be read once, and
+  // Hono hands whatever this returns straight to the client.
+  override getResponse(): Response {
+    return Response.json(
+      { error: this.message, message: this.message, code: this.code },
+      { status: 503 },
+    );
   }
 }
 
