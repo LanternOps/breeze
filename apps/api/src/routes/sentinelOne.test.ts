@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 
 const { permissionGate, mfaGate, permsState, authState } = vi.hoisted(() => ({
   permissionGate: { deny: false },
@@ -169,6 +170,24 @@ const INTEGRATION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const INTEGRATION_ID_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const S1_SITE_ID = 's1-site-abc123';
 
+function collectSqlValues(node: unknown, seen = new Set<unknown>(), values: unknown[] = []): unknown[] {
+  if (node === null || node === undefined || typeof node !== 'object') {
+    values.push(node);
+    return values;
+  }
+  if (seen.has(node)) return values;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const item of node) collectSqlValues(item, seen, values);
+    return values;
+  }
+  const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(chunks)) {
+    for (const item of chunks) collectSqlValues(item, seen, values);
+  }
+  return values;
+}
+
 describe('sentinel one routes', () => {
   let app: Hono;
 
@@ -188,6 +207,15 @@ describe('sentinel one routes', () => {
 
     app = new Hono();
     app.route('/s1', sentinelOneRoutes);
+  });
+
+  it('requires device-read permission before exposing integration metadata', async () => {
+    permissionGate.deny = true;
+
+    const res = await app.request('/s1/integration');
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -829,6 +857,15 @@ describe('sentinel one routes', () => {
 
   // ───────────────────── B4: /status ─────────────────────
   describe('GET /status', () => {
+    it('requires device-read permission before reading status', async () => {
+      permissionGate.deny = true;
+
+      const res = await app.request('/s1/status');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
     it('returns empty summary when no integration found', async () => {
       authState.scope = 'organization';
       authState.partnerId = PARTNER_ID;
@@ -929,6 +966,97 @@ describe('sentinel one routes', () => {
 
       const res = await app.request('/s1/status?orgId=b0000000-0000-4000-8000-000000000099');
       expect(res.status).toBe(403);
+    });
+
+    // SEC-2026-09-05-064. Site is an app-layer axis that organization RLS does
+    // not enforce. The org-scoped shape of GET /status was already narrowed by
+    // a site subquery; these two cover the CROSS-ORG shape (partner/system
+    // caller, no `orgId` selector), where the ceiling used to be dropped
+    // entirely and the aggregates counted devices outside the caller's sites.
+    function mockIntegrationLookup() {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: INTEGRATION_ID, partnerId: PARTNER_ID }])
+          })
+        })
+      } as any);
+    }
+
+    it('fails closed for a site-restricted cross-org read with no organization ceiling', async () => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      // No org ceiling at all: narrowing by site would have to scan every
+      // tenant's devices, so the read must return nothing instead.
+      authState.orgCondition = () => undefined as any;
+      permsState.permissions = { allowedSiteIds: ['site-A'] };
+      mockIntegrationLookup();
+
+      const res = await app.request('/s1/status');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        mapped: true,
+        summary: {
+          totalAgents: 0,
+          mappedDevices: 0,
+          infectedAgents: 0,
+          activeThreats: 0,
+          highOrCriticalThreats: 0,
+          pendingActions: 0,
+          reportedThreatCount: 0,
+        },
+      });
+      // Only the integration lookup ran — no aggregate touched S1 data.
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the site ceiling to every cross-org status aggregate', async () => {
+      authState.scope = 'partner';
+      authState.orgId = undefined;
+      const orgConditionSpy = vi.fn(() => sql`org_ceiling`);
+      authState.orgCondition = orgConditionSpy as any;
+      permsState.permissions = { allowedSiteIds: ['site-A'] };
+      const capturedWhere: unknown[] = [];
+      let siteDevicesWhere: unknown;
+
+      mockIntegrationLookup();
+      // The visible-device subquery. Returning its own WHERE makes the
+      // predicate observable inside each aggregate's condition tree.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((where: unknown) => {
+            siteDevicesWhere = where;
+            return where;
+          })
+        })
+      } as any);
+      for (const result of [
+        [{ totalAgents: 1, mappedDevices: 1, infectedAgents: 0, totalThreatCount: 0 }],
+        [{ activeThreats: 0, highOrCritical: 0 }],
+        [{ pendingActions: 0 }],
+      ]) {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn((where: unknown) => {
+              capturedWhere.push(where);
+              return Promise.resolve(result);
+            })
+          })
+        } as any);
+      }
+
+      const res = await app.request('/s1/status');
+
+      expect(res.status).toBe(200);
+      // The subquery keeps BOTH axes: the caller's accessible orgs and sites.
+      expect(orgConditionSpy).toHaveBeenCalled();
+      expect(collectSqlValues(siteDevicesWhere)).toContain('site-A');
+      // ...and every aggregate family is narrowed by it.
+      expect(capturedWhere).toHaveLength(3);
+      for (const where of capturedWhere) {
+        expect(collectSqlValues(where)).toContain('site-A');
+      }
     });
   });
 

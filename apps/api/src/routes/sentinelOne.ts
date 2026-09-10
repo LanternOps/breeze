@@ -260,6 +260,7 @@ function normalizedHost(value: string): string {
 sentinelOneRoutes.get(
   '/integration',
   requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
   zValidator('query', integrationQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -592,8 +593,18 @@ sentinelOneRoutes.get(
     }
 
     const perms = c.get('permissions') as UserPermissions | undefined;
-    if (perms?.allowedSiteIds && scopedOrgId) {
-      if (perms.allowedSiteIds.length === 0) {
+    if (perms?.allowedSiteIds) {
+      // Status is requested either for one org or across the caller's whole
+      // accessible org set. Site is an app-layer axis that org RLS does not
+      // enforce, so the ceiling has to be applied in BOTH shapes — a
+      // cross-org request is exactly where the aggregates would otherwise
+      // report devices outside the caller's sites.
+      const deviceOrgCondition = scopedOrgId
+        ? eq(devices.orgId, scopedOrgId)
+        : auth.orgCondition(devices.orgId);
+      // No sites, or a cross-org request with no organization ceiling at all:
+      // fail closed rather than scan every tenant's devices.
+      if (perms.allowedSiteIds.length === 0 || !deviceOrgCondition) {
         return c.json({ integration, mapped: true, summary: {
           totalAgents: 0, mappedDevices: 0, infectedAgents: 0, activeThreats: 0,
           highOrCriticalThreats: 0, pendingActions: 0, reportedThreatCount: 0,
@@ -602,7 +613,7 @@ sentinelOneRoutes.get(
       // Each security table has its own nullable device FK. SQL membership
       // excludes unmapped rows and avoids materializing a fleet-sized ID list.
       const siteDevices = db.select({ id: devices.id }).from(devices).where(and(
-        eq(devices.orgId, scopedOrgId), inArray(devices.siteId, perms.allowedSiteIds),
+        deviceOrgCondition, inArray(devices.siteId, perms.allowedSiteIds),
       ));
       agentConditions.push(inArray(s1Agents.deviceId, siteDevices));
       threatConditions.push(inArray(s1Threats.deviceId, siteDevices));
