@@ -23,17 +23,17 @@ const (
 	maxDesktopModifierBytes = 16
 	maxDesktopModifiers     = 8
 
-	// Caps for caller-supplied session-lifetime limits in the direct-mode
-	// (map-payload) decoder. Same maxima as the IPC path (userhelper), but note
-	// the enforcement DIFFERS: this decoder has no error channel so it CLAMPS to
-	// these bounds, whereas the IPC path REJECTS out-of-range input with an
-	// error. Either way the agent can't be pushed past these. 0 = disabled.
-	maxIdleTimeoutMinutes   = 1440 // 24h
-	maxSessionDurationHours = 12   // hard cap; 0 and >12 both resolve to this
+	// Cap for the caller-supplied idle timeout in the direct-mode (map-payload)
+	// decoder. Same maximum as the IPC path (userhelper), but note the
+	// enforcement DIFFERS: this decoder has no error channel so it CLAMPS,
+	// whereas the IPC path REJECTS out-of-range input with an error. Either way
+	// the agent can't be pushed past it. 0 = disabled.
+	maxIdleTimeoutMinutes = 1440 // 24h
 
-	// Fallback grace window when the server omits graceSec. Matches the API's
-	// REVOCATION_LEASE_GRACE_MS.
-	defaultRevocationLeaseGrace = 90 * time.Second
+	// Fallback grace window when the server omits graceSec. The 12h max-session
+	// ceiling is NOT duplicated here: desktop.ClampMaxDuration owns it for both
+	// decoders.
+	defaultRevocationLeaseGrace = desktop.DefaultRevocationLeaseGrace
 )
 
 var desktopInputTypes = map[string]struct{}{
@@ -348,42 +348,41 @@ func parseDesktopSessionPolicy(payload map[string]any) desktop.SessionPolicy {
 }
 
 // parseRevocationLease extracts the server-issued revocation lease from a
-// start_desktop payload. Returns nil when the block is absent or unusable —
-// the caller refuses the start rather than running unrevokable.
+// direct-mode start_desktop payload. Returns nil when the block is absent or
+// unusable — the caller refuses the start rather than running unrevokable.
+//
+// This decoder only reshapes the loose JSON map into the wire struct; every
+// validation and back-fill rule (usable expiry, usable renew cadence, 12h
+// hard-deadline fallback, 90s grace fallback, monotonic deadlines) lives in
+// desktop.NormalizeRevocationLease, which the IPC decoder and the helper's
+// validator also call. Keeping the rules in one place is what stops the two
+// paths from disagreeing about what a valid lease is — they already did once,
+// and the looser side accepted an all-zero block, i.e. an unrevokable session.
 func parseRevocationLease(payload map[string]any) *desktop.RevocationLease {
 	raw, ok := payload["revocationLease"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	lease := &desktop.RevocationLease{}
+	var wire ipc.RevocationLease
 	if v, ok := raw["token"].(string); ok {
-		lease.Token = v
+		wire.Token = v
 	}
-	if v, ok := raw["expiresAt"].(float64); ok && v > 0 {
-		lease.ExpiresAt = time.UnixMilli(int64(v))
+	if v, ok := raw["expiresAt"].(float64); ok {
+		wire.ExpiresAtUnixMs = int64(v)
 	}
-	if v, ok := raw["hardDeadline"].(float64); ok && v > 0 {
-		lease.HardDeadline = time.UnixMilli(int64(v))
+	if v, ok := raw["hardDeadline"].(float64); ok {
+		wire.HardDeadlineUnixMs = int64(v)
 	}
-	if v, ok := raw["renewEverySec"].(float64); ok && v > 0 {
-		lease.RenewEvery = time.Duration(v) * time.Second
+	if v, ok := raw["renewEverySec"].(float64); ok {
+		wire.RenewEverySec = int64(v)
 	}
-	if v, ok := raw["graceSec"].(float64); ok && v > 0 {
-		lease.Grace = time.Duration(v) * time.Second
+	if v, ok := raw["graceSec"].(float64); ok {
+		wire.GraceSec = int64(v)
 	}
-	// A lease with no expiry or no renew cadence cannot be kept alive, so it is
-	// no lease at all. Fail closed rather than start a session whose watchdog
-	// would never fire.
-	if lease.ExpiresAt.IsZero() || lease.RenewEvery <= 0 {
+	lease, err := desktop.NormalizeRevocationLease(&wire)
+	if err != nil {
+		log.Warn("dropping unusable revocationLease block from start_desktop", "error", err.Error())
 		return nil
-	}
-	// A missing hard deadline falls back to the local 12h cap from now, so the
-	// absolute ceiling always exists even against an older/partial server.
-	if lease.HardDeadline.IsZero() {
-		lease.HardDeadline = time.Now().Add(desktop.MaxSessionDurationCap)
-	}
-	if lease.Grace <= 0 {
-		lease.Grace = defaultRevocationLeaseGrace
 	}
 	return lease
 }
@@ -452,6 +451,16 @@ func handleListSessions(h *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
+// handleDesktopStreamStart is the WS-relay fallback path: frames are pushed to
+// the API over the agent's own WebSocket instead of peer-to-peer WebRTC.
+//
+// It deliberately carries NO revocation lease and runs no lease watchdog. It
+// does not need one: unlike a WebRTC session, every frame passes through the
+// server, so the server can (and does) cut it — the ~30s desktop_stream loop in
+// routes/desktopWs.ts revalidates and drops the relay. The lease exists
+// precisely because the API is NOT in the WebRTC media path; here it is.
+// Follow-up: fold this path into the same revalidation function the lease renew
+// uses, so the two revocation deadlines are provably the same policy.
 func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 

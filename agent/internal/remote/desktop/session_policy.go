@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -89,28 +90,74 @@ func ResolveSessionPolicyFromIPC(r ipc.DesktopStartRequest) SessionPolicy {
 		p.IdleTimeout = time.Duration(r.IdleTimeoutMinutes) * time.Minute
 	}
 	p.MaxDuration = ClampMaxDuration(time.Duration(r.MaxSessionDurationHours) * time.Hour)
-	if r.RevocationLease != nil {
-		p.RevocationLease = revocationLeaseFromIPC(r.RevocationLease)
+	// An unusable lease resolves to NO lease rather than to a half-populated
+	// one: StartSession then refuses the start outright, which is the
+	// fail-closed outcome. Callers that can report an error (the helper's
+	// validateDesktopStartRequest) reject it before ever getting here.
+	if lease, err := NormalizeRevocationLease(r.RevocationLease); err == nil {
+		p.RevocationLease = lease
 	}
 	return p
 }
 
-// revocationLeaseFromIPC converts the wire form (epoch milliseconds + seconds)
-// into the internal time.Time/Duration form used by the watchdog.
-func revocationLeaseFromIPC(l *ipc.RevocationLease) *RevocationLease {
+// DefaultRevocationLeaseGrace is the outage budget applied when the server
+// omits graceSec. Mirrors the API's REVOCATION_LEASE_GRACE_MS.
+const DefaultRevocationLeaseGrace = 90 * time.Second
+
+// NormalizeRevocationLease is the ONE validate-and-back-fill function every
+// lease decoder funnels through — the IPC decoder below, the agent's
+// map-payload decoder (heartbeat.parseRevocationLease) and the helper's
+// validateDesktopStartRequest. It plays the same role for the lease that
+// ClampMaxDuration plays for the max duration.
+//
+// It existed as two divergent copies, and they disagreed on the case that
+// matters: one accepted an all-zero block (a lease with no expiry, no deadline
+// and no cadence — one the watchdog can neither renew nor ever enforce, i.e. an
+// unrevokable session), the other refused it. Anything unusable is rejected
+// here so a caller cannot start a session it could never end.
+//
+// Deadlines are converted from wall clock to the MONOTONIC clock at receipt:
+// the server sends absolute epoch milliseconds, but a time.Time built from
+// time.UnixMilli carries no monotonic reading, so an NTP step or a hostile
+// local clock would move the expiry and the hard deadline. Storing
+// time.Now().Add(ttl) pins them to elapsed time instead, so a clock jump can
+// neither extend a lease nor push out the 12h ceiling.
+func NormalizeRevocationLease(l *ipc.RevocationLease) (*RevocationLease, error) {
 	if l == nil {
-		return nil
+		return nil, ErrRevocationLeaseRequired
 	}
-	lease := &RevocationLease{Token: l.Token}
-	if l.ExpiresAtUnixMs > 0 {
-		lease.ExpiresAt = time.UnixMilli(l.ExpiresAtUnixMs)
+	// A lease with no expiry can never lapse and one with no renew cadence can
+	// never be kept alive; either way the watchdog has nothing to enforce.
+	if l.ExpiresAtUnixMs <= 0 || l.RenewEverySec <= 0 {
+		return nil, fmt.Errorf("%w: expiresAt=%d renewEverySec=%d",
+			ErrRevocationLeaseRequired, l.ExpiresAtUnixMs, l.RenewEverySec)
 	}
-	if l.HardDeadlineUnixMs > 0 {
-		lease.HardDeadline = time.UnixMilli(l.HardDeadlineUnixMs)
+	lease := &RevocationLease{
+		Token:      l.Token,
+		ExpiresAt:  MonotonicDeadline(l.ExpiresAtUnixMs),
+		RenewEvery: time.Duration(l.RenewEverySec) * time.Second,
+		Grace:      time.Duration(l.GraceSec) * time.Second,
 	}
-	lease.RenewEvery = time.Duration(l.RenewEverySec) * time.Second
-	lease.Grace = time.Duration(l.GraceSec) * time.Second
-	return lease
+	// A missing hard deadline falls back to the local 12h cap from now, so the
+	// absolute ceiling always exists even against an older or partial server.
+	lease.HardDeadline = MonotonicDeadline(l.HardDeadlineUnixMs)
+	if lease.HardDeadline.IsZero() {
+		lease.HardDeadline = time.Now().Add(MaxSessionDurationCap)
+	}
+	if lease.Grace <= 0 {
+		lease.Grace = DefaultRevocationLeaseGrace
+	}
+	return lease, nil
+}
+
+// MonotonicDeadline turns a server-supplied epoch-millisecond deadline into a
+// time.Time anchored to this process's monotonic clock. Non-positive input (an
+// absent field) yields the zero time. See NormalizeRevocationLease for why.
+func MonotonicDeadline(unixMs int64) time.Time {
+	if unixMs <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(time.Until(time.UnixMilli(unixMs)))
 }
 
 // revocationLeaseToIPC is the inverse, used when the service hands a start over

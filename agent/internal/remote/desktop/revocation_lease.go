@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 // ErrRevocationLeaseRequired is returned when a start_desktop payload carries
@@ -175,6 +177,50 @@ func (m *SessionManager) RevokeSession(sessionID, reason string) {
 		return
 	}
 	session.leaseState.revoke(reason)
+}
+
+// WireHelperRevocationLease connects a helper-hosted SessionManager to the
+// agent process over IPC.
+//
+// A helper (Windows service install, macOS daemon install) hosts the capture
+// session but holds no command WebSocket — only the agent does. Without this
+// bridge the manager's RequestRevocationLeaseRenew stays nil, the watchdog asks
+// nobody for a renewal, no answer ever arrives, and EVERY helper-hosted session
+// is killed at expiresAt+grace (60s+90s) regardless of the operator's standing.
+//
+// `send` is the helper's outbound IPC channel. Renewals are fire-and-forget;
+// the agent's answer comes back separately and is applied by ApplyLeaseUpdate.
+// The helper's own watchdog remains authoritative either way: it stops the
+// session at expiresAt+grace or the hard deadline even if the agent is silent.
+func (m *SessionManager) WireHelperRevocationLease(send func(msgType string, payload any) error) {
+	if send == nil {
+		return
+	}
+	m.RequestRevocationLeaseRenew = func(sessionID string) {
+		if err := send(ipc.TypeDesktopLeaseRenew, ipc.DesktopLeaseRenewRequest{SessionID: sessionID}); err != nil {
+			// Not fatal: an unsent renew is indistinguishable from an
+			// unanswered one, and the grace window is exactly that budget.
+			slog.Debug("desktop lease renew request not sent over IPC",
+				"session", sessionID, "error", err.Error())
+		}
+	}
+}
+
+// ApplyLeaseUpdate applies an agent-forwarded answer to a helper-hosted
+// session's lease renewal. A revocation is recorded rather than torn down
+// inline so every lease-driven stop goes through the same watchdog decision
+// path (and so the caller — an IPC read loop — is never blocked by a teardown).
+func (m *SessionManager) ApplyLeaseUpdate(u ipc.DesktopLeaseUpdate) {
+	if u.SessionID == "" {
+		return
+	}
+	if u.Revoked {
+		m.RevokeSession(u.SessionID, u.Reason)
+		return
+	}
+	m.ApplyRevocationLease(u.SessionID,
+		MonotonicDeadline(u.ExpiresAtUnixMs),
+		MonotonicDeadline(u.HardDeadlineUnixMs))
 }
 
 // watchdogTickInterval is how often the lifetime + lease watchdog wakes up.

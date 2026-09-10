@@ -18,7 +18,7 @@ const (
 	// Sane upper bounds for caller-supplied lifetime limits. Values above the
 	// cap are almost certainly a bug or hostile input.
 	maxIdleTimeoutMinutes   = 1440 // 24h
-	maxSessionDurationHours = 12   // hard cap; 0 and >12 both resolve to it
+	maxSessionDurationHours = 12   // hard cap; 0 and >12 both resolve to it (desktop.MaxSessionDurationCap)
 )
 
 var helperDesktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -109,11 +109,14 @@ func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
 	if req.MaxSessionDurationHours > maxSessionDurationHours {
 		req.MaxSessionDurationHours = maxSessionDurationHours
 	}
-	// A start with no revocation lease is refused: the API is not in the
-	// peer-to-peer data path, so without a lease this session could never be
-	// ended by the control plane.
-	if req.RevocationLease == nil {
-		return desktop.ErrRevocationLeaseRequired
+	// A start with no USABLE revocation lease is refused: the API is not in the
+	// peer-to-peer data path, so without a lease the control plane could never
+	// end this session. Validated through the same shared function the agent's
+	// two decoders use, so "usable" means exactly one thing everywhere — an
+	// all-zero block used to slip through here and produce a session whose
+	// watchdog had nothing to enforce.
+	if _, err := desktop.NormalizeRevocationLease(req.RevocationLease); err != nil {
+		return err
 	}
 	return nil
 }
