@@ -1310,3 +1310,87 @@ func TestRunBackupContext_NoSecureJournalDir_RunsWithoutJournal(t *testing.T) {
 		t.Fatalf("no journal file may be written to the world-writable temp dir, found %s (err=%v)", journalPath, statErr)
 	}
 }
+
+// listRecordingProvider wraps mockProvider and counts List calls, proving
+// goal 4 ("the agent never lists the bucket to choose a base") at the
+// RunBackupContext level — fetchServerOwnedBase's own unit tests (Task 2)
+// only prove it in isolation.
+type listRecordingProvider struct {
+	*mockProvider
+	listCalls int
+}
+
+func (p *listRecordingProvider) List(prefix string) ([]string, error) {
+	p.listCalls++
+	return p.mockProvider.List(prefix)
+}
+
+func TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "file1.txt", "content")
+	backing := newMockProvider()
+	provider := &listRecordingProvider{mockProvider: backing}
+
+	baseID := "snap-base"
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		Paths:                 []string{tmpDir},
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		// Well beyond publishMargin (1h) so this test doesn't flake on the
+		// margin boundary — it's proving "never lists the bucket", not the
+		// lease-expiry edge (that's TestLeaseGate_RefusesManifestPastLeaseMargin).
+		PublishLeaseExpiresAt: time.Now().Add(4 * time.Hour),
+	})
+
+	// Seed the server-selected base AFTER constructing mgr, using its own
+	// runBackupIdentity() so the identity guard (D6) matches exactly what
+	// this run will compute — see incremental.go's fetchServerOwnedBase.
+	base := &Snapshot{
+		ID:             baseID,
+		BackupIdentity: mgr.runBackupIdentity(),
+		Files:          []SnapshotFile{{SourcePath: "/prior.txt", BackupPath: "snapshots/snap-base/files/prior.txt.gz", Size: 3}},
+	}
+	storeManifest(t, backing, base)
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("expected zero List calls in server-owned mode, got %d", provider.listCalls)
+	}
+}
+
+func TestRunBackupContext_ExpiredLease_RefusesToPublishManifest(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+
+	baseID := "" // full run — the lease is enforced for full runs too, not just incremental ones
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		Paths:                 []string{tmpDir},
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusFailed)
+	}
+	for key := range provider.files {
+		if isManifestPath(key) {
+			t.Fatalf("manifest was published despite an expired lease: %s", key)
+		}
+	}
+}
