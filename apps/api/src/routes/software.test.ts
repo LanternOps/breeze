@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { softwareRoutes, computeSoftwareDeploymentAggregateStatus } from './software';
+import {
+  softwareRoutes,
+  computeSoftwareDeploymentAggregateStatus,
+  softwareDeploymentSiteScopePredicate,
+} from './software';
 import { db } from '../db';
 import {
   uploadBinary,
@@ -14,6 +18,7 @@ import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
 import { authMiddleware } from '../middleware/auth';
 import { inArray, eq, isNull } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
 import {
@@ -225,6 +230,29 @@ vi.mock('../services/streamingUpload', async () => {
     '../services/streamingUpload'
   );
   return { ...actual, parseStreamingMultipart: vi.fn(actual.parseStreamingMultipart) };
+});
+
+describe('software deployment parent site predicate', () => {
+  it('is absent for unrestricted callers and false for an empty site ceiling', () => {
+    expect(softwareDeploymentSiteScopePredicate('id' as never, undefined)).toBeUndefined();
+    const empty = softwareDeploymentSiteScopePredicate('id' as never, { allowedSiteIds: [] } as never)!;
+    expect(new PgDialect().sqlToQuery(empty).sql).toContain('false');
+  });
+
+  it('requires children and rejects any missing, null-site, or outside-site device', () => {
+    const predicate = softwareDeploymentSiteScopePredicate(
+      'id' as never,
+      { allowedSiteIds: ['11111111-1111-4111-8111-111111111111'] } as never,
+    )!;
+    const query = new PgDialect().sqlToQuery(predicate);
+
+    expect(query.sql).toContain('EXISTS');
+    expect(query.sql).toContain('NOT EXISTS');
+    expect(query.sql).toContain('deployment_scope_device.id IS NULL');
+    expect(query.sql).toContain('deployment_scope_device.site_id IS NULL');
+    expect(query.sql).toContain('deployment_scope_device.site_id NOT IN');
+    expect(query.params).toContain('11111111-1111-4111-8111-111111111111');
+  });
 });
 
 describe('software routes', () => {
@@ -2504,6 +2532,39 @@ describe('software routes', () => {
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({}),
       });
+
+    it('returns an opaque not-found with no mutation or audit when the scoped parent is not visible', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'organization',
+          orgId: 'org-123',
+          partnerId: null,
+        });
+        c.set('permissions', { allowedSiteIds: ['site-1'] });
+        return next();
+      });
+      const lookup = selectCapture([]);
+      vi.mocked(db.select).mockReturnValueOnce(lookup.chain);
+
+      const res = await cancel();
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Deployment not found' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+
+      // The parent must be narrowed in SQL, not filtered afterwards: the
+      // preflight WHERE has to carry the site-scope predicate (allowed site id
+      // bound as a parameter) alongside the id/org equality.
+      const whereArgs = lookup.calls.where?.[0];
+      expect(whereArgs).toBeDefined();
+      const compiled = new PgDialect().sqlToQuery(whereArgs![0]);
+      expect(compiled.sql).toContain('deployment_scope_result');
+      expect(compiled.params).toContain('site-1');
+    });
 
     it('purges still-queued commands, leaves delivered ones alone, and reports the count', async () => {
       vi.mocked(db.select)

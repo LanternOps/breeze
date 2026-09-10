@@ -129,6 +129,40 @@ function resolveCatalogListScope(
 }
 
 /**
+ * A software deployment is an indivisible parent: its target metadata and
+ * aggregate status describe every child device. Restricted callers may see or
+ * mutate it only when it has at least one result and every result still points
+ * to a live device in one of their allowed sites.
+ */
+export function softwareDeploymentSiteScopePredicate(
+  deploymentIdColumn: typeof softwareDeployments.id,
+  permissions: UserPermissions | undefined,
+): SQL | undefined {
+  const allowedSiteIds = permissions?.allowedSiteIds;
+  if (allowedSiteIds === undefined) return undefined;
+  if (allowedSiteIds.length === 0) return sql`false`;
+
+  const allowedSites = sql.join(allowedSiteIds.map((siteId) => sql`${siteId}::uuid`), sql`, `);
+  return sql`
+    EXISTS (
+      SELECT 1 FROM ${deploymentResults} AS deployment_scope_result
+      WHERE deployment_scope_result.deployment_id = ${deploymentIdColumn}
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM ${deploymentResults} AS deployment_scope_result
+      LEFT JOIN ${devices} AS deployment_scope_device
+        ON deployment_scope_device.id = deployment_scope_result.device_id
+      WHERE deployment_scope_result.deployment_id = ${deploymentIdColumn}
+        AND (
+          deployment_scope_device.id IS NULL
+          OR deployment_scope_device.site_id IS NULL
+          OR deployment_scope_device.site_id NOT IN (${allowedSites})
+        )
+    )`;
+}
+
+/**
  * Authorize a write against a catalog row fetched by id (dual-axis, #2135).
  * Org-owned rows: the same resolved-org narrowing as the reads
  * (authorizeCatalogItemRead) — a partner caller acting as org A must not
@@ -1521,7 +1555,13 @@ softwareRoutes.get(
     // but is ignored — clients filter the returned page on the computed
     // `status` field instead. (Previously the route fetched every org row,
     // filtered in JS and sliced — SQL pagination replaces that.)
-    const orgCondition = eq(softwareDeployments.orgId, orgId);
+    const orgCondition = and(
+      eq(softwareDeployments.orgId, orgId),
+      softwareDeploymentSiteScopePredicate(
+        softwareDeployments.id,
+        c.get('permissions') as UserPermissions | undefined,
+      ),
+    );
     const [items, countRows] = await Promise.all([
       db.select().from(softwareDeployments)
         .where(orgCondition)
@@ -1580,7 +1620,13 @@ softwareRoutes.get(
       })
       .from(softwareDeployments)
       .leftJoin(deploymentResults, eq(deploymentResults.deploymentId, softwareDeployments.id))
-      .where(eq(softwareDeployments.orgId, orgId))
+      .where(and(
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ))
       .groupBy(
         softwareDeployments.id,
         softwareDeployments.dispatchedAt,
@@ -2123,7 +2169,14 @@ softwareRoutes.get(
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     const statusMap = await getDeploymentStatusMap([deployment.id]);
@@ -2155,7 +2208,14 @@ softwareRoutes.post(
 
     const { id } = c.req.valid('param');
     const [deployment] = await db.select().from(softwareDeployments)
-      .where(and(eq(softwareDeployments.id, id), eq(softwareDeployments.orgId, orgId)));
+      .where(and(
+        eq(softwareDeployments.id, id),
+        eq(softwareDeployments.orgId, orgId),
+        softwareDeploymentSiteScopePredicate(
+          softwareDeployments.id,
+          c.get('permissions') as UserPermissions | undefined,
+        ),
+      ));
     if (!deployment) return c.json({ error: 'Deployment not found' }, 404);
 
     // Update pending results to cancelled. `.returning()` surfaces which rows
