@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
 // RestoreConfig configures a restore operation.
@@ -22,6 +23,7 @@ type RestoreConfig struct {
 	SnapshotID    string
 	TargetPath    string   // where to restore files
 	SelectedPaths []string // if non-empty, only restore files matching these prefixes
+	WorkRoot      string   // privileged agent-data root for staging and default restores
 }
 
 // RestoreResult tracks the outcome of a restore.
@@ -55,6 +57,31 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	if cfg.SnapshotID == "" {
 		return nil, errors.New("snapshot ID is required")
 	}
+	if err := validateSnapshotID(cfg.SnapshotID); err != nil {
+		return nil, err
+	}
+	// Without a target AND without a work root there is nowhere durable to put
+	// the result: the work root would be an ephemeral MkdirTemp that this
+	// function removes on return, and the default target lives inside it, so
+	// the restore would delete exactly what it just wrote. Fail loudly instead.
+	if cfg.TargetPath == "" && cfg.WorkRoot == "" {
+		return nil, errors.New("restore requires a target path or a configured work root")
+	}
+	securefs.LogLegacyStagingTrees(slog.Warn)
+	workRoot, ephemeralWorkRoot, err := prepareRestoreWorkRoot(cfg.WorkRoot)
+	if err != nil {
+		return nil, fmt.Errorf("prepare restore work root: %w", err)
+	}
+	if ephemeralWorkRoot {
+		defer func() { _ = os.RemoveAll(workRoot) }()
+	}
+	targetBase := cfg.TargetPath
+	if targetBase == "" {
+		targetBase = filepath.Join(workRoot, "restored", cfg.SnapshotID)
+	}
+	if !filepath.IsAbs(targetBase) {
+		return nil, errors.New("restore target path must be absolute")
+	}
 
 	result := &RestoreResult{SnapshotID: cfg.SnapshotID}
 	checkCancelled := func() bool {
@@ -75,30 +102,56 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	// 1. Download and parse manifest
-	snapshot, err := downloadManifest(provider, cfg.SnapshotID)
+	snapshot, err := downloadManifest(provider, cfg.SnapshotID, workRoot)
 	if err != nil {
 		result.Status = "failed"
 		return result, fmt.Errorf("download manifest: %w", err)
 	}
 
-	// 2. Filter files by selected paths
+	// 2. Filter files by selected paths, then split into the three restore
+	// passes: regular files (today's download loop), symlinks, and
+	// directories — directories go last so their modes/owners are applied
+	// AFTER every child has been written (see the two passes appended below
+	// the main loop).
 	files := filterFiles(snapshot.Files, cfg.SelectedPaths)
-	if len(files) == 0 {
+	var contentFiles, links, dirs []SnapshotFile
+	for _, f := range files {
+		switch f.Kind {
+		case KindSymlink:
+			links = append(links, f)
+		case KindDir:
+			dirs = append(dirs, f)
+		default:
+			contentFiles = append(contentFiles, f)
+		}
+	}
+	files = contentFiles
+	total := int64(len(contentFiles) + len(links) + len(dirs))
+	if total == 0 {
 		result.Status = "completed"
 		if len(cfg.SelectedPaths) > 0 {
 			result.Warnings = append(result.Warnings, "no files matched the selected paths")
 		}
 		return result, nil
 	}
+	applyOwnership := restoreCanApplyOwnership()
+	ownershipWarned := false
+	warnOwnership := func() {
+		if applyOwnership || ownershipWarned {
+			return
+		}
+		ownershipWarned = true
+		result.Warnings = append(result.Warnings, "ownership/special mode bits not applied: restore is not running as root")
+	}
 
 	// 3. Create or reuse a deterministic staging directory so partial restores
 	// can resume on a subsequent attempt.
-	stagingDir, err := restoreStagingDir(cfg)
+	stagingDir, err := restoreStagingDir(cfg, workRoot)
 	if err != nil {
 		result.Status = "failed"
 		return result, fmt.Errorf("resolve staging dir: %w", err)
 	}
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+	if err := securefs.EnsurePrivateDir(stagingDir); err != nil {
 		result.Status = "failed"
 		return result, fmt.Errorf("create staging dir: %w", err)
 	}
@@ -116,7 +169,6 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		}
 	}
 
-	total := int64(len(files))
 	if progressFn != nil {
 		progressFn("starting", 0, total, fmt.Sprintf("restoring %d files", total))
 	}
@@ -129,11 +181,18 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 		current := int64(i + 1)
 		displayPath := restoreSourcePath(file)
-		targetPath := resolveTargetPath(cfg.TargetPath, displayPath)
+		relativeTarget, relErr := restoreRelativePath(displayPath)
+		if relErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("invalid restore path %s: %v", displayPath, relErr))
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
+			continue
+		}
+		targetPath := filepath.Join(targetBase, relativeTarget)
 
 		// Skip already-completed files (resume)
 		if resumeState.CompletedFiles[file.BackupPath] {
-			if info, statErr := os.Stat(targetPath); statErr == nil && info.Size() == file.Size {
+			if info, statErr := securefs.StatFile(targetBase, relativeTarget); statErr == nil && info.Size() == file.Size {
 				result.FilesRestored++
 				result.BytesRestored += file.Size
 				if progressFn != nil {
@@ -147,14 +206,6 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 		// Download to staging
 		stagingFile := filepath.Join(stagingDir, stagingFileName(file.BackupPath))
-		if err := os.MkdirAll(filepath.Dir(stagingFile), 0o755); err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			slog.Warn("failed to create staging subdir",
-				"file", displayPath, "error", err.Error())
-			continue
-		}
-
 		dlErr := provider.Download(file.BackupPath, stagingFile)
 		if dlErr != nil {
 			result.FilesFailed++
@@ -168,92 +219,71 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			return result, nil
 		}
 
-		// Path containment check
-		{
-			base := cfg.TargetPath
-			if base == "" {
-				base = filepath.Join(os.TempDir(), "breeze-restore")
-			}
-			cleaned := filepath.Clean(targetPath)
-			cleanBase := filepath.Clean(base)
-			if !strings.HasPrefix(cleaned, cleanBase+string(filepath.Separator)) && cleaned != cleanBase {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
-				result.FilesFailed++
-				os.Remove(stagingFile)
-				continue
-			}
-		}
-
-		// Create target directory
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			os.Remove(stagingFile)
-			slog.Warn("failed to create target dir",
-				"target", targetPath, "error", err.Error())
-			continue
-		}
-
-		// Move from staging to target
-		if err := moveFile(stagingFile, targetPath); err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, displayPath)
-			os.Remove(stagingFile)
-			slog.Warn("failed to move file to target",
-				"staging", stagingFile, "target", targetPath, "error", err.Error())
-			continue
-		}
-
+		// No pathname containment check, MkdirAll or moveFile here: the
+		// publication below walks the target hierarchy with directory
+		// descriptors/handles and refuses a symlink or reparse point at every
+		// component. That subsumes both the lexical containment check and
+		// EnsureNoSymlinkAncestor (which only lstat's, and so is decided
+		// before the write rather than during it), including the RESUMED case
+		// where an earlier pass recreated an ancestor as a symlink.
 		// Verify the restored bytes against the manifest BEFORE declaring the
 		// file restored. This is the path that writes real user data, so a
 		// corrupt/truncated object must not be silently reported "restored"
 		// (VerifyIntegrity/TestRestore run this same fail-closed check, but only
 		// against throwaway dirs — the real restore needs it too). Size is
 		// always checked; the SHA-256 when the manifest carries one.
-		if info, statErr := os.Stat(targetPath); statErr != nil || info == nil {
+		if info, statErr := os.Stat(stagingFile); statErr != nil || info == nil {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
+			_ = os.Remove(stagingFile)
 			slog.Warn("failed to stat restored file", "target", targetPath, "error", fmt.Sprint(statErr))
 			continue
 		} else if info.Size() != file.Size {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
+			_ = os.Remove(stagingFile)
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", displayPath, file.Size, info.Size()))
 			slog.Warn("restored file failed size check",
 				"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
 			continue
 		}
-		if file.Checksum != "" && !checksumMatches(targetPath, file.Checksum) {
+		if file.Checksum != "" && !checksumMatches(stagingFile, file.Checksum) {
 			result.FilesFailed++
 			result.FailedFiles = append(result.FailedFiles, displayPath)
+			_ = os.Remove(stagingFile)
 			result.Warnings = append(result.Warnings,
 				fmt.Sprintf("restored %s failed checksum check (manifest %s)", displayPath, file.Checksum))
 			slog.Warn("restored file failed checksum check", "target", targetPath)
 			continue
 		}
 
-		// Reapply the original Unix permissions + modification time so a restore
-		// is faithful (executables keep +x, 0600 secrets stay private, mtimes
-		// are preserved). Both are best-effort: a chmod/chtimes failure must not
-		// fail an otherwise-good restore, but IS surfaced in result.Warnings so
-		// the caller knows fidelity was partial. Pre-checksum manifests carry
-		// Mode==0 (leave the OS default) / a zero ModTime (leave as written).
-		if file.Mode != 0 {
-			if err := os.Chmod(targetPath, os.FileMode(file.Mode).Perm()); err != nil {
-				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), displayPath, err))
-				slog.Warn("failed to reapply file mode on restore",
-					"target", targetPath, "mode", file.Mode, "error", err.Error())
-			}
+		// Publish only verified bytes. Linux, macOS and Windows pin the
+		// target hierarchy with directory descriptors/handles and never follow
+		// a destination symlink/reparse point. Mode (full ModeBits when the
+		// manifest carries them, else the perm-only Mode), owner and mtime are
+		// applied to the pinned temporary BEFORE the atomic replace, so #5520's
+		// fidelity is preserved without any post-publication pathname
+		// chmod/chown/chtimes — the exact operations this boundary exists to
+		// remove.
+		mode := os.FileMode(file.Mode).Perm()
+		if file.ModeBits != 0 {
+			mode = os.FileMode(file.ModeBits)
 		}
-		if !file.ModTime.IsZero() {
-			if err := os.Chtimes(targetPath, file.ModTime, file.ModTime); err != nil {
-				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("could not reapply mtime to %s: %v", displayPath, err))
-				slog.Warn("failed to reapply mtime on restore",
-					"target", targetPath, "error", err.Error())
-			}
+		installWarnings, err := securefs.InstallFile(targetBase, relativeTarget, stagingFile, mode, file.ModTime, entryOwner(file, applyOwnership))
+		if err != nil {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("could not restore %s: %v", displayPath, err))
+			_ = os.Remove(stagingFile)
+			slog.Warn("failed to install restored file", "target", targetPath, "error", err.Error())
+			continue
+		}
+		for _, warning := range installWarnings {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("restored %s with reduced fidelity: %v", displayPath, warning))
+		}
+		if !applyOwnership && (file.Owner != nil || file.ModeBits&uint32(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0) {
+			warnOwnership()
 		}
 
 		result.FilesRestored++
@@ -270,6 +300,57 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			progressFn("restoring", current, total,
 				fmt.Sprintf("restored: %s", displayPath))
 		}
+	}
+
+	// Pass 2: symlinks (parents exist now, from the file pass above). Pass
+	// 3: directories last so their modes/owners are applied after every
+	// child (file or symlink) has been written under them.
+	for _, entry := range append(links, dirs...) {
+		if checkCancelled() {
+			return result, nil
+		}
+		displayPath := restoreSourcePath(entry)
+		relativeEntry, relErr := restoreRelativePath(displayPath)
+		if relErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("path traversal blocked: %s", displayPath))
+			result.FilesFailed++
+			continue
+		}
+		// securefs walks to the entry's parent with directory descriptors and
+		// refuses a symlink at every component, so neither pass can be routed
+		// through an ancestor an earlier pass recreated as a link. The link
+		// itself is created with symlinkat and the directory with mkdirat,
+		// both relative to that pinned parent — never by pathname.
+		var entryErr error
+		switch entry.Kind {
+		case KindSymlink:
+			var linkWarnings []error
+			linkWarnings, entryErr = securefs.InstallSymlink(targetBase, relativeEntry, entry.LinkTarget, entryOwner(entry, applyOwnership))
+			for _, warning := range linkWarnings {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: %v", displayPath, warning))
+			}
+		case KindDir:
+			mode := os.FileMode(entry.ModeBits)
+			if !applyOwnership {
+				// A non-root owner may legitimately set sticky/setgid on its
+				// own directory; setuid on a directory is vanishingly rare and
+				// this path cannot confirm root, so it strips only that bit.
+				mode &^= os.ModeSetuid
+			}
+			entryErr = securefs.InstallDir(targetBase, relativeEntry, mode, entry.ModeBits != 0, entryOwner(entry, applyOwnership), entry.ModTime)
+		default:
+			entryErr = fmt.Errorf("entry %s has content; use the file path", displayPath)
+		}
+		if entryErr != nil {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, displayPath)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("could not recreate %s: %v", displayPath, entryErr))
+			continue
+		}
+		if !applyOwnership && entry.Owner != nil {
+			warnOwnership()
+		}
+		result.FilesRestored++
 	}
 
 	if checkCancelled() {
@@ -299,10 +380,10 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 }
 
 // downloadManifest fetches and parses the manifest for a snapshot.
-func downloadManifest(provider providers.BackupProvider, snapshotID string) (*Snapshot, error) {
+func downloadManifest(provider providers.BackupProvider, snapshotID, workRoot string) (*Snapshot, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 
-	tmpFile, err := os.CreateTemp("", "restore-manifest-*.json")
+	tmpFile, err := os.CreateTemp(workRoot, "restore-manifest-*.json")
 	if err != nil {
 		return nil, fmt.Errorf("create temp manifest: %w", err)
 	}
@@ -433,7 +514,7 @@ func resolveTargetPath(targetBase, sourcePath string) string {
 	return filepath.Join(targetBase, rel)
 }
 
-func restoreStagingDir(cfg RestoreConfig) (string, error) {
+func restoreStagingDir(cfg RestoreConfig, workRoot string) (string, error) {
 	keyData, err := json.Marshal(struct {
 		TargetPath    string   `json:"targetPath"`
 		SelectedPaths []string `json:"selectedPaths"`
@@ -447,7 +528,7 @@ func restoreStagingDir(cfg RestoreConfig) (string, error) {
 
 	sum := sha256.Sum256(keyData)
 	stagingKey := hex.EncodeToString(sum[:8])
-	return filepath.Join(os.TempDir(), "breeze-restore-staging", cfg.SnapshotID, stagingKey), nil
+	return filepath.Join(workRoot, "staging", cfg.SnapshotID, stagingKey), nil
 }
 
 // clearReadOnly clears the owner-write bit on dst so a subsequent
@@ -502,6 +583,42 @@ func moveFile(src, dst string) error {
 	return copyAndDelete(src, dst)
 }
 
+func prepareRestoreWorkRoot(configured string) (string, bool, error) {
+	if configured == "" {
+		root, err := os.MkdirTemp("", "breeze-restore-work-")
+		if err != nil {
+			return "", false, err
+		}
+		if err := os.Chmod(root, 0o700); err != nil {
+			_ = os.RemoveAll(root)
+			return "", false, err
+		}
+		return root, true, nil
+	}
+	if !filepath.IsAbs(configured) {
+		return "", false, errors.New("configured restore work root must be absolute")
+	}
+	root := filepath.Join(configured, "restore-work")
+	if err := securefs.EnsurePrivateDir(root); err != nil {
+		return "", false, err
+	}
+	return root, false, nil
+}
+
+// entryOwner converts a manifest owner into the securefs form, and returns nil
+// when this process cannot apply ownership at all (non-root). Ownership is
+// applied to a pinned descriptor inside securefs, never by pathname.
+func entryOwner(entry SnapshotFile, applyOwnership bool) *securefs.Owner {
+	if !applyOwnership || entry.Owner == nil {
+		return nil
+	}
+	return &securefs.Owner{UID: entry.Owner.UID, GID: entry.Owner.GID}
+}
+
+func restoreRelativePath(sourcePath string) (string, error) {
+	return securefs.CleanRelative(stripVolumeAndLeadingSeparators(sourcePath))
+}
+
 // copyAndDelete copies src to dst then removes src.
 func copyAndDelete(src, dst string) error {
 	srcFile, err := os.Open(src)
@@ -540,6 +657,14 @@ func copyAndDelete(src, dst string) error {
 	return nil
 }
 
+func validateSnapshotID(snapshotID string) error {
+	clean, err := securefs.CleanRelative(snapshotID)
+	if err != nil || clean != snapshotID || filepath.Base(clean) != clean {
+		return errors.New("snapshot ID must be a single safe path component")
+	}
+	return nil
+}
+
 // stagingFileName derives a short, injective local filename for downloading
 // file.BackupPath into the staging directory. The object key can be
 // arbitrarily long (snapshot prefix + "files/" + the full original source
@@ -563,4 +688,129 @@ func copyAndDelete(src, dst string) error {
 func stagingFileName(backupPath string) string {
 	sum := sha256.Sum256([]byte(backupPath))
 	return hex.EncodeToString(sum[:]) + ".gz"
+}
+
+// EnsureNoSymlinkAncestor walks every path component strictly below base up
+// to filepath.Dir(target), lstat'ing each one, and refuses if any component
+// is a symlink. A resumed restore's file pass must never write THROUGH a
+// symlink an earlier pass (or a prior interrupted run) planted under the
+// restore root — e.g. a manifest entry recreating /etc as a symlink to an
+// absolute path outside base, followed by a file entry for /etc/passwd:
+// lexical containment on the final target path alone does not catch this,
+// since MkdirAll/os.Create happily follow an intermediate symlink to wherever
+// it points (review finding, PR #5520). A missing component is fine —
+// MkdirAll creates it fresh — so this stops (returns nil) at the first
+// component that doesn't exist yet; deeper components can't exist either.
+func EnsureNoSymlinkAncestor(base, target string) error {
+	cleanBase := filepath.Clean(base)
+	dir := filepath.Clean(filepath.Dir(target))
+	rel, err := filepath.Rel(cleanBase, dir)
+	if err != nil {
+		// Can't relate (e.g. different volumes on Windows) — nothing this
+		// helper can walk; the caller's own containment check governs.
+		return nil
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// dir IS base (nothing below it to check) or isn't under base at
+		// all — out of this helper's scope.
+		return nil
+	}
+	cur := cleanBase
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		info, statErr := os.Lstat(cur)
+		if statErr != nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write %s: ancestor %s is a symlink", target, cur)
+		}
+	}
+	return nil
+}
+
+// applyEntryMetadata reapplies mode bits (full ModeBits when known, else the
+// perm-only Mode), owner (root only) and mtime to a restored regular file.
+func applyEntryMetadata(targetPath string, entry SnapshotFile, applyOwnership bool) []string {
+	var warnings []string
+	switch {
+	case entry.ModeBits != 0:
+		if err := os.Chmod(targetPath, os.FileMode(entry.ModeBits)); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mode %o to %s: %v", entry.ModeBits, entry.SourcePath, err))
+		}
+	case entry.Mode != 0:
+		if err := os.Chmod(targetPath, os.FileMode(entry.Mode).Perm()); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(entry.Mode).Perm(), entry.SourcePath, err))
+		}
+	}
+	if applyOwnership {
+		if err := applyOwner(targetPath, entry.Owner); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply owner to %s: %v", entry.SourcePath, err))
+		}
+	}
+	if !entry.ModTime.IsZero() {
+		if err := os.Chtimes(targetPath, entry.ModTime, entry.ModTime); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not reapply mtime to %s: %v", entry.SourcePath, err))
+		}
+	}
+	return warnings
+}
+
+// RestoreContentlessEntry recreates a symlink or directory entry at
+// targetPath. Exported because bmr's reinstall-then-recover path and the
+// rebuild engine (W03) recreate the same entries.
+func RestoreContentlessEntry(targetPath string, entry SnapshotFile, applyOwnership bool) error {
+	switch entry.Kind {
+	case KindSymlink:
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+		if existing, err := os.Lstat(targetPath); err == nil {
+			// Only an existing SYMLINK may be replaced (the resume case: a
+			// prior run already planted the correct link, or a stale one
+			// pointing somewhere else). Anything else — a regular file, a
+			// real directory — must be refused, never silently destroyed
+			// (review finding, PR #5520).
+			if existing.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("%s exists and is not a symlink", targetPath)
+			}
+			if cur, rerr := os.Readlink(targetPath); rerr == nil && cur == entry.LinkTarget {
+				break // already correct (resume)
+			}
+			if err := os.Remove(targetPath); err != nil {
+				return err
+			}
+		}
+		if err := os.Symlink(entry.LinkTarget, targetPath); err != nil {
+			return err
+		}
+	case KindDir:
+		if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			return err
+		}
+		mode := os.FileMode(entry.ModeBits)
+		if !applyOwnership {
+			// A non-root owner may legitimately set sticky/setgid on its own
+			// directory (Linux/macOS both permit this); setuid on a
+			// directory is vanishingly rare and this path can't confirm
+			// root, so it errs conservative and strips only that bit.
+			mode &^= os.ModeSetuid
+		}
+		if entry.ModeBits != 0 {
+			if err := os.Chmod(targetPath, mode); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("entry %s has content; use the file path", entry.SourcePath)
+	}
+	if applyOwnership {
+		if err := applyOwner(targetPath, entry.Owner); err != nil {
+			return err
+		}
+	}
+	return nil
 }

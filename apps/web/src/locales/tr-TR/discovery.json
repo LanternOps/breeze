@@ -479,6 +479,7 @@
       "selectSite": "Siteyi seçin"
     },
     "paused": "Duraklatıldı",
+    "scheduleBlocked": "Yinelenen tarama duraklatıldı: yeniden onay gerekiyor",
     "permissionManage": "İzin kontrolü başarısızlığından sonra mutasyona uğratma eylemleri devre dışı bırakılır. `devices:write` gerektirir.",
     "placeholders": {
       "subnet": "192.168.1.0/24"

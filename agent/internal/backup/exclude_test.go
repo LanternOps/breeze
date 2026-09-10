@@ -39,6 +39,17 @@ func TestExcludeMatcher(t *testing.T) {
 		{name: "case-insensitive on windows", patterns: []string{"thumbs.db"}, relPath: "pics/Thumbs.DB", caseInsensitive: true, want: true},
 		{name: "case-sensitive elsewhere", patterns: []string{"thumbs.db"}, relPath: "pics/Thumbs.DB", want: false},
 
+		// Root-anchored patterns (leading slash) — gitignore semantics.
+		{name: "anchored dir matches at root", patterns: []string{"/proc/**"}, relPath: "proc", want: true},
+		{name: "anchored dir matches root contents", patterns: []string{"/proc/**"}, relPath: "proc/1/status", want: true},
+		{name: "anchored dir does not match nested same-name dir", patterns: []string{"/proc/**"}, relPath: "home/alice/proc", want: false},
+		{name: "anchored dir does not match nested same-name contents", patterns: []string{"/dev/**"}, relPath: "home/alice/dev/project/main.go", want: false},
+		{name: "anchored file at root", patterns: []string{"/swapfile"}, relPath: "swapfile", want: true},
+		{name: "anchored file spares nested", patterns: []string{"/swapfile"}, relPath: "backup/swapfile", want: false},
+		{name: "anchored backslash form", patterns: []string{"\\pagefile.sys"}, relPath: "pagefile.sys", caseInsensitive: true, want: true},
+		{name: "anchored is case-insensitive on windows", patterns: []string{"/$Recycle.Bin/**"}, relPath: "$RECYCLE.BIN/S-1-5/x", caseInsensitive: true, want: true},
+		{name: "unanchored keeps any-depth behaviour", patterns: []string{"proc/**"}, relPath: "home/alice/proc/x", want: true},
+
 		// No excludes / invalid patterns
 		{name: "no patterns passes everything through", patterns: nil, relPath: "anything.tmp", want: false},
 		{name: "invalid pattern is dropped not fatal", patterns: []string{"[unclosed"}, relPath: "file.txt", want: false},

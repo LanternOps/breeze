@@ -13,6 +13,7 @@ import {
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { sendCommandToAgent } from '../agentWs';
+import { dispatchCommandToAgent } from '../../services/agentCommandRelay';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
 import { getTrustedClientIp, getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -38,8 +39,8 @@ import {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
-import { captureException } from '../../services/sentry';
-import { teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
+import { captureException, captureMessage } from '../../services/sentry';
+import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import {
@@ -64,15 +65,30 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
   return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
+// Site scope is an app-layer-only authz axis (`permissions.allowedSiteIds`) —
+// RLS does not defend it, and `getSessionWithOrgCheck` only org-gates. Every
+// route that acts on an existing session must therefore re-read the CURRENT
+// site ceiling rather than trust the one that held at session creation.
+// `c.get('permissions')` is populated by the `requirePermission(remote:access)`
+// gate the parent router (`routes/remote/index.ts`) applies to `/remote/*`.
+function currentSessionSiteDenial(
+  c: any,
+  device: { siteId?: string | null },
+): Response | null {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
+    return c.json({ error: 'Access to this site denied' }, 403);
+  }
+  return null;
+}
+
 async function currentSessionCapabilityDenial(
   c: any,
   session: { type: string },
   device: { id: string; siteId?: string | null },
 ): Promise<Response | null> {
-  const perms = c.get('permissions') as UserPermissions | undefined;
-  if (perms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId))) {
-    return c.json({ error: 'Access to this site denied' }, 403);
-  }
+  const siteDenial = currentSessionSiteDenial(c, device);
+  if (siteDenial) return siteDenial;
   const capability = session.type === 'desktop' ? 'webrtcDesktop' : 'remoteTools';
   const policy = await checkRemoteAccess(device.id, capability);
   if (!policy.allowed) {
@@ -1160,6 +1176,15 @@ sessionRoutes.post(
 sessionRoutes.post(
   '/sessions/:id/end',
   requireScope('organization', 'partner', 'system'),
+  // Populates c.get('permissions') so the site gate below is provably live
+  // from this route's OWN chain (#1051 detector). The parent router
+  // (routes/remote/index.ts) already applies the identical gate to /remote/*,
+  // so this adds no new authority requirement and cannot lock anyone out — it
+  // states the dependency locally instead of inheriting it from a mount the
+  // file-local analyzer cannot see, and keeps the gate live if that mount ever
+  // changes. REMOTE_ACCESS rather than DEVICES_READ: it is the permission this
+  // surface already requires.
+  requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
   zValidator('param', sessionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1178,8 +1203,21 @@ sessionRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // Don't allow ending already ended sessions
-    if (['disconnected', 'failed'].includes(session.status)) {
+    // Re-enforce the CURRENT site ceiling: a caller narrowed away from this
+    // device's site after the session started must not be able to drive its
+    // lifecycle. Deliberately site-scope only, NOT the full
+    // `currentSessionCapabilityDenial`: End is a de-escalation, so a disabled
+    // remote-access policy must never be able to strand a live stream by
+    // blocking the one call that tears it down.
+    const siteDenial = currentSessionSiteDenial(c, device);
+    if (siteDenial) return siteDenial;
+
+    // Both End guards — this pre-check and the UPDATE predicate below — are
+    // driven off ACTIVE_REMOTE_SESSION_STATUSES so they can never disagree.
+    // They did: the old literal here rejected only `disconnected`/`failed`,
+    // so a `denied` row (the sixth enum value) sailed past and had its
+    // terminal verdict rewritten as an operator-initiated `disconnected`.
+    if (!(ACTIVE_REMOTE_SESSION_STATUSES as readonly string[]).includes(session.status)) {
       return c.json({
         error: 'Session is already ended',
         status: session.status
@@ -1199,6 +1237,14 @@ sessionRoutes.post(
       return c.json({ error: error instanceof Error ? error.message : 'Invalid recordingUrl' }, 400);
     }
 
+    // The status read above is a TOCTOU snapshot: a concurrent terminal writer
+    // (agent `failed` result, stale sweep, teardown, lease revocation) can land
+    // between the SELECT and this UPDATE. Without a status predicate the End
+    // overwrites that terminal row — turning a recorded `failed` with its
+    // errorMessage into a clean operator-initiated `disconnected`, and
+    // resetting endedAt/durationSeconds. Guard on the live states so the
+    // already-terminal case loses the write and is reported, not silently
+    // clobbered.
     const [updated] = await db
       .update(remoteSessions)
       .set({
@@ -1208,11 +1254,28 @@ sessionRoutes.post(
         bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
         recordingUrl: recordingUrl ?? session.recordingUrl
       })
-      .where(eq(remoteSessions.id, sessionId))
+      .where(and(
+        eq(remoteSessions.id, sessionId),
+        inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Failed to update session' }, 500);
+      // Lost the race (or the row went away). Re-read to answer with the same
+      // shape the pre-UPDATE guard above uses, so a client sees one contract
+      // regardless of which side of the race it landed on.
+      const [current] = await db
+        .select({ status: remoteSessions.status })
+        .from(remoteSessions)
+        .where(eq(remoteSessions.id, sessionId))
+        .limit(1);
+      if (!current) {
+        return c.json({ error: 'Session not found' }, 404);
+      }
+      return c.json({
+        error: 'Session is already ended',
+        status: current.status
+      }, 400);
     }
 
     // Revoke the viewer token immediately on End. Without this, a minted viewer
@@ -1233,11 +1296,57 @@ sessionRoutes.post(
     // stop the operator keeps screen + input + clipboard control after "End".
     // The agent's handleStopDesktop tears down both the direct and the
     // SYSTEM-helper sessions. Finding #2.
+    //
+    // Durable relay, NOT the socket-local send: the agent's command socket very
+    // often lives on a DIFFERENT API instance, where `sendCommandToAgent`
+    // silently returns false — leaving the live WebRTC stream running against a
+    // session the operator has already ended. `remoteSessionTeardown` has used
+    // the relay for exactly this reason; End was the last stop_desktop sender
+    // still on the socket-local path.
+    //
+    // NOT awaited. `dispatchCommandToAgent`'s relay branch polls Redis for the
+    // delivery ack for up to RELAY_DELIVERY_DEADLINE_MS (5 s), and this handler
+    // runs inside the auth middleware's ambient request transaction — awaiting
+    // it would pin a pooled connection idle-in-transaction across that wait on
+    // an operator-triggerable route, the #1105 pool-poison class the
+    // `db_operation_inside_held_context` tripwire exists to catch. The row is
+    // already terminal and the viewer token already revoked, so delivery is
+    // best-effort by design; the trade is that the outcome cannot be reported
+    // synchronously in the response, only logged and captured.
     if (session.type === 'desktop' && device.agentId) {
-      sendCommandToAgent(device.agentId, {
+      // `dispatchCommandToAgent` RESOLVES with a status — it does not throw on
+      // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
+      // A bare catch would therefore have been silent for every real
+      // non-delivery, so branch on the status explicitly.
+      void dispatchCommandToAgent(device.agentId, {
         id: `desk-stop-${sessionId}`,
         type: 'stop_desktop',
         payload: { sessionId },
+      }).then((outcome) => {
+        if (outcome.status === 'sent') return;
+        const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
+        console.warn(
+          `[remote/sessions] stop_desktop not delivered for session ${sessionId} `
+          + `(device ${device.id}, agent ${device.agentId}): ${outcome.status}${detail}`
+        );
+        // Two literal call sites, not one with a computed code: the BREEZE-18
+        // scanner (sentryEventCodes.test.ts) requires `eventCode` be a plain
+        // string literal, and the two branches are separately actionable —
+        // one points at the relay, the other at the device.
+        if (outcome.status === 'infrastructure_error') {
+          captureMessage('remote desktop stop_desktop dispatch faulted after End', {
+            eventCode: 'remote_desktop_stop_dispatch_failed',
+            level: 'warning',
+          });
+        } else {
+          captureMessage('remote desktop stop_desktop was not delivered after End', {
+            eventCode: 'remote_desktop_stop_undelivered',
+            level: 'warning',
+          });
+        }
+      }).catch((err) => {
+        console.error(`[remote/sessions] Failed to dispatch stop_desktop for session ${sessionId}:`, err);
+        captureException(err, undefined, { event_code: 'remote_desktop_stop_dispatch_failed' });
       });
     }
 

@@ -19,6 +19,7 @@ import { eq, and, or, lt, desc, inArray, isNull } from 'drizzle-orm';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
+  backupLayoutManifestKey,
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
   backupSystemStateArtifactKey,
@@ -938,6 +939,11 @@ async function markLiveBackupObjects(
     // failure: an unproven system-state manifest must never be inferred as
     // "doesn't exist" — that would open the door to sweeping objects a
     // transient error only made unreachable, not orphaned.
+    // layout.json (W01) is a single object with nothing to enumerate, so it is
+    // marked live unconditionally — marking a key that does not exist is
+    // harmless, fetching it would only add a round-trip and a failure mode.
+    live.add(backupLayoutManifestKey(snapshotId));
+
     const stateManifestKey = backupSystemStateManifestKey(snapshotId);
     let stateRaw: string;
     try {

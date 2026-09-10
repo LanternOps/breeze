@@ -246,6 +246,14 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'pam', action: 'manage_policy',
     description: 'Create, update, and delete PAM rules, signer groups, and org config' },
 
+  // Accounting / QuickBooks integration — dedicated capabilities, distinct
+  // from the partner-authority-only gate the routes previously carried
+  // (SEC-2026-09-05-057).
+  { resource: 'accounting', action: 'read',
+    description: 'Read accounting provider status, customers, mappings, and income accounts' },
+  { resource: 'accounting', action: 'manage',
+    description: 'Connect, disconnect, configure, and synchronize accounting provider integrations' },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -373,6 +381,10 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
       // devices:execute/devices:write above — an Org Technician holds those
       // for ordinary device work but must not thereby gain PAM authority.
       'pam:approve', 'pam:manage_policy',
+      // Accounting (SEC-2026-09-05-057): dedicated, NOT implied by partner
+      // authority — a full-partner low-role member must not thereby reach the
+      // shared QuickBooks realm.
+      'accounting:read', 'accounting:manage',
       // Workspace and partner connected-app permissions were introduced with
       // no built-in role grant except Partner Admin's wildcard, which would
       // have silently dropped this access for every existing Org Admin on

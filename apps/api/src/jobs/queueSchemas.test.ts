@@ -314,6 +314,41 @@ describe('backupProcessResultSchema — system_image manifest passthrough', () =
       backupProcessResultSchema.parse({ status: 'completed', systemStateManifest: null }),
     ).not.toThrow();
   });
+
+  it('accepts layoutManifest + bareMetal (strict schema must declare them)', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      layoutManifest: { schemaVersion: 1, platform: 'linux', disks: [] },
+      bareMetal: { restorable: true, reasons: [] },
+    });
+    expect(result.bareMetal).toEqual({ restorable: true, reasons: [] });
+    expect((result.layoutManifest as { platform: string }).platform).toBe('linux');
+  });
+});
+
+describe('backupProcessResultSchema — W02 content-less entries (symlink/dir)', () => {
+  it('accepts symlink/dir file entries with an empty backupPath and rejects an empty backupPath on a plain file', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [
+          { sourcePath: '/bin', backupPath: '', kind: 'symlink', linkTarget: 'usr/bin' },
+          { sourcePath: '/var/empty', backupPath: '', kind: 'dir' },
+          { sourcePath: '/etc/hosts', backupPath: 'snapshots/snap-1/files/path_0/etc/hosts' },
+        ],
+      },
+    });
+    expect(result.snapshot?.files?.[0]).toMatchObject({ kind: 'symlink', linkTarget: 'usr/bin' });
+    expect(() =>
+      backupProcessResultSchema.parse({
+        status: 'completed',
+        snapshot: { id: 'snap-1', files: [{ sourcePath: '/x', backupPath: '' }] },
+      }),
+    ).toThrow();
+  });
 });
 
 describe('backupProcessResultSchema — incremental dedup + partial-success passthrough', () => {

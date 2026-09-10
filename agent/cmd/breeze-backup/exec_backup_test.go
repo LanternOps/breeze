@@ -51,6 +51,9 @@ func TestExecBackupRestoreWithProgressNilManager(t *testing.T) {
 }
 
 func TestExecBackupRestoreWithProgressUsesWrapperCommandID(t *testing.T) {
+	originalWorkRoot := backupRestoreWorkRoot
+	backupRestoreWorkRoot = func() string { return t.TempDir() }
+	t.Cleanup(func() { backupRestoreWorkRoot = originalWorkRoot })
 	baseDir := t.TempDir()
 	provider := providers.NewLocalProvider(baseDir)
 	snapshotID := "restore-progress-1"

@@ -197,3 +197,60 @@ export const createExclusionGroups = (): ExclusionSuggestionGroup[] => [
     ],
   },
 ];
+
+// Whole-machine presets (bare-metal recovery W01, spec §5.1). Root-anchored
+// excludes (leading "/") only match from the selection root — see
+// agent/internal/backup/exclude.go. Pseudo/virtual filesystems, volatile
+// trees, and foreign mounts are excluded; everything else on the root
+// filesystem is captured so the rebuild engine can put it back.
+export const LINUX_WHOLE_MACHINE_EXCLUDES: string[] = [
+  "/proc/**",
+  "/sys/**",
+  "/dev/**",
+  "/run/**",
+  "/tmp/**",
+  "/var/tmp/**",
+  "/mnt/**",
+  "/media/**",
+  "/snap/**",
+  "/var/cache/apt/archives/**",
+  "/swapfile",
+  "/swap.img",
+  "**/lost+found/**",
+];
+
+export const WINDOWS_WHOLE_MACHINE_EXCLUDES: string[] = [
+  "/pagefile.sys",
+  "/hiberfil.sys",
+  "/swapfile.sys",
+  "/$Recycle.Bin/**",
+  "/System Volume Information/**",
+  "/Windows/Temp/**",
+  "/Windows/SoftwareDistribution/Download/**",
+  "**/AppData/Local/Temp/**",
+];
+
+export type WholeMachinePreset = {
+  id: "whole-machine-linux" | "whole-machine-windows";
+  title: string;
+  summary: string;
+  paths: string[];
+  excludes: string[];
+};
+
+export const createWholeMachinePresets = (): WholeMachinePreset[] => [
+  {
+    id: "whole-machine-linux",
+    title: i18n.t("backup:profiles.tmplWholeLinuxTitle"),
+    summary: i18n.t("backup:profiles.tmplWholeLinuxDesc"),
+    paths: ["/"],
+    excludes: LINUX_WHOLE_MACHINE_EXCLUDES,
+  },
+  {
+    id: "whole-machine-windows",
+    title: i18n.t("backup:profiles.tmplWholeWindowsTitle"),
+    summary: i18n.t("backup:profiles.tmplWholeWindowsDesc"),
+    paths: ["C:\\"],
+    excludes: WINDOWS_WHOLE_MACHINE_EXCLUDES,
+  },
+];
