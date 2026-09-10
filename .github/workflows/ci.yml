@@ -2857,7 +2857,19 @@ jobs:
           if [ -z "${SEEDED_DEVICE}" ]; then
             DEVICE_ID=00000000-0000-4000-8000-000000000000
           fi
+          # Session issuance requires the durable browser binding; bootstrap one
+          # first (as the guided smoke's own login() helper does) and carry it
+          # through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sk -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -H 'Origin: https://localhost' \
+            -X POST https://localhost/api/v1/auth/browser-binding/bootstrap)
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             -H 'Origin: https://localhost' \
             --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
@@ -3137,7 +3149,17 @@ jobs:
       - name: Verify hydration fixture MFA posture
         run: |
           BASE=$(jq -er '.baseUrl' .breeze-stack.json)
+          # Session issuance requires the durable browser binding; bootstrap
+          # one first and carry it through the login via a cookie jar.
+          COOKIE_JAR=$(mktemp)
+          BOOTSTRAP_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -c "${COOKIE_JAR}" \
+            -X POST "${BASE}/api/v1/auth/browser-binding/bootstrap")
+          if [ "${BOOTSTRAP_STATUS}" != "204" ]; then
+            echo "ERROR: auth binding bootstrap failed with ${BOOTSTRAP_STATUS} (expected 204)"
+            exit 1
+          fi
           LOGIN=$(curl -fsS -X POST "${BASE}/api/v1/auth/login" \
+            -b "${COOKIE_JAR}" -c "${COOKIE_JAR}" \
             -H 'Content-Type: application/json' \
             --data "$(jq -c '.admin' .breeze-stack.json)")
           jq -e '.mfaEnrollmentRequired == false' <<<"${LOGIN}" >/dev/null || {
