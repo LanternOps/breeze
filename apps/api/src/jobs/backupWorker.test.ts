@@ -476,7 +476,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       prunedByMaxVersions: 0,
       failed: 0,
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 2, blockedIdentities: 1 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 5, skippedIdentities: 2, blockedIdentities: 1,
+      retiredSwept: 1, orphansSwept: 2, deferredIdentities: 0, unreachableIdentities: 0,
+    });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -494,6 +497,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       gcDeleted: 5,
       gcSkippedIdentities: 2,
       gcBlockedIdentities: 1,
+      gcRetiredSwept: 1,
+      gcOrphansSwept: 2,
+      gcDeferredIdentities: 0,
+      gcUnreachableIdentities: 0,
     });
   });
 
@@ -518,6 +525,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(result.gcDeleted).toBe(0);
     expect(result.gcSkippedIdentities).toBe(0);
     expect(result.gcBlockedIdentities).toBe(0);
+    expect(result.gcRetiredSwept).toBe(0);
+    expect(result.gcOrphansSwept).toBe(0);
+    expect(result.gcDeferredIdentities).toBe(0);
+    expect(result.gcUnreachableIdentities).toBe(0);
     // A thrown GC sweep is escalated to Sentry (retention run still succeeds).
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
@@ -526,7 +537,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     mockDb.selectDistinct.mockReturnValue({
       from: vi.fn().mockResolvedValue([]),
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 0, skippedIdentities: 0, blockedIdentities: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    });
 
     const result = await processCleanupExpiredSnapshots();
 
@@ -540,6 +554,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       gcDeleted: 0,
       gcSkippedIdentities: 0,
       gcBlockedIdentities: 0,
+      gcRetiredSwept: 0,
+      gcOrphansSwept: 0,
+      gcDeferredIdentities: 0,
+      gcUnreachableIdentities: 0,
     });
   });
 
@@ -562,7 +580,10 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
       prunedByMaxVersions: 0,
       failed: 1,
     });
-    sweepUnreferencedBackupObjectsMock.mockResolvedValue({ deleted: 5, skippedIdentities: 0, blockedIdentities: 0 });
+    sweepUnreferencedBackupObjectsMock.mockResolvedValue({
+      deleted: 5, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    });
 
     await expect(processCleanupExpiredSnapshots()).rejects.toThrow(/1 snapshot row delete\(s\) failed/);
 
