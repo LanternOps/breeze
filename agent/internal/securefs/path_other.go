@@ -209,28 +209,28 @@ func statFile(base, relative string) (os.FileInfo, error) {
 	return info, nil
 }
 
-func installSymlink(base, relative, linkTarget string, owner *Owner) error {
+func installSymlink(base, relative, linkTarget string, owner *Owner) ([]error, error) {
 	if err := rejectLinkedPath(base, filepath.Dir(relative), true); err != nil {
-		return err
+		return nil, err
 	}
 	if owner != nil {
-		return fmt.Errorf("ownership is not applied on %s", runtime.GOOS)
+		return nil, fmt.Errorf("ownership is not applied on %s", runtime.GOOS)
 	}
 	destination := filepath.Join(base, relative)
 	if existing, err := os.Lstat(destination); err == nil {
 		if existing.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("%s exists and is not a symlink", destination)
+			return nil, fmt.Errorf("%s exists and is not a symlink", destination)
 		}
 		if current, rerr := os.Readlink(destination); rerr == nil && current == linkTarget {
-			return nil
+			return nil, nil
 		}
 		if err := os.Remove(destination); err != nil {
-			return err
+			return nil, err
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
-	return os.Symlink(linkTarget, destination)
+	return nil, os.Symlink(linkTarget, destination)
 }
 
 func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {

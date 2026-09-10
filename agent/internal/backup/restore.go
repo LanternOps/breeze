@@ -324,7 +324,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		var entryErr error
 		switch entry.Kind {
 		case KindSymlink:
-			entryErr = securefs.InstallSymlink(targetBase, relativeEntry, entry.LinkTarget, entryOwner(entry, applyOwnership))
+			var linkWarnings []error
+			linkWarnings, entryErr = securefs.InstallSymlink(targetBase, relativeEntry, entry.LinkTarget, entryOwner(entry, applyOwnership))
+			for _, warning := range linkWarnings {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("recreated %s with reduced fidelity: %v", displayPath, warning))
+			}
 		case KindDir:
 			mode := os.FileMode(entry.ModeBits)
 			if !applyOwnership {

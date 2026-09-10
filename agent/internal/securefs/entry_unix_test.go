@@ -16,7 +16,7 @@ import (
 func TestInstallSymlinkBoundary(t *testing.T) {
 	t.Run("positive control creates the link with the recorded target", func(t *testing.T) {
 		base := t.TempDir()
-		if err := InstallSymlink(base, filepath.Join("nested", "bin"), "usr/bin", nil); err != nil {
+		if _, err := InstallSymlink(base, filepath.Join("nested", "bin"), "usr/bin", nil); err != nil {
 			t.Fatal(err)
 		}
 		got, err := os.Readlink(filepath.Join(base, "nested", "bin"))
@@ -34,7 +34,7 @@ func TestInstallSymlinkBoundary(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(base, "escape")); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, filepath.Join("escape", "link"), "anywhere", nil); err == nil {
+		if _, err := InstallSymlink(base, filepath.Join("escape", "link"), "anywhere", nil); err == nil {
 			t.Fatal("symlink was created through a symlinked ancestor")
 		}
 		entries, err := os.ReadDir(outside)
@@ -51,7 +51,7 @@ func TestInstallSymlinkBoundary(t *testing.T) {
 		if err := os.Symlink("old/target", filepath.Join(base, "link")); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "link", "new/target", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "new/target", nil); err != nil {
 			t.Fatal(err)
 		}
 		got, err := os.Readlink(filepath.Join(base, "link"))
@@ -63,7 +63,7 @@ func TestInstallSymlinkBoundary(t *testing.T) {
 		if err := os.WriteFile(real, []byte("precious"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "regular", "somewhere", nil); err == nil {
+		if _, err := InstallSymlink(base, "regular", "somewhere", nil); err == nil {
 			t.Fatal("a regular file was replaced by a symlink")
 		}
 		content, err := os.ReadFile(real)
@@ -74,10 +74,10 @@ func TestInstallSymlinkBoundary(t *testing.T) {
 
 	t.Run("an already-correct link is left alone (resume)", func(t *testing.T) {
 		base := t.TempDir()
-		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "target", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "target", nil); err != nil {
 			t.Fatalf("re-installing an identical link failed: %v", err)
 		}
 	})
@@ -85,7 +85,7 @@ func TestInstallSymlinkBoundary(t *testing.T) {
 	t.Run("invalid relative paths are refused", func(t *testing.T) {
 		base := t.TempDir()
 		for _, relative := range []string{"", "..", filepath.Join("..", "escape"), "/absolute"} {
-			if err := InstallSymlink(base, relative, "target", nil); err == nil {
+			if _, err := InstallSymlink(base, relative, "target", nil); err == nil {
 				t.Fatalf("relative path %q was accepted", relative)
 			}
 		}
@@ -210,7 +210,7 @@ func TestInstallFileAppliesFullModeBitsAndOwner(t *testing.T) {
 		if err := os.WriteFile(target, []byte("payload"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "link", "target", &Owner{UID: 65534, GID: 65534}); err != nil {
+		if _, err := InstallSymlink(base, "link", "target", &Owner{UID: 65534, GID: 65534}); err != nil {
 			t.Fatal(err)
 		}
 		link, err := os.Lstat(filepath.Join(base, "link"))

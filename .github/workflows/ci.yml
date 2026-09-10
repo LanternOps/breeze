@@ -1682,25 +1682,27 @@ jobs:
 
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
-      # every component, and the atomic FILE_RENAME_INFO publish. Its
-      # reparse-point cases plant a junction with `mklink /J`; if that ever
-      # stops working on the runner the assertions would silently evaporate,
-      # so — like the elevaccount step above — assert PASS counts and zero
-      # skips rather than trusting a bare exit code.
+      # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
+      # restore. Its reparse-point cases plant a junction with `mklink /J` and
+      # its symlink cases need SeCreateSymbolicLinkPrivilege; if either stops
+      # working on the runner the assertions would silently evaporate, so —
+      # like the elevaccount step above — assert PASS counts and zero skips
+      # rather than trusting a bare exit code. The symlink helper is written to
+      # FAIL rather than skip for the same reason.
       - name: Run Windows secure-staging reparse-point tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 8) { throw "expected exactly 8 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The policy-state registry collector decides whether a batch uploads with
       # `replace: true` — which deletes every prior row for the device. That

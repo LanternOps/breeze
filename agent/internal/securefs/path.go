@@ -54,15 +54,20 @@ func InstallFile(base, relative, source string, mode os.FileMode, modTime time.T
 //
 // Resume semantics match the rest of the restore path: a link that already
 // points at linkTarget is left alone, a link pointing elsewhere is replaced,
-// and anything that is NOT a link (a regular file, a real directory) is
-// refused rather than silently destroyed.
-func InstallSymlink(base, relative, linkTarget string, owner *Owner) error {
+// and anything that is NOT a symlink (a regular file, a real directory, a
+// junction or any other reparse point) is refused rather than silently
+// destroyed.
+//
+// The returned warnings describe fidelity the platform could not deliver — a
+// link created with the wrong file/directory shape on Windows, say — for a link
+// that WAS created successfully.
+func InstallSymlink(base, relative, linkTarget string, owner *Owner) ([]error, error) {
 	clean, err := CleanRelative(relative)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if linkTarget == "" {
-		return errors.New("symlink target is empty")
+		return nil, errors.New("symlink target is empty")
 	}
 	return installSymlink(base, clean, linkTarget, owner)
 }

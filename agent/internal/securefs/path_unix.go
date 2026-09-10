@@ -388,15 +388,15 @@ func applyOwnerAt(parentFD int, name string, owner *Owner) error {
 	return unix.Fchownat(parentFD, name, owner.UID, owner.GID, unix.AT_SYMLINK_NOFOLLOW)
 }
 
-func installSymlink(base, relative, linkTarget string, owner *Owner) error {
+func installSymlink(base, relative, linkTarget string, owner *Owner) ([]error, error) {
 	baseFD, err := openAbsoluteDir(base, true, 0o755)
 	if err != nil {
-		return fmt.Errorf("open target base: %w", err)
+		return nil, fmt.Errorf("open target base: %w", err)
 	}
 	defer func() { _ = unix.Close(baseFD) }()
 	parentFD, err := openRelativeDir(baseFD, filepath.Dir(relative), true, 0o755)
 	if err != nil {
-		return fmt.Errorf("open target parent: %w", err)
+		return nil, fmt.Errorf("open target parent: %w", err)
 	}
 	defer func() { _ = unix.Close(parentFD) }()
 
@@ -404,20 +404,20 @@ func installSymlink(base, relative, linkTarget string, owner *Owner) error {
 	var existing unix.Stat_t
 	if err := unix.Fstatat(parentFD, name, &existing, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if existing.Mode&unix.S_IFMT != unix.S_IFLNK {
-			return fmt.Errorf("%s exists and is not a symlink", relative)
+			return nil, fmt.Errorf("%s exists and is not a symlink", relative)
 		}
 		buf := make([]byte, unix.PathMax)
 		if n, rerr := unix.Readlinkat(parentFD, name, buf); rerr == nil && n > 0 && string(buf[:n]) == linkTarget {
-			return applyOwnerAt(parentFD, name, owner)
+			return nil, applyOwnerAt(parentFD, name, owner)
 		}
 		if err := unix.Unlinkat(parentFD, name, 0); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := unix.Symlinkat(linkTarget, parentFD, name); err != nil {
-		return err
+		return nil, err
 	}
-	return applyOwnerAt(parentFD, name, owner)
+	return nil, applyOwnerAt(parentFD, name, owner)
 }
 
 func installDir(base, relative string, mode os.FileMode, applyMode bool, owner *Owner, modTime time.Time) error {

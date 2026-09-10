@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -583,16 +584,20 @@ func TestRenameRelativePublishesUnderThePinnedParent(t *testing.T) {
 	}
 }
 
-// requireSymlinkSupport skips when this host cannot create a symbolic link at
-// all (no SeCreateSymbolicLinkPrivilege and no developer mode). The agent runs
-// as SYSTEM in production, which holds the privilege; an unprivileged test host
-// does not, and that is an environment capability rather than a code defect —
-// unlike the junction assertions, which must never skip.
+// requireSymlinkSupport FAILS — it does not skip — when this host cannot create
+// a symbolic link. #5520's walker records symlink entries on Windows and the
+// agent runs as SYSTEM, which holds SeCreateSymbolicLinkPrivilege, so restoring
+// them is load-bearing production behaviour. CI runs `go test` without -v,
+// where a skip is indistinguishable from a pass, and this suite is the only
+// coverage of that path. If the runner genuinely lacks the privilege we want a
+// red build naming the reason, not a silent gap.
 func requireSymlinkSupport(t *testing.T) {
 	t.Helper()
 	probe := filepath.Join(t.TempDir(), "probe")
 	if err := os.Symlink("target", probe); err != nil {
-		t.Skipf("this host cannot create symbolic links: %v", err)
+		t.Fatalf("this host cannot create symbolic links, so Windows symlink restore is unproven here: %v\n"+
+			"The agent restores symlink manifest entries as SYSTEM, which holds SeCreateSymbolicLinkPrivilege. "+
+			"Run this suite elevated, or grant the privilege to the test account.", err)
 	}
 }
 
@@ -607,7 +612,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(base, "target.txt"), []byte("payload"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, filepath.Join("nested", "link.txt"), "target.txt", nil); err != nil {
+		if _, err := InstallSymlink(base, filepath.Join("nested", "link.txt"), "target.txt", nil); err != nil {
 			t.Fatal(err)
 		}
 		link := filepath.Join(base, "nested", "link.txt")
@@ -635,7 +640,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(base, "dir", "inside.txt"), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "dirlink", "dir", nil); err != nil {
+		if _, err := InstallSymlink(base, "dirlink", "dir", nil); err != nil {
 			t.Fatal(err)
 		}
 		// Only a DIRECTORY symlink can be walked into; a file symlink to a
@@ -652,7 +657,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 		if err := os.WriteFile(target, []byte("payload"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "abslink", target, nil); err != nil {
+		if _, err := InstallSymlink(base, "abslink", target, nil); err != nil {
 			t.Fatal(err)
 		}
 		got, err := os.Readlink(filepath.Join(base, "abslink"))
@@ -675,7 +680,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 		base := t.TempDir()
 		outside := t.TempDir()
 		mkJunction(t, filepath.Join(base, "escape"), outside)
-		if err := InstallSymlink(base, filepath.Join("escape", "link"), "anywhere", nil); err == nil {
+		if _, err := InstallSymlink(base, filepath.Join("escape", "link"), "anywhere", nil); err == nil {
 			t.Fatal("symlink was created through a junctioned ancestor")
 		}
 		entries, err := os.ReadDir(outside)
@@ -689,10 +694,10 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 
 	t.Run("replaces a stale link but refuses a regular file", func(t *testing.T) {
 		base := t.TempDir()
-		if err := InstallSymlink(base, "link", "old", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "old", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "link", "new", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "new", nil); err != nil {
 			t.Fatal(err)
 		}
 		got, err := os.Readlink(filepath.Join(base, "link"))
@@ -704,7 +709,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 		if err := os.WriteFile(real, []byte("precious"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "regular.txt", "somewhere", nil); err == nil {
+		if _, err := InstallSymlink(base, "regular.txt", "somewhere", nil); err == nil {
 			t.Fatal("a regular file was replaced by a symlink")
 		}
 		content, err := os.ReadFile(real)
@@ -715,10 +720,10 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 
 	t.Run("an already-correct link is left alone (resume)", func(t *testing.T) {
 		base := t.TempDir()
-		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "target", nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := InstallSymlink(base, "link", "target", nil); err != nil {
+		if _, err := InstallSymlink(base, "link", "target", nil); err != nil {
 			t.Fatalf("re-installing an identical link failed: %v", err)
 		}
 		got, err := os.Readlink(filepath.Join(base, "link"))
@@ -730,7 +735,7 @@ func TestInstallSymlinkOnWindows(t *testing.T) {
 	t.Run("invalid relative paths are refused", func(t *testing.T) {
 		base := t.TempDir()
 		for _, relative := range []string{"", "..", filepath.Join("..", "escape"), `C:\absolute`} {
-			if err := InstallSymlink(base, relative, "target", nil); err == nil {
+			if _, err := InstallSymlink(base, relative, "target", nil); err == nil {
 				t.Fatalf("relative path %q was accepted", relative)
 			}
 		}
@@ -783,4 +788,133 @@ func TestInstallDirOnWindows(t *testing.T) {
 			t.Fatalf("existing child was lost: %v", err)
 		}
 	})
+}
+
+// F3: SubstituteName must be correct for every absolute shape a manifest can
+// carry, not just a bare drive path. These assert the built buffer directly, so
+// they need no filesystem, no privilege and no particular host.
+func TestBuildSymlinkReparseBufferLayout(t *testing.T) {
+	cases := []struct {
+		name           string
+		linkTarget     string
+		wantSubstitute string
+		wantRelative   bool
+	}{
+		{"relative target is stored verbatim", `usr\bin`, `usr\bin`, true},
+		{"drive absolute gets the NT prefix", `C:\Windows\System32`, `\??\C:\Windows\System32`, false},
+		{"already-NT target passes through unchanged", `\??\C:\Windows`, `\??\C:\Windows`, false},
+		{"win32 extended target becomes NT", `\\?\C:\Windows`, `\??\C:\Windows`, false},
+		{"UNC target takes the UNC form", `\\server\share\x`, `\??\UNC\server\share\x`, false},
+		{"extended UNC target takes the UNC form", `\\?\UNC\server\share\x`, `\??\UNC\server\share\x`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf, err := buildSymlinkReparseBuffer(tc.linkTarget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var head reparseHeader
+			var payload symlinkReparsePayload
+			headerLen := int(unsafe.Sizeof(head))
+			payloadLen := int(unsafe.Sizeof(payload))
+
+			h := (*reparseHeader)(unsafe.Pointer(&buf[0]))
+			if h.ReparseTag != windows.IO_REPARSE_TAG_SYMLINK {
+				t.Fatalf("tag = %#08x, want IO_REPARSE_TAG_SYMLINK", h.ReparseTag)
+			}
+			if int(h.ReparseDataLength) != len(buf)-headerLen {
+				t.Fatalf("ReparseDataLength = %d, want %d", h.ReparseDataLength, len(buf)-headerLen)
+			}
+
+			p := (*symlinkReparsePayload)(unsafe.Pointer(&buf[headerLen]))
+			if (p.Flags&symlinkFlagRelative != 0) != tc.wantRelative {
+				t.Fatalf("Flags = %#x, wantRelative = %v", p.Flags, tc.wantRelative)
+			}
+			if int(p.SubstituteNameOffset)+int(p.SubstituteNameLength) > len(buf)-headerLen-payloadLen {
+				t.Fatal("SubstituteName runs past the buffer")
+			}
+			if int(p.PrintNameOffset)+int(p.PrintNameLength) > len(buf)-headerLen-payloadLen {
+				t.Fatal("PrintName runs past the buffer")
+			}
+
+			readAt := func(offset, length uint16) string {
+				start := headerLen + payloadLen + int(offset)
+				return windows.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(&buf[start])), int(length)/2))
+			}
+			if got := readAt(p.SubstituteNameOffset, p.SubstituteNameLength); got != tc.wantSubstitute {
+				t.Fatalf("SubstituteName = %q, want %q", got, tc.wantSubstitute)
+			}
+			// PrintName is always the caller's original string: that is what
+			// os.Readlink reports back.
+			if got := readAt(p.PrintNameOffset, p.PrintNameLength); got != tc.linkTarget {
+				t.Fatalf("PrintName = %q, want %q", got, tc.linkTarget)
+			}
+		})
+	}
+}
+
+// F4: only a drive-letter absolute may be probed with a path lookup. A UNC
+// target would make a SYSTEM-privileged restore authenticate outbound to a host
+// the manifest chose.
+func TestTargetIsDirectoryRefusesToProbeRemoteShapes(t *testing.T) {
+	base := t.TempDir()
+	chain, err := openVerifiedDir(base, false, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer chain.close()
+
+	for _, target := range []string{
+		`\\attacker\share\x`,
+		`\\?\UNC\attacker\share\x`,
+		`\??\C:\Windows`,
+		`\\?\C:\Windows`,
+	} {
+		isDir, probed := targetIsDirectory(chain.leaf(), target)
+		if probed {
+			t.Fatalf("target %q was probed with a path lookup", target)
+		}
+		if isDir {
+			t.Fatalf("target %q was classified as a directory without a probe", target)
+		}
+	}
+
+	// Control: an ordinary drive-letter absolute IS probed, so the refusal
+	// above is a restriction rather than the function never probing anything.
+	dir := filepath.Join(base, "real")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	isDir, probed := targetIsDirectory(chain.leaf(), dir)
+	if !probed {
+		t.Fatal("a drive-letter absolute was not probed")
+	}
+	if !isDir {
+		t.Fatal("a drive-letter absolute directory was not classified as a directory")
+	}
+}
+
+// F5: a junction at the entry path is a non-symlink and must be refused, not
+// silently replaced — the same contract that protects a regular file.
+func TestInstallSymlinkRefusesToReplaceAJunction(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "keep.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mkJunction(t, filepath.Join(base, "mount"), outside)
+
+	if _, err := InstallSymlink(base, "mount", "somewhere", nil); err == nil {
+		t.Fatal("a junction was replaced by a symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "keep.txt")); err != nil {
+		t.Fatalf("the junction's target was disturbed: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(base, "mount"))
+	if err != nil {
+		t.Fatalf("the junction itself was removed: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 && info.Mode()&os.ModeIrregular == 0 && !info.IsDir() {
+		t.Fatalf("junction entry changed shape: mode = %v", info.Mode())
+	}
 }
