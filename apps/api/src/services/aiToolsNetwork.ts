@@ -17,6 +17,7 @@ import {
   networkBaselines,
   networkChangeEvents,
   sites,
+  type NetworkBaselineScanSchedule,
 } from '../db/schema';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -25,6 +26,11 @@ import {
   normalizeBaselineAlertSettings,
   normalizeBaselineScanSchedule,
 } from './networkBaseline';
+import {
+  BaselineAuthorityUnsupportedError,
+  buildBaselineAuthorityEnvelope,
+  type BaselineAuthorityEnvelope,
+} from './networkBaselineAuthority';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -85,6 +91,20 @@ async function getCommandQueue() {
 // ============================================
 // Registration
 // ============================================
+
+/**
+ * SEC-2026-09-05-146 — same arming contract as the REST routes: an enabled
+ * recurring schedule created or changed through the AI/MCP tool is bound to the
+ * calling principal's live authority. Returns null when the schedule is
+ * disabled (nothing dispatches, so nothing needs an owner).
+ */
+async function armScheduleAuthority(
+  auth: AuthContext,
+  effect: { orgId: string; siteId: string; subnet: string; scanSchedule: NetworkBaselineScanSchedule },
+): Promise<BaselineAuthorityEnvelope | null> {
+  if (!effect.scanSchedule.enabled) return null;
+  return buildBaselineAuthorityEnvelope(auth, effect);
+}
 
 export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -320,11 +340,31 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           ...(alertOverrides.rogueDevice !== undefined ? { rogueDevice: alertOverrides.rogueDevice } : {})
         });
 
+        // SEC-146: re-arm the authority envelope and bump the generation for the
+        // changed schedule. Also the re-approval path for a legacy row.
+        let envelope: BaselineAuthorityEnvelope | null;
+        try {
+          envelope = await armScheduleAuthority(auth, {
+            orgId: baseline.orgId,
+            siteId: baseline.siteId,
+            subnet: baseline.subnet,
+            scanSchedule: nextSchedule,
+          });
+        } catch (error) {
+          if (error instanceof BaselineAuthorityUnsupportedError) {
+            return JSON.stringify({ error: error.message });
+          }
+          throw error;
+        }
+
         await db
           .update(networkBaselines)
           .set({
             scanSchedule: nextSchedule,
             alertSettings: nextAlertSettings,
+            ...(envelope ?? {}),
+            authorityGeneration: (baseline.authorityGeneration ?? 0) + 1,
+            scheduleBlockedReason: null,
             updatedAt: new Date()
           })
           .where(eq(networkBaselines.id, baseline.id));
@@ -375,6 +415,22 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // createCatalogItem in catalogService.ts). Suppressing the conflict at the
       // statement level keeps the transaction healthy; zero returned rows means
       // a baseline already exists for this org/site/subnet.
+      // SEC-146: bind the new recurring schedule to the calling principal.
+      let createEnvelope: BaselineAuthorityEnvelope | null;
+      try {
+        createEnvelope = await armScheduleAuthority(auth, {
+          orgId,
+          siteId,
+          subnet,
+          scanSchedule: nextSchedule,
+        });
+      } catch (error) {
+        if (error instanceof BaselineAuthorityUnsupportedError) {
+          return JSON.stringify({ error: error.message });
+        }
+        throw error;
+      }
+
       const [created] = await db
         .insert(networkBaselines)
         .values({
@@ -384,6 +440,9 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           knownDevices: [],
           scanSchedule: nextSchedule,
           alertSettings: nextAlertSettings,
+          ...(createEnvelope ?? {}),
+          authorityGeneration: createEnvelope ? 1 : 0,
+          scheduleBlockedReason: null,
           updatedAt: new Date()
         })
         .onConflictDoNothing()

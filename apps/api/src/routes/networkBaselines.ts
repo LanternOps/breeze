@@ -7,7 +7,8 @@ import {
   discoveryProfiles,
   networkBaselines,
   networkChangeEvents,
-  sites
+  sites,
+  type NetworkBaselineScanSchedule
 } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { enqueueBaselineScan } from '../jobs/networkBaselineWorker';
@@ -18,6 +19,11 @@ import {
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import {
+  BaselineAuthorityUnsupportedError,
+  buildBaselineAuthorityEnvelope,
+  type BaselineAuthorityEnvelope
+} from '../services/networkBaselineAuthority';
 import {
   networkEventTypes,
   optionalQueryBooleanSchema,
@@ -122,6 +128,20 @@ function baselineInSiteScope(
 ): boolean {
   if (!perms?.allowedSiteIds) return true;
   return canAccessSite(perms, baseline.siteId);
+}
+
+/**
+ * SEC-2026-09-05-146 — arm the creator-bound authority envelope for a schedule
+ * that is (or stays) enabled. A disabled schedule dispatches nothing, so it
+ * needs no authority; an enabled one must name the live principal that owns it.
+ * Returns null when no envelope is needed.
+ */
+async function armScheduleAuthority(
+  auth: AuthContext,
+  effect: { orgId: string; siteId: string; subnet: string; scanSchedule: NetworkBaselineScanSchedule }
+): Promise<BaselineAuthorityEnvelope | null> {
+  if (!effect.scanSchedule.enabled) return null;
+  return buildBaselineAuthorityEnvelope(auth, effect);
 }
 
 networkBaselineRoutes.use('*', authMiddleware);
@@ -293,6 +313,25 @@ networkBaselineRoutes.post(
     // unique violation at commit time even after it's caught here, turning the
     // mapped 409 back into a raw 500 (see createCatalogItem in catalogService.ts).
     // Zero returned rows means a baseline already exists for this org/site/subnet.
+    // SEC-146: an enabled recurring schedule is armed with the CURRENT user's
+    // authority in the same statement that creates it. System-scope contexts
+    // cannot own a recurring effect (nothing would ever revoke it) — they may
+    // still create a baseline whose schedule is disabled.
+    let envelope: BaselineAuthorityEnvelope | null;
+    try {
+      envelope = await armScheduleAuthority(auth, {
+        orgId,
+        siteId: body.siteId,
+        subnet: body.subnet,
+        scanSchedule: schedule
+      });
+    } catch (error) {
+      if (error instanceof BaselineAuthorityUnsupportedError) {
+        return c.json({ error: error.message }, 403);
+      }
+      throw error;
+    }
+
     const [created] = await db
       .insert(networkBaselines)
       .values({
@@ -304,6 +343,9 @@ networkBaselineRoutes.post(
         alertSettings,
         lastScanAt: null,
         lastScanJobId: null,
+        ...(envelope ?? {}),
+        authorityGeneration: envelope ? 1 : 0,
+        scheduleBlockedReason: null,
         updatedAt: new Date()
       })
       .onConflictDoNothing()
@@ -376,11 +418,41 @@ networkBaselineRoutes.patch(
       ? normalizeBaselineAlertSettings({ ...currentAlertSettings, ...body.alertSettings })
       : currentAlertSettings;
 
+    // SEC-146: any change to the schedule re-arms the envelope from the CURRENT
+    // user and bumps the generation, which also invalidates any tick already
+    // issued against the previous envelope. This is the re-approval path for a
+    // legacy row: re-saving the schedule is what makes it dispatchable again.
+    // An alert-settings-only edit is not an authority change and leaves the
+    // envelope (and generation) untouched.
+    let envelope: BaselineAuthorityEnvelope | null = null;
+    if (body.scanSchedule) {
+      try {
+        envelope = await armScheduleAuthority(auth, {
+          orgId: baseline.orgId,
+          siteId: baseline.siteId,
+          subnet: baseline.subnet,
+          scanSchedule: nextSchedule
+        });
+      } catch (error) {
+        if (error instanceof BaselineAuthorityUnsupportedError) {
+          return c.json({ error: error.message }, 403);
+        }
+        throw error;
+      }
+    }
+
     const [updated] = await db
       .update(networkBaselines)
       .set({
         scanSchedule: nextSchedule,
         alertSettings: nextAlertSettings,
+        ...(body.scanSchedule
+          ? {
+              ...(envelope ?? {}),
+              authorityGeneration: baseline.authorityGeneration + 1,
+              scheduleBlockedReason: null
+            }
+          : {}),
         updatedAt: new Date()
       })
       .where(eq(networkBaselines.id, baseline.id))
