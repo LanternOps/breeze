@@ -46,6 +46,14 @@ function makeApp() {
   return app;
 }
 
+/** Terminal shape for a Drizzle `.limit(1).for('share')` locking select. */
+function shareLockedRows<T>(rows: T[]) {
+  return { for: (mode: string) => {
+    expect(mode).toBe('share');
+    return Promise.resolve(rows);
+  } };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // vi.clearAllMocks clears call history but NOT implementations — restore
@@ -62,6 +70,7 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
     token: "HHHHHHHHHH",
     orgId: "backup-url-org",
     parentEnrollmentKeyId: "backup-url-parent-key",
+    parentCredentialGeneration: 1,
     siteId: "backup-url-site",
     maxUsage: 1,
     consumedCount: 0,
@@ -79,11 +88,12 @@ async function redeemBootstrapOk(): Promise<Record<string, unknown>> {
     .mockReturnValueOnce({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{
+          limit: () => shareLockedRows([{
             id: "backup-url-parent-key",
             name: "Backup URL parent",
             orgId: "backup-url-org",
             siteId: "backup-url-site",
+            credentialGeneration: 1,
             keySecretHash: "parent-secret-hash",
             expiresAt: new Date(Date.now() + 60_000),
           }]),
@@ -152,6 +162,42 @@ describe("childEnrollmentKeyTtlMinutes", () => {
 });
 
 describe("POST /api/v1/installer/bootstrap", () => {
+  it("rejects a token from a superseded parent credential epoch before minting a child", async () => {
+    const tokenRow = {
+      id: "stale-token",
+      token: "SSSSSSSSSS",
+      orgId: "stale-org",
+      parentEnrollmentKeyId: "stale-parent",
+      parentCredentialGeneration: 1,
+      siteId: "stale-site",
+      maxUsage: 1,
+      consumedCount: 0,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
+      } as any)
+      .mockReturnValueOnce({
+        // The generation predicate is evaluated by Postgres in production;
+        // an empty locked result models the parent now being at epoch 2.
+        from: () => ({ where: () => ({ limit: () => shareLockedRows([]) }) }),
+      } as any);
+
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: { "X-Breeze-Bootstrap-Token": tokenRow.token },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "token invalid, expired, or already used",
+    });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it("includes backupServerUrl when AGENT_BACKUP_SERVER_URL is set", async () => {
     process.env.AGENT_BACKUP_SERVER_URL = "https://new.example.com";
     const body = await redeemBootstrapOk();
@@ -315,7 +361,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -385,7 +431,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -434,7 +480,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -488,7 +534,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }) } as any)
-      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }) } as any)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }) } as any)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }) } as any);
 
     let capturedChildKeyValues: Record<string, unknown> | null = null;
@@ -555,7 +601,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -647,7 +693,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any);
 
@@ -720,7 +766,7 @@ describe("POST /api/v1/installer/bootstrap", () => {
       } as any)
       .mockReturnValueOnce({
         from: () => ({
-          where: () => ({ limit: () => Promise.resolve([parentKey]) }),
+          where: () => ({ limit: () => shareLockedRows([parentKey]) }),
         }),
       } as any)
       .mockReturnValueOnce({
@@ -798,7 +844,7 @@ describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () =
         from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
       } as any)
       .mockReturnValueOnce({
-        from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }),
+        from: () => ({ where: () => ({ limit: () => shareLockedRows([parentKey]) }) }),
       } as any)
       .mockReturnValueOnce({
         from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }),
