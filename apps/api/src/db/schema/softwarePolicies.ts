@@ -97,6 +97,13 @@ export const softwarePolicies = pgTable('software_policies', {
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  /**
+   * Bumped on every PATCH (site-ceiling gate contract §3). Compliance/
+   * remediation workers snapshot this at enqueue time and compare it against
+   * the freshly-reloaded row's generation before acting, so a queued job
+   * never enforces a policy shape that was edited after it was queued.
+   */
+  approvalGeneration: integer('approval_generation').notNull().default(1),
 }, (table) => ({
   orgIdIdx: index('software_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('software_policies_partner_id_idx').on(table.partnerId),
