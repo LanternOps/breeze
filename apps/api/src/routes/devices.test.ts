@@ -59,6 +59,9 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
 const assertTtlWithinCapMock = vi.fn(
   async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
 );
+const permissionSiteScope = vi.hoisted(() => ({
+  allowedSiteIds: undefined as string[] | undefined,
+}));
 vi.mock('../services/enrollmentDefaults', () => ({
   assertTtlWithinCap: (...args: [string, number | undefined]) =>
     assertTtlWithinCapMock(...args),
@@ -257,6 +260,7 @@ vi.mock('../middleware/auth', () => ({
       orgId: 'org-123',
       roleId: 'role-123',
       scope: 'organization',
+      allowedSiteIds: permissionSiteScope.allowedSiteIds,
     });
     return next();
   }),
@@ -333,6 +337,7 @@ describe('device routes', () => {
     // restore the permissive default (mirrors "no partner cap configured",
     // i.e. the product-default 525_600-minute ceiling from resolveEnrollmentDefaults).
     mockEnrollmentDefaults({ maxTtlMinutes: 525_600 });
+    permissionSiteScope.allowedSiteIds = undefined;
     app = new Hono();
     app.route('/devices', deviceRoutes);
   });
@@ -342,6 +347,41 @@ describe('device routes', () => {
   });
 
   describe('POST /devices/onboarding-token', () => {
+    it('denies an empty site allowlist before selecting a site or minting a key', async () => {
+      permissionSiteScope.allowedSiteIds = [];
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('limits automatic site selection to the caller site allowlist', async () => {
+      const allowedSiteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      permissionSiteScope.allowedSiteIds = [allowedSiteId];
+      const where = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ id: allowedSiteId }]),
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where }),
+      } as any);
+      const values = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(where.mock.calls[0]![0])).toContain(allowedSiteId);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ siteId: allowedSiteId }));
+    });
+
     it('returns 403 for probation before minting an onboarding token', async () => {
       const { authMiddleware } = await import('../middleware/auth');
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {

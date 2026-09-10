@@ -261,6 +261,36 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
 }
 
 /**
+ * Re-evaluate an already-admitted live session without replaying admission
+ * side effects. Continuation ticks must not create a denial audit or trigger
+ * probation auto-promotion every time the timer fires; admission owns those
+ * effects, while the socket lifecycle owns its single close transition.
+ */
+export async function evaluateCapabilityContinuation(
+  cap: GatedCapability,
+  ctx: GateContext,
+): Promise<GateDecision> {
+  const row = await readTrust(ctx.partnerId);
+  return evaluateCapabilityContinuationForState(cap, ctx, row);
+}
+
+/** Pure continuation decision for callers that already hold a bounded DB snapshot. */
+export function evaluateCapabilityContinuationForState(
+  cap: GatedCapability,
+  ctx: GateContext,
+  row: { trustState: PartnerTrustState; probationEnrollments: number } | null,
+): GateDecision {
+  const mode = partnerTrustMode();
+  if (mode === 'off') return { allow: true };
+  const denial = row
+    ? decide(cap, row, ctx)
+    : { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
+  if (!denial) return { allow: true };
+  if (mode === 'shadow') return { allow: true, shadowDenied: denial };
+  return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
+}
+
+/**
  * Decision for chokepoints that cannot even resolve a partnerId to gate on
  * (e.g. `partnerIdForDevice` returns null for an orphaned/unresolvable
  * device). There is no partner row to read a trust state from, so this

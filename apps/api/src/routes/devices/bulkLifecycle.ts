@@ -34,6 +34,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { restoreRemovedDevice, DeviceLifecycleError } from '../../services/deviceLifecycle';
 import {
   enqueueDeviceBulkPurge,
+  deviceBulkPurgeJobId,
   getDeviceBulkPurgeQueue,
   type DeviceBulkPurgeJobPayload,
   type DeviceBulkPurgeResult,
@@ -54,6 +55,7 @@ type BulkFailCode =
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
   | 'SITE_ACCESS_DENIED'
+  | 'STATE_CHANGED'
   | 'ERROR';
 
 interface BulkFailed {
@@ -152,7 +154,8 @@ bulkLifecycleRoutes.post(
  * device, so 500 of them cannot run inside a request without pinning a pooled
  * connection for minutes (see jobs/deviceBulkPurge.ts). This handler only does
  * the CHEAP checks — can the caller see the device, and is it removed — then
- * enqueues.
+ * enqueues. The caller's site ceiling is copied into the durable payload so
+ * the system-scoped worker cannot dissolve a group across that boundary.
  *
  * A pending agent uninstall is deliberately NOT pre-checked here. The worker
  * refuses it under the devices row lock, which keeps ONE source of truth for
@@ -227,6 +230,12 @@ bulkLifecycleRoutes.post(
     await enqueueDeviceBulkPurge({
       jobId,
       targets,
+      authorization: {
+        version: 1,
+        siteAccess: auth.allowedSiteIds === undefined
+          ? { mode: 'unrestricted' }
+          : { mode: 'restricted', allowedSiteIds: [...auth.allowedSiteIds] },
+      },
       actorUserId: auth.user.id,
       actorEmail: auth.user.email,
       partnerId: auth.partnerId ?? null,
@@ -289,7 +298,7 @@ bulkLifecycleRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const jobId = c.req.param('jobId')!;
 
-    const job = await getDeviceBulkPurgeQueue().getJob(`device-bulk-purge-${jobId}`);
+    const job = await getDeviceBulkPurgeQueue().getJob(deviceBulkPurgeJobId(jobId));
     if (!job) return c.json({ error: 'Purge run not found' }, 404);
 
     const payload = job.data as DeviceBulkPurgeJobPayload | undefined;

@@ -937,7 +937,7 @@ export const portalApi = {
   },
 
   updateProfile: async (
-    data: { name?: string; receiveNotifications?: boolean; password?: string; email?: string },
+    data: { name?: string; receiveNotifications?: boolean },
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<Profile>> => {
     const response = await apiPatch<{ user: Profile }>('/portal/profile', data, config);

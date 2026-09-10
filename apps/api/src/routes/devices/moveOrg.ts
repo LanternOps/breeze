@@ -15,7 +15,7 @@ import { hasPermission, PERMISSIONS } from '../../services/permissions';
 import {
   getDeviceWithOrgAndSiteCheck,
   SITE_ACCESS_DENIED,
-  stripSensitiveDeviceFields,
+  projectPublicDevice,
 } from './helpers';
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -418,7 +418,11 @@ moveOrgRoutes.post(
         // profile behind — or it was a vm_host group's HOST (#2308), leaving
         // the group headless — that group is no longer meaningful: dissolve it.
         if (device.linkGroupId) {
-          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(
+            tx,
+            device.linkGroupId,
+            auth.allowedSiteIds,
+          );
         }
 
         // Agent-run history stays with the SOURCE org (owner decision 2026-08-23):
@@ -1130,7 +1134,7 @@ moveOrgRoutes.post(
 
     return c.json({
       success: true,
-      device: updated ? stripSensitiveDeviceFields(updated) : null,
+      device: updated ? projectPublicDevice(updated) : null,
     });
   },
 );

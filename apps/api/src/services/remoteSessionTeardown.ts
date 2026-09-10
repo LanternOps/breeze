@@ -1,6 +1,6 @@
 import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { remoteSessions, devices } from '../db/schema';
+import { remoteSessions, tunnelSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
@@ -21,6 +21,49 @@ let _terminalWs: typeof import('../routes/terminalWs') | null = null;
 async function getTerminalWs() {
   if (!_terminalWs) _terminalWs = await import('../routes/terminalWs');
   return _terminalWs;
+}
+
+let _tunnelWs: typeof import('../routes/tunnelWs') | null = null;
+async function getTunnelWs() {
+  if (!_tunnelWs) _tunnelWs = await import('../routes/tunnelWs');
+  return _tunnelWs;
+}
+
+async function teardownDisconnectedTunnels(disconnected: DisconnectedSession[]): Promise<void> {
+  if (disconnected.length === 0) return;
+  const agentByDevice = new Map<string, string | null>();
+  try {
+    const deviceIds = Array.from(new Set(disconnected.map((row) => row.deviceId)));
+    const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ id: devices.id, agentId: devices.agentId })
+      .from(devices)
+      .where(inArray(devices.id, deviceIds))));
+    for (const row of rows) agentByDevice.set(row.id, row.agentId ?? null);
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+
+  await Promise.all(disconnected.map((row) => revokeViewerSession(row.id).catch((err) => {
+    console.error(`[remoteSessionTeardown] Failed to revoke tunnel ${row.id}:`, err);
+  })));
+
+  for (const row of disconnected) {
+    let closedLocally = false;
+    try {
+      const { closeTunnelSession } = await getTunnelWs();
+      closedLocally = await closeTunnelSession(row.id);
+    } catch (err) {
+      console.error(`[remoteSessionTeardown] Failed to close tunnel socket ${row.id}:`, err);
+    }
+    const agentId = agentByDevice.get(row.deviceId);
+    if (!closedLocally && agentId) {
+      sendCommandToAgent(agentId, {
+        id: `tun-close-${row.id}`,
+        type: 'tunnel_close',
+        payload: { tunnelId: row.id },
+      });
+    }
+  }
 }
 
 /**
@@ -157,7 +200,7 @@ export async function teardownDisconnectedSessions(
 export const TEARDOWN_FAILED = -1;
 
 /**
- * Force-terminate every live remote session owned by a user. Called from
+ * Force-terminate every live remote or tunnel session owned by a user. Called from
  * account-suspension / deactivation and partner-abuse-suspend paths so a
  * disabled or rogue operator cannot keep live remote-desktop control after
  * being cut off. Finding #3.
@@ -181,19 +224,28 @@ export const TEARDOWN_FAILED = -1;
  * `withSystemDbAccessContext` establishes system scope on a separate
  * connection (same pattern as `logSessionAudit`).
  *
- * The per-row viewer-revoke / agent-signal calls are best-effort: a failure on
- * one session does not prevent the others from being torn down, and an
- * unexpected throw is logged rather than swallowed bare.
+ * Tunnel rows follow the same DB-first rule, then revoke their viewer token,
+ * close an exact local socket through the normal lifecycle when present, or
+ * send a targeted agent close as a fallback. Per-row signaling is best-effort:
+ * a failure on one session does not prevent the others from being torn down,
+ * and an unexpected throw is logged rather than swallowed bare.
  *
  * @returns the number of sessions marked disconnected (`0` = nothing to do),
  *   or {@link TEARDOWN_FAILED} (`-1`) when the bulk disconnect itself failed.
  *   A `-1` is reported to Sentry here and MUST be surfaced by callers.
  */
 export async function terminateUserRemoteSessions(userId: string): Promise<number> {
-  return disconnectAndTeardown(
+  const remoteCount = await disconnectAndTeardown(
     eq(remoteSessions.userId, userId),
     `user ${userId}`
   );
+  const tunnelCount = await disconnectTunnelsAndTeardown(
+    eq(tunnelSessions.userId, userId),
+    `user ${userId}`,
+  );
+  return remoteCount === TEARDOWN_FAILED || tunnelCount === TEARDOWN_FAILED
+    ? TEARDOWN_FAILED
+    : remoteCount + tunnelCount;
 }
 
 /**
@@ -208,16 +260,41 @@ export async function terminateUserRemoteSessions(userId: string): Promise<numbe
  *   or {@link TEARDOWN_FAILED} (`-1`) when the bulk disconnect itself failed.
  */
 export async function terminateDeviceRemoteSessions(deviceId: string): Promise<number> {
-  return disconnectAndTeardown(
+  const remoteCount = await disconnectAndTeardown(
     eq(remoteSessions.deviceId, deviceId),
     `device ${deviceId}`
   );
+  const tunnelCount = await disconnectTunnelsAndTeardown(
+    eq(tunnelSessions.deviceId, deviceId),
+    `device ${deviceId}`,
+  );
+  return remoteCount === TEARDOWN_FAILED || tunnelCount === TEARDOWN_FAILED
+    ? TEARDOWN_FAILED
+    : remoteCount + tunnelCount;
+}
+
+async function disconnectTunnelsAndTeardown(scopePredicate: SQL, label: string): Promise<number> {
+  let disconnected: DisconnectedSession[];
+  try {
+    disconnected = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .update(tunnelSessions)
+      .set({ status: 'disconnected', endedAt: new Date() })
+      .where(and(scopePredicate, inArray(tunnelSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])))
+      .returning({ id: tunnelSessions.id, type: tunnelSessions.type, deviceId: tunnelSessions.deviceId })));
+  } catch (err) {
+    console.error(`[remoteSessionTeardown] Failed to disconnect tunnels for ${label}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return TEARDOWN_FAILED;
+  }
+  await teardownDisconnectedTunnels(disconnected);
+  return disconnected.length;
 }
 
 /**
- * Mark every active session matching `scopePredicate` as `disconnected`
- * (returning the touched rows) and run {@link teardownDisconnectedSessions} on
- * them. Shared core of the user- and device-keyed terminate functions.
+ * Mark every active remote and tunnel session matching `scopePredicate` as
+ * `disconnected` (returning the touched rows), then run their respective
+ * teardown paths. Shared core of the user- and device-keyed terminate
+ * functions.
  *
  * Runs in a fresh system DB scope so it is safe to call from a request handler
  * or a background/admin context: `runOutsideDbContext` first breaks out of any
