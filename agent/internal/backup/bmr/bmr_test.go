@@ -862,6 +862,136 @@ func TestRestoreFiles_ReappliesModeAndModTime(t *testing.T) {
 	}
 }
 
+// TestRestoreFiles_ReplacesReadOnlyDestination covers D19b: restoring onto a
+// machine where the target file already exists carrying the Windows
+// ReadOnly attribute (mapped by Go to a 0444-style mode with the owner-write
+// bit cleared) must succeed, mirroring restore.go's D19 fix for the ordinary
+// restore path (TestMoveFile_ReadOnlyDestination_CopyFallbackPath). BMR's
+// destination-creation happens inside whichever providers.BackupProvider is
+// in use (the HTTP recoveryDownloadProvider in production,
+// providers.LocalProvider here in tests) — restoreFiles itself must clear
+// the read-only bit and retry the download once, since neither provider
+// implementation is something this package may edit. Before the fix, a
+// non-root user cannot open a 0444 file for writing on any OS, so this test
+// is RED prior to the fix.
+func TestRestoreFiles_ReplacesReadOnlyDestination(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file mode bits; this test requires a non-root user")
+	}
+
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-readonly-dest"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "readonly.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "readonly")
+	content := []byte("new-bytes")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "readonly.txt")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("pre-create destination: %v", err)
+	}
+	if err := os.Chmod(targetPath, 0o444); err != nil {
+		t.Fatalf("chmod destination read-only: %v", err)
+	}
+
+	manifest := &snapshotManifest{
+		ID:    snapshotID,
+		Files: []manifestFile{{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content))}},
+		Size:  int64(len(content)),
+	}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+
+	got, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		t.Fatalf("read restored destination: %v", readErr)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("destination content = %q, want %q", got, content)
+	}
+}
+
+// TestRestoreFiles_ReadOnlySourceModeReappliedOverReadOnlyDestination proves
+// that once D19b's create-retry lets the download land, the existing
+// mode-reapply step (~restoreFiles:408, O20) still puts the read-only bit
+// BACK: a source file captured as read-only in the manifest must end up
+// read-only again at the destination, not merely writable because the fix
+// had to clear that bit to get the bytes down. Uses the same pre-existing
+// read-only destination as TestRestoreFiles_ReplacesReadOnlyDestination.
+func TestRestoreFiles_ReadOnlySourceModeReappliedOverReadOnlyDestination(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file mode bits; this test requires a non-root user")
+	}
+
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-readonly-src-and-dest"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "readonly.gz"))
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "readonly")
+	content := []byte("new-bytes")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	targetPath := filepath.Join(restoreRoot, "readonly.txt")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("pre-create destination: %v", err)
+	}
+	if err := os.Chmod(targetPath, 0o444); err != nil {
+		t.Fatalf("chmod destination read-only: %v", err)
+	}
+
+	manifest := &snapshotManifest{
+		ID:    snapshotID,
+		Files: []manifestFile{{SourcePath: targetPath, BackupPath: backupPath, Size: int64(len(content)), Mode: 0o444}},
+		Size:  int64(len(content)),
+	}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if filesRestored != 1 || failedFiles != 0 {
+		t.Fatalf("filesRestored=%d failedFiles=%d, want 1/0 (warnings: %v)", filesRestored, failedFiles, warnings)
+	}
+
+	info, statErr := os.Stat(targetPath)
+	if statErr != nil {
+		t.Fatalf("stat restored destination: %v", statErr)
+	}
+	if info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("destination mode = %o, want owner-write bit cleared (read-only) after restore", info.Mode().Perm())
+	}
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o444 {
+			t.Errorf("mode = %o, want 0444", info.Mode().Perm())
+		}
+	}
+}
+
 // TestRestoreFiles_CapsFidelityWarningsWithoutCountingAsFailedFiles proves
 // the silent-failure review's item 2 fix: the chmod/chtimes post-restore
 // fidelity warnings (added alongside O20's mode/mtime reapply) bypassed

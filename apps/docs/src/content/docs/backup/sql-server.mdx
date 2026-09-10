@@ -1,6 +1,6 @@
 ---
 title: SQL Server Backup
-description: Discover SQL Server instances and run full, differential, and transaction log backups with point-in-time recovery.
+description: Discover SQL Server instances and run full, differential, and transaction log backups.
 sidebar:
   order: 8
   label: "SQL Server"
@@ -8,7 +8,11 @@ sidebar:
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-Breeze can discover, back up, and restore SQL Server databases directly — no third-party SQL backup tool required. The agent runs native `sqlcmd` commands to produce standard `.bak` and `.trn` backup files.
+Breeze can discover, back up, and restore SQL Server databases directly — no third-party SQL backup tool required. The agent connects as its own Windows service identity and runs native `sqlcmd` commands to produce standard `.bak` and `.trn` backup files; the `sqlcmd` shipped with SQL Server 2022 and 2025 is supported.
+
+<Aside type="caution" title="Windows Authentication only">
+  Breeze always connects locally over Windows Authentication, as the agent's service identity (**LocalSystem**) — there is no SQL Authentication option. Instances configured for SQL-Authentication-only logins are not supported. Grant the service identity **sysadmin**, or the combination of **db_backupoperator** + **dbcreator** + **VIEW SERVER STATE**, so it can back up and restore databases.
+</Aside>
 
 ---
 
@@ -20,9 +24,13 @@ Breeze can discover, back up, and restore SQL Server databases directly — no t
 3. Discovered instances appear in the list.
 </Steps>
 
+<Aside type="caution">
+  Discovery is not automatic. A profile protects every database on a discovered instance, but only against the **discovered** inventory — scheduled runs don't rescan the instance themselves. Run **Discover Instances** again after creating a new database, or it won't be backed up until you do. There's also no per-database pick-list: a profile protects everything minus whatever you exclude.
+</Aside>
+
 Each instance shows:
 - Instance name, version, and edition
-- Authentication type and port
+- Authentication type and port — informational only; Breeze always connects locally over Windows Authentication regardless of what's shown here
 - Status (Online / Offline)
 
 Expand an instance to see its databases, including:
@@ -35,7 +43,7 @@ Expand an instance to see its databases, including:
 
 ## Backup Types
 
-SQL Server supports three backup types that work together for point-in-time recovery:
+SQL Server supports three backup types:
 
 | Type | What it captures | File extension | Frequency |
 |------|-----------------|----------------|-----------|
@@ -43,11 +51,9 @@ SQL Server supports three backup types that work together for point-in-time reco
 | **Differential** | Changes since last full backup | `.bak` | Daily (typical) |
 | **Transaction Log** | Log entries since last log backup | `.trn` | Every 15–60 min (typical) |
 
-Breeze tracks the **LSN (Log Sequence Number) chain** across backups so you can restore to any point in time covered by the chain.
-
-### Backup Chain View
-
-The SQL Server tab shows the backup chain for each database — a timeline of full, differential, and log backups color-coded by type. This helps you verify chain continuity and identify gaps.
+<Aside type="caution" title="No chain orchestration">
+  Breeze doesn't track an LSN chain or offer a point-in-time picker. Each restore is a single `RESTORE DATABASE ... FROM DISK` against **one** backup file — there's no automatic full → differential → log replay. To reconstruct a specific point in time, restore the full backup `WITH NORECOVERY`, then apply the differential/log backups in order yourself (outside Breeze), finishing the last one `WITH RECOVERY`.
+</Aside>
 
 ---
 
@@ -57,17 +63,18 @@ The SQL Server tab shows the backup chain for each database — a timeline of fu
 1. On the **SQL Server** tab, find the database you want to back up.
 2. Click the **Backup** action.
 3. Select the backup type: **Full**, **Differential**, or **Log**.
-4. Specify the output path for the backup file.
-5. Optionally select a storage configuration for cloud upload.
-6. Confirm to start the backup.
+4. Optionally select a storage configuration for cloud upload.
+5. Confirm to start the backup.
 </Steps>
+
+There's no field to choose the output path. Breeze runs `BACKUP DATABASE ... TO DISK` into the instance's **default backup directory**, under a `breeze` subfolder, then uploads the resulting `.bak`/`.trn` file and deletes the local copy — it doesn't accumulate on the SQL Server host. Backups are compressed except on **Express Edition**, which doesn't support backup compression.
 
 ### Scheduled Backups
 
-Create a [backup policy](/backup/policies/) with the **MSSQL** mode to automate SQL Server backups. Like Hyper-V, MSSQL mode uses **all-by-default targeting** — newly discovered databases are included automatically. Use exclude lists for databases that don't need backup (e.g., `tempdb`).
+Create a [backup policy](/backup/policies/) with the **MSSQL** mode to automate SQL Server backups. Like Hyper-V, MSSQL mode uses **all-by-default targeting** against the discovered inventory — see the discovery note above. Use exclude lists for databases that don't need backup (e.g., `tempdb`).
 
 <Aside type="note">
-  For full point-in-time recovery, schedule a combination: weekly full + daily differential + frequent log backups. The backup policy schedule controls the primary backup type; you may want separate policies for different backup frequencies.
+  Scheduling a combination — weekly full + daily differential + frequent log — gives you the raw backups needed to reconstruct a point in time, but Breeze doesn't chain them for you; see the caution in [Backup Types](#backup-types) above. The backup policy schedule controls the primary backup type; you may want separate policies for different backup frequencies.
 </Aside>
 
 ---
@@ -78,14 +85,14 @@ Create a [backup policy](/backup/policies/) with the **MSSQL** mode to automate 
 1. On the **SQL Server** tab, find the database and click **Restore**.
 2. The restore dialog walks you through:
    - **Source** — select the instance and source database
-   - **Restore point** — choose **Latest** (most recent backup) or **Point-in-time** (pick a specific date and time using the datetime picker)
-   - **Target database** — name of the database to restore into (can be a new name to restore alongside the original)
+   - **Backup to restore** — pick one specific backup (full, differential, or log) from the list; there's no point-in-time picker — each restore applies exactly one backup file
+   - **Target database** — name of the database to restore into; it can differ from the source name
    - **No Recovery mode** — optionally leave the database in a restoring state so you can apply additional log backups before bringing it online
 3. Review and confirm.
 </Steps>
 
 <Aside type="caution">
-  Restoring a database overwrites the target database if it already exists. To preserve the original, restore into a differently-named database and verify before swapping.
+  Restoring a database overwrites the target database if it already exists (`WITH REPLACE`). Restoring under a **different** name while the source database is still attached is not supported today — Breeze doesn't relocate the backup's data/log file paths (no `MOVE` clause), so the new database's files would collide with the original's. To restore a copy alongside the original, restore onto a different **instance** instead.
 </Aside>
 
 ---

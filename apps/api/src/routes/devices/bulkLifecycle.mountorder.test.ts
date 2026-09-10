@@ -107,6 +107,7 @@ vi.mock('../agents/enrollment', () => ({
 // everything past the handler entry is stubbed — reaching the handler at all
 // is the assertion.
 vi.mock('../../jobs/deviceBulkPurge', () => ({
+  deviceBulkPurgeJobId: vi.fn((jobId: string) => `device-bulk-purge-v2-${jobId}`),
   enqueueDeviceBulkPurge: vi.fn(async () => ({ id: 'device-bulk-purge-job' })),
   getDeviceBulkPurgeQueue: vi.fn(() => ({ getJob: vi.fn(async () => null) })),
 }));

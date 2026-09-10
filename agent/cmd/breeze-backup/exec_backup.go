@@ -107,6 +107,13 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
 		SystemImage    bool                     `json:"systemImage"`
+		// BaseSnapshotID/PublishLeaseExpiresAt implement the D18 §3.1
+		// server-owned-base protocol. BaseSnapshotID's presence in the JSON
+		// (vs. entirely absent) is the protocol switch: a *string stays nil
+		// when the field is omitted (older server, legacy bucket-listing
+		// mode) and becomes non-nil (possibly pointing at "") when present.
+		BaseSnapshotID        *string `json:"baseSnapshotId"`
+		PublishLeaseExpiresAt string  `json:"publishLeaseExpiresAt"`
 		// Vss lets the server force VSS on/off for this run. Not currently sent
 		// by apps/api/src/jobs/backupWorker.ts (a future policy toggle can); when
 		// absent the agent defaults it itself below.
@@ -117,6 +124,38 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	}
 	if p.ProviderConfig == nil || p.Provider == "" {
 		return nil, nil
+	}
+	var publishLeaseExpiresAt time.Time
+	if p.PublishLeaseExpiresAt != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, p.PublishLeaseExpiresAt)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt %q: %w", p.PublishLeaseExpiresAt, parseErr)
+		}
+		publishLeaseExpiresAt = parsed
+	}
+	// D18 §3.1 (P1 fix): publishLeaseExpiresAt is sent for EVERY
+	// server-owned-mode run — base or an explicit full run — never only
+	// when a base was actually chosen. A present baseSnapshotId (server-
+	// owned mode is ON, even if it points at "") with a missing, empty, or
+	// unparseable-to-zero lease means the dispatching server is violating
+	// its own protocol. Reject the WHOLE payload here rather than silently
+	// running server-owned mode ungated: main.go's caller turns this error
+	// into `fail(err.Error())`, so the backup_run command fails outright
+	// and uploads nothing.
+	if p.BaseSnapshotID != nil && publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: baseSnapshotId is present (server-owned mode) but publishLeaseExpiresAt is missing, empty, or zero")
+	}
+	// Symmetric defense-in-depth (review finding): the leaseGate installs
+	// on BaseSnapshotID != nil alone (backup.go), never on the lease value,
+	// so a payload that sent a non-zero lease WITHOUT baseSnapshotId would
+	// otherwise silently fall back to fully-unfenced legacy mode instead of
+	// getting the publish fence its own lease implies it wants. This can
+	// only happen if a dispatching server has a bug (the protocol ties the
+	// two together — baseSnapshotId's presence, even as "", IS the
+	// server-owned-mode switch per D18 §3.1), but reject it loudly here
+	// rather than silently downgrading to legacy/ungated.
+	if p.BaseSnapshotID == nil && !publishLeaseExpiresAt.IsZero() {
+		return nil, fmt.Errorf("invalid backup_run payload: publishLeaseExpiresAt is present but baseSnapshotId is absent (server-owned mode requires both fields together)")
 	}
 	// vssEnabled defaults to on for server-dispatched Windows file backups so
 	// locked files (open documents, DB files) aren't silently skipped — VSS
@@ -152,11 +191,13 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		// sets it explicitly): the agent must never prune remote storage itself
 		// and race the server's GFS/legal-hold/immutability authority.
 		return backup.NewBackupManager(backup.BackupConfig{
-			Provider:           provider,
-			SystemStateEnabled: true,
-			VSSEnabled:         vssEnabled,
-			AgentID:            helperAgentID,
-			AgentVersion:       version,
+			Provider:              provider,
+			SystemStateEnabled:    true,
+			VSSEnabled:            vssEnabled,
+			AgentID:               helperAgentID,
+			AgentVersion:          version,
+			BaseSnapshotID:        p.BaseSnapshotID,
+			PublishLeaseExpiresAt: publishLeaseExpiresAt,
 		}), nil
 	}
 	if len(p.Paths) == 0 {
@@ -170,12 +211,14 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
 	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
-		Provider:     provider,
-		Paths:        p.Paths,
-		Retention:    0,
-		VSSEnabled:   vssEnabled,
-		AgentID:      helperAgentID,
-		AgentVersion: version,
+		Provider:              provider,
+		Paths:                 p.Paths,
+		Retention:             0,
+		VSSEnabled:            vssEnabled,
+		AgentID:               helperAgentID,
+		AgentVersion:          version,
+		BaseSnapshotID:        p.BaseSnapshotID,
+		PublishLeaseExpiresAt: publishLeaseExpiresAt,
 	}), nil
 }
 
@@ -225,6 +268,46 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 	default:
 		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
 	}
+}
+
+// managerFromProviderPayload builds an ephemeral BackupManager carrying only a
+// provider (no paths/retention/VSS) from a provider-backed command payload's
+// provider + providerConfig, reusing restoreProviderFromPayload's parsing.
+//
+// D20b item B: mssql_backup/hyperv_backup/hyperv_restore only ever call
+// mgr.GetProvider() and mgr.GetStagingDir() (see execMSSQLBackup,
+// execHypervRestore, etc.) — never mgr.RunBackupContext — so unlike
+// managerFromBackupRunPayload (which requires paths, or systemImage,
+// because backup_run actually drives a full backup through the manager)
+// this builder needs nothing but a provider. GetStagingDir() on a
+// zero-value StagingDir returns "", and every remaining GetStagingDir()
+// caller already passes that straight to os.MkdirTemp, which treats "" as
+// "use the OS default temp dir" — so an unset StagingDir here is safe, not
+// a bug.
+//
+// mssql_restore/mssql_verify are the one exception as of D23b:
+// resolveMSSQLBackupArtifact no longer touches GetStagingDir() at all — it
+// downloads into mssql.ResolveRestoreTargetDir's directory instead, the
+// same SQL-Server-writable location RunBackup writes into (D23), since
+// RESTORE/RESTORE VERIFYONLY are read by the SQL Server service account,
+// not the Breeze helper. This builder is still fine for them: they only
+// need mgr.GetProvider().
+//
+// Returns (nil, nil) when the payload carries no provider config, so the
+// caller can produce its own command-specific "not configured" message
+// instead of a generic one.
+func managerFromProviderPayload(payload json.RawMessage) (*backup.BackupManager, error) {
+	provider, err := restoreProviderFromPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, nil
+	}
+	return backup.NewBackupManager(backup.BackupConfig{
+		Provider: provider,
+		AgentID:  helperAgentID,
+	}), nil
 }
 
 // restoreProviderForCommand resolves the provider to use for restore/verify/

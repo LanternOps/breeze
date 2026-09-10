@@ -63,6 +63,7 @@ vi.mock('./redis', () => ({
 
 import {
   checkGuardrails,
+  checkAgentGuardrails,
   checkToolPermission,
   checkPermissionRequirement,
   checkPermissionRequirements,
@@ -377,14 +378,74 @@ describe('checkGuardrails — fleet tool tier escalation', () => {
       expect(result.description).toBe(expected);
     });
 
-    it('prefers payload.serviceName over payload.name when both are present', () => {
+    it('prefers the dispatch-selected payload.name when both names are present', () => {
       const result = checkGuardrails('execute_command', {
         deviceId: DEVICE_ID,
         commandType: 'restart_service',
-        payload: { serviceName: 'Spooler', name: 'ignored' },
+        payload: { serviceName: 'Spooler', name: 'selected-service' },
       });
-      expect(result.description).toBe('Restart service "Spooler" on device 74e15ef8...');
+      expect(result.description).toBe('Restart service "selected-service" on device 74e15ef8...');
     });
+
+    it('keeps every raw service alias subject to protected-resource denial', () => {
+      vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+      try {
+        const policy = {
+          enabled: true, mode: 'act' as const, toolAllowlist: ['execute_command'],
+          protectedResources: { services: ['Protected'], paths: [], registryKeys: [], deviceTags: [] },
+          deviceSiteId: 'site-a', deviceId: DEVICE_ID,
+        };
+        for (const payload of [
+          { name: 'Chosen', serviceName: 'Protected' },
+          { name: 'Protected', serviceName: 'Alternate' },
+          { name: 'Chosen', service: 'Protected' },
+        ]) {
+          const result = checkAgentGuardrails('execute_command', { deviceId: DEVICE_ID, commandType: 'restart_service', payload }, policy);
+          expect(result.allowed).toBe(false);
+          expect(result.reason).toContain('service "Protected" is protected');
+        }
+        const positive = checkAgentGuardrails('execute_command', {
+          deviceId: DEVICE_ID, commandType: 'restart_service', payload: { name: 'Chosen', serviceName: 'Alternate' },
+        }, policy);
+        expect(positive.disposition).toBe('propose');
+        expect(positive.allowed).toBe(false);
+        expect(positive.requiresApproval).toBe(false);
+        expect(positive.reason).toBe('Tool "execute_command" is not act-eligible; recorded as a proposal');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    const serviceSelectionCases: Array<{ label: string; payload: Record<string, unknown>; display: string | null }> = [
+      { label: 'both strings', payload: { name: 'Chosen', serviceName: 'Alternate' }, display: 'Chosen' },
+      { label: 'name only', payload: { name: 'Chosen' }, display: 'Chosen' },
+      { label: 'alias only', payload: { serviceName: 'Alternate' }, display: 'Alternate' },
+      { label: 'undefined name', payload: { name: undefined, serviceName: 'Alternate' }, display: 'Alternate' },
+      { label: 'empty name', payload: { name: '', serviceName: 'Alternate' }, display: null },
+      { label: 'blank name', payload: { name: '   ', serviceName: 'Alternate' }, display: null },
+      { label: 'null name', payload: { name: null, serviceName: 'Alternate' }, display: null },
+      { label: 'false name', payload: { name: false, serviceName: 'Alternate' }, display: null },
+      { label: 'object name', payload: { name: { nested: 'Chosen' }, serviceName: 'Alternate' }, display: null },
+      { label: 'array name', payload: { name: ['Chosen'], serviceName: 'Alternate' }, display: null },
+      { label: 'zero name is display only', payload: { name: 0, serviceName: 'Alternate' }, display: '0' },
+      { label: 'finite name is display only', payload: { name: 42, serviceName: 'Alternate' }, display: '42' },
+      { label: 'padded display', payload: { name: ' Chosen ', serviceName: 'Alternate' }, display: 'Chosen' },
+      { label: 'nonfinite inert helper value', payload: { name: Infinity, serviceName: 'Alternate' }, display: null },
+      { label: 'NaN inert helper value', payload: { name: NaN, serviceName: 'Alternate' }, display: null },
+      { label: 'absent names', payload: {}, display: null },
+      { label: 'unsupported fallback', payload: { serviceName: false }, display: null },
+    ];
+    for (const [commandType, verb] of [['start_service', 'Start'], ['stop_service', 'Stop'], ['restart_service', 'Restart']]) {
+      it.each(serviceSelectionCases)(`${commandType}: $label preserves selected-value display and input`, ({ payload, display }) => {
+        const original = structuredClone(payload);
+        const input = Object.freeze({ deviceId: DEVICE_ID, commandType, payload: Object.freeze(payload) });
+        const result = checkGuardrails('execute_command', input);
+        expect(result.description).toBe(display === null
+          ? `Execute "${commandType}" command on device 74e15ef8...`
+          : `${verb} service "${display}" on device 74e15ef8...`);
+        expect(input.payload).toEqual(original);
+      });
+    }
 
     it('file_read names the target path', () => {
       const result = checkGuardrails('execute_command', {

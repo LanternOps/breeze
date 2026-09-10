@@ -48,6 +48,16 @@ func TestRunRestore_ReturnsNotSupported(t *testing.T) {
 	}
 }
 
+func TestResolveRestoreTargetDir_ReturnsNotSupported(t *testing.T) {
+	dir, err := ResolveRestoreTargetDir("MSSQLSERVER")
+	if !errors.Is(err, ErrMSSQLNotSupported) {
+		t.Fatalf("expected ErrMSSQLNotSupported, got %v", err)
+	}
+	if dir != "" {
+		t.Fatalf("expected empty dir, got %q", dir)
+	}
+}
+
 func TestVerifyBackup_ReturnsNotSupported(t *testing.T) {
 	result, err := VerifyBackup("MSSQLSERVER", "/tmp/backup.bak")
 	if !errors.Is(err, ErrMSSQLNotSupported) {

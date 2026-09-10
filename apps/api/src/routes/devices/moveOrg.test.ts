@@ -47,11 +47,14 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: requireMfaMock,
 }));
 
-vi.mock('./helpers', () => ({
-  getDeviceWithOrgAndSiteCheck: vi.fn(),
-  SITE_ACCESS_DENIED: siteDenied,
-  stripSensitiveDeviceFields: (d: any) => d,
-}));
+vi.mock('./helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./helpers')>();
+  return {
+    ...actual,
+    getDeviceWithOrgAndSiteCheck: vi.fn(),
+    SITE_ACCESS_DENIED: siteDenied,
+  };
+});
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),

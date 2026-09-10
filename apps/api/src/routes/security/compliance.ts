@@ -23,12 +23,14 @@ import {
   parseLocalAdminSummary,
   parseEncryptionVolumes
 } from './helpers';
+import { requireSecurityReadAccess } from './readAuthorization';
 
 export const complianceRoutes = new Hono();
 
 complianceRoutes.get(
   '/trends',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', trendsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -67,6 +69,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/firewall',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', firewallQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -122,6 +125,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/encryption',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', encryptionQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -223,6 +227,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/password-policy',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', passwordPolicyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
@@ -291,6 +296,7 @@ complianceRoutes.get(
 complianceRoutes.get(
   '/admin-audit',
   requireScope('organization', 'partner', 'system'),
+  requireSecurityReadAccess,
   zValidator('query', adminAuditQuerySchema),
   async (c) => {
     const auth = c.get('auth');

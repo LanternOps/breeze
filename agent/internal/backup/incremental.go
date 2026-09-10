@@ -2,7 +2,10 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 
@@ -93,6 +96,73 @@ func previousManifest(ctx context.Context, provider providers.BackupProvider, id
 	return nil, fmt.Sprintf(
 		"no matching previous snapshot for this backup identity (%d of %d candidate(s) belonged to a different device/run/destination)",
 		skippedForeign, len(snapshots))
+}
+
+// fetchServerOwnedBase downloads and validates the manifest for
+// baseSnapshotID as this run's incremental-dedupe base, per the D18
+// server-owned-base protocol (§3.1). Unlike previousManifest (legacy
+// bucket-listing mode), the server has already chosen the base id — this
+// function only fetches and validates it belongs to this device/
+// destination/run-kind (the same D6 identity guard as previousManifest); it
+// never lists the bucket. Returns (nil, reason) on ANY failure — empty id,
+// download error, decode error, or identity mismatch — collapsing to a full
+// run, exactly like previousManifest's fail-open contract. reason is always
+// non-empty in that case so callers can log it directly.
+func fetchServerOwnedBase(ctx context.Context, provider providers.BackupProvider, baseSnapshotID, identity string) (*Snapshot, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if baseSnapshotID == "" {
+		return nil, "server selected no base for this run (full run)"
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Sprintf("context already done: %v", err)
+	}
+	if identity == "" {
+		return nil, "this run has no known backup identity, cannot safely validate the server-selected base"
+	}
+
+	manifestKey := path.Join(snapshotRootDir, baseSnapshotID, snapshotManifestKey)
+	tempFile, err := os.CreateTemp("", "base-manifest-*.json")
+	if err != nil {
+		return nil, fmt.Sprintf("failed to create temp file for base manifest: %v", err)
+	}
+	tempPath := tempFile.Name()
+	_ = tempFile.Close()
+	// Best-effort: tempPath is an OS temp file already read (or about to
+	// fail trying) — a leftover on Remove failure is harmless temp-dir
+	// clutter, not a correctness issue worth surfacing.
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if err := provider.Download(manifestKey, tempPath); err != nil {
+		// Deliberately do NOT format the provider error's message (%v/
+		// .Error()) into this reason: it is logged verbatim by the caller
+		// (backup.go), and a storage-provider error can echo back request/
+		// signing details from a credentialed client (S3Provider holds the
+		// account's secret access key) — CodeQL's go/clear-text-logging
+		// flags exactly this shape. errors.Is(err, providers.ErrObjectNotFound)
+		// still distinguishes the common "never published" case; anything
+		// else is reported by error TYPE only, which carries no request or
+		// credential content.
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, fmt.Sprintf("server-selected base manifest %s not found", manifestKey)
+		}
+		return nil, fmt.Sprintf("failed to download server-selected base manifest %s (%T)", manifestKey, err)
+	}
+	data, err := os.ReadFile(tempPath)
+	if err != nil {
+		return nil, fmt.Sprintf("failed to read downloaded base manifest: %v", err)
+	}
+	var candidate Snapshot
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		return nil, fmt.Sprintf("failed to decode base manifest %s: %v", manifestKey, err)
+	}
+	if candidate.BackupIdentity != identity {
+		return nil, fmt.Sprintf(
+			"server-selected base %s has BackupIdentity %q, this run's identity is %q — refusing to use a foreign snapshot as a dedupe base (D6)",
+			baseSnapshotID, candidate.BackupIdentity, identity)
+	}
+	return &candidate, ""
 }
 
 // buildPreviousIndex converts a previous snapshot's file list into the

@@ -99,6 +99,9 @@ export const softwareDeployments = pgTable('software_deployments', {
   scheduledAt: timestamp('scheduled_at'),
   maintenanceWindowId: uuid('maintenance_window_id').references(() => maintenanceWindows.id),
   options: jsonb('options'),
+  // SHA-256 of the executable dependency fields approved at deployment
+  // creation. Nullable only for legacy rows, which dispatch/retry fail closed.
+  dependencyFingerprint: varchar('dependency_fingerprint', { length: 64 }),
   createdBy: uuid('created_by').references(() => users.id),
   // Dispatch claim marker: set when the per-device dispatch actually runs.
   // The scheduler claims rows via `SET dispatched_at = now() WHERE dispatched_at IS NULL`

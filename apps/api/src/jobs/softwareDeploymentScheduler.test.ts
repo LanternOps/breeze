@@ -10,6 +10,7 @@ const {
   maintenanceWindowsTable,
   softwareVersionsTable,
   softwareCatalogTable,
+  softwareInstallMethodsTable,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
@@ -24,6 +25,7 @@ const {
     scheduledAt: 'software_deployments.scheduled_at',
     maintenanceWindowId: 'software_deployments.maintenance_window_id',
     options: 'software_deployments.options',
+    dependencyFingerprint: 'software_deployments.dependency_fingerprint',
     createdBy: 'software_deployments.created_by',
     dispatchedAt: 'software_deployments.dispatched_at',
   },
@@ -50,6 +52,13 @@ const {
     name: 'software_catalog.name',
     integrationProvider: 'software_catalog.integration_provider',
   },
+  softwareInstallMethodsTable: {
+    id: 'software_install_methods.id',
+    catalogId: 'software_install_methods.catalog_id',
+    platform: 'software_install_methods.platform',
+    kind: 'software_install_methods.kind',
+    packageId: 'software_install_methods.package_id',
+  },
 }));
 
 vi.mock('bullmq', () => ({
@@ -74,6 +83,7 @@ vi.mock('../db/schema', () => ({
   maintenanceWindows: maintenanceWindowsTable,
   softwareVersions: softwareVersionsTable,
   softwareCatalog: softwareCatalogTable,
+  softwareInstallMethods: softwareInstallMethodsTable,
 }));
 
 vi.mock('../services/redis', () => ({
@@ -100,6 +110,7 @@ import {
   SCHEDULER_INTERVAL_MS,
   type DueDeploymentCandidate,
 } from './softwareDeploymentScheduler';
+import { fingerprintSoftwareVersionDependency } from '../services/softwareDependencyIdentity';
 
 // ---------------------------------------------------------------------------
 // Chain helpers (staleCommandReaper.test.ts pattern)
@@ -145,6 +156,7 @@ function scheduledCandidate(overrides: Partial<DueDeploymentCandidate> = {}): Du
     scheduleType: 'scheduled',
     scheduledAt: new Date(Date.now() - 5 * MINUTE),
     options: null,
+    dependencyFingerprint: fingerprintSoftwareVersionDependency(versionRecord, catalogItem),
     createdBy: 'user-1',
     windowStatus: null,
     windowStartTime: null,
@@ -162,6 +174,7 @@ function maintenanceCandidate(overrides: Partial<DueDeploymentCandidate> = {}): 
     scheduleType: 'maintenance_window',
     scheduledAt: null,
     options: null,
+    dependencyFingerprint: fingerprintSoftwareVersionDependency(versionRecord, catalogItem),
     createdBy: null,
     windowStatus: 'scheduled',
     windowStartTime: new Date(now - 10 * MINUTE),
@@ -170,7 +183,18 @@ function maintenanceCandidate(overrides: Partial<DueDeploymentCandidate> = {}): 
   };
 }
 
-const versionRecord = { id: 'ver-1', catalogId: 'cat-1', version: '1.0.0' };
+const versionRecord = {
+  id: 'ver-1',
+  catalogId: 'cat-1',
+  version: '1.0.0',
+  downloadUrl: 'https://downloads.example.test/app.exe',
+  s3Key: null,
+  checksum: null,
+  originalFileName: 'app.exe',
+  fileType: 'exe',
+  silentInstallArgs: '/S',
+  detectionRules: null,
+};
 const catalogItem = { id: 'cat-1', name: 'TestApp', integrationProvider: null };
 
 /**
@@ -346,6 +370,89 @@ describe('runSoftwareDeploymentSchedulerTick', () => {
         markDispatched: false,
       }),
     );
+  });
+
+  it('fails closed when a scheduled version no longer matches its approved dependency', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      scheduledCandidate({ dependencyFingerprint: 'approved-version-fingerprint' }),
+    ]));
+    updateMock
+      .mockReturnValueOnce(updChain([{ id: 'dep-1' }]))
+      .mockReturnValueOnce(updChain());
+    selectMock
+      .mockReturnValueOnce(selectChain([{ deviceId: 'dev-1' }]))
+      .mockReturnValueOnce(selectChain([{
+        ...versionRecord,
+        dependencyFingerprint: 'changed-version-fingerprint',
+      }]))
+      .mockReturnValueOnce(selectChain([catalogItem]));
+
+    const result = await runSoftwareDeploymentSchedulerTick();
+
+    expect(result).toEqual({ claimed: 1, skipped: 0, errors: 0 });
+    expect(buildAndDispatchMock).not.toHaveBeenCalled();
+    expect(updateSetCalls).toEqual([
+      expect.objectContaining({ dispatchedAt: expect.any(Date) }),
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: expect.stringMatching(/dependency changed/i),
+      }),
+    ]);
+  });
+
+  it('fails closed when a scheduled install method no longer matches its approved package', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      scheduledCandidate({
+        softwareVersionId: null,
+        installMethodId: 'method-1',
+        dependencyFingerprint: 'approved-method-fingerprint',
+      }),
+    ]));
+    updateMock
+      .mockReturnValueOnce(updChain([{ id: 'dep-1' }]))
+      .mockReturnValueOnce(updChain());
+    selectMock
+      .mockReturnValueOnce(selectChain([{ deviceId: 'dev-1' }]))
+      .mockReturnValueOnce(selectChain([{
+        id: 'method-1',
+        catalogId: 'cat-1',
+        platform: 'windows',
+        kind: 'winget',
+        packageId: 'Substituted.Package',
+        dependencyFingerprint: 'changed-method-fingerprint',
+      }]))
+      .mockReturnValueOnce(selectChain([catalogItem]));
+
+    const result = await runSoftwareDeploymentSchedulerTick();
+
+    expect(result).toEqual({ claimed: 1, skipped: 0, errors: 0 });
+    expect(buildAndDispatchMock).not.toHaveBeenCalled();
+    expect(updateSetCalls).toEqual([
+      expect.objectContaining({ dispatchedAt: expect.any(Date) }),
+      expect.objectContaining({
+        status: 'failed',
+        errorMessage: expect.stringMatching(/dependency changed/i),
+      }),
+    ]);
+  });
+
+  it('fails a legacy scheduled deployment closed when it has no approved fingerprint', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      scheduledCandidate({ dependencyFingerprint: null }),
+    ]));
+    updateMock
+      .mockReturnValueOnce(updChain([{ id: 'dep-1' }]))
+      .mockReturnValueOnce(updChain());
+    queueHappyPathSelects(['dev-1']);
+
+    const result = await runSoftwareDeploymentSchedulerTick();
+
+    expect(result).toEqual({ claimed: 1, skipped: 0, errors: 0 });
+    expect(buildAndDispatchMock).not.toHaveBeenCalled();
+    expect(updateSetCalls[1]).toEqual(expect.objectContaining({
+      status: 'failed',
+      errorMessage: expect.stringMatching(/predates dependency pinning/i),
+    }));
   });
 
   it('dispatches nothing when the claim race is lost (no row returned)', async () => {

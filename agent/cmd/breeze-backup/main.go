@@ -769,6 +769,73 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			// "backup not configured" made Stop a silent no-op for every
 			// policy-managed device.
 			return ok(fmt.Sprintf(`{"stopped":%t}`, commandCanceller.cancelAll()))
+		// D20b item B: mssql_backup/hyperv_backup/mssql_restore/hyperv_restore/
+		// mssql_verify used to fall straight through to the generic "backup not
+		// configured on this device" below whenever the helper had no
+		// agent.yaml manager — the NORMAL state for every policy-managed
+		// device, since the API dispatches these on-demand and profile
+		// commands with the destination baked into the payload instead
+		// (managerFromBackupRunPayload does the equivalent for backup_run).
+		// managerFromProviderPayload builds the same kind of ephemeral,
+		// provider-only manager from THIS payload's provider+providerConfig.
+		case "mssql_backup":
+			payloadMgr, err := managerFromProviderPayload(req.Payload)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if payloadMgr == nil {
+				return fail("MSSQL backup requires a provider-backed backup destination, but the command payload carried no provider/providerConfig")
+			}
+			return execMSSQLBackup(req.Payload, payloadMgr)
+		case "hyperv_backup":
+			payloadMgr, err := managerFromProviderPayload(req.Payload)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if payloadMgr == nil {
+				return fail("Hyper-V backup requires a provider-backed backup destination, but the command payload carried no provider/providerConfig")
+			}
+			return execHypervBackup(req.Payload, payloadMgr)
+		case "mssql_restore":
+			// execMSSQLRestore already tolerates a nil manager (mgr == nil
+			// means no provider/staging base) and fails with the specific
+			// "backup provider is required" from resolveMSSQLBackupArtifact —
+			// no extra nil check needed here.
+			payloadMgr, err := managerFromProviderPayload(req.Payload)
+			if err != nil {
+				return fail(err.Error())
+			}
+			return execMSSQLRestore(req.Payload, payloadMgr)
+		case "hyperv_restore":
+			payloadMgr, err := managerFromProviderPayload(req.Payload)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if payloadMgr == nil {
+				return fail("Hyper-V restore requires a provider-backed backup destination, but the command payload carried no provider/providerConfig")
+			}
+			return execHypervRestore(req.Payload, payloadMgr)
+		case "mssql_verify":
+			// Same nil-tolerant handling as mssql_restore above.
+			payloadMgr, err := managerFromProviderPayload(req.Payload)
+			if err != nil {
+				return fail(err.Error())
+			}
+			return execMSSQLVerify(req.Payload, payloadMgr)
+		// D20c: hyperv_checkpoint/hyperv_vm_state don't take a *backup.BackupManager
+		// at all — execHypervCheckpoint/execHypervVMState's signatures are
+		// (payload json.RawMessage) only, unlike every other Hyper-V/MSSQL
+		// command here. They still fell through to the generic "backup not
+		// configured on this device" below because their command types were
+		// never added to this switch, even though they need no manager/provider
+		// to run — breaking VM start/stop/pause/resume and checkpoint
+		// create/delete/apply for every policy-managed Hyper-V host (mgr == nil
+		// is the normal state). mssql_discover/hyperv_discover are the same
+		// kind of manager-less command and were already routed correctly above.
+		case "hyperv_checkpoint":
+			return execHypervCheckpoint(req.Payload)
+		case "hyperv_vm_state":
+			return execHypervVMState(req.Payload)
 		default:
 			return fail("backup not configured on this device")
 		}

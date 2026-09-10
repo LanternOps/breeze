@@ -238,11 +238,14 @@ func TestRunBackupContext_StopPreservesRemotePrefixAndJournal(t *testing.T) {
 	}
 }
 
-// TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh proves
-// the full manager-level wiring for the stale-journal path: a journal older
-// than journalMaxAge is discarded, its remote prefix is best-effort cleaned
-// up, and the run proceeds fresh with a brand new snapshot ID.
-func TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh(t *testing.T) {
+// TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup proves the
+// D18 §3.5 fix directly: a journal older than journalMaxAge is discarded
+// and the run proceeds fresh with a brand new snapshot ID, but the STALE
+// journal's remote prefix is left untouched — no agent-side delete, ever,
+// for another run's (even an abandoned one's) prefix. GC's existing
+// manifest-less-prefix rule is the only thing that may eventually reclaim
+// it.
+func TestRunBackupContext_StaleJournalDiscardedWithoutRemoteCleanup(t *testing.T) {
 	restoreMaxAge := setJournalMaxAgeForTest(time.Millisecond)
 	defer restoreMaxAge()
 
@@ -271,9 +274,8 @@ func TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh(t *testin
 	staleSnapshotID := staleJournal.snapshotID
 	staleJournal.Abandon()
 
-	// Seed the "remote" with an object under the stale snapshot's prefix so
-	// cleanup has something observable to delete.
-	provider.files[path.Join(snapshotRootDir, staleSnapshotID, snapshotFilesDir, "orphan.gz")] = []byte("orphan")
+	orphanKey := path.Join(snapshotRootDir, staleSnapshotID, snapshotFilesDir, "orphan.gz")
+	provider.files[orphanKey] = []byte("orphan")
 
 	time.Sleep(2 * time.Millisecond) // the journal is now older than the shrunk maxAge
 
@@ -291,14 +293,16 @@ func TestRunBackupContext_StaleJournalCleansUpRemotePrefixAndRunsFresh(t *testin
 		t.Fatal("a stale journal must never resume the old snapshot ID")
 	}
 
-	found := false
+	// The only legitimate delete is the NEW run's own upload.lease heartbeat
+	// (Task 7), removed after its own successful publish — never anything
+	// tied to the discarded stale journal's snapshot id.
 	for _, key := range provider.deleteCalls {
-		if strings.Contains(key, staleSnapshotID) {
-			found = true
+		if !strings.HasSuffix(key, "/upload.lease") || strings.Contains(key, staleSnapshotID) {
+			t.Fatalf("expected deletes to be limited to the new run's own upload.lease, got: %s (all: %v)", key, provider.deleteCalls)
 		}
 	}
-	if !found {
-		t.Errorf("expected the stale snapshot's remote prefix to be cleaned up, deletes=%v", provider.deleteCalls)
+	if _, stillThere := provider.files[orphanKey]; !stillThere {
+		t.Fatal("the stale journal's orphan object must survive — the agent no longer cleans it up (GC's manifest-less rule is the backstop)")
 	}
 }
 
@@ -1126,17 +1130,14 @@ func TestRunBackup_SecondSnapshotIncludesUnmodifiedFiles(t *testing.T) {
 
 // Incremental dedupe (now unconditional) carries an unchanged file's bytes
 // forward under the OLDEST snapshot's prefix, and every newer manifest
-// references back into it. Agent-side retention pruning deletes an expired
-// snapshot's ENTIRE prefix with zero reference-awareness — so pruning the
-// oldest prefix while newer manifests still reference it turns every retained
-// snapshot into an unrestorable manifest of dangling references (a failure
-// that only surfaces at restore time). This proves the fix: with Retention:2
-// and 3+ incremental runs over an UNCHANGED source, the agent must NOT prune,
-// and a verify/restore from the NEWEST manifest must still succeed.
-//
-// Before the fix (DeleteSnapshotContext reached in the incremental path) this
-// test fails: the oldest prefix — holding the referenced object bytes — is
-// deleted, and VerifyIntegrity of the newest snapshot reports failed objects.
+// references back into it. Agent-side retention pruning of OTHER,
+// already-published snapshots has been removed entirely (D18 §3.5,
+// DeleteSnapshotContext deleted) — this test proves the server-only-
+// retention invariant holds end-to-end: with Retention:2 (now fully
+// ignored, see GetRetention's doc comment) and 3+ incremental runs over an
+// UNCHANGED source, the agent must NOT prune, and a verify/restore from the
+// NEWEST manifest must still succeed. (The narrower own-run-prefix cleanup
+// in abortStopped/abortSourceGone is unaffected and unrelated to this test.)
 func TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects(t *testing.T) {
 	tmpDir := t.TempDir()
 	// A single unchanged file: every run after the first references its bytes
@@ -1510,5 +1511,253 @@ func TestRunBackupContext_NoSecureJournalDir_RunsWithoutJournal(t *testing.T) {
 	journalPath := pathpkg.Join(os.TempDir(), journalFileName(backupIdentity(provider, []string{dir})))
 	if _, statErr := os.Lstat(journalPath); !os.IsNotExist(statErr) {
 		t.Fatalf("no journal file may be written to the world-writable temp dir, found %s (err=%v)", journalPath, statErr)
+	}
+}
+
+// listRecordingProvider wraps mockProvider and counts List calls, proving
+// goal 4 ("the agent never lists the bucket to choose a base") at the
+// RunBackupContext level — fetchServerOwnedBase's own unit tests (Task 2)
+// only prove it in isolation.
+type listRecordingProvider struct {
+	*mockProvider
+	listCalls int
+}
+
+func (p *listRecordingProvider) List(prefix string) ([]string, error) {
+	p.listCalls++
+	return p.mockProvider.List(prefix)
+}
+
+func TestRunBackupContext_ServerOwnedMode_NeverListsTheBucket(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "file1.txt", "content")
+	backing := newMockProvider()
+	provider := &listRecordingProvider{mockProvider: backing}
+
+	baseID := "snap-base"
+	mgr := NewBackupManager(BackupConfig{
+		Provider:       provider,
+		Paths:          []string{tmpDir},
+		StagingDir:     t.TempDir(),
+		AgentID:        "test-device",
+		BaseSnapshotID: &baseID,
+		// Well beyond publishMargin (1h) so this test doesn't flake on the
+		// margin boundary — it's proving "never lists the bucket", not the
+		// lease-expiry edge (that's TestLeaseGate_RefusesManifestPastLeaseMargin).
+		PublishLeaseExpiresAt: time.Now().Add(4 * time.Hour),
+	})
+
+	// Seed the server-selected base AFTER constructing mgr, using its own
+	// runBackupIdentity() so the identity guard (D6) matches exactly what
+	// this run will compute — see incremental.go's fetchServerOwnedBase.
+	base := &Snapshot{
+		ID:             baseID,
+		BackupIdentity: mgr.runBackupIdentity(),
+		Files:          []SnapshotFile{{SourcePath: "/prior.txt", BackupPath: "snapshots/snap-base/files/prior.txt.gz", Size: 3}},
+	}
+	storeManifest(t, backing, base)
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext failed: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusCompleted)
+	}
+	if provider.listCalls != 0 {
+		t.Fatalf("expected zero List calls in server-owned mode, got %d", provider.listCalls)
+	}
+}
+
+func TestRunBackupContext_ExpiredLease_RefusesToPublishManifest(t *testing.T) {
+	tmpDir := t.TempDir()
+	createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+
+	baseID := "" // full run — the lease is enforced for full runs too, not just incremental ones
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		Paths:                 []string{tmpDir},
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusFailed)
+	}
+	for key := range provider.files {
+		if isManifestPath(key) {
+			t.Fatalf("manifest was published despite an expired lease: %s", key)
+		}
+	}
+}
+
+// D18 §3.5: agent-side retention pruning is removed entirely. A
+// system-state-only run is the ONLY config shape that reaches the (now
+// removed) retention-prune branch pre-fix — incrementalDedupeActive is
+// false exactly when SystemStateEnabled && len(Paths)==0 (backup.go's
+// dedupe-active check) — so this is the config that actually exercises the
+// danger, unlike a Paths-configured run which never reaches that branch
+// either way.
+func TestBackupNeverDeletesRemoteObjects_RetentionConfigured(t *testing.T) {
+	// A fresh staging dir per invocation, not one shared across all 3 runs:
+	// RunBackupContext os.RemoveAll's the system-state staging dir it's
+	// handed at the end of every successful run (backup.go), so reusing one
+	// fixed path across iterations would make run #2 fail to stat it — a
+	// real collision with production cleanup behavior, not this test's
+	// concern (see the plan's Task 5 note that this bug was a plan defect).
+	svcContent := []byte("svc")
+	newStagingDir := func() string {
+		dir := t.TempDir()
+		if err := os.WriteFile(pathpkg.Join(dir, "services.txt"), svcContent, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		// D15 Wave 1: system state now publishes only what the manifest's
+		// Artifacts describe (publishSystemState), not whatever the file
+		// walk happened to see — a manifest with zero artifacts is a hard
+		// failure (RunBackupContext's "system state collection produced no
+		// artifacts" branch), so this fixture must declare the staged file
+		// as an artifact, matching TestRunBackup_SystemImage_NoPathsAllowed's
+		// pattern above.
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(svcContent)),
+			}},
+		}, newStagingDir(), nil
+	})
+
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		SystemStateEnabled: true,
+		Retention:          1, // ignored — see GetRetention's doc comment
+		StagingDir:         t.TempDir(),
+		AgentID:            "test-device",
+	})
+
+	for i := 0; i < 3; i++ {
+		if _, err := mgr.RunBackupContext(context.Background(), nil); err != nil {
+			t.Fatalf("RunBackupContext #%d failed: %v", i+1, err)
+		}
+	}
+	// After Task 7, each run's own upload.lease is written then deleted —
+	// the ONLY delete this test may legitimately see. Any delete for a
+	// DIFFERENT run's snapshot id (i.e. anything but that run's own
+	// upload.lease) is the retention-prune bug this test guards against.
+	for _, key := range provider.deleteCalls {
+		if !strings.HasSuffix(key, "/upload.lease") {
+			t.Fatalf("expected deletes to be limited to each run's own upload.lease, got: %s (all: %v)", key, provider.deleteCalls)
+		}
+	}
+}
+
+// TestRunBackupContext_StateOnlyZeroFiles_ExpiredLease_RefusesToPublish
+// proves the D15-merge fix: D15 Wave 1's state-only-zero-walked-files
+// publish path (backup.go, "backup run finished with state artifacts but
+// zero walked files") writes snapshots/<id>/system-state/manifest.json and
+// snapshots/<id>/manifest.json directly, OUTSIDE createSnapshotWithProgress
+// — it must still go through the SAME leaseGate-wrapped provider as every
+// other publish path (D18 §3.1), not the raw m.config.Provider. Before the
+// fix (uploadProvider built after this branch instead of before it), this
+// exact scenario would silently publish past an already-expired lease.
+func TestRunBackupContext_StateOnlyZeroFiles_ExpiredLease_RefusesToPublish(t *testing.T) {
+	svcContent := []byte("svc")
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), svcContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform: "test",
+			Artifacts: []systemstate.Artifact{{
+				Name: "services", Category: "services", Path: "services.txt",
+				SizeBytes: int64(len(svcContent)),
+			}},
+		}, stagingDir, nil
+	})
+
+	provider := newMockProvider()
+	baseID := "" // full run — the lease fences state-only publishes too, not just ordinary ones
+	mgr := NewBackupManager(BackupConfig{
+		Provider:              provider,
+		SystemStateEnabled:    true,
+		StagingDir:            t.TempDir(),
+		AgentID:               "test-device",
+		BaseSnapshotID:        &baseID,
+		PublishLeaseExpiresAt: time.Now().Add(-1 * time.Hour), // already expired
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if !errors.Is(err, ErrPublishLeaseExpired) {
+		t.Fatalf("err = %v, want ErrPublishLeaseExpired", err)
+	}
+	if job.Status != jobStatusFailed {
+		t.Fatalf("job.Status = %q, want %q", job.Status, jobStatusFailed)
+	}
+	for key := range provider.files {
+		if isManifestPath(key) {
+			t.Fatalf("a manifest was published (state-only zero-files path) despite an expired lease: %s", key)
+		}
+	}
+}
+
+// TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone
+// proves the P2 ordering fix: the resume-with-already-published-manifest
+// check must run BEFORE any source scanning, so a resumed run whose
+// manifest was already published reports success even if the configured
+// source has since vanished.
+func TestRunBackupContext_ResumeWithPublishedManifest_SucceedsEvenIfSourceGone(t *testing.T) {
+	tmpDir := t.TempDir()
+	file1 := createTempFile(t, tmpDir, "file1.txt", "content")
+	provider := newMockProvider()
+	stagingDir := t.TempDir()
+
+	identity := backupIdentity(provider, []string{tmpDir})
+	journal, _, err := openSnapshotJournal(stagingDir, identity, journalMaxAge)
+	if err != nil {
+		t.Fatalf("openSnapshotJournal failed: %v", err)
+	}
+	published := &Snapshot{
+		ID:    journal.snapshotID,
+		Files: []SnapshotFile{{SourcePath: file1, BackupPath: "snapshots/" + journal.snapshotID + "/files/file1.txt.gz", Size: 7}},
+		Size:  7,
+	}
+	storeManifest(t, provider, published)
+	journal.Abandon()
+
+	// The source is now GONE — remove the file (and its directory) the
+	// configured path pointed at, so a fresh scan would find nothing and,
+	// pre-fix, hit backup.go's len(files)==0 early exit BEFORE the
+	// journal/resume check ever ran.
+	if err := os.RemoveAll(tmpDir); err != nil {
+		t.Fatalf("failed to remove source dir: %v", err)
+	}
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:   provider,
+		Paths:      []string{tmpDir},
+		StagingDir: stagingDir,
+	})
+
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected the resume shortcut to succeed despite the gone source, got err: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("job.Status = %q, want %q (source-gone must not prevent reporting the already-published manifest)", job.Status, jobStatusCompleted)
+	}
+	if job.Snapshot == nil || job.Snapshot.ID != journal.snapshotID {
+		t.Fatalf("expected the already-published snapshot back, got %+v", job.Snapshot)
 	}
 }

@@ -2,6 +2,7 @@ package sessionbroker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +33,20 @@ var backupHelperStopGrace = 5 * time.Second
 // backupHelperStopPollInterval is how often StopBackupHelper re-checks
 // activeRuns while waiting out backupHelperStopGrace.
 var backupHelperStopPollInterval = 100 * time.Millisecond
+
+// Backup-role admission errors. The broker only ever grants the backup IPC
+// scope to a process it spawned itself: an identity/root check alone is not
+// enough, since an independently launched copy of the genuine,
+// hash-allowlisted helper binary would also pass identity. Admission is
+// bound to the exact kernel-verified peer PID captured when the agent's own
+// spawnBackupHelper started the process (see backupSpawnReservation).
+var (
+	errBackupHelperNotReserved       = errors.New("backup helper was not spawned by the agent")
+	errBackupHelperPeerMismatch      = errors.New("backup helper process does not match the agent reservation")
+	errBackupHelperReservationUsed   = errors.New("backup helper process reservation was already used")
+	errBackupHelperReservationFailed = errors.New("backup helper process reservation failed")
+	errBackupHelperAlreadyConnected  = errors.New("backup helper already connected")
+)
 
 // backupHelperDiedError is the terminal error reported for a backup run whose
 // helper process disappeared mid-run (#2998). It is a fixed string so support
@@ -88,6 +103,14 @@ type backupHelper struct {
 	spawnDone chan struct{}
 	spawnErr  error
 
+	// reservation binds backup-role admission to the exact process spawned by
+	// the in-flight (or just-finished but not yet superseded) spawn attempt.
+	// It is created alongside spawnDone and cleared in the same defer that
+	// clears spawnDone/spawnErr, so reservation != nil implies a spawn
+	// attempt owns this helper right now. See backupSpawnReservation and
+	// claimBackupHelperAdmission.
+	reservation *backupSpawnReservation
+
 	// activeRuns holds every async backup_run this helper is executing, keyed
 	// by command id. It is the gate on synthesizing a failure when the helper
 	// dies (#2998), and it is a MAP rather than a single slot because
@@ -105,6 +128,19 @@ type backupHelper struct {
 	// the session closes and reports the failure itself — tracking it here too
 	// would double-report the same command.
 	activeRuns map[string]backupRunState
+}
+
+// backupSpawnReservation binds backup-role admission to the exact process the
+// agent started. Peer PID comes from the kernel-owned pipe/socket credentials,
+// not from the helper's authentication payload. ready closes after cmd.Start
+// publishes that PID, preventing a fast child from losing a startup race.
+type backupSpawnReservation struct {
+	ready     chan struct{}
+	pid       uint32
+	startErr  error
+	claimed   bool
+	committed bool
+	published bool
 }
 
 // backupRunState distinguishes a run whose forwarder is still blocked waiting
@@ -179,17 +215,31 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 	}
 	done := make(chan struct{})
 	bh.spawnDone = done
+	reservation := &backupSpawnReservation{ready: make(chan struct{})}
+	bh.reservation = reservation
 	bh.mu.Unlock()
 
 	// Record this attempt's outcome (session, err -- the named returns) into
 	// bh.spawnErr and signal every waiter by closing done, all under bh.mu so
 	// a waiter that has just acquired bh.mu in waitForBackupHelperSpawn never
-	// observes spawnErr before it is final.
+	// observes spawnErr before it is final. The admission reservation is
+	// retired in the same critical section: if the process never reached the
+	// point of publishing its PID (see below), publish the failure now so a
+	// racing claimBackupHelperAdmission call unblocks immediately instead of
+	// waiting out the full spawn timeout.
 	defer func() {
 		bh.mu.Lock()
 		bh.spawnErr = err
 		bh.spawnDone = nil
 		close(done)
+		if bh.reservation == reservation {
+			if !reservation.published {
+				reservation.startErr = err
+				reservation.published = true
+				close(reservation.ready)
+			}
+			bh.reservation = nil
+		}
 		bh.mu.Unlock()
 	}()
 
@@ -218,6 +268,9 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 
 	bh.mu.Lock()
 	bh.process = cmd.Process
+	reservation.pid = uint32(cmd.Process.Pid)
+	reservation.published = true
+	close(reservation.ready)
 	bh.mu.Unlock()
 
 	// Wait for the helper to connect via IPC
@@ -262,6 +315,54 @@ func waitForBackupHelperSpawn(bh *backupHelper, done chan struct{}) (*Session, e
 	}
 }
 
+// claimBackupHelperAdmission consumes the single-use reservation for the exact
+// kernel-verified peer PID. An independently launched copy of the genuine,
+// hash-allowlisted helper has a different PID and cannot claim backup scope.
+//
+// reservation != nil is only meaningful while a spawn attempt for this helper
+// is in flight (bh.spawnDone != nil) -- both are cleared together in
+// spawnBackupHelper's defer -- so the two are checked together throughout.
+func (b *Broker) claimBackupHelperAdmission(pid uint32) (*backupSpawnReservation, error) {
+	b.mu.RLock()
+	bh := b.backup
+	b.mu.RUnlock()
+	if bh == nil {
+		return nil, errBackupHelperNotReserved
+	}
+
+	bh.mu.Lock()
+	reservation := bh.reservation
+	if reservation == nil || bh.spawnDone == nil {
+		bh.mu.Unlock()
+		return nil, errBackupHelperNotReserved
+	}
+	ready := reservation.ready
+	bh.mu.Unlock()
+
+	select {
+	case <-ready:
+	case <-time.After(backupHelperSpawnTimeout):
+		return nil, errBackupHelperReservationFailed
+	}
+
+	bh.mu.Lock()
+	defer bh.mu.Unlock()
+	if bh.reservation != reservation || bh.spawnDone == nil {
+		return nil, errBackupHelperNotReserved
+	}
+	if reservation.startErr != nil || reservation.pid == 0 || bh.process == nil {
+		return nil, errBackupHelperReservationFailed
+	}
+	if reservation.pid != pid || uint32(bh.process.Pid) != pid {
+		return nil, errBackupHelperPeerMismatch
+	}
+	if reservation.claimed {
+		return nil, errBackupHelperReservationUsed
+	}
+	reservation.claimed = true
+	return reservation, nil
+}
+
 // SetBackupSession is called by the broker's connection handler when a backup helper authenticates.
 func (b *Broker) SetBackupSession(s *Session) {
 	b.mu.Lock()
@@ -276,18 +377,25 @@ func (b *Broker) SetBackupSession(s *Session) {
 	bh.mu.Unlock()
 }
 
-// ClearBackupSession removes the backup session (called on disconnect).
-func (b *Broker) ClearBackupSession() {
+// ClearBackupSession removes the backup session (called on disconnect), but
+// only when session still owns the singleton -- reporting whether it did so.
+// A delayed disconnect from a superseded helper must not clear a newer
+// owner's session out from under it.
+func (b *Broker) ClearBackupSession(session *Session) bool {
 	b.mu.RLock()
 	bh := b.backup
 	b.mu.RUnlock()
 	if bh == nil {
-		return
+		return false
 	}
 
 	bh.mu.Lock()
+	defer bh.mu.Unlock()
+	if bh.session != session {
+		return false
+	}
 	bh.session = nil
-	bh.mu.Unlock()
+	return true
 }
 
 // StopBackupHelper kills the backup helper process. It is the SCM/graceful-

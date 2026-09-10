@@ -75,11 +75,13 @@ vi.mock('./notificationChannelSecrets', () => ({
 }));
 
 const sendInAppNotificationMock = vi.hoisted(() => vi.fn());
+const webhookTotalAttemptsMock = vi.hoisted(() => vi.fn(() => 3));
 
 vi.mock('./notificationSenders', () => ({
   sendEmailNotification: vi.fn(),
   getEmailRecipients: vi.fn(),
   sendWebhookNotification: vi.fn(),
+  webhookTotalAttempts: webhookTotalAttemptsMock,
   sendInAppNotification: sendInAppNotificationMock,
   sendPagerDutyNotification: vi.fn(),
   sendPushoverNotification: vi.fn()
@@ -135,6 +137,7 @@ beforeEach(() => {
   );
   queueAddMock.mockReset().mockImplementation(async () => makeJobStub('job-1'));
   sendInAppNotificationMock.mockReset().mockResolvedValue({ success: true, notificationCount: 1 });
+  webhookTotalAttemptsMock.mockReset().mockReturnValue(3);
 });
 
 describe('processAlertNotifications status guard (a)', () => {
@@ -219,23 +222,46 @@ describe('processAlertNotifications baseline send jobId (c)', () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.opts?.jobId).toBe('alert-send-alert-1-channel-1-0');
   });
+
+  it('uses configured retries to set durable total attempts on the send job', async () => {
+    webhookTotalAttemptsMock.mockReturnValueOnce(1);
+    const config = { url: 'https://example.com/hook', retryCount: 0 };
+    selectQueue.push(
+      [makeAlert({ status: 'active' })],
+      [{ id: 'device-1', displayName: 'Server-1' }],
+      [{ partnerId: null }],
+      [],
+      [{ id: 'channel-1' }],
+      [{ id: 'channel-1', type: 'webhook', config }]
+    );
+
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+
+    expect(webhookTotalAttemptsMock).toHaveBeenCalledWith(config);
+    const jobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ opts: { attempts: number } }>;
+    expect(jobs[0]!.opts.attempts).toBe(1);
+  });
 });
 
 describe('scheduleEscalation job options (carried Task 8 review handoff)', () => {
   it('gives escalation send jobs attempts/backoff/removal options so a transport failure gets retried instead of permanently occupying the jobId', async () => {
+    const webhookConfig = { url: 'https://example.com/hook', retryCount: 2 };
     selectQueue.push(
       [makeAlert({ status: 'active', ruleId: 'rule-1' })], // alert
       [{ id: 'device-1', displayName: 'Server-1' }], // device
       [{ overrideSettings: { notificationChannelIds: ['channel-1'], escalationPolicyId: 'policy-1' } }], // rule
       [{ partnerId: null }], // org (partnerIdForOrg)
-      [{ id: 'channel-1' }], // validChannels (baseline)
+      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }], // validChannels (baseline)
       [{ id: 'policy-1', orgId: 'org-1', partnerId: null, steps: [{ delayMinutes: 5, channelIds: ['channel-1'] }] }], // escalation policy
-      [{ id: 'channel-1' }] // validChannels (escalation)
+      [{ id: 'channel-1', type: 'webhook', config: webhookConfig }] // validChannels (escalation)
     );
 
     await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
 
     expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(webhookTotalAttemptsMock).toHaveBeenCalledTimes(2);
+    expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(1, webhookConfig);
+    expect(webhookTotalAttemptsMock).toHaveBeenNthCalledWith(2, webhookConfig);
     const [name, data, opts] = queueAddMock.mock.calls[0]!;
     expect(name).toBe('send');
     expect(data).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'channel-1', escalationStep: 1 });

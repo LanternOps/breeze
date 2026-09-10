@@ -166,64 +166,19 @@ Every time a policy is evaluated against a device, the result is stored in the `
 
 ## Policy actions
 
-### Activate / Deactivate
+### Deactivate
 
-Toggle a legacy policy's `enabled` flag without modifying any other fields.
+Toggle a legacy policy's `enabled` flag to `false` without modifying any other fields.
 
 ```
-POST /api/v1/policies/:id/activate
 POST /api/v1/policies/:id/deactivate
 ```
 
-Both endpoints require `organization`, `partner`, or `system` scope.
+Requires `organization`, `partner`, or `system` scope.
 
-### Evaluate
-
-Trigger an on-demand evaluation of a policy against all its target devices.
-
-```
-POST /api/v1/policies/:id/evaluate
-```
-
-Returns the evaluation result immediately:
-
-```json
-{
-  "message": "Policy evaluation completed",
-  "policyId": "uuid",
-  "devicesEvaluated": 42,
-  "results": [
-    {
-      "deviceId": "uuid",
-      "hostname": "WORKSTATION-01",
-      "status": "compliant",
-      "previousStatus": "non_compliant",
-      "remediationRunId": null
-    }
-  ],
-  "summary": {
-    "compliant": 40,
-    "non_compliant": 2
-  },
-  "evaluatedAt": "2026-02-18T12:00:00.000Z"
-}
-```
-
-<Aside type="tip">
-Disabled policies cannot be evaluated. The endpoint returns a 400 error with `"Cannot evaluate disabled policy"`.
+<Aside type="caution">
+`POST /api/v1/policies/:id/activate`, `POST /api/v1/policies/:id/evaluate`, and `POST /api/v1/policies/:id/remediate` have been **removed**. They bypassed the MFA, `automations:write` permission, and site-scoped-target checks enforced by the modern manual automation trigger. Policy evaluation still runs automatically on the policy's configured interval and from the background compliance scanner — only the on-demand HTTP triggers were retired. To manually trigger a remediation automation, use `POST /api/v1/automations/:id/trigger` instead.
 </Aside>
-
-The evaluate action also writes an audit log entry with the `policy.evaluate` action type.
-
-### Remediate
-
-Trigger remediation without running a full evaluation cycle.
-
-```
-POST /api/v1/policies/:id/remediate
-```
-
-The endpoint resolves the remediation automation from the policy's rules or `remediationScriptId`, creates an `automation_runs` entry, increments the automation's `runCount`, dispatches the run for execution against the policy's target devices, and returns the run details. Returns a 400 error if no remediation automation is configured.
 
 ## Policy state collection from agents
 
@@ -406,10 +361,7 @@ See the [Reporting](#reporting) section for details.
 ### Action endpoints
 
 ```
-POST /api/v1/policies/:id/activate
 POST /api/v1/policies/:id/deactivate
-POST /api/v1/policies/:id/evaluate
-POST /api/v1/policies/:id/remediate
 ```
 
 See the [Policy actions](#policy-actions) section for details.
