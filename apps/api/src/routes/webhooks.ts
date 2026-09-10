@@ -702,7 +702,7 @@ webhookRoutes.post(
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedDelivery] = await db
@@ -814,7 +814,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
     };
 
     try {
-      await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), retryEvent as any, retryDelivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedRetry] = await db

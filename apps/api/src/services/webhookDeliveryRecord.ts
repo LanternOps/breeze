@@ -3,7 +3,7 @@ import * as dbModule from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import type { BreezeEvent } from './eventBus';
 import type {
-  WebhookConfig,
+  WebhookFanoutTarget,
   WebhookDeliveryJob,
   WebhookDeliveryRecordOutcome,
   WebhookDeliveryResult,
@@ -92,7 +92,7 @@ export function buildOutcomeWriteCas(deliveryId: string): SQL {
  * the callback returns.
  */
 export async function recordWebhookDelivery(
-  webhook: WebhookConfig,
+  webhook: WebhookFanoutTarget,
   event: BreezeEvent
 ): Promise<WebhookDeliveryRecordOutcome> {
   return runWithSystemDbAccess(async () => {

@@ -306,7 +306,7 @@ describe('webhook routes', () => {
     expect(body.url).toBe('https://example.com/hook');
   });
 
-  it('decrypts the delivery URL for internal delivery use', async () => {
+  it('queues delivery by webhookId + generation only, never the decrypted URL (site-ceiling gate contract §7E)', async () => {
     const { encryptSecret } = await import('../services/secretCrypto');
     const encryptedUrl = encryptSecret('https://user:pass@example.com/deliver?token=abc') as string;
     expect(encryptedUrl).toMatch(/^enc:v[123]:/);
@@ -325,7 +325,8 @@ describe('webhook routes', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         lastDeliveryAt: null,
-        retryPolicy: null
+        retryPolicy: null,
+        approvalGeneration: 1
       }
     ]) as any);
 
@@ -354,9 +355,13 @@ describe('webhook routes', () => {
     });
 
     expect(res.status).toBe(202);
-    // The worker config passed to queueDelivery must carry the decrypted URL.
-    const workerConfig = (queueDeliveryMock.mock.calls as any[])[0][0];
-    expect(workerConfig.url).toBe('https://user:pass@example.com/deliver?token=abc');
+    // The decrypted url/secret never leave this route on the enqueue path —
+    // only the webhook's identity and generation snapshot. The worker
+    // reloads and decrypts the row itself, at send time.
+    const call = (queueDeliveryMock.mock.calls as any[])[0];
+    expect(call[0]).toBe(WEBHOOK_ID_1);
+    expect(call[1]).toBe(1);
+    expect(JSON.stringify(call)).not.toContain('user:pass');
   });
 
   it('keeps the stored URL when an update re-submits the masked form', async () => {

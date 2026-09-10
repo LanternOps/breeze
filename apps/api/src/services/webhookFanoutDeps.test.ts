@@ -14,19 +14,11 @@ const {
   captureExceptionMock,
   recordWebhookDeliveryMock,
   withSystemDbAccessContextMock,
-  toWebhookConfigMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   captureExceptionMock: vi.fn(),
   recordWebhookDeliveryMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  // Identity-ish transform so assertions can check shape without pulling in
-  // real decryption.
-  toWebhookConfigMock: vi.fn((row: { id: string; orgId: string; events: string[] | null }) => ({
-    id: row.id,
-    orgId: row.orgId,
-    events: row.events ?? [],
-  })),
 }));
 
 vi.mock('../db', () => ({
@@ -34,10 +26,6 @@ vi.mock('../db', () => ({
     select: (...args: unknown[]) => selectMock(...args),
   },
   withSystemDbAccessContext: withSystemDbAccessContextMock,
-}));
-
-vi.mock('./webhookConfig', () => ({
-  toWebhookConfig: toWebhookConfigMock,
 }));
 
 vi.mock('./webhookDeliveryRecord', () => ({
@@ -95,18 +83,22 @@ describe('buildWebhookFanoutDeps', () => {
 
     it('filters to webhooks subscribed to the exact event type', async () => {
       mockRows([
-        { id: 'wh-1', orgId: 'org-1', events: ['device.offline'] },
-        { id: 'wh-2', orgId: 'org-1', events: ['device.online'] },
+        { id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: ['device.offline'] },
+        { id: 'wh-2', orgId: 'org-1', approvalGeneration: 1, events: ['device.online'] },
       ]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
 
-      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', events: ['device.offline'] }]);
+      // Site-ceiling gate contract §7E: the returned shape is the lean,
+      // UNDECRYPTED WebhookFanoutTarget — id/orgId/approvalGeneration only.
+      // `events` is consumed to FILTER but never appears in the output; no
+      // decryption happens on this path at all any more.
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1 }]);
     });
 
     it('includes wildcard-subscribed webhooks for any event type', async () => {
-      mockRows([{ id: 'wh-wild', orgId: 'org-1', events: ['*'] }]);
+      mockRows([{ id: 'wh-wild', orgId: 'org-1', approvalGeneration: 1, events: ['*'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'anything.happened');
@@ -116,7 +108,7 @@ describe('buildWebhookFanoutDeps', () => {
     });
 
     it('excludes webhooks with no matching event and no wildcard', async () => {
-      mockRows([{ id: 'wh-1', orgId: 'org-1', events: ['other.event'] }]);
+      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: ['other.event'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
@@ -125,7 +117,7 @@ describe('buildWebhookFanoutDeps', () => {
     });
 
     it('treats a null events column as subscribed to nothing', async () => {
-      mockRows([{ id: 'wh-1', orgId: 'org-1', events: null }]);
+      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: null }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
@@ -133,21 +125,18 @@ describe('buildWebhookFanoutDeps', () => {
       expect(result).toEqual([]);
     });
 
-    it('skips a single row whose decrypt throws, without dropping the others', async () => {
-      mockRows([
-        { id: 'wh-bad', orgId: 'org-1', events: ['device.offline'] },
-        { id: 'wh-good', orgId: 'org-1', events: ['device.offline'] },
-      ]);
-
-      toWebhookConfigMock.mockImplementationOnce(() => {
-        throw new Error('decrypt failed');
-      });
+    it('never decrypts on this path (site-ceiling gate contract §7E)', async () => {
+      // No secret/url/headers columns are even selected any more — decryption
+      // happens exactly once, inside the delivery worker at send time. This
+      // path cannot throw a decrypt error, so there is nothing to skip/report;
+      // the old "skips a row whose decrypt throws" behavior no longer applies.
+      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3, events: ['device.offline'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
 
-      expect(result).toEqual([{ id: 'wh-good', orgId: 'org-1', events: ['device.offline'] }]);
-      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3 }]);
+      expect(captureExceptionMock).not.toHaveBeenCalled();
     });
 
     it('queries via the system DB access context', async () => {

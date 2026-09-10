@@ -20,7 +20,6 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { decryptForColumn } from './secretCrypto';
 import { redactUrlForLogs } from './notificationSenders/webhookSender';
 import { getWebhookWorker } from '../workers/webhookDelivery';
-import { toWorkerWebhookConfig } from '../routes/webhooks';
 
 // webhooks.url is encrypted at rest and may embed credentials. Decrypt for
 // display then strip userinfo/query/hash so the AI tool never sees a token.
@@ -317,7 +316,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       };
 
       try {
-        await getWebhookWorker().queueDelivery(toWorkerWebhookConfig(webhook), event as any, delivery.id);
+        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
         await db

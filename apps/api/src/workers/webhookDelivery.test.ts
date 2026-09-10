@@ -26,8 +26,22 @@ vi.mock('../services/urlSafety', async () => {
   };
 });
 
+const { dbSelectMock, toWebhookConfigMock } = vi.hoisted(() => ({
+  dbSelectMock: vi.fn(),
+  toWebhookConfigMock: vi.fn(),
+}));
+
 vi.mock('../db', () => ({
+  // Most tests in this file exercise the LEGACY job shape (`job.webhook`
+  // embedded), which resolveDeliveryWebhookConfig delivers from directly —
+  // db.select is never reached for those. The new-shape (webhookId +
+  // generation) describe block below drives dbSelectMock directly.
+  db: { select: dbSelectMock },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../services/webhookConfig', () => ({
+  toWebhookConfig: toWebhookConfigMock,
 }));
 
 import { SsrfBlockedError } from '../services/urlSafety';
@@ -71,7 +85,7 @@ describe('webhook delivery worker', () => {
 
     const result = await deliverWebhook(makeJob({
       webhook: {
-        ...makeJob().webhook,
+        ...makeJob().webhook!,
         headers: {
           Authorization: 'Bearer token',
           Host: '169.254.169.254',
@@ -159,5 +173,118 @@ describe('webhook delivery worker', () => {
     const init = safeFetchMock.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(init.requirePrivateForCleartext).toBe(true);
     expect(init).toHaveProperty('allowPrivateNetwork');
+  });
+});
+
+describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling gate contract §7E)', () => {
+  function newShapeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
+    return {
+      id: 'delivery-1',
+      webhookId: 'webhook-1',
+      generation: 3,
+      event: {
+        id: 'event-1',
+        orgId: 'org-1',
+        type: 'device.created',
+        payload: { deviceId: 'device-1' },
+        metadata: { timestamp: '2026-05-02T00:00:00.000Z' },
+      } as any,
+      attempts: 0,
+      createdAt: '2026-05-02T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function mockRow(row: Record<string, unknown> | undefined) {
+    dbSelectMock.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(row ? [row] : []) }) }),
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
+    toWebhookConfigMock.mockImplementation((row: any) => ({
+      id: row.id,
+      orgId: row.orgId,
+      name: row.name,
+      url: row.url,
+      secret: row.secret,
+      events: row.events ?? [],
+      headers: row.headers ?? {},
+      retryPolicy: row.retryPolicy,
+    }));
+  });
+
+  it('never touches the network and reports superseded when the generation does not match', async () => {
+    mockRow({ id: 'webhook-1', status: 'active', approvalGeneration: 5, url: 'https://hooks.example.test' });
+
+    const result = await deliverWebhook(newShapeJob({ generation: 3 }));
+
+    expect(result.success).toBe(false);
+    expect(result.superseded).toBe(true);
+    expect(result.errorMessage).toMatch(/superseded_by_edit/);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never touches the network and reports superseded when the webhook is disabled', async () => {
+    mockRow({ id: 'webhook-1', status: 'disabled', approvalGeneration: 3, url: 'https://hooks.example.test' });
+
+    const result = await deliverWebhook(newShapeJob({ generation: 3 }));
+
+    expect(result.success).toBe(false);
+    expect(result.superseded).toBe(true);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never touches the network and reports superseded when the webhook row no longer exists', async () => {
+    mockRow(undefined);
+
+    const result = await deliverWebhook(newShapeJob());
+
+    expect(result.success).toBe(false);
+    expect(result.superseded).toBe(true);
+    expect(result.errorMessage).toContain('not found');
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports decrypt_failed as superseded, never as a network attempt', async () => {
+    mockRow({ id: 'webhook-1', status: 'active', approvalGeneration: 3, url: 'enc:v3:corrupt' });
+    toWebhookConfigMock.mockImplementationOnce(() => {
+      throw new Error('AAD mismatch');
+    });
+
+    const result = await deliverWebhook(newShapeJob({ generation: 3 }));
+
+    expect(result.success).toBe(false);
+    expect(result.superseded).toBe(true);
+    expect(result.errorMessage).toMatch(/could not be decrypted/);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reloads, decrypts, and delivers when the generation matches (real network attempt)', async () => {
+    mockRow({
+      id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 3,
+      url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
+    });
+    safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
+
+    const result = await deliverWebhook(newShapeJob({ generation: 3 }));
+
+    expect(result.success).toBe(true);
+    expect(result.superseded).toBeUndefined();
+    expect(safeFetchMock).toHaveBeenCalledWith('https://hooks.example.test/events', expect.any(Object));
+  });
+
+  it('skips the generation comparison entirely when the job carries no generation (legacy producer, opt-in only)', async () => {
+    mockRow({
+      id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 99,
+      url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
+    });
+    safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
+
+    const result = await deliverWebhook(newShapeJob({ generation: undefined }));
+
+    expect(result.success).toBe(true);
   });
 });
