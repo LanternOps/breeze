@@ -79,9 +79,11 @@ func execMSSQLBackup(payload json.RawMessage, mgr *backup.BackupManager) backupi
 	remotePath := path.Join("snapshots", snapshotID, "files", filepath.Base(result.BackupFile))
 
 	if err := provider.Upload(result.BackupFile, remotePath); err != nil {
+		removeMssqlBackupFile(result.BackupFile)
 		cleanupMssqlSnapshot(provider, snapshotID)
 		return fail("failed to upload MSSQL backup: " + err.Error())
 	}
+	removeMssqlBackupFile(result.BackupFile)
 
 	modTime := backupFileInfo.ModTime().UTC()
 	snapshot := backup.Snapshot{
@@ -567,6 +569,25 @@ func downloadMssqlSnapshotManifest(provider providers.BackupProvider, snapshotID
 		snapshot.ID = snapshotID
 	}
 	return &snapshot, nil
+}
+
+// removeMssqlBackupFile deletes the local .bak/.trn file once execMSSQLBackup
+// is done with it, on both the success and upload-failure paths.
+//
+// D23: RunBackup no longer writes into the staging directory this function
+// created (mssql.RunBackup now resolves its own directory that the SQL
+// Server service account, not the Breeze helper, can write to), so the
+// deferred os.RemoveAll(stagingDir) in execMSSQLBackup no longer reaches
+// the real backup file — it would otherwise accumulate forever in SQL
+// Server's default backup directory or the ProgramData fallback.
+func removeMssqlBackupFile(localPath string) {
+	if err := os.Remove(localPath); err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to remove local MSSQL backup file", "file", localPath, "error", err.Error())
+		}
+		return
+	}
+	slog.Debug("removed local MSSQL backup file", "file", localPath)
 }
 
 func cleanupMssqlSnapshot(provider providers.BackupProvider, snapshotID string) {

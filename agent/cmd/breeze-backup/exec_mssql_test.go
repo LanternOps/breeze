@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -301,5 +302,119 @@ func TestExecMSSQLVerifyStagesSnapshotPrefixArtifact(t *testing.T) {
 	}
 	if _, err := os.Stat(stagedPath); !os.IsNotExist(err) {
 		t.Fatalf("expected staged path to be removed, stat err=%v", err)
+	}
+}
+
+// failingUploadProvider fakes providers.BackupProvider with an Upload that
+// always fails, so execMSSQLBackup's upload-failure path can be exercised
+// without a real remote backend. List/Delete are no-ops so
+// cleanupMssqlSnapshot (called on the failure path) has nothing to do.
+type failingUploadProvider struct{}
+
+func (p *failingUploadProvider) Upload(_, _ string) error        { return errUploadFailedForTest }
+func (p *failingUploadProvider) Download(_, _ string) error      { return nil }
+func (p *failingUploadProvider) List(_ string) ([]string, error) { return nil, nil }
+func (p *failingUploadProvider) Delete(_ string) error           { return nil }
+
+var errUploadFailedForTest = fmt.Errorf("simulated upload failure")
+
+// D23: after RunBackup stopped writing into the caller-supplied staging
+// directory (it now resolves its own directory the SQL Server service
+// account can write to), the staging dir's deferred os.RemoveAll no longer
+// covers the real backup file — execMSSQLBackup must remove
+// result.BackupFile itself once the upload attempt is done.
+func TestExecMSSQLBackupRemovesLocalBackupFileAfterSuccessfulUpload(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(),
+	})
+
+	// The fake writes the backup file somewhere other than the staging
+	// dir, mirroring D23's real fix: RunBackup now resolves its own
+	// target directory instead of writing under outputPath.
+	backupBytes := []byte("mssql-backup-bytes")
+	backupFile := filepath.Join(t.TempDir(), "ProductionDB_full_20260331.bak")
+	if err := os.WriteFile(backupFile, backupBytes, 0o644); err != nil {
+		t.Fatalf("write backup file: %v", err)
+	}
+
+	origRunMSSQLBackup := runMSSQLBackup
+	t.Cleanup(func() { runMSSQLBackup = origRunMSSQLBackup })
+	runMSSQLBackup = func(_, _, _, _ string) (*mssql.BackupResult, error) {
+		return &mssql.BackupResult{
+			InstanceName: "MSSQLSERVER",
+			DatabaseName: "ProductionDB",
+			BackupType:   "full",
+			BackupFile:   backupFile,
+			SizeBytes:    int64(len(backupBytes)),
+			Compressed:   true,
+			DurationMs:   1234,
+		}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"database":   "ProductionDB",
+		"backupType": "full",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLBackup(payload, mgr)
+	if !result.Success {
+		t.Fatalf("expected success, got stderr %q", result.Stderr)
+	}
+
+	if _, statErr := os.Stat(backupFile); !os.IsNotExist(statErr) {
+		t.Fatalf("expected local backup file %q to be removed after upload, stat err=%v", backupFile, statErr)
+	}
+}
+
+func TestExecMSSQLBackupRemovesLocalBackupFileWhenUploadFails(t *testing.T) {
+	provider := &failingUploadProvider{}
+	mgr := backup.NewBackupManager(backup.BackupConfig{
+		Provider:   provider,
+		StagingDir: t.TempDir(),
+	})
+
+	backupBytes := []byte("mssql-backup-bytes")
+	backupFile := filepath.Join(t.TempDir(), "ProductionDB_full_20260331.bak")
+	if err := os.WriteFile(backupFile, backupBytes, 0o644); err != nil {
+		t.Fatalf("write backup file: %v", err)
+	}
+
+	origRunMSSQLBackup := runMSSQLBackup
+	t.Cleanup(func() { runMSSQLBackup = origRunMSSQLBackup })
+	runMSSQLBackup = func(_, _, _, _ string) (*mssql.BackupResult, error) {
+		return &mssql.BackupResult{
+			InstanceName: "MSSQLSERVER",
+			DatabaseName: "ProductionDB",
+			BackupType:   "full",
+			BackupFile:   backupFile,
+			SizeBytes:    int64(len(backupBytes)),
+			Compressed:   true,
+			DurationMs:   1234,
+		}, nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"instance":   "MSSQLSERVER",
+		"database":   "ProductionDB",
+		"backupType": "full",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	result := execMSSQLBackup(payload, mgr)
+	if result.Success {
+		t.Fatal("expected failure when upload fails")
+	}
+
+	if _, statErr := os.Stat(backupFile); !os.IsNotExist(statErr) {
+		t.Fatalf("expected local backup file %q to be removed even when upload fails, stat err=%v", backupFile, statErr)
 	}
 }
