@@ -1045,12 +1045,12 @@ jobs:
       # resolved that, and the tree is now clean at every severity, so the scan
       # covers dev dependencies too.
       #
-      # Follow-up: tighten AUDIT_THRESHOLD to HIGH once we're comfortable that a
-      # new dev-only advisory blocking PRs is an acceptable trade.
+      # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
+      # HIGH advisory blocks PRs until patched or an exception is recorded.
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
 
-      - name: Run dependency audit (critical gate)
+      - name: Run dependency audit (high+critical gate)
         run: bash scripts/security/check-npm-audit.sh
 
       - name: Run supply-chain hardening guard
