@@ -21,13 +21,14 @@ export const vaultRoutes = new Hono();
 const vaultIdParam = z.object({ id: z.string().guid() });
 
 async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: UserPermissions | undefined): Promise<boolean> {
-  if (!permissions?.allowedSiteIds) return false;
   const [device] = await db
     .select({ siteId: devices.siteId })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
     .limit(1);
-  return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
+  if (!device) return true;
+  if (!permissions?.allowedSiteIds) return false;
+  return typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
 }
 
 async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
@@ -143,7 +144,7 @@ vaultRoutes.post(
 
   const payload = c.req.valid('json');
   if (await isDeviceSiteDenied(orgId, payload.deviceId, c.get('permissions') as UserPermissions | undefined)) {
-    return c.json({ error: 'Access to this site denied' }, 403);
+    return c.json({ error: 'Device not found or access denied' }, 403);
   }
   const now = new Date();
 
@@ -320,12 +321,15 @@ vaultRoutes.post(
 
     // Dispatch vault_sync command to the device
     try {
-      await queueCommandForExecution(
+      const result = await queueCommandForExecution(
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
         { vaultId: vault.id, snapshotId: payload.snapshotId },
-        { userId: auth.user?.id }
+        { userId: auth.user?.id, expectedOrgId: orgId }
       );
+      if ('error' in result) {
+        throw new Error(result.error);
+      }
     } catch (err) {
       console.error('[Vault] Failed to dispatch sync command:', err);
       await db.update(localVaults).set({

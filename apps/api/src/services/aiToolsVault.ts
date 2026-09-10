@@ -242,6 +242,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       const [vault] = await db
         .select({
           id: localVaults.id,
+          orgId: localVaults.orgId,
           deviceId: localVaults.deviceId,
           isActive: localVaults.isActive,
         })
@@ -273,7 +274,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           vaultId: vault.id,
           snapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : undefined,
         },
-        { userId: auth.user?.id }
+        { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
       if (error) {

@@ -167,7 +167,7 @@ function prepareHandlerMocks(toolName: string) {
       ]);
       break;
     case 'trigger_vault_sync':
-      mockSelectSequence([[{ id: VAULT_ID, deviceId: DEVICE_ID, isActive: true }]]);
+      mockSelectSequence([[{ id: VAULT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, isActive: true }]]);
       break;
     case 'configure_vault':
       mockSelectSequence([[{ id: VAULT_ID }]]);
@@ -244,6 +244,18 @@ describe('aiToolsVault handlers', () => {
     await toolMap.get('query_vaults')!.handler({}, auth);
 
     expect(auth.orgCondition).toHaveBeenCalled();
+  });
+
+  it('pins AI vault sync dispatch to the selected vault organization', async () => {
+    prepareHandlerMocks('trigger_vault_sync');
+    await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'vault_sync',
+      expect.objectContaining({ vaultId: VAULT_ID }),
+      expect.objectContaining({ userId: 'user-1', expectedOrgId: ORG_ID }),
+    );
   });
 
   it('safeHandler returns error JSON when the handler throws', async () => {

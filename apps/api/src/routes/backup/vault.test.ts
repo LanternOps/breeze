@@ -211,6 +211,7 @@ describe('vault routes', () => {
   });
 
   it('creates a vault config', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
     insertMock.mockReturnValueOnce(chainMock([makeVault()]));
 
     const res = await app.request('/backup/vault', {
@@ -228,6 +229,28 @@ describe('vault routes', () => {
     const body = await res.json();
     expect(body.id).toBe(VAULT_ID);
     expect(body.vaultPath).toBe('D:/Backups/Vault');
+  });
+
+  it('rejects an unrestricted-site create when the device is outside the resolved org', async () => {
+    // An unset allowedSiteIds ceiling must not skip device ownership validation.
+    // The old early return allowed this caller-org/victim-device pair to reach INSERT.
+    selectMock.mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/backup/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: OTHER_DEVICE_ID,
+        vaultPath: 'D:/Backups/Vault',
+        vaultType: 'local',
+        retentionCount: 7,
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('updates a vault config', async () => {
@@ -306,9 +329,11 @@ describe('vault routes', () => {
   });
 
   it('dispatches a vault sync command', async () => {
-    selectMock.mockReturnValueOnce(chainMock([makeVault()]));
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault()]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
     updateMock.mockReturnValueOnce(chainMock([]));
-    queueCommandForExecutionMock.mockResolvedValueOnce(undefined);
+    queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1' } });
 
     const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
       method: 'POST',
@@ -324,7 +349,7 @@ describe('vault routes', () => {
       DEVICE_ID,
       'VAULT_SYNC',
       { vaultId: VAULT_ID, snapshotId: 'snap-ext-001' },
-      expect.objectContaining({ userId: 'user-123' })
+      expect.objectContaining({ userId: 'user-123', expectedOrgId: ORG_ID })
     );
   });
 
@@ -334,9 +359,11 @@ describe('vault routes', () => {
   // `400 Malformed JSON in request body` BEFORE the handler ran, so every
   // Sync Now click failed — silently, because the old UI swallowed the error.
   it('queues a sync when the client posts NO body (the web client never sends one)', async () => {
-    selectMock.mockReturnValueOnce(chainMock([makeVault()]));
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault()]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
     updateMock.mockReturnValueOnce(chainMock([]));
-    queueCommandForExecutionMock.mockResolvedValueOnce(undefined);
+    queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-2' } });
 
     const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
       method: 'POST',
@@ -350,8 +377,32 @@ describe('vault routes', () => {
       DEVICE_ID,
       'VAULT_SYNC',
       { vaultId: VAULT_ID, snapshotId: undefined },
-      expect.objectContaining({ userId: 'user-123' })
+      expect.objectContaining({ userId: 'user-123', expectedOrgId: ORG_ID })
     );
+  });
+
+  it('fails a sync when dispatch rejects the expected organization before reporting pending', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault()]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+    updateMock.mockReturnValue(chainMock([]));
+    queueCommandForExecutionMock.mockResolvedValueOnce({ error: 'Device not found' });
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: 'snap-ext-002' }),
+    });
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Failed to dispatch sync command to agent' });
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'VAULT_SYNC',
+      { vaultId: VAULT_ID, snapshotId: 'snap-ext-002' },
+      expect.objectContaining({ userId: 'user-123', expectedOrgId: ORG_ID })
+    );
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('denies vault status for a site-restricted caller when the vault device is out-of-site', async () => {
@@ -387,13 +438,15 @@ describe('vault routes', () => {
   });
 
   it('should get vault status', async () => {
-    selectMock.mockReturnValueOnce(chainMock([makeVault({
-      lastSyncAt: new Date('2026-03-28T12:00:00.000Z'),
-      lastSyncStatus: 'completed',
-      lastSyncSnapshotId: 'snap-ext-001',
-      syncSizeBytes: 1073741824,
-      lastSyncError: null,
-    })]));
+    selectMock
+      .mockReturnValueOnce(chainMock([makeVault({
+        lastSyncAt: new Date('2026-03-28T12:00:00.000Z'),
+        lastSyncStatus: 'completed',
+        lastSyncSnapshotId: 'snap-ext-001',
+        syncSizeBytes: 1073741824,
+        lastSyncError: null,
+      })]))
+      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
 
     const res = await app.request(`/backup/vault/${VAULT_ID}/status`, {
       method: 'GET',
