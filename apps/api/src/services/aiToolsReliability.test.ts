@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockListReliabilityDevices = vi.fn();
 const mockListUserRiskScores = vi.fn();
 const mockGetUserRiskDetail = vi.fn();
+const mockAssignSecurityTraining = vi.fn();
+const mockGetUserRiskOrgMembership = vi.fn();
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -86,8 +88,9 @@ vi.mock('./reliabilityScoring', () => ({
 }));
 
 vi.mock('./userRiskScoring', () => ({
-  assignSecurityTraining: vi.fn(),
+  assignSecurityTraining: (...args: unknown[]) => mockAssignSecurityTraining(...args),
   getUserRiskDetail: (...args: unknown[]) => mockGetUserRiskDetail(...args),
+  getUserRiskOrgMembership: (...args: unknown[]) => mockGetUserRiskOrgMembership(...args),
   listUserRiskScores: (...args: unknown[]) => mockListUserRiskScores(...args),
 }));
 
@@ -256,5 +259,63 @@ describe('aiTools get_user_risk_detail site scoping', () => {
     await executeTool('get_user_risk_detail', { userId: 'target-1' }, auth);
 
     expect(mockGetUserRiskDetail).toHaveBeenCalledWith('org-1', 'target-1', ['site-1']);
+  });
+});
+
+describe('aiTools assign_security_training authorization', () => {
+  const siteRestrictedAuth = {
+    user: { id: 'user-1' },
+    orgId: 'org-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    allowedSiteIds: ['site-1'],
+    canAccessOrg: () => true,
+    canAccessSite: (siteId: string | null | undefined) => siteId === 'site-1',
+    orgCondition: () => undefined,
+    token: { mfa: true },
+  } as any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetUserRiskOrgMembership.mockResolvedValue(true);
+    mockAssignSecurityTraining.mockResolvedValue({
+      assignmentEventId: 'assign-1',
+      moduleId: 'security-awareness-baseline',
+      deduplicated: false,
+      eventPublished: true,
+    });
+  });
+
+  it('denies a caller whose session has not satisfied MFA, before any write', async () => {
+    const result = await executeTool(
+      'assign_security_training',
+      { userId: 'target-1' },
+      { ...siteRestrictedAuth, token: { mfa: false } },
+    );
+
+    expect(JSON.parse(result)).toEqual({ error: 'MFA required' });
+    expect(mockGetUserRiskOrgMembership).not.toHaveBeenCalled();
+    expect(mockAssignSecurityTraining).not.toHaveBeenCalled();
+  });
+
+  it('denies a target outside the authenticated site ceiling, before any write', async () => {
+    mockGetUserRiskOrgMembership.mockResolvedValue(false);
+
+    const result = await executeTool('assign_security_training', { userId: 'target-1' }, siteRestrictedAuth);
+
+    expect(JSON.parse(result)).toEqual({ error: 'User not found in this organization' });
+    expect(mockGetUserRiskOrgMembership).toHaveBeenCalledWith('target-1', 'org-1', ['site-1']);
+    expect(mockAssignSecurityTraining).not.toHaveBeenCalled();
+  });
+
+  it('carries the site ceiling into the membership check for a visible target', async () => {
+    const result = await executeTool('assign_security_training', { userId: 'target-1' }, siteRestrictedAuth);
+
+    expect(JSON.parse(result)).toMatchObject({ success: true, assignmentEventId: 'assign-1' });
+    expect(mockGetUserRiskOrgMembership).toHaveBeenCalledWith('target-1', 'org-1', ['site-1']);
+    expect(mockAssignSecurityTraining).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1',
+      userId: 'target-1',
+    }));
   });
 });

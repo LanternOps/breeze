@@ -329,6 +329,30 @@ function userRiskMembershipVisible(
   )`;
 }
 
+/**
+ * Site-ceiling predicate for readers whose base table is NOT already constrained
+ * to a current `organization_users` row — the user-risk event log and the ML
+ * feedback ledger. An unrestricted caller (`siteIds === undefined`) gets `true`:
+ * these projections are org-scoped history, so requiring a *current* membership
+ * would silently drop events of departed members from an unrestricted reader's
+ * history and from the evaluation denominators, and would add a correlated
+ * subquery per row for no authorization gain. A defined ceiling (including the
+ * empty one) still gets the full membership + overlap proof.
+ *
+ * Readers that already select FROM / INNER JOIN `organization_users`
+ * (`listUserRiskScores`, `getUserRiskDetail`, `getUserRiskOrgMembership`) keep
+ * calling {@link userRiskMembershipVisible} directly — main required a current
+ * membership there before this change and must keep doing so.
+ */
+function userRiskSiteCeiling(
+  orgIdColumn: SQLWrapper,
+  userIdColumn: SQLWrapper,
+  siteIds?: string[],
+): SQL {
+  if (siteIds === undefined) return sql`true`;
+  return userRiskMembershipVisible(orgIdColumn, userIdColumn, siteIds);
+}
+
 export type UserRiskEvaluation = {
   windowDays: number;
   totalLabels: number;
@@ -1088,7 +1112,13 @@ export async function getUserRiskDetail(orgId: string, userId: string, siteIds?:
   }>;
   policy: UserRiskPolicy;
 } | null> {
-  const memberships = await db
+  // No row lock here on purpose: requests run inside one
+  // `withDbAccessContext` transaction, so a FOR SHARE would pin these `users`
+  // and `organization_users` rows for the whole request — blocking concurrent
+  // membership writes on hot rows and being blocked by org erasure or bulk site
+  // moves. Every subsidiary read below re-evaluates the same visibility
+  // predicate under its own snapshot, so the ceiling still holds.
+  const [membership] = await db
     .select({
       userId: users.id,
       name: users.name,
@@ -1105,9 +1135,7 @@ export async function getUserRiskDetail(orgId: string, userId: string, siteIds?:
         userRiskMembershipVisible(organizationUsers.orgId, organizationUsers.userId, siteIds)
       )
     )
-    .for('share');
-
-  const membership = memberships[0];
+    .limit(1);
 
   if (!membership) return null;
 
@@ -1219,7 +1247,7 @@ export async function listUserRiskEvents(filter: UserRiskEventFilter): Promise<{
   if (filter.severity) conditions.push(eq(userRiskEvents.severity, filter.severity));
   if (filter.from) conditions.push(gte(userRiskEvents.occurredAt, filter.from));
   if (filter.to) conditions.push(lte(userRiskEvents.occurredAt, filter.to));
-  conditions.push(userRiskMembershipVisible(
+  conditions.push(userRiskSiteCeiling(
     userRiskEvents.orgId,
     userRiskEvents.userId,
     filter.siteIds,
@@ -1299,12 +1327,12 @@ export async function getUserRiskEvaluation(filter: UserRiskEvaluationFilter): P
     feedbackConditions.push(inArray(mlFeedbackEvents.orgId, filter.orgIds));
     riskEventConditions.push(inArray(userRiskEvents.orgId, filter.orgIds));
   }
-  feedbackConditions.push(userRiskMembershipVisible(
+  feedbackConditions.push(userRiskSiteCeiling(
     mlFeedbackEvents.orgId,
     sql`${mlFeedbackEvents.sourceId}`,
     filter.siteIds,
   ));
-  riskEventConditions.push(userRiskMembershipVisible(
+  riskEventConditions.push(userRiskSiteCeiling(
     userRiskEvents.orgId,
     userRiskEvents.userId,
     filter.siteIds,
@@ -1639,5 +1667,7 @@ export async function listActiveDeviceSessionsForUserInOrg(input: {
 }
 
 export const userRiskScoringInternals = {
-  recordTrainingAssignment
+  recordTrainingAssignment,
+  userRiskMembershipVisible,
+  userRiskSiteCeiling
 };

@@ -452,6 +452,7 @@ describe('userRiskRoutes', () => {
   });
 
   it('POST /assign-training triggers assignment workflow', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
     vi.mocked(assignSecurityTraining).mockResolvedValue({
       assignmentEventId: '00000000-0000-0000-0000-000000000020',
       moduleId: 'security-awareness-baseline',
@@ -475,5 +476,86 @@ describe('userRiskRoutes', () => {
       eventType: 'training.assigned',
       outcome: 'assigned'
     }));
+  });
+});
+
+describe('userRiskRoutes write-path site ceiling', () => {
+  const CEILING = ['00000000-0000-4000-8000-000000000050'];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(resolveOrgAccess).mockResolvedValue({ type: 'single', orgId: ORG_ID });
+  });
+
+  it('POST /users/:userId/training-completed carries the site ceiling into the membership check', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/training-completed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(200);
+    expect(getUserRiskOrgMembership).toHaveBeenCalledWith(USER_ID, ORG_ID, CEILING);
+  });
+
+  it('POST /users/:userId/feedback carries the site ceiling into the membership check', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+
+    const app = buildApp();
+    const res = await app.request(`/user-risk/users/${USER_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'false_positive' })
+    });
+
+    expect(res.status).toBe(200);
+    expect(getUserRiskOrgMembership).toHaveBeenCalledWith(USER_ID, ORG_ID, CEILING);
+  });
+
+  it('POST /assign-training denies a target outside the site ceiling before any write', async () => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(false);
+
+    const app = buildApp();
+    const res = await app.request('/user-risk/assign-training', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId: USER_ID })
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'User not found in this organization' });
+    expect(getUserRiskOrgMembership).toHaveBeenCalledWith(USER_ID, ORG_ID, CEILING);
+    expect(assignSecurityTraining).not.toHaveBeenCalled();
+    expect(emitUserRiskFeedback).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['training-completed', `/user-risk/users/${USER_ID}/training-completed`, {}],
+    ['feedback', `/user-risk/users/${USER_ID}/feedback`, { outcome: 'false_positive' }],
+    ['assign-training', '/user-risk/assign-training', { userId: USER_ID }]
+  ])('POST %s leaves the membership check unrestricted for a caller with no site ceiling', async (_label, path, body) => {
+    vi.mocked(getUserRiskOrgMembership).mockResolvedValue(true);
+    vi.mocked(emitUserRiskFeedback).mockResolvedValue(undefined);
+    vi.mocked(assignSecurityTraining).mockResolvedValue({
+      assignmentEventId: '00000000-0000-0000-0000-000000000020',
+      moduleId: 'security-awareness-baseline',
+      deduplicated: false,
+      eventPublished: true
+    });
+
+    const app = buildApp({ allowedSiteIds: undefined });
+    const res = await app.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    expect(res.status).toBeLessThan(300);
+    expect(getUserRiskOrgMembership).toHaveBeenCalledWith(USER_ID, ORG_ID, undefined);
   });
 });

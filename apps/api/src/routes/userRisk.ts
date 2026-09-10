@@ -339,7 +339,7 @@ userRiskRoutes.post(
       return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
     }
 
-    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId);
+    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId, auth.allowedSiteIds);
     if (!isMember) {
       return c.json({ error: 'User not found in this organization' }, 404);
     }
@@ -394,7 +394,7 @@ userRiskRoutes.post(
       return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
     }
 
-    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId);
+    const isMember = await getUserRiskOrgMembership(userId, resolved.orgId, auth.allowedSiteIds);
     if (!isMember) {
       return c.json({ error: 'User not found in this organization' }, 404);
     }
@@ -496,6 +496,14 @@ userRiskRoutes.post(
     const resolved = resolveWriteOrgId(auth, payload.orgId);
     if (!resolved.orgId) {
       return c.json({ error: resolved.error ?? 'Organization resolution failed' }, resolved.status ?? 400);
+    }
+
+    // Same gate as the two feedback writes: without it a site-restricted tech
+    // could assign training to (and emit a feedback row for) a user their read
+    // projections 404 on, which is an enumeration oracle on the site axis.
+    const isMember = await getUserRiskOrgMembership(payload.userId, resolved.orgId, auth.allowedSiteIds);
+    if (!isMember) {
+      return c.json({ error: 'User not found in this organization' }, 404);
     }
 
     const assignment = await assignSecurityTraining({

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { sql, type SQL } from 'drizzle-orm';
 
 const dbMocks = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -39,12 +41,56 @@ import {
   userRiskScoringInternals
 } from './userRiskScoring';
 
+function mockVisibleRiskMembershipWithNoHistory(): void {
+  // membership (visible) -> history (empty) -> events (empty) -> policy lookup
+  dbMocks.selectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            userId: '00000000-0000-4000-8000-000000000010',
+            name: 'Target',
+            email: 'target@example.test',
+            mfaEnabled: false,
+            lastLoginAt: null
+          }])
+        })
+      })
+    })
+  });
+  const emptyOrdered = () => ({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([])
+        })
+      })
+    })
+  });
+  dbMocks.selectMock.mockReturnValueOnce(emptyOrdered());
+  dbMocks.selectMock.mockReturnValueOnce(emptyOrdered());
+  // Anything further would be getOrCreateUserRiskPolicy: an empty policy read
+  // followed by the default-policy INSERT.
+  dbMocks.selectMock.mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([])
+      })
+    })
+  });
+  dbMocks.insertMock.mockReturnValue({
+    values: vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+    })
+  });
+}
+
 function mockHiddenRiskMembership(): void {
   dbMocks.selectMock.mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       innerJoin: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          for: vi.fn().mockResolvedValue([])
+          limit: vi.fn().mockResolvedValue([])
         })
       })
     })
@@ -126,9 +172,12 @@ describe('userRiskScoring helpers', () => {
 });
 
 describe('getUserRiskDetail visibility short-circuit', () => {
-  it('performs no score, event, or policy subsidiary read for a hidden membership', async () => {
+  it('returns no detail and creates no policy row for a hidden membership', async () => {
     mockHiddenRiskMembership();
 
+    // Behavioural, not chain-shaped: a target the caller's site ceiling hides
+    // must yield null, must not trigger the score/event subsidiary reads, and
+    // must not lazily insert the org default risk policy.
     await expect(getUserRiskDetail(
       '00000000-0000-4000-8000-000000000001',
       '00000000-0000-4000-8000-000000000010',
@@ -137,6 +186,66 @@ describe('getUserRiskDetail visibility short-circuit', () => {
 
     expect(dbMocks.selectMock).toHaveBeenCalledTimes(1);
     expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+
+  it('creates no default policy row when a visible target has no score history', async () => {
+    mockVisibleRiskMembershipWithNoHistory();
+
+    await expect(getUserRiskDetail(
+      '00000000-0000-4000-8000-000000000001',
+      '00000000-0000-4000-8000-000000000010',
+      ['00000000-0000-4000-8000-000000000050'],
+    )).resolves.toBeNull();
+
+    // The lazy getOrCreateUserRiskPolicy write must stay behind the
+    // history-length check: a 404 detail must not mutate org state.
+    expect(dbMocks.insertMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('user-risk site visibility predicates', () => {
+  const dialect = new PgDialect();
+  const compile = (fragment: SQL): string => dialect.sqlToQuery(fragment).sql;
+  const ORG_COL = sql`"user_risk_events"."org_id"`;
+  const USER_COL = sql`"user_risk_events"."user_id"`;
+
+  it('userRiskSiteCeiling adds no membership subquery for an unrestricted caller', () => {
+    const compiled = compile(
+      userRiskScoringInternals.userRiskSiteCeiling(ORG_COL, USER_COL, undefined)
+    );
+
+    expect(compiled.trim()).toBe('true');
+    expect(compiled).not.toContain('organization_users');
+  });
+
+  it('userRiskSiteCeiling fails closed for a defined-empty ceiling', () => {
+    const compiled = compile(
+      userRiskScoringInternals.userRiskSiteCeiling(ORG_COL, USER_COL, [])
+    );
+
+    expect(compiled.trim()).toBe('false');
+  });
+
+  it('userRiskSiteCeiling requires an overlapping current membership for a defined ceiling', () => {
+    const compiled = compile(
+      userRiskScoringInternals.userRiskSiteCeiling(ORG_COL, USER_COL, ['site-a'])
+    );
+
+    expect(compiled).toContain('exists');
+    expect(compiled).toContain('"organization_users"');
+    expect(compiled).toContain('&&');
+  });
+
+  it('userRiskMembershipVisible still requires a current membership when unrestricted', () => {
+    // Scores/detail/membership readers previously inner-joined organization_users,
+    // so their unrestricted behaviour must keep requiring a current membership.
+    const compiled = compile(
+      userRiskScoringInternals.userRiskMembershipVisible(ORG_COL, USER_COL, undefined)
+    );
+
+    expect(compiled).toContain('exists');
+    expect(compiled).toContain('"organization_users"');
+    expect(compiled).not.toContain('&&');
   });
 });
 

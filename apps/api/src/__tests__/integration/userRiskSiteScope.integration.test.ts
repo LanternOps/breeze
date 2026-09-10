@@ -2,8 +2,7 @@ import './setup';
 
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { and, eq, sql } from 'drizzle-orm';
-import postgres from 'postgres';
+import { and, eq } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -46,28 +45,6 @@ async function setCallerSites(userId: string, orgId: string, siteIds: string[] |
       .where(and(eq(organizationUsers.userId, userId), eq(organizationUsers.orgId, orgId)));
   });
   await clearPermissionCache(userId);
-}
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
-async function waitForBlockedBackend(): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    const rows = await getTestDb().execute<{ waiting: number }>(sql`
-      SELECT count(*)::int AS waiting
-      FROM pg_catalog.pg_stat_activity
-      WHERE datname = current_database()
-        AND state = 'active'
-        AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
-    `);
-    if ((rows[0]?.waiting ?? 0) >= 1) return;
-    if (Date.now() > deadline) throw new Error('detail request did not block on the membership lock');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
 }
 
 describe('user-risk current-membership site visibility', () => {
@@ -184,16 +161,16 @@ describe('user-risk current-membership site visibility', () => {
     expect((await get(env.token, '/api/v1/user-risk/evaluation?days=30')).body.data.riskSignals).toBe(0);
   });
 
-  runDb('rechecks a concurrent membership move after waiting for the target row lock', async () => {
+  runDb('stops showing a target after their current membership moves to a hidden site', async () => {
     const env = await setupTestEnvironment({
       scope: 'organization',
       rolePermissions: [{ resource: 'users', action: 'read' }],
     });
-    const hiddenSite = await createSite({ orgId: env.organization.id, name: 'Race destination' });
+    const hiddenSite = await createSite({ orgId: env.organization.id, name: 'Move destination' });
     const target = await createUser({
       partnerId: env.partner.id,
       orgId: env.organization.id,
-      email: `risk-race-${crypto.randomUUID().slice(0, 8)}@example.test`,
+      email: `risk-move-${crypto.randomUUID().slice(0, 8)}@example.test`,
     });
     const database = getTestDb();
     const [membership] = await database.insert(organizationUsers).values({
@@ -212,31 +189,20 @@ describe('user-risk current-membership site visibility', () => {
     });
     await setCallerSites(env.user.id, env.organization.id, [env.site.id]);
 
-    const lockHeld = deferred();
-    const release = deferred();
-    const holder = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
-    let holderWork: Promise<unknown> | undefined;
-    try {
-      holderWork = holder.begin(async (tx) => {
-        await tx`SELECT id FROM organization_users WHERE id = ${membership!.id} FOR UPDATE`;
-        lockHeld.resolve();
-        await release.promise;
-        await tx`UPDATE organization_users SET site_ids = ARRAY[${hiddenSite.id}::uuid] WHERE id = ${membership!.id}`;
-      });
-      await lockHeld.promise;
+    // Visible while the target's CURRENT membership overlaps the caller ceiling.
+    const before = await get(env.token, `/api/v1/user-risk/users/${target.id}`);
+    expect(before.status).toBe(200);
 
-      const detailPromise = get(env.token, `/api/v1/user-risk/users/${target.id}`);
-      await waitForBlockedBackend();
-      release.resolve();
-      await holderWork;
+    // Visibility follows the current membership, not the site the retained
+    // history was recorded under: once the row moves out of the ceiling the
+    // whole projection disappears, identity fields included.
+    await database
+      .update(organizationUsers)
+      .set({ siteIds: [hiddenSite.id] })
+      .where(eq(organizationUsers.id, membership!.id));
 
-      const detail = await detailPromise;
-      expect(detail.status).toBe(404);
-      expect(JSON.stringify(detail.body)).not.toContain(target.email);
-    } finally {
-      release.resolve();
-      await holderWork?.catch(() => undefined);
-      await holder.end({ timeout: 1 });
-    }
+    const after = await get(env.token, `/api/v1/user-risk/users/${target.id}`);
+    expect(after.status).toBe(404);
+    expect(JSON.stringify(after.body)).not.toContain(target.email);
   });
 });

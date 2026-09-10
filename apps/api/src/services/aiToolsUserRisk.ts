@@ -8,10 +8,15 @@
  * - assign_security_training (Tier 2): Assign security awareness training
  */
 
-import type { AuthContext } from '../middleware/auth';
+import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { listReliabilityDevices } from './reliabilityScoring';
-import { assignSecurityTraining, getUserRiskDetail, listUserRiskScores } from './userRiskScoring';
+import {
+  assignSecurityTraining,
+  getUserRiskDetail,
+  getUserRiskOrgMembership,
+  listUserRiskScores
+} from './userRiskScoring';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -277,6 +282,14 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      // This tool performs the same mutation the HTTP route gates behind
+      // requireMfa(); Tier 2 means it auto-executes, so the MFA and site-ceiling
+      // proofs have to be re-established here or the AI/MCP path is a bypass.
+      // Checked before input validation, matching the HTTP route's ordering.
+      if (!hasSatisfiedMfa(auth)) {
+        return JSON.stringify({ error: 'MFA required' });
+      }
+
       if (typeof input.userId !== 'string' || !input.userId) {
         return JSON.stringify({ error: 'userId is required' });
       }
@@ -287,6 +300,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       );
       if (resolved.error || !resolved.orgId) {
         return JSON.stringify({ error: resolved.error ?? 'orgId is required for this operation' });
+      }
+
+      const isMember = await getUserRiskOrgMembership(input.userId, resolved.orgId, auth.allowedSiteIds);
+      if (!isMember) {
+        return JSON.stringify({ error: 'User not found in this organization' });
       }
 
       try {
