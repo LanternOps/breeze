@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -48,6 +49,22 @@ const (
 	// Directory and file handles held across an operation are deliberately NOT
 	// shared for delete: that is what pins the component.
 	shareNoDelete = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
+
+	// FILE handles (the temporary, and a destination being inspected) DO share
+	// delete. Only directories are pinned against rename/delete; a data file
+	// must remain replaceable, exactly as it is on unix, or two restores
+	// publishing to the same destination deadlock each other: the winner keeps
+	// its handle open until installFile returns, and a sibling's rename onto
+	// that name then fails with a sharing violation. This does not widen the
+	// boundary — the temporary's name is random and the file itself is pinned
+	// by handle.
+	shareFile = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+
+	// FileRenameInformationEx, the NT information class that takes flags rather
+	// than a bare BOOLEAN. x/sys/windows does not export it. Windows 10 RS1 /
+	// Server 2016 and later; older kernels answer STATUS_INVALID_INFO_CLASS and
+	// we fall back to class 10.
+	fileRenameInformationEx = 65
 
 	ntDirOptions  = windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
 	ntFileOptions = windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
@@ -89,7 +106,7 @@ func (c *dirChain) close() {
 
 // openRelativeComponent is the openat equivalent: name is resolved relative to
 // parent, never from the volume root.
-func openRelativeComponent(parent windows.Handle, name string, access uint32, disposition uint32, options uint32, sa *windows.SecurityAttributes) (windows.Handle, error) {
+func openRelativeComponent(parent windows.Handle, name string, access uint32, share uint32, disposition uint32, options uint32, sa *windows.SecurityAttributes) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -106,7 +123,7 @@ func openRelativeComponent(parent windows.Handle, name string, access uint32, di
 	var handle windows.Handle
 	var iosb windows.IO_STATUS_BLOCK
 	if err := windows.NtCreateFile(&handle, access|windows.SYNCHRONIZE, oa, &iosb, nil,
-		windows.FILE_ATTRIBUTE_NORMAL, shareNoDelete, disposition, options, 0, 0); err != nil {
+		windows.FILE_ATTRIBUTE_NORMAL, share, disposition, options, 0, 0); err != nil {
 		return windows.InvalidHandle, err
 	}
 	return handle, nil
@@ -181,7 +198,7 @@ func openVerifiedDir(path string, create bool, finalSA *windows.SecurityAttribut
 		if create {
 			disposition = windows.FILE_OPEN_IF
 		}
-		handle, err := openRelativeComponent(chain.leaf(), component, access, disposition, ntDirOptions, sa)
+		handle, err := openRelativeComponent(chain.leaf(), component, access, shareNoDelete, disposition, ntDirOptions, sa)
 		if err != nil {
 			chain.close()
 			return nil, fmt.Errorf("open path component %q: %w", component, err)
@@ -378,7 +395,7 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	tempName := ".breeze-restore-" + hex.EncodeToString(random[:])
 	tempHandle, err := openRelativeComponent(parentHandle, tempName,
 		windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
-		windows.FILE_CREATE, ntFileOptions, nil)
+		shareFile, windows.FILE_CREATE, ntFileOptions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create target temporary file: %w", err)
 	}
@@ -450,9 +467,60 @@ func setBasicInfo(handle windows.Handle, info *fileBasicInfo) error {
 		(*byte)(unsafe.Pointer(info)), uint32(unsafe.Sizeof(*info)))
 }
 
-// fileRenameInformation mirrors FILE_RENAME_INFORMATION. Go lays this out
-// exactly as the NT ABI does on x64: the union at 0, four bytes of padding,
-// RootDirectory at 8, FileNameLength at 16 and FileName at 20.
+// renameRelativeExUnsupported latches once a kernel tells us it does not know
+// FileRenameInformationEx, so we stop paying for the probe.
+var renameRelativeExUnsupported atomic.Bool
+
+// renameRelative publishes the open file at handle as name under parent,
+// atomically replacing whatever name currently refers to. RootDirectory is the
+// pinned parent handle, so the destination is resolved relative to a directory
+// we hold open — never from a path string the kernel would re-resolve.
+//
+// This deliberately uses the NATIVE NtSetInformationFile rather than Win32's
+// SetFileInformationByHandle(FileRenameInfo). The Win32 wrapper does not honour
+// a non-NULL RootDirectory — it expects FileName to be a fully qualified path
+// and returns ERROR_INVALID_PARAMETER otherwise, which is how the first
+// handle-relative attempt failed on a Windows Server 2022 lab host. Only the
+// native call gives us the renameat equivalent the rest of the design assumes.
+//
+// FileRenameInformationEx (class 65) is preferred because POSIX semantics let
+// the rename replace a destination that other handles still have open. Without
+// it, two restores publishing to the same destination collide: the winner holds
+// its handle until installFile returns and the sibling's rename fails with
+// STATUS_SHARING_VIOLATION (105 of 200 concurrent installs failed that way on
+// the lab host). Class 10 remains the fallback for pre-Server-2016 kernels,
+// with a short bounded retry for the same reason.
+func renameRelative(handle, parent windows.Handle, name string) error {
+	if !renameRelativeExUnsupported.Load() {
+		err := setRenameInformation(handle, parent, name, fileRenameInformationEx,
+			windows.FILE_RENAME_REPLACE_IF_EXISTS|windows.FILE_RENAME_POSIX_SEMANTICS)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, windows.STATUS_INVALID_INFO_CLASS) ||
+			errors.Is(err, windows.STATUS_NOT_SUPPORTED) ||
+			errors.Is(err, windows.STATUS_INVALID_PARAMETER) {
+			renameRelativeExUnsupported.Store(true)
+		} else {
+			return err
+		}
+	}
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		err = setRenameInformation(handle, parent, name, windows.FileRenameInformation,
+			windows.FILE_RENAME_REPLACE_IF_EXISTS)
+		if err == nil || !errors.Is(err, windows.STATUS_SHARING_VIOLATION) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+	return err
+}
+
+// fileRenameInformation mirrors FILE_RENAME_INFORMATION (and its Ex twin, which
+// has the identical layout). Go lays this out exactly as the NT ABI does on
+// x64: the union at 0, four bytes of padding, RootDirectory at 8,
+// FileNameLength at 16 and FileName at 20.
 type fileRenameInformation struct {
 	ReplaceIfExists uint32
 	RootDirectory   windows.Handle
@@ -460,22 +528,15 @@ type fileRenameInformation struct {
 	FileName        [1]uint16
 }
 
-// renameRelative publishes the open file at handle as name under parent,
-// atomically replacing whatever name currently refers to. RootDirectory is the
-// pinned parent handle, so the destination is resolved relative to a directory
-// we hold open — never from a path string the kernel would re-resolve.
+// setRenameInformation builds the variable-length request. FileNameLength is in
+// BYTES and excludes the terminator.
 //
-// This deliberately uses the NATIVE NtSetInformationFile(FileRenameInformation)
-// rather than Win32's SetFileInformationByHandle(FileRenameInfo). The Win32
-// wrapper does not honour a non-NULL RootDirectory — it expects FileName to be
-// a fully qualified path and returns ERROR_INVALID_PARAMETER otherwise, which
-// is exactly how the first handle-relative attempt failed on a Windows Server
-// 2022 lab host. Only the native call gives us the handle-relative rename that
-// makes this the equivalent of renameat.
-//
-// FileNameLength is in BYTES and excludes the terminator; the buffer is
-// offsetof(FileName) + FileNameLength.
-func renameRelative(handle, parent windows.Handle, name string) error {
+// The buffer is offsetof(FileName)+FileNameLength but NEVER shorter than the
+// whole struct: the kernel checks Length >= sizeof(FILE_RENAME_INFORMATION)
+// (24 on x64) BEFORE it looks at FileNameLength, so a one-character
+// destination — 20+2 = 22 — is rejected with STATUS_INFO_LENGTH_MISMATCH. A
+// real restore hits this: "…\assure\src\x".
+func setRenameInformation(handle, parent windows.Handle, name string, class uint32, flags uint32) error {
 	nameUTF16, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -485,22 +546,23 @@ func renameRelative(handle, parent windows.Handle, name string) error {
 		return errors.New("publication name is empty")
 	}
 	var layout fileRenameInformation
-	headerLen := int(unsafe.Offsetof(layout.FileName))
-	buf := make([]byte, headerLen+nameLen)
+	size := int(unsafe.Offsetof(layout.FileName)) + nameLen
+	if minimum := int(unsafe.Sizeof(layout)); size < minimum {
+		size = minimum
+	}
+	buf := make([]byte, size)
 	info := (*fileRenameInformation)(unsafe.Pointer(&buf[0]))
-	// Class 10 reads only the BOOLEAN low byte of this union; the Ex class
-	// (65) is the one that takes flags, and it needs Windows 10 / Server 2016.
-	info.ReplaceIfExists = windows.FILE_RENAME_REPLACE_IF_EXISTS
+	info.ReplaceIfExists = flags
 	info.RootDirectory = parent
 	info.FileNameLength = uint32(nameLen)
 	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:nameLen/2:nameLen/2], nameUTF16)
 
 	var iosb windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(handle, &iosb, &buf[0], uint32(len(buf)), windows.FileRenameInformation)
+	return windows.NtSetInformationFile(handle, &iosb, &buf[0], uint32(len(buf)), class)
 }
 
 func deleteRelative(parent windows.Handle, name string) error {
-	handle, err := openRelativeComponent(parent, name, windows.DELETE, windows.FILE_OPEN, ntFileOptions, nil)
+	handle, err := openRelativeComponent(parent, name, windows.DELETE, shareFile, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return err
 	}
@@ -513,7 +575,7 @@ func deleteRelative(parent windows.Handle, name string) error {
 
 func clearReadOnlyRelative(parent windows.Handle, name string) error {
 	handle, err := openRelativeComponent(parent, name,
-		windows.FILE_READ_ATTRIBUTES|windows.FILE_WRITE_ATTRIBUTES, windows.FILE_OPEN, ntFileOptions, nil)
+		windows.FILE_READ_ATTRIBUTES|windows.FILE_WRITE_ATTRIBUTES, shareFile, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return err
 	}
@@ -549,7 +611,7 @@ func statFile(base, relative string) (os.FileInfo, error) {
 
 	name := filepath.Base(relative)
 	handle, err := openRelativeComponent(chain.leaf(), name, windows.FILE_READ_ATTRIBUTES,
-		windows.FILE_OPEN, ntFileOptions, nil)
+		shareFile, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
 		return nil, err
 	}

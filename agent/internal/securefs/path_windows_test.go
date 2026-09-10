@@ -285,6 +285,7 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 	}()
 
 	var succeeded atomic.Int64
+	var firstErr atomic.Value
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -294,15 +295,19 @@ func TestInstallFileConcurrentReplacement(t *testing.T) {
 				source := writeSource(t, fmt.Sprintf("payload-%d-%d", i, j))
 				if _, err := InstallFile(base, "file.txt", source, 0, time.Time{}); err == nil {
 					succeeded.Add(1)
+				} else {
+					firstErr.CompareAndSwap(nil, err.Error())
 				}
 			}
 		}(i)
 	}
 	wg.Wait()
 	// Without this the whole test passes vacuously when every publish fails:
-	// the seed file simply stays put and the assertions below still hold.
+	// the seed file simply stays put and the assertions below still hold. The
+	// error text is reported so the log names the actual NTSTATUS.
 	if succeeded.Load() != 200 {
-		t.Fatalf("only %d of 200 concurrent installs succeeded; publication is broken", succeeded.Load())
+		t.Fatalf("only %d of 200 concurrent installs succeeded; publication is broken. First failure: %v",
+			succeeded.Load(), firstErr.Load())
 	}
 	close(stop)
 	readerWG.Wait()
@@ -446,10 +451,13 @@ func TestInstallFileResistsConcurrentComponentSwap(t *testing.T) {
 	}()
 
 	succeeded := 0
+	var lastErr error
 	for i := 0; i < 200; i++ {
 		source := writeSource(t, fmt.Sprintf("content-%d", i))
 		if _, err := InstallFile(base, filepath.Join("parent", fmt.Sprintf("file-%d", i)), source, 0, time.Time{}); err == nil {
 			succeeded++
+		} else {
+			lastErr = err
 		}
 	}
 	close(stop)
@@ -458,7 +466,7 @@ func TestInstallFileResistsConcurrentComponentSwap(t *testing.T) {
 	// but it would also hide a publication that never works at all. The racer
 	// only holds the directory away for a moment, so most iterations must land.
 	if succeeded == 0 {
-		t.Fatal("no install succeeded at all; publication is broken, not merely racing")
+		t.Fatalf("no install succeeded at all; publication is broken, not merely racing. Last failure: %v", lastErr)
 	}
 
 	entries, err := os.ReadDir(outside)
@@ -517,6 +525,13 @@ func TestRenameRelativePublishesUnderThePinnedParent(t *testing.T) {
 		{"replaces an existing destination", "target.txt", "old"},
 		{"creates a destination that does not exist", "fresh.txt", ""},
 		{"handles a long unicode name", "réstauré-ünïcode-name.txt", "old"},
+		// A one-character name makes offsetof(FileName)+FileNameLength (22)
+		// shorter than sizeof(FILE_RENAME_INFORMATION) (24), which the kernel
+		// checks first: STATUS_INFO_LENGTH_MISMATCH. A real restore hits this
+		// with "...\\assure\\src\\x".
+		{"one-character destination name", "x", "old"},
+		{"one-character destination name that does not exist", "y", ""},
+		{"two-character destination name", "xy", "old"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -535,7 +550,7 @@ func TestRenameRelativePublishesUnderThePinnedParent(t *testing.T) {
 
 			handle, err := openRelativeComponent(chain.leaf(), "staged.tmp",
 				windows.GENERIC_WRITE|windows.DELETE|windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES,
-				windows.FILE_CREATE, ntFileOptions, nil)
+				shareFile, windows.FILE_CREATE, ntFileOptions, nil)
 			if err != nil {
 				t.Fatalf("create relative temp: %v", err)
 			}
