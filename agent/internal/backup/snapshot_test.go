@@ -2110,12 +2110,14 @@ type raceDetectProvider struct {
 	mu                sync.Mutex
 	listInFlight      bool
 	violationDetected bool
+	leaseUploadCount  int
 	listDelay         time.Duration
 }
 
 func (p *raceDetectProvider) Upload(localPath, remotePath string) error {
 	if strings.HasSuffix(remotePath, "/upload.lease") {
 		p.mu.Lock()
+		p.leaseUploadCount++
 		if p.listInFlight {
 			p.violationDetected = true
 		}
@@ -2145,6 +2147,12 @@ func (p *raceDetectProvider) sawViolation() bool {
 	return p.violationDetected
 }
 
+func (p *raceDetectProvider) leaseUploads() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.leaseUploadCount
+}
+
 func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(t *testing.T) {
 	restoreInterval := setUploadLeaseIntervalForTest(2 * time.Millisecond)
 	defer restoreInterval()
@@ -2170,6 +2178,15 @@ func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(
 		t.Fatalf("expected nil snapshot (zero files landed), got %+v", snap)
 	}
 
+	// No positive-control assertion here on purpose: with the fix in place,
+	// this specific scenario aborts fast enough (a single failed upload
+	// attempt, no retry) that the heartbeat may legitimately never fire
+	// even once before stopLeaseRefresh stops it — that's a CORRECT outcome
+	// of the fix, not a broken heartbeat. The heartbeat firing at all is
+	// separately proven by TestCreateSnapshot_UploadLease_RefreshedDuring
+	// UploadThenDeletedAfterPublish (which uses a slow provider precisely
+	// so the ticker gets a chance to tick); provider.leaseUploads() is kept
+	// as an instrumentation hook other tests or future changes here can use.
 	if provider.sawViolation() {
 		t.Fatal("a lease-key Upload landed while cleanupSnapshotPrefix's List was in flight — " +
 			"the lease-refresh ticker must be fully stopped (stopLeaseRefresh, blocking) before cleanup starts")
