@@ -264,7 +264,7 @@ you want (e.g. `0.106.0` — no leading `v`). What each job does:
 |---|---|
 | `validate` | Checks the version and enum inputs, and refuses to overwrite an existing `v<version>` release on your repo (signing must happen once per release so reputation accrues on a stable hash). |
 | `windows` | Verifies the official manifest against the committed official key, pins the tag to the manifest's `sourceCommit`, checks out the Breeze build scripts at that commit, downloads + hash-verifies the four unsigned exes, signs them (Azure Artifact Signing or PFX), builds the MSI with WiX, signs the MSI, then asserts every output carries a signer **and an RFC3161 timestamp** and records that result as a signing attestation. |
-| `macos` | Same verify preamble; imports your `.p12` into an ephemeral keychain (deleted even on failure), codesigns all eight darwin binaries with hardened runtime + the repo's entitlements, notarizes them, builds both pkgs, `productsign`s, notarizes + staples, builds `Breeze Installer.app` from source around **your** pkgs, signs/notarizes/staples it, then verifies with `codesign --verify --strict`, `pkgutil --check-signature`, and `spctl -a -t install`, recording the result as a signing attestation. |
+| `macos` | Same verify preamble; imports your `.p12` into an ephemeral keychain (deleted even on failure), codesigns all eight darwin binaries with hardened runtime + the repo's entitlements, notarizes them, builds both pkgs, `productsign`s, notarizes + staples, builds `Breeze Installer.app` from source around **your** pkgs, signs/notarizes/staples it, then verifies with `codesign --verify --strict`, `pkgutil --check-signature`, and `spctl -a -t install`. The package check requires the exact configured Developer ID Installer leaf identity and Team ID and records both in the signing attestation. |
 | `publish` | Mirrors the never-signed official assets (Linux agent/backup/watchdog, viewer, helper, `latest.json` — each hash-verified against the official manifest), generates **your** `release-artifact-manifest.json` (+ `.ed25519` signed with your manifest key), writes `checksums.txt`, and creates release `v<version>` on your repo. The run summary prints the exact env block for Part 5. |
 
 <Aside type="caution" title="One run per version — a partial run consumes it">
@@ -284,7 +284,10 @@ you want (e.g. `0.106.0` — no leading `v`). What each job does:
   bytes) or, for mirrored assets, from the already-verified official
   manifest. `publish` refuses to build a manifest covering an asset that
   neither accounts for — so a component that slips past a signing step
-  fails the run instead of being published as "signed".
+  fails the run instead of being published as "signed". Package entries also
+  carry `signingIdentity` and `signingTeamId`, copied only from the macOS
+  runner's exact leaf-certificate check. Every generated entry also carries
+  `edition: "self-host"`, including unsigned dry-run evidence manifests.
 </Aside>
 
 <Aside type="note" title="Verifying outputs locally">
@@ -341,13 +344,17 @@ the binaries, and re-signs update manifests with its **per-deployment key** —
 agents keep trusting the same deployment key they pinned at enrollment, so no
 agent-side changes are needed.
 
-### T2 (zero-config fallback): local mode
+### T2: local mode
 
 Download your signed release assets and drop them into the API's binary
 directories (`AGENT_BINARY_DIR`, `VIEWER_BINARY_DIR`, `HELPER_BINARY_DIR`)
 with `BINARY_SOURCE=local`. See [Binary Distribution](/deploy/binaries/) for
-directory layout and S3 offload. This works today on any version and needs no
-repository override — at the cost of manual downloads per release.
+directory layout and S3 offload. Also stage your original signed
+`release-artifact-manifest.json` and `.ed25519` signature at the parent of
+`AGENT_BINARY_DIR`, configure your manifest public key, and set
+`BINARY_GITHUB_REPOSITORY` to the repository named by that manifest. macOS
+installer delivery fails closed if the pair is absent, invalid, or describes a
+different edition. This mode costs manual downloads per release.
 
 ### Migration flow for an existing fleet
 

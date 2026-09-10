@@ -497,3 +497,147 @@ func TestRecoveryDownloadProviderRetryBackoffIsContextAware(t *testing.T) {
 		t.Fatalf("Download took %v after cancellation, want it to return promptly (well under the 1s backoff step)", elapsed)
 	}
 }
+
+// TestRecoveryDownloadProviderDoesNotForwardAuthOnRedirect is D21's core
+// proof. net/http's default redirect policy forwards sensitive headers
+// (Authorization included) to a redirect target whenever the target's
+// *host* matches the original request's host, ignoring port — so a 302 from
+// the API to a presigned S3/MinIO URL on the same host but a different port
+// (the exact self-hosted shape: API and object storage on one box) leaks
+// the recovery token into the presigned request, which S3/MinIO then reject
+// with 400 ("Only one auth mechanism allowed"). Both httptest servers below
+// bind to 127.0.0.1 by default, reproducing "same host, different port"
+// without any custom listener config. Before the fix: Download fails with
+// status 400. After the fix: the redirect is followed with no Authorization
+// header, and the object bytes come back.
+func TestRecoveryDownloadProviderDoesNotForwardAuthOnRedirect(t *testing.T) {
+	var sawAuthOnStorage bool
+	var storageAuthValue string
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			sawAuthOnStorage = true
+			storageAuthValue = auth
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"InvalidArgument: Only one auth mechanism allowed"}`)
+			return
+		}
+		_, _ = io.WriteString(w, "object-bytes")
+	}))
+	defer storage.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, storage.URL+"/presigned?X-Amz-Signature=deadbeef", http.StatusFound)
+	}))
+	defer api.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), api.URL, "tok", &AuthenticatedDownloadDescriptor{
+		URL:               api.URL + "/download",
+		TokenHeaderName:   "authorization",
+		TokenHeaderFormat: "Bearer <recovery-token>",
+		PathQueryParam:    "path",
+		PathPrefix:        "snapshots/x",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	if err := provider.Download("snapshots/x/f.bin", dest); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if sawAuthOnStorage {
+		t.Fatalf("Authorization header leaked to redirect target: %q", storageAuthValue)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "object-bytes" {
+		t.Fatalf("downloaded data = %q", string(data))
+	}
+}
+
+// TestRecoveryDownloadProviderFollowsChainedRedirectWithoutAuth proves a
+// second redirect hop (API -> intermediate -> final storage) is followed
+// correctly, with no Authorization header reaching the ultimate target. The
+// intermediate hop redirects unconditionally regardless of any headers it
+// receives, isolating "does the chain-following logic work" from "is auth
+// stripped" (already covered by the sibling test above) — the final server
+// is still the one asserting no Authorization arrived.
+func TestRecoveryDownloadProviderFollowsChainedRedirectWithoutAuth(t *testing.T) {
+	var finalSawAuth bool
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			finalSawAuth = true
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, "chained-bytes")
+	}))
+	defer final.Close()
+
+	intermediate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL+"/object", http.StatusFound)
+	}))
+	defer intermediate.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "missing auth", http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, intermediate.URL+"/step2", http.StatusFound)
+	}))
+	defer api.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), api.URL, "tok", &AuthenticatedDownloadDescriptor{
+		URL:               api.URL + "/download",
+		TokenHeaderName:   "authorization",
+		TokenHeaderFormat: "Bearer <recovery-token>",
+		PathQueryParam:    "path",
+		PathPrefix:        "snapshots/x",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	if err := provider.Download("snapshots/x/f.bin", dest); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if finalSawAuth {
+		t.Fatal("Authorization header leaked to second-hop redirect target")
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "chained-bytes" {
+		t.Fatalf("downloaded data = %q", string(data))
+	}
+}
+
+// TestRecoveryDownloadProviderFailsOnRedirectLoopBeyondCap proves the
+// redirect-following loop is bounded: a server that redirects forever must
+// eventually produce a permanent error mentioning redirects, rather than
+// hanging or looping indefinitely.
+func TestRecoveryDownloadProviderFailsOnRedirectLoopBeyondCap(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, server.URL+"/download", http.StatusFound)
+	}))
+	defer server.Close()
+
+	provider := newRecoveryDownloadProvider(context.Background(), server.URL, "tok", &AuthenticatedDownloadDescriptor{
+		URL:            server.URL + "/download",
+		PathQueryParam: "path",
+		PathPrefix:     "snapshots/x",
+	})
+
+	dest := filepath.Join(t.TempDir(), "f.bin")
+	err := provider.Download("snapshots/x/f.bin", dest)
+	if err == nil {
+		t.Fatal("expected an error for a redirect loop")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "redirect") {
+		t.Fatalf("error = %v, want it to mention redirects", err)
+	}
+}

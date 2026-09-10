@@ -96,7 +96,7 @@ policy() {
   echo "$pid"
 }
 assign() { api POST "/configuration-policies/$1/assignments" "$(jq -cn --arg d "$2" '{level:"device",targetId:$d,priority:0}')" | jq -c '{id, level, targetId}'; }
-run() { api POST "/backup/jobs/run/$1" | jq -r '.jobs[]?.id // .id'; }
+run() { api POST "/backup/jobs/run/$1" | jq -r 'if (.jobs | type) == "array" and (.jobs | length) > 0 then .jobs[].id else .id end'; }
 job() { api GET "/backup/jobs/$1"; }
 jobs() { api GET "/backup/jobs?deviceId=$1" | jq -c '(.data // .)[] | {id, type, status, snapshotId, fileCount, totalSize, transferredSize, referencedFiles, errorCount, errorLog, createdAt, completedAt}'; }
 wait_job() {
@@ -108,7 +108,7 @@ wait_job() {
     sleep 5
   done
 }
-snapshots() { api GET "/backup/snapshots?deviceId=$1" | jq -c '(.data // .)[] | {id, backupType, sizeBytes, fileCount, createdAt, expiresAt, location}'; }
+snapshots() { api GET "/backup/snapshots?deviceId=$1" | jq -c '(.data // .)[] | {id, label, jobId, backupType, sizeBytes, fileCount, createdAt, expiresAt, location}'; }
 snapshot() { api GET "/backup/snapshots/$1"; }
 browse() { api GET "/backup/snapshots/$1/browse"; }
 restore() { api POST /backup/restore "$(jq -cn --arg s "$1" --argjson x "${2:-{\}}" '{snapshotId:$s,restoreType:"full"} + $x')" | jq -r '.data.id // .id'; }

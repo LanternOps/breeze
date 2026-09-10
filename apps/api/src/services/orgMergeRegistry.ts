@@ -31,8 +31,7 @@ export type OrgMergePolicy =
   | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / software_versions / report_runs have no org_id column
-// of their own:
+// deployment_results / report_runs have no org_id column of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
 // does nothing to them directly. (Exception: `report_runs` rows under a
@@ -52,13 +51,22 @@ export type OrgMergePolicy =
 // keeping it in sync. Classifying it follows-parent would mean the merge
 // engine never touches its org_id, silently pinning those rows to the dead
 // loser org forever — CORRECTED to a plain repoint in REPOINT_TABLES below.
+//
+// `software_versions` is deliberately NOT derived from
+// ASSOCIATED_SYSTEM_SCOPED_TABLES even though it has the same no-own-org_id
+// shape: the dependency-pinning fix (#5473) replaced its generic `clearSql`
+// pre-clear entry there with `deleteSoftwareCatalogsAndObjects` (it now also
+// has to delete the version's uploaded S3 artifact, which a bare DELETE
+// statement can't do), so it dropped out of that list. Its merge tenancy
+// shape hasn't changed — it's still catalog_id-keyed with no org_id column —
+// so it's classified by hand directly in SPECIAL below instead of relying on
+// derivation.
 const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   device_commands: 'device-keyed',
   user_sso_identities: 'user-keyed',
   sso_sessions: 'provider-keyed',
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
-  software_versions: 'parent-keyed (software_catalog)',
   report_runs: 'parent-keyed (reports)',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
@@ -362,6 +370,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
 
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
+
+  // Not derived from ASSOCIATED_SYSTEM_SCOPED_TABLES (see the comment above
+  // FOLLOWS_PARENT_NOTES) — classified by hand instead. Same shape as the
+  // derived entries: no org_id column, tenancy inferred via catalog_id ->
+  // software_catalog. A merge repoints software_catalog.org_id (REPOINT_TABLES
+  // below); since a version's org is never read directly, only joined through
+  // its catalog row, every version pinned by the loser org re-homes to the
+  // surviving org for free the moment its parent catalog repoints — the merge
+  // engine does nothing to software_versions directly.
+  software_versions: { kind: 'follows-parent', note: 'parent-keyed (software_catalog)' },
 
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint

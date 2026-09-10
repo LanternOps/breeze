@@ -18,7 +18,7 @@ const (
 	// Sane upper bounds for caller-supplied lifetime limits. Values above the
 	// cap are almost certainly a bug or hostile input.
 	maxIdleTimeoutMinutes   = 1440 // 24h
-	maxSessionDurationHours = 168  // 7d
+	maxSessionDurationHours = 12   // hard cap; 0 and >12 both resolve to it (desktop.MaxSessionDurationCap)
 )
 
 var helperDesktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -92,8 +92,7 @@ func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
 	}
 	// Clamp/reject lifetime bounds. Negative values must NOT silently decode to
 	// "disabled" (fail-open) — reject them outright rather than letting the >0
-	// guard in the policy decoder drop them. Cap at sane maxima to reject
-	// hostile/buggy values.
+	// guard in the policy decoder drop them.
 	if req.IdleTimeoutMinutes < 0 {
 		return fmt.Errorf("idleTimeoutMinutes must not be negative: %d", req.IdleTimeoutMinutes)
 	}
@@ -103,8 +102,21 @@ func validateDesktopStartRequest(req *ipc.DesktopStartRequest) error {
 	if req.MaxSessionDurationHours < 0 {
 		return fmt.Errorf("maxSessionDurationHours must not be negative: %d", req.MaxSessionDurationHours)
 	}
+	// An over-cap max duration is CLAMPED here rather than rejected. Rejecting
+	// it would refuse the whole session over a stale policy value, and the
+	// clamp is the same one both decoders apply (0 and >12h → 12h), so the
+	// helper can never be pushed past the 12h ceiling either way.
 	if req.MaxSessionDurationHours > maxSessionDurationHours {
-		return fmt.Errorf("maxSessionDurationHours %d exceeds max %d", req.MaxSessionDurationHours, maxSessionDurationHours)
+		req.MaxSessionDurationHours = maxSessionDurationHours
+	}
+	// A start with no USABLE revocation lease is refused: the API is not in the
+	// peer-to-peer data path, so without a lease the control plane could never
+	// end this session. Validated through the same shared function the agent's
+	// two decoders use, so "usable" means exactly one thing everywhere — an
+	// all-zero block used to slip through here and produce a session whose
+	// watchdog had nothing to enforce.
+	if _, err := desktop.NormalizeRevocationLease(req.RevocationLease); err != nil {
+		return err
 	}
 	return nil
 }

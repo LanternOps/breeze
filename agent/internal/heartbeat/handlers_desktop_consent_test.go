@@ -57,9 +57,10 @@ func startDesktopCmd(sessionID string, prompt *ipc.DesktopPrompt) Command {
 		ID:   "cmd-consent-" + sessionID,
 		Type: tools.CmdStartDesktop,
 		Payload: map[string]any{
-			"sessionId": sessionID,
-			"offer":     "test-offer",
-			"prompt":    promptMap,
+			"sessionId":       sessionID,
+			"offer":           "test-offer",
+			"prompt":          promptMap,
+			"revocationLease": testRevocationLeasePayload(),
 		},
 	}
 }
@@ -434,9 +435,10 @@ func TestConsentGate_NonConsentMode_Skips(t *testing.T) {
 		ID:   "cmd-notify-skip",
 		Type: tools.CmdStartDesktop,
 		Payload: map[string]any{
-			"sessionId": "sess-notify-skip",
-			"offer":     "test-offer",
-			"prompt":    promptMap,
+			"sessionId":       "sess-notify-skip",
+			"offer":           "test-offer",
+			"prompt":          promptMap,
+			"revocationLease": testRevocationLeasePayload(),
 		},
 	})
 
@@ -455,8 +457,9 @@ func TestConsentGate_NilPrompt_Skips(t *testing.T) {
 		ID:   "cmd-noprompt",
 		Type: tools.CmdStartDesktop,
 		Payload: map[string]any{
-			"sessionId": "sess-noprompt",
-			"offer":     "test-offer",
+			"sessionId":       "sess-noprompt",
+			"offer":           "test-offer",
+			"revocationLease": testRevocationLeasePayload(),
 			// No "prompt" key → parseDesktopPrompt returns nil
 		},
 	})

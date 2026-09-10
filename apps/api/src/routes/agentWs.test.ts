@@ -343,6 +343,13 @@ vi.mock('../services/backupResultPersistence', async (importOriginal) => {
 // the 0-row CAS branch and this file drives the real helper. Everything else in
 // services/sentry (captureException, the request-scope helpers) stays real, so
 // this must be a partial mock.
+const renewRevocationLeaseMock = vi.fn<() => Promise<Record<string, unknown>>>(async () => ({
+  status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+}));
+vi.mock('../services/remoteRevocationLease', () => ({
+  renewRevocationLease: (...a: unknown[]) => renewRevocationLeaseMock(...(a as [])),
+}));
+
 vi.mock('../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentry')>();
   // captureException is also stubbed (#5128 review round 2): the generic
@@ -419,6 +426,7 @@ import {
   refreshDispatchedExpectation,
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
+import { BACKUP_QUEUE_ACK_RESULT_STATUS } from '../services/commandResultAcceptance';
 import { enqueueBackupResults } from '../jobs/backupEnqueue';
 import { encryptSensitivePayloadFields } from '../services/sensitiveCommandPayload';
 
@@ -2767,6 +2775,182 @@ describe('backup command_result non-terminal guards (guard ordering integration)
   });
 });
 
+// D20 items C/D/E — mssql_backup and hyperv_backup DO create a device_commands
+// row (routes/backup/mssql.ts, hyperv.ts call executeCommand()), unlike
+// backup_run above, so their results land on the GENERIC owned-command path,
+// not processOrphanedCommandResult's backupJobs-by-commandId branch. Before
+// this fix the agent's FIRST reply — a queue-admission ack — was written as
+// the row's ONE terminal result, so the real outcome that arrived later found
+// the row already terminal and was dropped ("Ignoring stale or
+// already-processed command result"), and — once item E starts putting jobId
+// in the payload — the ack itself would otherwise reach
+// handleProviderBackedBackupResult and vacuously "complete" the backup_jobs
+// row with no snapshot at all (backupCommandResultSchema is all-optional).
+describe('D20 — queued-workload (mssql_backup/hyperv_backup) queue-ack handling', () => {
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+  const commandId = '55555555-5555-4555-8555-555555555555';
+  // Must be UUID-shaped: handleProviderBackedBackupResult's jobId fallback
+  // gates on UUID_REGEX.test(payload.jobId) (backupJobId is the unconstrained
+  // field; jobId is reused from generic command payloads, hence the guard).
+  const jobId = '99999999-9999-4999-8999-999999999999';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it.each(['mssql_backup', 'hyperv_backup'])(
+    'a %s queue-admission ack marks device_commands completed-with-marker WITHOUT firing terminal side effects',
+    async (commandType) => {
+      const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+      const commandRow = {
+        id: commandId,
+        type: commandType,
+        payload: { jobId, instance: 'MSSQLSERVER', database: 'AppDb', backupType: 'full' },
+        deviceId: 'device-123',
+        status: 'sent',
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([commandRow]) as any)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any); // isAgentDeviceStillAuthorized: no row → fail-open
+      const updateChain = updateResult([{ id: commandId }]);
+      vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+      await handlers.onMessage({
+        data: JSON.stringify({
+          type: 'command_result',
+          commandId,
+          status: 'completed',
+          exitCode: 0,
+          result: JSON.stringify({ queued: true }),
+        }),
+      } as any, ws as any);
+
+      // Exactly one CAS write — the ack, marked non-terminal via the stored
+      // result.status (device_commands.status column itself stays
+      // 'completed' so executeCommand()'s waitForCommandResult poll returns
+      // promptly with the ack — see commandAcceptsAgentResultCondition).
+      expect(db.update).toHaveBeenCalledTimes(1);
+      const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+      expect(setArg.status).toBe('completed');
+      expect((setArg.result as Record<string, unknown>).status).toBe(BACKUP_QUEUE_ACK_RESULT_STATUS);
+
+      // No terminal side effect for a mere queue admission.
+      expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
+      expect(writeAuditEvent).not.toHaveBeenCalled();
+      // The critical regression this guards: the per-type handler
+      // (handleProviderBackedBackupResult) must NOT run on the ack, or it
+      // would parse {"queued":true} against backupCommandResultSchema
+      // (all fields optional → vacuous success) and complete the backup job
+      // with no snapshot.
+      expect(applyBackupCommandResultToJob).not.toHaveBeenCalled();
+      // The device_commands lookup and the Finding #3 lifecycle recheck only —
+      // a THIRD db.select would mean the handler dispatched and tried its own
+      // backupJobs lookup.
+      expect(db.select).toHaveBeenCalledTimes(2);
+
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    },
+  );
+
+  it('a started-ack (legacy async, non-queue) is treated the same as a queued-ack', async () => {
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandRow = {
+      id: commandId,
+      type: 'mssql_backup',
+      payload: { jobId, instance: 'MSSQLSERVER', database: 'AppDb', backupType: 'full' },
+      deviceId: 'device-123',
+      status: 'sent',
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([commandRow]) as any)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any); // isAgentDeviceStillAuthorized: no row → fail-open
+    const updateChain = updateResult([{ id: commandId }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId,
+        status: 'completed',
+        result: JSON.stringify({ started: true }),
+      }),
+    } as any, ws as any);
+
+    const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+    expect((setArg.result as Record<string, unknown>).status).toBe(BACKUP_QUEUE_ACK_RESULT_STATUS);
+    expect(applyBackupCommandResultToJob).not.toHaveBeenCalled();
+  });
+
+  it('the REAL terminal result correlates to the job via payload.jobId and reaches the handler (D20 D+E)', async () => {
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandRow = {
+      id: commandId,
+      type: 'mssql_backup',
+      payload: { jobId, instance: 'MSSQLSERVER', database: 'AppDb', backupType: 'full' },
+      deviceId: 'device-123',
+      // Row already ack-marked in the DB — irrelevant to this test's mocks
+      // (which don't enforce the WHERE clause), but reflects the real state
+      // a second frame for this commandId would find. The SQL-level
+      // reopening itself is proven in commandResultAcceptance.test.ts.
+      status: 'completed',
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([commandRow]) as any) // device_commands lookup
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // isAgentDeviceStillAuthorized: no row → fail-open
+      .mockReturnValueOnce(selectOwnedCommandResult([ // handleProviderBackedBackupResult's backupJobs lookup
+        { id: jobId, orgId: 'org-123', deviceId: 'device-123' },
+      ]) as any);
+    const updateChain = updateResult([{ id: commandId }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+    vi.mocked(applyBackupCommandResultToJob).mockResolvedValue({
+      applied: true,
+      snapshotDbId: 'snap-db-1',
+      providerSnapshotId: 'snap-1',
+    });
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId,
+        status: 'completed',
+        // A genuine terminal result's `.result` arrives as a real OBJECT, not
+        // a string: toWSCommandResult's stdout->Result reparse
+        // (heartbeat.go) already json.Unmarshal's a correctly single-encoded
+        // (post D20-B) success stdout into a structured value before it hits
+        // the wire — unlike the queue-ack tests above, which stay
+        // JSON.stringify'd to match tryParseBackupResultPayload's tolerance
+        // of a legacy/double-encoded string on that narrower ack-only path.
+        result: {
+          status: 'completed',
+          snapshotId: 'snap-1',
+          filesBackedUp: 2,
+          bytesBackedUp: 2048,
+        },
+      }),
+    } as any, ws as any);
+
+    // The real result is terminal: CAS write carries the ordinary stored
+    // status, not the ack marker.
+    const setArg = updateChain.set.mock.calls[0]![0] as Record<string, unknown>;
+    expect((setArg.result as Record<string, unknown>).status).toBe('completed');
+
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledTimes(1);
+    // handleProviderBackedBackupResult read payload.jobId and persisted the
+    // real result to the correct backup_jobs row.
+    expect(applyBackupCommandResultToJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId,
+        orgId: 'org-123',
+        deviceId: 'device-123',
+        resultStatus: 'completed',
+        agentStatus: 'completed',
+        result: expect.objectContaining({ snapshotId: 'snap-1' }),
+      }),
+    );
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+});
+
 // Finding #4 — one authorized socket per agent. A second socket must close the
 // first, and disconnectAgent/revocation must always act on the authoritative
 // (newest) socket so no orphan survives.
@@ -4936,5 +5120,85 @@ describe('sw-install WS orphan-result branch', () => {
     await expect(
       processOrphanedCommandResult('agent-sw', deviceUuid, swResult())
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Revocation-lease renewal over the agent command socket
+// ---------------------------------------------------------------------------
+
+describe('agent websocket revocation_lease_renew', () => {
+  const SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'renewed', expiresAt: 111, hardDeadline: 222, renewEverySec: 25, graceSec: 90,
+    });
+  });
+
+  async function sendRenew(body: Record<string, unknown>) {
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+    await handlers.onMessage({ data: JSON.stringify(body) } as any, ws as any);
+    return ws;
+  }
+
+  it('binds the renew to the socket-authenticated device and answers revocation_lease', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(renewRevocationLeaseMock).toHaveBeenCalledWith(SESSION_ID, {
+      expectDeviceId: 'device-123',
+    });
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease',
+      sessionId: SESSION_ID,
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+    });
+  });
+
+  it('answers revocation_lease_revoked with the reason', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'revoked', reason: 'membership_removed' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'membership_removed',
+    });
+  });
+
+  it('reports a session belonging to another device as revoked, leaking nothing about it', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'forbidden' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'not_authorized',
+    });
+  });
+
+  it('answers revocation_lease_unavailable on an infrastructure failure so the agent rides its grace', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'unavailable' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_unavailable',
+      sessionId: SESSION_ID,
+    });
+  });
+
+  it('drops a malformed renew without touching the lease service', async () => {
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: 'not-a-uuid' });
+
+    expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
   });
 });

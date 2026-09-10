@@ -270,6 +270,46 @@ func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvid
 	}
 }
 
+// managerFromProviderPayload builds an ephemeral BackupManager carrying only a
+// provider (no paths/retention/VSS) from a provider-backed command payload's
+// provider + providerConfig, reusing restoreProviderFromPayload's parsing.
+//
+// D20b item B: mssql_backup/hyperv_backup/hyperv_restore only ever call
+// mgr.GetProvider() and mgr.GetStagingDir() (see execMSSQLBackup,
+// execHypervRestore, etc.) — never mgr.RunBackupContext — so unlike
+// managerFromBackupRunPayload (which requires paths, or systemImage,
+// because backup_run actually drives a full backup through the manager)
+// this builder needs nothing but a provider. GetStagingDir() on a
+// zero-value StagingDir returns "", and every remaining GetStagingDir()
+// caller already passes that straight to os.MkdirTemp, which treats "" as
+// "use the OS default temp dir" — so an unset StagingDir here is safe, not
+// a bug.
+//
+// mssql_restore/mssql_verify are the one exception as of D23b:
+// resolveMSSQLBackupArtifact no longer touches GetStagingDir() at all — it
+// downloads into mssql.ResolveRestoreTargetDir's directory instead, the
+// same SQL-Server-writable location RunBackup writes into (D23), since
+// RESTORE/RESTORE VERIFYONLY are read by the SQL Server service account,
+// not the Breeze helper. This builder is still fine for them: they only
+// need mgr.GetProvider().
+//
+// Returns (nil, nil) when the payload carries no provider config, so the
+// caller can produce its own command-specific "not configured" message
+// instead of a generic one.
+func managerFromProviderPayload(payload json.RawMessage) (*backup.BackupManager, error) {
+	provider, err := restoreProviderFromPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, nil
+	}
+	return backup.NewBackupManager(backup.BackupConfig{
+		Provider: provider,
+		AgentID:  helperAgentID,
+	}), nil
+}
+
 // restoreProviderForCommand resolves the provider to use for restore/verify/
 // test-restore commands. The payload's provider+providerConfig (sent by the
 // API, mirroring backup_run) takes precedence over the agent.yaml-configured

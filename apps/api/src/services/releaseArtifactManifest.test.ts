@@ -24,6 +24,7 @@ function makeSignedManifest(args: {
   release?: string;
   repository?: string;
   assetOverrides?: Record<string, unknown>;
+  duplicate?: boolean;
 }) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -45,6 +46,13 @@ function makeSignedManifest(args: {
             "release-workflow-produced",
           ...(args.assetOverrides ?? {}),
         },
+        ...(args.duplicate ? [{
+          name: args.assetName,
+          sha256: createSha256(args.assetBuffer),
+          size: args.assetBuffer.length,
+          platformTrust: requiredPlatformTrustFor(args.assetName) ?? "release-workflow-produced",
+          ...(args.assetOverrides ?? {}),
+        }] : []),
       ],
     }).replace("placeholder", createSha256(args.assetBuffer)),
   );
@@ -655,6 +663,72 @@ describe("releaseArtifactManifest", () => {
           signatureBytes: signed.signature,
         }),
       ).rejects.toThrow(/unknown edition/);
+    });
+  });
+
+  describe("macOS installer publisher identity", () => {
+    const assetName = "breeze-agent-darwin-arm64.pkg";
+    const asset = Buffer.from("signed-pkg");
+    const identity = "Developer ID Installer: LanternOps LLC (D8W6N2JYMA)";
+
+    it("returns the signed exact identity and Team ID", async () => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        assetOverrides: {
+          edition: "self-host",
+          signingIdentity: identity,
+          signingTeamId: "D8W6N2JYMA",
+        },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactBuffer({
+        assetName,
+        assetBuffer: asset,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        expectedEdition: "self-host",
+        requireMacosPublisher: true,
+      })).resolves.toMatchObject({ signingIdentity: identity, signingTeamId: "D8W6N2JYMA" });
+    });
+
+    it.each([
+      [{ signingIdentity: identity }, "missing Team ID"],
+      [{ signingIdentity: identity, signingTeamId: "bad" }, "malformed Team ID"],
+      [{ signingIdentity: "Developer ID Installer: Other (AAAAAAAAAA)", signingTeamId: "D8W6N2JYMA" }, "identity mismatch"],
+    ])("rejects %s (%s)", async (assetOverrides, _reason) => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        assetOverrides: { edition: "self-host", ...assetOverrides },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactManifestAsset({
+        assetName,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        requireMacosPublisher: true,
+      })).rejects.toThrow(/macOS signing identity/);
+    });
+
+    it("rejects duplicate canonical asset entries", async () => {
+      const signed = makeSignedManifest({
+        assetName,
+        assetBuffer: asset,
+        duplicate: true,
+        assetOverrides: {
+          edition: "self-host",
+          signingIdentity: identity,
+          signingTeamId: "D8W6N2JYMA",
+        },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(verifyReleaseArtifactManifestAsset({
+        assetName,
+        manifestBytes: signed.manifest,
+        signatureBytes: signed.signature,
+        requireMacosPublisher: true,
+      })).rejects.toThrow(/duplicate entries/);
     });
   });
 

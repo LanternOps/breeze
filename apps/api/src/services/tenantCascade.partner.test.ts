@@ -35,12 +35,10 @@ describe('cascadeDeletePartner', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      // Software chain pre-clears (#3600), in list order: deployment_results,
-      // software_deployments, software_versions. software_versions has no
-      // tenancy column and its catalog_id FK is NO ACTION, so the sweep's
-      // `DELETE FROM software_catalog WHERE partner_id = ...` aborts with
-      // 23503 without them.
-      .mockResolvedValueOnce([])
+      // Software chain pre-clears (#3600): deployment_results then
+      // software_deployments. Object/version/catalog deletion is deferred to
+      // the software_catalog sweep transaction so its parent lock is not
+      // released between inventory and deletion.
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ table_name: 'scripts' }, { table_name: 'users' }])
@@ -82,11 +80,9 @@ describe('cascadeDeletePartner', () => {
     // statements NAMES the other two tables in its subqueries.
     const resultsIdx = calls.findIndex((c) => c.includes('DELETE FROM deployment_results'));
     const deploymentsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_deployments'));
-    const versionsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_versions'));
     expect(resultsIdx).toBeGreaterThan(-1);
     expect(deploymentsIdx).toBeGreaterThan(resultsIdx);
-    expect(versionsIdx).toBeGreaterThan(deploymentsIdx);
-    expect(versionsIdx).toBeLessThan(firstSweepIdx);
+    expect(deploymentsIdx).toBeLessThan(firstSweepIdx);
 
     // Service Management un-wire (#5075 W04): the partner row's RESTRICT FK
     // into psa_connections is released BEFORE the sweep deletes the

@@ -317,6 +317,15 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports deployment dependency fingerprints as reviewed integrity provenance', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.software_deployments!.columns.dependency_fingerprint,
+    ).toMatchObject({
+      decision: 'include',
+      reviewedSensitiveName: true,
+    });
+  });
+
   it('classifies the portal auth epoch but omits it from the export plan', async () => {
     const portalPolicy = CORE_TENANT_EXPORT_POLICY.portal_users!;
     mockState.columns = Object.keys(portalPolicy.columns).map((columnName, index) =>

@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { remoteSessions, tunnelSessions, devices } from '../db/schema';
 import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent } from './agentCommandRelay';
 import { captureException } from './sentry';
 
 // Live statuses a teardown may disconnect. Terminal rows (`disconnected`,
@@ -134,11 +135,27 @@ export async function teardownDisconnectedSessions(
 
   // Signal each session's agent to tear down its stream / PTY, and drop any
   // live terminal socket held locally.
-  for (const row of disconnected) {
+  //
+  // Rows run CONCURRENTLY. Each `dispatchCommandToAgent` carries a 5 s ack
+  // deadline and this function runs inline inside request handlers (role change
+  // / membership removal in `routes/users.ts`, partner suspend in
+  // `routes/admin/abuse.ts`), so awaiting row by row turned N revoked sessions
+  // into N*5 s of request latency. Within a single row the steps stay
+  // sequential — the terminal branch must still learn whether
+  // `closeTerminalSession` closed a LOCAL socket before deciding on the
+  // `terminal_stop` fallback. `allSettled` (not `all`) because the per-row body
+  // is already best-effort and must never reject the whole teardown.
+  await Promise.allSettled(disconnected.map(async (row) => {
     const agentId = agentByDevice.get(row.deviceId);
     if (row.type === 'desktop' && agentId) {
       try {
-        sendCommandToAgent(agentId, {
+        // Durable relay, NOT the socket-local send: the agent's command socket
+        // very often lives on a DIFFERENT API instance (or on none at all if
+        // this is a worker-role process), and a socket-local send silently
+        // returns false there — leaving the live WebRTC stream running with the
+        // session already marked disconnected. The relay reaches whichever
+        // instance owns the socket, or reports `offline` honestly.
+        await dispatchCommandToAgent(agentId, {
           id: `desk-stop-${row.id}`,
           type: 'stop_desktop',
           payload: { sessionId: row.id },
@@ -175,7 +192,9 @@ export async function teardownDisconnectedSessions(
       }
       if (!closedLocally && agentId) {
         try {
-          sendCommandToAgent(agentId, {
+          // Same durable-relay reasoning as stop_desktop above: this fallback
+          // exists precisely for the case where the socket is NOT local.
+          await dispatchCommandToAgent(agentId, {
             id: `term-stop-${row.id}`,
             type: 'terminal_stop',
             payload: { sessionId: row.id },
@@ -188,7 +207,7 @@ export async function teardownDisconnectedSessions(
         }
       }
     }
-  }
+  }));
 }
 
 /**

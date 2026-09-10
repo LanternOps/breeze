@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import type Redis from 'ioredis';
 import { z } from 'zod';
+import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -80,7 +81,11 @@ import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/comm
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
-import { commandAcceptsAgentResultCondition } from '../services/commandResultAcceptance';
+import {
+  commandAcceptsAgentResultCondition,
+  BACKUP_QUEUE_ACK_RESULT_STATUS,
+} from '../services/commandResultAcceptance';
+import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
@@ -845,6 +850,14 @@ const backupProgressMessageSchema = z.object({
   type: z.literal('backup_progress'),
   commandId: z.string(),
   progress: z.record(z.string(), z.unknown()).optional(),
+});
+
+// Revocation-lease renewal ping from the agent. Handled on the fast path
+// (before the id-less-frame skip) rather than through agentMessageSchema,
+// alongside terminal_output and update_status.
+const revocationLeaseRenewSchema = z.object({
+  type: z.literal('revocation_lease_renew'),
+  sessionId: z.string().uuid(),
 });
 
 const agentMessageSchema = z.discriminatedUnion('type', [
@@ -1999,6 +2012,27 @@ async function processCommandResult(
       rawStdout,
     );
 
+    // D20-D: mssql_backup/hyperv_backup are QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES
+    // — the agent's FIRST reply for these can be a non-terminal queue-
+    // admission/started ack ({"queued":true}/{"started":true}), not the real
+    // backup outcome (agent/cmd/breeze-backup/main.go's QueueAsync/Async
+    // branches). Detected the same way the backup_run orphaned-result branch
+    // already does (tryParseBackupResultPayload + isBackupQueuedAck/
+    // isBackupStartedAck) so this is one guard, not two. `normalizedResult`
+    // survives the reparse in toWSCommandResult (heartbeat.go) into `.result`
+    // as a real object for a single-encoded ack (post D20-B agent) and as a
+    // once-parseable JSON string for a double-encoded one (pre-fix agent) —
+    // tryParseBackupResultPayload already tolerates both.
+    const isQueuedBackupWorkload = QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES.includes(
+      command.type as (typeof QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES)[number],
+    );
+    const isBackupAck =
+      isQueuedBackupWorkload &&
+      (() => {
+        const parsed = tryParseBackupResultPayload(normalizedResult.result, stdout);
+        return isBackupQueuedAck(parsed) || isBackupStartedAck(parsed);
+      })();
+
     // Update outside transaction for same visibility reasons as the lookup, and
     // under an explicit system context so the compare-and-set is not a
     // contextless bare-pool write (#1375). device_commands is intentionally
@@ -2025,6 +2059,14 @@ async function processCommandResult(
     // what tells those apart in Sentry. Non-throwing, so the stale-result
     // early-return keeps its existing behaviour.
     const terminalCompletedAt = new Date();
+    // D20-D: the ack write still sets device_commands.status: 'completed' —
+    // NOT some other non-terminal status — so executeCommand()'s
+    // waitForCommandResult poll (commandQueue.ts, which only ever checks the
+    // top-level status column) returns promptly with the ack instead of
+    // blocking for the whole backup/restore. What makes the row reopenable
+    // for the REAL result later is the BACKUP_QUEUE_ACK_RESULT_STATUS marker
+    // written into the STORED result.status (see commandAcceptsAgentResultCondition).
+    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout);
     const updatedCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         dbWriteExpectingRows(
@@ -2035,7 +2077,9 @@ async function processCommandResult(
               .set({
                   status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
                   completedAt: terminalCompletedAt,
-                  result: buildStoredCommandResult(command.type, normalizedResult, stdout),
+                  result: isBackupAck
+                    ? { ...storedResult, status: BACKUP_QUEUE_ACK_RESULT_STATUS }
+                    : storedResult,
                   ...terminalPayloadErasureSet(),
               })
               .where(
@@ -2047,6 +2091,8 @@ async function processCommandResult(
                   // terminalized by a server-side timeout is still acceptable,
                   // but the first late result rewrites `result.status` away
                   // from 'timeout', so a duplicate frame still finds 0 rows.
+                  // D20-D: same idea for a queue-ack-marked row — see
+                  // BACKUP_QUEUE_ACK_RESULT_STATUS.
                   commandAcceptsAgentResultCondition()
                 )
               )
@@ -2058,6 +2104,20 @@ async function processCommandResult(
 
     if (updatedCommands.length === 0) {
       console.warn(`[AgentWs] Ignoring stale or already-processed command result ${result.commandId} for agent ${agentId}`);
+      return;
+    }
+
+    if (isBackupAck) {
+      // Non-terminal signal: device_commands is 'completed' only so the
+      // synchronous executeCommand() caller unblocks with the ack (item C in
+      // routes/backup/mssql.ts, hyperv.ts decides what to do with it from
+      // there). No terminal side effect fires for a mere queue admission —
+      // NOT applyCommandAutomationTerminal, NOT the audit event below, and
+      // critically NOT the per-type handler dispatch further down
+      // (handleProviderBackedBackupResult would otherwise parse
+      // {"queued":true}/{"started":true} against backupCommandResultSchema —
+      // which is all-optional-fields and would vacuously "succeed" — and mark
+      // the backup_jobs row completed with no snapshot at all).
       return;
     }
 
@@ -2553,6 +2613,62 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             sessionId,
             decodedOutput,
           );
+          return;
+        }
+
+        // Revocation-lease renewal from the agent (fail-closed desktop session
+        // revalidation). The agent renews every 25s over this socket; the API
+        // runs the live authorization recheck and answers on the same socket.
+        //
+        // No `id` on this frame, so it must be handled BEFORE the id-less skip
+        // further down. A superseded socket may not renew: the answer carries
+        // authority to keep a live screen/input session running.
+        if (message?.type === 'revocation_lease_renew') {
+          const parsedRenew = revocationLeaseRenewSchema.safeParse(message);
+          if (!parsedRenew.success) {
+            console.warn(
+              `[AgentWs] Dropping malformed revocation_lease_renew from agent ${agentId}: ` +
+              `${parsedRenew.error.issues[0]?.message ?? 'invalid shape'}`
+            );
+            return;
+          }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
+            return;
+          }
+          const { sessionId: leaseSessionId } = parsedRenew.data;
+          // Bind the renew to the device this socket authenticated as: an agent
+          // must never be able to renew (or learn about) another tenant's
+          // session by guessing a session id.
+          const leaseResult = await renewRevocationLease(leaseSessionId, {
+            expectDeviceId: authenticatedAgent.deviceId,
+          });
+          if (leaseResult.status === 'renewed') {
+            ws.send(JSON.stringify({
+              type: 'revocation_lease',
+              sessionId: leaseSessionId,
+              expiresAt: leaseResult.expiresAt,
+              hardDeadline: leaseResult.hardDeadline,
+              renewEverySec: leaseResult.renewEverySec,
+              graceSec: leaseResult.graceSec,
+            }));
+          } else if (leaseResult.status === 'revoked' || leaseResult.status === 'forbidden') {
+            // `forbidden` is reported as a revocation on purpose: from the
+            // agent's point of view a session it may not renew is a session it
+            // must stop streaming. It reveals nothing about the real session.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_revoked',
+              sessionId: leaseSessionId,
+              reason: leaseResult.status === 'revoked' ? leaseResult.reason : 'not_authorized',
+            }));
+          } else {
+            // Infrastructure blip: say nothing conclusive and let the agent ride
+            // its grace window. Silence here is the whole point of the grace.
+            ws.send(JSON.stringify({
+              type: 'revocation_lease_unavailable',
+              sessionId: leaseSessionId,
+            }));
+          }
           return;
         }
 
