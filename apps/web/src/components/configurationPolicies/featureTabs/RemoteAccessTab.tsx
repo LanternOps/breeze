@@ -51,7 +51,11 @@ const defaults: RemoteAccessSettings = {
   technicianIdentityLevel: "name_email",
 };
 const idleTimeoutOptions = [1, 2, 5, 10, 15, 30];
-const maxSessionOptions = [1, 2, 4, 8, 12, 24];
+// Remote desktop sessions are hard-capped at 12 hours server-side and
+// agent-side; "unlimited" (0) is no longer a supported value and a write above
+// 12 is rejected by the policy routes. Keep the picker inside the range so the
+// UI cannot offer a setting the backend will refuse.
+const maxSessionOptions = [1, 2, 4, 8, 12];
 function ToggleRow({
   label,
   description,
