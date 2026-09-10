@@ -290,7 +290,7 @@ export const backupJobs = pgTable(
       .on(table.snapshotId)
       .where(sql`snapshot_id IS NOT NULL`),
     createdAtIdx: index('backup_jobs_created_at_idx').on(table.createdAt),
-    // D18 W01 (#5429/§3.1): matches migration 140005's
+    // D18 W01 (#5429/§3.1): matches migration 150002's
     // backup_jobs_base_snapshot_id_idx.
     baseSnapshotIdIdx: index('backup_jobs_base_snapshot_id_idx')
       .on(table.baseSnapshotId)
