@@ -16,6 +16,7 @@ import {
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { decryptForColumn } from './secretCrypto';
 import { redactUrlForLogs } from './notificationSenders/webhookSender';
 import { getWebhookWorker } from '../workers/webhookDelivery';
@@ -257,6 +258,9 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('test_webhook', async (input, auth) => {
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const webhookId = input.webhookId as string;
 
       // Verify webhook exists and belongs to org. Select the full row — the
