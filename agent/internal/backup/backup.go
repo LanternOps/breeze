@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 	"github.com/breeze-rmm/agent/internal/backup/vss"
@@ -68,6 +69,10 @@ var ErrJournalExpiredAtPublish = errors.New("checkpoint journal expired before m
 // real collector shells out to OS tools and succeeds on any CI host, which
 // would otherwise leave the system-state fail-loud/warning branches uncovered.
 var collectSystemState = systemstate.CollectSystemState
+
+// collectLayout is the seam over layout.Collect (disk layout for bare-metal
+// rebuilds, spec §5.2). Same rationale as collectSystemState above.
+var collectLayout = layout.Collect
 
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
@@ -206,6 +211,13 @@ type BackupJob struct {
 	ErrorCount          int                              `json:"errorCount,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
+	// LayoutManifest is the disk layout captured for bare-metal rebuilds
+	// (snapshots/<id>/layout.json). nil on file-only runs and when capture
+	// failed. BareMetal is the guard verdict for that layout; on capture
+	// failure it is non-nil with Restorable=false and the error as the reason,
+	// so the server never mistakes "unknown" for "restorable".
+	LayoutManifest *layout.Manifest      `json:"layoutManifest,omitempty"`
+	BareMetal      *layout.Restorability `json:"bareMetal,omitempty"`
 	// ReferencedFiles/ReferencedBytes count how much of FilesBackedUp/
 	// BytesBackedUp this run satisfied by referencing an older snapshot's
 	// object instead of re-uploading (see decideFile / isReferenceEntry).
@@ -700,6 +712,32 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				}
 			}()
 		}
+
+		// Disk layout — independent of system-state success: a partial state
+		// capture with a good layout is still worth knowing about, and vice
+		// versa. Never fatal: the run is still a valid file backup.
+		//
+		// ErrUnsupportedPlatform (no collector for this GOOS, e.g. darwin) is
+		// an EXPECTED, permanent condition, not a collection failure — it
+		// never becomes a run warning, and job.BareMetal stays nil exactly
+		// like a file-only run, so a healthy system-state run on an
+		// unsupported platform stays warning-free.
+		if lm, lerr := collectLayout(runCtx); lerr != nil {
+			if errors.Is(lerr, layout.ErrUnsupportedPlatform) {
+				log.Debug("disk layout capture skipped: unsupported platform")
+			} else {
+				log.Warn("disk layout capture failed", "error", lerr.Error())
+				appendWarning(job, "disk layout was not captured: "+lerr.Error())
+				job.BareMetal = &layout.Restorability{Restorable: false, Reasons: []string{"disk layout was not captured: " + lerr.Error()}}
+			}
+		} else {
+			job.LayoutManifest = lm
+			verdict := layout.Assess(lm)
+			job.BareMetal = &verdict
+			if !verdict.Restorable {
+				appendWarning(job, "not bare-metal restorable: "+strings.Join(verdict.Reasons, "; "))
+			}
+		}
 	}
 
 	// sourceLiveness watches the shadow-copy roots this run reads from so the
@@ -880,6 +918,14 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				job.Error = fmt.Errorf("system state publish failed: %w", pubErr)
 				return job, job.Error
 			}
+			if job.LayoutManifest != nil {
+				if pubErr := publishLayoutManifest(runCtx, uploadProvider, snapshot.ID, job.LayoutManifest); pubErr != nil {
+					job.Status = jobStatusFailed
+					job.CompletedAt = time.Now().UTC()
+					job.Error = fmt.Errorf("layout manifest publish failed: %w", pubErr)
+					return job, job.Error
+				}
+			}
 			if pubErr := publishSnapshotManifest(runCtx, uploadProvider, snapshot, prefix); pubErr != nil {
 				job.Status = jobStatusFailed
 				job.CompletedAt = time.Now().UTC()
@@ -994,6 +1040,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		// make AFTER createSnapshotWithProgress returned, which published the
 		// ordinary manifest first (wrong order — D15 Wave 1 finding #4).
 		snapshotOpts = append(snapshotOpts, withSystemState(systemStateStagingDir, job.SystemStateManifest))
+	}
+	if m.config.SystemStateEnabled && job.LayoutManifest != nil {
+		snapshotOpts = append(snapshotOpts, withLayout(job.LayoutManifest))
 	}
 	// Ownership of the journal's fd lifecycle transfers to
 	// createSnapshotWithProgress from here on (it has its own
