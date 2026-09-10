@@ -236,7 +236,27 @@ type manifestFile struct {
 	// every BMR-restored file landed with drifted permissions/mtimes (O20).
 	Mode    uint32    `json:"mode,omitempty"`
 	ModTime time.Time `json:"modTime"`
+	// Kind, LinkTarget, ModeBits and Owner mirror backup.SnapshotFile's
+	// identically-tagged W02 fields (agent/internal/backup/snapshot.go) —
+	// same deliberately-independent-mirror rationale as OriginalPath/Mode/
+	// ModTime above. Kind is "" for a regular file (content downloaded from
+	// BackupPath) or "symlink"/"dir" for a content-less entry recreated
+	// directly by restoreFiles instead of downloaded — see HasContent.
+	Kind       string             `json:"kind,omitempty"`
+	LinkTarget string             `json:"linkTarget,omitempty"`
+	ModeBits   uint32             `json:"modeBits,omitempty"`
+	Owner      *manifestFileOwner `json:"owner,omitempty"`
 }
+
+// manifestFileOwner mirrors backup.FileOwner.
+type manifestFileOwner struct {
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+}
+
+// HasContent reports whether file has an uploaded object at BackupPath —
+// mirrors backup.SnapshotFile.HasContent.
+func (file manifestFile) HasContent() bool { return file.Kind == "" }
 
 // restoreSourcePath returns the path a BMR restore should re-root file
 // under: file.OriginalPath when VSS rewrote SourcePath to a per-run
@@ -825,8 +845,51 @@ func restoreFiles(
 		// override by (D8).
 		origPath := restoreSourcePath(file)
 		targetPath := origPath
+		overridden := false
 		if override, ok := cfg.TargetPaths[origPath]; ok {
 			targetPath = override
+			overridden = true
+		}
+
+		// A RESUMED restore must never write THROUGH an ancestor a
+		// previous (possibly interrupted) run already recreated as a
+		// symlink — see ensureNoSymlinkAncestor's doc comment (review
+		// finding, PR #5520). Gated on overridden: this guard needs a
+		// caller-established trusted staging root to walk from (see
+		// symlinkAncestorBase), which only exists when cfg.TargetPaths
+		// redirects this file. Ordinary in-place restore (no override)
+		// writes back to the file's own live original path, whose real
+		// ancestors legitimately include OS-level symlinks having nothing
+		// to do with this restore (e.g. /var -> private/var on macOS,
+		// /var/run -> /run on many Linux distros) — walking those from "/"
+		// would refuse every single in-place restore on such a system.
+		if overridden {
+			if err := ensureNoSymlinkAncestor(symlinkAncestorBase(origPath, targetPath), targetPath); err != nil {
+				addFailure("%s", err.Error())
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+		}
+
+		// W02: a content-less entry (symlink/directory) is recreated
+		// directly — never downloaded, since its BackupPath is empty (see
+		// manifestFile.HasContent's doc comment and restoreContentlessEntry
+		// below).
+		if !file.HasContent() {
+			if err := restoreContentlessEntry(targetPath, file); err != nil {
+				addFailure("recreate failed for %s: %s", origPath, err.Error())
+				if consecutiveFailures >= maxConsecutiveDownloadFailures {
+					breakerTripped = true
+					break
+				}
+				continue
+			}
+			consecutiveFailures = 0
+			filesRestored++
+			continue
 		}
 
 		dir := filepath.Dir(targetPath)
@@ -927,6 +990,139 @@ func restoreFiles(
 			fmt.Errorf("bmr: %d of %d files failed to restore", len(manifest.Files)-filesRestored, len(manifest.Files))
 	}
 	return filesRestored, bytesRestored, warnings, failedFiles, nil
+}
+
+// ensureNoSymlinkAncestor walks every path component strictly below base up
+// to filepath.Dir(target), lstat'ing each one, and refuses if any component
+// is a symlink. bmr's local copy of backup.EnsureNoSymlinkAncestor
+// (agent/internal/backup/restore.go) — see that function's doc comment for
+// the full rationale (a resumed restore must never write THROUGH a symlink
+// an earlier pass, or a prior interrupted run, planted under the restore
+// root; review finding, PR #5520). Kept local for the same
+// deliberately-independent-mirror reason as restoreContentlessEntry below.
+func ensureNoSymlinkAncestor(base, target string) error {
+	if base == "" {
+		// symlinkAncestorBase returns "" when it has nothing safe to
+		// derive a trusted root from — explicitly a no-op, not "walk from
+		// the filesystem root" (see its doc comment for why that would be
+		// unsafe here).
+		return nil
+	}
+	cleanBase := filepath.Clean(base)
+	dir := filepath.Clean(filepath.Dir(target))
+	rel, err := filepath.Rel(cleanBase, dir)
+	if err != nil {
+		return nil
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	cur := cleanBase
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		info, statErr := os.Lstat(cur)
+		if statErr != nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write %s: ancestor %s is a symlink", target, cur)
+		}
+	}
+	return nil
+}
+
+// symlinkAncestorBase derives the trusted root ensureNoSymlinkAncestor
+// should walk from, for one overridden file being restored by
+// restoreFiles. Callers must only invoke this (and the ancestor guard it
+// feeds) when cfg.TargetPaths actually redirects this file — see the call
+// site's doc comment for why: bmr's restoreFiles has no single fixed
+// restore root the way backup.RestoreFromSnapshotContext's TargetPath is
+// (with no override it writes IN PLACE to the file's own live original
+// path, whose real ancestors legitimately include OS-level symlinks that
+// predate this restore entirely), so there is no safe base to derive or
+// walk from in that case.
+//
+// RecoveryConfig.TargetPaths overrides are a per-file map, not one shared
+// directory, but when origPath's override was built the way every real
+// caller builds one — some staging root joined with the file's own
+// original relative path (e.g. the bare-metal rebuild engine staging a
+// snapshot under one directory before applying it) — that root is
+// recovered here by stripping origPath's own relative structure off the
+// override's tail, giving exactly the shared, trusted root the ancestor
+// guard must walk from. Falls back to the filesystem root ("/") only when
+// the override doesn't follow that shape (nothing safe to derive) — the
+// guard still runs, just from "/", which is the conservative direction:
+// it may occasionally over-refuse an unusually-shaped override, never
+// under-protect one.
+func symlinkAncestorBase(origPath, targetPath string) string {
+	rel := strings.TrimPrefix(filepath.ToSlash(origPath), "/")
+	slashTarget := filepath.ToSlash(targetPath)
+	if rel != "" && strings.HasSuffix(slashTarget, rel) {
+		root := strings.TrimSuffix(slashTarget, rel)
+		root = strings.TrimSuffix(root, "/")
+		if root != "" {
+			return filepath.FromSlash(root)
+		}
+	}
+	// Nothing safe to derive — the override doesn't follow the
+	// root+relpath shape. Returning "" (rather than falling back to the
+	// real filesystem root) tells the caller to skip the ancestor guard
+	// for this file: walking from "/" is NOT a safe conservative default
+	// here the way it is in backup.RestoreFromSnapshotContext (whose
+	// TargetPath is always a restore-dedicated directory) — common
+	// top-level paths are legitimately symlinks with nothing to do with
+	// this restore (confirmed: macOS's own /var -> private/var sits in the
+	// ancestor chain of `os.TempDir()`/t.TempDir() itself), so walking from
+	// "/" would refuse restores under perfectly ordinary temp/staging
+	// directories, not just attacker-planted ones.
+	return ""
+}
+
+// restoreContentlessEntry recreates a symlink or directory manifest entry at
+// targetPath — bmr's version of backup.RestoreContentlessEntry
+// (agent/internal/backup/restore.go), kept as a local implementation rather
+// than importing package backup, for the same "deliberately independent
+// mirror" reason manifestFile carries its own Kind/LinkTarget/ModeBits/Owner
+// fields instead of embedding backup.SnapshotFile (see manifestFile's doc
+// comment): package bmr has never otherwise depended on package backup, and
+// nothing else here needs to change that. Ownership is never reapplied by
+// this path (this restore mode — reinstall-then-recover — does not gate on
+// running as root the way the bare-metal rebuild engine's file restore
+// does); mode bits are applied best-effort via the same chmodFile seam the
+// regular-file path above uses, with setuid stripped for directories (a
+// directory legitimately setuid is vanishingly rare and this path never
+// confirms root, so it errs conservative).
+func restoreContentlessEntry(targetPath string, file manifestFile) error {
+	switch file.Kind {
+	case "symlink":
+		if mkErr := os.MkdirAll(filepath.Dir(targetPath), 0o750); mkErr != nil {
+			return mkErr
+		}
+		if existing, statErr := os.Lstat(targetPath); statErr == nil {
+			if existing.Mode()&os.ModeSymlink != 0 {
+				if cur, readErr := os.Readlink(targetPath); readErr == nil && cur == file.LinkTarget {
+					return nil // already correct (resume / idempotent replay)
+				}
+			}
+			if rmErr := os.Remove(targetPath); rmErr != nil {
+				return rmErr
+			}
+		}
+		return symlinkFile(file.LinkTarget, targetPath)
+	case "dir":
+		if mkErr := os.MkdirAll(targetPath, 0o750); mkErr != nil {
+			return mkErr
+		}
+		if file.ModeBits != 0 {
+			return chmodFile(targetPath, os.FileMode(file.ModeBits)&^os.ModeSetuid)
+		}
+		return nil
+	default:
+		return fmt.Errorf("entry %s has content; use the download path", file.SourcePath)
+	}
 }
 
 // clearReadOnly clears the owner-write bit on dst so a subsequent

@@ -1199,7 +1199,10 @@ export async function applyBackupCommandResultToJob(params: {
         // selection. No separate column for the raw shadow path: it has no
         // browsing/restore value once the shadow copy is released.
         sourcePath: file.originalPath ?? file.sourcePath,
-        backupPath: file.backupPath,
+        // W02: content-less entries (symlinks/directories) carry no object —
+        // backupPath is '' for those (backup_snapshot_files.backup_path is
+        // NOT NULL, so '' is the documented value, not a missing column).
+        backupPath: file.backupPath ?? '',
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,
       }));

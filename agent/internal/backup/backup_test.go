@@ -1143,6 +1143,16 @@ func TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects(t *testing
 	// A single unchanged file: every run after the first references its bytes
 	// from the first snapshot's prefix.
 	createTempFile(t, tmpDir, "data.txt", "unchanging content that is referenced forward")
+	// Review finding #3 (PR #5520): a content-less entry (symlink) is
+	// recreated fresh every run (never uploaded, never dedup-referenced —
+	// see decideFile's kind!="" short-circuit) and always carries an empty
+	// BackupPath. isReferenceEntry must not mistake "" for "belongs to an
+	// older snapshot's prefix" — if it did, EVERY run (including the very
+	// first, which has no previous snapshot to reference at all) would
+	// over-count ReferencedFiles by one for this entry alone.
+	if err := os.Symlink(pathpkg.Join(tmpDir, "data.txt"), pathpkg.Join(tmpDir, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
 
 	provider := newMockProvider()
 	mgr := NewBackupManager(BackupConfig{
@@ -1170,6 +1180,13 @@ func TestRunBackup_IncrementalRetentionDoesNotStrandReferencedObjects(t *testing
 			t.Fatalf("run #%d produced no snapshot", i+1)
 		}
 		lastSnapshotID = job.Snapshot.ID
+		// Review finding #3: the very first run has no previous snapshot at
+		// all, so NOTHING can legitimately be a reference yet — the
+		// symlink's content-less, empty-BackupPath entry must not be
+		// miscounted as one.
+		if i == 0 && job.ReferencedFiles != 0 {
+			t.Fatalf("first run has no previous snapshot to reference, got ReferencedFiles=%d (content-less entry miscounted as a reference?)", job.ReferencedFiles)
+		}
 		// Runs after the first must reference the earlier object, not re-upload.
 		if i > 0 && job.ReferencedFiles == 0 {
 			t.Fatalf("run #%d expected to reference the unchanged file, got ReferencedFiles=0", i+1)

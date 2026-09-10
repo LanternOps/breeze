@@ -250,3 +250,18 @@ describe('backupCommandResultSchema — snapshot file manifest originalPath (D12
     expect(parsed.snapshot?.files?.[0]?.sourcePath).toBe('/home/user/file.txt');
   });
 });
+
+describe('backupCommandResultSchema — W02 content-less entries (symlink/dir)', () => {
+  it('accepts symlink/dir entries with an empty backupPath and rejects an empty backupPath on a file', () => {
+    const parsed = backupCommandResultSchema.parse({
+      snapshotId: 's',
+      snapshot: { id: 's', files: [
+        { sourcePath: '/bin', backupPath: '', kind: 'symlink', linkTarget: 'usr/bin' },
+        { sourcePath: '/var/empty', backupPath: '', kind: 'dir' },
+        { sourcePath: '/etc/hosts', backupPath: 'snapshots/s/files/path_0/etc/hosts', size: 3 },
+      ] },
+    });
+    expect(parsed.snapshot?.files?.[0]).toMatchObject({ kind: 'symlink', linkTarget: 'usr/bin' });
+    expect(() => backupCommandResultSchema.parse({ snapshotId: 's', snapshot: { id: 's', files: [{ sourcePath: '/x', backupPath: '' }] } })).toThrow();
+  });
+});

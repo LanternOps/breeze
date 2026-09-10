@@ -1107,3 +1107,128 @@ func TestRestoreFiles_FidelityFailureThenSuccessBothWarnUncapped(t *testing.T) {
 		t.Fatalf("warnings = %v, want exactly one mtime-reapply warning", warnings)
 	}
 }
+
+// W02: restoreFiles must recreate a symlink/directory manifest entry
+// directly (no download attempted for its empty BackupPath) — mirrors
+// backup.RestoreContentlessEntry's contract (agent/internal/backup/restore.go)
+// for BMR's independent manifestFile mirror.
+func TestRestoreFiles_RecreatesSymlinkWithoutDownload(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-symlink"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "real.gz"))
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "real")
+	content := []byte("real file content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	restoreRoot := t.TempDir()
+	realTarget := filepath.Join(restoreRoot, "assure", "real")
+	linkTarget := filepath.Join(restoreRoot, "assure", "link")
+	dirTarget := filepath.Join(restoreRoot, "assure", "empty")
+
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: realTarget, BackupPath: backupPath, Size: int64(len(content))},
+			{SourcePath: linkTarget, Kind: "symlink", LinkTarget: "real"},
+			{SourcePath: dirTarget, Kind: "dir", ModeBits: 0o700},
+		},
+		Size: int64(len(content)),
+	}
+
+	filesRestored, _, warnings, failedFiles, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if err != nil {
+		t.Fatalf("restoreFiles failed: %v (warnings: %v)", err, warnings)
+	}
+	if failedFiles != 0 {
+		t.Fatalf("failedFiles = %d, warnings: %v", failedFiles, warnings)
+	}
+	if filesRestored != 3 {
+		t.Fatalf("filesRestored = %d, want 3 (1 file + 1 link + 1 dir)", filesRestored)
+	}
+	got, err := os.Readlink(linkTarget)
+	if err != nil || got != "real" {
+		t.Fatalf("symlink = %q, err = %v", got, err)
+	}
+	if fi, statErr := os.Stat(dirTarget); statErr != nil || !fi.IsDir() {
+		t.Fatalf("dir missing: %v", statErr)
+	}
+	// failedFiles==0 above already proves no download was attempted (and
+	// failed) for the content-less entries' empty BackupPath — LocalProvider
+	// errors on a download of a nonexistent/empty key.
+}
+
+// Review finding #1 (PR #5520): restoreFiles must never write THROUGH an
+// ancestor that is a symlink — a prior (possibly interrupted) run may have
+// already recreated a directory-shaped manifest entry as a symlink pointing
+// outside the intended restore root. Uses a TargetPaths override so the
+// "override base" half of the guard is exercised (see
+// symlinkAncestorBase): the override is built the way a real caller (the
+// rebuild engine) builds one — stagingRoot + the original relative path —
+// so the guard can recover stagingRoot as the trusted root to walk from.
+func TestRestoreFiles_ResumedRunDoesNotWriteThroughRestoredSymlink(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := providers.NewLocalProvider(baseDir)
+
+	snapshotID := "bmr-escape"
+	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "pwned.gz"))
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "pwned")
+	content := []byte("pwned content")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := provider.Upload(srcPath, backupPath); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	stagingRoot := t.TempDir()
+	outside := t.TempDir()
+	// Exactly what a resumed run sees: a prior run already recreated
+	// /escape as a symlink pointing OUTSIDE the staging root.
+	if err := os.Symlink(outside, filepath.Join(stagingRoot, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	origPath := filepath.Join(string(filepath.Separator), "escape", "pwned")
+	manifest := &snapshotManifest{
+		ID: snapshotID,
+		Files: []manifestFile{
+			{SourcePath: origPath, BackupPath: backupPath, Size: int64(len(content))},
+		},
+		Size: int64(len(content)),
+	}
+	cfg := RecoveryConfig{
+		TargetPaths: map[string]string{
+			origPath: filepath.Join(stagingRoot, "escape", "pwned"),
+		},
+	}
+
+	filesRestored, _, warnings, failedFiles, _ := restoreFiles(context.Background(), manifest, cfg, provider)
+
+	if _, statErr := os.Stat(filepath.Join(outside, "pwned")); statErr == nil {
+		t.Fatal("restoreFiles wrote through the symlink into the outside directory")
+	}
+	if failedFiles != 1 {
+		t.Fatalf("failedFiles = %d, want 1 (warnings: %v)", failedFiles, warnings)
+	}
+	if filesRestored != 0 {
+		t.Fatalf("filesRestored = %d, want 0", filesRestored)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "symlink") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want one mentioning symlink", warnings)
+	}
+}

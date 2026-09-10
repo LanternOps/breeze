@@ -316,6 +316,30 @@ describe('backupProcessResultSchema — system_image manifest passthrough', () =
   });
 });
 
+describe('backupProcessResultSchema — W02 content-less entries (symlink/dir)', () => {
+  it('accepts symlink/dir file entries with an empty backupPath and rejects an empty backupPath on a plain file', () => {
+    const result = backupProcessResultSchema.parse({
+      status: 'completed',
+      snapshotId: 'snap-1',
+      snapshot: {
+        id: 'snap-1',
+        files: [
+          { sourcePath: '/bin', backupPath: '', kind: 'symlink', linkTarget: 'usr/bin' },
+          { sourcePath: '/var/empty', backupPath: '', kind: 'dir' },
+          { sourcePath: '/etc/hosts', backupPath: 'snapshots/snap-1/files/path_0/etc/hosts' },
+        ],
+      },
+    });
+    expect(result.snapshot?.files?.[0]).toMatchObject({ kind: 'symlink', linkTarget: 'usr/bin' });
+    expect(() =>
+      backupProcessResultSchema.parse({
+        status: 'completed',
+        snapshot: { id: 'snap-1', files: [{ sourcePath: '/x', backupPath: '' }] },
+      }),
+    ).toThrow();
+  });
+});
+
 describe('backupProcessResultSchema — incremental dedup + partial-success passthrough', () => {
   // Regression guard: same failure mode as the system_image block above — the
   // strict schema (and the WS enqueue call) lacked referencedFiles/

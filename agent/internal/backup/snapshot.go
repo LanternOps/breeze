@@ -198,6 +198,25 @@ type Snapshot struct {
 // `omitempty`: manifests written before this change carry neither, and the
 // verify/restore paths treat an absent value as "not available" and fall back
 // gracefully (size-only check on verify, default mode on restore).
+// Entry kinds. "" (the zero value) is a regular file with uploaded content.
+const (
+	KindSymlink = "symlink"
+	KindDir     = "dir"
+)
+
+// manifestFormatFidelity marks a manifest that carries content-less entries
+// (symlinks/directories) and/or ownership — bare-metal W02. Readers older
+// than W02 ignore the fields and would try to download an empty BackupPath
+// for a symlink; every reader in this repo checks HasContent() first.
+const manifestFormatFidelity = 3
+
+// FileOwner is the Unix owner of an entry. Nil on Windows and in manifests
+// written before W02.
+type FileOwner struct {
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+}
+
 type SnapshotFile struct {
 	SourcePath string    `json:"sourcePath"`
 	BackupPath string    `json:"backupPath"`
@@ -226,6 +245,44 @@ type SnapshotFile struct {
 	// of SourcePath when present, since SourcePath is a fresh per-run
 	// shadow-copy device path under VSS and would never match across runs.
 	OriginalPath string `json:"originalPath,omitempty"`
+	// Kind is "" for a regular file (content uploaded at BackupPath),
+	// KindSymlink or KindDir for content-less entries (BackupPath, Checksum
+	// and Size are empty/zero). LinkTarget is the verbatim readlink result.
+	Kind       string `json:"kind,omitempty"`
+	LinkTarget string `json:"linkTarget,omitempty"`
+	// ModeBits is the full Unix mode (perm + setuid/setgid/sticky), unlike
+	// Mode which is perm-only for compatibility. 0 = unknown.
+	ModeBits uint32 `json:"modeBits,omitempty"`
+	// Owner is nil when unknown (Windows, pre-W02 manifests).
+	Owner *FileOwner `json:"owner,omitempty"`
+}
+
+// HasContent reports whether the entry has an uploaded object at BackupPath.
+func (f SnapshotFile) HasContent() bool { return f.Kind == "" }
+
+// snapshotNeedsFidelityFormat reports whether files contains any
+// content-less entry or ownership — see manifestFormatFidelity.
+func snapshotNeedsFidelityFormat(files []SnapshotFile) bool {
+	for _, f := range files {
+		if f.Kind != "" || f.Owner != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// contentlessEntry builds the manifest entry for a symlink or directory:
+// nothing is uploaded, so BackupPath/Checksum/Size stay empty.
+func contentlessEntry(f backupFile) SnapshotFile {
+	return SnapshotFile{
+		SourcePath:   f.sourcePath,
+		OriginalPath: f.originalPath,
+		ModTime:      f.modTime,
+		Kind:         f.kind,
+		LinkTarget:   f.linkTarget,
+		ModeBits:     f.modeBits,
+		Owner:        f.owner,
+	}
 }
 
 // journalEntryKey returns the checkpoint-journal resume key for f:
@@ -806,6 +863,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		if err := ctx.Err(); err != nil {
 			return abortStopped()
 		}
+		if file.kind != "" {
+			// Content-less entry (symlink/directory): nothing to upload,
+			// dedupe against, or checkpoint — see contentlessEntry's doc
+			// comment. Rebuilt from the live filesystem on every run.
+			snapshot.Files = append(snapshot.Files, contentlessEntry(file))
+			markDone(1, 0)
+			emitProgress(false)
+			continue
+		}
 		if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
 			// Already uploaded in a prior (interrupted) run with identical
 			// (size, modTime) — filesDone/bytesDone already reflect this
@@ -986,6 +1052,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			ModTime:      file.modTime,
 			Checksum:     checksum,
 			Mode:         uint32(file.mode.Perm()),
+			ModeBits:     file.modeBits,
+			Owner:        file.owner,
 		}
 		snapshot.Files = append(snapshot.Files, entry)
 		snapshot.Size += file.size
@@ -1002,6 +1070,15 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// state even if the last file(s) landed inside the throttle window and
 	// were swallowed by the `!force` check above.
 	emitProgress(true)
+
+	// W02: a manifest carrying any content-less entry (symlink/dir) or
+	// ownership is stamped formatVersion 3 so an older reader knows to
+	// check HasContent() before trusting BackupPath — see
+	// manifestFormatFidelity's doc comment. Overrides the incremental
+	// format-2 stamp above when both apply.
+	if snapshotNeedsFidelityFormat(snapshot.Files) {
+		snapshot.FormatVersion = manifestFormatFidelity
+	}
 
 	if len(snapshot.Files) == 0 {
 		return nil, errors.Join(errs...)

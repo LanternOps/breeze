@@ -1,8 +1,10 @@
 package backup
 
 import (
+	"context"
 	"os"
 	pathpkg "path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +108,13 @@ func TestCollectBackupFiles_NonexistentPath(t *testing.T) {
 	}
 }
 
-func TestCollectBackupFiles_SkipsSymlinks(t *testing.T) {
+// W02: the walker used to drop symlinks entirely; it now records them as a
+// content-less backupFile (kind=KindSymlink, the verbatim readlink target,
+// zero size) alongside the real file — see TestCollectBackupFiles_FidelityEntries
+// for the fuller fidelity coverage (modes/owner/directories). This test keeps
+// its original, narrower shape: a real file plus one symlink to it, both
+// captured, the symlink never followed.
+func TestCollectBackupFiles_CapturesSymlinks(t *testing.T) {
 	tmpDir := t.TempDir()
 	subDir := pathpkg.Join(tmpDir, "symlink_test")
 	os.MkdirAll(subDir, 0755)
@@ -125,12 +133,23 @@ func TestCollectBackupFiles_SkipsSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
-	// Should only include the real file, not the symlink
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file (real only, symlink skipped), got %d", len(files))
+	if len(files) != 2 {
+		t.Fatalf("expected 2 entries (real file + symlink), got %d", len(files))
 	}
-	if !strings.Contains(files[0].sourcePath, "real.txt") {
-		t.Errorf("expected real.txt, got %q", files[0].sourcePath)
+	var real, link *backupFile
+	for i := range files {
+		switch {
+		case strings.Contains(files[i].sourcePath, "real.txt"):
+			real = &files[i]
+		case strings.Contains(files[i].sourcePath, "link.txt"):
+			link = &files[i]
+		}
+	}
+	if real == nil || real.kind != "" {
+		t.Fatalf("real file entry = %+v", real)
+	}
+	if link == nil || link.kind != KindSymlink || link.linkTarget != realFile || link.size != 0 {
+		t.Fatalf("symlink entry = %+v", link)
 	}
 }
 
@@ -216,5 +235,92 @@ func TestCollectBackupFiles_PathLabeling(t *testing.T) {
 	}
 	if !hasPath1 {
 		t.Error("expected a file with path_1 prefix")
+	}
+}
+
+// W02: the walker now records symlinks (never followed), empty directories,
+// and directories whose mode/owner differ from the MkdirAll default — plus
+// full mode bits and owner on every regular file (Unix only; Windows still
+// skips modeBits/owner but keeps symlinks + empty dirs).
+func TestCollectBackupFiles_FidelityEntries(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string, mode os.FileMode) string {
+		p := pathpkg.Join(root, rel)
+		if err := os.MkdirAll(pathpkg.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// os.Chmod's mode argument is a Go os.FileMode, whose setuid/setgid/sticky
+	// bits live at different bit positions than the traditional unix
+	// 04000/02000/01000 encoding — passing the traditional literal straight
+	// through (e.g. 0o4755) silently sets ONLY the permission bits (Go's
+	// syscallMode only adds the special bits when os.ModeSetuid etc. is
+	// actually set in the FileMode value). Use the os.Mode* constants so the
+	// fixture matches what a real `chmod 4755`'d file decodes to via
+	// os.Lstat (the kernel's raw st_mode IS correctly mapped back to
+	// os.ModeSetuid/Sticky on read — this quirk is Chmod-argument-only).
+	const setuidSticky = os.ModeSetuid | 0o755
+	const stickyDir = os.ModeSticky | 0o730
+	mk("usr/bin/tool", 0o755)
+	mk("usr/bin/sudo", setuidSticky)
+	if err := os.Symlink("usr/bin", pathpkg.Join(root, "bin")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.MkdirAll(pathpkg.Join(root, "var", "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pathpkg.Join(root, "var", "spool", "cron"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pathpkg.Join(root, "var", "spool", "cron"), stickyDir); err != nil {
+		t.Fatal(err)
+	}
+	mk("var/spool/cron/root", 0o600)
+
+	mgr := NewBackupManager(BackupConfig{Paths: []string{root}})
+	files, err := mgr.collectBackupFilesFromPaths(context.Background(), []string{root}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRel := map[string]backupFile{}
+	for _, f := range files {
+		rel, _ := pathpkg.Rel(root, f.sourcePath)
+		byRel[pathpkg.ToSlash(rel)] = f
+	}
+	link, ok := byRel["bin"]
+	if !ok || link.kind != KindSymlink || link.linkTarget != "usr/bin" || link.size != 0 {
+		t.Fatalf("symlink entry = %+v (ok=%v)", link, ok)
+	}
+	empty, ok := byRel["var/empty"]
+	if !ok || empty.kind != KindDir {
+		t.Fatalf("empty dir entry = %+v (ok=%v)", empty, ok)
+	}
+	if _, ok := byRel["usr"]; ok {
+		t.Error("a plain non-empty 0755 directory must not get an entry")
+	}
+	if runtime.GOOS != "windows" {
+		cron := byRel["var/spool/cron"]
+		if cron.kind != KindDir || cron.modeBits != uint32(stickyDir) {
+			t.Errorf("sticky dir entry = %+v", cron)
+		}
+		sudo := byRel["usr/bin/sudo"]
+		if sudo.modeBits != uint32(setuidSticky) || sudo.owner == nil || sudo.owner.UID != os.Getuid() {
+			t.Errorf("setuid file = %+v", sudo)
+		}
+		tool := byRel["usr/bin/tool"]
+		if tool.kind != "" || tool.modeBits != 0o755 {
+			t.Errorf("regular file = %+v", tool)
+		}
+	}
+	// Symlinked directories are recorded as links, never descended.
+	if _, ok := byRel["bin/tool"]; ok {
+		t.Error("walker followed a directory symlink")
 	}
 }
