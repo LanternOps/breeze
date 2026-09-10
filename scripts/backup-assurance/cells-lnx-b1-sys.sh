@@ -277,13 +277,11 @@ if [ "$MODE" = recover ]; then
   GOTMARKER=$(tgt "sudo cat /etc/breeze-assure-marker" 2> /dev/null)
   assert_eq "target: marker content matches" "$MARKER_CONTENT" "$GOTMARKER"
 
-  # KNOWN CAVEAT (as of main @ f4436f2276, W03 #5444): systemstate's
-  # copyFile/copyTree (agent/internal/backup/systemstate/helpers.go) hardcode
-  # every staged /etc file to 0600 and every staged dir to 0700 with no
-  # os.Chown — a collector-side gap called out in restore_linux.go's
-  # restoreEtcTree doc comment, not owned by any wave of this feature. Expect
-  # this assertion to FAIL for that pre-existing, already-documented reason
-  # until the collector is fixed, not as a wave 1-3 regression.
+  # Mode/owner fidelity depends on W01 (#5445): the collector stages /etc
+  # entries with their real mode/uid/gid/mtime and records them on the
+  # manifest artifacts, the consumer (W02) reapplies them into staging, and
+  # the restorer (W03) propagates them onto /etc. Before W01+W02 land, staged
+  # files are 0600 root and this assertion fails for that reason.
   GOTSTAT=$(tgt "stat -c '%a %U:%G' /etc/breeze-assure-marker" 2> /dev/null)
   assert_eq "target: marker mode/owner is 640 root:adm" "640 root:adm" "$GOTSTAT"
 
