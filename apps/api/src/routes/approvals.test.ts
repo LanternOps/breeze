@@ -1909,6 +1909,34 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
       expect(res.status).toBe(200);
       expect(db.transaction).toHaveBeenCalledTimes(1);
     });
+
+    // Gap: hasPermission(perms, 'pam', 'approve') alone says nothing about
+    // WHICH org the permission reaches. getUserPermissions falls back to the
+    // partner axis when the decider has no organization_users row for the
+    // elevation's org, so a partner-scope decider whose org_access is
+    // 'selected' and does NOT include the elevation's org must still be
+    // refused, exactly like the intentId/four_eyes branch's
+    // `canAccessOrg(deciderPerms, linkedIntent.orgId)` check (see
+    // 'refuses an intent-linked APPROVE ... lost access to the intent org').
+    // `permissions.ts` is mocked wholesale in this file (default
+    // `canAccessOrg: () => true`), so drive the org-reach failure the same
+    // way that test does: override the canAccessOrg mock directly.
+    it('a partner-scope decider with pam:approve who lost access to the elevation org is denied 403 and the row is never touched', async () => {
+      mockPreFetchAndElevationOrgLookup();
+      vi.mocked(getUserPermissions).mockResolvedValueOnce({
+        scope: 'partner',
+        orgAccess: 'selected',
+        allowedOrgIds: ['org-other'],
+        permissions: [{ resource: 'pam', action: 'approve' }],
+      } as any);
+      vi.mocked(canAccessOrg).mockReturnValueOnce(false);
+
+      const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'pam_approve_required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
   });
 });
 

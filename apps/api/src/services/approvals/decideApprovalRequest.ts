@@ -391,7 +391,18 @@ export async function decideApprovalRequest(
         }),
       ),
     );
-    if (!deciderPerms || !hasPermission(deciderPerms, 'pam', 'approve')) {
+    // hasPermission alone doesn't establish that the permission reaches THIS
+    // org: getUserPermissions falls back to the partner axis when the decider
+    // has no organization_users row for elevationOrgId, so a partner-scope
+    // decider with org_access='selected' that doesn't cover elevationOrgId
+    // would otherwise still pass. canAccessOrg closes that, mirroring the
+    // intentId/four_eyes branch's `canAccessOrg(deciderPerms, linkedIntent.orgId)`
+    // check below.
+    if (
+      !deciderPerms ||
+      !canAccessOrg(deciderPerms, elevationOrgId) ||
+      !hasPermission(deciderPerms, 'pam', 'approve')
+    ) {
       return { httpStatus: 403, body: { error: 'pam_approve_required' } };
     }
   }
