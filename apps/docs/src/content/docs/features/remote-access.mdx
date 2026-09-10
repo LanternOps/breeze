@@ -86,7 +86,11 @@ The `list_sessions` command returns available user sessions by merging the WTS s
 
 The same session broker architecture extends to macOS and Linux. When the agent runs as a LaunchDaemon (macOS) or systemd service (Linux), it has no display access. The agent detects this via the `IsHeadless` flag (checked by `hasConsole()` on Unix).
 
-In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11/Wayland on Linux).
+In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11 on Linux).
+
+<Aside type="caution" title="Wayland sessions are not supported yet">
+  Remote desktop and screenshots on Linux require an X11 session. Wayland-only sessions -- the default GNOME and KDE sessions on current Ubuntu and Fedora releases, and wlroots compositors such as Hyprland and Sway -- cannot be captured. When the device has no X11 display at all, the device page reports **Wayland Unsupported** and the **Connect Desktop** button is disabled. On compositors that run XWayland for legacy apps, the agent may attach to that XWayland display instead, so a session can connect but shows only X11 application windows rather than the desktop. Terminal, scripts, and monitoring are unaffected either way. Where the login screen offers an X11 session, selecting it restores remote desktop. See [Supported Linux Distributions](/agents/installation/#supported-linux-distributions).
+</Aside>
 
 <Aside>
   If no Helper process is connected when a remote desktop session is requested in headless mode, the agent returns an error immediately rather than streaming zero frames.
