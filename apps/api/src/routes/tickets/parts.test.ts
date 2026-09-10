@@ -160,6 +160,17 @@ describe('parts routes', () => {
     expect(body.data).toHaveProperty('id', PART_ID);
   });
 
+  it('rejects billed on create before ticket lookup or service work', async () => {
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: 'SSD', quantity: 1, billingStatus: 'billed' })
+    });
+    expect(res.status).toBe(400);
+    expect(getScopedTicketOr404Mock).not.toHaveBeenCalled();
+    expect(timeServiceMocks.addTicketPart).not.toHaveBeenCalled();
+  });
+
   it('passes a catalogItemId through to the service (#1368 catalog link)', async () => {
     getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
     timeServiceMocks.addTicketPart.mockResolvedValue({ id: PART_ID });
@@ -226,6 +237,18 @@ describe('parts routes', () => {
     });
     expect(res.status).toBe(200);
     expect(timeServiceMocks.updateTicketPart).toHaveBeenCalled();
+  });
+
+  it('rejects billed on update before part or ticket lookup and service work', async () => {
+    const res = await ticketsRoutes.request(`/parts/${PART_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ billingStatus: 'billed' })
+    });
+    expect(res.status).toBe(400);
+    expect(dbSelectMock).not.toHaveBeenCalled();
+    expect(getScopedTicketOr404Mock).not.toHaveBeenCalled();
+    expect(timeServiceMocks.updateTicketPart).not.toHaveBeenCalled();
   });
 
   it('DELETE /parts/:id 404s for out-of-scope ticket', async () => {
