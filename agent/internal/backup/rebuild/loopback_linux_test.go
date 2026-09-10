@@ -43,7 +43,7 @@ func TestRun_LoopbackRealSystem(t *testing.T) {
 	}
 	defer func() { _ = detach() }()
 	out, _ := exec.Command("blkid", "-o", "export", partitionDevice(dev, 3)).CombinedOutput()
-	if !strings.Contains(string(out), "UUID=9f7a-root") || !strings.Contains(string(out), "TYPE=ext4") {
+	if !strings.Contains(string(out), "UUID="+testRootFSUUID) || !strings.Contains(string(out), "TYPE=ext4") {
 		t.Fatalf("root partition: %s", out)
 	}
 	out, _ = exec.Command("blkid", "-o", "export", partitionDevice(dev, 1)).CombinedOutput()

@@ -108,7 +108,8 @@ type Plan struct {
 	TargetSizeBytes int64              `json:"targetSizeBytes"`
 	SectorSize      int                `json:"sectorSize"`
 	Partitions      []PlannedPartition `json:"partitions"`
-	MinimumBytes    int64              `json:"minimumBytes"` // what the target must offer
+	MinimumBytes    int64              `json:"minimumBytes"`       // what the target must offer
+	Warnings        []string           `json:"warnings,omitempty"` // non-fatal planning issues, e.g. a partition with no recorded filesystem UUID
 }
 
 // Options configures a single Run call.

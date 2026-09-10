@@ -142,7 +142,7 @@ func seedSnapshot(t *testing.T, id string, lay *layout.Manifest) *memProvider {
 	p := &memProvider{files: map[string][]byte{}}
 	content := map[string][]byte{
 		"/etc/hostname":                    []byte("srv-1\n"),
-		"/etc/fstab":                       []byte("UUID=9f7a-root / ext4 defaults 0 1\nUUID=ABCD-1234 /boot/efi vfat umask=0077 0 1\n"),
+		"/etc/fstab":                       []byte("UUID=" + testRootFSUUID + " / ext4 defaults 0 1\nUUID=ABCD-1234 /boot/efi vfat umask=0077 0 1\n"),
 		"/etc/machine-id":                  []byte("0123456789abcdef0123456789abcdef\n"),
 		"/etc/breeze/agent.yaml":           []byte("server_url: https://example.invalid\nagent_id: a1\ndevice_id: d1\nauth_token: t\n"),
 		"/etc/breeze/secrets.yaml":         []byte("auth_token: t\n"),
@@ -296,18 +296,18 @@ func TestRun_FullLinuxFlowOnFakeSystem(t *testing.T) {
 	// Provision: zap, three partitions with type GUIDs + partition GUIDs, rescan, formats with UUIDs.
 	for _, want := range []string{
 		"sgdisk --zap-all /dev/loop7",
-		"sgdisk --new=1:2048:", "--typecode=1:" + layout.GUIDEFISystem, "--partition-guid=1:1111-aaaa",
+		"sgdisk --new=1:2048:", "--typecode=1:" + layout.GUIDEFISystem, "--partition-guid=1:" + testEFIPartUUID,
 		"sgdisk --new=3:",
 		"partprobe /dev/loop7",
 		"mkfs.vfat -F 32 -i ABCD1234 /dev/loop7p1",
-		"mkfs.ext4 -F -q -U boot-uuid /dev/loop7p2",
-		"mkfs.ext4 -F -q -U 9f7a-root -L rootfs /dev/loop7p3",
+		"mkfs.ext4 -F -q -U " + testBootFSUUID + " /dev/loop7p2",
+		"mkfs.ext4 -F -q -U " + testRootFSUUID + " -L rootfs /dev/loop7p3",
 	} {
 		if !sys.has(want) && !strings.Contains(strings.Join(sys.cmds, "\n"), want) {
 			t.Errorf("missing command containing %q\n%s", want, sys.dump())
 		}
 	}
-	if sys.indexOf("sgdisk --zap-all") < 0 || sys.indexOf("mkfs.ext4 -F -q -U 9f7a-root") < sys.indexOf("partprobe") {
+	if sys.indexOf("sgdisk --zap-all") < 0 || sys.indexOf("mkfs.ext4 -F -q -U "+testRootFSUUID) < sys.indexOf("partprobe") {
 		t.Errorf("format must follow rescan\n%s", sys.dump())
 	}
 	// Mount order: root, then /boot, then /boot/efi.
