@@ -101,3 +101,48 @@ describe('navigateTo same-origin guard', () => {
     });
   });
 });
+
+describe('navigateTo reports which path it took', () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+    navigateMock.mockResolvedValue(undefined);
+  });
+
+  it("resolves 'soft' only when the router actually swapped the document (astro:after-swap fired)", async () => {
+    navigateMock.mockImplementation(async () => {
+      document.dispatchEvent(new Event('astro:after-swap'));
+    });
+    await expect(navigateTo('/devices')).resolves.toBe('soft');
+  });
+
+  it("resolves 'hard' when navigate() resolved without a swap (Astro's own full-load fallbacks never throw)", async () => {
+    // e.g. fetch failed / non-HTML response / no view-transitions meta: the
+    // router sets location.href and resolves normally.
+    navigateMock.mockResolvedValue(undefined);
+    await expect(navigateTo('/devices')).resolves.toBe('hard');
+  });
+
+  it('does not leave the after-swap listener behind once settled', async () => {
+    navigateMock.mockResolvedValue(undefined);
+    await navigateTo('/devices');
+    const before = navigateMock.mock.calls.length;
+    document.dispatchEvent(new Event('astro:after-swap'));
+    expect(navigateMock.mock.calls.length).toBe(before); // no side effects either way
+  });
+
+  it("resolves 'hard' when it had to fall back to a full navigation", async () => {
+    navigateMock.mockRejectedValue(new Error('no router'));
+    const assign = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true, writable: true,
+      value: { ...original, assign, replace: vi.fn() },
+    });
+    try {
+      await expect(navigateTo('/devices')).resolves.toBe('hard');
+      expect(assign).toHaveBeenCalledWith('/devices');
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, writable: true, value: original });
+    }
+  });
+});
