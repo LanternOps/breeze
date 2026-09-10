@@ -512,6 +512,20 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const deviceId = input.deviceId as string | undefined;
       const idleThresholdMinutes = Math.min(Math.max(1, Number(input.idleThresholdMinutes) || 15), 1440);
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 200);
+      // Site authority is app-layer only. A defined ceiling constrains even
+      // the fleet form (no deviceId); malformed runtime values fail closed.
+      const allowedSiteIds = auth.allowedSiteIds === undefined
+        ? undefined
+        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({
+          idleThresholdMinutes,
+          totalActiveSessions: 0,
+          totalDevicesWithSessions: 0,
+          devices: [],
+          note: SITE_SCOPE_EMPTY_NOTE,
+        });
+      }
 
       if (deviceId) {
         const access = await verifyDeviceAccess(deviceId, auth);
@@ -522,6 +536,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const orgCondition = auth.orgCondition(deviceSessions.orgId);
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
 
       const rows = await db
         .select({
@@ -620,6 +635,19 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       const username = input.username as string | undefined;
       const daysBack = Math.min(Math.max(1, Number(input.daysBack) || 30), 365);
       const limit = Math.min(Math.max(1, Number(input.limit) || 200), 500);
+      // Apply the current device's site before ordering/LIMIT so a hidden
+      // newest session cannot starve an older visible result.
+      const allowedSiteIds = auth.allowedSiteIds === undefined
+        ? undefined
+        : Array.isArray(auth.allowedSiteIds) ? auth.allowedSiteIds : [];
+      if (allowedSiteIds?.length === 0) {
+        return JSON.stringify({
+          daysBack,
+          totalSessions: 0,
+          message: 'No session data found for the selected filters.',
+          note: SITE_SCOPE_EMPTY_NOTE,
+        });
+      }
 
       if (deviceId) {
         const access = await verifyDeviceAccess(deviceId, auth);
@@ -632,6 +660,7 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (username) conditions.push(eq(deviceSessions.username, username));
+      if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
 
       const rows = await db
         .select({

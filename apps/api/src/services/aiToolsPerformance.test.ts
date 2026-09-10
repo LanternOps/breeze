@@ -34,6 +34,19 @@ function mockSelectOnce(result: unknown) {
   mockDb.select.mockImplementationOnce(() => createChain(result));
 }
 
+function captureSingleWhere(result: unknown = []) {
+  let captured: unknown;
+  mockDb.select.mockImplementationOnce(() => {
+    const chain = createChain(result);
+    chain.where = vi.fn((condition: unknown) => {
+      captured = condition;
+      return chain;
+    });
+    return chain;
+  });
+  return { capturedWhere: () => captured };
+}
+
 /**
  * analyze_fleet_metrics issues THREE `db.select()` calls, in this order:
  *   1. the grouped per-device subquery builder (`.groupBy(...).as(...)`) —
@@ -416,6 +429,65 @@ describe('analyze_fleet_metrics AI tool', () => {
     const condition = capturedWhere() as SQL | undefined;
     expect(condition).toBeDefined();
     const rendered = new PgDialect().sqlToQuery(condition!);
+    expect(rendered.params).not.toContain('site-A');
+  });
+});
+
+describe('fleet user-session AI tools — site narrowing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function restrictedAuth(allowedSiteIds: string[] | null): AuthContext {
+    return {
+      ...makeAuth(),
+      allowedSiteIds,
+      canAccessSite: (siteId: string | null | undefined) => Array.isArray(allowedSiteIds)
+        && !!siteId
+        && allowedSiteIds.includes(siteId),
+    } as unknown as AuthContext;
+  }
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s returns an empty result for a defined-empty site ceiling without querying', async (tool, input) => {
+    const parsed = JSON.parse(await handlerFor(tool)(input, restrictedAuth([])));
+
+    expect(parsed.totalActiveSessions ?? parsed.totalSessions).toBe(0);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a malformed null site ceiling before querying', async () => {
+    const parsed = JSON.parse(await handlerFor('get_active_users')({}, restrictedAuth(null)));
+
+    expect(parsed.totalActiveSessions).toBe(0);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s pushes the current device site ceiling into SQL before LIMIT', async (tool, input) => {
+    const { capturedWhere } = captureSingleWhere([]);
+
+    await handlerFor(tool)(input, restrictedAuth(['site-A']));
+
+    const condition = capturedWhere() as SQL | undefined;
+    expect(condition).toBeDefined();
+    const rendered = new PgDialect().sqlToQuery(condition!);
+    expect(rendered.params).toContain('site-A');
+  });
+
+  it.each([
+    ['get_active_users', { limit: 1 }],
+    ['get_user_experience_metrics', { limit: 1 }],
+  ])('%s remains unrestricted when no site ceiling exists', async (tool, input) => {
+    const { capturedWhere } = captureSingleWhere([]);
+
+    await handlerFor(tool)(input, makeAuth());
+
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
     expect(rendered.params).not.toContain('site-A');
   });
 });
