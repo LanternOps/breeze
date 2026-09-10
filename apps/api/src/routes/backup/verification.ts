@@ -21,7 +21,8 @@ import {
   listBackupVerifications,
   listRecoveryReadiness,
   recalculateReadinessScores,
-  runBackupVerification
+  runBackupVerification,
+  toVerificationListItem
 } from './verificationService';
 
 export const backupVerificationRoutes = new Hono();
@@ -36,6 +37,18 @@ async function isDeviceSiteDenied(orgId: string, deviceId: string, permissions: 
   return !device || typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId);
 }
 
+function allowedSiteIds(c: { get(key: 'permissions'): unknown }): string[] | undefined {
+  return (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+}
+
+function emptyHealthSummary() {
+  return {
+    verification: { total: 0, passedLast24h: 0, failedLast24h: 0, partialLast24h: 0, coveragePercent: 100 },
+    readiness: { averageScore: 0, lowReadinessCount: 0, criticalDevicesAtRisk: 0 },
+    escalations: { verificationFailures: 0, criticalVerificationFailures: 0 },
+  };
+}
+
 backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', backupHealthQuerySchema), async (c) => {
   const auth = c.get('auth');
   const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
@@ -44,10 +57,14 @@ backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.
   }
 
   const query = c.req.valid('query');
-  if (query.refresh === true) {
-    await recalculateReadinessScores(orgId);
+  const siteIds = allowedSiteIds(c);
+  if (siteIds?.length === 0) {
+    return c.json({ data: { status: 'healthy', ...emptyHealthSummary() } });
   }
-  const summary = await getBackupHealthSummary(orgId);
+  if (query.refresh === true) {
+    await recalculateReadinessScores(orgId, siteIds);
+  }
+  const summary = await getBackupHealthSummary(orgId, siteIds);
 
   return c.json({
     data: {
@@ -136,6 +153,8 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
   }
 
   const query = c.req.valid('query');
+  const siteIds = allowedSiteIds(c);
+  if (siteIds?.length === 0) return c.json({ data: [] });
   const rows = await listBackupVerifications(orgId, {
     deviceId: query.deviceId,
     backupJobId: query.backupJobId,
@@ -143,11 +162,14 @@ backupVerificationRoutes.get('/verifications', requirePermission(PERMISSIONS.ORG
     status: query.status,
     from: toDateOrNull(query.from),
     to: toDateOrNull(query.to),
-    limit: query.limit ?? 100
+    limit: query.limit ?? 100,
+    allowedSiteIds: siteIds,
   });
 
   return c.json({
-    data: rows
+    // Keep the HTTP serialization boundary explicit even though the shared
+    // list service also projects for its internal callers.
+    data: rows.map(toVerificationListItem)
   });
 });
 
@@ -159,10 +181,14 @@ backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSION
   }
 
   const query = c.req.valid('query');
-  if (query.refresh === true) {
-    await recalculateReadinessScores(orgId);
+  const siteIds = allowedSiteIds(c);
+  if (siteIds?.length === 0) {
+    return c.json({ data: { summary: { devices: 0, averageScore: 0, lowReadiness: 0, highReadiness: 0 }, devices: [] } });
   }
-  let rows = await listRecoveryReadiness(orgId);
+  if (query.refresh === true) {
+    await recalculateReadinessScores(orgId, siteIds);
+  }
+  let rows = await listRecoveryReadiness(orgId, siteIds);
   if (query.deviceId) {
     rows = rows.filter((row) => row.deviceId === query.deviceId);
   }
