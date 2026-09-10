@@ -250,25 +250,38 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
     return { queued: false, discoveryJobId: null };
   }
 
+  // SEC-146: the recurring gate answers "may this schedule keep firing with
+  // nobody watching". An interactive "Scan Now" is a live request that
+  // POST /network/baselines/:id/scan already authorized (org reach + site
+  // ceiling + devices:write), so it is NOT subject to the envelope, schedule-
+  // enabled or generation checks — running them there broke manual scans for
+  // exactly the baselines an operator most needs to reach: paused ones and every
+  // legacy row awaiting re-approval. A manual run also never writes
+  // scheduleBlockedReason, in either direction: it must neither block a schedule
+  // nor silently clear a block the recurring path recorded.
+  //
   // An absent trigger is a pre-upgrade queue payload: treat it as scheduled with
   // no generation, so a legacy row (no envelope) fails closed.
   const isScheduled = data.trigger !== 'manual';
-  const decision = await resolveBaselineDispatchAuthority(baseline, {
-    expectedGeneration:
-      isScheduled && typeof data.authorityGeneration === 'number' ? data.authorityGeneration : null
-  });
 
-  if (!decision.allowed) {
-    // No discovery job, no auto-created profile, no Redis effect — and no throw,
-    // so one revoked baseline never takes down the tick.
-    console.warn(
-      `[NetworkBaselineWorker] Baseline ${baseline.id} dispatch denied: ${decision.reason} (SEC-146)`
-    );
-    await db
-      .update(networkBaselines)
-      .set({ scheduleBlockedReason: decision.reason, updatedAt: new Date() })
-      .where(eq(networkBaselines.id, baseline.id));
-    return { queued: false, discoveryJobId: null, blockedReason: decision.reason };
+  if (isScheduled) {
+    const decision = await resolveBaselineDispatchAuthority(baseline, {
+      expectedGeneration:
+        typeof data.authorityGeneration === 'number' ? data.authorityGeneration : null
+    });
+
+    if (!decision.allowed) {
+      // No discovery job, no auto-created profile, no Redis effect — and no
+      // throw, so one revoked baseline never takes down the tick.
+      console.warn(
+        `[NetworkBaselineWorker] Baseline ${baseline.id} dispatch denied: ${decision.reason} (SEC-146)`
+      );
+      await db
+        .update(networkBaselines)
+        .set({ scheduleBlockedReason: decision.reason, updatedAt: new Date() })
+        .where(eq(networkBaselines.id, baseline.id));
+      return { queued: false, discoveryJobId: null, blockedReason: decision.reason };
+    }
   }
 
   let [profile] = await db
@@ -354,7 +367,9 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
     .update(networkBaselines)
     .set({
       lastScanJobId: discoveryJob.id,
-      scheduleBlockedReason: null,
+      // Only a recurring dispatch that passed the gate may clear the block — a
+      // manual scan proves nothing about the schedule's authority.
+      ...(isScheduled ? { scheduleBlockedReason: null } : {}),
       updatedAt: new Date()
     })
     .where(eq(networkBaselines.id, baseline.id));

@@ -84,9 +84,33 @@ const deleteBaselineQuerySchema = z.object({
   deleteChanges: optionalQueryBooleanSchema
 });
 
-function mapBaselineRow(row: typeof networkBaselines.$inferSelect) {
+/**
+ * SEC-2026-09-05-146: an explicit allowlist, not a spread.
+ *
+ * These handlers are gated on `devices:read`, which every device-viewing role
+ * holds, so spreading the row handed all of them the arming user's
+ * permission/MFA epochs, the effect fingerprint and the arm-time site ceiling.
+ * That envelope is an internal enforcement record — the client needs only what
+ * renders the re-approval banner (why the schedule is held, when it was armed,
+ * by whom, and which generation is current).
+ *
+ * Exported for the exposure contract test; adding a column to
+ * `network_baselines` does NOT publish it — extend this function deliberately.
+ */
+export function mapBaselineRow(row: typeof networkBaselines.$inferSelect) {
   return {
-    ...row,
+    id: row.id,
+    orgId: row.orgId,
+    siteId: row.siteId,
+    subnet: row.subnet,
+    knownDevices: row.knownDevices,
+    scanSchedule: row.scanSchedule,
+    alertSettings: row.alertSettings,
+    lastScanJobId: row.lastScanJobId,
+    authorityUserId: row.authorityUserId,
+    authorityGeneration: row.authorityGeneration,
+    authorityArmedAt: row.authorityArmedAt?.toISOString() ?? null,
+    scheduleBlockedReason: row.scheduleBlockedReason,
     lastScanAt: row.lastScanAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()

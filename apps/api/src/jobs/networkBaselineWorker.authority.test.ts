@@ -181,13 +181,33 @@ describe('processExecuteScan authority gate', () => {
     expect(createDiscoveryJobMock).not.toHaveBeenCalled();
   });
 
-  it('an interactive (manual) dispatch still runs the gate but carries no generation', async () => {
-    selectQueue.push([BASELINE], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
-    resolveAuthorityMock.mockResolvedValue({ allowed: true });
-    createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-2' }, created: false });
+  /**
+   * SEC-146 review F1. The recurring-authority envelope answers "may this
+   * schedule keep firing with nobody watching". An interactive "Scan Now" is a
+   * live request that POST /network/baselines/:id/scan already authorized
+   * (org + site ceiling + devices:write). Running the recurring gate on it made
+   * "Scan Now" fail for exactly the baselines an operator most needs to scan:
+   * a paused one, and every legacy row awaiting re-approval.
+   */
+  it.each([
+    ['a LEGACY baseline with no envelope', { ...BASELINE, authorityUserId: null, authorityFingerprint: null }],
+    ['a PAUSED baseline', { ...BASELINE, scanSchedule: { enabled: false, intervalHours: 4 } }],
+    ['a baseline already stamped blocked', { ...BASELINE, scheduleBlockedReason: 'reapproval_required' }],
+  ])('an interactive (manual) dispatch runs for %s and never stamps a blocked reason', async (_label, row) => {
+    selectQueue.push([row], [{ id: 'profile-1', subnets: ['10.0.0.0/24'] }]);
+    createDiscoveryJobMock.mockResolvedValue({ job: { id: 'discovery-2' }, created: true });
+    enqueueDiscoveryScanMock.mockResolvedValue(undefined);
 
-    await processExecuteScan({ ...JOB, trigger: 'manual', authorityGeneration: undefined } as never);
+    const result = await processExecuteScan({ ...JOB, trigger: 'manual', authorityGeneration: undefined } as never);
 
-    expect(resolveAuthorityMock).toHaveBeenCalledWith(expect.anything(), { expectedGeneration: null });
+    expect(result).toEqual({ queued: true, discoveryJobId: 'discovery-2' });
+    // The recurring gate is not consulted at all for a live-authorized scan.
+    expect(resolveAuthorityMock).not.toHaveBeenCalled();
+    expect(createDiscoveryJobMock).toHaveBeenCalledTimes(1);
+    // ...and a manual run must never write scheduleBlockedReason, in either
+    // direction: it neither blocks a schedule nor silently clears one.
+    for (const call of updateCalls) {
+      expect(call).not.toHaveProperty('scheduleBlockedReason');
+    }
   });
 });

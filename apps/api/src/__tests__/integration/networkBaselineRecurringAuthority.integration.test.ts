@@ -14,7 +14,15 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { withSystemDbAccessContext } from '../../db';
-import { networkBaselines, organizationUsers, users } from '../../db/schema';
+import {
+  discoveryJobs,
+  discoveryProfiles,
+  networkBaselines,
+  organizationUsers,
+  users,
+} from '../../db/schema';
+import { processResults } from '../../jobs/discoveryWorker';
+import { processExecuteScan } from '../../jobs/networkBaselineWorker';
 import {
   BASELINE_BLOCKED_REASON,
   computeBaselineAuthorityFingerprint,
@@ -391,5 +399,126 @@ describe('recurring network-baseline authority against real PostgreSQL', () => {
       .where(eq(networkBaselines.id, fixture.baseline.id))
       .limit(1);
     expect(must(armed, 'armed after').scheduleBlockedReason).toBeNull();
+  });
+});
+
+describe('SEC-146 review follow-ups against real PostgreSQL', () => {
+  let fixture: Fixture;
+  beforeEach(async () => {
+    fixture = await seedArmedBaseline();
+  });
+
+  /**
+   * F2. `discoveryWorker.processResults` auto-creates a baseline for a site that
+   * has none. It used to insert with `scan_schedule` NULL, which
+   * `normalizeBaselineScanSchedule` reads back as `enabled: true` — and
+   * `compareBaselineScan` then PERSISTS that normalised value. The result was an
+   * enabled recurring schedule with no envelope and no creator: blocked forever
+   * by the gate, and invisible to the migration's quarantine sweep (whose
+   * predicate reads the NULL jsonb as not-enabled). A system-auto-created scan
+   * has no revocable creator, so it must start disabled.
+   */
+  it('auto-created baselines start with a DISABLED recurring schedule', async () => {
+    const seed = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    const [profile] = await seed
+      .insert(discoveryProfiles)
+      .values({ orgId: org.id, siteId: site.id, name: 'auto-baseline-suite', subnets: ['10.44.0.0/24'] })
+      .returning();
+    const [job] = await seed
+      .insert(discoveryJobs)
+      .values({ profileId: must(profile, 'profile').id, orgId: org.id, siteId: site.id, status: 'running' })
+      .returning();
+
+    await withSystemDbAccessContext(() =>
+      processResults({
+        type: 'process-results',
+        jobId: must(job, 'job').id,
+        profileId: must(profile, 'profile').id,
+        orgId: org.id,
+        siteId: site.id,
+        hostsScanned: 1,
+        hostsDiscovered: 1,
+        hosts: [{ ip: '10.44.0.9', hostname: 'auto-host', mac: 'aa:bb:cc:00:44:09' } as never],
+      }),
+    );
+
+    const [auto] = await seed
+      .select({ scanSchedule: networkBaselines.scanSchedule, authorityUserId: networkBaselines.authorityUserId })
+      .from(networkBaselines)
+      .where(eq(networkBaselines.siteId, site.id))
+      .limit(1);
+
+    const autoRow = must(auto, 'auto-created baseline');
+    expect(autoRow.authorityUserId).toBeNull();
+    // The load-bearing assertion: an ownerless schedule is off, not
+    // enabled-and-permanently-blocked.
+    expect(autoRow.scanSchedule).not.toBeNull();
+    expect(autoRow.scanSchedule?.enabled).toBe(false);
+  });
+
+  /**
+   * F1. "Scan Now" is a live-authorized request. Running the recurring gate on
+   * it broke manual scans for precisely the baselines an operator needs most:
+   * paused ones, and every legacy row awaiting re-approval.
+   */
+  it.each([
+    ['LEGACY (no envelope)', { arm: false, enabled: true }],
+    ['PAUSED', { arm: true, enabled: false }],
+  ])('a manual dispatch of a %s baseline creates a discovery job and leaves schedule_blocked_reason alone', async (_label, shape) => {
+    const seed = getTestDb();
+    const target = shape.arm
+      ? fixture
+      : await (async () => {
+          const [legacy] = await seed
+            .insert(networkBaselines)
+            .values({
+              orgId: fixture.org.id,
+              siteId: fixture.site.id,
+              subnet: '10.99.0.0/24',
+              knownDevices: [],
+              scanSchedule: SCHEDULE,
+              updatedAt: new Date(),
+            })
+            .returning();
+          return { ...fixture, baseline: must(legacy, 'legacy baseline') };
+        })();
+
+    if (!shape.enabled) {
+      await seed
+        .update(networkBaselines)
+        .set({ scanSchedule: { ...SCHEDULE, enabled: false } })
+        .where(eq(networkBaselines.id, target.baseline.id));
+    }
+
+    // The recurring path denies this exact row...
+    const recurring = await gate(target, null);
+    expect(recurring.allowed).toBe(false);
+
+    // ...while the interactive path runs it.
+    const result = await withSystemDbAccessContext(() =>
+      processExecuteScan({
+        type: 'execute-baseline-scan',
+        baselineId: target.baseline.id,
+        orgId: target.org.id,
+        siteId: target.site.id,
+        subnet: target.baseline.subnet,
+        trigger: 'manual',
+      }),
+    );
+
+    expect(result.queued).toBe(true);
+    expect(result.discoveryJobId).not.toBeNull();
+    expect(result).not.toHaveProperty('blockedReason');
+
+    const [after] = await seed
+      .select({ scheduleBlockedReason: networkBaselines.scheduleBlockedReason })
+      .from(networkBaselines)
+      .where(eq(networkBaselines.id, target.baseline.id))
+      .limit(1);
+    expect(must(after, 'baseline after manual scan').scheduleBlockedReason).toBeNull();
   });
 });
