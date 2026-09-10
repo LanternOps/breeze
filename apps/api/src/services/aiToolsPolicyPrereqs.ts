@@ -16,6 +16,7 @@ import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import {
   ringAutoApproveSchema,
   mergeRingAutoApproveWrite,
@@ -366,6 +367,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_software_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -535,6 +540,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_peripheral_policies', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
@@ -668,6 +677,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_profiles', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'list') {
         const where = backupProfileWhere(auth);
@@ -843,6 +856,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_configs', async (input, auth) => {
       const action = input.action as string;
+      // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
+      if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
