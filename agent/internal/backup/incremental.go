@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
-	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // referenceDecision classifies one walked file against the previous
@@ -120,12 +118,6 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // index prev (nil = no usable previous manifest → always decideUpload),
 // implementing the design's decision table:
 //
-//   - f is a system-state staging artifact (f.systemState) → always
-//     decideUpload, never even looked up. CollectSystemState stages into a
-//     fresh os.MkdirTemp root every run, so these paths are inherently
-//     ephemeral and referencing them would be meaningless — see
-//     markSystemStateFiles for the explicit, defensive exclusion (rather
-//     than relying on the temp-dir path simply never colliding).
 //   - no entry for f's key → decideUpload (new file).
 //   - entry found but Size differs → decideUpload ("anything else" in the
 //     design table — a size change is never a reference even if some other
@@ -147,9 +139,6 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // entry itself after the upload actually completes, exactly as before
 // incremental backups existed.
 func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
-	if f.systemState {
-		return decideUpload, SnapshotFile{}
-	}
 	entry, ok := prev[journalLookupKey(f)]
 	if !ok || entry.Size != f.size {
 		return decideUpload, SnapshotFile{}
@@ -193,74 +182,19 @@ func isReferenceEntry(entry SnapshotFile, snapshotID string) bool {
 	return !strings.HasPrefix(entry.BackupPath, ownPrefix)
 }
 
-// isUnderDir reports whether p is dir itself or a descendant of it. Used by
-// markSystemStateFiles; dir == "" always reports false (no staging dir to
-// exclude, e.g. a non-system-state run).
-func isUnderDir(p, dir string) bool {
-	if dir == "" {
-		return false
-	}
-	rel, err := filepath.Rel(dir, p)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-// markSystemStateFiles flags every file in files whose sourcePath falls
-// under stagingDir (the run's system-state staging root — see
-// collectSystemState's call site in RunBackupContext) as
-// backupFile.systemState = true, so decideFile always uploads them.
-//
-// stagingDir is always the live path collectSystemState returned, never a VSS
-// shadow-device path: rewritePathsForVSS deliberately skips the staging index
-// because the dir is created after the snapshot is taken (#3026). That is what
-// keeps this prefix comparable to the sourcePaths collectBackupFilesFromPaths
-// actually produced.
-//
-// This exclusion is defense-in-depth, not strictly load-bearing for
-// correctness in production: CollectSystemState creates a fresh
-// os.MkdirTemp root every run, so a staging file's sourcePath is already
-// guaranteed never to appear as a key in a PREVIOUS manifest's index
-// (buildPreviousIndex) — the natural "new file" miss in decideFile would
-// reach the same decideUpload outcome on its own. Making it explicit here
-// keeps the exclusion correct independent of that randomness assumption
-// (e.g. a test double that reuses a fixed staging path across simulated
-// runs) and gives readers/reviewers a single obvious place the "never
-// referenced" rule lives, matching the design doc's explicit callout.
-//
-// Returns the number of files marked, so the caller can detect a manifest that
-// describes artifacts no collected file was matched to — see
-// systemStateArtifactsMissing.
-func markSystemStateFiles(files []backupFile, stagingDir string) int {
-	if stagingDir == "" {
-		return 0
-	}
-	marked := 0
-	for i := range files {
-		if isUnderDir(files[i].sourcePath, stagingDir) {
-			files[i].systemState = true
-			marked++
-		}
-	}
-	return marked
-}
-
-// systemStateArtifactsMissing reports the #3026 failure signature: the run
-// recorded a manifest describing system-state artifacts, but not one collected
-// file was matched to the staging directory those artifacts were written to.
-//
-// The manifest is written from the collector's own return value, so it says
-// nothing about whether the artifacts reached the snapshot. #3026 was one route
-// to that divergence (the staging dir rewritten onto a VSS shadow path that
-// predates it); the walk failing on the staging root, or a user exclude pattern
-// matching artifact names, are others. On a run that also has configured file
-// paths each one produces a green job whose restore point is missing the system
-// state it claims. Rather than guard only the route that was fixed, make the
-// outcome itself loud.
-//
-// A manifest with no artifacts is not a divergence — there is nothing to match
-// — so it is excluded rather than reported on every such run.
-func systemStateArtifactsMissing(manifest *systemstate.SystemStateManifest, markedFiles int) bool {
-	return manifest != nil && len(manifest.Artifacts) > 0 && markedFiles == 0
-}
+// NOTE: this package used to also carry isUnderDir/markSystemStateFiles/
+// systemStateArtifactsMissing, a detector for the #3026 failure signature (a
+// manifest recording system-state artifacts that the file walk never actually
+// saw). That whole mechanism assumed system-state artifacts were walked as
+// ordinary files (appended into backupPaths) alongside everything else.
+// Wave 1 of the D15 bare-metal-recovery contract (see
+// docs/superpowers/plans/backup/2026-09-09-bmr-system-state-contract.md)
+// moved system-state artifacts to their own remote prefix, published
+// directly from the manifest by publishSystemState (snapshot.go) rather than
+// discovered via the file walk — so a walked `files` slice never contains
+// staging-dir entries at all anymore, and the old detector would misfire on
+// EVERY run that collects any system state (markedFiles would always be 0).
+// publishSystemState's own per-artifact stat/upload is a strictly stronger
+// replacement: it fails loudly if an artifact the manifest describes isn't
+// actually on disk, rather than inferring the mismatch indirectly from the
+// file walk. Removed rather than left inert.

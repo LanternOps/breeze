@@ -11,12 +11,14 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // sha256File streams a file through SHA-256 and returns the lowercase-hex
@@ -46,6 +48,21 @@ const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
 	snapshotManifestKey = "manifest.json"
+	// systemStateDir is the remote sub-prefix, under a snapshot, where system
+	// state artifacts and their own manifest live — a dedicated tree, never
+	// the ordinary files/ tree. This is Option A of the D15 bare-metal-
+	// recovery contract (docs/superpowers/plans/backup/
+	// 2026-09-09-bmr-system-state-contract.md): the consumer (agent/internal/
+	// backup/bmr/bmr.go's systemStatePath) already expects exactly this
+	// layout, so the value here MUST match that constant.
+	systemStateDir = "system-state"
+	// systemStateManifestKey mirrors snapshotManifestKey, scoped to
+	// systemStateDir.
+	systemStateManifestKey = "manifest.json"
+	// systemStateManifestSchemaVersion mirrors systemstate.manifestSchemaVersion
+	// (that package's own unexported constant) — see publishSystemState's
+	// doc comment for why the backup package also stamps it.
+	systemStateManifestSchemaVersion = 1
 )
 
 // Snapshot represents a point-in-time backup.
@@ -286,6 +303,49 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 	return createSnapshotWithProgress(ctx, provider, files, nil, nil, nil, nil)
 }
 
+// createSnapshotOption customizes a single createSnapshotWithProgress call.
+// Functional options rather than more positional parameters: each option is
+// needed by only a handful of call sites, out of dozens across this
+// package's tests, and a positional parameter would force every other call
+// site to pass an explicit zero value.
+type createSnapshotOption func(*createSnapshotOptions)
+
+type createSnapshotOptions struct {
+	runIdentity           string
+	systemStateStagingDir string
+	systemStateManifest   *systemstate.SystemStateManifest
+}
+
+// withRunIdentity stamps identity onto the new snapshot's BackupIdentity —
+// see createSnapshotWithProgress's doc comment.
+func withRunIdentity(identity string) createSnapshotOption {
+	return func(o *createSnapshotOptions) { o.runIdentity = identity }
+}
+
+// withSystemState arranges for the system state already collected into
+// stagingDir (described by manifest) to be published under the SAME
+// snapshot ID as the ordinary files this createSnapshotWithProgress call is
+// snapshotting — and published BEFORE that call's own ordinary
+// manifest.json. Ordering matters: the ordinary manifest.json is the
+// "commit point" a concurrent GC sweep uses to decide a snapshot-id group is
+// "manifest-bearing" (markLiveBackupObjects, apps/api/src/jobs/
+// backupRetention.ts) and therefore eligible for the per-object grace period
+// rather than the manifestless-prefix rule. Publishing it FIRST — the
+// previous behavior, when backup.go called publishSystemState only after
+// createSnapshotWithProgress had already returned (and therefore already
+// published the ordinary manifest internally) — leaves a window where a GC
+// sweep sees a manifest-bearing group whose system-state/* objects are not
+// marked live yet, and can reap them.
+//
+// A no-op when manifest is nil or carries zero artifacts (nothing to
+// publish), matching the existing gate used elsewhere in this package.
+func withSystemState(stagingDir string, manifest *systemstate.SystemStateManifest) createSnapshotOption {
+	return func(o *createSnapshotOptions) {
+		o.systemStateStagingDir = stagingDir
+		o.systemStateManifest = manifest
+	}
+}
+
 // createSnapshotWithProgress creates a new snapshot using the provided
 // context, invoking onProgress (if non-nil) as files upload. Calls are
 // throttled to at most once per progressThrottle interval, except for a
@@ -332,25 +392,27 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 // letting every remaining file be recorded as individually bad (#3260). nil
 // means the run reads the live filesystem and has nothing to defend.
 //
-// runIdentity, if provided (variadic so the ~25 existing call sites that
-// don't care about it need no change — same pattern as main.go's
-// `tickets ...*backupExecutionTicket`), is stamped onto the new snapshot's
-// BackupIdentity (see that field's doc comment and runBackupIdentity) so a
-// LATER run can find this one via previousManifest without picking up
-// another device's or run-kind's snapshot instead (D6). At most the first
-// element is used; passing more than one is a caller bug and only the first
-// is honored.
-func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn, runIdentity ...string) (*Snapshot, error) {
+// opts, if provided (variadic functional options so the ~25 existing call
+// sites that don't care about either option need no change — same pattern
+// as main.go's `tickets ...*backupExecutionTicket`), customize the call:
+// withRunIdentity stamps the new snapshot's BackupIdentity (see that field's
+// doc comment and runBackupIdentity) so a LATER run can find this one via
+// previousManifest without picking up another device's or run-kind's
+// snapshot instead (D6); withSystemState publishes already-collected system
+// state under this call's snapshot ID BEFORE the ordinary manifest.json (see
+// withSystemState's doc comment for why the order matters).
+func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn, opts ...createSnapshotOption) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if sourceLiveness == nil {
 		sourceLiveness = func(string) error { return nil }
 	}
-	identity := ""
-	if len(runIdentity) > 0 {
-		identity = runIdentity[0]
+	var options createSnapshotOptions
+	for _, opt := range opts {
+		opt(&options)
 	}
+	identity := options.runIdentity
 
 	// Register the journal's fd cleanup before any other return path so
 	// every exit — including the validation errors just below — closes it.
@@ -781,6 +843,23 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		return abortStopped()
 	}
 
+	// System state (if any was collected for this run — see withSystemState)
+	// publishes BEFORE the ordinary manifest below: see withSystemState's doc
+	// comment for why the order matters to a concurrent GC sweep.
+	if options.systemStateManifest != nil && len(options.systemStateManifest.Artifacts) > 0 {
+		if err := publishSystemState(ctx, provider, snapshot.ID, options.systemStateStagingDir, options.systemStateManifest); err != nil {
+			log.Error("system state publish failed; the snapshot's ordinary files were still stored, "+
+				"but the restore point is missing bare-metal recovery state",
+				"snapshotId", snapshot.ID,
+				"error", err.Error(),
+			)
+			if errors.Is(err, errBackupStopped) {
+				return abortStopped()
+			}
+			return snapshot, fmt.Errorf("system state publish failed: %w", err)
+		}
+	}
+
 	if err := publishSnapshotManifest(ctx, provider, snapshot, prefix); err != nil {
 		if errors.Is(err, errBackupStopped) {
 			// A manifest-upload deadline expiry is fatal for the snapshot too
@@ -832,6 +911,121 @@ func publishSnapshotManifest(ctx context.Context, provider providers.BackupProvi
 		return fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
 	}
 	return nil
+}
+
+// publishSystemState uploads every artifact manifest describes (read from
+// stagingDir, where systemstate.CollectSystemState wrote them) to
+// snapshots/<snapshotID>/system-state/<artifact.Path>, then uploads manifest
+// itself to snapshots/<snapshotID>/system-state/manifest.json.
+//
+// Deliberately a SEPARATE remote prefix and a separate publish step from the
+// ordinary files/ tree and publishSnapshotManifest: mixing the two write
+// paths (appending the staging dir into the ordinary file walk) is exactly
+// the D15/O10 bug this function exists to fix — see the plan doc referenced
+// on systemStateDir. A caller invokes this using the SAME snapshot ID as the
+// rest of that run's snapshot (its own, for a state-only run; or the one
+// createSnapshotWithProgress already minted, for a run that also has
+// configured file paths), so bmr.go's bootstrap-driven lookup by snapshot ID
+// finds both trees under one prefix.
+//
+// Every artifact must exist in stagingDir at exactly the size the collector
+// recorded (SizeBytes) — a mismatch means the staging file was mutated or
+// truncated after collection, which is treated as a hard failure rather than
+// silently uploading corrupt/incomplete bytes. Checksums are computed by the
+// collector at collection time (systemstate.artifactFromFile /
+// collectArtifactsInDir) and carried through unchanged here; a downloading
+// consumer verifies against them.
+//
+// Returns nil for a nil manifest (nothing to publish) — callers gate this
+// off Artifacts being non-empty before calling, but staying a safe no-op
+// keeps this function usable standalone too.
+func publishSystemState(ctx context.Context, provider providers.BackupProvider, snapshotID, stagingDir string, manifest *systemstate.SystemStateManifest) error {
+	if manifest == nil {
+		return nil
+	}
+	// Belt-and-suspenders alongside systemstate.CollectSystemState (which
+	// already sets this on the real collection path): guarantees every
+	// manifest this function ever publishes carries a schema version, even
+	// one built by a test double or future caller that bypasses
+	// CollectSystemState.
+	manifest.SchemaVersion = systemStateManifestSchemaVersion
+	prefix := path.Join(snapshotRootDir, snapshotID, systemStateDir)
+
+	for i := range manifest.Artifacts {
+		art := &manifest.Artifacts[i]
+		if art.LinkTarget != "" {
+			// Symlink artifact: no independent file content to upload (see
+			// Artifact.LinkTarget's doc comment) — the manifest entry alone,
+			// written below, is enough for a consumer to recreate the link.
+			continue
+		}
+		localPath := filepath.Join(stagingDir, filepath.FromSlash(art.Path))
+
+		info, statErr := os.Stat(localPath)
+		if statErr != nil {
+			return fmt.Errorf("stat system state artifact %s: %w", art.Path, statErr)
+		}
+		if info.Size() != art.SizeBytes {
+			return fmt.Errorf("system state artifact %s changed size since collection (expected %d bytes, found %d)",
+				art.Path, art.SizeBytes, info.Size())
+		}
+
+		remoteKey := path.Join(prefix, art.Path)
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(info.Size()))
+		uploadErr := uploadSnapshotFile(attemptCtx, provider, localPath, remoteKey)
+		cancelAttempt()
+		if uploadErr != nil {
+			if errors.Is(uploadErr, errBackupStopped) {
+				return uploadErr
+			}
+			return fmt.Errorf("upload system state artifact %s: %w", art.Path, uploadErr)
+		}
+	}
+
+	manifestPath, manifestErr := writeSystemStateManifest(manifest)
+	if manifestErr != nil {
+		return manifestErr
+	}
+	// Best-effort: manifestPath is a local OS temp file, already uploaded (or
+	// about to fail trying) — a leftover on Remove failure is harmless OS
+	// temp-dir clutter, not a correctness issue worth failing the publish
+	// over. Matches the sibling cleanup in publishSnapshotManifest above.
+	defer func() { _ = os.Remove(manifestPath) }()
+
+	manifestKey := path.Join(prefix, systemStateManifestKey)
+	manifestInfo, statErr := os.Stat(manifestPath)
+	var manifestSize int64
+	if statErr == nil {
+		manifestSize = manifestInfo.Size()
+	}
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(manifestSize))
+	manifestUploadErr := uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)
+	cancelAttempt()
+	if manifestUploadErr != nil {
+		if errors.Is(manifestUploadErr, errBackupStopped) {
+			return manifestUploadErr
+		}
+		return fmt.Errorf("failed to upload system state manifest: %w", manifestUploadErr)
+	}
+	return nil
+}
+
+// writeSystemStateManifest serializes manifest to a temp file for upload,
+// mirroring writeSnapshotManifest.
+func writeSystemStateManifest(manifest *systemstate.SystemStateManifest) (string, error) {
+	tempFile, err := os.CreateTemp("", "system-state-manifest-*.json")
+	if err != nil {
+		return "", fmt.Errorf("failed to create system state manifest: %w", err)
+	}
+	encoder := json.NewEncoder(tempFile)
+	if err := encoder.Encode(manifest); err != nil {
+		_ = tempFile.Close()
+		return "", fmt.Errorf("failed to encode system state manifest: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return "", fmt.Errorf("failed to close system state manifest: %w", err)
+	}
+	return tempFile.Name(), nil
 }
 
 // attemptFileUpload runs a single upload attempt for file against a fresh
