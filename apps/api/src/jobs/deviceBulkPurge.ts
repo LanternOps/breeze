@@ -7,8 +7,9 @@
  * would abort them all. The route validates cheaply, enqueues, and returns
  * `202 { jobId }`; the web polls `GET /devices/bulk/purge-runs/:jobId`.
  *
- * AUTHORISATION IS RE-DERIVED PER DEVICE, UNDER THE LOCK. The payload carries
- * the org each device belonged to when the operator confirmed. This worker runs
+ * ORG AUTHORISATION IS RE-DERIVED PER DEVICE, UNDER THE LOCK. The payload carries
+ * the org each device belonged to when the operator confirmed, plus the
+ * request-time site ceiling that bounds any implicit sibling unlink. This worker runs
  * in a SYSTEM db context — the cascade must see tables a tenant context
  * deliberately hides (`services/deviceDeletion.ts`) — so RLS is not a backstop
  * here and nothing else would catch a device that moved orgs between confirm
@@ -34,8 +35,15 @@ import { invalidateOrgDeviceCount } from '../services/agentOrgRateLimit';
 import { purgeRemovedDevice, DeviceLifecycleError } from '../services/deviceLifecycle';
 import { attachWorkerObservability } from './workerObservability';
 
-const QUEUE_NAME = 'device-bulk-purge';
-const JOB_NAME = 'device-bulk-purge';
+// V2 uses a distinct queue, not merely a new field on the old payload. During
+// a rolling deployment an old worker must never consume a new producer's job
+// and interpret an unknown/missing authorization field as unrestricted.
+const QUEUE_NAME = 'device-bulk-purge-v2';
+const JOB_NAME = 'device-bulk-purge-v2';
+
+export function deviceBulkPurgeJobId(jobId: string): string {
+  return `${JOB_NAME}-${jobId}`;
+}
 
 /**
  * Re-applied here as well as in `bulkDeviceIdsSchema`. The job payload outlives
@@ -57,6 +65,13 @@ export interface DeviceBulkPurgeJobPayload {
   /** uuid; also the BullMQ jobId suffix and what the status route is polled with. */
   jobId: string;
   targets: DeviceBulkPurgeTarget[];
+  /** Versioned, explicit request-time authority; absence is never unrestricted. */
+  authorization: {
+    version: 1;
+    siteAccess:
+      | { mode: 'unrestricted' }
+      | { mode: 'restricted'; allowedSiteIds: string[] };
+  };
   actorUserId: string;
   actorEmail?: string;
   /** Ownership for the status route's partner-scope check. */
@@ -67,12 +82,39 @@ export type BulkPurgeSkipCode =
   | 'NOT_FOUND'
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
+  | 'SITE_ACCESS_DENIED'
+  | 'STATE_CHANGED'
+  | 'AUTHORIZATION_CONTEXT_INVALID'
   | 'ORG_CHANGED'
   | 'ERROR';
 
 export interface DeviceBulkPurgeResult {
   purged: string[];
   skipped: Array<{ deviceId: string; code: BulkPurgeSkipCode }>;
+}
+
+function resolveSerializedSiteCeiling(payload: unknown):
+  | { ok: true; allowedSiteIds: readonly string[] | undefined }
+  | { ok: false } {
+  if (!payload || typeof payload !== 'object') return { ok: false };
+  const authorization = (payload as { authorization?: unknown }).authorization;
+  if (!authorization || typeof authorization !== 'object') return { ok: false };
+  const envelope = authorization as {
+    version?: unknown;
+    siteAccess?: { mode?: unknown; allowedSiteIds?: unknown };
+  };
+  if (envelope.version !== 1 || !envelope.siteAccess) return { ok: false };
+  if (envelope.siteAccess.mode === 'unrestricted') {
+    return { ok: true, allowedSiteIds: undefined };
+  }
+  if (
+    envelope.siteAccess.mode === 'restricted'
+    && Array.isArray(envelope.siteAccess.allowedSiteIds)
+    && envelope.siteAccess.allowedSiteIds.every((siteId) => typeof siteId === 'string')
+  ) {
+    return { ok: true, allowedSiteIds: [...envelope.siteAccess.allowedSiteIds] };
+  }
+  return { ok: false };
 }
 
 let purgeQueue: Queue | null = null;
@@ -91,7 +133,7 @@ export async function enqueueDeviceBulkPurge(
   return enqueueOrReplaceStale(
     getDeviceBulkPurgeQueue(),
     JOB_NAME,
-    `${JOB_NAME}-${payload.jobId}`,
+    deviceBulkPurgeJobId(payload.jobId),
     payload,
     { attempts: 1, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } },
     '[DeviceBulkPurge]',
@@ -114,6 +156,9 @@ interface PurgeOneOutcome {
  * `SELECT org_id ... FOR UPDATE` before `purgeRemovedDevice` is the ownership
  * re-check; the second FOR UPDATE the service then takes on the same row in the
  * same transaction is a no-op on a lock we already hold.
+ * The site ceiling is intentionally serialized rather than re-derived from a
+ * live requester: general queued-requester revocation is a separate policy;
+ * this worker's obligation is never to exceed the authority accepted at enqueue.
  *
  * Returns the service's `PurgeResult` fields rather than discarding them: a
  * purge that dissolves a link group unlinks SIBLING devices that were never in
@@ -121,11 +166,14 @@ interface PurgeOneOutcome {
  * it. Discarding it is how a 200-device run silently re-shapes groups nobody
  * asked it to touch.
  */
-async function purgeOne(target: DeviceBulkPurgeTarget): Promise<PurgeOneOutcome> {
+async function purgeOne(
+  target: DeviceBulkPurgeTarget,
+  allowedSiteIds?: readonly string[],
+): Promise<PurgeOneOutcome> {
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(
-      () =>
-        db.transaction(async (tx): Promise<PurgeOneOutcome> => {
+    withSystemDbAccessContext(async () => {
+      try {
+        return await db.transaction(async (tx): Promise<PurgeOneOutcome> => {
           const rows = (await tx.execute(
             sql`SELECT org_id FROM devices WHERE id = ${target.deviceId} FOR UPDATE`,
           )) as unknown as Array<{ org_id: string }>;
@@ -135,22 +183,24 @@ async function purgeOne(target: DeviceBulkPurgeTarget): Promise<PurgeOneOutcome>
             return { code: 'ORG_CHANGED', linkGroupId: null, linkGroupDissolved: false };
           }
 
-          try {
-            const purged = await purgeRemovedDevice(tx, target.deviceId);
-            return {
-              code: null,
-              linkGroupId: purged.linkGroupId,
-              linkGroupDissolved: purged.linkGroupDissolved,
-            };
-          } catch (err) {
-            if (err instanceof DeviceLifecycleError) {
-              return { code: err.code, linkGroupId: null, linkGroupDissolved: false };
-            }
-            throw err;
-          }
-        }),
-      'deviceBulkPurge.purgeOne',
-    ),
+          const purged = await purgeRemovedDevice(tx, target.deviceId, allowedSiteIds);
+          return {
+            code: null,
+            linkGroupId: purged.linkGroupId,
+            linkGroupDissolved: purged.linkGroupDissolved,
+          };
+        });
+      } catch (err) {
+        // Translate only AFTER the transaction rejects. Some lifecycle
+        // denials are discovered after the cascade begins (a link-group
+        // survivor outside the serialized site ceiling); catching inside the
+        // callback would commit that partial delete while reporting SKIPPED.
+        if (err instanceof DeviceLifecycleError) {
+          return { code: err.code, linkGroupId: null, linkGroupDissolved: false };
+        }
+        throw err;
+      }
+    }, 'deviceBulkPurge.purgeOne'),
   );
 }
 
@@ -170,11 +220,21 @@ export async function processDeviceBulkPurgeJob(
   const targets = payload.targets.slice(0, DEVICE_BULK_PURGE_MAX_TARGETS);
   const result: DeviceBulkPurgeResult = { purged: [], skipped: [] };
   const touchedOrgs = new Set<string>();
+  const authorization = resolveSerializedSiteCeiling(payload);
+  if (!authorization.ok) {
+    return {
+      purged: [],
+      skipped: targets.map((target) => ({
+        deviceId: target.deviceId,
+        code: 'AUTHORIZATION_CONTEXT_INVALID' as const,
+      })),
+    };
+  }
 
   for (const [index, target] of targets.entries()) {
     let outcome: PurgeOneOutcome;
     try {
-      outcome = await purgeOne(target);
+      outcome = await purgeOne(target, authorization.allowedSiteIds);
     } catch (err) {
       // One device's failure must not abort the other 499 — but it must not be
       // silent either: the operator was told the whole selection was accepted.

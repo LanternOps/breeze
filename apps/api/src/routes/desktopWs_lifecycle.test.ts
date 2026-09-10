@@ -82,6 +82,11 @@ vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
 }));
 
+vi.mock('../services/remoteWsAuthorization', () => ({
+  authorizeConsumedRemoteWsTicket: vi.fn(),
+  revalidateRemoteWsAuthorityBounded: vi.fn(async () => ({ ok: true, context: {} })),
+}));
+
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true)
@@ -122,6 +127,7 @@ vi.mock('../services/clientIp', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { isViewerSessionRevoked } from '../services/viewerTokenRevocation';
+import { revalidateRemoteWsAuthorityBounded } from '../services/remoteWsAuthorization';
 import { consumeWsTicket, consumeDesktopConnectCode, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
 import { createAccessToken } from '../services/jwt';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
@@ -598,6 +604,27 @@ describe('desktopWs', () => {
       vi.useRealTimers();
       await handlers.onClose({}, ws);
       expect(getActiveDesktopSessionCount()).toBe(0);
+    });
+
+    it('closes before the next ping when live membership/policy authority is denied', async () => {
+      vi.useFakeTimers();
+      const { mockIsViewerSessionRevoked } = setupSuccessfulValidation();
+      mockIsViewerSessionRevoked.mockResolvedValue(false);
+      vi.mocked(revalidateRemoteWsAuthorityBounded).mockResolvedValueOnce({
+        ok: false, status: 403, reason: 'site_denied',
+      });
+      const handlers = captureWsHandlers(SESSION_ID, 'valid-ticket');
+      const ws = wsMock();
+      await handlers.onOpen({}, ws);
+      ws.send.mockClear();
+
+      await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS);
+
+      expect(revalidateRemoteWsAuthorityBounded).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: SESSION_ID, sessionType: 'desktop', userId: expect.any(String),
+      }));
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"ping"'));
+      expect(ws.close).toHaveBeenCalledWith(4003, 'Session revoked');
     });
 
     it('I3: fails CLOSED (4003) when the revocation check rejects', async () => {

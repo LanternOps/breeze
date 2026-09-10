@@ -81,6 +81,8 @@ vi.mock('../db/schema', () => ({
     // #5300: the peer-disconnect handler references this inside a
     // sql`COALESCE(...)` fragment to only fill errorMessage when empty.
     errorMessage: 'remoteSessions.errorMessage',
+    desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
+    desktopPromptMode: 'remoteSessions.desktopPromptMode',
   },
   // The delivery-epoch suites drive the REAL terminalWs (see the './terminalWs'
   // mock below), which reaches for these alongside remoteSessions/devices.
@@ -361,17 +363,21 @@ import {
   isAgentConnected,
   sendCommandToAgent,
   handleTrustChanged,
+  handleAgentCredentialRevocation,
+  publishAgentCredentialRevocation,
   registerConnection,
   processOrphanedCommandResult,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
+  AGENT_CREDENTIAL_RECHECK_TTL_MS,
+  AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS,
 } from './agentWs';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import {
   applySoftwareInstallResult,
   reconcileSoftwareInstallResult,
 } from '../services/softwareDeploymentResult';
-import { isRedisAvailable } from '../services/redis';
+import { getRedis, isRedisAvailable } from '../services/redis';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -402,6 +408,7 @@ import {
 import { consumeWsTicket } from '../services/remoteSessionAuth';
 import { createAuditLogAsync } from '../services/auditService';
 import { registerTunnelOwnership } from './tunnelWs';
+import { handleDesktopFrame } from './desktopWs';
 import { processBackupVerificationResult } from './backup/verificationService';
 import { updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { rateLimiter } from '../services/rate-limit';
@@ -435,8 +442,9 @@ function wsMock() {
 async function connectAgentSocket(
   handlers: Pick<ReturnType<typeof createAgentWsHandlers>, 'onOpen'>,
   ws: ReturnType<typeof wsMock>,
+  authorizationRows: unknown[] = [],
 ): Promise<void> {
-  vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+  vi.mocked(db.select).mockReturnValue(selectAgentDevice(authorizationRows) as any);
   vi.mocked(db.update).mockReturnValue(updateResult() as any);
   await handlers.onOpen({}, ws as any);
   vi.mocked(db.select).mockReset();
@@ -584,6 +592,183 @@ describe('partner-trust WebSocket fast path', () => {
   });
 });
 
+describe('agent credential revocation cluster signal', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('bounds a never-settling subscriber startup, disposes it, and retries without skipping DB admission', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const firstSubscriber = {
+      on: vi.fn(),
+      subscribe: vi.fn(() => new Promise<never>(() => {})),
+      disconnect: vi.fn(),
+    };
+    const secondSubscriber = {
+      on: vi.fn(),
+      subscribe: vi.fn().mockRejectedValue(new Error('redis unavailable')),
+      disconnect: vi.fn(),
+    };
+    const duplicate = vi.fn()
+      .mockReturnValueOnce(firstSubscriber)
+      .mockReturnValueOnce(secondSubscriber);
+    vi.mocked(getRedis).mockReturnValue({ duplicate } as never);
+
+    const tokenHash = createHash('sha256').update('subscription-timeout-token').digest('hex');
+    const authorizedRow = {
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: tokenHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    };
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([authorizedRow]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    const firstHandlers = createAgentWsHandlers('agent-subscribe-timeout', {
+      deviceId: 'device-subscribe-timeout',
+      orgId: 'org-subscribe-timeout',
+      partnerId: 'partner-subscribe-timeout',
+      credentialTokenHash: tokenHash,
+    });
+    const firstWs = wsMock();
+    const firstOpen = firstHandlers.onOpen({}, firstWs as any);
+
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS - 1);
+    expect(db.select).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await firstOpen;
+
+    expect(firstSubscriber.disconnect).toHaveBeenCalledTimes(1);
+    expect(db.select).toHaveBeenCalled();
+    expect(firstWs.close).not.toHaveBeenCalledWith(4001, expect.any(String));
+    expect(setAgentPresence).toHaveBeenCalledWith(
+      'agent-subscribe-timeout',
+      expect.objectContaining({ instanceId: INSTANCE_ID }),
+    );
+
+    // Timeout reset the shared startup promise, so the next connection gets a
+    // fresh duplicate. A prompt subscription rejection is also disposed and
+    // still falls through to the mandatory DB generation check.
+    vi.mocked(db.select).mockClear();
+    const retryHandlers = createAgentWsHandlers('agent-subscribe-retry', {
+      deviceId: 'device-subscribe-retry',
+      orgId: 'org-subscribe-retry',
+      partnerId: 'partner-subscribe-retry',
+      credentialTokenHash: tokenHash,
+    });
+    await retryHandlers.onOpen({}, wsMock() as any);
+
+    expect(duplicate).toHaveBeenCalledTimes(2);
+    expect(secondSubscriber.disconnect).toHaveBeenCalledTimes(1);
+    expect(db.select).toHaveBeenCalled();
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it('closes the local socket only when the broadcast names its admitted hash', async () => {
+    const tokenHash = createHash('sha256').update('revoked-token').digest('hex');
+    const handlers = createAgentWsHandlers('agent-revocation-event', {
+      deviceId: 'device-revocation-event',
+      orgId: 'org-revocation-event',
+      partnerId: 'partner-revocation-event',
+      credentialTokenHash: tokenHash,
+    });
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws, [{
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: tokenHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    }]);
+
+    expect(handleAgentCredentialRevocation({
+      agentId: 'agent-revocation-event',
+      revokedTokenHashes: [createHash('sha256').update('different-token').digest('hex')],
+    })).toBe(false);
+    expect(ws.close).not.toHaveBeenCalledWith(4001, 'Agent credentials revoked');
+
+    expect(handleAgentCredentialRevocation(JSON.stringify({
+      agentId: 'agent-revocation-event',
+      revokedTokenHashes: [tokenHash],
+    }))).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Agent credentials revoked');
+  });
+
+  it('publishes only the credential hashes needed by peer API instances', async () => {
+    const { getRedis } = await import('../services/redis');
+    const publish = vi.fn().mockResolvedValue(1);
+    vi.mocked(getRedis).mockReturnValue({ publish } as any);
+    const tokenHash = createHash('sha256').update('revoked-token').digest('hex');
+
+    await expect(publishAgentCredentialRevocation({
+      agentId: 'agent-revocation-publish',
+      revokedTokenHashes: [tokenHash, tokenHash],
+    })).resolves.toBe('published');
+
+    expect(publish).toHaveBeenCalledWith(
+      'agent-credential:revoked',
+      JSON.stringify({
+        agentId: 'agent-revocation-publish',
+        revokedTokenHashes: [tokenHash],
+      }),
+    );
+  });
+
+  it('a delayed old-generation event cannot close the newer socket', async () => {
+    const oldHash = createHash('sha256').update('old-token').digest('hex');
+    const newHash = createHash('sha256').update('new-token').digest('hex');
+    const oldHandlers = createAgentWsHandlers('agent-revocation-race', {
+      deviceId: 'device-revocation-race', orgId: 'org-race', partnerId: 'partner-race',
+      credentialTokenHash: oldHash,
+    });
+    const oldWs = wsMock();
+    await connectAgentSocket(oldHandlers, oldWs, [{
+      status: 'online', agentTokenSuspendedAt: null, agentTokenHash: oldHash,
+      previousTokenHash: null, previousTokenExpiresAt: null, watchdogTokenHash: null,
+      previousWatchdogTokenHash: null, previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null, pendingWatchdogTokenHash: null, pendingTokenExpiresAt: null,
+    }]);
+
+    const newHandlers = createAgentWsHandlers('agent-revocation-race', {
+      deviceId: 'device-revocation-race', orgId: 'org-race', partnerId: 'partner-race',
+      credentialTokenHash: newHash,
+    });
+    const newWs = wsMock();
+    await connectAgentSocket(newHandlers, newWs, [{
+      status: 'online', agentTokenSuspendedAt: null, agentTokenHash: newHash,
+      previousTokenHash: null, previousTokenExpiresAt: null, watchdogTokenHash: null,
+      previousWatchdogTokenHash: null, previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null, pendingWatchdogTokenHash: null, pendingTokenExpiresAt: null,
+    }]);
+    vi.mocked(newWs.close).mockClear();
+
+    expect(handleAgentCredentialRevocation({
+      agentId: 'agent-revocation-race',
+      revokedTokenHashes: [oldHash],
+    })).toBe(false);
+    expect(newWs.close).not.toHaveBeenCalled();
+  });
+});
+
 describe('validateAgentToken — tenant-status gate', () => {
   const TOKEN = 'brz_ws_test_token';
   const deviceRow = {
@@ -620,7 +805,16 @@ describe('validateAgentToken — tenant-status gate', () => {
 
     const result = await validateAgentToken('agent-1', TOKEN);
 
-    expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', partnerId: 'partner-1', role: 'agent' } });
+    expect(result).toEqual({
+      ok: true,
+      ctx: {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+        role: 'agent',
+        credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+      },
+    });
     expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
@@ -732,7 +926,16 @@ describe('validateAgentToken — certificate/device binding (Wave 5 Task 6)', ()
       assertion({ assertionTrusted: true, assertedVerified: true, assertedSerial: ACTIVE_SERIAL }),
     );
 
-    expect(result).toEqual({ ok: true, ctx: { deviceId: 'device-1', orgId: 'org-1', partnerId: 'partner-1', role: 'agent' } });
+    expect(result).toEqual({
+      ok: true,
+      ctx: {
+        deviceId: 'device-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+        role: 'agent',
+        credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+      },
+    });
   });
 
   it('mode enforce: refuses the upgrade when no assertion is presented and an active cert is on file', async () => {
@@ -2136,6 +2339,48 @@ describe('agent websocket command results', () => {
       warnSpy.mockRestore();
     });
 
+    it('a delayed old-socket close cannot clear the current generation probe counter', async () => {
+      __resetCrossTenantDropsForTest();
+      const context = { deviceId: 'device-counter-race', orgId: 'org-race', partnerId: 'partner-race' };
+      const oldHandlers = createAgentWsHandlers('agent-counter-race', context);
+      const oldWs = wsMock();
+      await connectAgentSocket(oldHandlers, oldWs);
+      const currentHandlers = createAgentWsHandlers('agent-counter-race', context);
+      const currentWs = wsMock();
+      await connectAgentSocket(currentHandlers, currentWs);
+
+      vi.mocked(getActiveTerminalSession).mockReturnValue({
+        agentId: 'other-agent',
+        userId: 'user-1',
+        deviceId: 'device-other',
+        startedAt: new Date(),
+        lastPongAt: Date.now(),
+        userWs: wsMock() as any,
+      } as any);
+      const updateSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const probe = {
+        data: JSON.stringify({
+          type: 'terminal_output',
+          sessionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          data: 'probe',
+        }),
+      } as any;
+
+      for (let i = 0; i < 4; i += 1) {
+        await currentHandlers.onMessage(probe, currentWs as any);
+      }
+      await oldHandlers.onClose({}, oldWs as any);
+      await currentHandlers.onMessage(probe, currentWs as any);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(updateSet).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
     it('suspends only once even when probes continue past threshold', async () => {
       __resetCrossTenantDropsForTest();
       const preValidatedAgent = { deviceId: 'device-once', orgId: 'org-y', partnerId: 'partner-y' };
@@ -2758,8 +3003,280 @@ describe('worker-role runtime assertions (wave 3.5b #4084)', () => {
 
 // Finding #3 — established sockets must stop acting once containment changes.
 describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
+  let now: number;
+
   beforeEach(() => {
     vi.resetAllMocks();
+    now = Date.parse('2026-09-06T12:00:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(['pong', 'heartbeat'] as const)(
+    'severs a %s before presence/status side effects when the authenticating credential was replaced',
+    async (type) => {
+      const oldCredentialHash = createHash('sha256').update('old-agent-token').digest('hex');
+      const handlers = createAgentWsHandlers('agent-generation', {
+        deviceId: 'device-generation',
+        orgId: 'org-generation',
+        partnerId: 'partner-generation',
+        credentialTokenHash: oldCredentialHash,
+      });
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws, [{
+        status: 'online',
+        agentTokenSuspendedAt: null,
+        agentTokenHash: oldCredentialHash,
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        watchdogTokenHash: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null,
+        pendingWatchdogTokenHash: null,
+        pendingTokenExpiresAt: null,
+      }]);
+      vi.mocked(refreshAgentPresence).mockClear();
+      now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+        status: 'online',
+        agentTokenSuspendedAt: null,
+        agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        watchdogTokenHash: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null,
+        pendingWatchdogTokenHash: null,
+        pendingTokenExpiresAt: null,
+      }]) as any);
+
+      await handlers.onMessage({ data: JSON.stringify({ type, timestamp: 123 }) } as any, ws as any);
+
+      expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+      expect(refreshAgentPresence).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed before pong presence renewal when the generation row disappears', async () => {
+    const oldCredentialHash = createHash('sha256').update('old-agent-token').digest('hex');
+    const handlers = createAgentWsHandlers('agent-generation-missing', {
+      deviceId: 'device-generation-missing',
+      orgId: 'org-generation-missing',
+      partnerId: 'partner-generation-missing',
+      credentialTokenHash: oldCredentialHash,
+    });
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws, [{
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: oldCredentialHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    }]);
+    vi.mocked(refreshAgentPresence).mockClear();
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(refreshAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the bounded generation query does not return', async () => {
+    const handlers = createAgentWsHandlers('agent-generation-timeout', {
+      deviceId: 'device-generation-timeout',
+      orgId: 'org-generation-timeout',
+      partnerId: 'partner-generation-timeout',
+      credentialTokenHash: createHash('sha256').update('old-agent-token').digest('hex'),
+    });
+    const ws = wsMock();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn(() => new Promise(() => {})),
+        }),
+      }),
+    } as any);
+
+    await handlers.onOpen({}, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(setAgentPresence).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+
+    // The failed decision is terminal for this socket. Frames queued before
+    // the close handshake completes must not start another hanging DB query.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed at onOpen when credential replacement wins the validate-to-upgrade race', async () => {
+    const handlers = createAgentWsHandlers('agent-generation-open-race', {
+      deviceId: 'device-generation-open-race',
+      orgId: 'org-generation-open-race',
+      partnerId: 'partner-generation-open-race',
+      credentialTokenHash: createHash('sha256').update('old-agent-token').digest('hex'),
+    });
+    const ws = wsMock();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    }]) as any);
+
+    await handlers.onOpen({}, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(setAgentPresence).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['terminal_output', 'desktop_binary'] as const)(
+    'blocks the %s sibling sink after credential replacement',
+    async (kind) => {
+      const oldCredentialHash = createHash('sha256').update('old-agent-token').digest('hex');
+      const handlers = createAgentWsHandlers('agent-generation-sink', {
+        deviceId: 'device-generation-sink',
+        orgId: 'org-generation-sink',
+        partnerId: 'partner-generation-sink',
+        credentialTokenHash: oldCredentialHash,
+      });
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws, [{
+        status: 'online',
+        agentTokenSuspendedAt: null,
+        agentTokenHash: oldCredentialHash,
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        watchdogTokenHash: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null,
+        pendingWatchdogTokenHash: null,
+        pendingTokenExpiresAt: null,
+      }]);
+      vi.mocked(handleTerminalOutput).mockClear();
+      vi.mocked(handleDesktopFrame).mockClear();
+      now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([{
+        status: 'online',
+        agentTokenSuspendedAt: null,
+        agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+        previousTokenHash: null,
+        previousTokenExpiresAt: null,
+        watchdogTokenHash: null,
+        previousWatchdogTokenHash: null,
+        previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null,
+        pendingWatchdogTokenHash: null,
+        pendingTokenExpiresAt: null,
+      }]) as any);
+
+      const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const data = kind === 'terminal_output'
+        ? JSON.stringify({ type: 'terminal_output', sessionId, data: 'stale output' })
+        : Buffer.concat([Buffer.from([0x02]), Buffer.from(sessionId), Buffer.from('frame')]);
+      await handlers.onMessage({ data } as any, ws as any);
+
+      expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+      expect(handleTerminalOutput).not.toHaveBeenCalled();
+      expect(handleDesktopFrame).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps DB validation independent of frame rate inside the bounded lease', async () => {
+    const tokenHash = createHash('sha256').update('current-agent-token').digest('hex');
+    const handlers = createAgentWsHandlers('agent-generation-throughput', {
+      deviceId: 'device-generation-throughput',
+      orgId: 'org-generation-throughput',
+      partnerId: 'partner-generation-throughput',
+      credentialTokenHash: tokenHash,
+    });
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws, [{
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: tokenHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    }]);
+
+    await Promise.all(Array.from({ length: 10_000 }, () =>
+      handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any),
+    ));
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(ws.close).not.toHaveBeenCalledWith(4001, expect.any(String));
+  });
+
+  it.each([
+    ['oversized binary', Buffer.alloc(5_000_001)],
+    ['malformed JSON', '{'],
+    ['oversized malformed JSON', 'x'.repeat(5_000_001)],
+  ] as const)('rejects stale %s before allocation/logging/parsing sinks', async (_label, data) => {
+    const oldCredentialHash = createHash('sha256').update('old-agent-token').digest('hex');
+    const handlers = createAgentWsHandlers('agent-generation-hostile-frame', {
+      deviceId: 'device-generation-hostile-frame',
+      orgId: 'org-generation-hostile-frame',
+      partnerId: 'partner-generation-hostile-frame',
+      credentialTokenHash: oldCredentialHash,
+    });
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws, [{
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: oldCredentialHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+    }]);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await handlers.onMessage({ data } as any, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(handleTerminalOutput).not.toHaveBeenCalled();
+    expect(handleDesktopFrame).not.toHaveBeenCalled();
   });
 
   it('severs the socket on a command result when the device was quarantined after connect', async () => {
@@ -3354,7 +3871,7 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
     await handlers.onMessage({
       data: JSON.stringify({
         type: 'command_result',
-        commandId: 'desk-start-sess1',
+        commandId: 'desk-start-sess1-22222222-2222-4222-8222-222222222222',
         status: 'failed',
         error: `capture init failed, key follows: ${pem2434}`,
       }),
