@@ -192,6 +192,9 @@ jobs:
       - name: Test docs-only CI contract
         run: node --test .github/scripts/classify-pr-paths.test.mjs
 
+      - name: Verify temporary CI apt source isolation
+        run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
+
       - name: Guard retired AI documentation automation
         run: pnpm test:docs-automation
 
@@ -2083,10 +2086,15 @@ jobs:
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
           install_deps() {
-            sudo timeout --kill-after=30s 2m apt-get update \
+            sudo timeout --kill-after=30s 2m apt-get update "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
-            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
+            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
@@ -2773,8 +2781,13 @@ jobs:
 
       - name: Install socat (stands in for the quickstart's `ssh -L 8443:127.0.0.1:443`)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq socat
+          CI_APT_DIR=$(mktemp -d)
+          trap 'rm -rf -- "$CI_APT_DIR"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
+          sudo apt-get update -qq "${APT_SOURCES[@]}"
+          sudo apt-get install -y -qq socat "${APT_SOURCES[@]}"
 
       # The installer pins images by BREEZE_VERSION; build this checkout's
       # api/web/portal under that tag so `docker compose up` uses them
