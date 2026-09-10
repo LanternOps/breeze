@@ -75,7 +75,15 @@ export const webhooks = pgTable('webhooks', {
   lastSuccessAt: timestamp('last_success_at'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  /**
+   * Bumped on every edit that changes delivery behavior (PATCH; site-ceiling
+   * gate contract §3). The delivery worker compares this against the
+   * generation carried on the job at enqueue time and drops the delivery
+   * (superseded) on mismatch, so an in-flight delivery never fires against a
+   * config that was edited (or disabled) after it was queued.
+   */
+  approvalGeneration: integer('approval_generation').notNull().default(1)
 });
 
 export const webhookDeliveries = pgTable('webhook_deliveries', {

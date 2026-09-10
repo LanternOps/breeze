@@ -853,3 +853,76 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
     expect(entry?.payload.storageIdentity).toBe('local::/tmp/gc-test');
   });
 });
+
+describe('processDispatchBackup — approval_generation mismatch (site-ceiling gate contract §3)', () => {
+  const CONFIG_ROW_GEN3 = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false, approvalGeneration: 3 };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  function wireSelects(configRow: Record<string, unknown> = CONFIG_ROW_GEN3) {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      let rows: unknown[];
+      if (keys.length === 0) {
+        rows = [configRow];
+      } else if (keys.length === 1 && keys[0] === 'status') {
+        rows = [];
+      } else if (keys.length === 1 && keys[0] === 'agentId') {
+        rows = [{ agentId: 'agent-1' }];
+      } else if (keys.includes('featureLinkId')) {
+        rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }];
+      } else {
+        throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        }),
+      };
+    }) as never);
+  }
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireSelects();
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('fails the job closed with backup_config_changed when the job generation does not match the reloaded config', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1', configGeneration: 2 };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.errorLog === 'backup_config_changed')).toBe(true);
+  });
+
+  it('dispatches normally when the job generation matches the reloaded config', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1', configGeneration: 3 };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+  });
+
+  it('dispatches normally when the job carries no generation (legacy payload, opt-in only)', async () => {
+    const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+  });
+});

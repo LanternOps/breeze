@@ -599,6 +599,21 @@ describe('backup config routes', () => {
     expect(JSON.stringify(body)).not.toContain('existing-nested-token');
   });
 
+  it('bumps approval_generation on every PATCH (site-ceiling gate contract §3)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig({ name: 'renamed' })]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ name: 'renamed' }),
+    });
+
+    expect(res.status).toBe(200);
+    const updateSet = updateMock.mock.results[0]?.value?.set;
+    expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({ approvalGeneration: expect.anything() }));
+  });
+
   it('rejects S3 config creation without a region or region-bearing endpoint', async () => {
     const res = await app.request('/backup/configs', {
       method: 'POST',

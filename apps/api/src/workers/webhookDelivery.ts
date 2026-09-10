@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from 'crypto';
 import { EventEmitter } from 'node:events';
 import type { Worker } from 'bullmq';
+import { eq } from 'drizzle-orm';
 import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
 import type Redis from 'ioredis';
 import type { BreezeEvent } from '../services/eventBus';
@@ -11,7 +12,11 @@ import { formatHttpFailure } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
+import { webhooks as webhooksTable } from '../db/schema';
+import { toWebhookConfig } from '../services/webhookConfig';
 import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
+
+const { db } = dbModule;
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -48,7 +53,26 @@ export interface WebhookConfig {
 export interface WebhookDeliveryJob {
   id: string;
   webhookId: string;
-  webhook: WebhookConfig;
+  /**
+   * Site-ceiling gate contract §7E: the config's approval_generation at
+   * enqueue time. `resolveDeliveryWebhookConfig` compares this against the
+   * freshly-reloaded row at send time and drops the delivery (superseded,
+   * not failed/retried) on mismatch or if the webhook is no longer active.
+   * `undefined` opts out of the comparison (legacy jobs, and any producer
+   * that predates this field).
+   */
+  generation?: number;
+  /**
+   * LEGACY SHAPE ONLY. Producers before this deploy embedded the full
+   * decrypted config in the queue payload — a decrypted secret then sat in
+   * the Redis LIST at rest. No current producer sets this; it exists so a
+   * job already queued at deploy time still delivers correctly for one
+   * release. `resolveDeliveryWebhookConfig` logs `legacy_webhook_payload`,
+   * delivers using this embedded config once, and NEVER re-serializes it —
+   * a retry always converts to the current shape (`webhookId`/`generation`
+   * only), so the plaintext cannot re-enter the queue on a retry/DLQ replay.
+   */
+  webhook?: WebhookConfig;
   event: BreezeEvent;
   attempts: number;
   nextRetryAt?: string;
@@ -63,6 +87,20 @@ export interface WebhookDeliveryJob {
    * — eating the retry and naming the wrong cause.
    */
   skipExecutionClaim?: boolean;
+}
+
+/**
+ * Site-ceiling gate contract §7E. The fan-out lookup and delivery-record
+ * dedupe never needed decrypted credentials — both only ever read `.id`
+ * (and `.orgId`/`.approvalGeneration` for enqueueing) — so this lean,
+ * UNDECRYPTED shape replaces `WebhookConfig` on that path entirely.
+ * Decryption now happens exactly once, inside `resolveDeliveryWebhookConfig`,
+ * right before the actual HTTP POST.
+ */
+export interface WebhookFanoutTarget {
+  id: string;
+  orgId: string;
+  approvalGeneration: number;
 }
 
 /**
@@ -94,6 +132,22 @@ export interface WebhookDeliveryResult {
   responseTimeMs?: number;
   errorMessage?: string;
   deliveredAt?: string;
+  /**
+   * Site-ceiling gate contract §7E: true when the delivery was dropped
+   * without an HTTP attempt because the webhook was edited (approval_
+   * generation mismatch) or disabled after this job was queued — never a
+   * network/endpoint failure, so `processNextJob` skips the retry/DLQ ladder
+   * entirely rather than retrying stale config. The delivery row is still
+   * recorded (as `failed`, the closest existing status — there is no
+   * separate `superseded` enum value) with a distinguishing errorMessage.
+   */
+  superseded?: boolean;
+  /**
+   * The resolved config's retry policy, needed by `processNextJob`'s
+   * retry/backoff scheduling now that `job.webhook` is not always present
+   * (new-shape jobs only carry `webhookId`/`generation`).
+   */
+  retryPolicy?: WebhookConfig['retryPolicy'];
 }
 
 /**
@@ -107,13 +161,97 @@ function generateSignature(payload: string, secret: string, timestamp: number): 
   return createHmac('sha256', secret).update(signaturePayload).digest('hex');
 }
 
+/** One-time-per-process warning so a long-lived legacy job backlog does not spam the log on every attempt. */
+let legacyWebhookPayloadWarned = false;
+
+export type ResolveDeliveryWebhookConfigOutcome =
+  | { status: 'ok'; webhook: WebhookConfig; legacy: boolean }
+  | { status: 'not_found' }
+  | { status: 'superseded' }
+  | { status: 'decrypt_failed' };
+
+/**
+ * Resolve the decrypted `WebhookConfig` to deliver against, for either job
+ * shape (site-ceiling gate contract §7E).
+ *
+ * NEW SHAPE (`job.webhook` absent): reloads the row by `job.webhookId` in
+ * system context — decryption happens HERE, at send time, and nowhere
+ * earlier in the pipeline. `superseded` covers both an edit since enqueue
+ * (approval_generation mismatch) and the webhook having been disabled —
+ * either way the job's premise no longer holds and it must not retry.
+ *
+ * LEGACY SHAPE (`job.webhook` present): delivers using the embedded config
+ * exactly once, for jobs already queued when this deploy lands. No current
+ * producer sets this field.
+ */
+async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<ResolveDeliveryWebhookConfigOutcome> {
+  if (job.webhook) {
+    if (!legacyWebhookPayloadWarned) {
+      legacyWebhookPayloadWarned = true;
+      console.warn(`[WebhookWorker] legacy_webhook_payload ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_LEGACY_PAYLOAD',
+        deliveryId: job.id,
+        webhookId: job.webhookId,
+        note: 'delivering from an embedded pre-deploy job payload; will not be re-queued in this shape'
+      })}`);
+    }
+    return { status: 'ok', webhook: job.webhook, legacy: true };
+  }
+
+  const [row] = await runWithSystemDbAccess(() =>
+    db.select().from(webhooksTable).where(eq(webhooksTable.id, job.webhookId)).limit(1)
+  );
+
+  if (!row) {
+    return { status: 'not_found' };
+  }
+  if (row.status !== 'active') {
+    return { status: 'superseded' };
+  }
+  if (job.generation !== undefined && row.approvalGeneration !== job.generation) {
+    return { status: 'superseded' };
+  }
+
+  try {
+    return { status: 'ok', webhook: toWebhookConfig(row), legacy: false };
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[WebhookWorker] decrypt-failed ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_DECRYPT_FAILED',
+      deliveryId: job.id,
+      webhookId: job.webhookId
+    })}`);
+    return { status: 'decrypt_failed' };
+  }
+}
+
 /**
  * Deliver a webhook with retry logic and HMAC signing
  */
 async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryResult> {
-  const { webhook, event } = job;
+  const { event } = job;
   const deliveryId = job.id;
   const timestamp = Date.now();
+
+  const resolved = await resolveDeliveryWebhookConfig(job);
+  if (resolved.status !== 'ok') {
+    const errorMessage = resolved.status === 'not_found'
+      ? 'Webhook not found (deleted after this delivery was queued)'
+      : resolved.status === 'decrypt_failed'
+        ? 'superseded_by_edit: webhook credentials could not be decrypted'
+        : 'superseded_by_edit: webhook was edited or disabled after this delivery was queued';
+    return {
+      deliveryId,
+      webhookId: job.webhookId,
+      eventId: event.id,
+      eventType: event.type,
+      success: false,
+      superseded: true,
+      attempts: job.attempts + 1,
+      errorMessage
+    };
+  }
+  const { webhook } = resolved;
 
   // No pre-flight DNS re-validation here. It used to call
   // `validateWebhookUrlSafetyWithDns`, which performs its OWN resolution
@@ -193,7 +331,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
         responseStatus,
         responseBody: responseBody?.slice(0, 1000), // Truncate large responses
         responseTimeMs: Date.now() - startTime,
-        deliveredAt: new Date().toISOString()
+        deliveredAt: new Date().toISOString(),
+        retryPolicy: webhook.retryPolicy
       };
     }
 
@@ -238,7 +377,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     responseStatus,
     responseBody: responseBody?.slice(0, 1000),
     responseTimeMs: Date.now() - startTime,
-    errorMessage
+    errorMessage,
+    retryPolicy: webhook.retryPolicy
   };
 }
 
@@ -328,16 +468,23 @@ class WebhookDeliveryWorker extends EventEmitter {
   }
 
   /**
-   * Queue a webhook for delivery
+   * Queue a webhook for delivery.
+   *
+   * Site-ceiling gate contract §7E: the payload carries only the webhook's
+   * IDENTITY and a generation snapshot — never its decrypted url/secret/
+   * headers. `resolveDeliveryWebhookConfig` reloads and decrypts the row at
+   * send time, inside the worker, which is the only place a secret is ever
+   * in plaintext on this path. `generation` is `undefined` for callers that
+   * don't have a fresh row to hand (rare; the comparison is then skipped).
    */
-  async queueDelivery(webhook: WebhookConfig, event: BreezeEvent, deliveryId?: string): Promise<string> {
+  async queueDelivery(webhookId: string, generation: number | undefined, event: BreezeEvent, deliveryId?: string): Promise<string> {
     const redis = getRedisConnection();
     const nextDeliveryId = deliveryId ?? randomUUID();
 
     const job: WebhookDeliveryJob = {
       id: nextDeliveryId,
-      webhookId: webhook.id,
-      webhook,
+      webhookId,
+      generation,
       event,
       attempts: 0,
       createdAt: new Date().toISOString()
@@ -346,7 +493,7 @@ class WebhookDeliveryWorker extends EventEmitter {
     // Add to Redis list queue
     await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(job));
 
-    console.log(`[WebhookWorker] Queued delivery ${nextDeliveryId} for webhook ${webhook.id}`);
+    console.log(`[WebhookWorker] Queued delivery ${nextDeliveryId} for webhook ${webhookId}`);
 
     return nextDeliveryId;
   }
@@ -479,14 +626,35 @@ class WebhookDeliveryWorker extends EventEmitter {
         return;
       }
 
-      // Handle failure
-      const maxRetries = job.webhook.retryPolicy?.maxRetries ?? MAX_RETRIES;
+      // Site-ceiling gate contract §7E: a superseded delivery (webhook edited
+      // or disabled since enqueue) was never attempted over the network —
+      // retrying or DLQ'ing it would just re-check the same now-stale premise.
+      // The outcome is already recorded (above); nothing more to do.
+      if (result2.superseded) {
+        console.warn(`[WebhookWorker] delivery-superseded ${JSON.stringify({
+          errorId: 'WEBHOOK_DELIVERY_SUPERSEDED',
+          deliveryId: job.id,
+          webhookId: job.webhookId,
+          eventId: job.event.id
+        })}`);
+        return;
+      }
+
+      // Handle failure. `result2.retryPolicy` (resolved inside deliverWebhook)
+      // replaces `job.webhook.retryPolicy` — new-shape jobs don't carry an
+      // embedded config to read it from.
+      const maxRetries = result2.retryPolicy?.maxRetries ?? MAX_RETRIES;
 
       if (job.attempts + 1 >= maxRetries) {
         // Move to dead letter queue
         console.log(`[WebhookWorker] Max retries reached for ${job.id}, moving to DLQ`);
+        // Site-ceiling gate contract §7E: a legacy job (embedded `webhook`)
+        // must not carry its decrypted url/secret/headers into the DLQ —
+        // same rationale as the retry path below. Strip it before
+        // re-serializing.
+        const { webhook: _legacy, ...dlqJob } = job;
         await redis.lpush(WEBHOOK_DLQ, JSON.stringify({
-          job,
+          job: dlqJob,
           lastResult: result2,
           movedAt: new Date().toISOString()
         }));
@@ -494,13 +662,22 @@ class WebhookDeliveryWorker extends EventEmitter {
       }
 
       // Schedule retry
-      const retryDelay = calculateRetryDelay(job.attempts, job.webhook.retryPolicy);
+      const retryDelay = calculateRetryDelay(job.attempts, result2.retryPolicy);
       const nextRetryAt = new Date(Date.now() + retryDelay).toISOString();
 
+      // `webhook` deliberately dropped, not spread from `job` (contract §7E):
+      // a legacy job (embedded `webhook`) converts to the current shape on
+      // retry — the worker reloads and decrypts by id next attempt — so a
+      // decrypted secret already in memory here never re-enters the queue.
       const retryJob: WebhookDeliveryJob = {
-        ...job,
+        id: job.id,
+        webhookId: job.webhookId,
+        generation: job.generation,
+        event: job.event,
         attempts: job.attempts + 1,
-        nextRetryAt
+        nextRetryAt,
+        createdAt: job.createdAt,
+        skipExecutionClaim: job.skipExecutionClaim
       };
 
       console.log(`[WebhookWorker] Scheduling retry for ${job.id} at ${nextRetryAt}`);
@@ -544,10 +721,15 @@ class WebhookDeliveryWorker extends EventEmitter {
 
     const { job } = JSON.parse(entry) as { job: WebhookDeliveryJob };
 
-    // Reset attempts and re-queue
+    // Reset attempts and re-queue. `webhook` deliberately dropped (contract
+    // §7E): a legacy DLQ entry converts to the current shape on replay — the
+    // worker reloads and decrypts by id — so a decrypted secret from an old
+    // entry never re-enters the queue via a DLQ replay either.
     const retryJob: WebhookDeliveryJob = {
-      ...job,
       id: randomUUID(), // New delivery ID
+      webhookId: job.webhookId,
+      generation: job.generation,
+      event: job.event,
       attempts: 0,
       nextRetryAt: undefined,
       createdAt: new Date().toISOString(),
@@ -608,7 +790,7 @@ export type WebhookDeliveryRecordOutcome =
   | { created: false; existing: ExistingWebhookDelivery | null };
 
 export type CreateWebhookDeliveryRecord = (
-  webhook: WebhookConfig,
+  webhook: WebhookFanoutTarget,
   event: BreezeEvent
 ) => Promise<WebhookDeliveryRecordOutcome>;
 
@@ -630,7 +812,7 @@ const BENIGN_DUPLICATE_STATUSES = new Set(['delivered', 'failed']);
  * that same skip is what suppresses a (webhook, event) pair forever.
  */
 function reportDuplicateSkip(
-  webhook: WebhookConfig,
+  webhook: WebhookFanoutTarget,
   event: BreezeEvent,
   existing: ExistingWebhookDelivery | null
 ): void {
@@ -659,7 +841,7 @@ function reportDuplicateSkip(
 }
 
 export interface WebhookFanoutDeps {
-  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookConfig[]>;
+  getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookFanoutTarget[]>;
   createDeliveryRecord?: CreateWebhookDeliveryRecord;
 }
 
@@ -689,7 +871,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
   }
   const { getWebhooksForEvent, createDeliveryRecord } = webhookFanoutDeps;
 
-  let webhooks: WebhookConfig[];
+  let webhooks: WebhookFanoutTarget[];
   try {
     // Get webhooks configured for this event type in this org — short DB context.
     webhooks = await runWithSystemDbAccess(() => getWebhooksForEvent(event.orgId, event.type));
@@ -752,7 +934,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
       // blind rather than skipping — a skip there would drop the delivery
       // outright rather than de-duplicate it.
 
-      await getWebhookWorker().queueDelivery(webhook, event, deliveryId);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event, deliveryId);
     } catch (err) {
       // Recorded-but-not-enqueued is exactly the orphan the recovery sweep
       // reclaims, so this is loud but not fatal to the rest of the fan-out.

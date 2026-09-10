@@ -93,6 +93,11 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     configId: z.string().min(1),
     orgId: z.string().min(1),
     deviceId: z.string().min(1),
+    // Site-ceiling gate contract §3: backup_configs.approval_generation
+    // snapshotted at enqueue time; undefined for jobs enqueued before this
+    // field existed (legacy job payloads never re-hydrate this field, so the
+    // dispatch precheck treats undefined as "skip the comparison").
+    configGeneration: z.number().int().optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
