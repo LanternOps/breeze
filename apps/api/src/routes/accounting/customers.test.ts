@@ -6,10 +6,12 @@ const { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authS
   const importMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
   class QbImportError extends Error { code: string; status: number; constructor(m: string, c: string, s: number) { super(m); this.code = c; this.status = s; } }
-  // Both customer routes create orgs + default sites, so both are gated on
-  // organizations:write + sites:write.
+  // The import route creates orgs + default sites and is gated on both write
+  // permissions. The list route is read-only, but both routes still require
+  // full-partner org access because they enter the partner-wide import seam.
   const authState = {
     scope: 'partner' as 'partner' | 'system',
+    partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null,
     permissions: new Set<string>(['organizations:write', 'sites:write']),
   };
   return { listAnnotatedMock, importMock, writeRouteAuditMock, QbImportError, authState };
@@ -26,6 +28,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.scope === 'system' ? null : 'p1',
+      partnerOrgAccess: authState.scope === 'system' ? null : authState.partnerOrgAccess,
       user: { id: 'u1' },
     });
     await next();
@@ -48,6 +51,7 @@ vi.mock('../../config/env', () => ({
 }));
 
 import { accountingRoutes } from './index';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 
 function app() {
   const a = new Hono();
@@ -58,10 +62,24 @@ function app() {
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
+  authState.partnerOrgAccess = 'all';
   authState.permissions = new Set(['organizations:write', 'sites:write']);
 });
 
 describe('GET /accounting/:provider/customers', () => {
+  it.each(['selected', 'none'] as const)(
+    'denies partnerOrgAccess=%s before the partner-wide preview seam',
+    async (partnerOrgAccess) => {
+      authState.partnerOrgAccess = partnerOrgAccess;
+
+      const res = await app().request('/accounting/quickbooks/customers');
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(listAnnotatedMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns annotated customers', async () => {
     listAnnotatedMock.mockResolvedValue([{ id: '1', displayName: 'Acme', alreadyImported: false, organizationId: null }]);
     const res = await app().request('/accounting/quickbooks/customers');
@@ -109,6 +127,23 @@ describe('GET /accounting/:provider/customers', () => {
 });
 
 describe('POST /accounting/:provider/customers/import', () => {
+  it.each(['selected', 'none'] as const)(
+    'denies partnerOrgAccess=%s before the partner-wide commit seam',
+    async (partnerOrgAccess) => {
+      authState.partnerOrgAccess = partnerOrgAccess;
+
+      const res = await app().request('/accounting/quickbooks/customers/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerIds: ['1'] }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      expect(importMock).not.toHaveBeenCalled();
+    },
+  );
+
   it('imports selected customers and returns the summary', async () => {
     importMock.mockResolvedValue({
       imported: [{ customerId: '1', displayName: 'Acme', organizationId: 'org-1', siteId: 'site-1' }],
