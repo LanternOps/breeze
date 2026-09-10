@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { authRoutes } from '../../routes/auth';
-import { createPartner, createUser } from './db-utils';
+import { bootstrapAuthBinding, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { users } from '../../db/schema';
 import { eq } from 'drizzle-orm';
@@ -60,9 +60,13 @@ describe('silent-write contract: login persists last_login_at under real breeze_
     // withSystemDbAccessContext, which is exactly the fix from #1375. If that
     // wrapper were ever removed or broken, the UPDATE would match 0 rows under
     // breeze_app RLS — and the assertion below would catch it.
+    // Login now requires a durable session-binding cookie (see
+    // authBrowserTransition.ts) — bootstrap one the way a real browser client
+    // would before the issuance call, or it 428s.
+    const binding = await bootstrapAuthBinding();
     const res = await app.request('/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', cookie: binding.cookie },
       body: JSON.stringify({
         email: 'lastlogin-contract@example.com',
         password: 'MyPassword123!'
