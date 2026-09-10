@@ -245,7 +245,11 @@ export RELEASE_FIXTURE_DIR VERSION
 API_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/api:${VERSION}" --format '{{.Id}}')"
 WEB_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/web:${VERSION}" --format '{{.Id}}')"
 PORTAL_DIGEST="$(docker image inspect "ghcr.io/lanternops/breeze/portal:${VERSION}" --format '{{.Id}}')"
-BINARIES_DIGEST="$(docker image inspect "${BINARIES_IMAGE_REF}" --format '{{.Id}}')"
+# The binaries image is pulled from GHCR (not built here), so the installer must be
+# handed its registry *manifest* digest (RepoDigests), not the local image ID:
+# `docker compose pull` resolves `repo@sha256:<digest>` against the registry and a
+# config ID yields "manifest unknown". Fall back to the ID only for a locally built image.
+BINARIES_DIGEST="$(docker image inspect "${BINARIES_IMAGE_REF}" --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' | sed 's/.*@//')"
 export API_DIGEST WEB_DIGEST PORTAL_DIGEST BINARIES_DIGEST
 RELEASE_PUBLIC_KEY="$({ node <<'NODE'
 const { generateKeyPairSync, sign } = require('node:crypto');
